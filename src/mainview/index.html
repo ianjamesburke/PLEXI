@@ -7,21 +7,84 @@
     <link rel="stylesheet" href="index.css">
 </head>
 <body>
-    <div class="container">
-        <h1>Plexi</h1>
-        <p class="subtitle">Infinite 2D Canvas Terminal Multiplexer</p>
-        
-        <div class="canvas-placeholder" id="canvas">
-            <p>🎯 Canvas will render here</p>
-            <p class="hint">Pan: Arrow keys | Zoom: +/- | New Terminal: Ctrl+N</p>
-        </div>
+    <header class="header">
+        <h1 class="logo">Plexi</h1>
+        <p class="tagline">Infinite canvas for terminals. Pan, zoom, link, and organize your workspace without limits.</p>
+    </header>
 
-        <div class="status-bar" id="status">
-            <span>Ready</span>
-            <span id="position">x: 0, y: 0</span>
-            <span id="zoom">zoom: 100%</span>
+    <main class="workspace">
+        <aside class="sidebar">
+            <section class="sidebar-section">
+                <span class="sidebar-label">Contexts</span>
+                <ul class="context-list">
+                    <li><button class="context-item active">Default</button></li>
+                    <li><button class="context-item">Frontend Dev</button></li>
+                    <li><button class="context-item">Backend API</button></li>
+                    <li><button class="context-item">Infrastructure</button></li>
+                </ul>
+            </section>
+
+            <section class="sidebar-section">
+                <span class="sidebar-label">Quick Actions</span>
+                <ul class="context-list">
+                    <li><button class="context-item">+ New Terminal</button></li>
+                    <li><button class="context-item">+ New Browser</button></li>
+                    <li><button class="context-item">Save Context</button></li>
+                </ul>
+            </section>
+        </aside>
+
+        <section class="canvas-wrapper">
+            <div class="canvas" id="canvas">
+                <div class="canvas-empty">
+                    <h2>Your infinite<br>workspace awaits</h2>
+                    <p>Create terminals that link together. Pan across an endless canvas. Switch contexts instantly.</p>
+                    
+                    <div class="shortcut-grid">
+                        <div class="shortcut">
+                            <span class="key">Ctrl+N</span>
+                            <span class="shortcut-label">New terminal</span>
+                        </div>
+                        <div class="shortcut">
+                            <span class="key">Ctrl+K</span>
+                            <span class="shortcut-label">Command palette</span>
+                        </div>
+                        <div class="shortcut">
+                            <span class="key">Arrow</span>
+                            <span class="shortcut-label">Pan canvas</span>
+                        </div>
+                        <div class="shortcut">
+                            <span class="key">+/-</span>
+                            <span class="shortcut-label">Zoom</span>
+                        </div>
+                        <div class="shortcut">
+                            <span class="key">Ctrl+S</span>
+                            <span class="shortcut-label">Save context</span>
+                        </div>
+                        <div class="shortcut">
+                            <span class="key">Ctrl+L</span>
+                            <span class="shortcut-label">Link panels</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="status-bar">
+        <div class="status-left">
+            <span class="status-item">
+                <span class="status-dot"></span>
+                Ready
+            </span>
+            <span class="status-item">Context: Default</span>
         </div>
-    </div>
+        <div class="status-right">
+            <span class="status-item">0 panels</span>
+            <span class="status-item">x: 0 y: 0</span>
+            <span class="status-item">100%</span>
+        </div>
+    </footer>
 
     <script src="index.ts"></script>
 </body>
