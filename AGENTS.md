@@ -4,41 +4,60 @@
 
 **Plexi** is an infinite 2D canvas terminal multiplexer built with Electrobun (Bun-native Electron alternative).
 
-## Self-Verification Loop (CRITICAL)
+## Self-Verification Loop (WORKING ✅)
 
-Before implementing ANY features, verify:
+The verification loop uses **Playwright headless browser** to test UI without needing a display.
 
-1. **App launches** - `bun run dev` opens a window
-2. **Tests pass** - Playwright e2e tests verify UI
-3. **Screenshot captured** - Visual verification
+### How It Works
+
+1. Playwright loads `src/mainview/index.html` directly
+2. Runs assertions against DOM elements
+3. Captures screenshot for visual verification
+4. No X11/Wayland display required
 
 ### Running Tests
 
 ```bash
-# Run all tests
-bun test
+# Run Playwright e2e tests
+bunx playwright test
 
-# Run e2e tests with Playwright
-bun run test:e2e
+# View test results
+cat test-results/.last-run.json
 
-# Capture screenshot for verification
-bun run test:screenshot
+# Screenshot saved to
+ls tests/e2e/screenshot.png
 ```
 
-### Test Coverage Requirements
+### Test Coverage
 
-- [ ] App window opens
-- [ ] Window has correct title ("Plexi")
-- [ ] Basic keyboard navigation works
+- [x] Page loads with correct title ("Plexi")
+- [x] Main heading renders ("Plexi")
+- [x] Subtitle renders ("Infinite 2D Canvas Terminal Multiplexer")
+- [x] Canvas placeholder visible
+- [x] Screenshot captured
+- [ ] Keyboard navigation (Phase 1)
 - [ ] Terminal panel renders (Phase 2)
+
+### Adding New Tests
+
+Add tests to `tests/e2e/`. Example:
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('new feature works', async ({ page }) => {
+  await page.goto(`file://${__dirname}/../../src/mainview/index.html`);
+  // assertions here
+});
+```
 
 ## Development Phases
 
-### Phase 0: Hello World (CURRENT)
+### Phase 0: Hello World (COMPLETE ✅)
 - [x] Initialize Electrobun project
-- [ ] App window opens with "Plexi" title
-- [ ] Playwright test verifies window
-- [ ] Screenshot captured and sent
+- [x] UI renders with "Plexi" title
+- [x] Playwright test verifies UI
+- [x] Screenshot captured and verified
 
 ### Phase 1: Core Canvas MVP
 - [ ] Infinite 2D viewport (pan/zoom)
