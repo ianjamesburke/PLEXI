@@ -14,7 +14,7 @@
     "electrobun": "^1.15.1"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "@playwright/test": "^1.51.0"
+    "@playwright/test": "^1.58.2",
+    "@types/bun": "latest"
   }
 }
