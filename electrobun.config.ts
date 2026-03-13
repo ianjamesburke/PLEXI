@@ -2,9 +2,9 @@ import type { ElectrobunConfig } from "electrobun";
 
 export default {
 	app: {
-		name: "hello-world",
-		identifier: "helloworld.electrobun.dev",
-		version: "0.0.1",
+		name: "plexi",
+		identifier: "dev.plexi.app",
+		version: "0.1.0",
 	},
 	build: {
 		views: {
