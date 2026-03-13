@@ -1,65 +1,250 @@
+/* Plexi - Brutalist/Industrial Aesthetic
+   No AI slop: no cyan-on-dark, no purple gradients, no glassmorphism
+   Stark, honest, high contrast, functional */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+:root {
+  /* Warm industrial palette - tinted neutrals */
+  --bg-primary: oklch(98% 0.005 60);
+  --bg-secondary: oklch(95% 0.008 60);
+  --bg-canvas: oklch(12% 0.01 60);
+  
+  --text-primary: oklch(15% 0.01 60);
+  --text-secondary: oklch(40% 0.02 60);
+  --text-inverse: oklch(95% 0.005 60);
+  
+  --accent: oklch(55% 0.15 30); /* warm rust/terracotta */
+  --accent-hover: oklch(45% 0.18 30);
+  
+  --border: oklch(80% 0.01 60);
+  --border-strong: oklch(25% 0.01 60);
+  
+  /* Spacing rhythm - varied, not uniform */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 2rem;
+  --space-xl: 4rem;
+  --space-2xl: 8rem;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #1a1a2e;
-  color: #eee;
-  height: 100vh;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
+  line-height: 1.5;
 }
 
-.container {
+/* === HEADER === */
+.header {
+  padding: var(--space-lg) var(--space-xl);
+  border-bottom: 2px solid var(--border-strong);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-lg);
+}
+
+.logo {
+  font-size: clamp(1.5rem, 4vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
+}
+
+.tagline {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-weight: 400;
+  max-width: 30ch;
+}
+
+/* === MAIN WORKSPACE === */
+.workspace {
   flex: 1;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 0;
+}
+
+/* === SIDEBAR === */
+.sidebar {
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  padding: var(--space-lg);
   display: flex;
   flex-direction: column;
-  padding: 20px;
+  gap: var(--space-xl);
 }
 
-h1 {
-  font-size: 2rem;
-  margin-bottom: 0.5rem;
-  color: #00d9ff;
-}
-
-.subtitle {
-  color: #888;
-  margin-bottom: 1rem;
-}
-
-.canvas-placeholder {
-  flex: 1;
-  background: #0f0f23;
-  border: 2px dashed #333;
-  border-radius: 8px;
+.sidebar-section {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  gap: var(--space-sm);
+}
+
+.sidebar-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border);
+}
+
+.context-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.context-item {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  padding: var(--space-sm) var(--space-md);
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background 0.1s ease-out;
+}
+
+.context-item:hover {
+  background: var(--bg-primary);
+}
+
+.context-item.active {
+  background: var(--text-primary);
+  color: var(--text-inverse);
+}
+
+/* === CANVAS AREA === */
+.canvas-wrapper {
+  background: var(--bg-canvas);
+  position: relative;
+  overflow: hidden;
+}
+
+.canvas {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+/* Empty state */
+.canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: center;
-  color: #555;
-  font-size: 1.2rem;
+  padding: var(--space-2xl);
+  color: var(--text-inverse);
 }
 
-.canvas-placeholder .hint {
-  font-size: 0.9rem;
-  margin-top: 1rem;
-  color: #444;
+.canvas-empty h2 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  margin-bottom: var(--space-md);
+  line-height: 1.1;
 }
 
+.canvas-empty p {
+  font-size: 1rem;
+  opacity: 0.6;
+  max-width: 40ch;
+  margin-bottom: var(--space-xl);
+}
+
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: var(--space-sm) var(--space-xl);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+}
+
+.shortcut {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.key {
+  background: oklch(25% 0.01 60);
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+.shortcut-label {
+  opacity: 0.5;
+}
+
+/* === STATUS BAR === */
 .status-bar {
+  background: var(--text-primary);
+  color: var(--text-inverse);
+  padding: var(--space-sm) var(--space-xl);
   display: flex;
   justify-content: space-between;
-  padding: 10px 0;
-  font-size: 0.85rem;
-  color: #666;
-  border-top: 1px solid #333;
-  margin-top: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
 }
 
-.status-bar span {
-  padding: 0 10px;
+.status-left,
+.status-right {
+  display: flex;
+  gap: var(--space-lg);
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+/* === FOCUS STATES === */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* === RESPONSIVE === */
+@media (max-width: 768px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+  
+  .sidebar {
+    display: none;
+  }
+  
+  .header {
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+  }
 }
