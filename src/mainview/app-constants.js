@@ -20,11 +20,11 @@ export const isMacOS = /\bMac/i.test(platformName);
 export const ASSET_CANDIDATES = {
   xtermCss: [
     "./vendor/xterm/xterm.css",
-    "../../node_modules/xterm/css/xterm.css",
+    "../../node_modules/@xterm/xterm/css/xterm.css",
   ],
   xtermJs: [
     "./vendor/xterm/xterm.js",
-    "../../node_modules/xterm/lib/xterm.js",
+    "../../node_modules/@xterm/xterm/lib/xterm.js",
   ],
   fitJs: [
     "./vendor/xterm/addon-fit.js",
