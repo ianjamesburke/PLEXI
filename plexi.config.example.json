@@ -1,0 +1,47 @@
+{
+  "$schema": "./src/shared/plexi-config.schema.json",
+  "version": 1,
+  "workspace": {
+    "title": "Default Workspace",
+    "camera": {
+      "x": 0,
+      "y": 0,
+      "zoom": 1
+    },
+    "contexts": [
+      {
+        "id": "default",
+        "label": "Default"
+      },
+      {
+        "id": "frontend-dev",
+        "label": "Frontend Dev"
+      },
+      {
+        "id": "backend-api",
+        "label": "Backend API"
+      },
+      {
+        "id": "infrastructure",
+        "label": "Infrastructure"
+      }
+    ]
+  },
+  "terminal": {
+    "engine": "xterm",
+    "fontFamily": "JetBrains Mono",
+    "fontSize": 13,
+    "cursorStyle": "block",
+    "theme": "ghostty-dark"
+  },
+  "keyboard": {
+    "newTerminal": "Mod+N",
+    "saveWorkspace": "Mod+S",
+    "nextPanel": "Tab",
+    "panCanvas": "ArrowKeys",
+    "movePanel": "Alt+ArrowKeys",
+    "zoomIn": "+",
+    "zoomOut": "-",
+    "resetViewport": "0"
+  }
+}
