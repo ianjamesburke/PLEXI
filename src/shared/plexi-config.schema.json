@@ -10,10 +10,21 @@
     },
     "workspace": {
       "type": "object",
-      "required": ["title", "camera", "contexts"],
+      "required": ["title", "camera", "contexts", "activeContextIndex", "sequence"],
       "properties": {
         "title": {
           "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeContextIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sidebarVisible": {
+          "type": "boolean"
         },
         "camera": {
           "type": "object",
@@ -33,10 +44,32 @@
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["id", "label"],
+            "required": ["id", "label", "panels", "activePanelId"],
             "properties": {
               "id": { "type": "string" },
-              "label": { "type": "string" }
+              "label": { "type": "string" },
+              "activePanelId": {
+                "type": ["string", "null"]
+              },
+              "panels": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "type", "title", "x", "y", "cwd", "cwdLabel"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "type": {
+                      "type": "string",
+                      "enum": ["terminal", "browser"]
+                    },
+                    "title": { "type": "string" },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "cwd": { "type": "string" },
+                    "cwdLabel": { "type": "string" }
+                  }
+                }
+              }
             }
           }
         }

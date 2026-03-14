@@ -49,6 +49,15 @@ function createLiveSessionBridge(handlers) {
     closeSession(params) {
       return rpc.requestProxy.closeSession(params);
     },
+    getWorkspaceStorageInfo() {
+      return rpc.requestProxy.getWorkspaceStorageInfo();
+    },
+    readWorkspaceDocument() {
+      return rpc.requestProxy.readWorkspaceDocument();
+    },
+    writeWorkspaceDocument(params) {
+      return rpc.requestProxy.writeWorkspaceDocument(params);
+    },
     async reset() {},
   };
 }

@@ -1,31 +1,29 @@
 import type { ApplicationMenuItemConfig } from "electrobun/bun";
-
-export const QUIT_ACCELERATOR = "CommandOrControl+Q";
+import { WORKSPACE_COMMANDS } from "../shared/commands.js";
 
 export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
   {
-    label: "Plexi",
     submenu: [
       { role: "hide" },
       { role: "hideOthers" },
       { role: "showAll" },
       { type: "separator" },
-      { role: "quit", accelerator: QUIT_ACCELERATOR },
+      { role: "quit" },
     ],
   },
   {
     label: "File",
     submenu: [
       { label: "New Terminal Right", action: "workspace:new-terminal-right", accelerator: "n" },
-      { label: "New Terminal Below", action: "workspace:new-terminal-down", accelerator: "N" },
+      { label: "New Terminal Below", action: "workspace:new-terminal-down", accelerator: "n" },
       { type: "separator" },
       { label: "Close Terminal", action: "workspace:close-terminal", accelerator: "w" },
-      { label: "Close Window", role: "close", accelerator: "W" },
+      { label: "Close Window", role: "close" },
       { type: "separator" },
       { label: "Save Workspace", action: "workspace:save", accelerator: "s" },
       { label: "Reset Viewport", action: "workspace:reset-viewport", accelerator: "0" },
       { type: "separator" },
-      { label: "Quit Plexi", role: "quit", accelerator: QUIT_ACCELERATOR },
+      { label: "Quit Plexi", role: "quit" },
     ],
   },
   {
@@ -44,7 +42,7 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
     label: "View",
     submenu: [
       { label: "Toggle Sidebar", action: "workspace:toggle-sidebar", accelerator: "b" },
-      { label: "Toggle Overview", action: "workspace:toggle-overview", accelerator: "O" },
+      { label: "Toggle Overview", action: "workspace:toggle-overview", accelerator: "o" },
       { label: "Keyboard Reference", action: "workspace:show-shortcuts", accelerator: "/" },
       { type: "separator" },
       { label: "Zoom In", action: "workspace:zoom-in", accelerator: "=" },
@@ -61,10 +59,15 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
       { label: "Focus Up", action: "workspace:focus-up" },
       { label: "Focus Down", action: "workspace:focus-down" },
       { type: "separator" },
-      { label: "Context 1", action: "workspace:context-1", accelerator: "1" },
-      { label: "Context 2", action: "workspace:context-2", accelerator: "2" },
-      { label: "Context 3", action: "workspace:context-3", accelerator: "3" },
-      { label: "Context 4", action: "workspace:context-4", accelerator: "4" },
+      { label: "Context 1", action: `workspace:${WORKSPACE_COMMANDS.context1}`, accelerator: "1" },
+      { label: "Context 2", action: `workspace:${WORKSPACE_COMMANDS.context2}`, accelerator: "2" },
+      { label: "Context 3", action: `workspace:${WORKSPACE_COMMANDS.context3}`, accelerator: "3" },
+      { label: "Context 4", action: `workspace:${WORKSPACE_COMMANDS.context4}`, accelerator: "4" },
+      { label: "Context 5", action: `workspace:${WORKSPACE_COMMANDS.context5}`, accelerator: "5" },
+      { label: "Context 6", action: `workspace:${WORKSPACE_COMMANDS.context6}`, accelerator: "6" },
+      { label: "Context 7", action: `workspace:${WORKSPACE_COMMANDS.context7}`, accelerator: "7" },
+      { label: "Context 8", action: `workspace:${WORKSPACE_COMMANDS.context8}`, accelerator: "8" },
+      { label: "Context 9", action: `workspace:${WORKSPACE_COMMANDS.context9}`, accelerator: "9" },
       { type: "separator" },
       { label: "Next Context", action: "workspace:next-context" },
       { label: "Previous Context", action: "workspace:previous-context" },

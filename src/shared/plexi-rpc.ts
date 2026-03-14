@@ -8,6 +8,11 @@ export type SessionBackendInfo = {
   shellName: string;
 };
 
+export type WorkspaceStorageInfo = {
+  path: string;
+  source: "disk" | "browser";
+};
+
 export type OpenSessionParams = {
   panelId: string;
   cwd?: string | null;
@@ -70,6 +75,23 @@ export type PlexiRPCSchema = ElectrobunRPCSchema & {
           panelId: string;
         };
         response: void;
+      };
+      getWorkspaceStorageInfo: {
+        params: void;
+        response: WorkspaceStorageInfo;
+      };
+      readWorkspaceDocument: {
+        params: void;
+        response: {
+          path: string;
+          document: Record<string, unknown> | null;
+        };
+      };
+      writeWorkspaceDocument: {
+        params: {
+          document: Record<string, unknown>;
+        };
+        response: WorkspaceStorageInfo;
       };
     };
     messages: Record<never, never>;

@@ -22,25 +22,29 @@
                 <div class="section-heading">
                     <h2 class="section-title">Contexts</h2>
                     <div class="section-actions">
+                        <button class="toolbar-button toolbar-button--ghost" id="new-context" type="button">New</button>
                         <button class="toolbar-button toolbar-button--ghost" data-command="previous-context" type="button">Prev</button>
                         <button class="toolbar-button toolbar-button--ghost" data-command="next-context" type="button">Next</button>
                     </div>
                 </div>
-                <ul class="context-list">
-                    <li><button class="context-item active" data-context-index="0" type="button">Default</button></li>
-                    <li><button class="context-item" data-context-index="1" type="button">Frontend Dev</button></li>
-                    <li><button class="context-item" data-context-index="2" type="button">Backend API</button></li>
-                    <li><button class="context-item" data-context-index="3" type="button">Infrastructure</button></li>
-                </ul>
+                <ul class="context-list" id="context-list"></ul>
             </section>
 
             <section class="sidebar-section">
-                <h2 class="section-title">Actions</h2>
-                <div class="action-stack">
-                    <button class="action-button" data-command="new-terminal-right" type="button">New terminal right</button>
-                    <button class="action-button" data-command="new-terminal-down" type="button">New terminal below</button>
-                    <button class="action-button" data-command="toggle-overview" type="button">Toggle overview</button>
-                    <button class="action-button" data-command="toggle-shortcuts" type="button">Keyboard help</button>
+                <div class="section-heading">
+                    <h2 class="section-title">Workspace</h2>
+                    <div class="section-actions">
+                        <button class="toolbar-button toolbar-button--ghost" id="save-workspace" type="button">Save</button>
+                        <button class="toolbar-button toolbar-button--ghost" id="toggle-workspace-json" type="button">JSON</button>
+                    </div>
+                </div>
+                <div class="meta-stack">
+                    <div class="meta-line"><span>Storage</span><strong id="workspace-storage-label">Loading</strong></div>
+                    <div class="meta-line"><span>Terminal</span><strong id="engine-label">Loading xterm.js</strong></div>
+                </div>
+                <p class="workspace-path" id="workspace-path">Resolving workspace file…</p>
+                <div class="workspace-json-shell is-hidden" id="workspace-json-shell">
+                    <textarea class="workspace-json" id="workspace-json" readonly spellcheck="false"></textarea>
                 </div>
             </section>
 
@@ -54,14 +58,6 @@
                 </aside>
             </section>
 
-            <section class="sidebar-section sidebar-section--meta">
-                <h2 class="section-title">Session</h2>
-                <div class="meta-stack">
-                    <div class="meta-line"><span>Engine</span><strong id="engine-label">Loading xterm.js</strong></div>
-                    <div class="meta-line"><span>Mode</span><strong id="mode-label">Focus</strong></div>
-                    <div class="meta-line"><span>Active</span><strong id="active-label">Booting</strong></div>
-                </div>
-            </section>
         </aside>
 
         <section class="workspace-shell">
@@ -71,10 +67,12 @@
                     <span class="toolbar-path" id="focus-path">~/</span>
                 </div>
                 <div class="toolbar-meta">
-                    <span class="toolbar-pill" id="toolbar-context">Default</span>
+                    <span class="toolbar-pill" id="toolbar-context">Main</span>
+                    <span class="toolbar-pill" id="mode-label">Focus</span>
                     <span class="toolbar-pill" id="focus-position">0, 0</span>
-                    <button class="toolbar-button" data-command="previous-context" type="button">Prev Context</button>
-                    <button class="toolbar-button" data-command="next-context" type="button">Next Context</button>
+                    <button class="toolbar-button" id="toolbar-save-workspace" type="button">Save</button>
+                    <button class="toolbar-button" id="toolbar-toggle-json" type="button">Workspace JSON</button>
+                    <button class="toolbar-button" data-command="toggle-shortcuts" type="button">Keys</button>
                     <button class="toolbar-button" data-command="toggle-overview" type="button">Overview</button>
                 </div>
             </header>
@@ -97,7 +95,7 @@
 
                     <section class="canvas-empty is-hidden" id="empty-shell">
                         <h2>No active terminals</h2>
-                        <p>Create a terminal to start the workspace.</p>
+                        <p>Create a terminal to start this context.</p>
                     </section>
 
                     <div class="shortcuts-overlay is-hidden" id="shortcuts-overlay" aria-live="polite">
@@ -107,26 +105,31 @@
                             <li><span>Cmd/Ctrl+Shift+N</span><span>New terminal below</span></li>
                             <li><span>Cmd/Ctrl+Arrow</span><span>Focus nearest terminal</span></li>
                             <li><span>Cmd/Ctrl+Shift+O</span><span>Toggle overview</span></li>
-                            <li><span>Cmd/Ctrl+1-4</span><span>Switch context</span></li>
+                            <li><span>Cmd/Ctrl+1-9</span><span>Switch context</span></li>
                             <li><span>Cmd/Ctrl+B</span><span>Toggle sidebar</span></li>
                             <li><span>Cmd/Ctrl+/</span><span>Keyboard help</span></li>
                         </ul>
                     </div>
                 </div>
             </section>
-
-            <footer class="status-bar">
-                <div class="status-left">
-                    <span class="status-item" id="status-ready">Booting workspace</span>
-                    <span class="status-item" id="status-context">Context: Default</span>
-                </div>
-                <div class="status-right">
-                    <span class="status-item" id="status-panels">0 terminals</span>
-                    <span class="status-item" id="status-position">0, 0</span>
-                    <span class="status-item" id="status-zoom">100%</span>
-                </div>
-            </footer>
         </section>
+    </div>
+
+    <div class="toast-layer" id="toast-layer" aria-live="polite"></div>
+
+    <div class="modal-shell is-hidden" id="context-modal" role="dialog" aria-modal="true" aria-labelledby="context-modal-title">
+        <form class="modal-card" id="context-form">
+            <div class="modal-header">
+                <h2 class="modal-title" id="context-modal-title">New context</h2>
+                <button class="toolbar-button toolbar-button--ghost" id="context-cancel" type="button">Cancel</button>
+            </div>
+            <label class="field-label" for="context-name-input">Context name</label>
+            <input class="text-input" id="context-name-input" name="context-name" type="text" maxlength="64" autocomplete="off" required>
+            <div class="modal-actions">
+                <button class="toolbar-button toolbar-button--ghost" id="context-close" type="button">Dismiss</button>
+                <button class="toolbar-button" id="context-submit" type="submit">Save context</button>
+            </div>
+        </form>
     </div>
 
     <script type="module" src="app.js"></script>
