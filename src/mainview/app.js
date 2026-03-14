@@ -12,11 +12,8 @@ import {
   getBounds,
   getVisiblePanels,
   movePanelRecord,
-  panCamera,
   renameContextRecord,
-  resetViewport,
   setContextIndex,
-  toggleMode,
 } from "../shared/workspace-state.js";
 import { CONTEXT_COMMANDS, WORKSPACE_COMMANDS, isWorkspaceCommand } from "../shared/commands.js";
 import { getDisplayContextLabel } from "../shared/workspace-document.js";
@@ -38,13 +35,10 @@ import {
   saveWorkspaceState,
 } from "./workspace-storage.js";
 import {
-  adjustTerminalFontSize,
   createTerminalRuntime,
   ensureTerminalFont,
   ensureXtermAssets,
-  getTerminalFontSize,
   getTerminalProfile,
-  getTerminalZoomStep,
   getXtermStatus,
   setXtermError,
 } from "./xterm-runtime.js";
@@ -59,7 +53,6 @@ let state = bootDefaultState();
 const uiState = {
   workspaceStorageSource: "browser",
   contextModalOpen: false,
-  contextRenameIndex: null,
   toastTimer: null,
 };
 
@@ -459,18 +452,6 @@ function renderContextModal() {
   }
 
   dom.contextModal.classList.toggle("is-hidden", !uiState.contextModalOpen);
-
-  if (!uiState.contextModalOpen) {
-    return;
-  }
-
-  const isRename = uiState.contextRenameIndex !== null;
-  if (dom.contextModalTitle) {
-    dom.contextModalTitle.textContent = isRename ? "Rename context" : "New context";
-  }
-  if (dom.contextSubmitButton) {
-    dom.contextSubmitButton.textContent = isRename ? "Rename" : "Create context";
-  }
 }
 
 function openContextModal() {
@@ -488,24 +469,22 @@ function openContextModal() {
   });
 }
 
-function openRenameModal(index) {
+function renameContext(index) {
   if (!Number.isInteger(index) || index < 0 || index >= state.contexts.length) {
     return;
   }
 
-  uiState.contextModalOpen = true;
-  uiState.contextRenameIndex = index;
-  renderContextModal();
+  const currentLabel = formatContextLabel(state.contexts[index]?.label, index);
+  const newLabel = window.prompt("Rename context", currentLabel);
 
-  const context = state.contexts[index];
-  if (dom.contextNameInput) {
-    dom.contextNameInput.value = formatContextLabel(context.label, index);
+  if (newLabel === null || !newLabel.trim()) {
+    return;
   }
 
-  window.requestAnimationFrame(() => {
-    dom.contextNameInput?.focus();
-    dom.contextNameInput?.select();
-  });
+  renameContextRecord(state, index, newLabel.trim());
+  setLastAction(`Context renamed to ${newLabel.trim()}`);
+  saveState();
+  render();
 }
 
 function closeContextModal() {
@@ -522,18 +501,8 @@ function submitContextModal() {
     return;
   }
 
-  if (uiState.contextRenameIndex !== null) {
-    const index = uiState.contextRenameIndex;
-    const currentLabel = formatContextLabel(state.contexts[index]?.label, index);
-    if (label !== currentLabel) {
-      renameContextRecord(state, index, label);
-      setLastAction(`Context renamed to ${label}`);
-    }
-  } else {
-    createContextRecord(state, label);
-    setLastAction(`Context ${label} created`);
-  }
-
+  createContextRecord(state, label);
+  setLastAction(`Context ${label} created`);
   closeContextModal();
   saveState();
   render();
@@ -566,7 +535,6 @@ function createTerminal(direction, cwd = null, cwdLabel = null) {
       ? `${panel.title} created below`
       : `${panel.title} created to the right`,
   );
-  state.mode = "focus";
 }
 
 function closeActiveTerminal() {
@@ -632,59 +600,14 @@ function handleShortcutKeydown(event) {
       new_terminal_down: WORKSPACE_COMMANDS.newTerminalDown,
       new_terminal_right: WORKSPACE_COMMANDS.newTerminalRight,
       save_workspace: WORKSPACE_COMMANDS.saveWorkspace,
-      toggle_overview: WORKSPACE_COMMANDS.toggleOverview,
       toggle_shortcuts: WORKSPACE_COMMANDS.toggleShortcuts,
       toggle_sidebar: WORKSPACE_COMMANDS.toggleSidebar,
-      zoom_in: WORKSPACE_COMMANDS.zoomIn,
-      zoom_out: WORKSPACE_COMMANDS.zoomOut,
     };
     const command = actionToCommand[match.action.name];
     if (command) {
       runCommand(command);
       return true;
     }
-  }
-
-  if (state.mode === "overview" && (event.metaKey || event.ctrlKey) && event.shiftKey && isArrowKey) {
-    event.preventDefault();
-
-    const direction =
-      event.key === "ArrowLeft"
-        ? DIRECTIONS.left
-        : event.key === "ArrowRight"
-          ? DIRECTIONS.right
-          : event.key === "ArrowUp"
-            ? DIRECTIONS.up
-            : DIRECTIONS.down;
-
-    const moved = movePanelRecord(state, state.activePanelId, direction);
-
-    if (moved) {
-      setLastAction(`${moved.title} repositioned`);
-      saveState();
-      render();
-    }
-
-    return true;
-  }
-
-  if (state.mode === "overview" && isArrowKey && !(event.metaKey || event.ctrlKey)) {
-    event.preventDefault();
-
-    const distance = 120;
-    if (event.key === "ArrowLeft") {
-      panCamera(state, distance, 0);
-    } else if (event.key === "ArrowRight") {
-      panCamera(state, -distance, 0);
-    } else if (event.key === "ArrowUp") {
-      panCamera(state, 0, distance);
-    } else if (event.key === "ArrowDown") {
-      panCamera(state, 0, -distance);
-    }
-    setLastAction("Overview moved");
-    saveState();
-    render();
-    return true;
   }
 
   return false;
@@ -706,9 +629,6 @@ function runCommand(command) {
       break;
     case WORKSPACE_COMMANDS.closeTerminal:
       closeActiveTerminal();
-      break;
-    case WORKSPACE_COMMANDS.toggleOverview:
-      setLastAction(toggleMode(state) === "overview" ? "Overview opened" : "Focus mode");
       break;
     case WORKSPACE_COMMANDS.toggleSidebar:
       state.sidebarVisible = !state.sidebarVisible;
@@ -733,18 +653,6 @@ function runCommand(command) {
       break;
     case WORKSPACE_COMMANDS.focusDown:
       handleDirectionalFocus(DIRECTIONS.down);
-      break;
-    case WORKSPACE_COMMANDS.zoomIn:
-      adjustTerminalFontSize(getTerminalZoomStep(), terminalRuntime);
-      setLastAction(`Terminal font ${getTerminalFontSize()}px`);
-      break;
-    case WORKSPACE_COMMANDS.zoomOut:
-      adjustTerminalFontSize(-getTerminalZoomStep(), terminalRuntime);
-      setLastAction(`Terminal font ${getTerminalFontSize()}px`);
-      break;
-    case WORKSPACE_COMMANDS.resetViewport:
-      resetViewport(state);
-      setLastAction("Overview recentered");
       break;
     case WORKSPACE_COMMANDS.nextContext:
       if (contextCount > 0) {
@@ -853,79 +761,36 @@ function renderSparseFocusHints(visiblePanels, activePanel) {
   dom.focusBottomSlot?.classList.toggle("is-hidden", !bottomOpen);
 }
 
-function renderOverviewHud(visiblePanels) {
-  if (!dom.overviewTitle || !dom.overviewBody) {
-    return;
-  }
-
-  if (visiblePanels.length === 0) {
-    dom.overviewTitle.textContent = "Nothing to map yet";
-    dom.overviewBody.textContent = "Open a terminal to start building your workspace.";
-    return;
-  }
-
-  if (visiblePanels.length === 1) {
-    dom.overviewTitle.textContent = "Your workspace map starts here";
-    dom.overviewBody.textContent = "Add terminals around this one to build a persistent spatial layout.";
-    return;
-  }
-
-  dom.overviewTitle.textContent = "Overview";
-  dom.overviewBody.textContent = "Pan with arrows. Move panels with Cmd/Ctrl+Shift+Arrow.";
-}
-
-function renderOverview(visiblePanels, activePanel) {
-  if (visiblePanels.length === 0) {
-    dom.overviewCanvas.innerHTML = "";
-    return;
-  }
-
-  const bounds = getBounds(visiblePanels);
-  const cellWidth = 312;
-  const rowHeight = 212;
-  const offsetX = 136;
-  const offsetY = 88;
-
-  dom.overviewCanvas.innerHTML = `
-    <div class="overview-viewport" style="transform: translate(${state.camera.x}px, ${state.camera.y}px) scale(${state.camera.zoom});">
-      ${visiblePanels
-        .map((panel) => {
-          const left = (panel.x - bounds.minX) * cellWidth + offsetX;
-          const top = (panel.y - bounds.minY) * rowHeight + offsetY;
-          const active = panel.id === activePanel?.id ? "is-active" : "";
-
-          return `
-            <article class="overview-node ${active}" data-focus-panel="${panel.id}" style="left:${left}px;top:${top}px;">
-              <h3>${panel.title}</h3>
-              <p>${PANEL_TYPES[panel.type].summary}</p>
-              <div class="overview-node-meta">
-                <span>${panel.x}, ${panel.y}</span>
-                <span>${panel.cwdLabel || panel.cwd}</span>
-              </div>
-            </article>
-          `;
-        })
-        .join("")}
-    </div>
-  `;
-}
-
 function renderFocus(activePanel) {
+  const activeContext = state.contexts[state.activeContextIndex];
+  const contextLabel = activeContext
+    ? (activeContext.label || `Context ${state.activeContextIndex + 1}`)
+    : `Context 1`;
+
+  if (dom.toolbarContext) {
+    dom.toolbarContext.textContent = contextLabel;
+  }
+
   if (!activePanel) {
     dom.focusTitle.textContent = "No terminals yet";
     dom.focusPath.textContent = "";
+    if (dom.focusPosition) {
+      dom.focusPosition.textContent = "";
+    }
     return;
   }
 
-  const label = activePanel.cwdLabel || activePanel.cwd || "~";
-  const dirName = label.split("/").filter(Boolean).pop() || label;
-  dom.focusTitle.textContent = dirName;
-  dom.focusPath.textContent = label;
+  dom.focusTitle.textContent = activePanel.title;
+  dom.focusPath.textContent = activePanel.cwdLabel || activePanel.cwd || "~";
+  if (dom.focusPosition) {
+    dom.focusPosition.textContent = `${activePanel.x}, ${activePanel.y}`;
+  }
 }
 
 function renderToolbarState(activePanel) {
   const hasActivePanel = Boolean(activePanel);
   dom.focusPath?.classList.toggle("is-hidden", !hasActivePanel);
+  dom.focusPosition?.classList.toggle("is-hidden", !hasActivePanel);
 }
 
 async function render() {
@@ -938,27 +803,22 @@ async function render() {
   updateEngineLabel(activePanel);
   renderFocus(activePanel);
   renderToolbarState(activePanel);
-  renderOverviewHud(visiblePanels);
-  renderOverview(visiblePanels, activePanel);
   renderMinimap(visiblePanels, activePanel);
   renderSparseFocusHints(visiblePanels, activePanel);
   dom.appShell.classList.toggle("app-shell--sidebar-hidden", !state.sidebarVisible);
   dom.sidebar?.setAttribute("aria-hidden", String(!state.sidebarVisible));
 
-  dom.focusShell.classList.toggle("is-hidden", state.mode !== "focus" || visiblePanels.length === 0);
-  dom.overviewShell.classList.toggle("is-hidden", state.mode !== "overview");
-  dom.emptyShell.classList.toggle("is-hidden", state.mode !== "focus" || visiblePanels.length !== 0);
+  dom.focusShell.classList.toggle("is-hidden", visiblePanels.length === 0);
+  dom.emptyShell.classList.toggle("is-hidden", visiblePanels.length !== 0);
   dom.shortcutsOverlay.classList.toggle("is-hidden", !state.shortcutsVisible);
 
   if (dom.workspaceStorageLabel) {
     dom.workspaceStorageLabel.textContent = uiState.workspaceStorageSource === "disk" ? "Disk" : "Browser";
   }
 
-  if (state.mode === "focus" && activePanel) {
+  if (activePanel) {
     await mountActiveTerminal(activePanel);
   }
-
-  dom.stage.dataset.mode = state.mode;
 }
 
 function bindUiEvents() {
@@ -978,7 +838,6 @@ function bindUiEvents() {
     if (focusTarget) {
       const panelId = focusTarget.getAttribute("data-focus-panel");
       focusPanel(state, panelId);
-      state.mode = "focus";
       setLastAction(`Focused ${getActivePanel(state)?.title}`);
       saveState();
       render();
@@ -987,7 +846,7 @@ function bindUiEvents() {
 
     const renameButton = target.closest("[data-rename-context-index]");
     if (renameButton) {
-      openRenameModal(Number(renameButton.getAttribute("data-rename-context-index")));
+      renameContext(Number(renameButton.getAttribute("data-rename-context-index")));
       return;
     }
 

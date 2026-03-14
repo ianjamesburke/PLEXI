@@ -53,12 +53,13 @@
         <section class="workspace-shell">
             <header class="workspace-toolbar electrobun-webkit-app-region-drag">
                 <div class="toolbar-primary">
+                    <span class="toolbar-context" id="toolbar-context"></span>
                     <h2 class="toolbar-title" id="focus-title">No terminals yet</h2>
                     <span class="toolbar-path" id="focus-path"></span>
+                    <span class="toolbar-position" id="focus-position"></span>
                 </div>
                 <div class="toolbar-meta">
                     <button class="toolbar-button" data-command="toggle-shortcuts" type="button">Keys</button>
-                    <button class="toolbar-button" data-command="toggle-overview" type="button">Overview</button>
                 </div>
             </header>
 
@@ -76,14 +77,6 @@
                             <p class="focus-ghost-shortcut">⌘+⇧+N</p>
                             <p class="focus-ghost-copy">Open one below</p>
                         </aside>
-                    </section>
-
-                    <section class="overview-shell is-hidden" id="overview-shell" aria-label="Workspace overview">
-                        <div class="overview-hud">
-                            <h3 id="overview-title">Overview</h3>
-                            <p id="overview-body">Pan with arrows. Move panels with ⌘+⇧+Arrow.</p>
-                        </div>
-                        <div class="overview-canvas" id="overview-canvas"></div>
                     </section>
 
                     <section class="canvas-empty is-hidden" id="empty-shell">
@@ -118,7 +111,6 @@
                             <li><span>⌘+N</span><span>New terminal right</span></li>
                             <li><span>⌘+⇧+N</span><span>New terminal below</span></li>
                             <li><span>⌘+Arrow</span><span>Focus nearest terminal</span></li>
-                            <li><span>⌘+⇧+O</span><span>Toggle overview</span></li>
                             <li><span>⌘+1–9</span><span>Switch context</span></li>
                             <li><span>⌘+B</span><span>Toggle sidebar</span></li>
                             <li><span>⌘+/</span><span>Keyboard help</span></li>

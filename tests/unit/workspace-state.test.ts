@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   DIRECTIONS,
-  adjustZoom,
   closePanelRecord,
   createContextRecord,
   createPanelRecord,
@@ -113,12 +112,6 @@ describe("workspace state helpers", () => {
     expect(first.x).toBe(2);
     expect(first.y).toBe(0);
     expect(second.x).toBe(1);
-  });
-
-  test("adjustZoom stays within supported overview range", () => {
-    const state = makeDefaultState();
-    expect(adjustZoom(state, -2)).toBe(0.45);
-    expect(adjustZoom(state, 3)).toBe(2);
   });
 
   test("context switching restores the last focused panel per context", () => {
