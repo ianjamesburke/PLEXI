@@ -4,9 +4,14 @@ import { tmpdir } from "node:os";
 import { resolveShellLaunchConfig } from "./shells";
 
 const PLEXI_CWD_OSC = "\u001b]633;PlexiCwd=%s\u0007";
+type ShellLaunch = ReturnType<typeof resolveShellLaunchConfig>;
+type BootstrappedShellLaunch = {
+  launch: ShellLaunch;
+  bootstrapDir: string | null;
+};
 
 function buildZshBootstrapDirectory(env: Record<string, string>) {
-  const sourceDir = env.ZDOTDIR || env.HOME;
+  const sourceDir = env["ZDOTDIR"] || env["HOME"];
   if (!sourceDir) {
     return null;
   }
@@ -29,7 +34,7 @@ function buildZshBootstrapDirectory(env: Record<string, string>) {
   return bootstrapDir;
 }
 
-export function applyShellBootstrap(launch: ReturnType<typeof resolveShellLaunchConfig>) {
+export function applyShellBootstrap(launch: ShellLaunch): BootstrappedShellLaunch {
   if (launch.shellName === "zsh") {
     const bootstrapDir = buildZshBootstrapDirectory(launch.env);
     if (!bootstrapDir) {
@@ -42,7 +47,7 @@ export function applyShellBootstrap(launch: ReturnType<typeof resolveShellLaunch
         env: {
           ...launch.env,
           ZDOTDIR: bootstrapDir,
-        },
+        } as ShellLaunch["env"],
       },
       bootstrapDir,
     };
@@ -54,8 +59,8 @@ export function applyShellBootstrap(launch: ReturnType<typeof resolveShellLaunch
         ...launch,
         env: {
           ...launch.env,
-          PROMPT_COMMAND: `printf '${PLEXI_CWD_OSC}' "$PWD";${launch.env.PROMPT_COMMAND ? ` ${launch.env.PROMPT_COMMAND}` : ""}`,
-        },
+          PROMPT_COMMAND: `printf '${PLEXI_CWD_OSC}' "$PWD";${launch.env["PROMPT_COMMAND"] ? ` ${launch.env["PROMPT_COMMAND"]}` : ""}`,
+        } as ShellLaunch["env"],
       },
       bootstrapDir: null,
     };

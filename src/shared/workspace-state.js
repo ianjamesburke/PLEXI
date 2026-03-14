@@ -114,6 +114,61 @@ export const renameContextRecord = (state, index, label) => {
   return context;
 };
 
+export const deleteContextRecord = (state, index) => {
+  const context = state.contexts[index];
+  if (!context) {
+    return null;
+  }
+
+  state.panels = state.panels.filter((panel) => panel.contextIndex !== index);
+
+  for (let i = index; i < state.contexts.length - 1; i++) {
+    state.contexts[i] = state.contexts[i + 1];
+    state.panels.forEach((panel) => {
+      if (panel.contextIndex > index) {
+        panel.contextIndex--;
+      }
+    });
+  }
+  state.contexts.pop();
+
+  if (state.activeContextIndex >= state.contexts.length) {
+    state.activeContextIndex = state.contexts.length - 1;
+  }
+  if (state.activeContextIndex < 0) {
+    state.activeContextIndex = 0;
+  }
+
+  if (state.activePanelIdsByContext) {
+    const newActivePanelIds = {};
+    Object.keys(state.activePanelIdsByContext).forEach((keyStr) => {
+      const key = Number(keyStr);
+      if (key < index) {
+        newActivePanelIds[key] = state.activePanelIdsByContext[key];
+      } else if (key > index) {
+        newActivePanelIds[key - 1] = state.activePanelIdsByContext[key];
+      }
+    });
+    state.activePanelIdsByContext = newActivePanelIds;
+  }
+
+  if (state.rowFocusPanelIdsByContext) {
+    const newRowFocus = {};
+    Object.keys(state.rowFocusPanelIdsByContext).forEach((keyStr) => {
+      const key = Number(keyStr);
+      if (key < index) {
+        newRowFocus[key] = state.rowFocusPanelIdsByContext[key];
+      } else if (key > index) {
+        newRowFocus[key - 1] = state.rowFocusPanelIdsByContext[key];
+      }
+    });
+    state.rowFocusPanelIdsByContext = newRowFocus;
+  }
+
+  ensureActivePanel(state);
+  return context;
+};
+
 export const getActiveContext = (state) => state.contexts[state.activeContextIndex] || null;
 
 const isOccupied = (panels, x, y, contextIndex, ignoreId = null) =>
@@ -251,6 +306,7 @@ export const createPanelRecord = (
     y,
     contextIndex: state.activeContextIndex,
     transcript: [],
+    hasReceivedInput: false,
     cwd: cwd || activePanel?.cwd || "~",
     cwdLabel: cwdLabel || activePanel?.cwdLabel || cwd || activePanel?.cwd || "~",
   };

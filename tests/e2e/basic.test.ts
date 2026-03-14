@@ -56,7 +56,6 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#empty-shell .empty-tagline")).toHaveText("Open a terminal, cd into a project and then open one beside or below it.");
   await expect(page.locator("#empty-shell")).toContainText("Open your first terminal here");
   await expect(page.locator("#empty-shell")).toContainText("Contexts live here.");
-  await expect(page.locator("#workspace-storage-label")).toHaveText("Browser");
   expect(pageErrors).toEqual([]);
 
   await page.keyboard.press("Control+N");
@@ -66,7 +65,6 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#focus-bottom-slot")).toBeVisible();
   await expect(page.locator("#focus-path")).toHaveText("~");
   await expect(page.locator(".xterm")).toBeVisible();
-  await expect(page.locator("#engine-label")).toContainText("xterm.js ready");
 
   const terminalProfile = await page.evaluate(() => window.__PLEXI_DEBUG__.getTerminalProfile());
   expect(terminalProfile.fontFamily).toContain("Plexi Terminal");
@@ -97,10 +95,12 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
 
   await page.locator("#new-context").click();
   await expect(page.locator("#context-modal")).toBeVisible();
-  await page.locator("#context-name-input").fill("Context 2");
+  await page.locator("#context-name-input").fill("<b>Context 2</b>");
   await page.locator("#context-form").evaluate((form) => form.requestSubmit());
   await page.keyboard.press("Control+2");
-  await expect(page.locator("#toolbar-context")).toHaveText("Context 2");
+  await expect(page.locator("#toolbar-context")).toHaveText("<b>Context 2</b>");
+  await expect(page.locator("#context-list")).toContainText("<b>Context 2</b>");
+  expect(await page.locator("#context-list b").count()).toBe(0);
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBeNull();
   await expect(page.locator("#focus-path")).toBeHidden();
   
@@ -117,7 +117,8 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await page.locator("#context-delete").click();
   await page.locator("#context-delete").click();
   
-  await expect(page.locator("#toast-layer")).toContainText("Context Context 2 deleted");
+  await expect(page.locator("#toast-layer")).toContainText("Context <b>Context 2</b> deleted");
+  expect(await page.locator("#toast-layer b").count()).toBe(0);
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().contexts)).toHaveLength(1);
 
   await page.keyboard.press("Control+B");
@@ -129,7 +130,6 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator(".workspace-toolbar")).toHaveClass(/electrobun-webkit-app-region-drag/);
 
   await page.setViewportSize({ width: 1040, height: 720 });
-  await expect(page.locator("#engine-label")).toBeVisible();
 
   const viewportFit = await page.evaluate(() => {
     const header = document.querySelector(".workspace-toolbar")?.getBoundingClientRect();

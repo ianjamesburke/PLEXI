@@ -1,57 +1,53 @@
-# Electrobun Hello World
+# Plexi
 
-A simple Electrobun app to get you started with the framework.
+An exploration in spatial terminal window management. I'm building this for people who haven't learned `tmux` but want to become terminal super users. 
 
-## What You'll See
+Instead of memorizing obscure keybindings to manage split panes, Plexi uses an infinite 2D canvas. You organize your dev environment using spatial memory—placing servers, tail logs, and build tasks exactly where they make sense to you. My goal is to refine this spatial canvas into a core primitive that is as versatile as possible.
 
-This hello world app demonstrates:
-- **Native Window**: A cross-platform desktop window
-- **Web-based UI**: Modern HTML, CSS, and JavaScript interface
-- **Simple Architecture**: Clean separation between Bun process and UI
+Built with **Electrobun** (Bun + WebView) and **xterm.js** (for now).
 
-## Getting Started
+---
 
-1. Install dependencies:
-   ```bash
-   bun install
-   ```
+## Current Scope (The MVP)
 
-2. Run in development mode:
-   ```bash
-   bun run dev
-   ```
+Right now, I'm just focused on getting a functional frontend window manager working:
 
-3. Build for production:
-   ```bash
-   bun run build
-   ```
+*   **Infinite 2D Viewport**: Pan and zoom around your terminal nodes.
+*   **Spatial Keyboard Navigation**: Jump between terminals based on their X/Y coordinates.
+*   **Terminal Panels**: Basic interactions powered by `xterm.js`.
+*   **Layouts**: Save and load your visual arrangement to a JSON config. You can edit the `session.json` file directly in `~/.config/plexi/session.json` (or your OS equivalent). I have plans to expose this editing capability directly in the app at some point.
 
-## Project Structure
+## The Future (Replacing `tmux`)
 
+Once the basic canvas feels good, the plan is to build the backend daemon features that actually make this a `tmux` alternative.
+
+*   **True Session Persistence**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI.
+*   **libghostty Integration**: I plan to eventually swap out `xterm.js` for `libghostty` to get GPU-accelerated, native-grade terminal rendering.
+*   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas alongside your terminals.
+*   **Advanced Multiplexing**: SSH auto-connect, connection pooling, and visual routing lines showing relationships between nodes.
+*   **Ergonomics**: Vi-style copy mode and scrollback buffers.
+
+---
+
+## Known Issues
+
+*   **Graphics rendering isn't great:** `xterm.js` is okay for now, but this will be fixed with the planned migration to `libghostty`.
+*   **opencode visually bugs sometimes.**
+
+---
+
+## Development
+
+```bash
+# Install dependencies
+bun install
+
+# Start dev server
+bun run dev
+
+# Build for production
+bun run build
+
+# Run Playwright e2e verification (ALWAYS RUN BEFORE COMMITS)
+bun run test:e2e
 ```
-src/
-├── bun/
-│   └── index.ts      # Main process - creates and manages windows
-└── mainview/
-    ├── index.html    # Your app's UI
-    ├── index.css     # Styles
-    └── index.ts      # View logic
-```
-
-## Next Steps
-
-Ready to build something more complex? Check out:
-
-- **[Documentation](https://docs.electrobun.dev)** - Learn about all Electrobun features
-- **[Examples](https://github.com/blackboardsh/electrobun/tree/main/playground)** - See advanced features like RPC, menus, and system tray
-- **[GitHub](https://github.com/blackboardsh/electrobun)** - Star the repo and join the community
-
-### Add More Features
-
-Want to extend this app? Try adding:
-- RPC communication between Bun and webview
-- Native menus and system tray
-- File dialogs and system integration
-- Multiple windows and views
-
-Happy building! 🚀

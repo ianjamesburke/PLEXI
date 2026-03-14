@@ -264,22 +264,6 @@ body.platform-macos {
   gap: 4px;
 }
 
-.meta-stack {
-  display: grid;
-  gap: 8px;
-}
-
-.meta-line {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--text-secondary);
-  font-size: 0.72rem;
-}
-
-.meta-line strong {
-  color: var(--text-primary);
-  font-weight: 500;
   text-align: right;
 }
 
@@ -823,7 +807,6 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
     gap: 6px;
   }
 
-  .meta-stack,
   .action-stack {
     gap: 4px;
   }

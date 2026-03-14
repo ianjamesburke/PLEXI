@@ -1,4 +1,4 @@
-import { BrowserView } from "electrobun/bun";
+import { BrowserView, Utils } from "electrobun/bun";
 import type { LocalSessionManager } from "./session-manager";
 import type { PlexiRPCSchema } from "../shared/plexi-rpc";
 import {
@@ -16,7 +16,7 @@ export function createSessionRpc(sessionManager: LocalSessionManager, workspaceS
     },
   });
 
-  rpc.setRequestHandler({
+  const requestHandlers = {
     getBackendInfo() {
       return sessionManager.getBackendInfo();
     },
@@ -51,7 +51,12 @@ export function createSessionRpc(sessionManager: LocalSessionManager, workspaceS
         source: "disk" as const,
       };
     },
-  });
+    openExternalUrl(params) {
+      return Utils.openExternal(params.url);
+    },
+  } as Parameters<typeof rpc.setRequestHandler>[0];
+
+  rpc.setRequestHandler(requestHandlers);
 
   return rpc;
 }

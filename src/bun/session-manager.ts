@@ -63,7 +63,7 @@ export class LocalSessionManager {
     const { spawn } = await loadBunPty();
 
     const pty = spawn(bootstrappedLaunch.shellPath, bootstrappedLaunch.args, {
-      name: bootstrappedLaunch.env.TERM || "xterm-256color",
+      name: bootstrappedLaunch.env["TERM"] || "xterm-256color",
       cols,
       rows,
       cwd: bootstrappedLaunch.cwd,
@@ -89,7 +89,7 @@ export class LocalSessionManager {
     const started: SessionStartedMessage = {
       panelId: params.panelId,
       cwd: bootstrappedLaunch.cwd,
-      cwdLabel: formatHomeLabel(bootstrappedLaunch.cwd, bootstrappedLaunch.env.HOME),
+      cwdLabel: formatHomeLabel(bootstrappedLaunch.cwd, bootstrappedLaunch.env["HOME"]),
       shellPath: bootstrappedLaunch.shellPath,
       shellName: bootstrappedLaunch.shellName,
       backend: "bun-pty",

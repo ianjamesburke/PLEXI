@@ -28,16 +28,6 @@
                 <ul class="context-list" id="context-list"></ul>
             </section>
 
-            <section class="sidebar-section">
-                <div class="section-heading">
-                    <h2 class="section-title">Workspace</h2>
-                </div>
-                <div class="meta-stack">
-                    <div class="meta-line"><span>Storage</span><strong id="workspace-storage-label">Loading</strong></div>
-                    <div class="meta-line"><span>Terminal</span><strong id="engine-label">Loading xterm.js</strong></div>
-                </div>
-            </section>
-
             <section class="sidebar-section sidebar-section--map">
                 <div class="section-heading">
                     <h2 class="section-title">Map</h2>
@@ -131,8 +121,11 @@
             <label class="field-label" for="context-name-input">Context name</label>
             <input class="text-input" id="context-name-input" name="context-name" type="text" maxlength="64" autocomplete="off" required>
             <div class="modal-actions">
-                <button class="toolbar-button toolbar-button--ghost" id="context-close" type="button">Dismiss</button>
-                <button class="toolbar-button" id="context-submit" type="submit">Save context</button>
+                <button class="toolbar-button toolbar-button--danger is-hidden" id="context-delete" type="button">Delete</button>
+                <div class="modal-actions-right">
+                    <button class="toolbar-button toolbar-button--ghost" id="context-close" type="button">Dismiss</button>
+                    <button class="toolbar-button" id="context-submit" type="submit">Save context</button>
+                </div>
             </div>
         </form>
     </div>

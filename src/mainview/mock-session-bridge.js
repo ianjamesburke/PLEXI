@@ -226,6 +226,9 @@ export function createMockSessionBridge(handlers = {}) {
         source: "browser",
       };
     },
+    async openExternalUrl(_url) {
+      return true;
+    },
     async reset() {
       sessions.clear();
     },
