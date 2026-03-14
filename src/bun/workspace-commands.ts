@@ -6,9 +6,7 @@ const MENU_ACTION_TO_COMMAND = {
   "workspace:new-terminal-down": WORKSPACE_COMMANDS.newTerminalDown,
   "workspace:close-terminal": WORKSPACE_COMMANDS.closeTerminal,
   "workspace:save": WORKSPACE_COMMANDS.saveWorkspace,
-  "workspace:toggle-overview": WORKSPACE_COMMANDS.toggleOverview,
   "workspace:toggle-sidebar": WORKSPACE_COMMANDS.toggleSidebar,
-  "workspace:reset-viewport": WORKSPACE_COMMANDS.resetViewport,
   "workspace:zoom-in": WORKSPACE_COMMANDS.zoomIn,
   "workspace:zoom-out": WORKSPACE_COMMANDS.zoomOut,
   "workspace:focus-right": WORKSPACE_COMMANDS.focusRight,
@@ -27,7 +25,6 @@ const MENU_ACTION_TO_COMMAND = {
   "workspace:next-context": WORKSPACE_COMMANDS.nextContext,
   "workspace:previous-context": WORKSPACE_COMMANDS.previousContext,
   "workspace:show-shortcuts": WORKSPACE_COMMANDS.showShortcuts,
-  "workspace:edit-workspace-configuration": WORKSPACE_COMMANDS.editWorkspaceConfiguration,
 } as const;
 
 export function getWorkspaceCommandForMenuAction(action: string | undefined) {

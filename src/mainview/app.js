@@ -695,8 +695,6 @@ function runCommand(command) {
     case WORKSPACE_COMMANDS.newContext:
       openContextModal();
       return;
-    case WORKSPACE_COMMANDS.editWorkspaceConfiguration:
-      return;
     default:
       if (CONTEXT_COMMANDS.includes(command)) {
         switchToContext(Number(command.slice(-1)) - 1);
@@ -798,25 +796,24 @@ function renderFocus(activePanel) {
   }
 
   if (!activePanel) {
-    dom.focusTitle.textContent = "No terminals yet";
     dom.focusPath.textContent = "";
-    if (dom.focusPosition) {
-      dom.focusPosition.textContent = "";
+    if (dom.focusProcess) {
+      dom.focusProcess.textContent = "";
     }
     return;
   }
 
-  dom.focusTitle.textContent = activePanel.title;
   dom.focusPath.textContent = activePanel.cwdLabel || activePanel.cwd || "~";
-  if (dom.focusPosition) {
-    dom.focusPosition.textContent = `${activePanel.x}, ${activePanel.y}`;
+  if (dom.focusProcess) {
+    const meta = panelMeta.get(activePanel.id);
+    dom.focusProcess.textContent = meta?.shellName || "";
   }
 }
 
 function renderToolbarState(activePanel) {
   const hasActivePanel = Boolean(activePanel);
   dom.focusPath?.classList.toggle("is-hidden", !hasActivePanel);
-  dom.focusPosition?.classList.toggle("is-hidden", !hasActivePanel);
+  dom.focusProcess?.classList.toggle("is-hidden", !hasActivePanel);
 }
 
 async function render() {

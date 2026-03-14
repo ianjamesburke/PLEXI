@@ -15,7 +15,6 @@ export const WORKSPACE_COMMANDS = {
   previousContext: "previous-context",
   newContext: "new-context",
   showShortcuts: "show-shortcuts",
-  editWorkspaceConfiguration: "edit-workspace-configuration",
   context1: "context-1",
   context2: "context-2",
   context3: "context-3",
