@@ -5,6 +5,8 @@ export const WORKSPACE_COMMANDS = {
   saveWorkspace: "save-workspace",
   toggleSidebar: "toggle-sidebar",
   toggleShortcuts: "toggle-shortcuts",
+  zoomIn: "zoom-in",
+  zoomOut: "zoom-out",
   focusRight: "focus-right",
   focusLeft: "focus-left",
   focusUp: "focus-up",
