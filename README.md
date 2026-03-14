@@ -1,5 +1,7 @@
 # Plexi
 
+![Plexi screenshot](media/screenshot.png)
+
 An exploration in spatial terminal window management. I'm building this for people who haven't learned `tmux` but want to become terminal super users. 
 
 Instead of memorizing obscure keybindings to manage split panes, Plexi uses an infinite 2D canvas. You organize your dev environment using spatial memory—placing servers, tail logs, and build tasks exactly where they make sense to you. My goal is to refine this spatial canvas into a core primitive that is as versatile as possible.
@@ -51,3 +53,7 @@ bun run build
 # Run Playwright e2e verification (ALWAYS RUN BEFORE COMMITS)
 bun run test:e2e
 ```
+
+---
+
+Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) — although I've been dreaming of something similar for years.
