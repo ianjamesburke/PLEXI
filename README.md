@@ -6,6 +6,8 @@ An experiment in spatial terminal window management.
 
 (Basically tmux but omarchy babes lol)
 
+**Tested on Mac only** — Linux may work but hasn't been tested.
+
 Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) — although I've been dreaming of something similar for years.
 
 Built with **Electrobun** (Bun + WebView) and **xterm.js** (for now).
@@ -38,6 +40,7 @@ Your layout and working directories are saved automatically to local storage —
 
 ## The Future
 
+*   **Coding Agent Support**: Session labels, awaiting-response indicators, and notifications — so you can run multiple agents across panes without babysitting them.
 *   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas the terminals.
 *   **True Session Persistence and Multiplexing**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI. (SSH auto-connect, connection pooling)
 *   **Support Multiple Workspaces**: Add the abbility to switch between whole families of contexts (might be overkill)
