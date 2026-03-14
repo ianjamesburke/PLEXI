@@ -27,6 +27,7 @@ export const makeDefaultState = () => ({
   rowFocusPanelIdsByContext: {},
   previousPanelId: null,
   sidebarVisible: true,
+  minimapVisible: true,
   shortcutsVisible: false,
   sequence: 0,
   lastAction: "Ready",

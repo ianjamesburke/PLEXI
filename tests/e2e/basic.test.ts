@@ -37,6 +37,66 @@ test("keyboard layout flow keeps down-splits left and compacts rows on close", a
   ]);
 });
 
+test("narrow windows keep the sidebar beside the workspace without overflowing", async ({ page }) => {
+  await page.setViewportSize({ width: 980, height: 720 });
+  await page.goto("http://127.0.0.1:4173/build/dev-macos-arm64/plexi-dev.app/Contents/Resources/app/views/mainview/index.html");
+  await page.evaluate(() => window.__PLEXI_DEBUG__.reset());
+
+  await page.keyboard.press("Control+N");
+
+  const layout = await page.evaluate(() => {
+    const shell = document.querySelector(".app-shell");
+    const shellStyle = shell ? getComputedStyle(shell) : null;
+    const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect();
+    const toolbar = document.querySelector(".workspace-toolbar")?.getBoundingClientRect();
+    const path = document.querySelector("#focus-path");
+    const process = document.querySelector("#focus-process");
+
+    return {
+      gridColumns: shellStyle?.gridTemplateColumns ?? "",
+      gridRows: shellStyle?.gridTemplateRows ?? "",
+      sidebarWidth: sidebar?.width ?? 0,
+      toolbarWidth: toolbar?.width ?? 0,
+      pathHidden: path ? getComputedStyle(path).display === "none" : false,
+      processHidden: process ? getComputedStyle(process).display === "none" : false,
+      scrollWidth: document.body.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+
+  expect(layout.gridColumns).not.toBe("980px");
+  expect(layout.gridRows).toBe("720px");
+  expect(layout.sidebarWidth).toBeGreaterThan(0);
+  expect(layout.toolbarWidth).toBeGreaterThan(0);
+  expect(layout.pathHidden).toBe(true);
+  expect(layout.processHidden).toBe(true);
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
+});
+
+test("short windows do not trigger a separate compact layout mode", async ({ page }) => {
+  await page.setViewportSize({ width: 980, height: 640 });
+  await page.goto("http://127.0.0.1:4173/build/dev-macos-arm64/plexi-dev.app/Contents/Resources/app/views/mainview/index.html");
+  await page.evaluate(() => window.__PLEXI_DEBUG__.reset());
+
+  const layout = await page.evaluate(() => {
+    const toolbar = document.querySelector(".workspace-toolbar");
+    const sidebarHeader = document.querySelector(".sidebar-header");
+    const sidebarSection = document.querySelector(".sidebar-section");
+
+    return {
+      toolbarPaddingTop: toolbar ? getComputedStyle(toolbar).paddingTop : "",
+      toolbarPaddingBottom: toolbar ? getComputedStyle(toolbar).paddingBottom : "",
+      sidebarHeaderPaddingTop: sidebarHeader ? getComputedStyle(sidebarHeader).paddingTop : "",
+      sidebarSectionGap: sidebarSection ? getComputedStyle(sidebarSection).gap : "",
+    };
+  });
+
+  expect(layout.toolbarPaddingTop).not.toBe("9px");
+  expect(layout.toolbarPaddingBottom).not.toBe("9px");
+  expect(layout.sidebarHeaderPaddingTop).not.toBe("9px");
+  expect(layout.sidebarSectionGap).not.toBe("6px");
+});
+
 test("Plexi keyboard-first terminal workspace flows correctly", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (error) => {
@@ -128,6 +188,15 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#app-shell")).not.toHaveClass(/app-shell--sidebar-hidden/);
   await expect(page.locator(".sidebar-header")).toHaveClass(/electrobun-webkit-app-region-drag/);
   await expect(page.locator(".workspace-toolbar")).toHaveClass(/electrobun-webkit-app-region-drag/);
+
+  await page.keyboard.press("Control+M");
+  await expect(page.locator("#minimap")).not.toHaveClass(/is-hidden/);
+  await expect(page.locator("#minimap-overlay")).toHaveClass(/is-hidden/);
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().minimapVisible)).toBe(false);
+
+  await page.keyboard.press("Control+M");
+  await expect(page.locator("#minimap-overlay")).not.toHaveClass(/is-hidden/);
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().minimapVisible)).toBe(true);
 
   await page.setViewportSize({ width: 1040, height: 720 });
 

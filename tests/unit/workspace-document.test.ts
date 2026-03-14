@@ -26,6 +26,7 @@ describe("workspace document", () => {
     expect(document.workspace.contexts).toHaveLength(2);
     expect(document.workspace.contexts[0]?.panels[0]?.cwdLabel).toBe("~/project-a");
     expect(document.workspace.contexts[1]?.label).toBe("Infra");
+    expect(document.workspace.minimapVisible).toBe(true);
   });
 
   test("restores app state from a workspace document", () => {
@@ -36,6 +37,7 @@ describe("workspace document", () => {
         sequence: 3,
         activeContextIndex: 1,
         sidebarVisible: true,
+        minimapVisible: false,
         camera: { x: 20, y: -10, zoom: 1.2 },
         contexts: [
           {
@@ -76,5 +78,6 @@ describe("workspace document", () => {
     expect(restored.activeContextIndex).toBe(1);
     expect(restored.panels[0]?.cwdLabel).toBe("~/project-a");
     expect(restored.camera.zoom).toBe(1.2);
+    expect(restored.minimapVisible).toBe(false);
   });
 });

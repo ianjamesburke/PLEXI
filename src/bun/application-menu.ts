@@ -41,6 +41,7 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
     label: "View",
     submenu: [
       { label: "Toggle Sidebar", action: "workspace:toggle-sidebar", accelerator: "b" },
+      { label: "Toggle Map", action: "workspace:toggle-minimap" },
       { label: "Keyboard Reference", action: "workspace:show-shortcuts", accelerator: "/" },
       { type: "separator" },
       { label: "Zoom In", action: "workspace:zoom-in", accelerator: "=" },
