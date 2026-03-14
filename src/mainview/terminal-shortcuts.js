@@ -1,31 +1,10 @@
-export const TERMINAL_SHORTCUT_ACTIONS = {
-  copy: "copy",
-  interrupt: "interrupt",
-  paste: "paste",
-  pass: "pass",
-};
+import { resolveKeybind } from "../shared/keybinds.js";
+import { TERMINAL_KEYBINDS } from "./keybind-config.js";
 
-export function resolveTerminalShortcutAction(event, { hasSelection, isMacOS }) {
-  const key = event.key.toLowerCase();
-  const hasMod = event.metaKey || event.ctrlKey;
-
-  if (hasSelection && hasMod && key === "c") {
-    return TERMINAL_SHORTCUT_ACTIONS.copy;
-  }
-
-  if (hasMod && key === "v") {
-    return TERMINAL_SHORTCUT_ACTIONS.paste;
-  }
-
-  const isCtrlInterrupt =
-    event.ctrlKey &&
-    !event.metaKey &&
-    !event.altKey &&
-    key === "c";
-
-  if (isCtrlInterrupt) {
-    return TERMINAL_SHORTCUT_ACTIONS.interrupt;
-  }
-
-  return TERMINAL_SHORTCUT_ACTIONS.pass;
+export function resolveTerminalKeybind(event, { hasSelection }) {
+  return resolveKeybind(event, TERMINAL_KEYBINDS, {
+    canPerform(action) {
+      return action.name === "copy_to_clipboard" ? hasSelection : true;
+    },
+  });
 }

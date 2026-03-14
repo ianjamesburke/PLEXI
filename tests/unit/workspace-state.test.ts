@@ -3,9 +3,11 @@ import {
   DIRECTIONS,
   adjustZoom,
   closePanelRecord,
+  createContextRecord,
   createPanelRecord,
   ensureActivePanel,
   focusDirectionalPanel,
+  focusPanel,
   getVisiblePanels,
   makeDefaultState,
   movePanelRecord,
@@ -42,6 +44,24 @@ describe("workspace state helpers", () => {
     expect(down?.id).toBe(third.id);
   });
 
+  test("vertical navigation restores the last focused terminal in each row", () => {
+    const state = makeDefaultState();
+    const first = createPanelRecord(state, { direction: DIRECTIONS.right });
+    createPanelRecord(state, { direction: DIRECTIONS.right });
+    const third = createPanelRecord(state, { direction: DIRECTIONS.right });
+
+    focusPanel(state, first.id);
+    const fourth = createPanelRecord(state, { direction: DIRECTIONS.down });
+
+    focusPanel(state, third.id);
+
+    const down = focusDirectionalPanel(state, DIRECTIONS.down);
+    expect(down?.id).toBe(fourth.id);
+
+    const up = focusDirectionalPanel(state, DIRECTIONS.up);
+    expect(up?.id).toBe(third.id);
+  });
+
   test("closePanelRecord falls back to another visible terminal", () => {
     const state = makeDefaultState();
     const first = createPanelRecord(state, { direction: DIRECTIONS.right });
@@ -74,12 +94,14 @@ describe("workspace state helpers", () => {
 
   test("context switching restores the last focused panel per context", () => {
     const state = makeDefaultState();
+    createContextRecord(state, "One");
     const first = createPanelRecord(state, { direction: DIRECTIONS.right });
     const second = createPanelRecord(state, { direction: DIRECTIONS.right });
 
     state.activePanelId = second.id;
     state.activePanelIdsByContext[state.activeContextIndex] = second.id;
 
+    createContextRecord(state, "Two");
     setContextIndex(state, 1);
     expect(state.activePanelId).toBeNull();
 
@@ -92,5 +114,21 @@ describe("workspace state helpers", () => {
     setContextIndex(state, 1);
     expect(ensureActivePanel(state)?.id).toBe(third.id);
     expect(first.contextIndex).toBe(0);
+  });
+
+  test("new panels inherit cwd from the active panel", () => {
+    const state = makeDefaultState();
+    createContextRecord(state, "One");
+    const first = createPanelRecord(state, {
+      direction: DIRECTIONS.right,
+      cwd: "/tmp/project-a",
+      cwdLabel: "~/project-a",
+    });
+    const second = createPanelRecord(state, { direction: DIRECTIONS.right });
+
+    expect(first.cwd).toBe("/tmp/project-a");
+    expect(first.cwdLabel).toBe("~/project-a");
+    expect(second.cwd).toBe("/tmp/project-a");
+    expect(second.cwdLabel).toBe("~/project-a");
   });
 });

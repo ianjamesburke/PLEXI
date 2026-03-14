@@ -1,9 +1,10 @@
 import {
-  CONTEXTS,
   DIRECTIONS,
   PANEL_TYPES,
   adjustZoom,
   clone,
+  closePanelRecord,
+  createContextRecord,
   createPanelRecord,
   ensureActivePanel,
   focusDirectionalPanel,
@@ -11,120 +12,61 @@ import {
   getActivePanel,
   getBounds,
   getVisiblePanels,
-  makeDefaultState,
   movePanelRecord,
   panCamera,
+  renameContextRecord,
   resetViewport,
   setContextIndex,
   toggleMode,
-  closePanelRecord,
 } from "../shared/workspace-state.js";
+import { CONTEXT_COMMANDS, WORKSPACE_COMMANDS, isWorkspaceCommand } from "../shared/commands.js";
+import { getDisplayContextLabel } from "../shared/workspace-document.js";
+import { resolveKeybind } from "../shared/keybinds.js";
 import { createSessionBridge } from "./session-bridge.js";
-import { resolveTerminalShortcutAction, TERMINAL_SHORTCUT_ACTIONS } from "./terminal-shortcuts.js";
+import { applyPlatformClasses, MAX_BUFFER_CHARS } from "./app-constants.js";
+import { dom } from "./dom.js";
+import { APP_KEYBINDS } from "./keybind-config.js";
+import { resolveTerminalKeybind } from "./terminal-shortcuts.js";
+import {
+  extractSessionOutputMetadata,
+  formatPathLabel,
+  inferHomeDirectory,
+} from "./session-output.js";
+import {
+  bootDefaultState,
+  getWorkspaceSnapshot,
+  hydrateWorkspaceState,
+  loadWorkspaceState,
+  saveWorkspaceState,
+} from "./workspace-storage.js";
+import {
+  createTerminalRuntime,
+  ensureTerminalFont,
+  ensureXtermAssets,
+  getTerminalProfile,
+  getXtermStatus,
+  setXtermError,
+} from "./xterm-runtime.js";
 
-const STORAGE_KEY = "plexi.workspace.v2";
-const MAX_BUFFER_CHARS = 120000;
-const platformName = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent;
-const isMacOS = /\bMac/i.test(platformName);
 let terminalRuntime = null;
 const panelBuffers = new Map();
 const panelMeta = new Map();
 const panelSessions = new Set();
 let backendInfo = null;
-
-const appShell = document.getElementById("app-shell");
-const sidebar = document.getElementById("sidebar");
-const stage = document.getElementById("stage");
-const focusShell = document.getElementById("focus-shell");
-const overviewShell = document.getElementById("overview-shell");
-const emptyShell = document.getElementById("empty-shell");
-const terminalMount = document.getElementById("terminal-mount");
-const overviewCanvas = document.getElementById("overview-canvas");
-const minimap = document.getElementById("minimap");
-const minimapGrid = document.getElementById("minimap-grid");
-const minimapSize = document.getElementById("minimap-size");
-const shortcutsOverlay = document.getElementById("shortcuts-overlay");
-
-const focusTitle = document.getElementById("focus-title");
-const focusPath = document.getElementById("focus-path");
-const focusPosition = document.getElementById("focus-position");
-const toolbarContext = document.getElementById("toolbar-context");
-const engineLabel = document.getElementById("engine-label");
-const modeLabel = document.getElementById("mode-label");
-const activeLabel = document.getElementById("active-label");
-
-const statusReady = document.getElementById("status-ready");
-const statusContext = document.getElementById("status-context");
-const statusPanels = document.getElementById("status-panels");
-const statusPosition = document.getElementById("status-position");
-const statusZoom = document.getElementById("status-zoom");
-
-const ASSET_CANDIDATES = {
-  xtermCss: [
-    "./vendor/xterm/xterm.css",
-    "../../node_modules/xterm/css/xterm.css",
-  ],
-  xtermJs: [
-    "./vendor/xterm/xterm.js",
-    "../../node_modules/xterm/lib/xterm.js",
-  ],
-  fitJs: [
-    "./vendor/xterm/addon-fit.js",
-    "../../node_modules/@xterm/addon-fit/lib/addon-fit.js",
-  ],
-};
-const TERMINAL_FONT_FAMILY = [
-  '"Plexi Terminal"',
-  '"JetBrainsMono Nerd Font Mono"',
-  '"JetBrains Mono"',
-  '"Symbols Nerd Font Mono"',
-  '"MesloLGM Nerd Font Mono"',
-  '"MesloLGSDZ Nerd Font Mono"',
-  '"Hack Nerd Font Mono"',
-  '"0xProto Nerd Font Mono"',
-  '"Menlo"',
-  '"Monaco"',
-  "monospace",
-].join(", ");
-const TERMINAL_PROFILE = {
-  cursorBlink: true,
-  convertEol: false,
-  fontFamily: TERMINAL_FONT_FAMILY,
-  fontSize: 14,
-  fontWeight: "400",
-  fontWeightBold: "600",
-  letterSpacing: 0,
-  lineHeight: 1,
-  drawBoldTextInBrightColors: false,
-  theme: {
-    background: "#0d0f13",
-    foreground: "#f3f5f7",
-    cursor: "#d57936",
-    selectionBackground: "rgba(213, 121, 54, 0.3)",
-    black: "#0d0f13",
-    brightBlack: "#66707b",
-    red: "#ef8b7b",
-    brightRed: "#f0a79c",
-    green: "#91c27a",
-    brightGreen: "#acd494",
-    yellow: "#d7b36d",
-    brightYellow: "#ebca8d",
-    blue: "#7da3d8",
-    brightBlue: "#9db8e4",
-    magenta: "#bc8ed8",
-    brightMagenta: "#cea8e4",
-    cyan: "#6cb8bd",
-    brightCyan: "#8cccd0",
-    white: "#d8dde3",
-    brightWhite: "#ffffff",
-  },
+let homeDirectory = null;
+let state = bootDefaultState();
+const uiState = {
+  workspaceStoragePath: "Resolving workspace file…",
+  workspaceStorageSource: "browser",
+  workspaceInspectorVisible: false,
+  contextModalOpen: false,
+  contextModalMode: "create",
+  contextModalIndex: null,
+  toastTimer: null,
 };
 
-let xtermStatus = "loading";
-let terminalFontReady = null;
-let state = loadState();
-document.documentElement.style.setProperty("--plexi-font-mono", TERMINAL_FONT_FAMILY);
-document.body.classList.toggle("platform-macos", isMacOS);
+applyPlatformClasses();
+
 const sessionBridge = createSessionBridge({
   onStarted(message) {
     panelMeta.set(message.panelId, {
@@ -132,18 +74,32 @@ const sessionBridge = createSessionBridge({
       shellPath: message.shellPath,
       backend: message.backend,
     });
+    homeDirectory = homeDirectory || inferHomeDirectory(message.cwd, message.cwdLabel);
     const panel = state.panels.find((item) => item.id === message.panelId);
-    if (panel) {
-      panel.cwd = message.cwdLabel;
-      saveState();
-      render();
+    if (!panel) {
+      return;
     }
+
+    panel.cwd = message.cwd;
+    panel.cwdLabel = message.cwdLabel;
+    saveState();
+    render();
   },
   onOutput(message) {
-    appendPanelBuffer(message.panelId, message.data);
+    const { cleaned, cwd } = extractSessionOutputMetadata(message.data);
+
+    if (cwd) {
+      updatePanelDirectory(message.panelId, cwd);
+    }
+
+    if (!cleaned) {
+      return;
+    }
+
+    appendPanelBuffer(message.panelId, cleaned);
 
     if (terminalRuntime?.panel?.id === message.panelId) {
-      terminalRuntime.terminal.write(message.data);
+      terminalRuntime.terminal.write(cleaned);
     }
   },
   onExit(message) {
@@ -172,6 +128,72 @@ const sessionBridge = createSessionBridge({
   },
 });
 
+if (sessionBridge.mode !== "live") {
+  state = loadWorkspaceState();
+}
+
+function saveState() {
+  const snapshot = clone(state);
+  void saveWorkspaceState(snapshot, sessionBridge)
+    .then(updateWorkspaceStorage)
+    .catch(() => {
+      showToast("Workspace save failed");
+    });
+}
+
+function showToast(message) {
+  if (!dom.toastLayer || !message) {
+    return;
+  }
+
+  dom.toastLayer.innerHTML = `<div class="toast">${message}</div>`;
+  dom.toastLayer.classList.add("is-visible");
+
+  if (uiState.toastTimer) {
+    window.clearTimeout(uiState.toastTimer);
+  }
+
+  uiState.toastTimer = window.setTimeout(() => {
+    dom.toastLayer.classList.remove("is-visible");
+  }, 2200);
+}
+
+function updateWorkspaceStorage(storage) {
+  if (!storage) {
+    return;
+  }
+
+  uiState.workspaceStoragePath = storage.path;
+  uiState.workspaceStorageSource = storage.source;
+}
+
+function setLastAction(label, { toast = true } = {}) {
+  state.lastAction = label;
+  if (toast) {
+    showToast(label);
+  }
+}
+
+function getContextCount() {
+  return state.contexts.length;
+}
+
+function getContextLabel(index) {
+  return state.contexts[index]?.label || "";
+}
+
+function getActiveContextLabel() {
+  return getContextLabel(state.activeContextIndex);
+}
+
+function formatContextLabel(label, index = state.activeContextIndex) {
+  return getDisplayContextLabel(label, index);
+}
+
+function formatContextStatusLabel(label, index = state.activeContextIndex) {
+  return formatContextLabel(label, index);
+}
+
 function syncViewportMetrics() {
   const candidates = [
     window.visualViewport?.height,
@@ -184,57 +206,6 @@ function syncViewportMetrics() {
   if (viewportHeight > 0) {
     document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
   }
-}
-
-function loadState() {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-
-    if (!raw) {
-      return bootDefaultState();
-    }
-
-    const parsed = JSON.parse(raw);
-    const nextState = {
-      ...makeDefaultState(),
-      ...parsed,
-      panels: Array.isArray(parsed.panels)
-        ? parsed.panels.map((panel) => ({
-          ...panel,
-          cwd: panel.cwd || "~",
-          transcript: [],
-        }))
-        : [],
-    };
-    ensureActivePanel(nextState);
-
-    if (getVisiblePanels(nextState).length === 0) {
-      return bootDefaultState();
-    }
-
-    return nextState;
-  } catch (_error) {
-    return bootDefaultState();
-  }
-}
-
-function bootDefaultState() {
-  const nextState = makeDefaultState();
-  createPanelRecord(nextState, { direction: DIRECTIONS.right });
-  nextState.lastAction = "Terminal 1 ready";
-  return nextState;
-}
-
-function saveState() {
-  const serialized = {
-    ...state,
-    panels: state.panels.map(({ transcript, ...panel }) => panel),
-  };
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(serialized));
-}
-
-function setLastAction(label) {
-  state.lastAction = label;
 }
 
 function appendPanelBuffer(panelId, chunk) {
@@ -255,6 +226,21 @@ function replayBuffer(runtime) {
   runtime.terminal.write(panelBuffers.get(runtime.panel.id) || "");
 }
 
+function updatePanelDirectory(panelId, cwd) {
+  const panel = state.panels.find((item) => item.id === panelId);
+  if (!panel || panel.cwd === cwd) {
+    return;
+  }
+
+  panel.cwd = cwd;
+  panel.cwdLabel = formatPathLabel(cwd, homeDirectory);
+  saveState();
+
+  if (terminalRuntime?.panel?.id === panelId) {
+    render();
+  }
+}
+
 async function copySelection(runtime) {
   const selection = runtime?.terminal?.getSelection?.();
 
@@ -265,13 +251,12 @@ async function copySelection(runtime) {
   try {
     await navigator.clipboard.writeText(selection);
     setLastAction("Selection copied");
-    saveState();
-    render();
   } catch (_error) {
     setLastAction("Clipboard copy failed");
-    saveState();
-    render();
   }
+
+  saveState();
+  render();
 }
 
 async function pasteClipboard(runtime) {
@@ -287,219 +272,12 @@ async function pasteClipboard(runtime) {
       data: text,
     });
     setLastAction("Clipboard pasted");
-    saveState();
-    render();
   } catch (_error) {
     setLastAction("Clipboard paste failed");
-    saveState();
-    render();
-  }
-}
-
-async function ensureTerminalFont() {
-  if (!document.fonts?.load) {
-    return;
   }
 
-  if (!terminalFontReady) {
-    terminalFontReady = Promise.all([
-      document.fonts.load('400 14px "Plexi Terminal"'),
-      document.fonts.load('600 14px "Plexi Terminal"'),
-    ]).catch(() => {});
-  }
-
-  await terminalFontReady;
-}
-
-function createRuntime(panel, mountNode) {
-  const terminal = new window.Terminal(TERMINAL_PROFILE);
-  const fitAddon = new window.FitAddon.FitAddon();
-  terminal.loadAddon(fitAddon);
-  terminal.open(mountNode);
-  mountNode.dataset.terminalFontFamily = TERMINAL_PROFILE.fontFamily;
-  fitAddon.fit();
-
-  const runtime = {
-    panel,
-    terminal,
-    fitAddon,
-    resizeHandler: () => {
-      fitAddon.fit();
-      void sessionBridge.resizeSession({
-        panelId: runtime.panel.id,
-        cols: terminal.cols,
-        rows: terminal.rows,
-      });
-    },
-    dispose() {
-      terminal.dispose();
-    },
-  };
-
-  terminal.attachCustomKeyEventHandler((event) => {
-    const action = resolveTerminalShortcutAction(event, {
-      hasSelection: Boolean(terminal.getSelection()),
-      isMacOS,
-    });
-
-    if (action === TERMINAL_SHORTCUT_ACTIONS.copy) {
-      event.preventDefault();
-      void copySelection(runtime);
-      return false;
-    }
-
-    if (action === TERMINAL_SHORTCUT_ACTIONS.paste) {
-      event.preventDefault();
-      void pasteClipboard(runtime);
-      return false;
-    }
-
-    if (action === TERMINAL_SHORTCUT_ACTIONS.interrupt) {
-      event.preventDefault();
-      void sessionBridge.writeToSession({
-        panelId: runtime.panel.id,
-        data: "\u0003",
-      });
-      return false;
-    }
-
-    return !handleShortcutKeydown(event);
-  });
-
-  terminal.onData((rawData) => {
-    void sessionBridge.writeToSession({
-      panelId: runtime.panel.id,
-      data: rawData,
-    });
-  });
-
-  window.addEventListener("resize", runtime.resizeHandler);
-  replayBuffer(runtime);
-  void sessionBridge.resizeSession({
-    panelId: runtime.panel.id,
-    cols: terminal.cols,
-    rows: terminal.rows,
-  });
-  terminal.focus();
-  return runtime;
-}
-
-function disposeRuntime() {
-  if (!terminalRuntime) {
-    return;
-  }
-
-  window.removeEventListener("resize", terminalRuntime.resizeHandler);
-  terminalRuntime.dispose();
-  terminalRuntime = null;
-}
-
-async function loadStylesheet(candidates) {
-  if (document.querySelector('link[data-plexi-xterm="true"]')) {
-    return;
-  }
-
-  for (const href of candidates) {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = href;
-    link.dataset.plexiXterm = "true";
-
-    const loaded = await new Promise((resolve) => {
-      link.onload = () => resolve(true);
-      link.onerror = () => resolve(false);
-      document.head.append(link);
-    });
-
-    if (loaded) {
-      return;
-    }
-
-    link.remove();
-  }
-
-  throw new Error("Unable to load xterm stylesheet");
-}
-
-async function loadScript(candidates) {
-  for (const src of candidates) {
-    const loaded = await new Promise((resolve) => {
-      const script = document.createElement("script");
-      script.src = src;
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.head.append(script);
-    });
-
-    if (loaded) {
-      return;
-    }
-  }
-
-  throw new Error(`Unable to load script: ${candidates.join(", ")}`);
-}
-
-async function ensureXterm() {
-  if (xtermStatus === "ready") {
-    return;
-  }
-
-  try {
-    await loadStylesheet(ASSET_CANDIDATES.xtermCss);
-
-    if (!window.Terminal) {
-      await loadScript(ASSET_CANDIDATES.xtermJs);
-    }
-
-    if (!window.FitAddon) {
-      await loadScript(ASSET_CANDIDATES.fitJs);
-    }
-
-    xtermStatus = "ready";
-    if (engineLabel) {
-      engineLabel.textContent = "xterm.js ready";
-    }
-  } catch (error) {
-    xtermStatus = "error";
-    if (engineLabel) {
-      engineLabel.textContent = "xterm.js failed";
-    }
-    terminalMount.textContent = String(error);
-    terminalMount.classList.add("terminal-mount--error");
-  }
-}
-
-function updateEngineLabel(activePanel) {
-  if (xtermStatus === "error") {
-    return;
-  }
-
-  const activeMeta = activePanel ? panelMeta.get(activePanel.id) : null;
-
-  if (activeMeta?.shellName) {
-    if (engineLabel) {
-      engineLabel.textContent = `xterm.js + ${activeMeta.shellName}`;
-    }
-    return;
-  }
-
-  if (backendInfo?.shellName) {
-    if (engineLabel) {
-      engineLabel.textContent = `xterm.js + ${backendInfo.shellName}`;
-    }
-    return;
-  }
-
-  if (backendInfo?.backend === "mock") {
-    if (engineLabel) {
-      engineLabel.textContent = "xterm.js + mock shell";
-    }
-    return;
-  }
-
-  if (engineLabel) {
-    engineLabel.textContent = xtermStatus === "ready" ? "xterm.js ready" : "Loading xterm.js";
-  }
+  saveState();
+  render();
 }
 
 async function ensurePanelSession(panel) {
@@ -539,8 +317,227 @@ function closePanelSession(panelId) {
   void sessionBridge.closeSession({ panelId });
 }
 
-function createTerminal(direction) {
-  const panel = createPanelRecord(state, { direction });
+function disposeRuntime() {
+  if (!terminalRuntime) {
+    return;
+  }
+
+  terminalRuntime.dispose();
+  terminalRuntime = null;
+}
+
+async function mountActiveTerminal(activePanel) {
+  if (!activePanel || activePanel.type !== "terminal") {
+    disposeRuntime();
+    dom.terminalMount.innerHTML = "";
+    return;
+  }
+
+  try {
+    await ensureXtermAssets();
+    await ensureTerminalFont();
+  } catch (error) {
+    setXtermError();
+    if (dom.engineLabel) {
+      dom.engineLabel.textContent = "xterm.js failed";
+    }
+    dom.terminalMount.textContent = String(error);
+    dom.terminalMount.classList.add("terminal-mount--error");
+    return;
+  }
+
+  if (dom.engineLabel && getXtermStatus() === "ready") {
+    dom.engineLabel.textContent = "xterm.js ready";
+  }
+
+  dom.terminalMount.classList.remove("terminal-mount--loading", "terminal-mount--error");
+  if (terminalRuntime?.panel?.id !== activePanel.id) {
+    disposeRuntime();
+    dom.terminalMount.innerHTML = "";
+    terminalRuntime = createTerminalRuntime({
+      panel: activePanel,
+      mountNode: dom.terminalMount,
+      onData(runtime, rawData) {
+        void sessionBridge.writeToSession({
+          panelId: runtime.panel.id,
+          data: rawData,
+        });
+      },
+      onShortcut(event, runtime) {
+        if (handleShortcutKeydown(event)) {
+          return false;
+        }
+
+        const match = resolveTerminalKeybind(event, {
+          hasSelection: Boolean(runtime.terminal.getSelection()),
+        });
+
+        if (!match) {
+          return true;
+        }
+
+        if (match.action.name === "copy_to_clipboard") {
+          event.preventDefault();
+          void copySelection(runtime);
+          return false;
+        }
+
+        if (match.action.name === "paste_from_clipboard") {
+          event.preventDefault();
+          void pasteClipboard(runtime);
+          return false;
+        }
+
+        if (match.consume) {
+          event.preventDefault();
+          return false;
+        }
+
+        return true;
+      },
+      onResize(runtime) {
+        void sessionBridge.resizeSession({
+          panelId: runtime.panel.id,
+          cols: runtime.terminal.cols,
+          rows: runtime.terminal.rows,
+        });
+      },
+      replayBuffer,
+    });
+    return;
+  }
+
+  terminalRuntime.panel = activePanel;
+  replayBuffer(terminalRuntime);
+  void sessionBridge.resizeSession({
+    panelId: activePanel.id,
+    cols: terminalRuntime.terminal.cols,
+    rows: terminalRuntime.terminal.rows,
+  });
+  terminalRuntime.terminal.focus();
+}
+
+function updateEngineLabel(activePanel) {
+  if (getXtermStatus() === "error") {
+    return;
+  }
+
+  const activeMeta = activePanel ? panelMeta.get(activePanel.id) : null;
+
+  if (activeMeta?.shellName) {
+    if (dom.engineLabel) {
+      dom.engineLabel.textContent = `xterm.js + ${activeMeta.shellName}`;
+    }
+    return;
+  }
+
+  if (backendInfo?.shellName) {
+    if (dom.engineLabel) {
+      dom.engineLabel.textContent = `xterm.js + ${backendInfo.shellName}`;
+    }
+    return;
+  }
+
+  if (backendInfo?.backend === "mock") {
+    if (dom.engineLabel) {
+      dom.engineLabel.textContent = "xterm.js + mock shell";
+    }
+    return;
+  }
+
+  if (dom.engineLabel) {
+    dom.engineLabel.textContent = getXtermStatus() === "ready" ? "xterm.js ready" : "Loading xterm.js";
+  }
+}
+
+function renderContextModal() {
+  if (!dom.contextModal) {
+    return;
+  }
+
+  dom.contextModal.classList.toggle("is-hidden", !uiState.contextModalOpen);
+
+  if (!uiState.contextModalOpen) {
+    return;
+  }
+
+  const isRename = uiState.contextModalMode === "rename";
+  const submitLabel = isRename ? "Save changes" : "Create context";
+
+  if (dom.contextModalTitle) {
+    dom.contextModalTitle.textContent = isRename ? "Edit context" : "New context";
+  }
+  if (dom.contextSubmitButton) {
+    dom.contextSubmitButton.textContent = submitLabel;
+  }
+}
+
+function openContextModal({ mode, index = null }) {
+  const existing = index === null ? null : state.contexts[index];
+  uiState.contextModalOpen = true;
+  uiState.contextModalMode = mode;
+  uiState.contextModalIndex = index;
+  renderContextModal();
+
+  if (dom.contextNameInput) {
+    dom.contextNameInput.value = existing
+      ? formatContextLabel(existing.label, index)
+      : `Context ${getContextCount() + 1}`;
+  }
+
+  window.requestAnimationFrame(() => {
+    dom.contextNameInput?.focus();
+    dom.contextNameInput?.select();
+  });
+}
+
+function closeContextModal() {
+  uiState.contextModalOpen = false;
+  uiState.contextModalMode = "create";
+  uiState.contextModalIndex = null;
+  renderContextModal();
+}
+
+function toggleWorkspaceJson() {
+  uiState.workspaceInspectorVisible = !uiState.workspaceInspectorVisible;
+  setLastAction(uiState.workspaceInspectorVisible ? "Workspace JSON opened" : "Workspace JSON closed");
+  render();
+}
+
+function submitContextModal() {
+  const label = dom.contextNameInput?.value?.trim();
+
+  if (!label) {
+    dom.contextNameInput?.focus();
+    return;
+  }
+
+  if (uiState.contextModalMode === "rename" && Number.isInteger(uiState.contextModalIndex)) {
+    renameContextRecord(state, uiState.contextModalIndex, label);
+    setLastAction(`Context renamed to ${label}`);
+  } else {
+    createContextRecord(state, label);
+    setLastAction(`Context ${label} created`);
+  }
+
+  closeContextModal();
+  saveState();
+  render();
+}
+
+function switchToContext(index) {
+  if (index < 0 || index >= getContextCount()) {
+    return false;
+  }
+  setContextIndex(state, index);
+  setLastAction(`Context ${formatContextLabel(getActiveContextLabel())}`);
+  saveState();
+  render();
+  return true;
+}
+
+function createTerminal(direction, cwd = null, cwdLabel = null) {
+  const panel = createPanelRecord(state, { direction, cwd, cwdLabel });
   clearPanelBuffer(panel.id);
   void ensurePanelSession(panel);
   setLastAction(
@@ -562,12 +559,20 @@ function closeActiveTerminal() {
   const removed = closePanelRecord(state, activePanel.id);
 
   if (removed) {
+    if (terminalRuntime?.panel?.id === removed.id) {
+      disposeRuntime();
+      dom.terminalMount.innerHTML = "";
+    }
     closePanelSession(removed.id);
     setLastAction(`${removed.title} closed`);
   }
 
   if (getVisiblePanels(state).length === 0) {
-    createTerminal(DIRECTIONS.right);
+    createTerminal(
+      DIRECTIONS.right,
+      removed?.cwd || "~",
+      removed?.cwdLabel || removed?.cwd || "~",
+    );
   }
 }
 
@@ -591,69 +596,43 @@ function handleShortcutKeydown(event) {
   if (event.type !== "keydown" || event.defaultPrevented) {
     return false;
   }
-
-  const mod = event.metaKey || event.ctrlKey;
-  const key = event.key.toLowerCase();
   const isArrowKey = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key);
+  const match = resolveKeybind(event, APP_KEYBINDS);
 
-  if (mod && key === "n") {
+  if (match) {
     event.preventDefault();
-    runCommand(event.shiftKey ? "new-terminal-down" : "new-terminal-right");
-    return true;
+    const actionToCommand = {
+      close_terminal: WORKSPACE_COMMANDS.closeTerminal,
+      context_1: WORKSPACE_COMMANDS.context1,
+      context_2: WORKSPACE_COMMANDS.context2,
+      context_3: WORKSPACE_COMMANDS.context3,
+      context_4: WORKSPACE_COMMANDS.context4,
+      context_5: WORKSPACE_COMMANDS.context5,
+      context_6: WORKSPACE_COMMANDS.context6,
+      context_7: WORKSPACE_COMMANDS.context7,
+      context_8: WORKSPACE_COMMANDS.context8,
+      context_9: WORKSPACE_COMMANDS.context9,
+      focus_down: WORKSPACE_COMMANDS.focusDown,
+      focus_left: WORKSPACE_COMMANDS.focusLeft,
+      focus_right: WORKSPACE_COMMANDS.focusRight,
+      focus_up: WORKSPACE_COMMANDS.focusUp,
+      new_terminal_down: WORKSPACE_COMMANDS.newTerminalDown,
+      new_terminal_right: WORKSPACE_COMMANDS.newTerminalRight,
+      save_workspace: WORKSPACE_COMMANDS.saveWorkspace,
+      toggle_overview: WORKSPACE_COMMANDS.toggleOverview,
+      toggle_shortcuts: WORKSPACE_COMMANDS.toggleShortcuts,
+      toggle_sidebar: WORKSPACE_COMMANDS.toggleSidebar,
+      zoom_in: WORKSPACE_COMMANDS.zoomIn,
+      zoom_out: WORKSPACE_COMMANDS.zoomOut,
+    };
+    const command = actionToCommand[match.action.name];
+    if (command) {
+      runCommand(command);
+      return true;
+    }
   }
 
-  if (mod && key === "w") {
-    event.preventDefault();
-    runCommand("close-terminal");
-    return true;
-  }
-
-  if (mod && key === "s") {
-    event.preventDefault();
-    runCommand("save-workspace");
-    return true;
-  }
-
-  if (mod && key === "b") {
-    event.preventDefault();
-    runCommand("toggle-sidebar");
-    return true;
-  }
-
-  if (mod && /^[1-4]$/.test(event.key)) {
-    event.preventDefault();
-    setContextIndex(state, Number(event.key) - 1);
-    setLastAction(`Context ${CONTEXTS[state.activeContextIndex]}`);
-    saveState();
-    render();
-    return true;
-  }
-
-  if (mod && event.code === "Slash") {
-    event.preventDefault();
-    runCommand("toggle-shortcuts");
-    return true;
-  }
-
-  if (mod && event.shiftKey && event.code === "KeyO") {
-    event.preventDefault();
-    runCommand("toggle-overview");
-    return true;
-  }
-
-  if (mod && (event.code === "Equal" || key === "+")) {
-    event.preventDefault();
-    runCommand("zoom-in");
-    return true;
-  }
-
-  if (mod && (event.code === "Minus" || key === "-")) {
-    event.preventDefault();
-    runCommand("zoom-out");
-    return true;
-  }
-
-  if (state.mode === "overview" && mod && event.shiftKey && isArrowKey) {
+  if (state.mode === "overview" && (event.metaKey || event.ctrlKey) && event.shiftKey && isArrowKey) {
     event.preventDefault();
 
     const direction =
@@ -676,25 +655,7 @@ function handleShortcutKeydown(event) {
     return true;
   }
 
-  if (mod && isArrowKey) {
-    event.preventDefault();
-
-    if (event.key === "ArrowLeft") {
-      handleDirectionalFocus(DIRECTIONS.left);
-    } else if (event.key === "ArrowRight") {
-      handleDirectionalFocus(DIRECTIONS.right);
-    } else if (event.key === "ArrowUp") {
-      handleDirectionalFocus(DIRECTIONS.up);
-    } else if (event.key === "ArrowDown") {
-      handleDirectionalFocus(DIRECTIONS.down);
-    }
-
-    saveState();
-    render();
-    return true;
-  }
-
-  if (state.mode === "overview" && isArrowKey && !mod) {
+  if (state.mode === "overview" && isArrowKey && !(event.metaKey || event.ctrlKey)) {
     event.preventDefault();
 
     const distance = 120;
@@ -717,69 +678,81 @@ function handleShortcutKeydown(event) {
 }
 
 function runCommand(command) {
+  if (!isWorkspaceCommand(command)) {
+    return;
+  }
+
+  const contextCount = getContextCount();
+
   switch (command) {
-    case "new-terminal-right":
+    case WORKSPACE_COMMANDS.newTerminalRight:
       createTerminal(DIRECTIONS.right);
       break;
-    case "new-terminal-down":
+    case WORKSPACE_COMMANDS.newTerminalDown:
       createTerminal(DIRECTIONS.down);
       break;
-    case "close-terminal":
+    case WORKSPACE_COMMANDS.closeTerminal:
       closeActiveTerminal();
       break;
-    case "toggle-overview":
+    case WORKSPACE_COMMANDS.toggleOverview:
       setLastAction(toggleMode(state) === "overview" ? "Overview opened" : "Focus mode");
       break;
-    case "toggle-sidebar":
+    case WORKSPACE_COMMANDS.toggleSidebar:
       state.sidebarVisible = !state.sidebarVisible;
       setLastAction(state.sidebarVisible ? "Sidebar shown" : "Sidebar hidden");
       break;
-    case "toggle-shortcuts":
+    case WORKSPACE_COMMANDS.toggleShortcuts:
+    case WORKSPACE_COMMANDS.showShortcuts:
       toggleShortcuts();
       break;
-    case "save-workspace":
+    case WORKSPACE_COMMANDS.saveWorkspace:
+      saveState();
       setLastAction("Workspace saved");
       break;
-    case "focus-left":
+    case WORKSPACE_COMMANDS.focusLeft:
       handleDirectionalFocus(DIRECTIONS.left);
       break;
-    case "focus-right":
+    case WORKSPACE_COMMANDS.focusRight:
       handleDirectionalFocus(DIRECTIONS.right);
       break;
-    case "focus-up":
+    case WORKSPACE_COMMANDS.focusUp:
       handleDirectionalFocus(DIRECTIONS.up);
       break;
-    case "focus-down":
+    case WORKSPACE_COMMANDS.focusDown:
       handleDirectionalFocus(DIRECTIONS.down);
       break;
-    case "zoom-in":
+    case WORKSPACE_COMMANDS.zoomIn:
       adjustZoom(state, 0.1);
       setLastAction(`Overview zoom ${Math.round(state.camera.zoom * 100)}%`);
       break;
-    case "zoom-out":
+    case WORKSPACE_COMMANDS.zoomOut:
       adjustZoom(state, -0.1);
       setLastAction(`Overview zoom ${Math.round(state.camera.zoom * 100)}%`);
       break;
-    case "reset-viewport":
+    case WORKSPACE_COMMANDS.resetViewport:
       resetViewport(state);
       setLastAction("Overview recentered");
       break;
-    case "next-context":
-      setContextIndex(state, (state.activeContextIndex + 1) % CONTEXTS.length);
-      setLastAction(`Context ${CONTEXTS[state.activeContextIndex]}`);
+    case WORKSPACE_COMMANDS.nextContext:
+      if (contextCount > 0) {
+        switchToContext((state.activeContextIndex + 1) % contextCount);
+        return;
+      }
       break;
-    case "previous-context":
-      setContextIndex(state, (state.activeContextIndex - 1 + CONTEXTS.length) % CONTEXTS.length);
-      setLastAction(`Context ${CONTEXTS[state.activeContextIndex]}`);
+    case WORKSPACE_COMMANDS.previousContext:
+      if (contextCount > 0) {
+        switchToContext((state.activeContextIndex - 1 + contextCount) % contextCount);
+        return;
+      }
       break;
-    case "context-1":
-    case "context-2":
-    case "context-3":
-    case "context-4":
-      setContextIndex(state, Number(command.slice(-1)) - 1);
-      setLastAction(`Context ${CONTEXTS[state.activeContextIndex]}`);
-      break;
+    case WORKSPACE_COMMANDS.newContext:
+      openContextModal({ mode: "create" });
+      return;
     default:
+      if (CONTEXT_COMMANDS.includes(command)) {
+        switchToContext(Number(command.slice(-1)) - 1);
+        return;
+      }
       break;
   }
 
@@ -788,32 +761,49 @@ function runCommand(command) {
 }
 
 function renderContextButtons() {
-  document.querySelectorAll("[data-context-index]").forEach((button) => {
-    const index = Number(button.getAttribute("data-context-index"));
-    button.classList.toggle("active", index === state.activeContextIndex);
-  });
+  if (!dom.contextList) {
+    return;
+  }
+
+  dom.contextList.innerHTML = state.contexts
+    .map((context, index) => `
+      <li class="context-row">
+        <button
+          class="context-item ${index === state.activeContextIndex ? "active" : ""}"
+          data-context-index="${index}"
+          type="button"
+        >${formatContextLabel(context.label, index)}</button>
+        <button
+          class="toolbar-button toolbar-button--ghost context-rename"
+          data-rename-context-index="${index}"
+          type="button"
+          aria-label="Edit ${formatContextLabel(context.label, index)}"
+        >Edit</button>
+      </li>
+    `)
+    .join("");
 }
 
 function renderMinimap(visiblePanels, activePanel) {
-  minimap.classList.toggle("is-hidden", visiblePanels.length === 0);
-  minimapSize.textContent = `${visiblePanels.length} terminal${visiblePanels.length === 1 ? "" : "s"}`;
+  dom.minimap.classList.toggle("is-hidden", visiblePanels.length === 0);
+  dom.minimapSize.textContent = `${visiblePanels.length} terminal${visiblePanels.length === 1 ? "" : "s"}`;
 
   if (visiblePanels.length === 0) {
-    minimapGrid.innerHTML = "";
+    dom.minimapGrid.innerHTML = "";
     return;
   }
 
   const bounds = getBounds(visiblePanels);
-  const width = minimapGrid.clientWidth || 228;
+  const width = dom.minimapGrid.clientWidth || 228;
   const spanX = Math.max(bounds.width + 1, 1);
   const spanY = Math.max(bounds.height + 1, 1);
   const gutter = 10;
   const cellWidth = Math.max(12, Math.min(18, Math.floor((width - gutter * 2) / spanX)));
   const cellHeight = Math.max(12, Math.min(16, Math.floor(140 / spanY)));
   const gridHeight = Math.max(88, Math.min(176, spanY * cellHeight + gutter * 2));
-  minimapGrid.style.height = `${gridHeight}px`;
+  dom.minimapGrid.style.height = `${gridHeight}px`;
 
-  minimapGrid.innerHTML = visiblePanels
+  dom.minimapGrid.innerHTML = visiblePanels
     .map((panel) => {
       const left = (panel.x - bounds.minX) * cellWidth + gutter;
       const top = (panel.y - bounds.minY) * cellHeight + gutter;
@@ -826,21 +816,22 @@ function renderMinimap(visiblePanels, activePanel) {
 
 function renderOverview(visiblePanels, activePanel) {
   if (visiblePanels.length === 0) {
-    overviewCanvas.innerHTML = "";
+    dom.overviewCanvas.innerHTML = "";
     return;
   }
 
   const bounds = getBounds(visiblePanels);
-  const cell = 240;
-  const offsetX = 120;
-  const offsetY = 80;
+  const cellWidth = 312;
+  const rowHeight = 212;
+  const offsetX = 136;
+  const offsetY = 88;
 
-  overviewCanvas.innerHTML = `
+  dom.overviewCanvas.innerHTML = `
     <div class="overview-viewport" style="transform: translate(${state.camera.x}px, ${state.camera.y}px) scale(${state.camera.zoom});">
       ${visiblePanels
         .map((panel) => {
-          const left = (panel.x - bounds.minX) * cell + offsetX;
-          const top = (panel.y - bounds.minY) * 150 + offsetY;
+          const left = (panel.x - bounds.minX) * cellWidth + offsetX;
+          const top = (panel.y - bounds.minY) * rowHeight + offsetY;
           const active = panel.id === activePanel?.id ? "is-active" : "";
 
           return `
@@ -849,7 +840,7 @@ function renderOverview(visiblePanels, activePanel) {
               <p>${PANEL_TYPES[panel.type].summary}</p>
               <div class="overview-node-meta">
                 <span>${panel.x}, ${panel.y}</span>
-                <span>${panel.cwd}</span>
+                <span>${panel.cwdLabel || panel.cwd}</span>
               </div>
             </article>
           `;
@@ -861,141 +852,152 @@ function renderOverview(visiblePanels, activePanel) {
 
 function renderFocus(activePanel) {
   if (!activePanel) {
-    focusTitle.textContent = "No active terminal";
-    focusPath.textContent = `Context ${CONTEXTS[state.activeContextIndex]}`;
-    focusPosition.textContent = "0, 0";
+    dom.focusTitle.textContent = "No active terminal";
+    dom.focusPath.textContent = formatContextLabel(getActiveContextLabel(), state.activeContextIndex);
+    dom.focusPosition.textContent = "0, 0";
     return;
   }
 
-  focusTitle.textContent = activePanel.title;
-  focusPath.textContent = activePanel.cwd;
-  focusPosition.textContent = `${activePanel.x}, ${activePanel.y}`;
-}
-
-async function mountActiveTerminal(activePanel) {
-  if (!activePanel || activePanel.type !== "terminal") {
-    terminalMount.innerHTML = "";
-    return;
-  }
-
-  await ensureXterm();
-  await ensureTerminalFont();
-
-  if (xtermStatus !== "ready") {
-    return;
-  }
-
-  terminalMount.classList.remove("terminal-mount--loading", "terminal-mount--error");
-  if (!terminalRuntime) {
-    terminalMount.innerHTML = "";
-    terminalRuntime = createRuntime(activePanel, terminalMount);
-    return;
-  }
-
-  terminalRuntime.panel = activePanel;
-  replayBuffer(terminalRuntime);
-  void sessionBridge.resizeSession({
-    panelId: activePanel.id,
-    cols: terminalRuntime.terminal.cols,
-    rows: terminalRuntime.terminal.rows,
-  });
-  terminalRuntime.terminal.focus();
+  dom.focusTitle.textContent = activePanel.title;
+  dom.focusPath.textContent = activePanel.cwdLabel || activePanel.cwd;
+  dom.focusPosition.textContent = `${activePanel.x}, ${activePanel.y}`;
 }
 
 async function render() {
   ensurePanelSessions();
   renderContextButtons();
+  renderContextModal();
 
   const visiblePanels = getVisiblePanels(state);
   const activePanel = ensureActivePanel(state);
+  const workspaceSnapshot = getWorkspaceSnapshot(state);
   updateEngineLabel(activePanel);
   renderFocus(activePanel);
   renderOverview(visiblePanels, activePanel);
   renderMinimap(visiblePanels, activePanel);
-  appShell.classList.toggle("app-shell--sidebar-hidden", !state.sidebarVisible);
-  sidebar?.setAttribute("aria-hidden", String(!state.sidebarVisible));
+  dom.appShell.classList.toggle("app-shell--sidebar-hidden", !state.sidebarVisible);
+  dom.sidebar?.setAttribute("aria-hidden", String(!state.sidebarVisible));
 
-  focusShell.classList.toggle("is-hidden", state.mode !== "focus" || visiblePanels.length === 0);
-  overviewShell.classList.toggle("is-hidden", state.mode !== "overview" || visiblePanels.length === 0);
-  emptyShell.classList.toggle("is-hidden", visiblePanels.length !== 0);
-  shortcutsOverlay.classList.toggle("is-hidden", !state.shortcutsVisible);
+  dom.focusShell.classList.toggle("is-hidden", state.mode !== "focus" || visiblePanels.length === 0);
+  dom.overviewShell.classList.toggle("is-hidden", state.mode !== "overview" || visiblePanels.length === 0);
+  dom.emptyShell.classList.toggle("is-hidden", visiblePanels.length !== 0);
+  dom.shortcutsOverlay.classList.toggle("is-hidden", !state.shortcutsVisible);
 
-  if (modeLabel) {
-    modeLabel.textContent = state.mode === "focus" ? "Focus" : "Overview";
+  if (dom.modeLabel) {
+    dom.modeLabel.textContent = state.mode === "focus" ? "Focus" : "Overview";
   }
-  if (activeLabel) {
-    activeLabel.textContent = activePanel ? activePanel.title : "None";
+  if (dom.toolbarContext) {
+    dom.toolbarContext.textContent = formatContextLabel(getActiveContextLabel(), state.activeContextIndex);
   }
-  if (toolbarContext) {
-    toolbarContext.textContent = CONTEXTS[state.activeContextIndex];
+  if (dom.workspaceStorageLabel) {
+    dom.workspaceStorageLabel.textContent = uiState.workspaceStorageSource === "disk" ? "Disk" : "Browser";
   }
-
-  if (statusReady) {
-    statusReady.textContent = state.lastAction;
+  if (dom.workspacePath) {
+    dom.workspacePath.textContent = uiState.workspaceStoragePath;
   }
-  if (statusContext) {
-    statusContext.textContent = `Context: ${CONTEXTS[state.activeContextIndex]}`;
+  if (dom.workspaceJsonShell) {
+    dom.workspaceJsonShell.classList.toggle("is-hidden", !uiState.workspaceInspectorVisible);
   }
-  if (statusPanels) {
-    statusPanels.textContent = `${visiblePanels.length} terminal${visiblePanels.length === 1 ? "" : "s"}`;
+  if (dom.workspaceJson) {
+    dom.workspaceJson.value = workspaceSnapshot.json;
   }
-  if (statusPosition) {
-    statusPosition.textContent = activePanel ? `${activePanel.x}, ${activePanel.y}` : "0, 0";
-  }
-  if (statusZoom) {
-    statusZoom.textContent = `${Math.round(state.camera.zoom * 100)}%`;
-  }
-
-  document.querySelectorAll("[data-focus-panel]").forEach((node) => {
-    node.addEventListener("click", () => {
-      const panelId = node.getAttribute("data-focus-panel");
-      focusPanel(state, panelId);
-      state.mode = "focus";
-      setLastAction(`Focused ${getActivePanel(state)?.title}`);
-      saveState();
-      render();
-    });
-  });
 
   if (state.mode === "focus" && activePanel) {
     await mountActiveTerminal(activePanel);
   }
 
-  stage.dataset.mode = state.mode;
+  dom.stage.dataset.mode = state.mode;
 }
 
-document.querySelectorAll("[data-command]").forEach((button) => {
-  button.addEventListener("click", () => {
-    runCommand(button.getAttribute("data-command"));
+function bindUiEvents() {
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+      return;
+    }
+
+    const commandButton = target.closest("[data-command]");
+    if (commandButton) {
+      runCommand(commandButton.getAttribute("data-command"));
+      return;
+    }
+
+    const focusTarget = target.closest("[data-focus-panel]");
+    if (focusTarget) {
+      const panelId = focusTarget.getAttribute("data-focus-panel");
+      focusPanel(state, panelId);
+      state.mode = "focus";
+      setLastAction(`Focused ${getActivePanel(state)?.title}`);
+      saveState();
+      render();
+      return;
+    }
+
+    const contextButton = target.closest("[data-context-index]");
+    if (contextButton) {
+      switchToContext(Number(contextButton.getAttribute("data-context-index")));
+      return;
+    }
+
+    const renameButton = target.closest("[data-rename-context-index]");
+    if (renameButton) {
+      openContextModal({
+        mode: "rename",
+        index: Number(renameButton.getAttribute("data-rename-context-index")),
+      });
+    }
   });
-});
 
-document.querySelectorAll("[data-context-index]").forEach((button) => {
-  button.addEventListener("click", () => {
-    setContextIndex(state, Number(button.getAttribute("data-context-index")));
-    setLastAction(`Context ${CONTEXTS[state.activeContextIndex]}`);
-    saveState();
-    render();
+  dom.newContextButton?.addEventListener("click", () => {
+    openContextModal({ mode: "create" });
   });
-});
 
-window.addEventListener("plexi:command", (event) => {
-  const command = event.detail?.command;
+  dom.saveWorkspaceButton?.addEventListener("click", () => {
+    runCommand(WORKSPACE_COMMANDS.saveWorkspace);
+  });
 
-  if (command) {
-    runCommand(command);
-  }
-});
+  dom.toolbarSaveWorkspaceButton?.addEventListener("click", () => {
+    runCommand(WORKSPACE_COMMANDS.saveWorkspace);
+  });
 
-window.addEventListener("keydown", (event) => {
-  if (!event.defaultPrevented) {
-    handleShortcutKeydown(event);
-  }
-});
+  dom.toggleWorkspaceJsonButton?.addEventListener("click", toggleWorkspaceJson);
+  dom.toolbarToggleJsonButton?.addEventListener("click", toggleWorkspaceJson);
+
+  dom.contextCancelButton?.addEventListener("click", closeContextModal);
+  dom.contextCloseButton?.addEventListener("click", closeContextModal);
+  dom.contextForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitContextModal();
+  });
+
+  window.addEventListener("plexi:command", (event) => {
+    const command = event.detail?.command;
+    if (command) {
+      runCommand(command);
+    }
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && uiState.contextModalOpen) {
+      event.preventDefault();
+      closeContextModal();
+      return;
+    }
+
+    if (!event.defaultPrevented) {
+      handleShortcutKeydown(event);
+    }
+  });
+}
+
+bindUiEvents();
+syncViewportMetrics();
+window.addEventListener("resize", syncViewportMetrics);
+window.visualViewport?.addEventListener("resize", syncViewportMetrics);
 
 window.__PLEXI_DEBUG__ = {
   getState: () => clone(state),
-  getTerminalProfile: () => ({ ...TERMINAL_PROFILE }),
+  getTerminalProfile,
   runCommand,
   reset: () => {
     state.panels.forEach((panel) => closePanelSession(panel.id));
@@ -1003,21 +1005,38 @@ window.__PLEXI_DEBUG__ = {
     panelMeta.clear();
     panelBuffers.clear();
     state = bootDefaultState();
+    uiState.workspaceInspectorVisible = false;
+    closeContextModal();
     saveState();
     render();
   },
 };
 
-syncViewportMetrics();
-window.addEventListener("resize", syncViewportMetrics);
-window.visualViewport?.addEventListener("resize", syncViewportMetrics);
+async function initializeApp() {
+  const [info, hydrated] = await Promise.all([
+    sessionBridge.getBackendInfo(),
+    hydrateWorkspaceState(sessionBridge),
+  ]);
 
-void sessionBridge.getBackendInfo().then((info) => {
   backendInfo = info;
+  state = hydrated.state;
+  updateWorkspaceStorage(hydrated.storage);
+
+  if (sessionBridge.mode === "live" && !hydrated.storage) {
+    updateWorkspaceStorage({
+      path: "Workspace file unavailable",
+      source: "disk",
+    });
+  }
+
+  if (sessionBridge.mode === "live" && hydrated.storage && hydrated.state.lastAction === "Workspace ready") {
+    saveState();
+  }
+
   syncViewportMetrics();
   updateEngineLabel(getActivePanel(state));
-  render();
-});
+  await render();
+}
 
-render();
+void initializeApp();
 console.log("Plexi terminal workspace loaded");

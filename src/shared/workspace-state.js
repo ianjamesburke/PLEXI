@@ -27,6 +27,7 @@ export const makeDefaultState = () => ({
   panels: [],
   activePanelId: null,
   activePanelIdsByContext: {},
+  rowFocusPanelIdsByContext: {},
   previousPanelId: null,
   mode: "focus",
   sidebarVisible: true,
@@ -42,6 +43,39 @@ export const getPanelById = (state, panelId) =>
   state.panels.find((panel) => panel.id === panelId) || null;
 
 export const getActivePanel = (state) => getPanelById(state, state.activePanelId);
+
+const getRowFocusMap = (state, contextIndex = state.activeContextIndex) => {
+  if (!state.rowFocusPanelIdsByContext) {
+    state.rowFocusPanelIdsByContext = {};
+  }
+
+  if (!state.rowFocusPanelIdsByContext[contextIndex]) {
+    state.rowFocusPanelIdsByContext[contextIndex] = {};
+  }
+
+  return state.rowFocusPanelIdsByContext[contextIndex];
+};
+
+const rememberRowFocus = (state, panel) => {
+  if (!panel) {
+    return;
+  }
+
+  getRowFocusMap(state, panel.contextIndex)[panel.y] = panel.id;
+};
+
+const forgetRowFocus = (state, panelId, contextIndex = state.activeContextIndex) => {
+  if (!state.rowFocusPanelIdsByContext?.[contextIndex]) {
+    return;
+  }
+
+  const rowFocus = state.rowFocusPanelIdsByContext[contextIndex];
+  Object.keys(rowFocus).forEach((row) => {
+    if (rowFocus[row] === panelId) {
+      delete rowFocus[row];
+    }
+  });
+};
 
 const slugify = (value) =>
   value
@@ -135,6 +169,7 @@ export const ensureActivePanel = (state) => {
     if (state.activePanelIdsByContext) {
       state.activePanelIdsByContext[state.activeContextIndex] = activePanel.id;
     }
+    rememberRowFocus(state, activePanel);
     return activePanel;
   }
 
@@ -144,18 +179,21 @@ export const ensureActivePanel = (state) => {
     state.activePanelIdsByContext[state.activeContextIndex] = state.activePanelId;
   }
   state.previousPanelId = null;
-  return getPanelById(state, state.activePanelId);
+  const nextActivePanel = getPanelById(state, state.activePanelId);
+  rememberRowFocus(state, nextActivePanel);
+  return nextActivePanel;
 };
 
 export const focusPanel = (state, panelId) => {
-  if (panelId === state.activePanelId) {
-    return getPanelById(state, panelId);
-  }
-
   const panel = getPanelById(state, panelId);
 
   if (!panel || panel.contextIndex !== state.activeContextIndex) {
     return null;
+  }
+
+  if (panelId === state.activePanelId) {
+    rememberRowFocus(state, panel);
+    return panel;
   }
 
   state.previousPanelId = state.activePanelId;
@@ -163,10 +201,14 @@ export const focusPanel = (state, panelId) => {
   if (state.activePanelIdsByContext) {
     state.activePanelIdsByContext[state.activeContextIndex] = panelId;
   }
+  rememberRowFocus(state, panel);
   return panel;
 };
 
-export const createPanelRecord = (state, { type = "terminal", direction = DIRECTIONS.right } = {}) => {
+export const createPanelRecord = (
+  state,
+  { type = "terminal", direction = DIRECTIONS.right, cwd = null, cwdLabel = null } = {},
+) => {
   state.sequence += 1;
 
   const visiblePanels = getVisiblePanels(state);
@@ -187,7 +229,8 @@ export const createPanelRecord = (state, { type = "terminal", direction = DIRECT
     y,
     contextIndex: state.activeContextIndex,
     transcript: [],
-    cwd: activePanel?.cwd || "~",
+    cwd: cwd || activePanel?.cwd || "~",
+    cwdLabel: cwdLabel || activePanel?.cwdLabel || cwd || activePanel?.cwd || "~",
   };
 
   state.panels.push(panel);
@@ -204,6 +247,7 @@ export const closePanelRecord = (state, panelId) => {
   }
 
   const [removed] = state.panels.splice(index, 1);
+  forgetRowFocus(state, removed.id, removed.contextIndex);
   const visiblePanels = getVisiblePanels(state);
 
   if (visiblePanels.length === 0) {
@@ -222,6 +266,7 @@ export const closePanelRecord = (state, panelId) => {
     state.activePanelIdsByContext[removed.contextIndex] = fallback.id;
   }
   state.previousPanelId = null;
+  rememberRowFocus(state, fallback);
   return removed;
 };
 
@@ -232,6 +277,7 @@ export const movePanelRecord = (state, panelId, direction) => {
     return null;
   }
 
+  forgetRowFocus(state, panel.id, panel.contextIndex);
   const nextPosition = getNextOpenPosition(
     state,
     { x: panel.x, y: panel.y },
@@ -240,6 +286,9 @@ export const movePanelRecord = (state, panelId, direction) => {
 
   panel.x = nextPosition.x;
   panel.y = nextPosition.y;
+  if (panel.id === state.activePanelId) {
+    rememberRowFocus(state, panel);
+  }
   return panel;
 };
 
@@ -249,7 +298,9 @@ export const toggleMode = (state) => {
 };
 
 export const setContextIndex = (state, index) => {
-  state.activeContextIndex = index;
+  const maxIndex = Math.max(0, state.contexts.length - 1);
+  const nextIndex = Math.max(0, Math.min(index, maxIndex));
+  state.activeContextIndex = nextIndex;
   ensureActivePanel(state);
 };
 
@@ -306,11 +357,44 @@ const scoreDirectionalCandidate = (activePanel, candidate, direction) => {
   return primary * 10 + secondary;
 };
 
+const getRowVisitTarget = (state, activePanel, direction) => {
+  const visiblePanels = getVisiblePanels(state).filter((panel) => panel.id !== activePanel.id);
+  const rowCandidates = visiblePanels.filter((panel) =>
+    direction === DIRECTIONS.up ? panel.y < activePanel.y : panel.y > activePanel.y
+  );
+
+  if (rowCandidates.length === 0) {
+    return null;
+  }
+
+  const targetRow = rowCandidates.reduce((closestRow, panel) => {
+    if (closestRow === null) {
+      return panel.y;
+    }
+
+    const currentDistance = Math.abs(panel.y - activePanel.y);
+    const closestDistance = Math.abs(closestRow - activePanel.y);
+    return currentDistance < closestDistance ? panel.y : closestRow;
+  }, null);
+
+  const rowPanels = rowCandidates
+    .filter((panel) => panel.y === targetRow)
+    .sort((left, right) => (left.x - right.x) || left.id.localeCompare(right.id));
+  const rememberedPanelId = getRowFocusMap(state, activePanel.contextIndex)[targetRow];
+  const rememberedPanel = rowPanels.find((panel) => panel.id === rememberedPanelId);
+
+  return rememberedPanel || rowPanels[0] || null;
+};
+
 export const getDirectionalNeighbor = (state, direction) => {
   const activePanel = ensureActivePanel(state);
 
   if (!activePanel) {
     return null;
+  }
+
+  if (direction === DIRECTIONS.up || direction === DIRECTIONS.down) {
+    return getRowVisitTarget(state, activePanel, direction);
   }
 
   const visiblePanels = getVisiblePanels(state).filter((panel) => panel.id !== activePanel.id);

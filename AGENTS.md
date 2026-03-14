@@ -23,6 +23,14 @@ When the user explicitly asks about future work, deep refactors, or deferred imp
 
 When working with Electrobun APIs or platform behavior, consult [`llms.txt`](./llms.txt) alongside this file. It contains the project's framework-specific guidance for main-process imports, `views://` URLs, and other Electrobun constraints.
 
+### Electrobun Menu Notes
+
+- For macOS application menus, follow Electrobun's documented shape: the first top-level menu should be an unlabeled item with a `submenu`, which macOS renders as the app menu.
+- Only use `accelerator` on custom action items. Built-in `role` items like `quit`, `close`, `copy`, and `paste` should rely on the native role shortcut handling.
+- Prefer simple lowercase single-character accelerators for custom actions unless Electrobun explicitly documents a more complex pattern.
+- Plexi's observed macOS fix was not a menu-shape change by itself. The menu only became reliable after reapplying `ApplicationMenu.setApplicationMenu(...)` during startup: once immediately, again on a zero-delay timeout, again after a short delay, and again when the main window receives focus.
+- Treat that repeated install as a project-specific Electrobun workaround for macOS app activation timing, not as a documented framework best practice. Keep it unless a future Electrobun release makes it unnecessary and local native testing confirms removal is safe.
+
 ## Self-Verification Loop (WORKING ✅)
 
 The verification loop uses **Playwright headless browser only** to test UI without needing a display.

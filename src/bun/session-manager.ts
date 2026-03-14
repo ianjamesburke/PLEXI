@@ -1,4 +1,5 @@
 import { expandHomePath, formatHomeLabel, resolveShellLaunchConfig } from "./shells";
+import type { IDisposable, IPty } from "bun-pty";
 import type {
   OpenSessionParams,
   SessionBackendInfo,
@@ -6,12 +7,16 @@ import type {
   SessionOutputMessage,
   SessionStartedMessage,
 } from "../shared/plexi-rpc";
+import { loadBunPty } from "./pty-loader";
+import { applyShellBootstrap, cleanupBootstrapDir } from "./shell-bootstrap";
 
 type TerminalSessionRecord = {
   panelId: string;
-  proc: Bun.Subprocess;
-  terminal: Bun.Terminal;
+  pty: IPty;
+  outputSubscription: IDisposable;
+  exitSubscription: IDisposable;
   started: SessionStartedMessage;
+  bootstrapDir?: string;
 };
 
 type SessionManagerEvents = {
@@ -20,10 +25,6 @@ type SessionManagerEvents = {
   onExit?: (message: SessionExitMessage) => void;
   onError?: (panelId: string, error: Error) => void;
 };
-
-function isPtySupported() {
-  return process.platform !== "win32";
-}
 
 export class LocalSessionManager {
   #sessions = new Map<string, TerminalSessionRecord>();
@@ -41,7 +42,7 @@ export class LocalSessionManager {
     return {
       backend: "bun-pty",
       platform: process.platform,
-      supported: isPtySupported(),
+      supported: true,
       shellPath: config.shellPath,
       shellName: config.shellName,
     };
@@ -53,62 +54,55 @@ export class LocalSessionManager {
       return existing.started;
     }
 
-    if (!isPtySupported()) {
-      throw new Error("PTY-backed shell sessions are not supported on this platform yet.");
-    }
-
-    const launch = resolveShellLaunchConfig({
+    const { launch: bootstrappedLaunch, bootstrapDir } = applyShellBootstrap(resolveShellLaunchConfig({
       cwd: params.cwd,
       env: this.#env,
-    });
+    }));
     const cols = Math.max(20, params.cols || 80);
     const rows = Math.max(8, params.rows || 24);
+    const { spawn } = await loadBunPty();
 
-    const terminal = new Bun.Terminal({
+    const pty = spawn(bootstrappedLaunch.shellPath, bootstrappedLaunch.args, {
+      name: bootstrappedLaunch.env.TERM || "xterm-256color",
       cols,
       rows,
-      data: (_terminal, data) => {
-        this.#events.onOutput?.({
-          panelId: params.panelId,
-          data: Buffer.from(data).toString(),
-        });
-      },
+      cwd: bootstrappedLaunch.cwd,
+      env: bootstrappedLaunch.env,
     });
 
-    const proc = Bun.spawn([launch.shellPath, ...launch.args], {
-      cwd: launch.cwd,
-      env: launch.env,
-      terminal,
+    const outputSubscription = pty.onData((data) => {
+        this.#events.onOutput?.({
+          panelId: params.panelId,
+          data,
+        });
+    });
+    const exitSubscription = pty.onExit((event) => {
+      const record = this.#sessions.get(params.panelId);
+      this.#sessions.delete(params.panelId);
+      cleanupBootstrapDir(record?.bootstrapDir);
+      this.#events.onExit?.({
+        panelId: params.panelId,
+        exitCode: event.exitCode,
+      });
     });
 
     const started: SessionStartedMessage = {
       panelId: params.panelId,
-      cwd: launch.cwd,
-      cwdLabel: formatHomeLabel(launch.cwd, launch.env.HOME),
-      shellPath: launch.shellPath,
-      shellName: launch.shellName,
+      cwd: bootstrappedLaunch.cwd,
+      cwdLabel: formatHomeLabel(bootstrappedLaunch.cwd, bootstrappedLaunch.env.HOME),
+      shellPath: bootstrappedLaunch.shellPath,
+      shellName: bootstrappedLaunch.shellName,
       backend: "bun-pty",
     };
 
     this.#sessions.set(params.panelId, {
       panelId: params.panelId,
-      proc,
-      terminal,
+      pty,
+      outputSubscription,
+      exitSubscription,
       started,
+      bootstrapDir: bootstrapDir || undefined,
     });
-
-    proc.exited
-      .then((exitCode) => {
-        this.#sessions.delete(params.panelId);
-        this.#events.onExit?.({
-          panelId: params.panelId,
-          exitCode,
-        });
-      })
-      .catch((error) => {
-        this.#sessions.delete(params.panelId);
-        this.#events.onError?.(params.panelId, error instanceof Error ? error : new Error(String(error)));
-      });
 
     this.#events.onStarted?.(started);
     return started;
@@ -120,7 +114,11 @@ export class LocalSessionManager {
       return;
     }
 
-    session.terminal.write(data);
+    try {
+      session.pty.write(data);
+    } catch (error) {
+      this.#events.onError?.(panelId, error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   resizeSession(panelId: string, cols: number, rows: number) {
@@ -129,7 +127,7 @@ export class LocalSessionManager {
       return;
     }
 
-    session.terminal.resize(Math.max(20, Math.floor(cols)), Math.max(8, Math.floor(rows)));
+    session.pty.resize(Math.max(20, Math.floor(cols)), Math.max(8, Math.floor(rows)));
   }
 
   closeSession(panelId: string) {
@@ -139,18 +137,15 @@ export class LocalSessionManager {
     }
 
     this.#sessions.delete(panelId);
+    session.outputSubscription.dispose();
+    session.exitSubscription.dispose();
 
     try {
-      session.proc.kill();
+      session.pty.kill();
     } catch (_error) {
       // Ignore double-close races during teardown.
     }
-
-    try {
-      session.terminal.close();
-    } catch (_error) {
-      // Ignore double-close races during teardown.
-    }
+    cleanupBootstrapDir(session.bootstrapDir);
   }
 
   closeAllSessions() {

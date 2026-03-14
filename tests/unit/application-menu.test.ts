@@ -1,17 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { createApplicationMenu, QUIT_ACCELERATOR } from "../../src/bun/application-menu";
+import { createApplicationMenu } from "../../src/bun/application-menu";
 
 describe("application menu", () => {
-  test("maps quit to CommandOrControl+Q in both native quit entries", () => {
+  test("uses an unlabeled top-level app menu for macOS", () => {
     const menu = createApplicationMenu();
-    const quitItems = menu
+
+    expect(menu[0]).not.toHaveProperty("label");
+    expect(menu[0]).toHaveProperty("submenu");
+  });
+
+  test("does not assign custom accelerators to native role items", () => {
+    const menu = createApplicationMenu();
+    const roleItems = menu
       .flatMap((item) => ("submenu" in item && item.submenu ? item.submenu : []))
-      .filter((item) => "role" in item && item.role === "quit");
+      .filter((item) => "role" in item);
 
-    expect(quitItems).toHaveLength(2);
+    expect(roleItems.length).toBeGreaterThan(0);
 
-    for (const item of quitItems) {
-      expect(item.accelerator).toBe(QUIT_ACCELERATOR);
+    for (const item of roleItems) {
+      expect(item.accelerator).toBeUndefined();
     }
   });
 });
