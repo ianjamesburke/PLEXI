@@ -5,6 +5,7 @@ import {
   closePanelRecord,
   createContextRecord,
   createPanelRecord,
+  deleteContextRecord,
   ensureActivePanel,
   focusDirectionalPanel,
   focusPanel,
@@ -357,6 +358,7 @@ async function mountActiveTerminal(activePanel) {
       panel: activePanel,
       mountNode: dom.terminalMount,
       onData(runtime, rawData) {
+        runtime.panel.hasReceivedInput = true;
         void sessionBridge.writeToSession({
           panelId: runtime.panel.id,
           data: rawData,
@@ -459,6 +461,12 @@ function renderContextModal() {
   if (titleEl) {
     titleEl.textContent = uiState.contextRenameIndex !== null ? "Rename context" : "New context";
   }
+
+  const deleteBtn = dom.contextDeleteButton;
+  if (deleteBtn) {
+    deleteBtn.classList.toggle("is-hidden", uiState.contextRenameIndex === null);
+    deleteBtn.textContent = "Delete";
+  }
 }
 
 function openContextModal() {
@@ -501,6 +509,47 @@ function closeContextModal() {
   renderContextModal();
 }
 
+function deleteContext() {
+  const index = uiState.contextRenameIndex;
+  if (index === null || index < 0 || index >= state.contexts.length) {
+    setLastAction("Cannot delete: invalid context index");
+    return;
+  }
+
+  if (state.contexts.length <= 1) {
+    setLastAction("Cannot delete the last context");
+    return;
+  }
+
+  const contextLabel = state.contexts[index]?.label || `Context ${index + 1}`;
+
+  const deleteBtn = dom.contextDeleteButton;
+  if (deleteBtn && deleteBtn.textContent === "Delete") {
+    deleteBtn.textContent = "Are you sure?";
+    setTimeout(() => {
+      if (deleteBtn.textContent === "Are you sure?") {
+        deleteBtn.textContent = "Delete";
+      }
+    }, 3000);
+    return;
+  }
+
+  if (deleteBtn) {
+    deleteBtn.textContent = "Delete";
+  }
+
+  // Close sessions for panels in this context before removing them
+  state.panels
+    .filter((panel) => panel.contextIndex === index)
+    .forEach((panel) => closePanelSession(panel.id));
+
+  deleteContextRecord(state, index);
+  setLastAction(`Context ${contextLabel} deleted`);
+  closeContextModal();
+  saveState();
+  render();
+}
+
 function submitContextModal() {
   const label = dom.contextNameInput?.value?.trim();
 
@@ -523,6 +572,7 @@ function submitContextModal() {
 }
 
 function switchToContext(index) {
+  console.log("switchToContext called", index, new Error().stack);
   if (index < 0 || index >= getContextCount()) {
     return false;
   }
@@ -707,6 +757,24 @@ function runCommand(command) {
   render();
 }
 
+function getRowFocusMap(contextIndex = state.activeContextIndex) {
+  if (!state.rowFocusPanelIdsByContext) {
+    state.rowFocusPanelIdsByContext = {};
+  }
+
+  if (!state.rowFocusPanelIdsByContext[contextIndex]) {
+    state.rowFocusPanelIdsByContext[contextIndex] = {};
+  }
+
+  return state.rowFocusPanelIdsByContext[contextIndex];
+}
+
+function isRowFocusPanel(panel) {
+  if (!panel) return false;
+  const rowFocusMap = getRowFocusMap(panel.contextIndex);
+  return rowFocusMap[panel.y] === panel.id;
+}
+
 function renderContextButtons() {
   if (!dom.contextList) {
     return;
@@ -757,8 +825,9 @@ function renderMinimap(visiblePanels, activePanel) {
       const left = (panel.x - bounds.minX) * cellWidth + gutter;
       const top = (panel.y - bounds.minY) * cellHeight + gutter;
       const active = panel.id === activePanel?.id ? "is-active" : "";
+      const rowFocus = isRowFocusPanel(panel) ? "is-row-focus" : "";
 
-      return `<button class="minimap-node ${active}" data-focus-panel="${panel.id}" style="left:${left}px;top:${top}px;" aria-label="${panel.title}"></button>`;
+      return `<button class="minimap-node ${active} ${rowFocus}" data-focus-panel="${panel.id}" style="left:${left}px;top:${top}px;" aria-label="${panel.title}"></button>`;
     })
     .join("");
 }
@@ -778,7 +847,7 @@ function hasOpenAdjacentSpace(panel, direction) {
 }
 
 function renderSparseFocusHints(visiblePanels, activePanel) {
-  const canShowHints = visiblePanels.length === 1 && Boolean(activePanel);
+  const canShowHints = visiblePanels.length === 1 && Boolean(activePanel) && !activePanel.hasReceivedInput;
   const rightOpen = canShowHints && hasOpenAdjacentSpace(activePanel, DIRECTIONS.right);
   const bottomOpen = canShowHints && hasOpenAdjacentSpace(activePanel, DIRECTIONS.down);
   dom.focusRightSlot?.classList.toggle("is-hidden", !rightOpen);
@@ -885,6 +954,21 @@ function bindUiEvents() {
 
   dom.contextCancelButton?.addEventListener("click", closeContextModal);
   dom.contextCloseButton?.addEventListener("click", closeContextModal);
+  
+  if (dom.contextDeleteButton) {
+    dom.contextDeleteButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      deleteContext();
+    });
+  } else {
+    setTimeout(() => {
+      const btn = document.getElementById("context-delete");
+      if (btn) {
+        btn.addEventListener("click", deleteContext);
+      }
+    }, 100);
+  }
+  
   dom.contextForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     submitContextModal();
@@ -919,6 +1003,7 @@ window.__PLEXI_DEBUG__ = {
   getState: () => clone(state),
   getTerminalProfile,
   runCommand,
+  deleteContextFromUi: deleteContext,
   reset: () => {
     state.panels.forEach((panel) => closePanelSession(panel.id));
     void sessionBridge.reset();
