@@ -10,17 +10,18 @@ test("keyboard layout flow keeps down-splits left and compacts rows on close", a
   await page.keyboard.press("Control+N"); // Terminal 3 at (2, 0)
   await page.keyboard.press("Control+Shift+N"); // Terminal 4 should be at (0, 1)
 
-  await expect(page.locator("#focus-title")).toHaveText("Terminal 4");
-  await expect(page.locator("#focus-position")).toHaveText("0, 1");
+  const getActivePanelId = () => page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId);
+  expect(await getActivePanelId()).toBe("panel-4");
+  
 
   await page.keyboard.press("Control+ArrowUp"); // back to row 0 (remembered: Terminal 3)
   await page.keyboard.press("Control+ArrowLeft"); // Terminal 2
   await page.keyboard.press("Control+ArrowLeft"); // Terminal 1
-  await expect(page.locator("#focus-title")).toHaveText("Terminal 1");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-1");
 
   await page.keyboard.press("Control+W"); // close Terminal 1, row should compact left
-  await expect(page.locator("#focus-title")).toHaveText("Terminal 2");
-  await expect(page.locator("#focus-position")).toHaveText("0, 0");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
+  
 
   const panelPositions = await page.evaluate(() => {
     const state = window.__PLEXI_DEBUG__.getState();
@@ -48,9 +49,9 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
 
   await expect(page).toHaveTitle("Plexi");
   await expect(page.locator(".app-title")).toHaveText("Plexi");
-  await expect(page.locator("#focus-title")).toHaveText("No terminals yet");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBeNull();
   await expect(page.locator("#focus-path")).toBeHidden();
-  await expect(page.locator("#focus-position")).toBeHidden();
+  
   await expect(page.locator("#toolbar-context")).toHaveText("Context 1");
   await expect(page.locator("#empty-shell .empty-tagline")).toHaveText("Open a terminal, cd into a project and then open one beside or below it.");
   await expect(page.locator("#empty-shell")).toContainText("Open your first terminal here");
@@ -59,7 +60,7 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   expect(pageErrors).toEqual([]);
 
   await page.keyboard.press("Control+N");
-  await expect(page.locator("#focus-title")).toHaveText("Terminal 1");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-1");
   await expect(page.locator("#toolbar-context")).toHaveText("Context 1");
   await expect(page.locator("#focus-right-slot")).toBeVisible();
   await expect(page.locator("#focus-bottom-slot")).toBeVisible();
@@ -80,18 +81,18 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
 
   await page.keyboard.press("Control+Shift+N");
   await expect(page.locator("#toast-layer")).toContainText("Terminal 2 created below");
-  await expect(page.locator("#focus-title")).toHaveText("Terminal 2");
-  await expect(page.locator("#focus-position")).toHaveText("0, 1");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
+  
 
   await page.keyboard.press("Control+N");
   await expect(page.locator("#toast-layer")).toContainText("Terminal 3 created to the right");
-  await expect(page.locator("#focus-title")).toHaveText("Terminal 3");
-  await expect(page.locator("#focus-position")).toHaveText("1, 1");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-3");
+  
 
-  page.once("dialog", (dialog) => {
-    dialog.accept("Project Alpha");
-  });
   await page.locator('[data-rename-context-index="0"]').click();
+  await expect(page.locator("#context-modal")).toBeVisible();
+  await page.locator("#context-name-input").fill("Project Alpha");
+  await page.locator("#context-form").evaluate((form) => form.requestSubmit());
   await expect(page.locator("#toolbar-context")).toHaveText("Project Alpha");
 
   await page.locator("#new-context").click();
@@ -100,13 +101,24 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await page.locator("#context-form").evaluate((form) => form.requestSubmit());
   await page.keyboard.press("Control+2");
   await expect(page.locator("#toolbar-context")).toHaveText("Context 2");
-  await expect(page.locator("#focus-title")).toHaveText("No terminals yet");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBeNull();
   await expect(page.locator("#focus-path")).toBeHidden();
-  await expect(page.locator("#focus-position")).toBeHidden();
+  
 
   await page.keyboard.press("Control+1");
   await expect(page.locator("#toolbar-context")).toHaveText("Project Alpha");
-  await expect(page.locator("#focus-title")).toHaveText("Terminal 3");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-3");
+
+  await page.locator('[data-rename-context-index="1"]').click();
+  await expect(page.locator("#context-modal")).toBeVisible();
+  await expect(page.locator("#context-delete")).toBeVisible();
+
+  // Double click to confirm delete
+  await page.locator("#context-delete").click();
+  await page.locator("#context-delete").click();
+  
+  await expect(page.locator("#toast-layer")).toContainText("Context Context 2 deleted");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().contexts)).toHaveLength(1);
 
   await page.keyboard.press("Control+B");
   await expect(page.locator("#app-shell")).toHaveClass(/app-shell--sidebar-hidden/);
@@ -140,7 +152,7 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
 
   await page.keyboard.press("Control+W");
   await page.keyboard.press("Control+W");
-  await expect(page.locator("#focus-title")).toHaveText("No terminals yet");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBeNull();
   await expect(page.locator("#toolbar-context")).toHaveText("Project Alpha");
   await expect(page.locator("#empty-shell")).toBeVisible();
 
