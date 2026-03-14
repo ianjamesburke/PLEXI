@@ -38,13 +38,11 @@ Your layout and working directories are saved automatically to local storage —
 
 ## The Future
 
-Once the basic canvas feels good, the plan is to build the backend daemon features that actually make this a `tmux` alternative.
-
-*   **True Session Persistence**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI.
-*   **libghostty Integration**: I plan to eventually swap out `xterm.js` for `libghostty` to get GPU-accelerated, native-grade terminal rendering.
-*   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas alongside your terminals.
-*   **Advanced Multiplexing**: SSH auto-connect, connection pooling, and visual routing lines showing relationships between nodes.
-*   **Ergonomics**: Vi-style copy mode and scrollback buffers.
+*   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas the terminals.
+*   **True Session Persistence and Multiplexing**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI. (SSH auto-connect, connection pooling)
+*   **Support Multiple Workspaces**: Add the abbility to switch between whole families of contexts (might be overkill)
+*   **libghostty Integration**: Swap out `xterm.js` for `libghostty` to get GPU-accelerated, native-grade terminal rendering.
+*   **Ergonomics**: Vi-style copy mode and scrollback buffers. (as well as many other Vim style interactions on the canvas)
 *   **Pane Management**: Considering tmux-style split pane management within a single canvas node.
 
 ---
