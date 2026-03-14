@@ -18,10 +18,7 @@ export const PANEL_TYPES = {
 
 export const clone = (value) => JSON.parse(JSON.stringify(value));
 
-export const clampZoom = (zoom) => Math.min(2, Math.max(0.45, Number(zoom.toFixed(2))));
-
 export const makeDefaultState = () => ({
-  camera: { x: 0, y: 0, zoom: 1 },
   contexts: [],
   activeContextIndex: 0,
   panels: [],
@@ -29,7 +26,6 @@ export const makeDefaultState = () => ({
   activePanelIdsByContext: {},
   rowFocusPanelIdsByContext: {},
   previousPanelId: null,
-  mode: "focus",
   sidebarVisible: true,
   shortcutsVisible: false,
   sequence: 0,
@@ -334,32 +330,11 @@ export const movePanelRecord = (state, panelId, direction) => {
   return panel;
 };
 
-export const toggleMode = (state) => {
-  state.mode = state.mode === "focus" ? "overview" : "focus";
-  return state.mode;
-};
-
 export const setContextIndex = (state, index) => {
   const maxIndex = Math.max(0, state.contexts.length - 1);
   const nextIndex = Math.max(0, Math.min(index, maxIndex));
   state.activeContextIndex = nextIndex;
   ensureActivePanel(state);
-};
-
-export const panCamera = (state, dx, dy) => {
-  state.camera.x += dx;
-  state.camera.y += dy;
-  return state.camera;
-};
-
-export const adjustZoom = (state, delta) => {
-  state.camera.zoom = clampZoom(state.camera.zoom + delta);
-  return state.camera.zoom;
-};
-
-export const resetViewport = (state) => {
-  state.camera = { x: 0, y: 0, zoom: 1 };
-  return state.camera;
 };
 
 export const cycleVisiblePanel = (state, direction) => {

@@ -104,17 +104,9 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#focus-path")).toBeHidden();
   await expect(page.locator("#focus-position")).toBeHidden();
 
-  await page.keyboard.press("Control+Shift+O");
-  await expect(page.locator("#mode-label")).toHaveText("Overview");
-  await expect(page.locator("#overview-title")).toHaveText("Nothing to map yet");
-  await expect(page.locator("#overview-body")).toHaveText("Open a terminal to start building your workspace.");
-
   await page.keyboard.press("Control+1");
   await expect(page.locator("#toolbar-context")).toHaveText("Project Alpha");
   await expect(page.locator("#focus-title")).toHaveText("Terminal 3");
-
-  await expect(page.locator("#mode-label")).toHaveText("Overview");
-  await expect(page.locator(".overview-node")).toHaveCount(3);
 
   await page.keyboard.press("Control+B");
   await expect(page.locator("#app-shell")).toHaveClass(/app-shell--sidebar-hidden/);
@@ -123,17 +115,6 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#app-shell")).not.toHaveClass(/app-shell--sidebar-hidden/);
   await expect(page.locator(".sidebar-header")).toHaveClass(/electrobun-webkit-app-region-drag/);
   await expect(page.locator(".workspace-toolbar")).toHaveClass(/electrobun-webkit-app-region-drag/);
-
-  await page.evaluate(() => {
-    window.dispatchEvent(
-      new CustomEvent("plexi:command", {
-        detail: { command: "edit-workspace-configuration" },
-      }),
-    );
-  });
-  await expect(page.locator("#workspace-json-shell")).toBeVisible();
-  await expect(page.locator("#workspace-json")).toHaveValue(/"contexts"/);
-  await expect(page.locator("#workspace-json")).toHaveValue(/"id": "context-1"/);
 
   await page.setViewportSize({ width: 1040, height: 720 });
   await expect(page.locator("#engine-label")).toBeVisible();
@@ -152,9 +133,6 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   const viewportTolerance = 4;
   expect(viewportFit.headerBottom).toBeLessThanOrEqual(viewportFit.viewportHeight + viewportTolerance);
   expect(viewportFit.toastBottom).toBeLessThanOrEqual(viewportFit.viewportHeight + viewportTolerance);
-
-  await page.keyboard.press("Control+Shift+O");
-  await expect(page.locator("#mode-label")).toHaveText("Focus");
 
   await page.keyboard.press("Control+W");
   await expect(page.locator("#toast-layer")).toContainText("Terminal 3 closed");

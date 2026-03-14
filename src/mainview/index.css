@@ -338,6 +338,13 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   letter-spacing: -0.02em;
 }
 
+.toolbar-context {
+  color: var(--text-secondary);
+  font-size: 0.79rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .toolbar-path {
   min-width: 0;
   overflow: hidden;
@@ -345,6 +352,14 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   font-size: 0.79rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.toolbar-position {
+  color: var(--text-tertiary, var(--text-secondary));
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .toolbar-meta {
@@ -397,18 +412,13 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 .focus-shell,
-.overview-shell,
 .canvas-empty {
   position: absolute;
   inset: 0;
 }
 
-.focus-shell,
-.overview-shell {
-  padding: 18px;
-}
-
 .focus-shell {
+  padding: 18px;
   overflow: hidden;
 }
 
@@ -486,7 +496,6 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   font-size: 0.85rem;
 }
 
-.overview-hud,
 .shortcuts-overlay,
 .minimap {
   background: var(--bg-canvas-soft);
@@ -494,19 +503,6 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   box-shadow: var(--shadow);
 }
 
-.overview-hud {
-  position: absolute;
-  bottom: 18px;
-  left: 18px;
-  z-index: 2;
-  display: grid;
-  gap: 4px;
-  width: min(340px, calc(100% - 36px));
-  padding: 14px 16px;
-  color: var(--text-primary);
-}
-
-.overview-hud h3,
 .canvas-empty h2,
 .shortcuts-overlay h3 {
   margin: 0;
@@ -514,64 +510,10 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   font-weight: 400;
 }
 
-.overview-hud p,
 .canvas-empty p {
   margin: 0;
   color: var(--text-secondary);
   font-size: 0.85rem;
-}
-
-.overview-canvas {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-}
-
-.overview-viewport {
-  position: absolute;
-  inset: 0;
-  transform-origin: center center;
-}
-
-.overview-node {
-  position: absolute;
-  display: grid;
-  gap: 10px;
-  width: 244px;
-  min-height: 136px;
-  padding: 16px;
-  border: 1px solid var(--canvas-border);
-  background: oklch(18% 0.012 60 / 0.94);
-  color: var(--text-primary);
-  text-align: left;
-}
-
-.overview-node.is-active {
-  border-color: var(--accent);
-}
-
-.overview-node h3,
-.overview-node p {
-  margin: 0;
-}
-
-.overview-node h3 {
-  font-size: 1rem;
-  font-weight: 400;
-}
-
-.overview-node p,
-.overview-node-meta {
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-}
-
-.overview-node-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-family: var(--font-mono);
-  align-self: end;
 }
 
 .canvas-empty {
@@ -821,6 +763,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 .modal-shell.is-hidden,
 .toolbar-pill.is-hidden,
 .toolbar-path.is-hidden,
+.toolbar-position.is-hidden,
 .workspace-json-shell.is-hidden {
   display: none;
 }
@@ -916,8 +859,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
     min-height: 76px;
   }
 
-  .shortcuts-overlay,
-  .overview-hud {
+  .shortcuts-overlay {
     right: 12px;
     left: 12px;
     width: auto;
