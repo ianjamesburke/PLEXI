@@ -7,85 +7,128 @@
     <link rel="stylesheet" href="index.css">
 </head>
 <body>
-    <header class="header">
-        <h1 class="logo">Plexi</h1>
-        <p class="tagline">Infinite canvas for terminals. Pan, zoom, link, and organize your workspace without limits.</p>
-    </header>
+    <div class="app-shell" id="app-shell">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header electrobun-webkit-app-region-drag">
+                <div class="sidebar-brand">
+                    <h1 class="app-title">Plexi</h1>
+                </div>
+                <button class="toolbar-button toolbar-button--ghost" data-command="toggle-sidebar" type="button">
+                    ←
+                </button>
+            </div>
 
-    <main class="workspace">
-        <aside class="sidebar">
             <section class="sidebar-section">
-                <span class="sidebar-label">Contexts</span>
+                <div class="section-heading">
+                    <h2 class="section-title">Contexts</h2>
+                    <div class="section-actions">
+                        <button class="toolbar-button toolbar-button--ghost" data-command="previous-context" type="button">Prev</button>
+                        <button class="toolbar-button toolbar-button--ghost" data-command="next-context" type="button">Next</button>
+                    </div>
+                </div>
                 <ul class="context-list">
-                    <li><button class="context-item active">Default</button></li>
-                    <li><button class="context-item">Frontend Dev</button></li>
-                    <li><button class="context-item">Backend API</button></li>
-                    <li><button class="context-item">Infrastructure</button></li>
+                    <li><button class="context-item active" data-context-index="0" type="button">Default</button></li>
+                    <li><button class="context-item" data-context-index="1" type="button">Frontend Dev</button></li>
+                    <li><button class="context-item" data-context-index="2" type="button">Backend API</button></li>
+                    <li><button class="context-item" data-context-index="3" type="button">Infrastructure</button></li>
                 </ul>
             </section>
 
             <section class="sidebar-section">
-                <span class="sidebar-label">Quick Actions</span>
-                <ul class="context-list">
-                    <li><button class="context-item">+ New Terminal</button></li>
-                    <li><button class="context-item">+ New Browser</button></li>
-                    <li><button class="context-item">Save Context</button></li>
-                </ul>
+                <h2 class="section-title">Actions</h2>
+                <div class="action-stack">
+                    <button class="action-button" data-command="new-terminal-right" type="button">New terminal right</button>
+                    <button class="action-button" data-command="new-terminal-down" type="button">New terminal below</button>
+                    <button class="action-button" data-command="toggle-overview" type="button">Toggle overview</button>
+                    <button class="action-button" data-command="toggle-shortcuts" type="button">Keyboard help</button>
+                </div>
+            </section>
+
+            <section class="sidebar-section sidebar-section--map">
+                <div class="section-heading">
+                    <h2 class="section-title">Map</h2>
+                    <span class="section-meta" id="minimap-size">0 terminals</span>
+                </div>
+                <aside class="minimap" id="minimap" aria-label="Workspace map">
+                    <div class="minimap-grid" id="minimap-grid"></div>
+                </aside>
+            </section>
+
+            <section class="sidebar-section sidebar-section--meta">
+                <h2 class="section-title">Session</h2>
+                <div class="meta-stack">
+                    <div class="meta-line"><span>Engine</span><strong id="engine-label">Loading xterm.js</strong></div>
+                    <div class="meta-line"><span>Mode</span><strong id="mode-label">Focus</strong></div>
+                    <div class="meta-line"><span>Active</span><strong id="active-label">Booting</strong></div>
+                </div>
             </section>
         </aside>
 
-        <section class="canvas-wrapper">
-            <div class="canvas" id="canvas">
-                <div class="canvas-empty">
-                    <h2>Your infinite<br>workspace awaits</h2>
-                    <p>Create terminals that link together. Pan across an endless canvas. Switch contexts instantly.</p>
-                    
-                    <div class="shortcut-grid">
-                        <div class="shortcut">
-                            <span class="key">Ctrl+N</span>
-                            <span class="shortcut-label">New terminal</span>
+        <section class="workspace-shell">
+            <header class="workspace-toolbar electrobun-webkit-app-region-drag">
+                <div class="toolbar-primary">
+                    <h2 class="toolbar-title" id="focus-title">Terminal 1</h2>
+                    <span class="toolbar-path" id="focus-path">~/</span>
+                </div>
+                <div class="toolbar-meta">
+                    <span class="toolbar-pill" id="toolbar-context">Default</span>
+                    <span class="toolbar-pill" id="focus-position">0, 0</span>
+                    <button class="toolbar-button" data-command="previous-context" type="button">Prev Context</button>
+                    <button class="toolbar-button" data-command="next-context" type="button">Next Context</button>
+                    <button class="toolbar-button" data-command="toggle-overview" type="button">Overview</button>
+                </div>
+            </header>
+
+            <section class="canvas-wrapper">
+                <div class="canvas" id="stage">
+                    <section class="focus-shell" id="focus-shell">
+                        <div class="terminal-frame">
+                            <div class="terminal-mount" id="terminal-mount" aria-label="Active terminal"></div>
                         </div>
-                        <div class="shortcut">
-                            <span class="key">Ctrl+K</span>
-                            <span class="shortcut-label">Command palette</span>
+                    </section>
+
+                    <section class="overview-shell is-hidden" id="overview-shell" aria-label="Workspace overview">
+                        <div class="overview-hud">
+                            <h3>Overview</h3>
+                            <p>Pan with arrows. Move panels with Cmd/Ctrl+Shift+Arrow.</p>
                         </div>
-                        <div class="shortcut">
-                            <span class="key">Arrow</span>
-                            <span class="shortcut-label">Pan canvas</span>
-                        </div>
-                        <div class="shortcut">
-                            <span class="key">+/-</span>
-                            <span class="shortcut-label">Zoom</span>
-                        </div>
-                        <div class="shortcut">
-                            <span class="key">Ctrl+S</span>
-                            <span class="shortcut-label">Save context</span>
-                        </div>
-                        <div class="shortcut">
-                            <span class="key">Ctrl+L</span>
-                            <span class="shortcut-label">Link panels</span>
-                        </div>
+                        <div class="overview-canvas" id="overview-canvas"></div>
+                    </section>
+
+                    <section class="canvas-empty is-hidden" id="empty-shell">
+                        <h2>No active terminals</h2>
+                        <p>Create a terminal to start the workspace.</p>
+                    </section>
+
+                    <div class="shortcuts-overlay is-hidden" id="shortcuts-overlay" aria-live="polite">
+                        <h3>Keyboard</h3>
+                        <ul class="overlay-list">
+                            <li><span>Cmd/Ctrl+N</span><span>New terminal right</span></li>
+                            <li><span>Cmd/Ctrl+Shift+N</span><span>New terminal below</span></li>
+                            <li><span>Cmd/Ctrl+Arrow</span><span>Focus nearest terminal</span></li>
+                            <li><span>Cmd/Ctrl+Shift+O</span><span>Toggle overview</span></li>
+                            <li><span>Cmd/Ctrl+1-4</span><span>Switch context</span></li>
+                            <li><span>Cmd/Ctrl+B</span><span>Toggle sidebar</span></li>
+                            <li><span>Cmd/Ctrl+/</span><span>Keyboard help</span></li>
+                        </ul>
                     </div>
                 </div>
-            </div>
+            </section>
+
+            <footer class="status-bar">
+                <div class="status-left">
+                    <span class="status-item" id="status-ready">Booting workspace</span>
+                    <span class="status-item" id="status-context">Context: Default</span>
+                </div>
+                <div class="status-right">
+                    <span class="status-item" id="status-panels">0 terminals</span>
+                    <span class="status-item" id="status-position">0, 0</span>
+                    <span class="status-item" id="status-zoom">100%</span>
+                </div>
+            </footer>
         </section>
-    </main>
+    </div>
 
-    <footer class="status-bar">
-        <div class="status-left">
-            <span class="status-item">
-                <span class="status-dot"></span>
-                Ready
-            </span>
-            <span class="status-item">Context: Default</span>
-        </div>
-        <div class="status-right">
-            <span class="status-item">0 panels</span>
-            <span class="status-item">x: 0 y: 0</span>
-            <span class="status-item">100%</span>
-        </div>
-    </footer>
-
-    <script src="index.ts"></script>
+    <script type="module" src="app.js"></script>
 </body>
 </html>

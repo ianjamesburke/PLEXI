@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Plexi Config",
+  "type": "object",
+  "required": ["version", "workspace", "terminal", "keyboard"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["title", "camera", "contexts"],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "camera": {
+          "type": "object",
+          "required": ["x", "y", "zoom"],
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "zoom": {
+              "type": "number",
+              "minimum": 0.25,
+              "maximum": 3
+            }
+          }
+        },
+        "contexts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "required": ["engine", "fontFamily", "fontSize", "cursorStyle", "theme"],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "enum": ["xterm", "libghostty"]
+        },
+        "fontFamily": {
+          "type": "string"
+        },
+        "fontSize": {
+          "type": "number",
+          "minimum": 8
+        },
+        "cursorStyle": {
+          "type": "string",
+          "enum": ["block", "bar", "underline"]
+        },
+        "theme": {
+          "type": "string"
+        }
+      }
+    },
+    "keyboard": {
+      "type": "object"
+    }
+  }
+}
