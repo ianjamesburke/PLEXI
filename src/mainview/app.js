@@ -1,7 +1,6 @@
 import {
   DIRECTIONS,
   PANEL_TYPES,
-  adjustZoom,
   clone,
   closePanelRecord,
   createContextRecord,
@@ -34,16 +33,18 @@ import {
 } from "./session-output.js";
 import {
   bootDefaultState,
-  getWorkspaceSnapshot,
   hydrateWorkspaceState,
   loadWorkspaceState,
   saveWorkspaceState,
 } from "./workspace-storage.js";
 import {
+  adjustTerminalFontSize,
   createTerminalRuntime,
   ensureTerminalFont,
   ensureXtermAssets,
+  getTerminalFontSize,
   getTerminalProfile,
+  getTerminalZoomStep,
   getXtermStatus,
   setXtermError,
 } from "./xterm-runtime.js";
@@ -56,12 +57,9 @@ let backendInfo = null;
 let homeDirectory = null;
 let state = bootDefaultState();
 const uiState = {
-  workspaceStoragePath: "Resolving workspace file…",
   workspaceStorageSource: "browser",
-  workspaceInspectorVisible: false,
   contextModalOpen: false,
-  contextModalMode: "create",
-  contextModalIndex: null,
+  contextRenameIndex: null,
   toastTimer: null,
 };
 
@@ -132,13 +130,20 @@ if (sessionBridge.mode !== "live") {
   state = loadWorkspaceState();
 }
 
+let saveScheduled = false;
 function saveState() {
-  const snapshot = clone(state);
-  void saveWorkspaceState(snapshot, sessionBridge)
-    .then(updateWorkspaceStorage)
-    .catch(() => {
-      showToast("Workspace save failed");
-    });
+  if (saveScheduled) return;
+  saveScheduled = true;
+  const schedule = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
+  schedule(() => {
+    saveScheduled = false;
+    const snapshot = clone(state);
+    void saveWorkspaceState(snapshot, sessionBridge)
+      .then(updateWorkspaceStorage)
+      .catch(() => {
+        showToast("Workspace save failed");
+      });
+  });
 }
 
 function showToast(message) {
@@ -163,7 +168,6 @@ function updateWorkspaceStorage(storage) {
     return;
   }
 
-  uiState.workspaceStoragePath = storage.path;
   uiState.workspaceStorageSource = storage.source;
 }
 
@@ -408,7 +412,6 @@ async function mountActiveTerminal(activePanel) {
   }
 
   terminalRuntime.panel = activePanel;
-  replayBuffer(terminalRuntime);
   void sessionBridge.resizeSession({
     panelId: activePanel.id,
     cols: terminalRuntime.terminal.cols,
@@ -461,28 +464,42 @@ function renderContextModal() {
     return;
   }
 
-  const isRename = uiState.contextModalMode === "rename";
-  const submitLabel = isRename ? "Save changes" : "Create context";
-
+  const isRename = uiState.contextRenameIndex !== null;
   if (dom.contextModalTitle) {
-    dom.contextModalTitle.textContent = isRename ? "Edit context" : "New context";
+    dom.contextModalTitle.textContent = isRename ? "Rename context" : "New context";
   }
   if (dom.contextSubmitButton) {
-    dom.contextSubmitButton.textContent = submitLabel;
+    dom.contextSubmitButton.textContent = isRename ? "Rename" : "Create context";
   }
 }
 
-function openContextModal({ mode, index = null }) {
-  const existing = index === null ? null : state.contexts[index];
+function openContextModal() {
   uiState.contextModalOpen = true;
-  uiState.contextModalMode = mode;
-  uiState.contextModalIndex = index;
+  uiState.contextRenameIndex = null;
   renderContextModal();
 
   if (dom.contextNameInput) {
-    dom.contextNameInput.value = existing
-      ? formatContextLabel(existing.label, index)
-      : `Context ${getContextCount() + 1}`;
+    dom.contextNameInput.value = `Context ${getContextCount() + 1}`;
+  }
+
+  window.requestAnimationFrame(() => {
+    dom.contextNameInput?.focus();
+    dom.contextNameInput?.select();
+  });
+}
+
+function openRenameModal(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= state.contexts.length) {
+    return;
+  }
+
+  uiState.contextModalOpen = true;
+  uiState.contextRenameIndex = index;
+  renderContextModal();
+
+  const context = state.contexts[index];
+  if (dom.contextNameInput) {
+    dom.contextNameInput.value = formatContextLabel(context.label, index);
   }
 
   window.requestAnimationFrame(() => {
@@ -493,15 +510,8 @@ function openContextModal({ mode, index = null }) {
 
 function closeContextModal() {
   uiState.contextModalOpen = false;
-  uiState.contextModalMode = "create";
-  uiState.contextModalIndex = null;
+  uiState.contextRenameIndex = null;
   renderContextModal();
-}
-
-function toggleWorkspaceJson() {
-  uiState.workspaceInspectorVisible = !uiState.workspaceInspectorVisible;
-  setLastAction(uiState.workspaceInspectorVisible ? "Workspace JSON opened" : "Workspace JSON closed");
-  render();
 }
 
 function submitContextModal() {
@@ -512,9 +522,13 @@ function submitContextModal() {
     return;
   }
 
-  if (uiState.contextModalMode === "rename" && Number.isInteger(uiState.contextModalIndex)) {
-    renameContextRecord(state, uiState.contextModalIndex, label);
-    setLastAction(`Context renamed to ${label}`);
+  if (uiState.contextRenameIndex !== null) {
+    const index = uiState.contextRenameIndex;
+    const currentLabel = formatContextLabel(state.contexts[index]?.label, index);
+    if (label !== currentLabel) {
+      renameContextRecord(state, index, label);
+      setLastAction(`Context renamed to ${label}`);
+    }
   } else {
     createContextRecord(state, label);
     setLastAction(`Context ${label} created`);
@@ -529,6 +543,9 @@ function switchToContext(index) {
   if (index < 0 || index >= getContextCount()) {
     return false;
   }
+  if (index === state.activeContextIndex) {
+    return false;
+  }
   setContextIndex(state, index);
   setLastAction(`Context ${formatContextLabel(getActiveContextLabel())}`);
   saveState();
@@ -537,6 +554,10 @@ function switchToContext(index) {
 }
 
 function createTerminal(direction, cwd = null, cwdLabel = null) {
+  if (state.contexts.length === 0) {
+    createContextRecord(state, "");
+  }
+
   const panel = createPanelRecord(state, { direction, cwd, cwdLabel });
   clearPanelBuffer(panel.id);
   void ensurePanelSession(panel);
@@ -565,14 +586,6 @@ function closeActiveTerminal() {
     }
     closePanelSession(removed.id);
     setLastAction(`${removed.title} closed`);
-  }
-
-  if (getVisiblePanels(state).length === 0) {
-    createTerminal(
-      DIRECTIONS.right,
-      removed?.cwd || "~",
-      removed?.cwdLabel || removed?.cwd || "~",
-    );
   }
 }
 
@@ -722,12 +735,12 @@ function runCommand(command) {
       handleDirectionalFocus(DIRECTIONS.down);
       break;
     case WORKSPACE_COMMANDS.zoomIn:
-      adjustZoom(state, 0.1);
-      setLastAction(`Overview zoom ${Math.round(state.camera.zoom * 100)}%`);
+      adjustTerminalFontSize(getTerminalZoomStep(), terminalRuntime);
+      setLastAction(`Terminal font ${getTerminalFontSize()}px`);
       break;
     case WORKSPACE_COMMANDS.zoomOut:
-      adjustZoom(state, -0.1);
-      setLastAction(`Overview zoom ${Math.round(state.camera.zoom * 100)}%`);
+      adjustTerminalFontSize(-getTerminalZoomStep(), terminalRuntime);
+      setLastAction(`Terminal font ${getTerminalFontSize()}px`);
       break;
     case WORKSPACE_COMMANDS.resetViewport:
       resetViewport(state);
@@ -746,7 +759,9 @@ function runCommand(command) {
       }
       break;
     case WORKSPACE_COMMANDS.newContext:
-      openContextModal({ mode: "create" });
+      openContextModal();
+      return;
+    case WORKSPACE_COMMANDS.editWorkspaceConfiguration:
       return;
     default:
       if (CONTEXT_COMMANDS.includes(command)) {
@@ -774,11 +789,12 @@ function renderContextButtons() {
           type="button"
         >${formatContextLabel(context.label, index)}</button>
         <button
-          class="toolbar-button toolbar-button--ghost context-rename"
+          class="toolbar-button toolbar-button--ghost context-rename ${index === state.activeContextIndex ? "context-rename--active" : ""}"
           data-rename-context-index="${index}"
           type="button"
-          aria-label="Edit ${formatContextLabel(context.label, index)}"
-        >Edit</button>
+          aria-label="Rename ${formatContextLabel(context.label, index)}"
+          title="Rename ${formatContextLabel(context.label, index)}"
+        ><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2l3 3-7 7H0V9z"/></svg></button>
       </li>
     `)
     .join("");
@@ -798,8 +814,9 @@ function renderMinimap(visiblePanels, activePanel) {
   const spanX = Math.max(bounds.width + 1, 1);
   const spanY = Math.max(bounds.height + 1, 1);
   const gutter = 10;
-  const cellWidth = Math.max(12, Math.min(18, Math.floor((width - gutter * 2) / spanX)));
-  const cellHeight = Math.max(12, Math.min(16, Math.floor(140 / spanY)));
+  const nodeSize = 18;
+  const cellWidth = Math.max(nodeSize + 4, Math.min(nodeSize + 12, Math.floor((width - gutter * 2) / spanX)));
+  const cellHeight = Math.max(nodeSize + 2, Math.min(nodeSize + 8, Math.floor(148 / spanY)));
   const gridHeight = Math.max(88, Math.min(176, spanY * cellHeight + gutter * 2));
   dom.minimapGrid.style.height = `${gridHeight}px`;
 
@@ -812,6 +829,49 @@ function renderMinimap(visiblePanels, activePanel) {
       return `<button class="minimap-node ${active}" data-focus-panel="${panel.id}" style="left:${left}px;top:${top}px;" aria-label="${panel.title}"></button>`;
     })
     .join("");
+}
+
+function hasOpenAdjacentSpace(panel, direction) {
+  if (!panel) {
+    return false;
+  }
+
+  const target =
+    direction === DIRECTIONS.down
+      ? { x: panel.x, y: panel.y + 1 }
+      : { x: panel.x + 1, y: panel.y };
+
+  return !state.panels.some((item) =>
+    item.contextIndex === panel.contextIndex && item.x === target.x && item.y === target.y);
+}
+
+function renderSparseFocusHints(visiblePanels, activePanel) {
+  const canShowHints = visiblePanels.length === 1 && Boolean(activePanel);
+  const rightOpen = canShowHints && hasOpenAdjacentSpace(activePanel, DIRECTIONS.right);
+  const bottomOpen = canShowHints && hasOpenAdjacentSpace(activePanel, DIRECTIONS.down);
+  dom.focusRightSlot?.classList.toggle("is-hidden", !rightOpen);
+  dom.focusBottomSlot?.classList.toggle("is-hidden", !bottomOpen);
+}
+
+function renderOverviewHud(visiblePanels) {
+  if (!dom.overviewTitle || !dom.overviewBody) {
+    return;
+  }
+
+  if (visiblePanels.length === 0) {
+    dom.overviewTitle.textContent = "Nothing to map yet";
+    dom.overviewBody.textContent = "Open a terminal to start building your workspace.";
+    return;
+  }
+
+  if (visiblePanels.length === 1) {
+    dom.overviewTitle.textContent = "Your workspace map starts here";
+    dom.overviewBody.textContent = "Add terminals around this one to build a persistent spatial layout.";
+    return;
+  }
+
+  dom.overviewTitle.textContent = "Overview";
+  dom.overviewBody.textContent = "Pan with arrows. Move panels with Cmd/Ctrl+Shift+Arrow.";
 }
 
 function renderOverview(visiblePanels, activePanel) {
@@ -852,15 +912,20 @@ function renderOverview(visiblePanels, activePanel) {
 
 function renderFocus(activePanel) {
   if (!activePanel) {
-    dom.focusTitle.textContent = "No active terminal";
-    dom.focusPath.textContent = formatContextLabel(getActiveContextLabel(), state.activeContextIndex);
-    dom.focusPosition.textContent = "0, 0";
+    dom.focusTitle.textContent = "No terminals yet";
+    dom.focusPath.textContent = "";
     return;
   }
 
-  dom.focusTitle.textContent = activePanel.title;
-  dom.focusPath.textContent = activePanel.cwdLabel || activePanel.cwd;
-  dom.focusPosition.textContent = `${activePanel.x}, ${activePanel.y}`;
+  const label = activePanel.cwdLabel || activePanel.cwd || "~";
+  const dirName = label.split("/").filter(Boolean).pop() || label;
+  dom.focusTitle.textContent = dirName;
+  dom.focusPath.textContent = label;
+}
+
+function renderToolbarState(activePanel) {
+  const hasActivePanel = Boolean(activePanel);
+  dom.focusPath?.classList.toggle("is-hidden", !hasActivePanel);
 }
 
 async function render() {
@@ -870,36 +935,23 @@ async function render() {
 
   const visiblePanels = getVisiblePanels(state);
   const activePanel = ensureActivePanel(state);
-  const workspaceSnapshot = getWorkspaceSnapshot(state);
   updateEngineLabel(activePanel);
   renderFocus(activePanel);
+  renderToolbarState(activePanel);
+  renderOverviewHud(visiblePanels);
   renderOverview(visiblePanels, activePanel);
   renderMinimap(visiblePanels, activePanel);
+  renderSparseFocusHints(visiblePanels, activePanel);
   dom.appShell.classList.toggle("app-shell--sidebar-hidden", !state.sidebarVisible);
   dom.sidebar?.setAttribute("aria-hidden", String(!state.sidebarVisible));
 
   dom.focusShell.classList.toggle("is-hidden", state.mode !== "focus" || visiblePanels.length === 0);
-  dom.overviewShell.classList.toggle("is-hidden", state.mode !== "overview" || visiblePanels.length === 0);
-  dom.emptyShell.classList.toggle("is-hidden", visiblePanels.length !== 0);
+  dom.overviewShell.classList.toggle("is-hidden", state.mode !== "overview");
+  dom.emptyShell.classList.toggle("is-hidden", state.mode !== "focus" || visiblePanels.length !== 0);
   dom.shortcutsOverlay.classList.toggle("is-hidden", !state.shortcutsVisible);
 
-  if (dom.modeLabel) {
-    dom.modeLabel.textContent = state.mode === "focus" ? "Focus" : "Overview";
-  }
-  if (dom.toolbarContext) {
-    dom.toolbarContext.textContent = formatContextLabel(getActiveContextLabel(), state.activeContextIndex);
-  }
   if (dom.workspaceStorageLabel) {
     dom.workspaceStorageLabel.textContent = uiState.workspaceStorageSource === "disk" ? "Disk" : "Browser";
-  }
-  if (dom.workspacePath) {
-    dom.workspacePath.textContent = uiState.workspaceStoragePath;
-  }
-  if (dom.workspaceJsonShell) {
-    dom.workspaceJsonShell.classList.toggle("is-hidden", !uiState.workspaceInspectorVisible);
-  }
-  if (dom.workspaceJson) {
-    dom.workspaceJson.value = workspaceSnapshot.json;
   }
 
   if (state.mode === "focus" && activePanel) {
@@ -933,35 +985,21 @@ function bindUiEvents() {
       return;
     }
 
-    const contextButton = target.closest("[data-context-index]");
-    if (contextButton) {
-      switchToContext(Number(contextButton.getAttribute("data-context-index")));
+    const renameButton = target.closest("[data-rename-context-index]");
+    if (renameButton) {
+      openRenameModal(Number(renameButton.getAttribute("data-rename-context-index")));
       return;
     }
 
-    const renameButton = target.closest("[data-rename-context-index]");
-    if (renameButton) {
-      openContextModal({
-        mode: "rename",
-        index: Number(renameButton.getAttribute("data-rename-context-index")),
-      });
+    const contextButton = target.closest("[data-context-index]");
+    if (contextButton) {
+      switchToContext(Number(contextButton.getAttribute("data-context-index")));
     }
   });
 
   dom.newContextButton?.addEventListener("click", () => {
-    openContextModal({ mode: "create" });
+    openContextModal();
   });
-
-  dom.saveWorkspaceButton?.addEventListener("click", () => {
-    runCommand(WORKSPACE_COMMANDS.saveWorkspace);
-  });
-
-  dom.toolbarSaveWorkspaceButton?.addEventListener("click", () => {
-    runCommand(WORKSPACE_COMMANDS.saveWorkspace);
-  });
-
-  dom.toggleWorkspaceJsonButton?.addEventListener("click", toggleWorkspaceJson);
-  dom.toolbarToggleJsonButton?.addEventListener("click", toggleWorkspaceJson);
 
   dom.contextCancelButton?.addEventListener("click", closeContextModal);
   dom.contextCloseButton?.addEventListener("click", closeContextModal);
@@ -1005,7 +1043,6 @@ window.__PLEXI_DEBUG__ = {
     panelMeta.clear();
     panelBuffers.clear();
     state = bootDefaultState();
-    uiState.workspaceInspectorVisible = false;
     closeContextModal();
     saveState();
     render();
@@ -1029,7 +1066,7 @@ async function initializeApp() {
     });
   }
 
-  if (sessionBridge.mode === "live" && hydrated.storage && hydrated.state.lastAction === "Workspace ready") {
+  if (sessionBridge.mode === "live" && hydrated.storage && hydrated.state.lastAction === "Ready") {
     saveState();
   }
 

@@ -2,6 +2,10 @@ import { ASSET_CANDIDATES, TERMINAL_PROFILE } from "./app-constants.js";
 
 let xtermStatus = "loading";
 let terminalFontReady = null;
+const MIN_TERMINAL_FONT_SIZE = 10;
+const MAX_TERMINAL_FONT_SIZE = 28;
+const TERMINAL_FONT_STEP = 1;
+let terminalFontSize = TERMINAL_PROFILE.fontSize;
 
 async function loadStylesheet(candidates) {
   if (document.querySelector('link[data-plexi-xterm="true"]')) {
@@ -91,7 +95,10 @@ export function setXtermError() {
 }
 
 export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, onResize, replayBuffer }) {
-  const terminal = new window.Terminal(TERMINAL_PROFILE);
+  const terminal = new window.Terminal({
+    ...TERMINAL_PROFILE,
+    fontSize: terminalFontSize,
+  });
   const fitAddon = new window.FitAddon.FitAddon();
 
   terminal.loadAddon(fitAddon);
@@ -127,5 +134,29 @@ export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, on
 }
 
 export function getTerminalProfile() {
-  return { ...TERMINAL_PROFILE };
+  return { ...TERMINAL_PROFILE, fontSize: terminalFontSize };
+}
+
+function clampTerminalFontSize(fontSize) {
+  return Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, Math.round(fontSize)));
+}
+
+export function getTerminalFontSize() {
+  return terminalFontSize;
+}
+
+export function adjustTerminalFontSize(delta, runtime = null) {
+  const nextFontSize = clampTerminalFontSize(terminalFontSize + delta);
+  terminalFontSize = nextFontSize;
+
+  if (runtime?.terminal?.options) {
+    runtime.terminal.options.fontSize = nextFontSize;
+    runtime.fitAddon?.fit?.();
+  }
+
+  return terminalFontSize;
+}
+
+export function getTerminalZoomStep() {
+  return TERMINAL_FONT_STEP;
 }

@@ -22,9 +22,7 @@
                 <div class="section-heading">
                     <h2 class="section-title">Contexts</h2>
                     <div class="section-actions">
-                        <button class="toolbar-button toolbar-button--ghost" id="new-context" type="button">New</button>
-                        <button class="toolbar-button toolbar-button--ghost" data-command="previous-context" type="button">Prev</button>
-                        <button class="toolbar-button toolbar-button--ghost" data-command="next-context" type="button">Next</button>
+                        <button class="toolbar-button toolbar-button--ghost" id="new-context" type="button" aria-label="New context">+</button>
                     </div>
                 </div>
                 <ul class="context-list" id="context-list"></ul>
@@ -33,18 +31,10 @@
             <section class="sidebar-section">
                 <div class="section-heading">
                     <h2 class="section-title">Workspace</h2>
-                    <div class="section-actions">
-                        <button class="toolbar-button toolbar-button--ghost" id="save-workspace" type="button">Save</button>
-                        <button class="toolbar-button toolbar-button--ghost" id="toggle-workspace-json" type="button">JSON</button>
-                    </div>
                 </div>
                 <div class="meta-stack">
                     <div class="meta-line"><span>Storage</span><strong id="workspace-storage-label">Loading</strong></div>
                     <div class="meta-line"><span>Terminal</span><strong id="engine-label">Loading xterm.js</strong></div>
-                </div>
-                <p class="workspace-path" id="workspace-path">Resolving workspace file…</p>
-                <div class="workspace-json-shell is-hidden" id="workspace-json-shell">
-                    <textarea class="workspace-json" id="workspace-json" readonly spellcheck="false"></textarea>
                 </div>
             </section>
 
@@ -63,15 +53,10 @@
         <section class="workspace-shell">
             <header class="workspace-toolbar electrobun-webkit-app-region-drag">
                 <div class="toolbar-primary">
-                    <h2 class="toolbar-title" id="focus-title">Terminal 1</h2>
-                    <span class="toolbar-path" id="focus-path">~/</span>
+                    <h2 class="toolbar-title" id="focus-title">No terminals yet</h2>
+                    <span class="toolbar-path" id="focus-path"></span>
                 </div>
                 <div class="toolbar-meta">
-                    <span class="toolbar-pill" id="toolbar-context">Main</span>
-                    <span class="toolbar-pill" id="mode-label">Focus</span>
-                    <span class="toolbar-pill" id="focus-position">0, 0</span>
-                    <button class="toolbar-button" id="toolbar-save-workspace" type="button">Save</button>
-                    <button class="toolbar-button" id="toolbar-toggle-json" type="button">Workspace JSON</button>
                     <button class="toolbar-button" data-command="toggle-shortcuts" type="button">Keys</button>
                     <button class="toolbar-button" data-command="toggle-overview" type="button">Overview</button>
                 </div>
@@ -83,31 +68,60 @@
                         <div class="terminal-frame">
                             <div class="terminal-mount" id="terminal-mount" aria-label="Active terminal"></div>
                         </div>
+                        <aside class="focus-ghost-slot focus-ghost-slot--right is-hidden" id="focus-right-slot">
+                            <p class="focus-ghost-shortcut">⌘+N</p>
+                            <p class="focus-ghost-copy">Open another terminal here</p>
+                        </aside>
+                        <aside class="focus-ghost-slot focus-ghost-slot--bottom is-hidden" id="focus-bottom-slot">
+                            <p class="focus-ghost-shortcut">⌘+⇧+N</p>
+                            <p class="focus-ghost-copy">Open one below</p>
+                        </aside>
                     </section>
 
                     <section class="overview-shell is-hidden" id="overview-shell" aria-label="Workspace overview">
                         <div class="overview-hud">
-                            <h3>Overview</h3>
-                            <p>Pan with arrows. Move panels with Cmd/Ctrl+Shift+Arrow.</p>
+                            <h3 id="overview-title">Overview</h3>
+                            <p id="overview-body">Pan with arrows. Move panels with ⌘+⇧+Arrow.</p>
                         </div>
                         <div class="overview-canvas" id="overview-canvas"></div>
                     </section>
 
                     <section class="canvas-empty is-hidden" id="empty-shell">
-                        <h2>No active terminals</h2>
-                        <p>Create a terminal to start this context.</p>
+                        <aside class="empty-context-callout">
+                            <span class="empty-context-arrow">←</span>
+                            <p>Contexts live here. Use them to separate tasks, repos, or clients.</p>
+                        </aside>
+                        <p class="empty-support-note">Layouts and settings are saved locally.</p>
+                        <div class="empty-shell-content">
+                            <p class="empty-tagline">Open a terminal, cd into a project and then open one beside or below it.</p>
+                            <div class="empty-ghost-grid" aria-hidden="true">
+                                <article class="empty-ghost-card empty-ghost-card--first">
+                                    <p class="empty-ghost-label">First terminal</p>
+                                    <p class="empty-ghost-shortcut">⌘+N</p>
+                                    <p class="empty-ghost-caption">Open your first terminal here</p>
+                                </article>
+                                <article class="empty-ghost-card empty-ghost-card--second">
+                                    <p class="empty-ghost-shortcut">⌘+N</p>
+                                    <p class="empty-ghost-caption">Then open another beside it</p>
+                                </article>
+                                <article class="empty-ghost-card empty-ghost-card--third">
+                                    <p class="empty-ghost-shortcut">⌘+⇧+N</p>
+                                    <p class="empty-ghost-caption">Or stack one below</p>
+                                </article>
+                            </div>
+                        </div>
                     </section>
 
                     <div class="shortcuts-overlay is-hidden" id="shortcuts-overlay" aria-live="polite">
                         <h3>Keyboard</h3>
                         <ul class="overlay-list">
-                            <li><span>Cmd/Ctrl+N</span><span>New terminal right</span></li>
-                            <li><span>Cmd/Ctrl+Shift+N</span><span>New terminal below</span></li>
-                            <li><span>Cmd/Ctrl+Arrow</span><span>Focus nearest terminal</span></li>
-                            <li><span>Cmd/Ctrl+Shift+O</span><span>Toggle overview</span></li>
-                            <li><span>Cmd/Ctrl+1-9</span><span>Switch context</span></li>
-                            <li><span>Cmd/Ctrl+B</span><span>Toggle sidebar</span></li>
-                            <li><span>Cmd/Ctrl+/</span><span>Keyboard help</span></li>
+                            <li><span>⌘+N</span><span>New terminal right</span></li>
+                            <li><span>⌘+⇧+N</span><span>New terminal below</span></li>
+                            <li><span>⌘+Arrow</span><span>Focus nearest terminal</span></li>
+                            <li><span>⌘+⇧+O</span><span>Toggle overview</span></li>
+                            <li><span>⌘+1–9</span><span>Switch context</span></li>
+                            <li><span>⌘+B</span><span>Toggle sidebar</span></li>
+                            <li><span>⌘+/</span><span>Keyboard help</span></li>
                         </ul>
                     </div>
                 </div>

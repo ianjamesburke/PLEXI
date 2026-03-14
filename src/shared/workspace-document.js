@@ -127,15 +127,6 @@ export function deserializeWorkspaceDocument(document) {
   nextState.mode = "focus";
   nextState.lastAction = "Workspace restored";
 
-  if (nextState.contexts.length === 0) {
-    nextState.contexts = [
-      {
-        id: "main",
-        label: "Main",
-      },
-    ];
-  }
-
   nextState.activePanelId = activePanelIdsByContext[nextState.activeContextIndex] || null;
   ensureActivePanel(nextState);
   return nextState;
@@ -189,15 +180,6 @@ export function migrateLegacyWorkspaceState(parsed) {
   nextState.shortcutsVisible = false;
   nextState.mode = "focus";
   nextState.lastAction = "Workspace restored";
-
-  if (nextState.contexts.length === 0) {
-    nextState.contexts = [
-      {
-        id: "main",
-        label: "Main",
-      },
-    ];
-  }
 
   ensureActivePanel(nextState);
   return nextState;

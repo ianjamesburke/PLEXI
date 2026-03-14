@@ -15,7 +15,7 @@ import {
 } from "../../src/shared/workspace-state.js";
 
 describe("workspace state helpers", () => {
-  test("createPanelRecord places terminals to the right and below the active one", () => {
+  test("createPanelRecord places terminals right and starts new rows at the left edge", () => {
     const state = makeDefaultState();
     const first = createPanelRecord(state, { direction: DIRECTIONS.right });
     const second = createPanelRecord(state, { direction: DIRECTIONS.right });
@@ -25,7 +25,7 @@ describe("workspace state helpers", () => {
     expect(first.y).toBe(0);
     expect(second.x).toBe(1);
     expect(second.y).toBe(0);
-    expect(third.x).toBe(1);
+    expect(third.x).toBe(0);
     expect(third.y).toBe(1);
   });
 
@@ -73,6 +73,35 @@ describe("workspace state helpers", () => {
     expect(removed?.id).toBe(second.id);
     expect(state.activePanelId).toBe(first.id);
     expect(getVisiblePanels(state)).toHaveLength(1);
+  });
+
+  test("closePanelRecord compacts row columns left and focuses shifted successor", () => {
+    const state = makeDefaultState();
+    const first = createPanelRecord(state, { direction: DIRECTIONS.right });
+    const second = createPanelRecord(state, { direction: DIRECTIONS.right });
+    const third = createPanelRecord(state, { direction: DIRECTIONS.right });
+
+    closePanelRecord(state, first.id);
+
+    expect(second.x).toBe(0);
+    expect(second.y).toBe(0);
+    expect(third.x).toBe(1);
+    expect(third.y).toBe(0);
+    expect(state.activePanelId).toBe(second.id);
+  });
+
+  test("createPanelRecord with down ignores active column and uses leftmost column", () => {
+    const state = makeDefaultState();
+    const first = createPanelRecord(state, { direction: DIRECTIONS.right });
+    createPanelRecord(state, { direction: DIRECTIONS.right });
+    const third = createPanelRecord(state, { direction: DIRECTIONS.right });
+
+    focusPanel(state, third.id);
+    const fourth = createPanelRecord(state, { direction: DIRECTIONS.down });
+
+    expect(first.x).toBe(0);
+    expect(fourth.x).toBe(0);
+    expect(fourth.y).toBe(1);
   });
 
   test("movePanelRecord finds the next open slot in the requested direction", () => {
