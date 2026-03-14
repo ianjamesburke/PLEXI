@@ -93,6 +93,10 @@ export type PlexiRPCSchema = ElectrobunRPCSchema & {
         };
         response: WorkspaceStorageInfo;
       };
+      openExternalUrl: {
+        params: { url: string };
+        response: boolean;
+      };
     };
     messages: Record<never, never>;
   };

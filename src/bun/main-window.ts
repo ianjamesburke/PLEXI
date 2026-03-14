@@ -1,4 +1,7 @@
-import { BrowserWindow, Screen } from "electrobun/bun";
+import { BrowserView, BrowserWindow, Screen } from "electrobun/bun";
+import type { PlexiRPCSchema } from "../shared/plexi-rpc";
+
+type PlexiBrowserRpc = ReturnType<typeof BrowserView.defineRPC<PlexiRPCSchema>>;
 
 function getDefaultFrame() {
   const primaryDisplay = Screen.getPrimaryDisplay();
@@ -23,10 +26,10 @@ function getDefaultFrame() {
   };
 }
 
-export function createMainWindow(rpc: unknown) {
+export function createMainWindow(rpc: PlexiBrowserRpc) {
   const frame = getDefaultFrame();
 
-  return new BrowserWindow({
+  return new BrowserWindow<PlexiBrowserRpc>({
     title: "Plexi",
     url: "views://mainview/index.html",
     rpc,

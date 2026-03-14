@@ -23,7 +23,7 @@ function getBunPtyLibFilenames() {
 }
 
 function resolveBunPtyLibraryPath() {
-  const configured = process.env.BUN_PTY_LIB;
+  const configured = process.env["BUN_PTY_LIB"];
   if (configured && existsSync(configured)) {
     return configured;
   }
@@ -46,7 +46,7 @@ export async function loadBunPty() {
   if (!bunPtyModulePromise) {
     const libraryPath = resolveBunPtyLibraryPath();
     if (libraryPath) {
-      process.env.BUN_PTY_LIB = libraryPath;
+      process.env["BUN_PTY_LIB"] = libraryPath;
     }
     bunPtyModulePromise = import("bun-pty");
   }

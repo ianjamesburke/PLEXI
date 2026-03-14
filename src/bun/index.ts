@@ -1,4 +1,4 @@
-import Electrobun, { ApplicationMenu } from "electrobun/bun";
+import { ApplicationMenu } from "electrobun/bun";
 import { createMainWindow } from "./main-window";
 import { LocalSessionManager } from "./session-manager";
 import { createApplicationMenu } from "./application-menu";

@@ -58,6 +58,9 @@ function createLiveSessionBridge(handlers) {
     writeWorkspaceDocument(params) {
       return rpc.requestProxy.writeWorkspaceDocument(params);
     },
+    openExternalUrl(url) {
+      return rpc.requestProxy.openExternalUrl({ url });
+    },
     async reset() {},
   };
 }

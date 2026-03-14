@@ -9,10 +9,18 @@ dist/
 # Test artifacts
 test-results/
 playwright-report/
+tests/e2e/screenshot.png
 
 # IDE
 .idea/
 .vscode/
+
+# AI tool configs (local only)
+.agents/
+.claude/
+.kiro/
+skills/
+skills-lock.json
 *.swp
 *.swo
 

@@ -56,6 +56,9 @@ let state = bootDefaultState();
 const uiState = {
   workspaceStorageSource: "browser",
   contextModalOpen: false,
+  contextRenameIndex: null,
+  contextDeleteConfirming: false,
+  contextDeleteTimer: null,
   toastTimer: null,
 };
 
@@ -147,7 +150,10 @@ function showToast(message) {
     return;
   }
 
-  dom.toastLayer.innerHTML = `<div class="toast">${message}</div>`;
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = message;
+  dom.toastLayer.replaceChildren(toast);
   dom.toastLayer.classList.add("is-visible");
 
   if (uiState.toastTimer) {
@@ -219,6 +225,38 @@ function appendPanelBuffer(panelId, chunk) {
 
 function clearPanelBuffer(panelId) {
   panelBuffers.set(panelId, "");
+}
+
+function clearNode(node) {
+  node?.replaceChildren();
+}
+
+function createRenameIcon() {
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  svg.setAttribute("width", "12");
+  svg.setAttribute("height", "12");
+  svg.setAttribute("viewBox", "0 0 12 12");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+
+  const path = document.createElementNS(namespace, "path");
+  path.setAttribute("d", "M7 2l3 3-7 7H0V9z");
+  svg.append(path);
+
+  return svg;
+}
+
+function resetDeleteConfirmation() {
+  uiState.contextDeleteConfirming = false;
+
+  if (uiState.contextDeleteTimer) {
+    window.clearTimeout(uiState.contextDeleteTimer);
+    uiState.contextDeleteTimer = null;
+  }
 }
 
 function replayBuffer(runtime) {
@@ -329,7 +367,7 @@ function disposeRuntime() {
 async function mountActiveTerminal(activePanel) {
   if (!activePanel || activePanel.type !== "terminal") {
     disposeRuntime();
-    dom.terminalMount.innerHTML = "";
+    clearNode(dom.terminalMount);
     return;
   }
 
@@ -338,22 +376,16 @@ async function mountActiveTerminal(activePanel) {
     await ensureTerminalFont();
   } catch (error) {
     setXtermError();
-    if (dom.engineLabel) {
-      dom.engineLabel.textContent = "xterm.js failed";
-    }
     dom.terminalMount.textContent = String(error);
     dom.terminalMount.classList.add("terminal-mount--error");
     return;
   }
 
-  if (dom.engineLabel && getXtermStatus() === "ready") {
-    dom.engineLabel.textContent = "xterm.js ready";
-  }
 
   dom.terminalMount.classList.remove("terminal-mount--loading", "terminal-mount--error");
   if (terminalRuntime?.panel?.id !== activePanel.id) {
     disposeRuntime();
-    dom.terminalMount.innerHTML = "";
+    clearNode(dom.terminalMount);
     terminalRuntime = createTerminalRuntime({
       panel: activePanel,
       mountNode: dom.terminalMount,
@@ -403,6 +435,11 @@ async function mountActiveTerminal(activePanel) {
           rows: runtime.terminal.rows,
         });
       },
+      onLinkClick(uri) {
+        if (uri) {
+          void sessionBridge.openExternalUrl(uri);
+        }
+      },
       replayBuffer,
     });
     return;
@@ -417,38 +454,6 @@ async function mountActiveTerminal(activePanel) {
   terminalRuntime.terminal.focus();
 }
 
-function updateEngineLabel(activePanel) {
-  if (getXtermStatus() === "error") {
-    return;
-  }
-
-  const activeMeta = activePanel ? panelMeta.get(activePanel.id) : null;
-
-  if (activeMeta?.shellName) {
-    if (dom.engineLabel) {
-      dom.engineLabel.textContent = `xterm.js + ${activeMeta.shellName}`;
-    }
-    return;
-  }
-
-  if (backendInfo?.shellName) {
-    if (dom.engineLabel) {
-      dom.engineLabel.textContent = `xterm.js + ${backendInfo.shellName}`;
-    }
-    return;
-  }
-
-  if (backendInfo?.backend === "mock") {
-    if (dom.engineLabel) {
-      dom.engineLabel.textContent = "xterm.js + mock shell";
-    }
-    return;
-  }
-
-  if (dom.engineLabel) {
-    dom.engineLabel.textContent = getXtermStatus() === "ready" ? "xterm.js ready" : "Loading xterm.js";
-  }
-}
 
 function renderContextModal() {
   if (!dom.contextModal) {
@@ -465,11 +470,12 @@ function renderContextModal() {
   const deleteBtn = dom.contextDeleteButton;
   if (deleteBtn) {
     deleteBtn.classList.toggle("is-hidden", uiState.contextRenameIndex === null);
-    deleteBtn.textContent = "Delete";
+    deleteBtn.textContent = uiState.contextDeleteConfirming ? "Are you sure?" : "Delete";
   }
 }
 
 function openContextModal() {
+  resetDeleteConfirmation();
   uiState.contextModalOpen = true;
   uiState.contextRenameIndex = null;
   renderContextModal();
@@ -489,6 +495,7 @@ function renameContext(index) {
     return;
   }
 
+  resetDeleteConfirmation();
   uiState.contextModalOpen = true;
   uiState.contextRenameIndex = index;
   renderContextModal();
@@ -504,6 +511,7 @@ function renameContext(index) {
 }
 
 function closeContextModal() {
+  resetDeleteConfirmation();
   uiState.contextModalOpen = false;
   uiState.contextRenameIndex = null;
   renderContextModal();
@@ -523,20 +531,17 @@ function deleteContext() {
 
   const contextLabel = state.contexts[index]?.label || `Context ${index + 1}`;
 
-  const deleteBtn = dom.contextDeleteButton;
-  if (deleteBtn && deleteBtn.textContent === "Delete") {
-    deleteBtn.textContent = "Are you sure?";
-    setTimeout(() => {
-      if (deleteBtn.textContent === "Are you sure?") {
-        deleteBtn.textContent = "Delete";
-      }
+  if (!uiState.contextDeleteConfirming) {
+    uiState.contextDeleteConfirming = true;
+    renderContextModal();
+    uiState.contextDeleteTimer = window.setTimeout(() => {
+      resetDeleteConfirmation();
+      renderContextModal();
     }, 3000);
     return;
   }
 
-  if (deleteBtn) {
-    deleteBtn.textContent = "Delete";
-  }
+  resetDeleteConfirmation();
 
   // Close sessions for panels in this context before removing them
   state.panels
@@ -572,7 +577,6 @@ function submitContextModal() {
 }
 
 function switchToContext(index) {
-  console.log("switchToContext called", index, new Error().stack);
   if (index < 0 || index >= getContextCount()) {
     return false;
   }
@@ -614,7 +618,7 @@ function closeActiveTerminal() {
   if (removed) {
     if (terminalRuntime?.panel?.id === removed.id) {
       disposeRuntime();
-      dom.terminalMount.innerHTML = "";
+      clearNode(dom.terminalMount);
     }
     closePanelSession(removed.id);
     setLastAction(`${removed.title} closed`);
@@ -780,24 +784,30 @@ function renderContextButtons() {
     return;
   }
 
-  dom.contextList.innerHTML = state.contexts
-    .map((context, index) => `
-      <li class="context-row">
-        <button
-          class="context-item ${index === state.activeContextIndex ? "active" : ""}"
-          data-context-index="${index}"
-          type="button"
-        >${formatContextLabel(context.label, index)}</button>
-        <button
-          class="toolbar-button toolbar-button--ghost context-rename ${index === state.activeContextIndex ? "context-rename--active" : ""}"
-          data-rename-context-index="${index}"
-          type="button"
-          aria-label="Rename ${formatContextLabel(context.label, index)}"
-          title="Rename ${formatContextLabel(context.label, index)}"
-        ><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2l3 3-7 7H0V9z"/></svg></button>
-      </li>
-    `)
-    .join("");
+  const rows = state.contexts.map((context, index) => {
+    const label = formatContextLabel(context.label, index);
+    const row = document.createElement("li");
+    row.className = "context-row";
+
+    const contextButton = document.createElement("button");
+    contextButton.className = `context-item ${index === state.activeContextIndex ? "active" : ""}`.trim();
+    contextButton.dataset.contextIndex = String(index);
+    contextButton.type = "button";
+    contextButton.textContent = label;
+
+    const renameButton = document.createElement("button");
+    renameButton.className = `toolbar-button toolbar-button--ghost context-rename ${index === state.activeContextIndex ? "context-rename--active" : ""}`.trim();
+    renameButton.dataset.renameContextIndex = String(index);
+    renameButton.type = "button";
+    renameButton.setAttribute("aria-label", `Rename ${label}`);
+    renameButton.title = `Rename ${label}`;
+    renameButton.append(createRenameIcon());
+
+    row.append(contextButton, renameButton);
+    return row;
+  });
+
+  dom.contextList.replaceChildren(...rows);
 }
 
 function renderMinimap(visiblePanels, activePanel) {
@@ -805,7 +815,7 @@ function renderMinimap(visiblePanels, activePanel) {
   dom.minimapSize.textContent = `${visiblePanels.length} terminal${visiblePanels.length === 1 ? "" : "s"}`;
 
   if (visiblePanels.length === 0) {
-    dom.minimapGrid.innerHTML = "";
+    clearNode(dom.minimapGrid);
     return;
   }
 
@@ -820,16 +830,21 @@ function renderMinimap(visiblePanels, activePanel) {
   const gridHeight = Math.max(88, Math.min(176, spanY * cellHeight + gutter * 2));
   dom.minimapGrid.style.height = `${gridHeight}px`;
 
-  dom.minimapGrid.innerHTML = visiblePanels
-    .map((panel) => {
-      const left = (panel.x - bounds.minX) * cellWidth + gutter;
-      const top = (panel.y - bounds.minY) * cellHeight + gutter;
-      const active = panel.id === activePanel?.id ? "is-active" : "";
-      const rowFocus = isRowFocusPanel(panel) ? "is-row-focus" : "";
+  const nodes = visiblePanels.map((panel) => {
+    const left = (panel.x - bounds.minX) * cellWidth + gutter;
+    const top = (panel.y - bounds.minY) * cellHeight + gutter;
+    const node = document.createElement("button");
+    const active = panel.id === activePanel?.id ? "is-active" : "";
+    const rowFocus = isRowFocusPanel(panel) ? "is-row-focus" : "";
+    node.className = `minimap-node ${active} ${rowFocus}`.trim();
+    node.dataset.focusPanel = panel.id;
+    node.style.left = `${left}px`;
+    node.style.top = `${top}px`;
+    node.setAttribute("aria-label", panel.title);
+    return node;
+  });
 
-      return `<button class="minimap-node ${active} ${rowFocus}" data-focus-panel="${panel.id}" style="left:${left}px;top:${top}px;" aria-label="${panel.title}"></button>`;
-    })
-    .join("");
+  dom.minimapGrid.replaceChildren(...nodes);
 }
 
 function hasOpenAdjacentSpace(panel, direction) {
@@ -892,7 +907,6 @@ async function render() {
 
   const visiblePanels = getVisiblePanels(state);
   const activePanel = ensureActivePanel(state);
-  updateEngineLabel(activePanel);
   renderFocus(activePanel);
   renderToolbarState(activePanel);
   renderMinimap(visiblePanels, activePanel);
@@ -904,9 +918,6 @@ async function render() {
   dom.emptyShell.classList.toggle("is-hidden", visiblePanels.length !== 0);
   dom.shortcutsOverlay.classList.toggle("is-hidden", !state.shortcutsVisible);
 
-  if (dom.workspaceStorageLabel) {
-    dom.workspaceStorageLabel.textContent = uiState.workspaceStorageSource === "disk" ? "Disk" : "Browser";
-  }
 
   if (activePanel) {
     await mountActiveTerminal(activePanel);
@@ -955,19 +966,10 @@ function bindUiEvents() {
   dom.contextCancelButton?.addEventListener("click", closeContextModal);
   dom.contextCloseButton?.addEventListener("click", closeContextModal);
   
-  if (dom.contextDeleteButton) {
-    dom.contextDeleteButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      deleteContext();
-    });
-  } else {
-    setTimeout(() => {
-      const btn = document.getElementById("context-delete");
-      if (btn) {
-        btn.addEventListener("click", deleteContext);
-      }
-    }, 100);
-  }
+  dom.contextDeleteButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    deleteContext();
+  });
   
   dom.contextForm?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1038,9 +1040,7 @@ async function initializeApp() {
   }
 
   syncViewportMetrics();
-  updateEngineLabel(getActivePanel(state));
   await render();
 }
 
 void initializeApp();
-console.log("Plexi terminal workspace loaded");

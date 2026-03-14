@@ -45,11 +45,11 @@ export function formatHomeLabel(pathname: string, homeDirectory: string | undefi
 
 export function expandHomePath(pathname: string | null | undefined, env: Record<string, string | undefined>) {
   if (!pathname || pathname === "~") {
-    return env.HOME || process.cwd();
+    return env["HOME"] || process.cwd();
   }
 
-  if (pathname.startsWith("~/") && env.HOME) {
-    return `${env.HOME}${pathname.slice(1)}`;
+  if (pathname.startsWith("~/") && env["HOME"]) {
+    return `${env["HOME"]}${pathname.slice(1)}`;
   }
 
   return pathname;
@@ -60,7 +60,7 @@ export function resolveShellLaunchConfig(options: {
   env?: Record<string, string | undefined>;
 } = {}): ShellLaunchConfig {
   const envSource = options.env || process.env;
-  const shellPath = envSource.SHELL || resolveFallbackShell();
+  const shellPath = envSource["SHELL"] || resolveFallbackShell();
   const shellName = shellPath.split("/").pop() || "shell";
   const cwd = expandHomePath(options.cwd, envSource);
 
@@ -76,10 +76,10 @@ export function resolveShellLaunchConfig(options: {
     }
   }
 
-  env.TERM = "xterm-256color";
-  env.COLORTERM = env.COLORTERM || "truecolor";
-  env.TERM_PROGRAM = "Plexi";
-  env.TERM_PROGRAM_VERSION = env.npm_package_version || "0.1.0";
+  env["TERM"] = "xterm-256color";
+  env["COLORTERM"] = env["COLORTERM"] || "truecolor";
+  env["TERM_PROGRAM"] = "Plexi";
+  env["TERM_PROGRAM_VERSION"] = env["npm_package_version"] || "0.1.0";
 
   return {
     shellPath,

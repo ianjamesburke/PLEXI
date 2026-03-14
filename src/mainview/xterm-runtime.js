@@ -39,8 +39,12 @@ async function loadScript(candidates) {
     const loaded = await new Promise((resolve) => {
       const script = document.createElement("script");
       script.src = src;
+      script.async = false;
       script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
+      script.onerror = () => {
+        script.remove();
+        resolve(false);
+      };
       document.head.append(script);
     });
 
@@ -82,6 +86,10 @@ export async function ensureXtermAssets() {
     await loadScript(ASSET_CANDIDATES.fitJs);
   }
 
+  if (!window.WebLinksAddon) {
+    await loadScript(ASSET_CANDIDATES.webLinksJs);
+  }
+
   xtermStatus = "ready";
   return { status: xtermStatus };
 }
@@ -94,14 +102,26 @@ export function setXtermError() {
   xtermStatus = "error";
 }
 
-export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, onResize, replayBuffer }) {
+export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, onResize, replayBuffer, onLinkClick }) {
   const terminal = new window.Terminal({
     ...TERMINAL_PROFILE,
     fontSize: terminalFontSize,
   });
   const fitAddon = new window.FitAddon.FitAddon();
+  const webLinksAddon = window.WebLinksAddon ? new window.WebLinksAddon.WebLinksAddon(
+    (event, uri) => {
+      if (event.metaKey || event.ctrlKey) {
+        event.preventDefault();
+        onLinkClick?.(uri);
+      }
+    }
+  ) : null;
 
   terminal.loadAddon(fitAddon);
+  if (webLinksAddon) {
+    terminal.loadAddon(webLinksAddon);
+  }
+  
   terminal.open(mountNode);
   mountNode.dataset.terminalFontFamily = TERMINAL_PROFILE.fontFamily;
   fitAddon.fit();
@@ -110,6 +130,7 @@ export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, on
     panel,
     terminal,
     fitAddon,
+    webLinksAddon,
     resizeHandler: () => {
       fitAddon.fit();
       onResize(runtime);

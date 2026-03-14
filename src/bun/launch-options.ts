@@ -17,7 +17,7 @@ export function resolveLaunchOptions(
   argv: string[] = process.argv,
   env: Record<string, string | undefined> = process.env,
 ): LaunchOptions {
-  const clean = argv.includes("--clean") || isCleanEnvEnabled(env.PLEXI_CLEAN);
+  const clean = argv.includes("--clean") || isCleanEnvEnabled(env["PLEXI_CLEAN"]);
 
   return {
     clean,

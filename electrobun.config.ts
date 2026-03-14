@@ -21,9 +21,10 @@ function buildCopyMap() {
 		"src/mainview/assets/fonts/JetBrainsMono-SemiBold.otf": "views/mainview/assets/fonts/JetBrainsMono-SemiBold.otf",
 		"src/shared/workspace-state.js": "views/shared/workspace-state.js",
 		"src/shared/workspace-document.js": "views/shared/workspace-document.js",
-		"node_modules/xterm/lib/xterm.js": "views/mainview/vendor/xterm/xterm.js",
-		"node_modules/xterm/css/xterm.css": "views/mainview/vendor/xterm/xterm.css",
+		"node_modules/@xterm/xterm/lib/xterm.js": "views/mainview/vendor/xterm/xterm.js",
+		"node_modules/@xterm/xterm/css/xterm.css": "views/mainview/vendor/xterm/xterm.css",
 		"node_modules/@xterm/addon-fit/lib/addon-fit.js": "views/mainview/vendor/xterm/addon-fit.js",
+		"node_modules/@xterm/addon-web-links/lib/addon-web-links.js": "views/mainview/vendor/xterm/addon-web-links.js",
 		...Object.fromEntries(
 			NATIVE_COPY_TARGETS.map((source) => [source, `native/${filename(source)}`]),
 		),
