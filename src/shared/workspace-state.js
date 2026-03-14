@@ -129,6 +129,23 @@ const isOccupied = (panels, x, y, contextIndex, ignoreId = null) =>
       panel.y === y,
   );
 
+const compactRowColumnsLeft = (panels, anchorX = null) => {
+  if (panels.length === 0) {
+    return;
+  }
+
+  const minX = anchorX ?? getBounds(panels).minX;
+  const rows = [...new Set(panels.map((panel) => panel.y))].sort((a, b) => a - b);
+  rows.forEach((rowY) => {
+    const rowPanels = panels
+      .filter((panel) => panel.y === rowY)
+      .sort((left, right) => (left.x - right.x) || left.id.localeCompare(right.id));
+    rowPanels.forEach((panel, index) => {
+      panel.x = minX + index;
+    });
+  });
+};
+
 export const getNextOpenPosition = (state, origin, direction) => {
   const step =
     direction === DIRECTIONS.left
@@ -209,6 +226,10 @@ export const createPanelRecord = (
   state,
   { type = "terminal", direction = DIRECTIONS.right, cwd = null, cwdLabel = null } = {},
 ) => {
+  if (state.contexts.length === 0) {
+    createContextRecord(state, "");
+  }
+
   state.sequence += 1;
 
   const visiblePanels = getVisiblePanels(state);
@@ -218,7 +239,12 @@ export const createPanelRecord = (
     : { x: 0, y: 0 };
   const { x, y } = visiblePanels.length === 0
     ? { x: 0, y: 0 }
-    : getNextOpenPosition(state, origin, direction);
+    : direction === DIRECTIONS.down
+      ? (() => {
+        const bounds = getBounds(visiblePanels);
+        return { x: bounds.minX, y: bounds.maxY + 1 };
+      })()
+      : getNextOpenPosition(state, origin, direction);
   const id = `panel-${state.sequence}`;
 
   const panel = {
@@ -246,8 +272,13 @@ export const closePanelRecord = (state, panelId) => {
     return null;
   }
 
+  const contextPanelsBeforeClose = state.panels.filter((panel) => panel.contextIndex === state.panels[index].contextIndex);
+  const minXBeforeClose = getBounds(contextPanelsBeforeClose).minX;
   const [removed] = state.panels.splice(index, 1);
   forgetRowFocus(state, removed.id, removed.contextIndex);
+  const contextPanelsAfterClose = state.panels.filter((panel) => panel.contextIndex === removed.contextIndex);
+  compactRowColumnsLeft(contextPanelsAfterClose, minXBeforeClose);
+
   const visiblePanels = getVisiblePanels(state);
 
   if (visiblePanels.length === 0) {
@@ -259,8 +290,19 @@ export const closePanelRecord = (state, panelId) => {
     return removed;
   }
 
+  const rowPanels = contextPanelsAfterClose
+    .filter((panel) => panel.y === removed.y)
+    .sort((left, right) => (left.x - right.x) || left.id.localeCompare(right.id));
+  const shiftedPanel = rowPanels.find((panel) => panel.x === removed.x);
+  const sameRowFallback = rowPanels[rowPanels.length - 1] || null;
+  const rowBelow = contextPanelsAfterClose
+    .filter((panel) => panel.y > removed.y)
+    .sort((left, right) => (left.y - right.y) || (left.x - right.x) || left.id.localeCompare(right.id))[0] || null;
+  const rowAbove = contextPanelsAfterClose
+    .filter((panel) => panel.y < removed.y)
+    .sort((left, right) => (right.y - left.y) || (left.x - right.x) || left.id.localeCompare(right.id))[0] || null;
   const previousVisible = visiblePanels.find((panel) => panel.id === state.previousPanelId);
-  const fallback = previousVisible || visiblePanels[0];
+  const fallback = shiftedPanel || sameRowFallback || rowBelow || rowAbove || previousVisible || visiblePanels[0];
   state.activePanelId = fallback.id;
   if (state.activePanelIdsByContext) {
     state.activePanelIdsByContext[removed.contextIndex] = fallback.id;

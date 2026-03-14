@@ -27,6 +27,7 @@ const MENU_ACTION_TO_COMMAND = {
   "workspace:next-context": WORKSPACE_COMMANDS.nextContext,
   "workspace:previous-context": WORKSPACE_COMMANDS.previousContext,
   "workspace:show-shortcuts": WORKSPACE_COMMANDS.showShortcuts,
+  "workspace:edit-workspace-configuration": WORKSPACE_COMMANDS.editWorkspaceConfiguration,
 } as const;
 
 export function getWorkspaceCommandForMenuAction(action: string | undefined) {

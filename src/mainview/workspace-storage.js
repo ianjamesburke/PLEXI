@@ -1,9 +1,4 @@
-import {
-  DIRECTIONS,
-  createContextRecord,
-  createPanelRecord,
-  makeDefaultState,
-} from "../shared/workspace-state.js";
+import { createContextRecord, makeDefaultState } from "../shared/workspace-state.js";
 import { STORAGE_KEY } from "./app-constants.js";
 import {
   deserializeWorkspaceDocument,
@@ -14,18 +9,21 @@ import {
 
 export function bootDefaultState() {
   const nextState = makeDefaultState();
-  createContextRecord(nextState, "Main");
-  createPanelRecord(nextState, { direction: DIRECTIONS.right });
-  nextState.lastAction = "Workspace ready";
+  createContextRecord(nextState, "");
+  nextState.lastAction = "Ready";
   return nextState;
 }
 
 function parseStoredState(parsed) {
-  if (parsed?.workspace) {
-    return deserializeWorkspaceDocument(parsed);
+  const nextState = parsed?.workspace
+    ? deserializeWorkspaceDocument(parsed)
+    : migrateLegacyWorkspaceState(parsed);
+
+  if (nextState.contexts.length === 0) {
+    createContextRecord(nextState, "");
   }
 
-  return migrateLegacyWorkspaceState(parsed);
+  return nextState;
 }
 
 export function loadWorkspaceState() {

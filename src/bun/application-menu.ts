@@ -71,6 +71,8 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
       { type: "separator" },
       { label: "Next Context", action: "workspace:next-context" },
       { label: "Previous Context", action: "workspace:previous-context" },
+      { type: "separator" },
+      { label: "Edit Workspace Configuration…", action: "workspace:edit-workspace-configuration" },
     ],
   },
   {
