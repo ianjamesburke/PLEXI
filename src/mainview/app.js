@@ -35,12 +35,14 @@ import {
   saveWorkspaceState,
 } from "./workspace-storage.js";
 import {
+  adjustTerminalFontSize,
   createTerminalRuntime,
   ensureTerminalFont,
   ensureXtermAssets,
   getTerminalProfile,
   getXtermStatus,
   setXtermError,
+  getTerminalZoomStep,
 } from "./xterm-runtime.js";
 
 let terminalRuntime = null;
@@ -452,6 +454,11 @@ function renderContextModal() {
   }
 
   dom.contextModal.classList.toggle("is-hidden", !uiState.contextModalOpen);
+
+  const titleEl = dom.contextModal.querySelector("#context-modal-title");
+  if (titleEl) {
+    titleEl.textContent = uiState.contextRenameIndex !== null ? "Rename context" : "New context";
+  }
 }
 
 function openContextModal() {
@@ -474,17 +481,18 @@ function renameContext(index) {
     return;
   }
 
-  const currentLabel = formatContextLabel(state.contexts[index]?.label, index);
-  const newLabel = window.prompt("Rename context", currentLabel);
+  uiState.contextModalOpen = true;
+  uiState.contextRenameIndex = index;
+  renderContextModal();
 
-  if (newLabel === null || !newLabel.trim()) {
-    return;
+  if (dom.contextNameInput) {
+    dom.contextNameInput.value = state.contexts[index]?.label || "";
   }
 
-  renameContextRecord(state, index, newLabel.trim());
-  setLastAction(`Context renamed to ${newLabel.trim()}`);
-  saveState();
-  render();
+  window.requestAnimationFrame(() => {
+    dom.contextNameInput?.focus();
+    dom.contextNameInput?.select();
+  });
 }
 
 function closeContextModal() {
@@ -501,8 +509,14 @@ function submitContextModal() {
     return;
   }
 
-  createContextRecord(state, label);
-  setLastAction(`Context ${label} created`);
+  if (uiState.contextRenameIndex !== null) {
+    renameContextRecord(state, uiState.contextRenameIndex, label);
+    setLastAction(`Context renamed to ${label}`);
+  } else {
+    createContextRecord(state, label);
+    setLastAction(`Context ${label} created`);
+  }
+
   closeContextModal();
   saveState();
   render();
@@ -602,6 +616,8 @@ function handleShortcutKeydown(event) {
       save_workspace: WORKSPACE_COMMANDS.saveWorkspace,
       toggle_shortcuts: WORKSPACE_COMMANDS.toggleShortcuts,
       toggle_sidebar: WORKSPACE_COMMANDS.toggleSidebar,
+      zoom_in: WORKSPACE_COMMANDS.zoomIn,
+      zoom_out: WORKSPACE_COMMANDS.zoomOut,
     };
     const command = actionToCommand[match.action.name];
     if (command) {
@@ -641,6 +657,16 @@ function runCommand(command) {
     case WORKSPACE_COMMANDS.saveWorkspace:
       saveState();
       setLastAction("Workspace saved");
+      break;
+    case WORKSPACE_COMMANDS.zoomIn:
+      adjustTerminalFontSize(getTerminalZoomStep(), terminalRuntime);
+      setLastAction("Font size increased");
+      saveState();
+      break;
+    case WORKSPACE_COMMANDS.zoomOut:
+      adjustTerminalFontSize(-getTerminalZoomStep(), terminalRuntime);
+      setLastAction("Font size decreased");
+      saveState();
       break;
     case WORKSPACE_COMMANDS.focusLeft:
       handleDirectionalFocus(DIRECTIONS.left);
