@@ -56,6 +56,7 @@ export function serializeWorkspaceDocument(state) {
       sequence: coerceNumber(state.sequence, 0),
       activeContextIndex: coerceNumber(state.activeContextIndex, 0),
       sidebarVisible: state.sidebarVisible !== false,
+      minimapVisible: state.minimapVisible !== false,
       camera: {
         x: coerceNumber(state.camera?.x, 0),
         y: coerceNumber(state.camera?.y, 0),
@@ -123,6 +124,7 @@ export function deserializeWorkspaceDocument(document) {
     zoom: coerceNumber(workspace.camera?.zoom, 1),
   };
   nextState.sidebarVisible = workspace.sidebarVisible !== false;
+  nextState.minimapVisible = workspace.minimapVisible !== false;
   nextState.shortcutsVisible = false;
   nextState.mode = "focus";
   nextState.lastAction = "Workspace restored";
@@ -177,6 +179,7 @@ export function migrateLegacyWorkspaceState(parsed) {
     zoom: coerceNumber(parsed?.camera?.zoom, 1),
   };
   nextState.sidebarVisible = parsed?.sidebarVisible !== false;
+  nextState.minimapVisible = parsed?.minimapVisible !== false;
   nextState.shortcutsVisible = false;
   nextState.mode = "focus";
   nextState.lastAction = "Workspace restored";

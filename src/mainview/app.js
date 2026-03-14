@@ -668,6 +668,7 @@ function handleShortcutKeydown(event) {
       new_terminal_down: WORKSPACE_COMMANDS.newTerminalDown,
       new_terminal_right: WORKSPACE_COMMANDS.newTerminalRight,
       save_workspace: WORKSPACE_COMMANDS.saveWorkspace,
+      toggle_minimap: WORKSPACE_COMMANDS.toggleMinimap,
       toggle_shortcuts: WORKSPACE_COMMANDS.toggleShortcuts,
       toggle_sidebar: WORKSPACE_COMMANDS.toggleSidebar,
       zoom_in: WORKSPACE_COMMANDS.zoomIn,
@@ -703,6 +704,10 @@ function runCommand(command) {
     case WORKSPACE_COMMANDS.toggleSidebar:
       state.sidebarVisible = !state.sidebarVisible;
       setLastAction(state.sidebarVisible ? "Sidebar shown" : "Sidebar hidden");
+      break;
+    case WORKSPACE_COMMANDS.toggleMinimap:
+      state.minimapVisible = !state.minimapVisible;
+      setLastAction(state.minimapVisible ? "Map shown" : "Map hidden");
       break;
     case WORKSPACE_COMMANDS.toggleShortcuts:
     case WORKSPACE_COMMANDS.showShortcuts:
@@ -810,27 +815,19 @@ function renderContextButtons() {
   dom.contextList.replaceChildren(...rows);
 }
 
-function renderMinimap(visiblePanels, activePanel) {
-  dom.minimap.classList.toggle("is-hidden", visiblePanels.length === 0);
-  dom.minimapSize.textContent = `${visiblePanels.length} terminal${visiblePanels.length === 1 ? "" : "s"}`;
-
-  if (visiblePanels.length === 0) {
-    clearNode(dom.minimapGrid);
-    return;
-  }
-
+function buildMinimapNodes(visiblePanels, activePanel, gridElement, maxHeight) {
   const bounds = getBounds(visiblePanels);
-  const width = dom.minimapGrid.clientWidth || 228;
+  const width = gridElement.clientWidth || 228;
   const spanX = Math.max(bounds.width + 1, 1);
   const spanY = Math.max(bounds.height + 1, 1);
   const gutter = 10;
   const nodeSize = 18;
   const cellWidth = Math.max(nodeSize + 4, Math.min(nodeSize + 12, Math.floor((width - gutter * 2) / spanX)));
-  const cellHeight = Math.max(nodeSize + 2, Math.min(nodeSize + 8, Math.floor(148 / spanY)));
-  const gridHeight = Math.max(88, Math.min(176, spanY * cellHeight + gutter * 2));
-  dom.minimapGrid.style.height = `${gridHeight}px`;
+  const cellHeight = Math.max(nodeSize + 2, Math.min(nodeSize + 8, Math.floor(maxHeight / spanY)));
+  const gridHeight = Math.max(88, Math.min(maxHeight + 28, spanY * cellHeight + gutter * 2));
+  gridElement.style.height = `${gridHeight}px`;
 
-  const nodes = visiblePanels.map((panel) => {
+  return visiblePanels.map((panel) => {
     const left = (panel.x - bounds.minX) * cellWidth + gutter;
     const top = (panel.y - bounds.minY) * cellHeight + gutter;
     const node = document.createElement("button");
@@ -843,8 +840,31 @@ function renderMinimap(visiblePanels, activePanel) {
     node.setAttribute("aria-label", panel.title);
     return node;
   });
+}
 
-  dom.minimapGrid.replaceChildren(...nodes);
+function renderMinimap(visiblePanels, activePanel) {
+  const hasVisiblePanels = visiblePanels.length > 0;
+  const shouldShowOverlayMinimap = state.minimapVisible !== false && hasVisiblePanels;
+  dom.minimap.classList.toggle("is-hidden", !hasVisiblePanels);
+  dom.overlayMinimap.classList.toggle("is-hidden", !shouldShowOverlayMinimap);
+  dom.minimapSize.textContent = `${visiblePanels.length} terminal${visiblePanels.length === 1 ? "" : "s"}`;
+
+  if (!hasVisiblePanels) {
+    clearNode(dom.minimapGrid);
+    clearNode(dom.overlayMinimapGrid);
+    return;
+  }
+
+  const sidebarNodes = buildMinimapNodes(visiblePanels, activePanel, dom.minimapGrid, 148);
+  dom.minimapGrid.replaceChildren(...sidebarNodes);
+
+  if (!shouldShowOverlayMinimap) {
+    clearNode(dom.overlayMinimapGrid);
+    return;
+  }
+
+  const overlayNodes = buildMinimapNodes(visiblePanels, activePanel, dom.overlayMinimapGrid, 120);
+  dom.overlayMinimapGrid.replaceChildren(...overlayNodes);
 }
 
 function hasOpenAdjacentSpace(panel, direction) {

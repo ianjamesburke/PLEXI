@@ -84,7 +84,7 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 284px minmax(0, 1fr);
+  grid-template-columns: clamp(236px, 26vw, 284px) minmax(0, 1fr);
   width: 100%;
   min-height: var(--app-height);
   height: var(--app-height);
@@ -616,10 +616,33 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   box-shadow: none;
 }
 
+.minimap--overlay {
+  position: absolute;
+  right: 28px;
+  top: 28px;
+  z-index: 2;
+  width: min(240px, calc(100% - 36px));
+  background: oklch(16% 0.012 60 / 0.28);
+  backdrop-filter: blur(4px);
+  opacity: 0.42;
+  transition: opacity 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+.minimap--overlay:hover {
+  opacity: 0.96;
+  background: oklch(16% 0.012 60 / 0.86);
+  border-color: oklch(46% 0.03 240 / 0.9);
+}
+
 .minimap-grid {
   position: relative;
   min-height: 48px;
   padding: 8px;
+}
+
+.minimap-grid--overlay {
+  min-height: 72px;
+  padding: 10px;
 }
 
 .minimap-node {
@@ -663,19 +686,27 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   text-align: right;
 }
 
+.minimap--overlay .minimap-node {
+  background: oklch(78% 0.01 60 / 0.28);
+}
+
+.minimap--overlay .minimap-node.is-active {
+  background: oklch(70% 0.08 240 / 0.48);
+}
+
 .sidebar {
   scrollbar-width: thin;
   scrollbar-color: rgba(216, 221, 227, 0.32) transparent;
 }
 
 .sidebar::-webkit-scrollbar {
-  width: 10px;
+  width: 6px;
 }
 
 .sidebar::-webkit-scrollbar-thumb {
   background: rgba(216, 221, 227, 0.28);
-  border: 2px solid transparent;
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
   background-clip: padding-box;
 }
 
@@ -688,14 +719,25 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   scrollbar-color: rgba(216, 221, 227, 0.32) transparent;
 }
 
+.xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical {
+  width: 6px !important;
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical > .slider {
+  width: 6px !important;
+  right: 0 !important;
+  border-radius: 5px;
+  background: rgba(216, 221, 227, 0.28) !important;
+}
+
 .xterm .xterm-viewport::-webkit-scrollbar {
-  width: 10px;
+  width: 6px;
 }
 
 .xterm .xterm-viewport::-webkit-scrollbar-thumb {
   background: rgba(216, 221, 227, 0.28);
-  border: 2px solid transparent;
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
   background-clip: padding-box;
 }
 
@@ -789,48 +831,30 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 @media (max-width: 1120px) {
+  .workspace-toolbar {
+    align-items: flex-start;
+  }
+
+  .app-shell {
+    grid-template-columns: clamp(212px, 24vw, 248px) minmax(0, 1fr);
+  }
+
+  .toolbar-primary {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .toolbar-process {
+    display: none;
+  }
+
   .toolbar-meta {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
 }
 
-@media (max-height: 760px) {
-  .sidebar-header,
-  .sidebar-section,
-  .workspace-toolbar {
-    padding-top: 9px;
-    padding-bottom: 9px;
-  }
-
-  .sidebar-section {
-    gap: 6px;
-  }
-
-  .action-stack {
-    gap: 4px;
-  }
-
-  .minimap-grid {
-    min-height: 64px;
-  }
-}
-
-@media (max-width: 900px) {
-  .app-shell {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .app-shell--sidebar-hidden {
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .sidebar {
-    border-right: none;
-    border-bottom: 1px solid var(--border-shell);
-  }
-
+@media (max-width: 1040px) {
   .minimap-grid {
     min-height: 76px;
   }
@@ -860,6 +884,47 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
     display: none;
   }
 
+  .toolbar-path {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 192px minmax(0, 1fr);
+  }
+
+  .sidebar-header,
+  .sidebar-section,
+  .workspace-toolbar {
+    padding-inline: 12px;
+  }
+
+  .workspace-toolbar {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+
+  .toolbar-primary,
+  .toolbar-meta {
+    width: 100%;
+  }
+
+  .toolbar-meta {
+    justify-content: flex-start;
+  }
+
+  .context-item {
+    padding-right: 28px;
+  }
+
+  .section-title,
+  .section-meta,
+  .context-item,
+  .toolbar-button {
+    font-size: 0.72rem;
+  }
+
   .focus-ghost-slot--right {
     top: 20px;
     right: 20px;
@@ -872,6 +937,14 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 @media (max-width: 720px) {
+  .app-shell {
+    grid-template-columns: 176px minmax(0, 1fr);
+  }
+
+  .sidebar-section--map {
+    display: none;
+  }
+
   .empty-ghost-grid {
     grid-template-columns: repeat(2, 1fr);
     grid-template-rows: repeat(2, 140px);

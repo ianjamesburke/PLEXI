@@ -17,6 +17,8 @@ export const dom = {
   minimap: byId("minimap"),
   minimapGrid: byId("minimap-grid"),
   minimapSize: byId("minimap-size"),
+  overlayMinimap: byId("minimap-overlay"),
+  overlayMinimapGrid: byId("minimap-overlay-grid"),
   shortcutsOverlay: byId("shortcuts-overlay"),
   contextList: byId("context-list"),
   newContextButton: byId("new-context"),

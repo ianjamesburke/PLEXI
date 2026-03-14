@@ -7,6 +7,7 @@ const MENU_ACTION_TO_COMMAND = {
   "workspace:close-terminal": WORKSPACE_COMMANDS.closeTerminal,
   "workspace:save": WORKSPACE_COMMANDS.saveWorkspace,
   "workspace:toggle-sidebar": WORKSPACE_COMMANDS.toggleSidebar,
+  "workspace:toggle-minimap": WORKSPACE_COMMANDS.toggleMinimap,
   "workspace:zoom-in": WORKSPACE_COMMANDS.zoomIn,
   "workspace:zoom-out": WORKSPACE_COMMANDS.zoomOut,
   "workspace:focus-right": WORKSPACE_COMMANDS.focusRight,

@@ -26,6 +26,9 @@
         "sidebarVisible": {
           "type": "boolean"
         },
+        "minimapVisible": {
+          "type": "boolean"
+        },
         "camera": {
           "type": "object",
           "required": ["x", "y", "zoom"],

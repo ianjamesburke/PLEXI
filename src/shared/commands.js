@@ -4,6 +4,7 @@ export const WORKSPACE_COMMANDS = {
   closeTerminal: "close-terminal",
   saveWorkspace: "save-workspace",
   toggleSidebar: "toggle-sidebar",
+  toggleMinimap: "toggle-minimap",
   toggleShortcuts: "toggle-shortcuts",
   zoomIn: "zoom-in",
   zoomOut: "zoom-out",

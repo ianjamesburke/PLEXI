@@ -62,10 +62,17 @@ describe("resolveTerminalKeybind", () => {
 describe("resolveKeybind", () => {
   test("normalizes punctuation and arrow keys from KeyboardEvent.code", () => {
     const bindings = compileKeybinds([
+      "ctrl+m=toggle_minimap",
       "ctrl+/=toggle_shortcuts",
       "ctrl+left=focus_left",
       "ctrl+equal=zoom_in",
     ]);
+
+    expect(resolveKeybind(createEvent({
+      key: "m",
+      code: "KeyM",
+      ctrlKey: true,
+    }), bindings)?.action.name).toBe("toggle_minimap");
 
     expect(resolveKeybind(createEvent({
       key: "/",
