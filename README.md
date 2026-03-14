@@ -12,11 +12,29 @@ Built with **Electrobun** (Bun + WebView) and **xterm.js** (for now).
 
 ---
 
-## Currently Working
+## Quick Start
 
-Right now, I'm just focused on getting a functional frontend window manager working:
+1. **New pane right** — `Cmd+N` / **New pane below** — `Cmd+Shift+N`
+2. **Navigate panes** — `Cmd+Arrow` or `Cmd+H/J/K/L`
+3. **Switch contexts** — `Cmd+1`, `Cmd+2`, etc.
 
-...
+Your layout and working directories are saved automatically to local storage — pick up where you left off.
+
+---
+
+## The Present
+
+*   **Infinite 2D canvas** — terminals arranged on a spatial grid, navigable with arrow keys or vim-style `h/j/k/l`
+*   **Contexts** — named workspaces to separate projects; switch between them with `Cmd+1–9`, rename or delete on the fly
+*   **Sidebar & minimap** — visual overview of your layout; click nodes to jump to a terminal
+*   **Overlay minimap** — toggleable full-canvas map (`Cmd+M`)
+*   **Terminal management** — open new terminals to the right (`Cmd+N`) or below (`Cmd+Shift+N`), close with `Cmd+W`
+*   **Workspace persistence** — layout, context, and working directories saved locally
+*   **Copy/paste** — selection-aware clipboard support
+*   **Font zoom** — `Cmd++/−` to adjust terminal font size
+*   **Keyboard reference** — `Cmd+/` to show all shortcuts
+*   **Ghost slot hints** — empty adjacent slots show shortcut hints when the canvas is sparse
+*   **Status toolbar** — shows current context, working directory, and active process name
 
 ## The Future
 
@@ -27,6 +45,7 @@ Once the basic canvas feels good, the plan is to build the backend daemon featur
 *   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas alongside your terminals.
 *   **Advanced Multiplexing**: SSH auto-connect, connection pooling, and visual routing lines showing relationships between nodes.
 *   **Ergonomics**: Vi-style copy mode and scrollback buffers.
+*   **Pane Management**: Considering tmux-style split pane management within a single canvas node.
 
 ---
 
