@@ -331,13 +331,6 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   min-width: 0;
 }
 
-.toolbar-title {
-  margin: 0;
-  font-size: 1.02rem;
-  font-weight: 400;
-  letter-spacing: -0.02em;
-}
-
 .toolbar-context {
   color: var(--text-secondary);
   font-size: 0.79rem;
@@ -354,7 +347,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   white-space: nowrap;
 }
 
-.toolbar-position {
+.toolbar-process {
   color: var(--text-tertiary, var(--text-secondary));
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -763,7 +756,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 .modal-shell.is-hidden,
 .toolbar-pill.is-hidden,
 .toolbar-path.is-hidden,
-.toolbar-position.is-hidden,
+.toolbar-process.is-hidden,
 .workspace-json-shell.is-hidden {
   display: none;
 }

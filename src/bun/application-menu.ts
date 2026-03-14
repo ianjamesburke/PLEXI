@@ -21,7 +21,6 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
       { label: "Close Window", role: "close" },
       { type: "separator" },
       { label: "Save Workspace", action: "workspace:save", accelerator: "s" },
-      { label: "Reset Viewport", action: "workspace:reset-viewport", accelerator: "0" },
       { type: "separator" },
       { label: "Quit Plexi", role: "quit" },
     ],
@@ -42,7 +41,6 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
     label: "View",
     submenu: [
       { label: "Toggle Sidebar", action: "workspace:toggle-sidebar", accelerator: "b" },
-      { label: "Toggle Overview", action: "workspace:toggle-overview", accelerator: "o" },
       { label: "Keyboard Reference", action: "workspace:show-shortcuts", accelerator: "/" },
       { type: "separator" },
       { label: "Zoom In", action: "workspace:zoom-in", accelerator: "=" },
@@ -71,8 +69,6 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
       { type: "separator" },
       { label: "Next Context", action: "workspace:next-context" },
       { label: "Previous Context", action: "workspace:previous-context" },
-      { type: "separator" },
-      { label: "Edit Workspace Configuration…", action: "workspace:edit-workspace-configuration" },
     ],
   },
   {
