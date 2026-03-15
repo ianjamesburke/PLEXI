@@ -48,6 +48,9 @@
                     <span class="toolbar-process" id="focus-process"></span>
                 </div>
                 <div class="toolbar-meta">
+                    <button class="toolbar-button toolbar-button--ghost" data-command="jump-back" type="button">Back</button>
+                    <button class="toolbar-button toolbar-button--ghost" data-command="new-node-right" type="button">Node→</button>
+                    <button class="toolbar-button toolbar-button--ghost" data-command="new-node-down" type="button">Node↓</button>
                     <button class="toolbar-button" data-command="toggle-shortcuts" type="button">Keys</button>
                 </div>
             </header>
@@ -55,8 +58,10 @@
             <section class="canvas-wrapper">
                 <div class="canvas" id="stage">
                     <section class="focus-shell" id="focus-shell">
-                        <div class="terminal-frame">
-                            <div class="terminal-mount" id="terminal-mount" aria-label="Active terminal"></div>
+                        <div class="focus-node-grid" id="focus-node-grid">
+                            <div class="terminal-frame">
+                                <div class="terminal-mount" id="terminal-mount" aria-label="Active terminal"></div>
+                            </div>
                         </div>
                         <aside class="focus-ghost-slot focus-ghost-slot--right is-hidden" id="focus-right-slot">
                             <p class="focus-ghost-shortcut">⌘+N</p>
@@ -127,6 +132,11 @@
             <input class="text-input" id="context-name-input" name="context-name" type="text" maxlength="64" autocomplete="off" required>
             <div class="modal-actions">
                 <button class="toolbar-button toolbar-button--danger is-hidden" id="context-delete" type="button">Delete</button>
+                <div class="modal-actions-left">
+                    <button class="toolbar-button toolbar-button--ghost is-hidden" id="context-pin" type="button">Pin</button>
+                    <button class="toolbar-button toolbar-button--ghost is-hidden" id="context-move-up" type="button">Move up</button>
+                    <button class="toolbar-button toolbar-button--ghost is-hidden" id="context-move-down" type="button">Move down</button>
+                </div>
                 <div class="modal-actions-right">
                     <button class="toolbar-button toolbar-button--ghost" id="context-close" type="button">Dismiss</button>
                     <button class="toolbar-button" id="context-submit" type="submit">Save context</button>

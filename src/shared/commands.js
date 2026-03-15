@@ -1,8 +1,11 @@
 export const WORKSPACE_COMMANDS = {
   newTerminalRight: "new-terminal-right",
   newTerminalDown: "new-terminal-down",
+  newNodeRight: "new-node-right",
+  newNodeDown: "new-node-down",
   closeTerminal: "close-terminal",
   saveWorkspace: "save-workspace",
+  jumpBack: "jump-back",
   toggleSidebar: "toggle-sidebar",
   toggleMinimap: "toggle-minimap",
   toggleShortcuts: "toggle-shortcuts",

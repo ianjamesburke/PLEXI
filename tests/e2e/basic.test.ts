@@ -1,39 +1,60 @@
 import { expect, test } from "@playwright/test";
 
-test("keyboard layout flow keeps down-splits left and compacts rows on close", async ({ page }) => {
+test("split groups stay inside one top-level node and collapse cleanly on close", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.goto("http://127.0.0.1:4173/build/dev-macos-arm64/plexi-dev.app/Contents/Resources/app/views/mainview/index.html");
   await page.evaluate(() => window.__PLEXI_DEBUG__.reset());
 
-  await page.keyboard.press("Control+N"); // Terminal 1 at (0, 0)
-  await page.keyboard.press("Control+N"); // Terminal 2 at (1, 0)
-  await page.keyboard.press("Control+N"); // Terminal 3 at (2, 0)
-  await page.keyboard.press("Control+Shift+N"); // Terminal 4 should be at (0, 1)
+  await page.keyboard.press("Control+N");
+  await page.keyboard.press("Control+N");
+  await page.keyboard.press("Control+Shift+N");
 
   const getActivePanelId = () => page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId);
-  expect(await getActivePanelId()).toBe("panel-4");
-  
+  expect(await getActivePanelId()).toBe("panel-3");
 
-  await page.keyboard.press("Control+ArrowUp"); // back to row 0 (remembered: Terminal 3)
-  await page.keyboard.press("Control+ArrowLeft"); // Terminal 2
-  await page.keyboard.press("Control+ArrowLeft"); // Terminal 1
+  const topology = await page.evaluate(() => {
+    const state = window.__PLEXI_DEBUG__.getState();
+    return {
+      nodes: (state.nodes || []).length,
+      panes: (state.panels || []).map((panel) => ({
+        id: panel.id,
+        nodeId: panel.nodeId,
+        splitX: panel.splitX,
+        splitY: panel.splitY,
+      })),
+    };
+  });
+
+  expect(topology.nodes).toBe(1);
+  expect(topology.panes).toEqual([
+    { id: "panel-1", nodeId: "node-1", splitX: 0, splitY: 0 },
+    { id: "panel-2", nodeId: "node-1", splitX: 1, splitY: 0 },
+    { id: "panel-3", nodeId: "node-1", splitX: 1, splitY: 1 },
+  ]);
+
+  await expect(page.locator(".terminal-frame--split")).toHaveCount(3);
+  await expect(page.locator("#minimap-grid .minimap-node")).toHaveCount(1);
+  await expect(page.locator("#minimap-grid .minimap-node-count")).toHaveText("3");
+
+  await page.keyboard.press("Control+ArrowUp");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
+
+  await page.keyboard.press("Control+ArrowLeft");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-1");
 
-  await page.keyboard.press("Control+W"); // close Terminal 1, row should compact left
+  await page.keyboard.press("Control+W");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
-  
 
   const panelPositions = await page.evaluate(() => {
     const state = window.__PLEXI_DEBUG__.getState();
     return state.panels
-      .map((panel) => ({ title: panel.title, x: panel.x, y: panel.y }))
+      .map((panel) => ({ title: panel.title, splitX: panel.splitX, splitY: panel.splitY }))
       .sort((a, b) => a.title.localeCompare(b.title));
   });
 
   expect(panelPositions).toEqual([
-    { title: "Terminal 2", x: 0, y: 0 },
-    { title: "Terminal 3", x: 1, y: 0 },
-    { title: "Terminal 4", x: 0, y: 1 },
+    { title: "Terminal 2", splitX: 0, splitY: 0 },
+    { title: "Terminal 3", splitX: 0, splitY: 1 },
   ]);
 });
 
@@ -138,13 +159,30 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#terminal-mount")).toContainText("split-right");
 
   await page.keyboard.press("Control+Shift+N");
-  await expect(page.locator("#toast-layer")).toContainText("Terminal 2 created below");
+  await expect(page.locator("#toast-layer")).toContainText("Terminal 2 split below");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
   
 
   await page.keyboard.press("Control+N");
-  await expect(page.locator("#toast-layer")).toContainText("Terminal 3 created to the right");
+  await expect(page.locator("#toast-layer")).toContainText("Terminal 3 split right");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-3");
+  await expect(page.locator(".terminal-frame--split")).toHaveCount(3);
+  await expect(page.locator(".pane-preview")).toHaveCount(2);
+  await page.locator('[data-command="new-node-right"]').click();
+  await expect(page.locator("#toast-layer")).toContainText("Terminal 4 opened in a node to the right");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
+  expect(await page.evaluate(() => (window.__PLEXI_DEBUG__.getState().nodes || []).length)).toBe(2);
+
+  await page.keyboard.press("Control+ArrowLeft");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-3");
+
+  await page.locator("#minimap-grid .minimap-node").nth(1).click();
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
+
+  await page.keyboard.press("Control+S");
+  await page.reload();
+  expect(await page.evaluate(() => (window.__PLEXI_DEBUG__.getState().nodes || []).length)).toBe(2);
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
   
 
   await page.locator('[data-rename-context-index="0"]').click();
@@ -152,6 +190,10 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await page.locator("#context-name-input").fill("Project Alpha");
   await page.locator("#context-form").evaluate((form) => form.requestSubmit());
   await expect(page.locator("#toolbar-context")).toHaveText("Project Alpha");
+  await page.locator('[data-rename-context-index="0"]').click();
+  await page.locator("#context-pin").click();
+  await expect(page.locator("#context-list")).toContainText("★ Project Alpha");
+  await page.locator("#context-close").click();
 
   await page.locator("#new-context").click();
   await expect(page.locator("#context-modal")).toBeVisible();
@@ -167,7 +209,7 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
 
   await page.keyboard.press("Control+1");
   await expect(page.locator("#toolbar-context")).toHaveText("Project Alpha");
-  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-3");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
 
   await page.locator('[data-rename-context-index="1"]').click();
   await expect(page.locator("#context-modal")).toBeVisible();
@@ -216,9 +258,10 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   expect(viewportFit.toastBottom).toBeLessThanOrEqual(viewportFit.viewportHeight + viewportTolerance);
 
   await page.keyboard.press("Control+W");
-  await expect(page.locator("#toast-layer")).toContainText("Terminal 3 closed");
-  await expect(page.locator("#minimap-size")).toHaveText("2 terminals");
+  await expect(page.locator("#toast-layer")).toContainText("Terminal 4 closed");
+  await expect(page.locator("#minimap-size")).toHaveText("1 node · 3 panes");
 
+  await page.keyboard.press("Control+W");
   await page.keyboard.press("Control+W");
   await page.keyboard.press("Control+W");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBeNull();
