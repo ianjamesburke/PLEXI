@@ -287,7 +287,7 @@ async function copySelection(runtime) {
   }
 
   try {
-    await navigator.clipboard.writeText(selection);
+    await sessionBridge.writeClipboardText(selection);
     setLastAction("Selection copied");
   } catch (_error) {
     setLastAction("Clipboard copy failed");
@@ -299,7 +299,7 @@ async function copySelection(runtime) {
 
 async function pasteClipboard(runtime) {
   try {
-    const text = await navigator.clipboard.readText();
+    const text = await sessionBridge.readClipboardText();
 
     if (!text) {
       return;

@@ -1,4 +1,4 @@
-import { ASSET_CANDIDATES, TERMINAL_PROFILE } from "./app-constants.js";
+import { ASSET_CANDIDATES, TERMINAL_PROFILE, isMacOS } from "./app-constants.js";
 
 let xtermStatus = "loading";
 let terminalFontReady = null;
@@ -106,6 +106,7 @@ export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, on
   const terminal = new window.Terminal({
     ...TERMINAL_PROFILE,
     fontSize: terminalFontSize,
+    macOptionIsMeta: isMacOS,
   });
   const fitAddon = new window.FitAddon.FitAddon();
   const webLinksAddon = window.WebLinksAddon ? new window.WebLinksAddon.WebLinksAddon(
@@ -141,7 +142,20 @@ export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, on
     },
   };
 
-  terminal.attachCustomKeyEventHandler((event) => onShortcut(event, runtime));
+  terminal.attachCustomKeyEventHandler((event) => {
+    if (onShortcut(event, runtime) === false) {
+      return false;
+    }
+
+    const nativeInput = resolveNativeTerminalInput(event);
+    if (!nativeInput) {
+      return true;
+    }
+
+    event.preventDefault();
+    onData(runtime, nativeInput);
+    return false;
+  });
   terminal.onData((rawData) => {
     onData(runtime, rawData);
   });
@@ -180,4 +194,44 @@ export function adjustTerminalFontSize(delta, runtime = null) {
 
 export function getTerminalZoomStep() {
   return TERMINAL_FONT_STEP;
+}
+
+export function resolveNativeTerminalInput(event) {
+  if (!isMacOS || event.type !== "keydown" || event.defaultPrevented || event.ctrlKey) {
+    return null;
+  }
+
+  if (event.metaKey && !event.altKey && !event.shiftKey) {
+    if (event.key === "ArrowLeft" || event.key === "Home") {
+      return "\u0001";
+    }
+
+    if (event.key === "ArrowRight" || event.key === "End") {
+      return "\u0005";
+    }
+
+    if (event.key === "Backspace" || event.key === "Delete") {
+      return "\u0015";
+    }
+  }
+
+  if (event.altKey && !event.metaKey && !event.shiftKey) {
+    if (event.key === "ArrowLeft") {
+      return "\u001bb";
+    }
+
+    if (event.key === "ArrowRight") {
+      return "\u001bf";
+    }
+
+    if (event.key === "Backspace") {
+      return "\u001b\u007f";
+    }
+
+    if (event.key === "Delete") {
+      return "\u001bd";
+    }
+  }
+
+  return null;
 }

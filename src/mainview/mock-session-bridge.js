@@ -114,6 +114,7 @@ function executeMockCommand(session, command, handlers) {
 
 export function createMockSessionBridge(handlers = {}) {
   const sessions = new Map();
+  let clipboardText = "";
 
   return {
     mode: "mock",
@@ -229,9 +230,16 @@ export function createMockSessionBridge(handlers = {}) {
     async openExternalUrl(_url) {
       return true;
     },
+    async readClipboardText() {
+      return clipboardText;
+    },
+    async writeClipboardText(text) {
+      clipboardText = typeof text === "string" ? text : "";
+    },
     async quitApplication() {},
     async reset() {
       sessions.clear();
+      clipboardText = "";
     },
   };
 }
