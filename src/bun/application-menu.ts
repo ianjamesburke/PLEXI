@@ -21,8 +21,6 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
       { label: "Close Window", role: "close" },
       { type: "separator" },
       { label: "Save Workspace", action: "workspace:save", accelerator: "s" },
-      { type: "separator" },
-      { label: "Quit Plexi", role: "quit" },
     ],
   },
   {

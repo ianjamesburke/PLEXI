@@ -667,6 +667,7 @@ function handleShortcutKeydown(event) {
       focus_up: WORKSPACE_COMMANDS.focusUp,
       new_terminal_down: WORKSPACE_COMMANDS.newTerminalDown,
       new_terminal_right: WORKSPACE_COMMANDS.newTerminalRight,
+      quit_application: "quit-application",
       save_workspace: WORKSPACE_COMMANDS.saveWorkspace,
       toggle_minimap: WORKSPACE_COMMANDS.toggleMinimap,
       toggle_shortcuts: WORKSPACE_COMMANDS.toggleShortcuts,
@@ -685,6 +686,11 @@ function handleShortcutKeydown(event) {
 }
 
 function runCommand(command) {
+  if (command === "quit-application") {
+    void sessionBridge.quitApplication?.();
+    return;
+  }
+
   if (!isWorkspaceCommand(command)) {
     return;
   }

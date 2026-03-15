@@ -61,6 +61,9 @@ function createLiveSessionBridge(handlers) {
     openExternalUrl(url) {
       return rpc.requestProxy.openExternalUrl({ url });
     },
+    quitApplication() {
+      return rpc.requestProxy.quitApplication();
+    },
     async reset() {},
   };
 }
