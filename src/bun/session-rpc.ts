@@ -54,6 +54,12 @@ export function createSessionRpc(sessionManager: LocalSessionManager, workspaceS
     openExternalUrl(params) {
       return Utils.openExternal(params.url);
     },
+    readClipboardText() {
+      return Utils.clipboardReadText();
+    },
+    writeClipboardText(params) {
+      Utils.clipboardWriteText(params.text);
+    },
     quitApplication() {
       sessionManager.closeAllSessions();
       Utils.quit();

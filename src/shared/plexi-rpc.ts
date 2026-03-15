@@ -97,6 +97,14 @@ export type PlexiRPCSchema = ElectrobunRPCSchema & {
         params: { url: string };
         response: boolean;
       };
+      readClipboardText: {
+        params: void;
+        response: string | null;
+      };
+      writeClipboardText: {
+        params: { text: string };
+        response: void;
+      };
       quitApplication: {
         params: void;
         response: void;
