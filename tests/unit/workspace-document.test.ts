@@ -24,6 +24,9 @@ describe("workspace document", () => {
     const document = serializeWorkspaceDocument(state);
 
     expect(document.workspace.contexts).toHaveLength(2);
+    expect(document.version).toBe(2);
+    expect(document.workspace.contexts[0]?.pinned).toBe(false);
+    expect(document.workspace.contexts[0]?.nodes[0]?.type).toBe("single");
     expect(document.workspace.contexts[0]?.panels[0]?.cwdLabel).toBe("~/project-a");
     expect(document.workspace.contexts[1]?.label).toBe("Infra");
     expect(document.workspace.minimapVisible).toBe(true);
@@ -31,7 +34,7 @@ describe("workspace document", () => {
 
   test("restores app state from a workspace document", () => {
     const restored = deserializeWorkspaceDocument({
-      version: 1,
+      version: 2,
       workspace: {
         title: "Plexi Workspace",
         sequence: 3,
@@ -43,7 +46,27 @@ describe("workspace document", () => {
           {
             id: "main",
             label: "Main",
+            pinned: true,
+            activeNodeId: "node-1",
             activePanelId: "panel-1",
+            nodes: [
+              {
+                id: "node-1",
+                type: "single",
+                x: 0,
+                y: 0,
+                activePaneId: "panel-1",
+                panes: [
+                  {
+                    id: "panel-1",
+                    type: "terminal",
+                    title: "Terminal 1",
+                    cwd: "/tmp/project-a",
+                    cwdLabel: "~/project-a",
+                  },
+                ],
+              },
+            ],
             panels: [
               {
                 id: "panel-1",
@@ -76,6 +99,8 @@ describe("workspace document", () => {
 
     expect(restored.contexts).toHaveLength(2);
     expect(restored.activeContextIndex).toBe(1);
+    expect(restored.contexts[0]?.pinned).toBe(true);
+    expect(restored.nodes[0]?.id).toBe("node-1");
     expect(restored.panels[0]?.cwdLabel).toBe("~/project-a");
     expect(restored.camera.zoom).toBe(1.2);
     expect(restored.minimapVisible).toBe(false);

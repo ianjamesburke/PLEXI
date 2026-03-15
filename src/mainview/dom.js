@@ -11,6 +11,7 @@ export const dom = {
   sidebar: byId("sidebar"),
   stage: byId("stage"),
   focusShell: byId("focus-shell"),
+  focusNodeGrid: byId("focus-node-grid"),
   terminalFrame: byClass("terminal-frame"),
   emptyShell: byId("empty-shell"),
   terminalMount: byId("terminal-mount"),
@@ -34,4 +35,7 @@ export const dom = {
   contextCancelButton: byId("context-cancel"),
   contextCloseButton: byId("context-close"),
   contextDeleteButton: byId("context-delete"),
+  contextPinButton: byId("context-pin"),
+  contextMoveUpButton: byId("context-move-up"),
+  contextMoveDownButton: byId("context-move-down"),
 };

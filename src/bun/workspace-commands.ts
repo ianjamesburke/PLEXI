@@ -4,7 +4,10 @@ import { WORKSPACE_COMMANDS, isWorkspaceCommand } from "../shared/commands.js";
 const MENU_ACTION_TO_COMMAND = {
   "workspace:new-terminal-right": WORKSPACE_COMMANDS.newTerminalRight,
   "workspace:new-terminal-down": WORKSPACE_COMMANDS.newTerminalDown,
+  "workspace:new-node-right": WORKSPACE_COMMANDS.newNodeRight,
+  "workspace:new-node-down": WORKSPACE_COMMANDS.newNodeDown,
   "workspace:close-terminal": WORKSPACE_COMMANDS.closeTerminal,
+  "workspace:jump-back": WORKSPACE_COMMANDS.jumpBack,
   "workspace:save": WORKSPACE_COMMANDS.saveWorkspace,
   "workspace:toggle-sidebar": WORKSPACE_COMMANDS.toggleSidebar,
   "workspace:toggle-minimap": WORKSPACE_COMMANDS.toggleMinimap,

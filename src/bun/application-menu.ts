@@ -16,6 +16,8 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
     submenu: [
       { label: "New Terminal Right", action: "workspace:new-terminal-right", accelerator: "n" },
       { label: "New Terminal Below", action: "workspace:new-terminal-down", accelerator: "n" },
+      { label: "New Node Right", action: "workspace:new-node-right" },
+      { label: "New Node Down", action: "workspace:new-node-down" },
       { type: "separator" },
       { label: "Close Terminal", action: "workspace:close-terminal", accelerator: "w" },
       { label: "Close Window", role: "close" },
@@ -55,6 +57,7 @@ export const createApplicationMenu = (): ApplicationMenuItemConfig[] => [
       { label: "Focus Left", action: "workspace:focus-left" },
       { label: "Focus Up", action: "workspace:focus-up" },
       { label: "Focus Down", action: "workspace:focus-down" },
+      { label: "Jump Back", action: "workspace:jump-back" },
       { type: "separator" },
       { label: "Context 1", action: `workspace:${WORKSPACE_COMMANDS.context1}`, accelerator: "1" },
       { label: "Context 2", action: `workspace:${WORKSPACE_COMMANDS.context2}`, accelerator: "2" },

@@ -1,18 +1,24 @@
 import {
   DIRECTIONS,
-  PANEL_TYPES,
   clone,
   closePanelRecord,
   createContextRecord,
   createPanelRecord,
+  createTopLevelPanelRecord,
   deleteContextRecord,
+  getActiveNode,
   ensureActivePanel,
   focusDirectionalPanel,
   focusPanel,
   getActivePanel,
   getBounds,
+  getNodeForPanelId,
+  getNodePaneBounds,
+  getVisibleNodes,
   getVisiblePanels,
-  movePanelRecord,
+  jumpBackPanel,
+  moveContextRecord,
+  toggleContextPinned,
   renameContextRecord,
   setContextIndex,
 } from "../shared/workspace-state.js";
@@ -41,9 +47,8 @@ import {
   ensureTerminalFont,
   ensureXtermAssets,
   getTerminalProfile,
-  getXtermStatus,
-  setXtermError,
   getTerminalZoomStep,
+  setXtermError,
 } from "./xterm-runtime.js";
 
 let terminalRuntime = null;
@@ -472,6 +477,14 @@ function renderContextModal() {
     deleteBtn.classList.toggle("is-hidden", uiState.contextRenameIndex === null);
     deleteBtn.textContent = uiState.contextDeleteConfirming ? "Are you sure?" : "Delete";
   }
+
+  const context = uiState.contextRenameIndex !== null ? state.contexts[uiState.contextRenameIndex] : null;
+  dom.contextPinButton?.classList.toggle("is-hidden", !context);
+  dom.contextMoveUpButton?.classList.toggle("is-hidden", !context);
+  dom.contextMoveDownButton?.classList.toggle("is-hidden", !context);
+  if (dom.contextPinButton && context) {
+    dom.contextPinButton.textContent = context.pinned ? "Unpin" : "Pin";
+  }
 }
 
 function openContextModal() {
@@ -596,12 +609,36 @@ function createTerminal(direction, cwd = null, cwdLabel = null) {
   }
 
   const panel = createPanelRecord(state, { direction, cwd, cwdLabel });
+  if (!panel) {
+    setLastAction("Split group is full");
+    return;
+  }
   clearPanelBuffer(panel.id);
   void ensurePanelSession(panel);
   setLastAction(
     direction === DIRECTIONS.down
-      ? `${panel.title} created below`
-      : `${panel.title} created to the right`,
+      ? `${panel.title} split below`
+      : `${panel.title} split right`,
+  );
+}
+
+function createTopLevelTerminal(direction, cwd = null, cwdLabel = null) {
+  if (state.contexts.length === 0) {
+    createContextRecord(state, "");
+  }
+
+  const panel = createTopLevelPanelRecord(state, { direction, cwd, cwdLabel });
+  if (!panel) {
+    setLastAction("Unable to create top-level node");
+    return;
+  }
+
+  clearPanelBuffer(panel.id);
+  void ensurePanelSession(panel);
+  setLastAction(
+    direction === DIRECTIONS.down
+      ? `${panel.title} opened in a node below`
+      : `${panel.title} opened in a node to the right`,
   );
 }
 
@@ -636,6 +673,16 @@ function handleDirectionalFocus(direction) {
   setLastAction("No terminal in that direction");
 }
 
+function jumpBack() {
+  const panel = jumpBackPanel(state);
+  if (!panel) {
+    setLastAction("No recent pane");
+    return;
+  }
+
+  setLastAction(`Jumped back to ${panel.title}`);
+}
+
 function toggleShortcuts() {
   state.shortcutsVisible = !state.shortcutsVisible;
   setLastAction(state.shortcutsVisible ? "Keyboard reference open" : "Keyboard reference closed");
@@ -665,6 +712,9 @@ function handleShortcutKeydown(event) {
       focus_left: WORKSPACE_COMMANDS.focusLeft,
       focus_right: WORKSPACE_COMMANDS.focusRight,
       focus_up: WORKSPACE_COMMANDS.focusUp,
+      jump_back: WORKSPACE_COMMANDS.jumpBack,
+      new_node_down: WORKSPACE_COMMANDS.newNodeDown,
+      new_node_right: WORKSPACE_COMMANDS.newNodeRight,
       new_terminal_down: WORKSPACE_COMMANDS.newTerminalDown,
       new_terminal_right: WORKSPACE_COMMANDS.newTerminalRight,
       quit_application: "quit-application",
@@ -704,8 +754,17 @@ function runCommand(command) {
     case WORKSPACE_COMMANDS.newTerminalDown:
       createTerminal(DIRECTIONS.down);
       break;
+    case WORKSPACE_COMMANDS.newNodeRight:
+      createTopLevelTerminal(DIRECTIONS.right);
+      break;
+    case WORKSPACE_COMMANDS.newNodeDown:
+      createTopLevelTerminal(DIRECTIONS.down);
+      break;
     case WORKSPACE_COMMANDS.closeTerminal:
       closeActiveTerminal();
+      break;
+    case WORKSPACE_COMMANDS.jumpBack:
+      jumpBack();
       break;
     case WORKSPACE_COMMANDS.toggleSidebar:
       state.sidebarVisible = !state.sidebarVisible;
@@ -804,7 +863,7 @@ function renderContextButtons() {
     contextButton.className = `context-item ${index === state.activeContextIndex ? "active" : ""}`.trim();
     contextButton.dataset.contextIndex = String(index);
     contextButton.type = "button";
-    contextButton.textContent = label;
+    contextButton.textContent = context.pinned ? `★ ${label}` : label;
 
     const renameButton = document.createElement("button");
     renameButton.className = `toolbar-button toolbar-button--ghost context-rename ${index === state.activeContextIndex ? "context-rename--active" : ""}`.trim();
@@ -821,8 +880,8 @@ function renderContextButtons() {
   dom.contextList.replaceChildren(...rows);
 }
 
-function buildMinimapNodes(visiblePanels, activePanel, gridElement, maxHeight) {
-  const bounds = getBounds(visiblePanels);
+function buildMinimapNodes(visibleNodes, activeNode, gridElement, maxHeight) {
+  const bounds = getBounds(visibleNodes);
   const width = gridElement.clientWidth || 228;
   const spanX = Math.max(bounds.width + 1, 1);
   const spanY = Math.max(bounds.height + 1, 1);
@@ -833,35 +892,43 @@ function buildMinimapNodes(visiblePanels, activePanel, gridElement, maxHeight) {
   const gridHeight = Math.max(88, Math.min(maxHeight + 28, spanY * cellHeight + gutter * 2));
   gridElement.style.height = `${gridHeight}px`;
 
-  return visiblePanels.map((panel) => {
-    const left = (panel.x - bounds.minX) * cellWidth + gutter;
-    const top = (panel.y - bounds.minY) * cellHeight + gutter;
+  return visibleNodes.map((nodeRecord) => {
+    const left = (nodeRecord.x - bounds.minX) * cellWidth + gutter;
+    const top = (nodeRecord.y - bounds.minY) * cellHeight + gutter;
     const node = document.createElement("button");
-    const active = panel.id === activePanel?.id ? "is-active" : "";
-    const rowFocus = isRowFocusPanel(panel) ? "is-row-focus" : "";
+    const active = nodeRecord.id === activeNode?.id ? "is-active" : "";
+    const rowFocus = isRowFocusPanel(nodeRecord.panes.find((pane) => pane.id === nodeRecord.activePaneId) || nodeRecord.panes[0]) ? "is-row-focus" : "";
     node.className = `minimap-node ${active} ${rowFocus}`.trim();
-    node.dataset.focusPanel = panel.id;
+    node.dataset.focusPanel = nodeRecord.activePaneId || nodeRecord.panes[0]?.id || "";
     node.style.left = `${left}px`;
     node.style.top = `${top}px`;
-    node.setAttribute("aria-label", panel.title);
+    const activePane = nodeRecord.panes.find((pane) => pane.id === nodeRecord.activePaneId) || nodeRecord.panes[0];
+    node.setAttribute("aria-label", activePane?.title || "Workspace node");
+    if (nodeRecord.panes.length > 1) {
+      const badge = document.createElement("span");
+      badge.className = "minimap-node-count";
+      badge.textContent = String(nodeRecord.panes.length);
+      node.append(badge);
+    }
     return node;
   });
 }
 
-function renderMinimap(visiblePanels, activePanel) {
-  const hasVisiblePanels = visiblePanels.length > 0;
-  const shouldShowOverlayMinimap = state.minimapVisible !== false && hasVisiblePanels;
-  dom.minimap.classList.toggle("is-hidden", !hasVisiblePanels);
+function renderMinimap(visibleNodes, activeNode) {
+  const hasVisibleNodes = visibleNodes.length > 0;
+  const paneCount = visibleNodes.reduce((count, node) => count + node.panes.length, 0);
+  const shouldShowOverlayMinimap = state.minimapVisible !== false && hasVisibleNodes;
+  dom.minimap.classList.toggle("is-hidden", !hasVisibleNodes);
   dom.overlayMinimap.classList.toggle("is-hidden", !shouldShowOverlayMinimap);
-  dom.minimapSize.textContent = `${visiblePanels.length} terminal${visiblePanels.length === 1 ? "" : "s"}`;
+  dom.minimapSize.textContent = `${visibleNodes.length} node${visibleNodes.length === 1 ? "" : "s"} · ${paneCount} pane${paneCount === 1 ? "" : "s"}`;
 
-  if (!hasVisiblePanels) {
+  if (!hasVisibleNodes) {
     clearNode(dom.minimapGrid);
     clearNode(dom.overlayMinimapGrid);
     return;
   }
 
-  const sidebarNodes = buildMinimapNodes(visiblePanels, activePanel, dom.minimapGrid, 148);
+  const sidebarNodes = buildMinimapNodes(visibleNodes, activeNode, dom.minimapGrid, 148);
   dom.minimapGrid.replaceChildren(...sidebarNodes);
 
   if (!shouldShowOverlayMinimap) {
@@ -869,30 +936,135 @@ function renderMinimap(visiblePanels, activePanel) {
     return;
   }
 
-  const overlayNodes = buildMinimapNodes(visiblePanels, activePanel, dom.overlayMinimapGrid, 120);
+  const overlayNodes = buildMinimapNodes(visibleNodes, activeNode, dom.overlayMinimapGrid, 120);
   dom.overlayMinimapGrid.replaceChildren(...overlayNodes);
 }
 
-function hasOpenAdjacentSpace(panel, direction) {
-  if (!panel) {
+function hasOpenAdjacentSpace(nodeRecord, panel, direction) {
+  if (!nodeRecord || !panel) {
     return false;
+  }
+
+  if (nodeRecord.panes.length >= 4) {
+    return false;
+  }
+
+  if (nodeRecord.panes.length === 1) {
+    return true;
   }
 
   const target =
     direction === DIRECTIONS.down
-      ? { x: panel.x, y: panel.y + 1 }
-      : { x: panel.x + 1, y: panel.y };
+      ? { x: panel.splitX, y: panel.splitY + 1 }
+      : { x: panel.splitX + 1, y: panel.splitY };
 
-  return !state.panels.some((item) =>
-    item.contextIndex === panel.contextIndex && item.x === target.x && item.y === target.y);
+  return !nodeRecord.panes.some((item) => item.splitX === target.x && item.splitY === target.y);
 }
 
-function renderSparseFocusHints(visiblePanels, activePanel) {
-  const canShowHints = visiblePanels.length === 1 && Boolean(activePanel) && !activePanel.hasReceivedInput;
-  const rightOpen = canShowHints && hasOpenAdjacentSpace(activePanel, DIRECTIONS.right);
-  const bottomOpen = canShowHints && hasOpenAdjacentSpace(activePanel, DIRECTIONS.down);
+function renderSparseFocusHints(visibleNodes, activeNode, activePanel) {
+  const canShowHints = visibleNodes.length === 1
+    && Boolean(activeNode)
+    && Boolean(activePanel)
+    && !activePanel.hasReceivedInput;
+  const rightOpen = canShowHints && hasOpenAdjacentSpace(activeNode, activePanel, DIRECTIONS.right);
+  const bottomOpen = canShowHints && hasOpenAdjacentSpace(activeNode, activePanel, DIRECTIONS.down);
   dom.focusRightSlot?.classList.toggle("is-hidden", !rightOpen);
   dom.focusBottomSlot?.classList.toggle("is-hidden", !bottomOpen);
+}
+
+function getPanePreview(panel) {
+  const content = panelBuffers.get(panel.id) || "";
+  if (!content.trim()) {
+    return `[${panel.title} idle]`;
+  }
+
+  return content.slice(-4000);
+}
+
+function renameActivePane() {
+  const activePanel = getActivePanel(state);
+  if (!activePanel) {
+    setLastAction("No pane to rename");
+    return;
+  }
+
+  const nextLabel = window.prompt("Pane label", activePanel.title);
+  if (nextLabel === null) {
+    return;
+  }
+
+  const trimmed = nextLabel.trim();
+  if (!trimmed) {
+    setLastAction("Pane label unchanged");
+    return;
+  }
+
+  activePanel.title = trimmed;
+  setLastAction(`Pane renamed to ${trimmed}`);
+  saveState();
+  render();
+}
+
+function renderActiveNode(activeNode, activePanel) {
+  if (!dom.focusNodeGrid) {
+    return;
+  }
+
+  clearNode(dom.focusNodeGrid);
+
+  if (!activeNode || !activePanel) {
+    return;
+  }
+
+  const paneBounds = getNodePaneBounds(activeNode);
+  dom.focusNodeGrid.style.gridTemplateColumns = `repeat(${paneBounds.width}, minmax(0, 1fr))`;
+  dom.focusNodeGrid.style.gridTemplateRows = `repeat(${paneBounds.height}, minmax(0, 1fr))`;
+
+  activeNode.panes.forEach((panel) => {
+    const frame = document.createElement("div");
+    frame.className = `terminal-frame terminal-frame--split ${panel.id === activePanel.id ? "terminal-frame--active" : "terminal-frame--inactive"}`.trim();
+    frame.dataset.focusPanel = panel.id;
+    frame.tabIndex = 0;
+    frame.style.gridColumn = `${panel.splitX + 1}`;
+    frame.style.gridRow = `${panel.splitY + 1}`;
+
+    const header = document.createElement("div");
+    header.className = "pane-header";
+
+    const title = document.createElement("span");
+    title.className = "pane-title";
+    title.textContent = panel.title;
+
+    const badge = document.createElement("span");
+    badge.className = "pane-badge";
+    badge.textContent = panel.id === activePanel.id ? "active" : `pane ${panel.splitX + 1}:${panel.splitY + 1}`;
+
+    header.append(title, badge);
+
+    if (panel.id === activePanel.id) {
+      const renameButton = document.createElement("button");
+      renameButton.type = "button";
+      renameButton.className = "toolbar-button toolbar-button--ghost pane-rename";
+      renameButton.dataset.action = "rename-pane";
+      renameButton.textContent = "Label";
+      header.append(renameButton);
+    }
+
+    const body = document.createElement("div");
+    body.className = "pane-body";
+
+    if (panel.id === activePanel.id) {
+      body.append(dom.terminalMount);
+    } else {
+      const preview = document.createElement("pre");
+      preview.className = "pane-preview";
+      preview.textContent = getPanePreview(panel);
+      body.append(preview);
+    }
+
+    frame.append(header, body);
+    dom.focusNodeGrid.append(frame);
+  });
 }
 
 function renderFocus(activePanel) {
@@ -931,19 +1103,22 @@ async function render() {
   renderContextButtons();
   renderContextModal();
 
+  const visibleNodes = getVisibleNodes(state);
   const visiblePanels = getVisiblePanels(state);
   const activePanel = ensureActivePanel(state);
+  const activeNode = getActiveNode(state);
   renderFocus(activePanel);
   renderToolbarState(activePanel);
-  renderMinimap(visiblePanels, activePanel);
-  renderSparseFocusHints(visiblePanels, activePanel);
+  renderMinimap(visibleNodes, activeNode);
+  renderSparseFocusHints(visibleNodes, activeNode, activePanel);
   dom.appShell.classList.toggle("app-shell--sidebar-hidden", !state.sidebarVisible);
   dom.sidebar?.setAttribute("aria-hidden", String(!state.sidebarVisible));
 
-  dom.focusShell.classList.toggle("is-hidden", visiblePanels.length === 0);
-  dom.emptyShell.classList.toggle("is-hidden", visiblePanels.length !== 0);
+  dom.focusShell.classList.toggle("is-hidden", visibleNodes.length === 0);
+  dom.emptyShell.classList.toggle("is-hidden", visibleNodes.length !== 0);
   dom.shortcutsOverlay.classList.toggle("is-hidden", !state.shortcutsVisible);
 
+  renderActiveNode(activeNode, activePanel);
 
   if (activePanel) {
     await mountActiveTerminal(activePanel);
@@ -960,6 +1135,12 @@ function bindUiEvents() {
     const commandButton = target.closest("[data-command]");
     if (commandButton) {
       runCommand(commandButton.getAttribute("data-command"));
+      return;
+    }
+
+    const paneAction = target.closest("[data-action='rename-pane']");
+    if (paneAction) {
+      renameActivePane();
       return;
     }
 
@@ -995,6 +1176,53 @@ function bindUiEvents() {
   dom.contextDeleteButton?.addEventListener("click", (event) => {
     event.preventDefault();
     deleteContext();
+  });
+
+  dom.contextPinButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    const index = uiState.contextRenameIndex;
+    if (index === null) {
+      return;
+    }
+    const pinned = toggleContextPinned(state, index);
+    setLastAction(pinned ? "Context pinned" : "Context unpinned");
+    saveState();
+    renderContextModal();
+    render();
+  });
+
+  dom.contextMoveUpButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    const index = uiState.contextRenameIndex;
+    if (index === null) {
+      return;
+    }
+    if (!moveContextRecord(state, index, -1)) {
+      setLastAction("Context cannot move up");
+      return;
+    }
+    uiState.contextRenameIndex -= 1;
+    setLastAction("Context moved up");
+    saveState();
+    renderContextModal();
+    render();
+  });
+
+  dom.contextMoveDownButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    const index = uiState.contextRenameIndex;
+    if (index === null) {
+      return;
+    }
+    if (!moveContextRecord(state, index, 1)) {
+      setLastAction("Context cannot move down");
+      return;
+    }
+    uiState.contextRenameIndex += 1;
+    setLastAction("Context moved down");
+    saveState();
+    renderContextModal();
+    render();
   });
   
   dom.contextForm?.addEventListener("submit", (event) => {
