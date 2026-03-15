@@ -106,6 +106,21 @@ describe("resolveKeybind", () => {
     expect(match?.consume).toBe(false);
   });
 
+  test("matches quit bindings with the platform modifier", () => {
+    const bindings = compileKeybinds([
+      "super+q=quit_application",
+      "ctrl+q=quit_application",
+    ]);
+
+    const match = resolveKeybind(createEvent({
+      key: "q",
+      code: "KeyQ",
+      ...primaryModifier,
+    }), bindings);
+
+    expect(match?.action.name).toBe("quit_application");
+  });
+
   test("ignores non-keydown events", () => {
     const bindings = compileKeybinds(["ctrl+n=new_terminal_right"]);
     const match = resolveKeybind(createEvent({

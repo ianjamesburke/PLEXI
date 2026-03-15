@@ -229,6 +229,7 @@ export function createMockSessionBridge(handlers = {}) {
     async openExternalUrl(_url) {
       return true;
     },
+    async quitApplication() {},
     async reset() {
       sessions.clear();
     },

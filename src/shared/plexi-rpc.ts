@@ -97,6 +97,10 @@ export type PlexiRPCSchema = ElectrobunRPCSchema & {
         params: { url: string };
         response: boolean;
       };
+      quitApplication: {
+        params: void;
+        response: void;
+      };
     };
     messages: Record<never, never>;
   };

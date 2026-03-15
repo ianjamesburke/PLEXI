@@ -54,6 +54,10 @@ export function createSessionRpc(sessionManager: LocalSessionManager, workspaceS
     openExternalUrl(params) {
       return Utils.openExternal(params.url);
     },
+    quitApplication() {
+      sessionManager.closeAllSessions();
+      Utils.quit();
+    },
   } as Parameters<typeof rpc.setRequestHandler>[0];
 
   rpc.setRequestHandler(requestHandlers);

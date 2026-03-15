@@ -9,6 +9,20 @@ describe("application menu", () => {
     expect(menu[0]).toHaveProperty("submenu");
   });
 
+  test("keeps the native quit role only in the macOS app menu", () => {
+    const menu = createApplicationMenu();
+    const appMenuSubmenu = "submenu" in menu[0] && menu[0].submenu ? menu[0].submenu : [];
+    const fileMenu = menu.find((item) => "label" in item && item.label === "File");
+    const fileMenuSubmenu = fileMenu && "submenu" in fileMenu && fileMenu.submenu ? fileMenu.submenu : [];
+    const quitItems = menu
+      .flatMap((item) => ("submenu" in item && item.submenu ? item.submenu : []))
+      .filter((item) => "role" in item && item.role === "quit");
+
+    expect(appMenuSubmenu.some((item) => "role" in item && item.role === "quit")).toBeTrue();
+    expect(fileMenuSubmenu.some((item) => "role" in item && item.role === "quit")).toBeFalse();
+    expect(quitItems).toHaveLength(1);
+  });
+
   test("does not assign custom accelerators to native role items", () => {
     const menu = createApplicationMenu();
     const roleItems = menu
