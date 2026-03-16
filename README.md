@@ -90,9 +90,6 @@ bun install
 
 # Start dev server
 bun run dev
-
-# Run Playwright e2e verification (ALWAYS RUN BEFORE COMMITS)
-bun run test:e2e
 ```
 
 ---
