@@ -53,6 +53,19 @@ Your layout and working directories are saved automatically to local storage —
 ## Known Issues
 
 *   **Graphics rendering isn't great:** `xterm.js` is okay for now, but this will be fixed with the planned migration to `libghostty`.
+*   **Built app double-input glitch:** I'm seeing double inputs on the built version of the app. It works fine when running dev mode, but the standalone built app just does not want to behave. If anybody can figure it out, that would be spectacular.
+    Current state: `bunx electrobun run` against the built app works perfectly. Double-clicking the `.app` is what breaks.
+    Things we've tried that did not fix it:
+    - hiding xterm helper/composition layers more aggressively
+    - changing terminal input handling paths (`onData` vs `onKey`)
+    - disabling terminal transparency / forcing an opaque background
+    - deduping PTY output with sequence numbers
+    - switching the built app to CEF instead of the native renderer
+    Current suspects:
+    - the standalone app launch path is different from `electrobun run`
+    - shell startup / environment differences when launched from Finder vs terminal
+    - the build surface is more complicated than it needs to be, especially around copying view assets into `views/`
+    I still suspect the build surface may be wrong or at least noisier than necessary, but at this point it does not look like a simple CSS bug.
 *   **opencode visually bugs sometimes.**
 *   No SSH atm (Will add when i add session persistance)
 

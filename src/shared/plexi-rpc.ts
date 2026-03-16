@@ -32,6 +32,7 @@ export type SessionStartedMessage = {
 export type SessionOutputMessage = {
   panelId: string;
   data: string;
+  seq: number;
 };
 
 export type SessionExitMessage = {

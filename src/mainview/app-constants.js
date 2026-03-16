@@ -42,9 +42,9 @@ export const TERMINAL_PROFILE = {
   letterSpacing: 0,
   lineHeight: 1,
   drawBoldTextInBrightColors: false,
-  allowTransparency: true,
+  allowTransparency: false,
   theme: {
-    background: "transparent",
+    background: "#0d0f13",
     foreground: "#f3f5f7",
     cursor: "#d57936",
     selectionBackground: "rgba(213, 121, 54, 0.3)",

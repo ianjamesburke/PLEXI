@@ -12,47 +12,41 @@ function createSessionRecord(params) {
     cwd,
     cwdLabel: params.cwdLabel || cwd,
     input: "",
+    outputSeq: 0,
   };
 }
 
-function emitPrompt(handlers, session) {
+function emitOutput(handlers, session, data) {
   handlers.onOutput?.({
     panelId: session.panelId,
-    data: `${cwdSequence(session.cwd)}${promptFor(session)}`,
+    data,
+    seq: ++session.outputSeq,
   });
+}
+
+function emitPrompt(handlers, session) {
+  emitOutput(handlers, session, `${cwdSequence(session.cwd)}${promptFor(session)}`);
 }
 
 function executeMockCommand(session, command, handlers) {
   const normalized = command.trim();
 
   if (!normalized) {
-    handlers.onOutput?.({
-      panelId: session.panelId,
-      data: "\r\n",
-    });
+    emitOutput(handlers, session, "\r\n");
     emitPrompt(handlers, session);
     return;
   }
 
   const [verb, ...args] = normalized.split(/\s+/);
 
-  handlers.onOutput?.({
-    panelId: session.panelId,
-    data: "\r\n",
-  });
+  emitOutput(handlers, session, "\r\n");
 
   switch (verb) {
     case "help":
-      handlers.onOutput?.({
-        panelId: session.panelId,
-        data: `${MOCK_HELP}\r\n`,
-      });
+      emitOutput(handlers, session, `${MOCK_HELP}\r\n`);
       break;
     case "pwd":
-      handlers.onOutput?.({
-        panelId: session.panelId,
-        data: `${session.cwd}\r\n`,
-      });
+      emitOutput(handlers, session, `${session.cwd}\r\n`);
       break;
     case "cd": {
       const target = args[0];
@@ -71,16 +65,10 @@ function executeMockCommand(session, command, handlers) {
       break;
     }
     case "ls":
-      handlers.onOutput?.({
-        panelId: session.panelId,
-        data: "README.md  src/  tests/  package.json\r\n",
-      });
+      emitOutput(handlers, session, "README.md  src/  tests/  package.json\r\n");
       break;
     case "echo":
-      handlers.onOutput?.({
-        panelId: session.panelId,
-        data: `${args.join(" ")}\r\n`,
-      });
+      emitOutput(handlers, session, `${args.join(" ")}\r\n`);
       break;
     case "split-right":
       handlers.onWorkspaceCommand?.("new-terminal-right");
@@ -102,10 +90,7 @@ function executeMockCommand(session, command, handlers) {
       handlers.onClear?.(session.panelId);
       break;
     default:
-      handlers.onOutput?.({
-        panelId: session.panelId,
-        data: `Unknown command: ${verb}\r\n`,
-      });
+      emitOutput(handlers, session, `Unknown command: ${verb}\r\n`);
       break;
   }
 
@@ -147,10 +132,7 @@ export function createMockSessionBridge(handlers = {}) {
       sessions.set(session.panelId, session);
 
       handlers.onStarted?.(started);
-      handlers.onOutput?.({
-        panelId: session.panelId,
-        data: "Plexi mock shell\r\nType `help` to inspect keyboard-driven workspace commands.\r\n",
-      });
+      emitOutput(handlers, session, "Plexi mock shell\r\nType `help` to inspect keyboard-driven workspace commands.\r\n");
       emitPrompt(handlers, session);
       return started;
     },
@@ -170,30 +152,21 @@ export function createMockSessionBridge(handlers = {}) {
         if (char === "\u007f") {
           if (session.input.length > 0) {
             session.input = session.input.slice(0, -1);
-            handlers.onOutput?.({
-              panelId,
-              data: "\b \b",
-            });
+            emitOutput(handlers, session, "\b \b");
           }
           continue;
         }
 
         if (char === "\u0003") {
           session.input = "";
-          handlers.onOutput?.({
-            panelId,
-            data: "^C\r\n",
-          });
+          emitOutput(handlers, session, "^C\r\n");
           emitPrompt(handlers, session);
           continue;
         }
 
         if (/^[\x20-\x7E\n\t]$/.test(char)) {
           session.input += char;
-          handlers.onOutput?.({
-            panelId,
-            data: char,
-          });
+          emitOutput(handlers, session, char);
         }
       }
     },
