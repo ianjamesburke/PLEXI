@@ -550,7 +550,7 @@ function renderContextModal() {
 
   const titleEl = dom.contextModal.querySelector("#context-modal-title");
   if (titleEl) {
-    titleEl.textContent = uiState.contextRenameIndex !== null ? "Rename context" : "New context";
+    titleEl.textContent = uiState.contextRenameIndex !== null ? "Edit context" : "New context";
   }
 
   const deleteBtn = dom.contextDeleteButton;
@@ -662,6 +662,11 @@ function submitContextModal() {
     setLastAction(`Context renamed to ${label}`);
   } else {
     createContextRecord(state, label);
+    const panel = createTopLevelPanelRecord(state, { direction: DIRECTIONS.right });
+    if (panel) {
+      clearPanelBuffer(panel.id);
+      void ensurePanelSession(panel);
+    }
     setLastAction(`Context ${label} created`);
   }
 
@@ -819,6 +824,8 @@ function handleShortcutKeydown(event) {
       context_7: WORKSPACE_COMMANDS.context7,
       context_8: WORKSPACE_COMMANDS.context8,
       context_9: WORKSPACE_COMMANDS.context9,
+      next_context: WORKSPACE_COMMANDS.nextContext,
+      previous_context: WORKSPACE_COMMANDS.previousContext,
       focus_down: WORKSPACE_COMMANDS.focusDown,
       focus_left: WORKSPACE_COMMANDS.focusLeft,
       focus_right: WORKSPACE_COMMANDS.focusRight,
@@ -1364,7 +1371,6 @@ function bindUiEvents() {
   });
 
   dom.contextCancelButton?.addEventListener("click", closeContextModal);
-  dom.contextCloseButton?.addEventListener("click", closeContextModal);
   
   dom.contextDeleteButton?.addEventListener("click", (event) => {
     event.preventDefault();

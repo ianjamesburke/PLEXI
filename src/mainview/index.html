@@ -91,25 +91,32 @@
                             <span class="empty-context-arrow">←</span>
                             <p>Contexts live here. Use them to separate tasks, repos, or clients.</p>
                         </aside>
-                        <p class="empty-support-note">Layouts and settings are saved locally.</p>
                         <div class="empty-shell-content">
-                            <p class="empty-tagline">Open a node with ⌘+N, then split it with ⌘+D or ⌘+⇧+D.</p>
+                            <div class="empty-hint-group">
+                                <p class="empty-hint-row"><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">N</kbd></span> Open a node to the right <span class="empty-hint-arrow">→</span></p>
+                                <p class="empty-hint-row"><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key key--mod">⇧</kbd><kbd class="key">N</kbd></span> Open a node below <span class="empty-hint-arrow">↓</span></p>
+                            </div>
+                            <div class="empty-hint-group">
+                                <p class="empty-hint-row"><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">D</kbd></span> Split pane right <span class="empty-hint-arrow">→</span></p>
+                                <p class="empty-hint-row"><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key key--mod">⇧</kbd><kbd class="key">D</kbd></span> Split pane below <span class="empty-hint-arrow">↓</span></p>
+                            </div>
+                            <p class="empty-hint-meta"><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">/</kbd></span> to see all shortcuts</p>
                         </div>
                     </section>
 
                     <div class="shortcuts-overlay is-hidden" id="shortcuts-overlay" aria-live="polite">
                         <h3>Keyboard</h3>
                         <ul class="overlay-list">
-                            <li><span>⌘+N</span><span>New node right</span></li>
-                            <li><span>⌘+⇧+N</span><span>New node below</span></li>
-                            <li><span>⌘+D</span><span>Split right</span></li>
-                            <li><span>⌘+⇧+D</span><span>Split below</span></li>
-                            <li><span>⌘+Arrow</span><span>Focus nearest terminal</span></li>
-                            <li><span>⌘+1–9</span><span>Focus pane in current context</span></li>
-                            <li><span>⌘+⇧+1–9</span><span>Switch context</span></li>
-                            <li><span>⌘+B</span><span>Toggle sidebar</span></li>
-                            <li><span>⌘+M</span><span>Open workspace overview</span></li>
-                            <li><span>⌘+/</span><span>Keyboard help</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">N</kbd></span><span>New node right</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key key--mod">⇧</kbd><kbd class="key">N</kbd></span><span>New node below</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">D</kbd></span><span>Split right</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key key--mod">⇧</kbd><kbd class="key">D</kbd></span><span>Split below</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">Arrow</kbd></span><span>Focus nearest terminal</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">1–9</kbd></span><span>Focus pane</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">[</kbd></span><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">]</kbd></span><span>Prev / next context</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key key--mod">⌥</kbd><kbd class="key">1–9</kbd></span><span>Switch to context</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">B</kbd></span><span>Toggle sidebar</span></li>
+                            <li><span class="shortcut"><kbd class="key key--mod">⌘</kbd><kbd class="key">/</kbd></span><span>Keyboard help</span></li>
                         </ul>
                     </div>
 
@@ -124,9 +131,9 @@
         <form class="modal-card" id="context-form">
             <div class="modal-header">
                 <h2 class="modal-title" id="context-modal-title">New context</h2>
-                <button class="toolbar-button toolbar-button--ghost" id="context-cancel" type="button">Cancel</button>
+                <button class="toolbar-button toolbar-button--ghost" id="context-cancel" type="button">✕</button>
             </div>
-            <label class="field-label" for="context-name-input">Context name</label>
+            <label class="field-label" for="context-name-input">Name</label>
             <input class="text-input" id="context-name-input" name="context-name" type="text" maxlength="64" autocomplete="off" required>
             <div class="modal-actions">
                 <button class="toolbar-button toolbar-button--danger is-hidden" id="context-delete" type="button">Delete</button>
@@ -136,8 +143,7 @@
                     <button class="toolbar-button toolbar-button--ghost is-hidden" id="context-move-down" type="button">Move down</button>
                 </div>
                 <div class="modal-actions-right">
-                    <button class="toolbar-button toolbar-button--ghost" id="context-close" type="button">Dismiss</button>
-                    <button class="toolbar-button" id="context-submit" type="submit">Save context</button>
+                    <button class="toolbar-button" id="context-submit" type="submit">Save</button>
                 </div>
             </div>
         </form>
