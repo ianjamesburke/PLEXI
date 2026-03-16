@@ -121,6 +121,8 @@ export function createTerminalRuntime({
     disableStdin: !interactive,
     fontSize: clampTerminalFontSize(panel?.fontSize ?? TERMINAL_PROFILE.fontSize),
     macOptionIsMeta: isMacOS,
+    overviewRulerLanes: 0,
+    overviewRuler: { width: 1 },
   });
   const fitAddon = new window.FitAddon.FitAddon();
   const webLinksAddon = window.WebLinksAddon ? new window.WebLinksAddon.WebLinksAddon(
@@ -182,6 +184,7 @@ export function createTerminalRuntime({
       if (runtime.resizeFrame) {
         window.cancelAnimationFrame(runtime.resizeFrame);
       }
+      clearTimeout(scrollHideTimer);
       runtime.resizeObserver?.disconnect?.();
       window.removeEventListener("resize", runtime.resizeHandler);
       terminal.dispose();
@@ -207,6 +210,15 @@ export function createTerminalRuntime({
       onData(runtime, rawData);
     });
   }
+
+  let scrollHideTimer = 0;
+  terminal.onScroll(() => {
+    mountNode.classList.add("terminal-mount--scrolling");
+    clearTimeout(scrollHideTimer);
+    scrollHideTimer = setTimeout(() => {
+      mountNode.classList.remove("terminal-mount--scrolling");
+    }, 1500);
+  });
 
   window.addEventListener("resize", runtime.resizeHandler);
   if (window.ResizeObserver) {

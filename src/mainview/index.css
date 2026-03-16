@@ -558,8 +558,8 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   background: var(--bg-terminal);
 }
 
-.terminal-mount .xterm-viewport,
-.terminal-mount .xterm-screen {
+.terminal-mount .xterm .xterm-viewport,
+.terminal-mount .xterm .xterm-screen {
   background: var(--bg-terminal);
 }
 
@@ -944,13 +944,36 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   background: transparent;
 }
 
-.xterm .xterm-viewport {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(216, 221, 227, 0.32) transparent;
+/* Hide native scrollbar entirely — no reserved space, no gap. */
+.terminal-mount .xterm .xterm-viewport {
+  scrollbar-width: none;
+  overflow-x: hidden !important;
 }
 
+.terminal-mount .xterm .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Collapse xterm's native scrollbar and overview ruler to eliminate the black gap.
+   FitAddon subtracts overviewRuler.width (set to 1px) instead of the default 14px. */
+.terminal-mount .xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 0 !important;
+}
+
+.terminal-mount .xterm .xterm-decoration-overview-ruler {
+  display: none !important;
+}
+
+/* Monaco virtual scrollbar — overlay, auto-hide */
 .xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical {
   width: 6px !important;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.terminal-mount--scrolling .xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical {
+  opacity: 1;
 }
 
 .xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical > .slider {
@@ -960,19 +983,8 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   background: rgba(216, 221, 227, 0.28) !important;
 }
 
-.xterm .xterm-viewport::-webkit-scrollbar {
-  width: 6px;
-}
-
-.xterm .xterm-viewport::-webkit-scrollbar-thumb {
-  background: rgba(216, 221, 227, 0.28);
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background-clip: padding-box;
-}
-
-.xterm .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
+.xterm .xterm-scrollable-element > .scrollbar.scrollbar.horizontal {
+  display: none !important;
 }
 
 .toast-layer {
