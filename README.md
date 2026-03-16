@@ -1,8 +1,16 @@
-# Plexi
+<p align="center">
+  <img src="assets/app-icon.png" width="100" alt="Plexi icon" />
+</p>
 
-![Plexi screenshot](media/screenshot.png)
+<h1 align="center">Plexi</h1>
 
-An experiment in spatial terminal window management.
+<p align="center">An experiment in spatial terminal window management.</p>
+
+<p align="center">
+  <img src="media/screenshot-1.png" width="48%" alt="Screenshot 1" />
+  &nbsp;
+  <img src="media/screenshot-2.png" width="48%" alt="Screenshot 2" />
+</p>
 
 (Basically tmux but omarchy babes lol)
 
