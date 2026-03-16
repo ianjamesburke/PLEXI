@@ -226,9 +226,9 @@ function syncViewportMetrics() {
     document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
   }
 
-  if (uiState.overviewOpen) {
-    renderOverview();
-  }
+  const visibleNodes = getVisibleNodes(state);
+  const activeNode = getActiveNode(state);
+  renderMinimap(visibleNodes, activeNode);
 }
 
 function appendPanelBuffer(panelId, chunk) {
@@ -1046,25 +1046,31 @@ function createMinimapNode(nodeRecord, activeNode, options) {
   return node;
 }
 
-function buildMinimapNodes(visibleNodes, activeNode, gridElement, maxHeight, options = {}) {
+function buildMinimapNodes(visibleNodes, activeNode, gridElement, options = {}) {
   const bounds = getBounds(visibleNodes);
   const width = gridElement.clientWidth || options.defaultWidth || 228;
-  const spanX = Math.max(bounds.width + 1, 1);
-  const spanY = Math.max(bounds.height + 1, 1);
+  const spanX = Math.max(bounds.width, 1);
+  const spanY = Math.max(bounds.height, 1);
   const gutter = options.gutter || 10;
-  const baseNodeSize = options.baseNodeSize || 18;
-  const cellWidth = Math.max(baseNodeSize + 4, Math.min(baseNodeSize + 20, Math.floor((width - gutter * 2) / spanX)));
-  const cellHeight = Math.max(baseNodeSize + 2, Math.min(baseNodeSize + 16, Math.floor(maxHeight / spanY)));
-  const gridHeight = Math.max(options.minHeight || 88, Math.min(maxHeight + 28, spanY * cellHeight + gutter * 2));
+  const nodeGap = options.nodeGap || 4;
+  const minNodeSize = options.minNodeSize || 10;
+  const maxNodeSize = options.maxNodeSize || options.baseNodeSize || 18;
+  const availableWidth = Math.max(width - gutter * 2, minNodeSize);
+  const fittedNodeSize = Math.floor((availableWidth - Math.max(0, spanX - 1) * nodeGap) / spanX);
+  const nodeSize = Math.max(minNodeSize, Math.min(maxNodeSize, fittedNodeSize));
+  const contentHeight = spanY * nodeSize + Math.max(0, spanY - 1) * nodeGap;
+  const startX = gutter;
+  const startY = gutter;
+  const gridHeight = Math.max(options.minHeight || 88, contentHeight + gutter * 2);
   gridElement.style.height = `${gridHeight}px`;
 
   return visibleNodes.map((nodeRecord) => createMinimapNode(nodeRecord, activeNode, {
     variant: options.variant || "sidebar",
     contextIndex: options.contextIndex,
-    left: (nodeRecord.x - bounds.minX) * cellWidth + gutter,
-    top: (nodeRecord.y - bounds.minY) * cellHeight + gutter,
-    width: cellWidth - 4,
-    height: cellHeight - 4,
+    left: startX + (nodeRecord.x - bounds.minX) * (nodeSize + nodeGap),
+    top: startY + (nodeRecord.y - bounds.minY) * (nodeSize + nodeGap),
+    width: nodeSize,
+    height: nodeSize,
   }));
 }
 
@@ -1112,13 +1118,15 @@ function renderOverview() {
     grid.className = "overview-context__grid";
 
     if (visibleNodes.length > 0) {
-      const nodes = buildMinimapNodes(visibleNodes, activeNode, grid, 180, {
+      const nodes = buildMinimapNodes(visibleNodes, activeNode, grid, {
         variant: "overview",
         contextIndex,
-        baseNodeSize: 72,
+        baseNodeSize: 36,
         defaultWidth: grid.clientWidth || dom.overviewShell?.clientWidth || 900,
-        minHeight: 132,
+        minHeight: 88,
+        minNodeSize: 20,
         gutter: 12,
+        nodeGap: 6,
       });
       grid.replaceChildren(...nodes);
     }
@@ -1140,11 +1148,13 @@ function renderMinimap(visibleNodes, activeNode) {
     return;
   }
 
-  const sidebarNodes = buildMinimapNodes(visibleNodes, activeNode, dom.minimapGrid, 148, {
+  const sidebarNodes = buildMinimapNodes(visibleNodes, activeNode, dom.minimapGrid, {
     variant: "sidebar",
-    baseNodeSize: 18,
+    baseNodeSize: 16,
     defaultWidth: 228,
-    minHeight: 88,
+    minHeight: 0,
+    minNodeSize: 12,
+    nodeGap: 4,
   });
   dom.minimapGrid.replaceChildren(...sidebarNodes);
   renderOverview();
@@ -1321,9 +1331,12 @@ function bindUiEvents() {
 
     const focusTarget = target.closest("[data-focus-panel]");
     if (focusTarget) {
-      const contextIndex = Number(focusTarget.getAttribute("data-focus-context-index"));
-      if (Number.isInteger(contextIndex) && contextIndex !== state.activeContextIndex) {
-        setContextIndex(state, contextIndex);
+      const contextIndexValue = focusTarget.getAttribute("data-focus-context-index");
+      if (contextIndexValue !== null) {
+        const contextIndex = Number(contextIndexValue);
+        if (Number.isInteger(contextIndex) && contextIndex !== state.activeContextIndex) {
+          setContextIndex(state, contextIndex);
+        }
       }
       const panelId = focusTarget.getAttribute("data-focus-panel");
       focusPanel(state, panelId);
