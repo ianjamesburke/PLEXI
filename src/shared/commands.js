@@ -19,6 +19,15 @@ export const WORKSPACE_COMMANDS = {
   previousContext: "previous-context",
   newContext: "new-context",
   showShortcuts: "show-shortcuts",
+  pane1: "pane-1",
+  pane2: "pane-2",
+  pane3: "pane-3",
+  pane4: "pane-4",
+  pane5: "pane-5",
+  pane6: "pane-6",
+  pane7: "pane-7",
+  pane8: "pane-8",
+  pane9: "pane-9",
   context1: "context-1",
   context2: "context-2",
   context3: "context-3",
@@ -29,6 +38,18 @@ export const WORKSPACE_COMMANDS = {
   context8: "context-8",
   context9: "context-9",
 };
+
+export const PANE_COMMANDS = [
+  WORKSPACE_COMMANDS.pane1,
+  WORKSPACE_COMMANDS.pane2,
+  WORKSPACE_COMMANDS.pane3,
+  WORKSPACE_COMMANDS.pane4,
+  WORKSPACE_COMMANDS.pane5,
+  WORKSPACE_COMMANDS.pane6,
+  WORKSPACE_COMMANDS.pane7,
+  WORKSPACE_COMMANDS.pane8,
+  WORKSPACE_COMMANDS.pane9,
+];
 
 export const CONTEXT_COMMANDS = [
   WORKSPACE_COMMANDS.context1,

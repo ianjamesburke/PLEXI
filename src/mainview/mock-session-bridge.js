@@ -89,11 +89,11 @@ function executeMockCommand(session, command, handlers) {
       handlers.onWorkspaceCommand?.("new-terminal-down");
       break;
     case "map":
-      handlers.onWorkspaceCommand?.("toggle-overview");
+      handlers.onWorkspaceCommand?.("toggle-minimap");
       break;
     case "focus":
-      handlers.onWorkspaceCommand?.("toggle-overview");
-      handlers.onWorkspaceCommand?.("toggle-overview");
+      handlers.onWorkspaceCommand?.("toggle-minimap");
+      handlers.onWorkspaceCommand?.("toggle-minimap");
       break;
     case "close":
       handlers.onWorkspaceCommand?.("close-terminal");

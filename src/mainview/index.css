@@ -39,7 +39,7 @@
   --bg-shell-2: oklch(18% 0.014 255);
   --bg-canvas: oklch(12% 0.01 60);
   --bg-canvas-soft: oklch(18% 0.012 60 / 0.92);
-  --bg-terminal: oklch(10% 0.01 60);
+  --bg-terminal: #0d0f13;
   --text-primary: oklch(95% 0.005 60);
   --text-secondary: oklch(78% 0.01 255 / 0.92);
   --text-tertiary: oklch(70% 0.01 255 / 0.72);
@@ -124,7 +124,7 @@ button {
 }
 
 body.platform-macos {
-  --window-top-inset: 8px;
+  --window-top-inset: 6px;
   --window-leading-inset: 76px;
 }
 
@@ -297,10 +297,10 @@ body.platform-macos {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 10px;
   flex: 0 0 auto;
-  padding-top: calc(12px + var(--window-top-inset));
-  padding-bottom: 15px;
+  padding-top: calc(8px + var(--window-top-inset));
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border-shell);
 }
 
@@ -311,13 +311,13 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 .toolbar-primary {
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 
 .toolbar-context {
   color: var(--text-secondary);
-  font-size: 0.79rem;
+  font-size: 0.74rem;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -326,7 +326,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   min-width: 0;
   overflow: hidden;
   color: var(--text-secondary);
-  font-size: 0.79rem;
+  font-size: 0.73rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -334,7 +334,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 .toolbar-process {
   color: var(--text-tertiary, var(--text-secondary));
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -342,7 +342,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 .toolbar-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -358,12 +358,12 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 .toolbar-button {
-  min-height: 28px;
-  padding: 0 0.7rem;
+  min-height: 24px;
+  padding: 0 0.55rem;
   border: 1px solid var(--border-shell);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 0.74rem;
+  font-size: 0.7rem;
 }
 
 .toolbar-button--ghost {
@@ -395,23 +395,26 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 .focus-shell {
-  padding: 18px;
+  padding: 10px;
   overflow: hidden;
+  background: var(--bg-terminal);
 }
 
 .focus-node-grid {
   display: grid;
   width: 100%;
   height: 100%;
-  gap: 10px;
+  gap: 8px;
 }
 
 .terminal-frame {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   border: 1px solid var(--canvas-border);
-  background: oklch(11% 0.01 60 / 0.96);
+  background: var(--bg-terminal);
   box-shadow: inset 0 1px 0 oklch(28% 0.01 60 / 0.32);
 }
 
@@ -429,7 +432,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 .terminal-frame--inactive {
-  background: oklch(12% 0.01 60 / 0.9);
+  background: var(--bg-terminal);
 }
 
 .pane-header {
@@ -437,12 +440,12 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 7px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--canvas-border);
   background: oklch(16% 0.01 60 / 0.88);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.64rem;
 }
 
 .pane-title {
@@ -453,30 +456,29 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 
 .pane-badge {
   flex-shrink: 0;
-  color: var(--text-tertiary);
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.24);
+}
+
+.pane-badge--active {
+  background: #6fd27f;
+}
+
+.pane-badge--idle {
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .pane-body {
   position: relative;
   width: 100%;
-  height: calc(100% - 34px);
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
   overflow: hidden;
-}
-
-.pane-preview {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 10px 12px;
-  overflow: auto;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 18%), var(--bg-terminal);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
+  background: var(--bg-terminal);
 }
 
 .focus-ghost-slot {
@@ -516,17 +518,38 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 .terminal-mount {
   width: 100%;
   height: 100%;
-  padding: 6px 8px;
+  padding: 2px 4px 0;
   box-sizing: border-box;
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 18%), var(--bg-terminal);
+  background: var(--bg-terminal);
   font-family: var(--font-mono);
   -webkit-app-region: no-drag;
+}
+
+.terminal-mount--hydrating .xterm,
+.terminal-mount--hydrating .xterm-helpers {
+  opacity: 0;
+}
+
+.terminal-mount--preview {
+  cursor: pointer;
+}
+
+.terminal-mount--preview .xterm-screen,
+.terminal-mount--preview .xterm-helpers,
+.terminal-mount--preview textarea {
+  pointer-events: none;
 }
 
 .terminal-mount .xterm {
   width: 100%;
   height: 100%;
+  background: var(--bg-terminal);
+}
+
+.terminal-mount .xterm-viewport,
+.terminal-mount .xterm-screen {
+  background: var(--bg-terminal);
 }
 
 .terminal-mount,
@@ -675,7 +698,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 .is-hidden {
-  display: none;
+  display: none !important;
 }
 
 .sidebar-section--map {
@@ -686,65 +709,52 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   width: 100%;
   overflow: hidden;
   box-shadow: none;
-}
-
-.minimap--overlay {
-  position: absolute;
-  right: 28px;
-  top: 28px;
-  z-index: 2;
-  width: min(240px, calc(100% - 36px));
-  background: oklch(16% 0.012 60 / 0.28);
-  backdrop-filter: blur(4px);
-  opacity: 0.42;
-  transition: opacity 140ms ease, background-color 140ms ease, border-color 140ms ease;
-}
-
-.minimap--overlay:hover {
-  opacity: 0.96;
-  background: oklch(16% 0.012 60 / 0.86);
-  border-color: oklch(46% 0.03 240 / 0.9);
+  background: oklch(20% 0.012 60 / 0.96);
 }
 
 .minimap-grid {
   position: relative;
   min-height: 48px;
-  padding: 8px;
-}
-
-.minimap-grid--overlay {
-  min-height: 72px;
   padding: 10px;
 }
 
 .minimap-node {
   position: absolute;
-  display: grid;
-  width: 18px;
-  height: 18px;
   border: 1px solid var(--canvas-border);
   background: oklch(26% 0.01 60 / 0.95);
+  overflow: hidden;
+  cursor: pointer;
 }
 
-.minimap-node.is-active {
+.minimap-node.is-row-focus {
   border-color: var(--accent);
   background: oklch(70% 0.08 240 / 0.28);
 }
 
-.minimap-node-count {
+.minimap-node.is-active {
+  outline: 1px solid oklch(84% 0.16 92 / 0.95);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 1px oklch(84% 0.16 92 / 0.28);
+}
+
+.minimap-node__surface {
   position: absolute;
-  right: -5px;
-  bottom: -5px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 999px;
-  background: oklch(90% 0.01 60);
-  color: oklch(18% 0.01 255);
-  font-family: var(--font-mono);
-  font-size: 0.58rem;
-  line-height: 14px;
-  text-align: center;
+  inset: 0;
+}
+
+.minimap-pane-preview {
+  position: absolute;
+  border: 1px solid rgba(216, 221, 227, 0.18);
+  background: rgba(11, 14, 20, 0.72);
+}
+
+.minimap-pane-preview.is-active {
+  border-color: var(--accent);
+  background: rgba(213, 121, 54, 0.2);
+}
+
+.minimap-node--overview .minimap-pane-preview {
+  border-width: 1px;
 }
 
 .shortcuts-overlay {
@@ -755,6 +765,88 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   width: 340px;
   padding: 14px 16px;
   color: var(--text-primary);
+}
+
+.overview-shell {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px;
+  background: var(--bg-canvas);
+}
+
+.overview-shell__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 2px;
+}
+
+.overview-shell__heading {
+  display: grid;
+  gap: 4px;
+}
+
+.overview-shell__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.overview-shell__summary {
+  margin: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.overview-shell__body {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  overflow: auto;
+  min-height: 0;
+  padding: 2px 2px 18px;
+}
+
+.overview-context {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--canvas-border);
+  background: oklch(16% 0.01 60 / 0.94);
+}
+
+.overview-context.is-active {
+  border-color: oklch(68% 0.08 240 / 0.6);
+}
+
+.overview-context__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+
+.overview-context__meta {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
+.overview-context__grid {
+  position: relative;
+  min-height: 112px;
+  padding: 12px;
+  border: 1px solid var(--canvas-border);
+  background: oklch(13% 0.01 60 / 0.96);
 }
 
 .overlay-list {
@@ -773,14 +865,6 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 .overlay-list li span:last-child {
   color: var(--text-secondary);
   text-align: right;
-}
-
-.minimap--overlay .minimap-node {
-  background: oklch(78% 0.01 60 / 0.28);
-}
-
-.minimap--overlay .minimap-node.is-active {
-  background: oklch(70% 0.08 240 / 0.48);
 }
 
 .sidebar {
@@ -955,6 +1039,11 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
     min-height: 76px;
   }
 
+  .overview-shell {
+    padding: 14px;
+    gap: 14px;
+  }
+
   .shortcuts-overlay {
     right: 12px;
     left: 12px;
@@ -1037,8 +1126,10 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
     grid-template-columns: 176px minmax(0, 1fr);
   }
 
-  .sidebar-section--map {
-    display: none;
+  .overview-shell__header,
+  .overview-context__label {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .empty-ghost-grid {

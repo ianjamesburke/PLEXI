@@ -5,7 +5,6 @@ let terminalFontReady = null;
 const MIN_TERMINAL_FONT_SIZE = 10;
 const MAX_TERMINAL_FONT_SIZE = 28;
 const TERMINAL_FONT_STEP = 1;
-let terminalFontSize = TERMINAL_PROFILE.fontSize;
 
 async function loadStylesheet(candidates) {
   if (document.querySelector('link[data-plexi-xterm="true"]')) {
@@ -102,10 +101,25 @@ export function setXtermError() {
   xtermStatus = "error";
 }
 
-export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, onResize, replayBuffer, onLinkClick }) {
+export function clampTerminalFontSize(fontSize) {
+  return Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, Math.round(fontSize)));
+}
+
+export function createTerminalRuntime({
+  panel,
+  mountNode,
+  onData,
+  onShortcut,
+  onResize,
+  replayBuffer,
+  onLinkClick,
+  interactive = true,
+}) {
   const terminal = new window.Terminal({
     ...TERMINAL_PROFILE,
-    fontSize: terminalFontSize,
+    cursorBlink: interactive && TERMINAL_PROFILE.cursorBlink,
+    disableStdin: !interactive,
+    fontSize: clampTerminalFontSize(panel?.fontSize ?? TERMINAL_PROFILE.fontSize),
     macOptionIsMeta: isMacOS,
   });
   const fitAddon = new window.FitAddon.FitAddon();
@@ -125,71 +139,109 @@ export function createTerminalRuntime({ panel, mountNode, onData, onShortcut, on
   
   terminal.open(mountNode);
   mountNode.dataset.terminalFontFamily = TERMINAL_PROFILE.fontFamily;
-  fitAddon.fit();
+
+  function safeFit() {
+    if (!mountNode.isConnected) {
+      return false;
+    }
+
+    const rect = mountNode.getBoundingClientRect();
+    if (rect.width < 8 || rect.height < 8) {
+      return false;
+    }
+
+    try {
+      fitAddon.fit();
+      return terminal.cols > 0 && terminal.rows > 0;
+    } catch (_error) {
+      return false;
+    }
+  }
 
   const runtime = {
+    interactive,
     panel,
+    mountNode,
     terminal,
     fitAddon,
     webLinksAddon,
+    resizeFrame: 0,
+    resizeObserver: null,
     resizeHandler: () => {
-      fitAddon.fit();
-      onResize(runtime);
+      if (runtime.resizeFrame) {
+        window.cancelAnimationFrame(runtime.resizeFrame);
+      }
+      runtime.resizeFrame = window.requestAnimationFrame(() => {
+        runtime.resizeFrame = 0;
+        if (safeFit()) {
+          onResize(runtime);
+        }
+      });
     },
     dispose() {
+      if (runtime.resizeFrame) {
+        window.cancelAnimationFrame(runtime.resizeFrame);
+      }
+      runtime.resizeObserver?.disconnect?.();
       window.removeEventListener("resize", runtime.resizeHandler);
       terminal.dispose();
     },
   };
 
-  terminal.attachCustomKeyEventHandler((event) => {
-    if (onShortcut(event, runtime) === false) {
+  if (interactive) {
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (onShortcut(event, runtime) === false) {
+        return false;
+      }
+
+      const nativeInput = resolveNativeTerminalInput(event);
+      if (!nativeInput) {
+        return true;
+      }
+
+      event.preventDefault();
+      onData(runtime, nativeInput);
       return false;
-    }
-
-    const nativeInput = resolveNativeTerminalInput(event);
-    if (!nativeInput) {
-      return true;
-    }
-
-    event.preventDefault();
-    onData(runtime, nativeInput);
-    return false;
-  });
-  terminal.onData((rawData) => {
-    onData(runtime, rawData);
-  });
+    });
+    terminal.onData((rawData) => {
+      onData(runtime, rawData);
+    });
+  }
 
   window.addEventListener("resize", runtime.resizeHandler);
+  if (window.ResizeObserver) {
+    runtime.resizeObserver = new window.ResizeObserver(() => {
+      runtime.resizeHandler();
+    });
+    runtime.resizeObserver.observe(mountNode);
+  }
+  runtime.resizeHandler();
   replayBuffer(runtime);
-  onResize(runtime);
-  terminal.focus();
 
   return runtime;
 }
 
-export function getTerminalProfile() {
-  return { ...TERMINAL_PROFILE, fontSize: terminalFontSize };
+export function getTerminalProfile(fontSize = TERMINAL_PROFILE.fontSize) {
+  return { ...TERMINAL_PROFILE, fontSize: clampTerminalFontSize(fontSize) };
 }
 
-function clampTerminalFontSize(fontSize) {
-  return Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, Math.round(fontSize)));
+export function getTerminalFontSize(panel = null) {
+  return clampTerminalFontSize(panel?.fontSize ?? TERMINAL_PROFILE.fontSize);
 }
 
-export function getTerminalFontSize() {
-  return terminalFontSize;
-}
-
-export function adjustTerminalFontSize(delta, runtime = null) {
-  const nextFontSize = clampTerminalFontSize(terminalFontSize + delta);
-  terminalFontSize = nextFontSize;
+export function adjustTerminalFontSize(delta, runtime = null, currentFontSize = TERMINAL_PROFILE.fontSize) {
+  const nextFontSize = clampTerminalFontSize(currentFontSize + delta);
 
   if (runtime?.terminal?.options) {
     runtime.terminal.options.fontSize = nextFontSize;
-    runtime.fitAddon?.fit?.();
+    try {
+      runtime.fitAddon?.fit?.();
+    } catch (_error) {
+      // Ignore transient fit races during resize or remount.
+    }
   }
 
-  return terminalFontSize;
+  return nextFontSize;
 }
 
 export function getTerminalZoomStep() {

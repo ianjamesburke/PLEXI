@@ -21,7 +21,8 @@ export const PANEL_TYPES = {
   },
 };
 
-const MAX_PANES_PER_NODE = 4;
+const MAX_NODE_GRID_UNITS = 4;
+const DEFAULT_PANE_FONT_SIZE = 14;
 
 export const clone = (value) => JSON.parse(JSON.stringify(value));
 
@@ -77,6 +78,18 @@ const sortByGrid = (left, right) => {
   return left.id.localeCompare(right.id);
 };
 
+const createLeafLayout = (paneId) => ({
+  type: "pane",
+  paneId,
+});
+
+const createSplitLayout = (axis, first, second) => ({
+  type: "split",
+  axis,
+  first,
+  second,
+});
+
 const syncPaneSpatialFields = (node, pane) => {
   pane.nodeId = node.id;
   pane.contextIndex = node.contextIndex;
@@ -84,6 +97,8 @@ const syncPaneSpatialFields = (node, pane) => {
   pane.y = node.y;
   pane.splitX = Number.isFinite(pane.splitX) ? pane.splitX : 0;
   pane.splitY = Number.isFinite(pane.splitY) ? pane.splitY : 0;
+  pane.splitWidth = Number.isFinite(pane.splitWidth) ? pane.splitWidth : MAX_NODE_GRID_UNITS;
+  pane.splitHeight = Number.isFinite(pane.splitHeight) ? pane.splitHeight : MAX_NODE_GRID_UNITS;
   return pane;
 };
 
@@ -96,6 +111,67 @@ const syncLegacyPanels = (state) => {
   ensureCollections(state);
   state.panels = flattenNodePanes(state.nodes);
   return state.panels;
+};
+
+const chainLayouts = (axis, layouts) => {
+  if (layouts.length === 0) {
+    return null;
+  }
+
+  if (layouts.length === 1) {
+    return layouts[0];
+  }
+
+  const [first, ...rest] = layouts;
+  return createSplitLayout(axis, first, chainLayouts(axis, rest));
+};
+
+const buildRowsFromEntries = (entries) => {
+  const rowsByY = new Map();
+
+  [...entries]
+    .sort((left, right) =>
+      (left.rect.y - right.rect.y)
+      || (left.rect.x - right.rect.x)
+      || left.paneId.localeCompare(right.paneId))
+    .forEach((entry) => {
+      if (!rowsByY.has(entry.rect.y)) {
+        rowsByY.set(entry.rect.y, []);
+      }
+
+      rowsByY.get(entry.rect.y).push(entry);
+    });
+
+  return [...rowsByY.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, rowEntries]) =>
+      rowEntries
+        .sort((left, right) =>
+          (left.rect.x - right.rect.x)
+          || left.paneId.localeCompare(right.paneId))
+        .map((entry) => entry.paneId))
+    .filter((row) => row.length > 0);
+};
+
+const buildLayoutFromRows = (rows) => {
+  const normalizedRows = rows.filter((row) => row.length > 0);
+  if (normalizedRows.length === 0) {
+    return null;
+  }
+
+  if (normalizedRows.length === 1 && normalizedRows[0].length === 1) {
+    return createLeafLayout(normalizedRows[0][0]);
+  }
+
+  const rowLayouts = normalizedRows
+    .map((row) => chainLayouts("x", row.map((paneId) => createLeafLayout(paneId))))
+    .filter(Boolean);
+
+  if (rowLayouts.length === 1) {
+    return rowLayouts[0];
+  }
+
+  return chainLayouts("y", rowLayouts);
 };
 
 const createSingleNodeRecord = (state, pane, position = {}) => {
@@ -126,6 +202,7 @@ const createSingleNodeRecord = (state, pane, position = {}) => {
       },
       pane,
     )],
+    layout: createLeafLayout(pane.id),
   };
 
   node.panes.forEach((item) => syncPaneSpatialFields(node, item));
@@ -145,17 +222,186 @@ const hydrateNodesFromPanels = (state) => {
   syncLegacyPanels(state);
 };
 
-const normalizeNodePaneGrid = (node) => {
-  const columns = [...new Set(node.panes.map((pane) => pane.splitX))].sort((a, b) => a - b);
-  const rows = [...new Set(node.panes.map((pane) => pane.splitY))].sort((a, b) => a - b);
-  const columnMap = new Map(columns.map((value, index) => [value, index]));
-  const rowMap = new Map(rows.map((value, index) => [value, index]));
+const computeLayoutEntries = (layout, rect, path = [], entries = [], internalEntries = []) => {
+  if (!layout) {
+    return { entries, internalEntries };
+  }
+
+  if (layout.type === "pane") {
+    entries.push({
+      paneId: layout.paneId,
+      rect,
+      path,
+    });
+    return { entries, internalEntries };
+  }
+
+  internalEntries.push({
+    path,
+    rect,
+    layout,
+  });
+
+  if (layout.axis === "x") {
+    const firstWidth = Math.floor(rect.w / 2);
+    const secondWidth = rect.w - firstWidth;
+    computeLayoutEntries(layout.first, { ...rect, w: firstWidth }, [...path, "first"], entries, internalEntries);
+    computeLayoutEntries(
+      layout.second,
+      { ...rect, x: rect.x + firstWidth, w: secondWidth },
+      [...path, "second"],
+      entries,
+      internalEntries,
+    );
+    return { entries, internalEntries };
+  }
+
+  const firstHeight = Math.floor(rect.h / 2);
+  const secondHeight = rect.h - firstHeight;
+  computeLayoutEntries(layout.first, { ...rect, h: firstHeight }, [...path, "first"], entries, internalEntries);
+  computeLayoutEntries(
+    layout.second,
+    { ...rect, y: rect.y + firstHeight, h: secondHeight },
+    [...path, "second"],
+    entries,
+    internalEntries,
+  );
+  return { entries, internalEntries };
+};
+
+const getLayoutSnapshot = (layout) =>
+  computeLayoutEntries(
+    layout,
+    { x: 0, y: 0, w: MAX_NODE_GRID_UNITS, h: MAX_NODE_GRID_UNITS },
+  );
+
+const removeUnknownLeaves = (layout, paneIds) => {
+  if (!layout) {
+    return null;
+  }
+
+  if (layout.type === "pane") {
+    return paneIds.has(layout.paneId) ? createLeafLayout(layout.paneId) : null;
+  }
+
+  const first = removeUnknownLeaves(layout.first, paneIds);
+  const second = removeUnknownLeaves(layout.second, paneIds);
+
+  if (!first) {
+    return second;
+  }
+
+  if (!second) {
+    return first;
+  }
+
+  return createSplitLayout(layout.axis === "y" ? "y" : "x", first, second);
+};
+
+const getStoredNodeEntries = (node) => {
+  const paneIds = new Set(node.panes.map((pane) => pane.id));
+  const layout = removeUnknownLeaves(node.layout, paneIds);
+  const entries = layout
+    ? getLayoutSnapshot(layout).entries.filter((entry) => paneIds.has(entry.paneId))
+    : [];
+  const seenPaneIds = new Set(entries.map((entry) => entry.paneId));
 
   node.panes.forEach((pane) => {
-    pane.splitX = columnMap.get(pane.splitX) ?? 0;
-    pane.splitY = rowMap.get(pane.splitY) ?? 0;
-    syncPaneSpatialFields(node, pane);
+    if (seenPaneIds.has(pane.id)) {
+      return;
+    }
+
+    entries.push({
+      paneId: pane.id,
+      rect: {
+        x: Number.isFinite(pane.splitX) ? pane.splitX : 0,
+        y: Number.isFinite(pane.splitY) ? pane.splitY : 0,
+        w: Number.isFinite(pane.splitWidth) ? pane.splitWidth : MAX_NODE_GRID_UNITS,
+        h: Number.isFinite(pane.splitHeight) ? pane.splitHeight : MAX_NODE_GRID_UNITS,
+      },
+    });
   });
+
+  return entries;
+};
+
+const getNodeRows = (node) => buildRowsFromEntries(getStoredNodeEntries(node));
+
+const distributeUnits = (count, totalUnits = MAX_NODE_GRID_UNITS) => {
+  if (!Number.isInteger(count) || count <= 0) {
+    return [];
+  }
+
+  const spans = [];
+  let usedUnits = 0;
+
+  for (let index = 0; index < count; index += 1) {
+    const remainingItems = count - index;
+    const remainingUnits = totalUnits - usedUnits;
+    const size = Math.ceil(remainingUnits / remainingItems);
+    spans.push(size);
+    usedUnits += size;
+  }
+
+  return spans;
+};
+
+const applyNodeRows = (node, rows) => {
+  const normalizedRows = rows
+    .map((row) => row.filter(Boolean))
+    .filter((row) => row.length > 0);
+  const orderedPaneIds = normalizedRows.flat();
+  const panesById = new Map(node.panes.map((pane) => [pane.id, pane]));
+
+  node.panes = orderedPaneIds
+    .map((paneId) => panesById.get(paneId))
+    .filter(Boolean);
+  node.layout = buildLayoutFromRows(normalizedRows);
+  node.type = node.panes.length <= 1 ? NODE_TYPES.single : NODE_TYPES.splitGroup;
+  node.activePaneId = orderedPaneIds.includes(node.activePaneId)
+    ? node.activePaneId
+    : orderedPaneIds[0] || null;
+
+  if (node.panes.length === 0) {
+    return;
+  }
+
+  const rowHeights = distributeUnits(normalizedRows.length);
+  let currentY = 0;
+
+  normalizedRows.forEach((row, rowIndex) => {
+    const rowHeight = rowHeights[rowIndex] ?? 0;
+    const columnWidths = distributeUnits(row.length);
+    let currentX = 0;
+
+    row.forEach((paneId, columnIndex) => {
+      const pane = panesById.get(paneId);
+      if (!pane) {
+        currentX += columnWidths[columnIndex] ?? 0;
+        return;
+      }
+
+      pane.splitX = currentX;
+      pane.splitY = currentY;
+      pane.splitWidth = columnWidths[columnIndex] ?? 0;
+      pane.splitHeight = rowHeight;
+      syncPaneSpatialFields(node, pane);
+      currentX += pane.splitWidth;
+    });
+
+    currentY += rowHeight;
+  });
+};
+
+const normalizeNodeLayout = (node) => {
+  const rows = getNodeRows(node);
+
+  if (rows.length === 0 && node.panes[0]) {
+    applyNodeRows(node, [[node.panes[0].id]]);
+    return;
+  }
+
+  applyNodeRows(node, rows);
 };
 
 const normalizeNode = (node) => {
@@ -173,23 +419,11 @@ const normalizeNode = (node) => {
     pane.cwdLabel = String(pane.cwdLabel || pane.cwd || "~");
     pane.transcript = Array.isArray(pane.transcript) ? pane.transcript : [];
     pane.hasReceivedInput = pane.hasReceivedInput === true;
+    pane.fontSize = Number.isFinite(pane.fontSize) ? pane.fontSize : DEFAULT_PANE_FONT_SIZE;
     syncPaneSpatialFields(node, pane);
   });
 
-  if (node.panes.length <= 1) {
-    node.type = NODE_TYPES.single;
-    node.panes.forEach((pane) => {
-      pane.splitX = 0;
-      pane.splitY = 0;
-      syncPaneSpatialFields(node, pane);
-    });
-  } else {
-    normalizeNodePaneGrid(node);
-  }
-
-  node.activePaneId = node.panes.some((pane) => pane.id === node.activePaneId)
-    ? node.activePaneId
-    : node.panes[0]?.id || null;
+  normalizeNodeLayout(node);
 };
 
 export const normalizeWorkspaceState = (state) => {
@@ -237,15 +471,14 @@ export const getActiveNode = (state) => getNodeById(state, state.activeNodeId);
 
 export const getNodePaneBounds = (node) => {
   if (!node || node.panes.length === 0) {
-    return { minX: 0, maxX: 0, minY: 0, maxY: 0, width: 1, height: 1 };
+    return { minX: 0, maxX: 0, minY: 0, maxY: 0, width: MAX_NODE_GRID_UNITS, height: MAX_NODE_GRID_UNITS };
   }
 
-  const xs = node.panes.map((pane) => pane.splitX);
-  const ys = node.panes.map((pane) => pane.splitY);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  const minX = Math.min(...node.panes.map((pane) => pane.splitX));
+  const minY = Math.min(...node.panes.map((pane) => pane.splitY));
+  const maxX = Math.max(...node.panes.map((pane) => pane.splitX + pane.splitWidth - 1));
+  const maxY = Math.max(...node.panes.map((pane) => pane.splitY + pane.splitHeight - 1));
+
   return {
     minX,
     maxX,
@@ -466,10 +699,10 @@ export const getActiveContext = (state) => state.contexts[state.activeContextInd
 const isOccupied = (nodes, x, y, contextIndex, ignoreNodeId = null) =>
   nodes.some(
     (node) =>
-      node.contextIndex === contextIndex &&
-      node.id !== ignoreNodeId &&
-      node.x === x &&
-      node.y === y,
+      node.contextIndex === contextIndex
+      && node.id !== ignoreNodeId
+      && node.x === x
+      && node.y === y,
   );
 
 export const getNextOpenPosition = (state, origin, direction, options = {}) => {
@@ -496,6 +729,23 @@ export const getNextOpenPosition = (state, origin, direction, options = {}) => {
   }
 
   return { x, y };
+};
+
+const getNextBottomRowPosition = (state, options = {}) => {
+  const contextIndex = Number.isFinite(options.contextIndex)
+    ? options.contextIndex
+    : state.activeContextIndex;
+  const contextNodes = state.nodes.filter((node) =>
+    node.contextIndex === contextIndex && node.id !== (options.ignoreNodeId || null));
+
+  if (contextNodes.length === 0) {
+    return { x: 0, y: 0 };
+  }
+
+  return {
+    x: getBounds(contextNodes).minX,
+    y: getBounds(contextNodes).maxY + 1,
+  };
 };
 
 const getPanelFocusFallback = (node) =>
@@ -583,10 +833,13 @@ const buildPanelRecord = (state, type, cwd = null, cwdLabel = null, fallbackPane
   title: `${PANEL_TYPES[type].label} ${state.sequence}`,
   transcript: [],
   hasReceivedInput: false,
+  fontSize: Number.isFinite(fallbackPanel?.fontSize) ? fallbackPanel.fontSize : DEFAULT_PANE_FONT_SIZE,
   cwd: cwd || fallbackPanel?.cwd || "~",
   cwdLabel: cwdLabel || fallbackPanel?.cwdLabel || cwd || fallbackPanel?.cwd || "~",
   splitX: 0,
   splitY: 0,
+  splitWidth: MAX_NODE_GRID_UNITS,
+  splitHeight: MAX_NODE_GRID_UNITS,
 });
 
 export const createTopLevelPanelRecord = (
@@ -607,7 +860,9 @@ export const createTopLevelPanelRecord = (
     : { x: 0, y: 0 };
   const position = state.nodes.length === 0
     ? { x: 0, y: 0 }
-    : getNextOpenPosition(state, origin, direction);
+    : direction === DIRECTIONS.down
+      ? getNextBottomRowPosition(state)
+      : getNextOpenPosition(state, origin, direction);
   const panel = buildPanelRecord(state, type, cwd, cwdLabel, activePanel);
   const node = createSingleNodeRecord(state, panel, {
     contextIndex: state.activeContextIndex,
@@ -638,29 +893,50 @@ const compactTopLevelNodesLeft = (nodes, anchorX = null) => {
   });
 };
 
-const insertPaneIntoNode = (node, activePane, newPane, direction) => {
-  if (direction === DIRECTIONS.down) {
-    newPane.splitX = activePane.splitX;
-    newPane.splitY = activePane.splitY + 1;
-    node.panes.forEach((pane) => {
-      if (pane.id !== activePane.id && pane.splitY >= newPane.splitY) {
-        pane.splitY += 1;
-      }
-    });
-  } else {
-    newPane.splitX = activePane.splitX + 1;
-    newPane.splitY = activePane.splitY;
-    node.panes.forEach((pane) => {
-      if (pane.id !== activePane.id && pane.splitY === newPane.splitY && pane.splitX >= newPane.splitX) {
-        pane.splitX += 1;
-      }
-    });
+const getNodeLayoutEntries = (node) =>
+  [...node.panes]
+    .sort((left, right) =>
+      (left.splitY - right.splitY)
+      || (left.splitX - right.splitX)
+      || left.id.localeCompare(right.id))
+    .map((pane) => ({
+      paneId: pane.id,
+      rect: {
+        x: pane.splitX,
+        y: pane.splitY,
+        w: pane.splitWidth,
+        h: pane.splitHeight,
+      },
+    }));
+
+const insertPaneIntoNode = (node, activePaneId, newPane, direction) => {
+  const rows = getNodeRows(node);
+  const rowIndex = rows.findIndex((row) => row.includes(activePaneId));
+  if (rowIndex === -1) {
+    return false;
   }
 
   node.panes.push(newPane);
-  node.type = node.panes.length > 1 ? NODE_TYPES.splitGroup : NODE_TYPES.single;
-  node.activePaneId = newPane.id;
-  normalizeNodePaneGrid(node);
+  if (direction === DIRECTIONS.down) {
+    if (rows.length >= MAX_NODE_GRID_UNITS) {
+      node.panes = node.panes.filter((pane) => pane.id !== newPane.id);
+      return false;
+    }
+
+    rows.splice(rowIndex + 1, 0, [newPane.id]);
+    applyNodeRows(node, rows);
+    return true;
+  }
+
+  const columnIndex = rows[rowIndex].indexOf(activePaneId);
+  if (columnIndex === -1 || rows[rowIndex].length >= MAX_NODE_GRID_UNITS) {
+    node.panes = node.panes.filter((pane) => pane.id !== newPane.id);
+    return false;
+  }
+
+  rows[rowIndex].splice(columnIndex + 1, 0, newPane.id);
+  applyNodeRows(node, rows);
+  return true;
 };
 
 export const createPanelRecord = (
@@ -693,15 +969,110 @@ export const createPanelRecord = (
     return panel;
   }
 
-  if (activeNode.panes.length >= MAX_PANES_PER_NODE) {
+  const panel = buildPanelRecord(state, type, cwd, cwdLabel, activePanel);
+  if (!insertPaneIntoNode(activeNode, activePanel.id, panel, direction)) {
     return null;
   }
 
-  const panel = buildPanelRecord(state, type, cwd, cwdLabel, activePanel);
-  insertPaneIntoNode(activeNode, activePanel, panel, direction);
   syncLegacyPanels(state);
   focusPanel(state, panel.id);
   return panel;
+};
+
+const getClosestPaneForRect = (node, rect, ignorePaneId = null) => {
+  const entries = getNodeLayoutEntries(node).filter((entry) => entry.paneId !== ignorePaneId);
+  const overlapsVertically = (entry) =>
+    entry.rect.y < rect.y + rect.h && rect.y < entry.rect.y + entry.rect.h;
+  const overlapsHorizontally = (entry) =>
+    entry.rect.x < rect.x + rect.w && rect.x < entry.rect.x + entry.rect.w;
+  const centerDistance = (entry) => {
+    const centerX = entry.rect.x + (entry.rect.w / 2);
+    const centerY = entry.rect.y + (entry.rect.h / 2);
+    const rectCenterX = rect.x + (rect.w / 2);
+    const rectCenterY = rect.y + (rect.h / 2);
+    return Math.abs(centerX - rectCenterX) + Math.abs(centerY - rectCenterY);
+  };
+
+  const scored = entries
+    .map((entry) => {
+      const entryRight = entry.rect.x + entry.rect.w;
+      const entryBottom = entry.rect.y + entry.rect.h;
+      const removedRight = rect.x + rect.w;
+      const removedBottom = rect.y + rect.h;
+      const verticalOverlap = overlapsVertically(entry);
+      const horizontalOverlap = overlapsHorizontally(entry);
+
+      let lane = 4;
+      let primary = centerDistance(entry);
+      let secondary = 0;
+
+      if (verticalOverlap && entryRight <= rect.x) {
+        lane = 0;
+        primary = rect.x - entryRight;
+        secondary = Math.abs(entry.rect.y - rect.y);
+      } else if (verticalOverlap && entry.rect.x >= removedRight) {
+        lane = 1;
+        primary = entry.rect.x - removedRight;
+        secondary = Math.abs(entry.rect.y - rect.y);
+      } else if (horizontalOverlap && entryBottom <= rect.y) {
+        lane = 2;
+        primary = rect.y - entryBottom;
+        secondary = Math.abs(entry.rect.x - rect.x);
+      } else if (horizontalOverlap && entry.rect.y >= removedBottom) {
+        lane = 3;
+        primary = entry.rect.y - removedBottom;
+        secondary = Math.abs(entry.rect.x - rect.x);
+      }
+
+      return {
+        paneId: entry.paneId,
+        lane,
+        primary,
+        secondary,
+        distance: centerDistance(entry),
+      };
+    })
+    .sort((left, right) =>
+      (left.lane - right.lane)
+      || (left.primary - right.primary)
+      || (left.secondary - right.secondary)
+      || (left.distance - right.distance)
+      || left.paneId.localeCompare(right.paneId));
+
+  return scored[0]?.paneId || null;
+};
+
+const getFallbackNodeAfterClose = (nodes, removedNode) => {
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  const sameRow = nodes
+    .filter((node) => node.y === removedNode.y)
+    .sort((left, right) => (left.x - right.x) || left.id.localeCompare(right.id));
+
+  const previousInRow = sameRow
+    .filter((node) => node.x < removedNode.x)
+    .sort((left, right) => (right.x - left.x) || left.id.localeCompare(right.id))[0];
+  if (previousInRow) {
+    return previousInRow;
+  }
+
+  const nextInRow = sameRow.find((node) => node.x >= removedNode.x);
+  if (nextInRow) {
+    return nextInRow;
+  }
+
+  return nodes
+    .map((node) => ({
+      node,
+      rowDistance: Math.abs(node.y - removedNode.y),
+      columnDistance: Math.abs(node.x - removedNode.x),
+    }))
+    .sort((left, right) =>
+      (left.rowDistance - right.rowDistance)
+      || (left.columnDistance - right.columnDistance)
+      || left.node.id.localeCompare(right.node.id))[0]?.node || null;
 };
 
 export const closePanelRecord = (state, panelId) => {
@@ -713,15 +1084,25 @@ export const closePanelRecord = (state, panelId) => {
     return null;
   }
 
+  const removedRect = {
+    x: panel.splitX,
+    y: panel.splitY,
+    w: panel.splitWidth,
+    h: panel.splitHeight,
+  };
   forgetRowFocus(state, panel.id, panel.contextIndex);
 
   if (node.panes.length > 1) {
+    const fallbackPanelId = getClosestPaneForRect(node, removedRect, panelId);
+    const rows = getNodeRows(node)
+      .map((row) => row.filter((paneId) => paneId !== panelId))
+      .filter((row) => row.length > 0);
     node.panes = node.panes.filter((pane) => pane.id !== panelId);
-    normalizeNode(node);
+    applyNodeRows(node, rows);
     syncLegacyPanels(state);
-    const fallback = getPanelFocusFallback(node);
-    if (fallback) {
-      focusPanel(state, fallback.id);
+    const nextPanelId = fallbackPanelId || getPanelFocusFallback(node)?.id || null;
+    if (nextPanelId) {
+      focusPanel(state, nextPanelId);
     }
     return panel;
   }
@@ -744,11 +1125,7 @@ export const closePanelRecord = (state, panelId) => {
   }
 
   const sameContextNodes = getVisibleNodes(state);
-  const fallbackNode = sameContextNodes.find((item) => item.y === node.y && item.x === node.x)
-    || sameContextNodes.find((item) => item.y === node.y)
-    || sameContextNodes.find((item) => item.y > node.y)
-    || sameContextNodes.find((item) => item.y < node.y)
-    || sameContextNodes[0];
+  const fallbackNode = getFallbackNodeAfterClose(sameContextNodes, node);
   const fallbackPanel = getPanelFocusFallback(fallbackNode);
   if (fallbackPanel) {
     focusPanel(state, fallbackPanel.id);
@@ -819,10 +1196,10 @@ const scoreDirectionalCandidate = (origin, candidate, direction) => {
   const dy = candidate.y - origin.y;
 
   if (
-    (direction === DIRECTIONS.left && dx >= 0) ||
-    (direction === DIRECTIONS.right && dx <= 0) ||
-    (direction === DIRECTIONS.up && dy >= 0) ||
-    (direction === DIRECTIONS.down && dy <= 0)
+    (direction === DIRECTIONS.left && dx >= 0)
+    || (direction === DIRECTIONS.right && dx <= 0)
+    || (direction === DIRECTIONS.up && dy >= 0)
+    || (direction === DIRECTIONS.down && dy <= 0)
   ) {
     return Number.POSITIVE_INFINITY;
   }
@@ -837,23 +1214,72 @@ const scoreDirectionalCandidate = (origin, candidate, direction) => {
   return primary * 10 + secondary;
 };
 
+const getRectHorizontalOverlap = (left, right) =>
+  Math.max(0, Math.min(left.x + left.w, right.x + right.w) - Math.max(left.x, right.x));
+
+const getRectVerticalOverlap = (left, right) =>
+  Math.max(0, Math.min(left.y + left.h, right.y + right.h) - Math.max(left.y, right.y));
+
 const getIntraNodeDirectionalNeighbor = (node, activePane, direction) => {
   if (!node || node.panes.length <= 1) {
     return null;
   }
 
-  const candidates = node.panes
-    .filter((pane) => pane.id !== activePane.id)
-    .map((pane) => ({
-      pane,
-      score: scoreDirectionalCandidate(
-        { x: activePane.splitX, y: activePane.splitY },
-        { x: pane.splitX, y: pane.splitY },
-        direction,
-      ),
-    }))
-    .filter((candidate) => Number.isFinite(candidate.score))
-    .sort((left, right) => left.score - right.score);
+  const rows = getNodeRows(node);
+  const rowIndex = rows.findIndex((row) => row.includes(activePane.id));
+  if (rowIndex === -1) {
+    return null;
+  }
+
+  const columnIndex = rows[rowIndex].indexOf(activePane.id);
+  if (direction === DIRECTIONS.left) {
+    const previousPaneId = rows[rowIndex][columnIndex - 1];
+    return node.panes.find((pane) => pane.id === previousPaneId) || null;
+  }
+
+  if (direction === DIRECTIONS.right) {
+    const nextPaneId = rows[rowIndex][columnIndex + 1];
+    return node.panes.find((pane) => pane.id === nextPaneId) || null;
+  }
+
+  const entries = getNodeLayoutEntries(node);
+  const activeEntry = entries.find((entry) => entry.paneId === activePane.id);
+  if (!activeEntry) {
+    return null;
+  }
+
+  const targetRowIndex = direction === DIRECTIONS.up ? rowIndex - 1 : rowIndex + 1;
+  const targetRow = rows[targetRowIndex];
+  if (!targetRow) {
+    return null;
+  }
+
+  const candidates = targetRow
+    .map((paneId) => {
+      const entry = entries.find((item) => item.paneId === paneId) || null;
+      const pane = node.panes.find((item) => item.id === paneId) || null;
+      if (!entry || !pane) {
+        return null;
+      }
+
+      const overlap = direction === DIRECTIONS.up || direction === DIRECTIONS.down
+        ? getRectHorizontalOverlap(activeEntry.rect, entry.rect)
+        : getRectVerticalOverlap(activeEntry.rect, entry.rect);
+      const score = direction === DIRECTIONS.up || direction === DIRECTIONS.down
+        ? Math.abs((entry.rect.x + (entry.rect.w / 2)) - (activeEntry.rect.x + (activeEntry.rect.w / 2)))
+        : Math.abs((entry.rect.y + (entry.rect.h / 2)) - (activeEntry.rect.y + (activeEntry.rect.h / 2)));
+
+      return {
+        pane,
+        overlap,
+        score,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) =>
+      (right.overlap - left.overlap)
+      || (left.score - right.score)
+      || left.pane.id.localeCompare(right.pane.id));
 
   return candidates[0]?.pane || null;
 };
@@ -887,8 +1313,10 @@ const getTopLevelDirectionalNeighbor = (state, activeNode, direction) => {
       .sort((left, right) => (left.x - right.x) || left.id.localeCompare(right.id));
     const rememberedPanelId = getRowFocusMap(state, activeNode.contextIndex)[targetRow];
     const rememberedNode = rowNodes.find((node) => node.panes.some((pane) => pane.id === rememberedPanelId));
+    const xAlignedNode = rowNodes.reduce((best, node) =>
+      !best || Math.abs(node.x - activeNode.x) < Math.abs(best.x - activeNode.x) ? node : best, null);
 
-    return rememberedNode || rowNodes[0] || null;
+    return rememberedNode || xAlignedNode || null;
   }
 
   const candidates = visibleNodes

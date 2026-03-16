@@ -1,4 +1,6 @@
 const PLEXI_CWD_SEQUENCE = /\u001b]633;PlexiCwd=([^\u0007\u001b]*)(?:\u0007|\u001b\\)/g;
+const ANSI_SEQUENCE = /\u001b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\))/g;
+const NON_PRINTABLE = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
 
 export function inferHomeDirectory(cwd, cwdLabel) {
   if (!cwd || !cwdLabel || !cwdLabel.startsWith("~")) {
@@ -49,4 +51,13 @@ export function extractSessionOutputMetadata(chunk) {
     cleaned,
     cwd: nextCwd,
   };
+}
+
+export function sanitizeTerminalPreview(chunk) {
+  return String(chunk || "")
+    .replace(ANSI_SEQUENCE, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(NON_PRINTABLE, "")
+    .trimEnd();
 }
