@@ -36,7 +36,6 @@ export const makeDefaultState = () => ({
   activeNodeIdsByContext: {},
   activePanelIdsByContext: {},
   rowFocusPanelIdsByContext: {},
-  previousPanelId: null,
   sidebarVisible: true,
   minimapVisible: true,
   shortcutsVisible: false,
@@ -764,7 +763,6 @@ export const ensureActivePanel = (state) => {
     state.activePanelId = null;
     state.activeNodeIdsByContext[state.activeContextIndex] = null;
     state.activePanelIdsByContext[state.activeContextIndex] = null;
-    state.previousPanelId = null;
     return null;
   }
 
@@ -796,7 +794,6 @@ export const ensureActivePanel = (state) => {
       node.activePaneId = fallbackPanel.id;
     }
   }
-  state.previousPanelId = null;
   rememberRowFocus(state, fallbackPanel);
   return fallbackPanel;
 };
@@ -812,10 +809,6 @@ export const focusPanel = (state, panelId) => {
   const node = getNodeForPanelId(state, panelId);
   if (!node) {
     return null;
-  }
-
-  if (panelId !== state.activePanelId) {
-    state.previousPanelId = state.activePanelId;
   }
 
   state.activeNodeId = node.id;
@@ -1140,7 +1133,6 @@ export const closePanelRecord = (state, panelId) => {
     state.activePanelId = null;
     state.activeNodeIdsByContext[node.contextIndex] = null;
     state.activePanelIdsByContext[node.contextIndex] = null;
-    state.previousPanelId = null;
     return panel;
   }
 
@@ -1198,17 +1190,6 @@ export const cycleVisiblePanel = (state, direction) => {
     ? 0
     : (currentIndex + direction + visiblePanels.length) % visiblePanels.length;
   return focusPanel(state, visiblePanels[nextIndex].id);
-};
-
-export const jumpBackPanel = (state) => {
-  normalizeWorkspaceState(state);
-
-  const previousPanel = getPanelById(state, state.previousPanelId);
-  if (!previousPanel || previousPanel.contextIndex !== state.activeContextIndex) {
-    return null;
-  }
-
-  return focusPanel(state, previousPanel.id);
 };
 
 const scoreDirectionalCandidate = (origin, candidate, direction) => {

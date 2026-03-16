@@ -7,6 +7,7 @@
     "dev": "electrobun dev --watch",
     "dev:clean": "bun run scripts/dev-clean.ts",
     "build": "electrobun build",
+    "build:cef": "PLEXI_RENDERER=cef electrobun build",
     "test": "bun test ./tests/unit/*.test.ts",
     "test:e2e": "bun run build && playwright test",
     "verify": "bun run test && bun run test:e2e"

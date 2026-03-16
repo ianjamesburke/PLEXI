@@ -16,8 +16,7 @@ import {
   getNodePaneBounds,
   getVisibleNodes,
   getVisiblePanels,
-  jumpBackPanel,
-  moveContextRecord,
+moveContextRecord,
   toggleContextPinned,
   renameContextRecord,
   setContextIndex,
@@ -55,6 +54,7 @@ const paneRuntimes = new Map();
 const panelBuffers = new Map();
 const panelMeta = new Map();
 const panelSessions = new Set();
+const outputSequences = window.__PLEXI_OUTPUT_SEQUENCES__ || (window.__PLEXI_OUTPUT_SEQUENCES__ = new Map());
 let backendInfo = null;
 let homeDirectory = null;
 let state = bootDefaultState();
@@ -72,6 +72,7 @@ applyPlatformClasses();
 
 const sessionBridge = createSessionBridge({
   onStarted(message) {
+    outputSequences.delete(message.panelId);
     panelMeta.set(message.panelId, {
       shellName: message.shellName,
       shellPath: message.shellPath,
@@ -89,6 +90,14 @@ const sessionBridge = createSessionBridge({
     render();
   },
   onOutput(message) {
+    if (typeof message.seq === "number") {
+      const lastSeq = outputSequences.get(message.panelId) ?? 0;
+      if (message.seq <= lastSeq) {
+        return;
+      }
+      outputSequences.set(message.panelId, message.seq);
+    }
+
     const { cleaned, cwd } = extractSessionOutputMetadata(message.data);
 
     if (cwd) {
@@ -111,6 +120,7 @@ const sessionBridge = createSessionBridge({
   },
   onExit(message) {
     panelSessions.delete(message.panelId);
+    outputSequences.delete(message.panelId);
     appendPanelBuffer(message.panelId, `\r\n[session exited ${message.exitCode}]\r\n`);
 
     const runtime = getPaneRuntime(message.panelId);
@@ -407,6 +417,7 @@ function closePanelSession(panelId) {
   panelSessions.delete(panelId);
   panelMeta.delete(panelId);
   panelBuffers.delete(panelId);
+  outputSequences.delete(panelId);
   void sessionBridge.closeSession({ panelId });
 }
 
@@ -780,16 +791,6 @@ function handleDirectionalFocus(direction) {
   setLastAction("No terminal in that direction");
 }
 
-function jumpBack() {
-  const panel = jumpBackPanel(state);
-  if (!panel) {
-    setLastAction("No recent pane");
-    return;
-  }
-
-  setLastAction(`Jumped back to ${panel.title}`);
-}
-
 function toggleShortcuts() {
   state.shortcutsVisible = !state.shortcutsVisible;
   setLastAction(state.shortcutsVisible ? "Keyboard reference open" : "Keyboard reference closed");
@@ -830,8 +831,7 @@ function handleShortcutKeydown(event) {
       focus_left: WORKSPACE_COMMANDS.focusLeft,
       focus_right: WORKSPACE_COMMANDS.focusRight,
       focus_up: WORKSPACE_COMMANDS.focusUp,
-      jump_back: WORKSPACE_COMMANDS.jumpBack,
-      new_node_down: WORKSPACE_COMMANDS.newNodeDown,
+new_node_down: WORKSPACE_COMMANDS.newNodeDown,
       new_node_right: WORKSPACE_COMMANDS.newNodeRight,
       new_terminal_down: WORKSPACE_COMMANDS.newTerminalDown,
       new_terminal_right: WORKSPACE_COMMANDS.newTerminalRight,
@@ -881,10 +881,7 @@ function runCommand(command) {
     case WORKSPACE_COMMANDS.closeTerminal:
       closeActiveTerminal();
       break;
-    case WORKSPACE_COMMANDS.jumpBack:
-      jumpBack();
-      break;
-    case WORKSPACE_COMMANDS.toggleSidebar:
+case WORKSPACE_COMMANDS.toggleSidebar:
       state.sidebarVisible = !state.sidebarVisible;
       setLastAction(state.sidebarVisible ? "Sidebar shown" : "Sidebar hidden");
       break;
@@ -1472,6 +1469,7 @@ window.__PLEXI_DEBUG__ = {
     disposeAllPaneRuntimes();
     panelMeta.clear();
     panelBuffers.clear();
+    outputSequences.clear();
     state = bootDefaultState();
     closeContextModal();
     closeOverview();

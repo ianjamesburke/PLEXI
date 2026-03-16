@@ -15,6 +15,7 @@ type TerminalSessionRecord = {
   pty: IPty;
   outputSubscription: IDisposable;
   exitSubscription: IDisposable;
+  outputSeq: number;
   started: SessionStartedMessage;
   bootstrapDir?: string;
 };
@@ -71,9 +72,16 @@ export class LocalSessionManager {
     });
 
     const outputSubscription = pty.onData((data) => {
+        const record = this.#sessions.get(params.panelId);
+        if (!record) {
+          return;
+        }
+
+        record.outputSeq += 1;
         this.#events.onOutput?.({
           panelId: params.panelId,
           data,
+          seq: record.outputSeq,
         });
     });
     const exitSubscription = pty.onExit((event) => {
@@ -100,6 +108,7 @@ export class LocalSessionManager {
       pty,
       outputSubscription,
       exitSubscription,
+      outputSeq: 0,
       started,
       bootstrapDir: bootstrapDir || undefined,
     });

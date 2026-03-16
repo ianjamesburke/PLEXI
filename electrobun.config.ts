@@ -1,5 +1,7 @@
 import type { ElectrobunConfig } from "electrobun";
 
+const useCefRenderer = process.env["PLEXI_RENDERER"] === "cef";
+
 const NATIVE_COPY_TARGETS = [
 	"node_modules/bun-pty/rust-pty/target/release/librust_pty_arm64.dylib",
 	"node_modules/bun-pty/rust-pty/target/release/librust_pty.dylib",
@@ -44,11 +46,18 @@ export default {
 		views: {
 			mainview: {
 				entrypoint: "src/mainview/app.js",
+				sourcemap: "linked",
 			},
 		},
 		copy: buildCopyMap(),
 		mac: {
-			bundleCEF: false,
+			bundleCEF: useCefRenderer,
+			defaultRenderer: useCefRenderer ? "cef" : "native",
+			chromiumFlags: useCefRenderer
+				? {
+						"remote-debugging-port": "9333",
+					}
+				: undefined,
 		},
 		linux: {
 			bundleCEF: false,

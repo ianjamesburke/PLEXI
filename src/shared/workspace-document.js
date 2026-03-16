@@ -267,8 +267,7 @@ export function migrateLegacyWorkspaceState(parsed) {
   nextState.activePanelIdsByContext = parsed?.activePanelIdsByContext || {};
   nextState.activeNodeId = parsed?.activeNodeId || null;
   nextState.activePanelId = parsed?.activePanelId || null;
-  nextState.previousPanelId = parsed?.previousPanelId || null;
-  nextState.camera = {
+nextState.camera = {
     x: coerceNumber(parsed?.camera?.x, 0),
     y: coerceNumber(parsed?.camera?.y, 0),
     zoom: coerceNumber(parsed?.camera?.zoom, 1),
