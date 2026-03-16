@@ -57,6 +57,7 @@ function serializeNode(node) {
     x: coerceNumber(node.x, 0),
     y: coerceNumber(node.y, 0),
     activePaneId: node.activePaneId || node.panes[0]?.id || null,
+    layout: node.layout ? JSON.parse(JSON.stringify(node.layout)) : null,
     panes: node.panes.map(serializePane),
   };
 }
@@ -68,10 +69,13 @@ function createPaneFromDocument(panel, fallbackId, index) {
     title: String(panel?.title || `Terminal ${index + 1}`),
     transcript: [],
     hasReceivedInput: panel?.hasReceivedInput === true,
+    fontSize: coerceNumber(panel?.fontSize, 14),
     cwd: String(panel?.cwd || "~"),
     cwdLabel: String(panel?.cwdLabel || panel?.cwd || "~"),
     splitX: coerceNumber(panel?.splitX, 0),
     splitY: coerceNumber(panel?.splitY, 0),
+    splitWidth: coerceNumber(panel?.splitWidth, 4),
+    splitHeight: coerceNumber(panel?.splitHeight, 4),
   };
 }
 
@@ -86,6 +90,10 @@ function createNodeFromLegacyPanel(panel, contextIndex, panelIndex) {
     label: "",
     activePaneId: pane.id,
     panes: [pane],
+    layout: {
+      type: "pane",
+      paneId: pane.id,
+    },
   };
 }
 
@@ -105,6 +113,7 @@ function createNodeFromDocument(node, contextIndex, nodeIndex) {
     label: String(node?.label || ""),
     activePaneId: String(node?.activePaneId || normalizedPanes[0]?.id || ""),
     panes: normalizedPanes,
+    layout: node?.layout ? JSON.parse(JSON.stringify(node.layout)) : null,
   };
 }
 

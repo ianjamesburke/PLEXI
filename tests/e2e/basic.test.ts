@@ -6,8 +6,8 @@ test("split groups stay inside one top-level node and collapse cleanly on close"
   await page.evaluate(() => window.__PLEXI_DEBUG__.reset());
 
   await page.keyboard.press("Control+N");
-  await page.keyboard.press("Control+N");
-  await page.keyboard.press("Control+Shift+N");
+  await page.keyboard.press("Control+D");
+  await page.keyboard.press("Control+Shift+D");
 
   const getActivePanelId = () => page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId);
   expect(await getActivePanelId()).toBe("panel-3");
@@ -21,40 +21,48 @@ test("split groups stay inside one top-level node and collapse cleanly on close"
         nodeId: panel.nodeId,
         splitX: panel.splitX,
         splitY: panel.splitY,
+        splitWidth: panel.splitWidth,
+        splitHeight: panel.splitHeight,
       })),
     };
   });
 
   expect(topology.nodes).toBe(1);
   expect(topology.panes).toEqual([
-    { id: "panel-1", nodeId: "node-1", splitX: 0, splitY: 0 },
-    { id: "panel-2", nodeId: "node-1", splitX: 1, splitY: 0 },
-    { id: "panel-3", nodeId: "node-1", splitX: 1, splitY: 1 },
+    { id: "panel-1", nodeId: "node-1", splitX: 0, splitY: 0, splitWidth: 2, splitHeight: 2 },
+    { id: "panel-2", nodeId: "node-1", splitX: 2, splitY: 0, splitWidth: 2, splitHeight: 2 },
+    { id: "panel-3", nodeId: "node-1", splitX: 0, splitY: 2, splitWidth: 4, splitHeight: 2 },
   ]);
 
   await expect(page.locator(".terminal-frame--split")).toHaveCount(3);
   await expect(page.locator("#minimap-grid .minimap-node")).toHaveCount(1);
-  await expect(page.locator("#minimap-grid .minimap-node-count")).toHaveText("3");
+  await expect(page.locator("#minimap-grid .minimap-pane-preview")).toHaveCount(3);
 
   await page.keyboard.press("Control+ArrowUp");
-  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
-
-  await page.keyboard.press("Control+ArrowLeft");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-1");
 
-  await page.keyboard.press("Control+W");
+  await page.keyboard.press("Control+ArrowRight");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
+
+  await page.keyboard.press("Control+W");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-1");
 
   const panelPositions = await page.evaluate(() => {
     const state = window.__PLEXI_DEBUG__.getState();
     return state.panels
-      .map((panel) => ({ title: panel.title, splitX: panel.splitX, splitY: panel.splitY }))
+      .map((panel) => ({
+        title: panel.title,
+        splitX: panel.splitX,
+        splitY: panel.splitY,
+        splitWidth: panel.splitWidth,
+        splitHeight: panel.splitHeight,
+      }))
       .sort((a, b) => a.title.localeCompare(b.title));
   });
 
   expect(panelPositions).toEqual([
-    { title: "Terminal 2", splitX: 0, splitY: 0 },
-    { title: "Terminal 3", splitX: 0, splitY: 1 },
+    { title: "Terminal 1", splitX: 0, splitY: 0, splitWidth: 4, splitHeight: 2 },
+    { title: "Terminal 3", splitX: 0, splitY: 2, splitWidth: 4, splitHeight: 2 },
   ]);
 });
 
@@ -134,16 +142,15 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#focus-path")).toBeHidden();
   
   await expect(page.locator("#toolbar-context")).toHaveText("Context 1");
-  await expect(page.locator("#empty-shell .empty-tagline")).toHaveText("Open a terminal, cd into a project and then open one beside or below it.");
-  await expect(page.locator("#empty-shell")).toContainText("Open your first terminal here");
+  await expect(page.locator("#empty-shell .empty-tagline")).toHaveText("Open a node with ⌘+N, then split it with ⌘+D or ⌘+⇧+D.");
   await expect(page.locator("#empty-shell")).toContainText("Contexts live here.");
+  await expect(page.locator("#focus-right-slot")).toHaveCount(0);
+  await expect(page.locator("#focus-bottom-slot")).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 
   await page.keyboard.press("Control+N");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-1");
   await expect(page.locator("#toolbar-context")).toHaveText("Context 1");
-  await expect(page.locator("#focus-right-slot")).toBeVisible();
-  await expect(page.locator("#focus-bottom-slot")).toBeVisible();
   await expect(page.locator("#focus-path")).toHaveText("~");
   await expect(page.locator(".xterm")).toBeVisible();
 
@@ -158,17 +165,17 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await page.keyboard.press("Enter");
   await expect(page.locator("#terminal-mount")).toContainText("split-right");
 
-  await page.keyboard.press("Control+Shift+N");
-  await expect(page.locator("#toast-layer")).toContainText("Terminal 2 split below");
+  await page.keyboard.press("Control+D");
+  await expect(page.locator("#toast-layer")).toContainText("Terminal 2 split right");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
   
 
-  await page.keyboard.press("Control+N");
-  await expect(page.locator("#toast-layer")).toContainText("Terminal 3 split right");
+  await page.keyboard.press("Control+Shift+D");
+  await expect(page.locator("#toast-layer")).toContainText("Terminal 3 split below");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-3");
   await expect(page.locator(".terminal-frame--split")).toHaveCount(3);
-  await expect(page.locator(".pane-preview")).toHaveCount(2);
-  await page.locator('[data-command="new-node-right"]').click();
+  await expect(page.locator(".terminal-mount .xterm")).toHaveCount(3);
+  await page.keyboard.press("Control+N");
   await expect(page.locator("#toast-layer")).toContainText("Terminal 4 opened in a node to the right");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
   expect(await page.evaluate(() => (window.__PLEXI_DEBUG__.getState().nodes || []).length)).toBe(2);
@@ -182,6 +189,7 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await page.keyboard.press("Control+S");
   await page.reload();
   expect(await page.evaluate(() => (window.__PLEXI_DEBUG__.getState().nodes || []).length)).toBe(2);
+  await page.keyboard.press("Control+4");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
   
 
@@ -199,7 +207,7 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#context-modal")).toBeVisible();
   await page.locator("#context-name-input").fill("<b>Context 2</b>");
   await page.locator("#context-form").evaluate((form) => form.requestSubmit());
-  await page.keyboard.press("Control+2");
+  await page.keyboard.press("Control+Shift+2");
   await expect(page.locator("#toolbar-context")).toHaveText("<b>Context 2</b>");
   await expect(page.locator("#context-list")).toContainText("<b>Context 2</b>");
   expect(await page.locator("#context-list b").count()).toBe(0);
@@ -207,8 +215,13 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#focus-path")).toBeHidden();
   
 
-  await page.keyboard.press("Control+1");
+  await page.keyboard.press("Control+Shift+1");
   await expect(page.locator("#toolbar-context")).toHaveText("Project Alpha");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
+
+  await page.keyboard.press("Control+2");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
+  await page.keyboard.press("Control+4");
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
 
   await page.locator('[data-rename-context-index="1"]').click();
@@ -232,13 +245,24 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator(".workspace-toolbar")).toHaveClass(/electrobun-webkit-app-region-drag/);
 
   await page.keyboard.press("Control+M");
-  await expect(page.locator("#minimap")).not.toHaveClass(/is-hidden/);
-  await expect(page.locator("#minimap-overlay")).toHaveClass(/is-hidden/);
-  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().minimapVisible)).toBe(false);
+  await expect(page.locator("#minimap")).toBeVisible();
+  await expect(page.locator("#overview-shell")).toBeVisible();
+  await expect(page.locator("#toolbar-context")).toHaveText("Workspace Overview");
+  await expect(page.locator("#overview-grid .overview-context")).toHaveCount(1);
+  await expect(page.locator("#overview-grid .minimap-node")).toHaveCount(2);
+  await expect(page.locator("#overview-grid .minimap-pane-preview")).toHaveCount(4);
+  await page.locator('#overview-grid [data-focus-panel="panel-2"]').click();
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
+  await expect(page.locator("#overview-shell")).toHaveClass(/is-hidden/);
+  await expect(page.locator("#overview-shell")).toBeHidden();
 
   await page.keyboard.press("Control+M");
-  await expect(page.locator("#minimap-overlay")).not.toHaveClass(/is-hidden/);
-  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().minimapVisible)).toBe(true);
+  await expect(page.locator("#overview-shell")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#overview-shell")).toHaveClass(/is-hidden/);
+  await expect(page.locator("#overview-shell")).toBeHidden();
+  await page.keyboard.press("Control+4");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-4");
 
   await page.setViewportSize({ width: 1040, height: 720 });
 
@@ -259,7 +283,7 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
 
   await page.keyboard.press("Control+W");
   await expect(page.locator("#toast-layer")).toContainText("Terminal 4 closed");
-  await expect(page.locator("#minimap-size")).toHaveText("1 node · 3 panes");
+  await expect(page.locator("#minimap-size")).toHaveText("1 node");
 
   await page.keyboard.press("Control+W");
   await page.keyboard.press("Control+W");

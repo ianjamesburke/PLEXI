@@ -75,6 +75,9 @@
                     "activePaneId": {
                       "type": ["string", "null"]
                     },
+                    "layout": {
+                      "type": ["object", "null"]
+                    },
                     "panes": {
                       "type": "array",
                       "minItems": 1,
@@ -90,8 +93,11 @@
                           "title": { "type": "string" },
                           "cwd": { "type": "string" },
                           "cwdLabel": { "type": "string" },
+                          "fontSize": { "type": "number", "minimum": 8 },
                           "splitX": { "type": "number" },
-                          "splitY": { "type": "number" }
+                          "splitY": { "type": "number" },
+                          "splitWidth": { "type": "number" },
+                          "splitHeight": { "type": "number" }
                         }
                       }
                     }
@@ -113,7 +119,8 @@
                     "x": { "type": "number" },
                     "y": { "type": "number" },
                     "cwd": { "type": "string" },
-                    "cwdLabel": { "type": "string" }
+                    "cwdLabel": { "type": "string" },
+                    "fontSize": { "type": "number", "minimum": 8 }
                   }
                 }
               }

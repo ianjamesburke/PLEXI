@@ -22,7 +22,7 @@ import {
   renameContextRecord,
   setContextIndex,
 } from "../shared/workspace-state.js";
-import { CONTEXT_COMMANDS, WORKSPACE_COMMANDS, isWorkspaceCommand } from "../shared/commands.js";
+import { CONTEXT_COMMANDS, PANE_COMMANDS, WORKSPACE_COMMANDS, isWorkspaceCommand } from "../shared/commands.js";
 import { getDisplayContextLabel } from "../shared/workspace-document.js";
 import { resolveKeybind } from "../shared/keybinds.js";
 import { createSessionBridge } from "./session-bridge.js";
@@ -51,7 +51,7 @@ import {
   setXtermError,
 } from "./xterm-runtime.js";
 
-let terminalRuntime = null;
+const paneRuntimes = new Map();
 const panelBuffers = new Map();
 const panelMeta = new Map();
 const panelSessions = new Set();
@@ -61,6 +61,7 @@ let state = bootDefaultState();
 const uiState = {
   workspaceStorageSource: "browser",
   contextModalOpen: false,
+  overviewOpen: false,
   contextRenameIndex: null,
   contextDeleteConfirming: false,
   contextDeleteTimer: null,
@@ -100,16 +101,22 @@ const sessionBridge = createSessionBridge({
 
     appendPanelBuffer(message.panelId, cleaned);
 
-    if (terminalRuntime?.panel?.id === message.panelId) {
-      terminalRuntime.terminal.write(cleaned);
+    const runtime = getPaneRuntime(message.panelId);
+    if (runtime) {
+      runtime.terminal.write(cleaned);
+      if (!runtime.interactive) {
+        runtime.terminal.scrollToBottom?.();
+      }
     }
   },
   onExit(message) {
     panelSessions.delete(message.panelId);
     appendPanelBuffer(message.panelId, `\r\n[session exited ${message.exitCode}]\r\n`);
 
-    if (terminalRuntime?.panel?.id === message.panelId) {
-      terminalRuntime.terminal.write(`\r\n[session exited ${message.exitCode}]\r\n`);
+    const runtime = getPaneRuntime(message.panelId);
+    if (runtime) {
+      runtime.terminal.write(`\r\n[session exited ${message.exitCode}]\r\n`);
+      runtime.terminal.scrollToBottom?.();
     }
   },
   onError(message) {
@@ -124,8 +131,9 @@ const sessionBridge = createSessionBridge({
   },
   onClear(panelId) {
     clearPanelBuffer(panelId);
-    if (terminalRuntime?.panel?.id === panelId) {
-      terminalRuntime.terminal.clear();
+    const runtime = getPaneRuntime(panelId);
+    if (runtime) {
+      runtime.terminal.clear();
     }
   },
 });
@@ -217,6 +225,10 @@ function syncViewportMetrics() {
   if (viewportHeight > 0) {
     document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
   }
+
+  if (uiState.overviewOpen) {
+    renderOverview();
+  }
 }
 
 function appendPanelBuffer(panelId, chunk) {
@@ -265,8 +277,45 @@ function resetDeleteConfirmation() {
 }
 
 function replayBuffer(runtime) {
+  runtime.mountNode?.classList.add("terminal-mount--hydrating");
+  runtime.terminal.options.cursorBlink = false;
+  runtime.terminal.reset();
   runtime.terminal.clear();
-  runtime.terminal.write(panelBuffers.get(runtime.panel.id) || "");
+  runtime.terminal.write(panelBuffers.get(runtime.panel.id) || "", () => {
+    runtime.resizeHandler();
+    runtime.terminal.scrollToBottom?.();
+    runtime.mountNode?.classList.remove("terminal-mount--hydrating");
+    runtime.terminal.options.cursorBlink = runtime.interactive;
+    if (runtime.interactive) {
+      window.requestAnimationFrame(() => {
+        runtime.terminal.focus();
+      });
+    }
+  });
+}
+
+function getPaneRuntime(panelId) {
+  return paneRuntimes.get(panelId) || null;
+}
+
+function getActiveRuntime() {
+  return getPaneRuntime(state.activePanelId);
+}
+
+function disposePaneRuntime(panelId) {
+  const runtime = getPaneRuntime(panelId);
+  if (!runtime) {
+    return;
+  }
+
+  runtime.dispose();
+  paneRuntimes.delete(panelId);
+}
+
+function disposeAllPaneRuntimes() {
+  for (const panelId of paneRuntimes.keys()) {
+    disposePaneRuntime(panelId);
+  }
 }
 
 function updatePanelDirectory(panelId, cwd) {
@@ -279,7 +328,7 @@ function updatePanelDirectory(panelId, cwd) {
   panel.cwdLabel = formatPathLabel(cwd, homeDirectory);
   saveState();
 
-  if (terminalRuntime?.panel?.id === panelId) {
+  if (getPaneRuntime(panelId)) {
     render();
   }
 }
@@ -335,8 +384,8 @@ async function ensurePanelSession(panel) {
     await sessionBridge.openSession({
       panelId: panel.id,
       cwd: panel.cwd,
-      cols: terminalRuntime?.terminal?.cols || 80,
-      rows: terminalRuntime?.terminal?.rows || 24,
+      cols: getPaneRuntime(panel.id)?.terminal?.cols || getActiveRuntime()?.terminal?.cols || 80,
+      rows: getPaneRuntime(panel.id)?.terminal?.rows || getActiveRuntime()?.terminal?.rows || 24,
     });
   } catch (error) {
     panelSessions.delete(panel.id);
@@ -354,25 +403,76 @@ function ensurePanelSessions() {
 }
 
 function closePanelSession(panelId) {
+  disposePaneRuntime(panelId);
   panelSessions.delete(panelId);
   panelMeta.delete(panelId);
   panelBuffers.delete(panelId);
   void sessionBridge.closeSession({ panelId });
 }
 
-function disposeRuntime() {
-  if (!terminalRuntime) {
-    return;
-  }
+function createPaneRuntime(panel, mountNode, interactive) {
+  return createTerminalRuntime({
+    panel,
+    mountNode,
+    interactive: true,
+    onData(runtime, rawData) {
+      runtime.panel.hasReceivedInput = true;
+      void sessionBridge.writeToSession({
+        panelId: runtime.panel.id,
+        data: rawData,
+      });
+    },
+    onShortcut(event, runtime) {
+      if (handleShortcutKeydown(event)) {
+        return false;
+      }
 
-  terminalRuntime.dispose();
-  terminalRuntime = null;
+      const match = resolveTerminalKeybind(event, {
+        hasSelection: Boolean(runtime.terminal.getSelection()),
+      });
+
+      if (!match) {
+        return true;
+      }
+
+      if (match.action.name === "copy_to_clipboard") {
+        event.preventDefault();
+        void copySelection(runtime);
+        return false;
+      }
+
+      if (match.action.name === "paste_from_clipboard") {
+        event.preventDefault();
+        void pasteClipboard(runtime);
+        return false;
+      }
+
+      if (match.consume) {
+        event.preventDefault();
+        return false;
+      }
+
+      return true;
+    },
+    onResize(runtime) {
+      void sessionBridge.resizeSession({
+        panelId: runtime.panel.id,
+        cols: runtime.terminal.cols,
+        rows: runtime.terminal.rows,
+      });
+    },
+    onLinkClick(uri) {
+      if (uri) {
+        void sessionBridge.openExternalUrl(uri);
+      }
+    },
+    replayBuffer,
+  });
 }
 
-async function mountActiveTerminal(activePanel) {
-  if (!activePanel || activePanel.type !== "terminal") {
-    disposeRuntime();
-    clearNode(dom.terminalMount);
+async function syncVisiblePaneRuntimes(activeNode, activePanel) {
+  if (!activeNode || !activePanel) {
+    disposeAllPaneRuntimes();
     return;
   }
 
@@ -381,82 +481,63 @@ async function mountActiveTerminal(activePanel) {
     await ensureTerminalFont();
   } catch (error) {
     setXtermError();
-    dom.terminalMount.textContent = String(error);
-    dom.terminalMount.classList.add("terminal-mount--error");
+    disposeAllPaneRuntimes();
+    const errorMount = dom.focusNodeGrid?.querySelector("[data-panel-terminal-mount]");
+    if (errorMount instanceof HTMLElement) {
+      errorMount.textContent = String(error);
+      errorMount.classList.add("terminal-mount--error");
+    }
     return;
   }
 
+  const desiredPanels = activeNode.panes.filter((panel) => panel.type === "terminal");
+  const desiredIds = new Set(desiredPanels.map((panel) => panel.id));
 
-  dom.terminalMount.classList.remove("terminal-mount--loading", "terminal-mount--error");
-  if (terminalRuntime?.panel?.id !== activePanel.id) {
-    disposeRuntime();
-    clearNode(dom.terminalMount);
-    terminalRuntime = createTerminalRuntime({
-      panel: activePanel,
-      mountNode: dom.terminalMount,
-      onData(runtime, rawData) {
-        runtime.panel.hasReceivedInput = true;
-        void sessionBridge.writeToSession({
-          panelId: runtime.panel.id,
-          data: rawData,
-        });
-      },
-      onShortcut(event, runtime) {
-        if (handleShortcutKeydown(event)) {
-          return false;
-        }
-
-        const match = resolveTerminalKeybind(event, {
-          hasSelection: Boolean(runtime.terminal.getSelection()),
-        });
-
-        if (!match) {
-          return true;
-        }
-
-        if (match.action.name === "copy_to_clipboard") {
-          event.preventDefault();
-          void copySelection(runtime);
-          return false;
-        }
-
-        if (match.action.name === "paste_from_clipboard") {
-          event.preventDefault();
-          void pasteClipboard(runtime);
-          return false;
-        }
-
-        if (match.consume) {
-          event.preventDefault();
-          return false;
-        }
-
-        return true;
-      },
-      onResize(runtime) {
-        void sessionBridge.resizeSession({
-          panelId: runtime.panel.id,
-          cols: runtime.terminal.cols,
-          rows: runtime.terminal.rows,
-        });
-      },
-      onLinkClick(uri) {
-        if (uri) {
-          void sessionBridge.openExternalUrl(uri);
-        }
-      },
-      replayBuffer,
-    });
-    return;
+  for (const panelId of paneRuntimes.keys()) {
+    if (!desiredIds.has(panelId)) {
+      disposePaneRuntime(panelId);
+    }
   }
 
-  terminalRuntime.panel = activePanel;
-  void sessionBridge.resizeSession({
-    panelId: activePanel.id,
-    cols: terminalRuntime.terminal.cols,
-    rows: terminalRuntime.terminal.rows,
+  const mounts = new Map(
+    [...document.querySelectorAll("[data-panel-terminal-mount]")]
+      .map((node) => [node.getAttribute("data-panel-terminal-mount"), node])
+      .filter(([panelId, node]) => panelId && node instanceof HTMLElement),
+  );
+
+  desiredPanels.forEach((panel) => {
+    const mountNode = mounts.get(panel.id);
+    if (!(mountNode instanceof HTMLElement)) {
+      disposePaneRuntime(panel.id);
+      return;
+    }
+
+    mountNode.classList.remove("terminal-mount--loading", "terminal-mount--error");
+    const interactive = panel.id === activePanel.id;
+    const existing = getPaneRuntime(panel.id);
+    const needsRecreate = !existing
+      || existing.panel.id !== panel.id
+      || existing.panel.fontSize !== panel.fontSize
+      || existing.terminal.element?.parentElement !== mountNode;
+
+    if (needsRecreate) {
+      disposePaneRuntime(panel.id);
+      paneRuntimes.set(panel.id, createPaneRuntime(panel, mountNode, interactive));
+      return;
+    }
+
+    existing.panel = panel;
+    existing.mountNode = mountNode;
+    existing.interactive = interactive;
+    mountNode.classList.toggle("terminal-mount--preview", !interactive);
+    mountNode.classList.toggle("terminal-mount--active", interactive);
+    existing.terminal.options.disableStdin = !interactive;
+    existing.terminal.options.cursorBlink = interactive;
+    existing.resizeHandler();
+    if (interactive) {
+      existing.terminal.focus();
+    }
   });
-  terminalRuntime.terminal.focus();
 }
 
 
@@ -603,6 +684,31 @@ function switchToContext(index) {
   return true;
 }
 
+function closeOverview() {
+  uiState.overviewOpen = false;
+}
+
+function toggleOverview() {
+  uiState.overviewOpen = !uiState.overviewOpen;
+  setLastAction(uiState.overviewOpen ? "Workspace overview open" : "Workspace overview closed");
+}
+
+function focusVisiblePane(index) {
+  const visiblePanels = getVisiblePanels(state);
+  const panel = visiblePanels[index];
+
+  if (!panel) {
+    setLastAction(`Pane ${index + 1} is not available`);
+    return false;
+  }
+
+  focusPanel(state, panel.id);
+  setLastAction(`Focused ${panel.title}`);
+  saveState();
+  render();
+  return true;
+}
+
 function createTerminal(direction, cwd = null, cwdLabel = null) {
   if (state.contexts.length === 0) {
     createContextRecord(state, "");
@@ -653,10 +759,6 @@ function closeActiveTerminal() {
   const removed = closePanelRecord(state, activePanel.id);
 
   if (removed) {
-    if (terminalRuntime?.panel?.id === removed.id) {
-      disposeRuntime();
-      clearNode(dom.terminalMount);
-    }
     closePanelSession(removed.id);
     setLastAction(`${removed.title} closed`);
   }
@@ -699,6 +801,15 @@ function handleShortcutKeydown(event) {
     event.preventDefault();
     const actionToCommand = {
       close_terminal: WORKSPACE_COMMANDS.closeTerminal,
+      pane_1: WORKSPACE_COMMANDS.pane1,
+      pane_2: WORKSPACE_COMMANDS.pane2,
+      pane_3: WORKSPACE_COMMANDS.pane3,
+      pane_4: WORKSPACE_COMMANDS.pane4,
+      pane_5: WORKSPACE_COMMANDS.pane5,
+      pane_6: WORKSPACE_COMMANDS.pane6,
+      pane_7: WORKSPACE_COMMANDS.pane7,
+      pane_8: WORKSPACE_COMMANDS.pane8,
+      pane_9: WORKSPACE_COMMANDS.pane9,
       context_1: WORKSPACE_COMMANDS.context1,
       context_2: WORKSPACE_COMMANDS.context2,
       context_3: WORKSPACE_COMMANDS.context3,
@@ -771,8 +882,7 @@ function runCommand(command) {
       setLastAction(state.sidebarVisible ? "Sidebar shown" : "Sidebar hidden");
       break;
     case WORKSPACE_COMMANDS.toggleMinimap:
-      state.minimapVisible = !state.minimapVisible;
-      setLastAction(state.minimapVisible ? "Map shown" : "Map hidden");
+      toggleOverview();
       break;
     case WORKSPACE_COMMANDS.toggleShortcuts:
     case WORKSPACE_COMMANDS.showShortcuts:
@@ -783,12 +893,28 @@ function runCommand(command) {
       setLastAction("Workspace saved");
       break;
     case WORKSPACE_COMMANDS.zoomIn:
-      adjustTerminalFontSize(getTerminalZoomStep(), terminalRuntime);
+      if (state.activePanelId) {
+        const activeRuntime = getActiveRuntime();
+        const activePanel = getActivePanel(state);
+        activePanel.fontSize = adjustTerminalFontSize(
+          getTerminalZoomStep(),
+          activeRuntime,
+          activePanel.fontSize,
+        );
+      }
       setLastAction("Font size increased");
       saveState();
       break;
     case WORKSPACE_COMMANDS.zoomOut:
-      adjustTerminalFontSize(-getTerminalZoomStep(), terminalRuntime);
+      if (state.activePanelId) {
+        const activeRuntime = getActiveRuntime();
+        const activePanel = getActivePanel(state);
+        activePanel.fontSize = adjustTerminalFontSize(
+          -getTerminalZoomStep(),
+          activeRuntime,
+          activePanel.fontSize,
+        );
+      }
       setLastAction("Font size decreased");
       saveState();
       break;
@@ -820,6 +946,10 @@ function runCommand(command) {
       openContextModal();
       return;
     default:
+      if (PANE_COMMANDS.includes(command)) {
+        focusVisiblePane(Number(command.slice(-1)) - 1);
+        return;
+      }
       if (CONTEXT_COMMANDS.includes(command)) {
         switchToContext(Number(command.slice(-1)) - 1);
         return;
@@ -880,129 +1010,152 @@ function renderContextButtons() {
   dom.contextList.replaceChildren(...rows);
 }
 
-function buildMinimapNodes(visibleNodes, activeNode, gridElement, maxHeight) {
+function createMinimapNode(nodeRecord, activeNode, options) {
+  const node = document.createElement("button");
+  const active = nodeRecord.id === activeNode?.id ? "is-active" : "";
+  const rowFocus = isRowFocusPanel(nodeRecord.panes.find((pane) => pane.id === nodeRecord.activePaneId) || nodeRecord.panes[0]) ? "is-row-focus" : "";
+  const variant = options.variant === "overview" ? "minimap-node--overview" : "minimap-node--sidebar";
+  const activePane = nodeRecord.panes.find((pane) => pane.id === nodeRecord.activePaneId) || nodeRecord.panes[0];
+  const paneBounds = getNodePaneBounds(nodeRecord);
+
+  node.className = `minimap-node ${variant} ${active} ${rowFocus}`.trim();
+  node.type = "button";
+  node.dataset.focusPanel = nodeRecord.activePaneId || nodeRecord.panes[0]?.id || "";
+  if (Number.isInteger(options.contextIndex)) {
+    node.dataset.focusContextIndex = String(options.contextIndex);
+  }
+  node.style.left = `${options.left}px`;
+  node.style.top = `${options.top}px`;
+  node.style.width = `${options.width}px`;
+  node.style.height = `${options.height}px`;
+  node.setAttribute("aria-label", activePane?.title || "Workspace node");
+
+  const surface = document.createElement("div");
+  surface.className = "minimap-node__surface";
+  nodeRecord.panes.forEach((pane) => {
+    const preview = document.createElement("div");
+    preview.className = `minimap-pane-preview ${pane.id === nodeRecord.activePaneId ? "is-active" : ""}`.trim();
+    preview.style.left = `${((pane.splitX - paneBounds.minX) / paneBounds.width) * 100}%`;
+    preview.style.top = `${((pane.splitY - paneBounds.minY) / paneBounds.height) * 100}%`;
+    preview.style.width = `${(pane.splitWidth / paneBounds.width) * 100}%`;
+    preview.style.height = `${(pane.splitHeight / paneBounds.height) * 100}%`;
+    surface.append(preview);
+  });
+  node.append(surface);
+
+  return node;
+}
+
+function buildMinimapNodes(visibleNodes, activeNode, gridElement, maxHeight, options = {}) {
   const bounds = getBounds(visibleNodes);
-  const width = gridElement.clientWidth || 228;
+  const width = gridElement.clientWidth || options.defaultWidth || 228;
   const spanX = Math.max(bounds.width + 1, 1);
   const spanY = Math.max(bounds.height + 1, 1);
-  const gutter = 10;
-  const nodeSize = 18;
-  const cellWidth = Math.max(nodeSize + 4, Math.min(nodeSize + 12, Math.floor((width - gutter * 2) / spanX)));
-  const cellHeight = Math.max(nodeSize + 2, Math.min(nodeSize + 8, Math.floor(maxHeight / spanY)));
-  const gridHeight = Math.max(88, Math.min(maxHeight + 28, spanY * cellHeight + gutter * 2));
+  const gutter = options.gutter || 10;
+  const baseNodeSize = options.baseNodeSize || 18;
+  const cellWidth = Math.max(baseNodeSize + 4, Math.min(baseNodeSize + 20, Math.floor((width - gutter * 2) / spanX)));
+  const cellHeight = Math.max(baseNodeSize + 2, Math.min(baseNodeSize + 16, Math.floor(maxHeight / spanY)));
+  const gridHeight = Math.max(options.minHeight || 88, Math.min(maxHeight + 28, spanY * cellHeight + gutter * 2));
   gridElement.style.height = `${gridHeight}px`;
 
-  return visibleNodes.map((nodeRecord) => {
-    const left = (nodeRecord.x - bounds.minX) * cellWidth + gutter;
-    const top = (nodeRecord.y - bounds.minY) * cellHeight + gutter;
-    const node = document.createElement("button");
-    const active = nodeRecord.id === activeNode?.id ? "is-active" : "";
-    const rowFocus = isRowFocusPanel(nodeRecord.panes.find((pane) => pane.id === nodeRecord.activePaneId) || nodeRecord.panes[0]) ? "is-row-focus" : "";
-    node.className = `minimap-node ${active} ${rowFocus}`.trim();
-    node.dataset.focusPanel = nodeRecord.activePaneId || nodeRecord.panes[0]?.id || "";
-    node.style.left = `${left}px`;
-    node.style.top = `${top}px`;
-    const activePane = nodeRecord.panes.find((pane) => pane.id === nodeRecord.activePaneId) || nodeRecord.panes[0];
-    node.setAttribute("aria-label", activePane?.title || "Workspace node");
-    if (nodeRecord.panes.length > 1) {
-      const badge = document.createElement("span");
-      badge.className = "minimap-node-count";
-      badge.textContent = String(nodeRecord.panes.length);
-      node.append(badge);
+  return visibleNodes.map((nodeRecord) => createMinimapNode(nodeRecord, activeNode, {
+    variant: options.variant || "sidebar",
+    contextIndex: options.contextIndex,
+    left: (nodeRecord.x - bounds.minX) * cellWidth + gutter,
+    top: (nodeRecord.y - bounds.minY) * cellHeight + gutter,
+    width: cellWidth - 4,
+    height: cellHeight - 4,
+  }));
+}
+
+function renderOverview() {
+  if (!dom.overviewShell || !dom.overviewGrid) {
+    return;
+  }
+
+  dom.overviewShell.classList.toggle("is-hidden", !uiState.overviewOpen);
+  dom.overviewShell.setAttribute("aria-hidden", String(!uiState.overviewOpen));
+  if (!uiState.overviewOpen) {
+    clearNode(dom.overviewGrid);
+    return;
+  }
+
+  if (dom.overviewSummary) {
+    const contextCount = state.contexts.length;
+    const nodeCount = state.contexts.reduce((count, _context, contextIndex) => {
+      return count + getVisibleNodes({ ...state, activeContextIndex: contextIndex }).length;
+    }, 0);
+    dom.overviewSummary.textContent = `${contextCount} context${contextCount === 1 ? "" : "s"} · ${nodeCount} node${nodeCount === 1 ? "" : "s"}`;
+  }
+
+  const contextSections = state.contexts.map((context, contextIndex) => {
+    const section = document.createElement("section");
+    section.className = `overview-context ${contextIndex === state.activeContextIndex ? "is-active" : ""}`.trim();
+
+    const visibleNodes = getVisibleNodes({ ...state, activeContextIndex: contextIndex });
+    const activePanelId = state.activePanelIdsByContext?.[contextIndex] || null;
+    const activeNode = visibleNodes.find((node) => node.panes.some((pane) => pane.id === activePanelId))
+      || visibleNodes[0]
+      || null;
+
+    const label = document.createElement("div");
+    label.className = "overview-context__label";
+    const title = document.createElement("span");
+    title.textContent = formatContextLabel(context.label, contextIndex);
+    const meta = document.createElement("span");
+    meta.className = "overview-context__meta";
+    const paneCount = visibleNodes.reduce((count, node) => count + node.panes.length, 0);
+    meta.textContent = `${visibleNodes.length} node${visibleNodes.length === 1 ? "" : "s"} · ${paneCount} pane${paneCount === 1 ? "" : "s"}`;
+    label.append(title, meta);
+
+    const grid = document.createElement("div");
+    grid.className = "overview-context__grid";
+
+    if (visibleNodes.length > 0) {
+      const nodes = buildMinimapNodes(visibleNodes, activeNode, grid, 180, {
+        variant: "overview",
+        contextIndex,
+        baseNodeSize: 72,
+        defaultWidth: grid.clientWidth || dom.overviewShell?.clientWidth || 900,
+        minHeight: 132,
+        gutter: 12,
+      });
+      grid.replaceChildren(...nodes);
     }
-    return node;
+
+    section.append(label, grid);
+    return section;
   });
+
+  dom.overviewGrid.replaceChildren(...contextSections);
 }
 
 function renderMinimap(visibleNodes, activeNode) {
   const hasVisibleNodes = visibleNodes.length > 0;
-  const paneCount = visibleNodes.reduce((count, node) => count + node.panes.length, 0);
-  const shouldShowOverlayMinimap = state.minimapVisible !== false && hasVisibleNodes;
-  dom.minimap.classList.toggle("is-hidden", !hasVisibleNodes);
-  dom.overlayMinimap.classList.toggle("is-hidden", !shouldShowOverlayMinimap);
-  dom.minimapSize.textContent = `${visibleNodes.length} node${visibleNodes.length === 1 ? "" : "s"} · ${paneCount} pane${paneCount === 1 ? "" : "s"}`;
+  dom.minimapSize.textContent = `${visibleNodes.length} node${visibleNodes.length === 1 ? "" : "s"}`;
 
   if (!hasVisibleNodes) {
     clearNode(dom.minimapGrid);
-    clearNode(dom.overlayMinimapGrid);
+    renderOverview();
     return;
   }
 
-  const sidebarNodes = buildMinimapNodes(visibleNodes, activeNode, dom.minimapGrid, 148);
+  const sidebarNodes = buildMinimapNodes(visibleNodes, activeNode, dom.minimapGrid, 148, {
+    variant: "sidebar",
+    baseNodeSize: 18,
+    defaultWidth: 228,
+    minHeight: 88,
+  });
   dom.minimapGrid.replaceChildren(...sidebarNodes);
-
-  if (!shouldShowOverlayMinimap) {
-    clearNode(dom.overlayMinimapGrid);
-    return;
-  }
-
-  const overlayNodes = buildMinimapNodes(visibleNodes, activeNode, dom.overlayMinimapGrid, 120);
-  dom.overlayMinimapGrid.replaceChildren(...overlayNodes);
-}
-
-function hasOpenAdjacentSpace(nodeRecord, panel, direction) {
-  if (!nodeRecord || !panel) {
-    return false;
-  }
-
-  if (nodeRecord.panes.length >= 4) {
-    return false;
-  }
-
-  if (nodeRecord.panes.length === 1) {
-    return true;
-  }
-
-  const target =
-    direction === DIRECTIONS.down
-      ? { x: panel.splitX, y: panel.splitY + 1 }
-      : { x: panel.splitX + 1, y: panel.splitY };
-
-  return !nodeRecord.panes.some((item) => item.splitX === target.x && item.splitY === target.y);
+  renderOverview();
 }
 
 function renderSparseFocusHints(visibleNodes, activeNode, activePanel) {
-  const canShowHints = visibleNodes.length === 1
-    && Boolean(activeNode)
-    && Boolean(activePanel)
-    && !activePanel.hasReceivedInput;
-  const rightOpen = canShowHints && hasOpenAdjacentSpace(activeNode, activePanel, DIRECTIONS.right);
-  const bottomOpen = canShowHints && hasOpenAdjacentSpace(activeNode, activePanel, DIRECTIONS.down);
-  dom.focusRightSlot?.classList.toggle("is-hidden", !rightOpen);
-  dom.focusBottomSlot?.classList.toggle("is-hidden", !bottomOpen);
-}
-
-function getPanePreview(panel) {
-  const content = panelBuffers.get(panel.id) || "";
-  if (!content.trim()) {
-    return `[${panel.title} idle]`;
-  }
-
-  return content.slice(-4000);
-}
-
-function renameActivePane() {
-  const activePanel = getActivePanel(state);
-  if (!activePanel) {
-    setLastAction("No pane to rename");
-    return;
-  }
-
-  const nextLabel = window.prompt("Pane label", activePanel.title);
-  if (nextLabel === null) {
-    return;
-  }
-
-  const trimmed = nextLabel.trim();
-  if (!trimmed) {
-    setLastAction("Pane label unchanged");
-    return;
-  }
-
-  activePanel.title = trimmed;
-  setLastAction(`Pane renamed to ${trimmed}`);
-  saveState();
-  render();
+  void visibleNodes;
+  void activeNode;
+  void activePanel;
+  dom.focusRightSlot?.classList.add("is-hidden");
+  dom.focusBottomSlot?.classList.add("is-hidden");
 }
 
 function renderActiveNode(activeNode, activePanel) {
@@ -1010,64 +1163,96 @@ function renderActiveNode(activeNode, activePanel) {
     return;
   }
 
-  clearNode(dom.focusNodeGrid);
-
   if (!activeNode || !activePanel) {
+    clearNode(dom.focusNodeGrid);
     return;
   }
 
   const paneBounds = getNodePaneBounds(activeNode);
-  dom.focusNodeGrid.style.gridTemplateColumns = `repeat(${paneBounds.width}, minmax(0, 1fr))`;
-  dom.focusNodeGrid.style.gridTemplateRows = `repeat(${paneBounds.height}, minmax(0, 1fr))`;
+  dom.focusNodeGrid.style.gridTemplateColumns = `repeat(${Math.max(4, paneBounds.width)}, minmax(0, 1fr))`;
+  dom.focusNodeGrid.style.gridTemplateRows = `repeat(${Math.max(4, paneBounds.height)}, minmax(0, 1fr))`;
+  const existingFrames = new Map(
+    [...dom.focusNodeGrid.querySelectorAll(".terminal-frame--split")]
+      .map((frame) => [frame.getAttribute("data-focus-panel"), frame])
+      .filter(([panelId, frame]) => panelId && frame instanceof HTMLElement),
+  );
+  const nextPanelIds = new Set(activeNode.panes.map((panel) => panel.id));
 
   activeNode.panes.forEach((panel) => {
-    const frame = document.createElement("div");
+    const frame = existingFrames.get(panel.id) || document.createElement("div");
     frame.className = `terminal-frame terminal-frame--split ${panel.id === activePanel.id ? "terminal-frame--active" : "terminal-frame--inactive"}`.trim();
     frame.dataset.focusPanel = panel.id;
     frame.tabIndex = 0;
-    frame.style.gridColumn = `${panel.splitX + 1}`;
-    frame.style.gridRow = `${panel.splitY + 1}`;
+    frame.style.gridColumn = `${panel.splitX + 1} / span ${panel.splitWidth || 1}`;
+    frame.style.gridRow = `${panel.splitY + 1} / span ${panel.splitHeight || 1}`;
 
-    const header = document.createElement("div");
-    header.className = "pane-header";
+    let header = frame.querySelector(".pane-header");
+    if (!(header instanceof HTMLElement)) {
+      header = document.createElement("div");
+      header.className = "pane-header";
+      frame.append(header);
+    }
 
-    const title = document.createElement("span");
-    title.className = "pane-title";
+    let title = header.querySelector(".pane-title");
+    if (!(title instanceof HTMLElement)) {
+      title = document.createElement("span");
+      title.className = "pane-title";
+      header.append(title);
+    }
     title.textContent = panel.title;
 
-    const badge = document.createElement("span");
-    badge.className = "pane-badge";
-    badge.textContent = panel.id === activePanel.id ? "active" : `pane ${panel.splitX + 1}:${panel.splitY + 1}`;
+    let badge = header.querySelector(".pane-badge");
+    if (!(badge instanceof HTMLElement)) {
+      badge = document.createElement("span");
+      header.append(badge);
+    }
+    badge.className = `pane-badge ${panel.id === activePanel.id ? "pane-badge--active" : "pane-badge--idle"}`.trim();
+    badge.setAttribute("aria-label", panel.id === activePanel.id ? "Active terminal" : "Idle terminal");
 
-    header.append(title, badge);
-
-    if (panel.id === activePanel.id) {
-      const renameButton = document.createElement("button");
-      renameButton.type = "button";
-      renameButton.className = "toolbar-button toolbar-button--ghost pane-rename";
-      renameButton.dataset.action = "rename-pane";
-      renameButton.textContent = "Label";
-      header.append(renameButton);
+    let body = frame.querySelector(".pane-body");
+    if (!(body instanceof HTMLElement)) {
+      body = document.createElement("div");
+      body.className = "pane-body";
+      frame.append(body);
     }
 
-    const body = document.createElement("div");
-    body.className = "pane-body";
+    let mount = body.querySelector(".terminal-mount");
+    if (!(mount instanceof HTMLElement)) {
+      mount = document.createElement("div");
+      body.append(mount);
+    }
 
+    mount.className = `terminal-mount ${panel.id === activePanel.id ? "terminal-mount--active" : "terminal-mount--preview"}`.trim();
+    mount.dataset.panelTerminalMount = panel.id;
     if (panel.id === activePanel.id) {
-      body.append(dom.terminalMount);
+      mount.id = "terminal-mount";
     } else {
-      const preview = document.createElement("pre");
-      preview.className = "pane-preview";
-      preview.textContent = getPanePreview(panel);
-      body.append(preview);
+      mount.removeAttribute("id");
     }
+    mount.setAttribute("aria-label", panel.id === activePanel.id ? "Active terminal" : `${panel.title} preview`);
 
-    frame.append(header, body);
     dom.focusNodeGrid.append(frame);
+  });
+
+  existingFrames.forEach((frame, panelId) => {
+    if (!nextPanelIds.has(panelId)) {
+      frame.remove();
+    }
   });
 }
 
 function renderFocus(activePanel) {
+  if (uiState.overviewOpen) {
+    if (dom.toolbarContext) {
+      dom.toolbarContext.textContent = "Workspace Overview";
+    }
+    dom.focusPath.textContent = "";
+    if (dom.focusProcess) {
+      dom.focusProcess.textContent = "";
+    }
+    return;
+  }
+
   const activeContext = state.contexts[state.activeContextIndex];
   const contextLabel = activeContext
     ? (activeContext.label || `Context ${state.activeContextIndex + 1}`)
@@ -1093,7 +1278,7 @@ function renderFocus(activePanel) {
 }
 
 function renderToolbarState(activePanel) {
-  const hasActivePanel = Boolean(activePanel);
+  const hasActivePanel = Boolean(activePanel) && !uiState.overviewOpen;
   dom.focusPath?.classList.toggle("is-hidden", !hasActivePanel);
   dom.focusProcess?.classList.toggle("is-hidden", !hasActivePanel);
 }
@@ -1104,7 +1289,6 @@ async function render() {
   renderContextModal();
 
   const visibleNodes = getVisibleNodes(state);
-  const visiblePanels = getVisiblePanels(state);
   const activePanel = ensureActivePanel(state);
   const activeNode = getActiveNode(state);
   renderFocus(activePanel);
@@ -1114,15 +1298,12 @@ async function render() {
   dom.appShell.classList.toggle("app-shell--sidebar-hidden", !state.sidebarVisible);
   dom.sidebar?.setAttribute("aria-hidden", String(!state.sidebarVisible));
 
-  dom.focusShell.classList.toggle("is-hidden", visibleNodes.length === 0);
-  dom.emptyShell.classList.toggle("is-hidden", visibleNodes.length !== 0);
-  dom.shortcutsOverlay.classList.toggle("is-hidden", !state.shortcutsVisible);
+  dom.focusShell.classList.toggle("is-hidden", uiState.overviewOpen || visibleNodes.length === 0);
+  dom.emptyShell.classList.toggle("is-hidden", uiState.overviewOpen || visibleNodes.length !== 0);
+  dom.shortcutsOverlay.classList.toggle("is-hidden", uiState.overviewOpen || !state.shortcutsVisible);
 
   renderActiveNode(activeNode, activePanel);
-
-  if (activePanel) {
-    await mountActiveTerminal(activePanel);
-  }
+  await syncVisiblePaneRuntimes(activeNode, activePanel);
 }
 
 function bindUiEvents() {
@@ -1138,16 +1319,15 @@ function bindUiEvents() {
       return;
     }
 
-    const paneAction = target.closest("[data-action='rename-pane']");
-    if (paneAction) {
-      renameActivePane();
-      return;
-    }
-
     const focusTarget = target.closest("[data-focus-panel]");
     if (focusTarget) {
+      const contextIndex = Number(focusTarget.getAttribute("data-focus-context-index"));
+      if (Number.isInteger(contextIndex) && contextIndex !== state.activeContextIndex) {
+        setContextIndex(state, contextIndex);
+      }
       const panelId = focusTarget.getAttribute("data-focus-panel");
       focusPanel(state, panelId);
+      closeOverview();
       setLastAction(`Focused ${getActivePanel(state)?.title}`);
       saveState();
       render();
@@ -1244,10 +1424,17 @@ function bindUiEvents() {
       return;
     }
 
+    if (event.key === "Escape" && uiState.overviewOpen) {
+      event.preventDefault();
+      closeOverview();
+      render();
+      return;
+    }
+
     if (!event.defaultPrevented) {
       handleShortcutKeydown(event);
     }
-  });
+  }, true);
 }
 
 bindUiEvents();
@@ -1257,16 +1444,18 @@ window.visualViewport?.addEventListener("resize", syncViewportMetrics);
 
 window.__PLEXI_DEBUG__ = {
   getState: () => clone(state),
-  getTerminalProfile,
+  getTerminalProfile: () => getTerminalProfile(getActivePanel(state)?.fontSize),
   runCommand,
   deleteContextFromUi: deleteContext,
   reset: () => {
     state.panels.forEach((panel) => closePanelSession(panel.id));
     void sessionBridge.reset();
+    disposeAllPaneRuntimes();
     panelMeta.clear();
     panelBuffers.clear();
     state = bootDefaultState();
     closeContextModal();
+    closeOverview();
     saveState();
     render();
   },

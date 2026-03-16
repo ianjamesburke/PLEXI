@@ -31,7 +31,7 @@
             <section class="sidebar-section sidebar-section--map">
                 <div class="section-heading">
                     <h2 class="section-title">Map</h2>
-                    <span class="section-meta" id="minimap-size">0 terminals</span>
+                    <span class="section-meta" id="minimap-size">0 nodes</span>
                 </div>
                 <aside class="minimap" id="minimap" aria-label="Workspace map">
                     <div class="minimap-grid" id="minimap-grid"></div>
@@ -57,12 +57,24 @@
 
             <section class="canvas-wrapper">
                 <div class="canvas" id="stage">
+                    <section class="overview-shell is-hidden" id="overview-shell" aria-hidden="true">
+                        <header class="overview-shell__header">
+                            <div class="overview-shell__heading">
+                                <h2 class="overview-shell__title">Workspace Overview</h2>
+                                <p class="overview-shell__summary" id="overview-summary">0 contexts</p>
+                            </div>
+                            <button class="toolbar-button" data-command="toggle-minimap" type="button">Close</button>
+                        </header>
+                        <div class="overview-shell__body" id="overview-grid"></div>
+                    </section>
+
                     <section class="focus-shell" id="focus-shell">
                         <div class="focus-node-grid" id="focus-node-grid">
                             <div class="terminal-frame">
                                 <div class="terminal-mount" id="terminal-mount" aria-label="Active terminal"></div>
                             </div>
                         </div>
+                        <!--
                         <aside class="focus-ghost-slot focus-ghost-slot--right is-hidden" id="focus-right-slot">
                             <p class="focus-ghost-shortcut">⌘+N</p>
                             <p class="focus-ghost-copy">Open another terminal here</p>
@@ -71,6 +83,7 @@
                             <p class="focus-ghost-shortcut">⌘+⇧+N</p>
                             <p class="focus-ghost-copy">Open one below</p>
                         </aside>
+                        -->
                     </section>
 
                     <section class="canvas-empty is-hidden" id="empty-shell">
@@ -80,41 +93,26 @@
                         </aside>
                         <p class="empty-support-note">Layouts and settings are saved locally.</p>
                         <div class="empty-shell-content">
-                            <p class="empty-tagline">Open a terminal, cd into a project and then open one beside or below it.</p>
-                            <div class="empty-ghost-grid" aria-hidden="true">
-                                <article class="empty-ghost-card empty-ghost-card--first">
-                                    <p class="empty-ghost-label">First terminal</p>
-                                    <p class="empty-ghost-shortcut">⌘+N</p>
-                                    <p class="empty-ghost-caption">Open your first terminal here</p>
-                                </article>
-                                <article class="empty-ghost-card empty-ghost-card--second">
-                                    <p class="empty-ghost-shortcut">⌘+N</p>
-                                    <p class="empty-ghost-caption">Then open another beside it</p>
-                                </article>
-                                <article class="empty-ghost-card empty-ghost-card--third">
-                                    <p class="empty-ghost-shortcut">⌘+⇧+N</p>
-                                    <p class="empty-ghost-caption">Or stack one below</p>
-                                </article>
-                            </div>
+                            <p class="empty-tagline">Open a node with ⌘+N, then split it with ⌘+D or ⌘+⇧+D.</p>
                         </div>
                     </section>
 
                     <div class="shortcuts-overlay is-hidden" id="shortcuts-overlay" aria-live="polite">
                         <h3>Keyboard</h3>
                         <ul class="overlay-list">
-                            <li><span>⌘+N</span><span>New terminal right</span></li>
-                            <li><span>⌘+⇧+N</span><span>New terminal below</span></li>
+                            <li><span>⌘+N</span><span>New node right</span></li>
+                            <li><span>⌘+⇧+N</span><span>New node below</span></li>
+                            <li><span>⌘+D</span><span>Split right</span></li>
+                            <li><span>⌘+⇧+D</span><span>Split below</span></li>
                             <li><span>⌘+Arrow</span><span>Focus nearest terminal</span></li>
-                            <li><span>⌘+1–9</span><span>Switch context</span></li>
+                            <li><span>⌘+1–9</span><span>Focus pane in current context</span></li>
+                            <li><span>⌘+⇧+1–9</span><span>Switch context</span></li>
                             <li><span>⌘+B</span><span>Toggle sidebar</span></li>
-                            <li><span>⌘+M</span><span>Show or hide map</span></li>
+                            <li><span>⌘+M</span><span>Open workspace overview</span></li>
                             <li><span>⌘+/</span><span>Keyboard help</span></li>
                         </ul>
                     </div>
 
-                    <aside class="minimap minimap--overlay" id="minimap-overlay" aria-label="Workspace minimap overlay">
-                        <div class="minimap-grid minimap-grid--overlay" id="minimap-overlay-grid"></div>
-                    </aside>
                 </div>
             </section>
         </section>

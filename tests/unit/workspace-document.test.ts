@@ -14,6 +14,7 @@ describe("workspace document", () => {
       cwd: "/tmp/project-a",
       cwdLabel: "~/project-a",
     });
+    state.panels[0].fontSize = 18;
     createContextRecord(state, "Infra");
     createPanelRecord(state, {
       direction: DIRECTIONS.right,
@@ -27,7 +28,9 @@ describe("workspace document", () => {
     expect(document.version).toBe(2);
     expect(document.workspace.contexts[0]?.pinned).toBe(false);
     expect(document.workspace.contexts[0]?.nodes[0]?.type).toBe("single");
+    expect(document.workspace.contexts[0]?.nodes[0]?.layout).toEqual({ type: "pane", paneId: "panel-1" });
     expect(document.workspace.contexts[0]?.panels[0]?.cwdLabel).toBe("~/project-a");
+    expect(document.workspace.contexts[0]?.panels[0]?.fontSize).toBe(18);
     expect(document.workspace.contexts[1]?.label).toBe("Infra");
     expect(document.workspace.minimapVisible).toBe(true);
   });
@@ -63,8 +66,13 @@ describe("workspace document", () => {
                     title: "Terminal 1",
                     cwd: "/tmp/project-a",
                     cwdLabel: "~/project-a",
+                    fontSize: 17,
                   },
                 ],
+                layout: {
+                  type: "pane",
+                  paneId: "panel-1",
+                },
               },
             ],
             panels: [
@@ -76,6 +84,7 @@ describe("workspace document", () => {
                 y: 0,
                 cwd: "/tmp/project-a",
                 cwdLabel: "~/project-a",
+                fontSize: 17,
               },
             ],
           },
@@ -102,6 +111,7 @@ describe("workspace document", () => {
     expect(restored.contexts[0]?.pinned).toBe(true);
     expect(restored.nodes[0]?.id).toBe("node-1");
     expect(restored.panels[0]?.cwdLabel).toBe("~/project-a");
+    expect(restored.panels[0]?.fontSize).toBe(17);
     expect(restored.camera.zoom).toBe(1.2);
     expect(restored.minimapVisible).toBe(false);
   });
