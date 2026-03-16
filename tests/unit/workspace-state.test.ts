@@ -279,6 +279,26 @@ describe("workspace state helpers", () => {
     expect(first.x).toBe(0);
   });
 
+  test("closing the only node in a middle row compacts lower rows upward", () => {
+    const state = makeDefaultState();
+    const topLeft = createPanelRecord(state, { direction: DIRECTIONS.right });
+    const topRight = createTopLevelPanelRecord(state, { direction: DIRECTIONS.right });
+
+    focusPanel(state, topLeft.id);
+    const middleRow = createTopLevelPanelRecord(state, { direction: DIRECTIONS.down });
+
+    focusPanel(state, topRight.id);
+    const bottomRow = createTopLevelPanelRecord(state, { direction: DIRECTIONS.down });
+
+    expect(getNodeForPanelId(state, middleRow.id)?.y).toBe(1);
+    expect(getNodeForPanelId(state, bottomRow.id)?.y).toBe(2);
+
+    closePanelRecord(state, middleRow.id);
+
+    expect(getNodeForPanelId(state, bottomRow.id)?.y).toBe(1);
+    expect(getVisibleNodes(state).map((node) => [node.x, node.y])).toEqual([[0, 0], [1, 0], [0, 1]]);
+  });
+
   test("jumpBackPanel returns to the previously focused pane", () => {
     const state = makeDefaultState();
     const first = createPanelRecord(state, { direction: DIRECTIONS.right });

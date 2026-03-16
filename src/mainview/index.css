@@ -707,15 +707,15 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 
 .minimap {
   width: 100%;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   box-shadow: none;
   background: oklch(20% 0.012 60 / 0.96);
 }
 
 .minimap-grid {
   position: relative;
-  min-height: 48px;
-  padding: 10px;
+  min-height: 0;
 }
 
 .minimap-node {
@@ -843,10 +843,10 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 
 .overview-context__grid {
   position: relative;
-  min-height: 112px;
-  padding: 12px;
+  min-height: 88px;
   border: 1px solid var(--canvas-border);
   background: oklch(13% 0.01 60 / 0.96);
+  overflow: hidden;
 }
 
 .overlay-list {
@@ -1036,7 +1036,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 
 @media (max-width: 1040px) {
   .minimap-grid {
-    min-height: 76px;
+    min-height: 0;
   }
 
   .overview-shell {

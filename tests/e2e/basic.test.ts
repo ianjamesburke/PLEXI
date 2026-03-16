@@ -213,6 +213,12 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   expect(await page.locator("#context-list b").count()).toBe(0);
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBeNull();
   await expect(page.locator("#focus-path")).toBeHidden();
+  await page.keyboard.press("Control+N");
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activeContextIndex)).toBe(1);
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-5");
+  await page.locator("#minimap-grid .minimap-node").click();
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activeContextIndex)).toBe(1);
+  expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-5");
   
 
   await page.keyboard.press("Control+Shift+1");
@@ -251,10 +257,37 @@ test("Plexi keyboard-first terminal workspace flows correctly", async ({ page })
   await expect(page.locator("#overview-grid .overview-context")).toHaveCount(1);
   await expect(page.locator("#overview-grid .minimap-node")).toHaveCount(2);
   await expect(page.locator("#overview-grid .minimap-pane-preview")).toHaveCount(4);
+  const overviewSquares = await page.evaluate(() => {
+    const grid = document.querySelector("#overview-grid .overview-context__grid")?.getBoundingClientRect();
+    const nodes = [...document.querySelectorAll("#overview-grid .minimap-node")].map((node) => node.getBoundingClientRect());
+    return {
+      gridHeight: grid?.height ?? 0,
+      minNodeLeft: Math.min(...nodes.map((node) => node.left - (grid?.left ?? 0)), Number.POSITIVE_INFINITY),
+      maxNodeBottom: Math.max(...nodes.map((node) => node.bottom - (grid?.top ?? 0)), 0),
+      allSquare: nodes.every((node) => Math.abs(node.width - node.height) <= 1),
+    };
+  });
+  expect(overviewSquares.allSquare).toBe(true);
+  expect(overviewSquares.minNodeLeft).toBeLessThanOrEqual(13);
+  expect(overviewSquares.maxNodeBottom).toBeLessThanOrEqual(overviewSquares.gridHeight + 1);
   await page.locator('#overview-grid [data-focus-panel="panel-2"]').click();
   expect(await page.evaluate(() => window.__PLEXI_DEBUG__.getState().activePanelId)).toBe("panel-2");
   await expect(page.locator("#overview-shell")).toHaveClass(/is-hidden/);
   await expect(page.locator("#overview-shell")).toBeHidden();
+
+  const minimapSquares = await page.evaluate(() => {
+    const grid = document.getElementById("minimap-grid")?.getBoundingClientRect();
+    const nodes = [...document.querySelectorAll("#minimap-grid .minimap-node")].map((node) => node.getBoundingClientRect());
+    return {
+      gridHeight: grid?.height ?? 0,
+      minNodeLeft: Math.min(...nodes.map((node) => node.left - (grid?.left ?? 0)), Number.POSITIVE_INFINITY),
+      maxNodeBottom: Math.max(...nodes.map((node) => node.bottom - (grid?.top ?? 0)), 0),
+      allSquare: nodes.every((node) => Math.abs(node.width - node.height) <= 1),
+    };
+  });
+  expect(minimapSquares.allSquare).toBe(true);
+  expect(minimapSquares.minNodeLeft).toBeLessThanOrEqual(11);
+  expect(minimapSquares.maxNodeBottom).toBeLessThanOrEqual(minimapSquares.gridHeight + 1);
 
   await page.keyboard.press("Control+M");
   await expect(page.locator("#overview-shell")).toBeVisible();

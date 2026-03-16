@@ -893,6 +893,24 @@ const compactTopLevelNodesLeft = (nodes, anchorX = null) => {
   });
 };
 
+const compactTopLevelNodesUp = (nodes, anchorY = null) => {
+  if (nodes.length === 0) {
+    return;
+  }
+
+  const minY = anchorY ?? getBounds(nodes).minY;
+  const rows = [...new Set(nodes.map((node) => node.y))].sort((a, b) => a - b);
+  rows.forEach((rowY, index) => {
+    const nextY = minY + index;
+    nodes
+      .filter((node) => node.y === rowY)
+      .forEach((node) => {
+        node.y = nextY;
+        node.panes.forEach((pane) => syncPaneSpatialFields(node, pane));
+      });
+  });
+};
+
 const getNodeLayoutEntries = (node) =>
   [...node.panes]
     .sort((left, right) =>
@@ -1109,8 +1127,10 @@ export const closePanelRecord = (state, panelId) => {
 
   const contextNodesBeforeClose = state.nodes.filter((item) => item.contextIndex === node.contextIndex);
   const minXBeforeClose = getBounds(contextNodesBeforeClose).minX;
+  const minYBeforeClose = getBounds(contextNodesBeforeClose).minY;
   state.nodes = state.nodes.filter((item) => item.id !== node.id);
   const contextNodesAfterClose = state.nodes.filter((item) => item.contextIndex === node.contextIndex);
+  compactTopLevelNodesUp(contextNodesAfterClose, minYBeforeClose);
   compactTopLevelNodesLeft(contextNodesAfterClose, minXBeforeClose);
   syncLegacyPanels(state);
 
