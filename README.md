@@ -52,6 +52,9 @@ Your layout and working directories are saved automatically to local storage —
 
 ## Known Issues
 
+
+*   **opencode visually bugs sometimes.**
+*   No SSH atm (Will add when i add session persistance)
 *   **Graphics rendering isn't great:** `xterm.js` is okay for now, but this will be fixed with the planned migration to `libghostty`.
 *   **Built app double-input glitch:** I'm seeing double inputs on the built version of the app. It works fine when running dev mode, but the standalone built app just does not want to behave. If anybody can figure it out, that would be spectacular.
     Current state: `bunx electrobun run` against the built app works perfectly. Double-clicking the `.app` is what breaks.
@@ -66,8 +69,6 @@ Your layout and working directories are saved automatically to local storage —
     - shell startup / environment differences when launched from Finder vs terminal
     - the build surface is more complicated than it needs to be, especially around copying view assets into `views/`
     I still suspect the build surface may be wrong or at least noisier than necessary, but at this point it does not look like a simple CSS bug.
-*   **opencode visually bugs sometimes.**
-*   No SSH atm (Will add when i add session persistance)
 
 ---
 
