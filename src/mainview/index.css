@@ -370,6 +370,17 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   border-color: transparent;
 }
 
+.toolbar-button--danger {
+  color: #e05c5c;
+  border-color: rgba(224, 92, 92, 0.3);
+}
+
+.toolbar-button--danger:hover,
+.toolbar-button--danger:focus-visible {
+  background: rgba(224, 92, 92, 0.1);
+  color: #e05c5c;
+}
+
 .canvas-wrapper {
   position: relative;
   flex: 1 1 auto;
@@ -598,15 +609,72 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 
 .empty-shell-content {
   display: grid;
-  gap: 16px;
+  gap: 24px;
 }
 
-.empty-tagline {
+.empty-hint-group {
+  display: grid;
+  gap: 6px;
+}
+
+.empty-hint-row {
   margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.empty-hint-meta {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* ── Shortcut chips (shared across landing and overlay) ───────────────── */
+.shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
   color: var(--text-primary);
-  font-size: 0.88rem;
-  line-height: 1.55;
-  max-width: 500px;
+  background: oklch(20% 0.01 60 / 0.9);
+  border: 1px solid var(--canvas-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 2px 6px;
+  min-width: 22px;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.key--mod {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  padding: 2px 5px;
+  min-width: 20px;
+}
+
+
+.empty-hint-arrow {
+  color: var(--text-tertiary);
+  font-size: 0.9rem;
 }
 
 .empty-ghost-grid {
@@ -685,17 +753,6 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   font-family: var(--font-mono);
 }
 
-.empty-support-note {
-  position: absolute;
-  bottom: 18px;
-  right: 18px;
-  margin: 0;
-  color: var(--text-tertiary);
-  font-size: 0.72rem;
-  line-height: 1.5;
-  text-align: right;
-  max-width: 320px;
-}
 
 .is-hidden {
   display: none !important;
