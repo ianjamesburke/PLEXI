@@ -12,13 +12,15 @@
   <img src="media/screenshot-2.png" width="48%" alt="Screenshot 2" />
 </p>
 
-(Basically tmux but omarchy babes lol)
+<p align="center"><em>basically tmux for omarchy babes</em></p>
 
 **Tested on Mac only** — Linux may work but hasn't been tested.
 
 Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) — although I've been dreaming of something similar for years.
 
-Built with **Electrobun** (Bun + WebView) and **xterm.js** (for now).
+---
+
+> **⚠️ Not production ready.** Electrobun may be too early-stage to support a project of this complexity — there's a confusing bug in the local build that I haven't been able to crack, and I may need to switch to Electron. See [Known Issues](#known-issues) below. If you have experience with Electrobun internals and want to help, please let me know.
 
 ---
 
