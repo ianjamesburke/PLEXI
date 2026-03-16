@@ -50,9 +50,9 @@ Your layout and working directories are saved automatically to local storage —
 
 ## The Future
 
+*   **True Session Persistence and Multiplexing**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI. (SSH auto-connect, connection pooling)
 *   **Coding Agent Support**: Session labels, awaiting-response indicators, and notifications — so you can run multiple agents across panes without babysitting them.
 *   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas the terminals.
-*   **True Session Persistence and Multiplexing**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI. (SSH auto-connect, connection pooling)
 *   **Support Multiple Workspaces**: Add the abbility to switch between whole families of contexts (might be overkill)
 *   **libghostty Integration**: Swap out `xterm.js` for `libghostty` to get GPU-accelerated, native-grade terminal rendering.
 *   **Ergonomics**: Vi-style copy mode and scrollback buffers. (as well as many other Vim style interactions on the canvas)
