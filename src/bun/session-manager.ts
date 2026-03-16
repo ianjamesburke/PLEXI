@@ -127,7 +127,11 @@ export class LocalSessionManager {
       return;
     }
 
-    session.pty.resize(Math.max(20, Math.floor(cols)), Math.max(8, Math.floor(rows)));
+    try {
+      session.pty.resize(Math.max(20, Math.floor(cols)), Math.max(8, Math.floor(rows)));
+    } catch (_error) {
+      // Ignore resize races when the PTY process has already exited.
+    }
   }
 
   closeSession(panelId: string) {

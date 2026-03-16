@@ -414,7 +414,7 @@ function createPaneRuntime(panel, mountNode, interactive) {
   return createTerminalRuntime({
     panel,
     mountNode,
-    interactive: true,
+    interactive,
     onData(runtime, rawData) {
       runtime.panel.hasReceivedInput = true;
       void sessionBridge.writeToSession({
