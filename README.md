@@ -35,7 +35,7 @@ Your layout and working directories are saved automatically to local storage —
 ## The Present
 
 *   **Infinite 2D canvas** — terminals arranged on a spatial grid, navigable with arrow keys or vim-style `h/j/k/l`
-*   **Contexts** — named workspaces to separate projects; switch between them with `Cmd+1–9`, rename or delete on the fly
+*   **Contexts** — named workspaces to separate projects; cycle between them with `Cmd+[` and `Cmd+]` , rename or delete on the fly
 *   **Sidebar & minimap** — visual overview of your layout; click nodes to jump to a terminal
 *   **Overlay minimap** — toggleable full-canvas map (`Cmd+M`)
 *   **Terminal management** — open new terminals to the right (`Cmd+N`) or below (`Cmd+Shift+N`), close with `Cmd+W`
