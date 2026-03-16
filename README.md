@@ -26,7 +26,7 @@ Built with **Electrobun** (Bun + WebView) and **xterm.js** (for now).
 
 1. **New pane right** — `Cmd+N` / **New pane below** — `Cmd+Shift+N`
 2. **Navigate panes** — `Cmd+Arrow` or `Cmd+H/J/K/L`
-3. **Switch contexts** — `Cmd+1`, `Cmd+2`, etc.
+3. **Switch contexts** — `Cmd+Opt+1`, `Cmd+Opt+2`, etc.
 
 Your layout and working directories are saved automatically to local storage — pick up where you left off.
 
