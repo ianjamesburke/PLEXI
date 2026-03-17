@@ -1,7 +1,7 @@
 mod pty;
 mod session;
 
-use session::{SessionManager, OpenSessionParams, SessionInput, SessionStartedMessage, FocusParams, SessionStatusInfo};
+use session::{SessionManager, OpenSessionParams, SessionInput, SessionStartedMessage, SessionStatusInfo, PollOutputResult};
 use std::sync::Mutex;
 
 struct AppState {
@@ -91,6 +91,17 @@ fn get_session_status(
     manager.get_session_status(&panel_id)
 }
 
+/// Poll for output from a session (temporary polling mechanism)
+#[tauri::command]
+fn poll_session_output(
+    state: tauri::State<'_, AppState>,
+    panel_id: String,
+    last_seq: u32,
+) -> Result<PollOutputResult, String> {
+    let manager = state.session_manager.lock().map_err(|_| "Lock poisoned")?;
+    manager.poll_session_output(&panel_id, last_seq)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -109,6 +120,7 @@ pub fn run() {
             focus_panel,
             unfocus_panel,
             get_session_status,
+            poll_session_output,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

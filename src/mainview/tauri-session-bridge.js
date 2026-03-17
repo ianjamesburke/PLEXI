@@ -121,25 +121,28 @@ function createTauriSessionBridge(handlers) {
         return;
       }
 
-      // TODO: Implement polling or event system
-      // For now: polling every 100ms (rough approach)
-      // Better: WebSocket or Tauri event system
+      let lastSeq = 0;
+      const interval = setInterval(async () => {
+        try {
+          const result = await invoke("poll_session_output", {
+            panel_id: panelId,
+            last_seq: lastSeq,
+          });
+          
+          if (result && result.data) {
+            lastSeq = result.seq;
+            handlers.onOutput?.({
+              panelId,
+              data: result.data,
+              seq: result.seq,
+            });
+          }
+        } catch (e) {
+          console.error(`Error polling ${panelId}:`, e);
+        }
+      }, 100);
       
-      // const interval = setInterval(async () => {
-      //   try {
-      //     const output = await invoke("get_session_output", { panel_id: panelId });
-      //     if (output) {
-      //       handlers.onOutput?.({
-      //         panelId,
-      //         data: output.data,
-      //         seq: output.seq,
-      //       });
-      //     }
-      //   } catch (e) {
-      //     console.error(`Error polling ${panelId}:`, e);
-      //   }
-      // }, 100);
-      // pollIntervals.set(panelId, interval);
+      pollIntervals.set(panelId, interval);
     },
 
     // Workspace storage (filesystem-based in Tauri)

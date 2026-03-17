@@ -279,6 +279,45 @@ impl SessionManager {
             output_seq: session.output_seq,
         })
     }
+
+    /// Poll for output from a visible session
+    /// This is a temporary polling mechanism for testing/simple cases
+    /// In production, consider WebSocket or Tauri event system
+    pub fn poll_session_output(&self, panel_id: &str, last_seq: u32) -> Result<PollOutputResult, String> {
+        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
+        let session = sessions.get_mut(panel_id)
+            .ok_or_else(|| "Session not found".to_string())?;
+
+        // Read from PTY if visible
+        if session.is_visible && session.pty.is_some() {
+            let pty = session.pty.as_mut().unwrap();
+            let mut buf = vec![0u8; 4096];
+            match pty.read_output(&mut buf) {
+                Ok(n) if n > 0 => {
+                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    session.output_seq += 1;
+                    return Ok(PollOutputResult {
+                        panel_id: panel_id.to_string(),
+                        data,
+                        seq: session.output_seq,
+                    });
+                }
+                Ok(_) => {
+                    // No data available
+                }
+                Err(e) => {
+                    log::error!("Error reading from PTY {}: {}", panel_id, e);
+                }
+            }
+        }
+
+        // No new output
+        Ok(PollOutputResult {
+            panel_id: panel_id.to_string(),
+            data: String::new(),
+            seq: session.output_seq,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -287,6 +326,13 @@ pub struct SessionStatusInfo {
     pub is_visible: bool,
     pub buffered_bytes: usize,
     pub output_seq: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PollOutputResult {
+    pub panel_id: String,
+    pub data: String,
+    pub seq: u32,
 }
 
 impl Default for SessionManager {
@@ -311,15 +357,15 @@ mod tests {
     #[test]
     fn test_ring_buffer_eviction() {
         let mut buf = OutputRingBuffer::new(10);
-        buf.append(b"12345"); // 5 bytes
-        buf.append(b"67890"); // 5 bytes, now full
+        buf.append(b"12345"); // 5 bytes: [1,2,3,4,5]
+        buf.append(b"67890"); // 5 bytes: [1,2,3,4,5,6,7,8,9,0], now full
         assert_eq!(buf.len(), 10);
 
-        buf.append(b"ABC"); // 3 bytes, should evict oldest
+        buf.append(b"ABC"); // 3 bytes: evicts [1,2,3], keeps [4,5,6,7,8,9,0], adds [A,B,C]
         assert_eq!(buf.len(), 10);
         let drained = buf.drain_all();
-        // Should have evicted "123", keeping "456789" + "0ABC"
-        assert_eq!(&drained[..], b"6789ABC000"); // Evicted oldest 3 bytes "123"
+        // Expected: [4,5,6,7,8,9,0,A,B,C] = "4567890ABC"
+        assert_eq!(&drained[..], b"4567890ABC");
     }
 
     #[test]
