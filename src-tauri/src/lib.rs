@@ -1,6 +1,6 @@
 mod session;
 
-use session::{SessionManager, OpenSessionParams, SessionInput, SessionStartedMessage};
+use session::{SessionManager, OpenSessionParams, SessionInput, SessionStartedMessage, FocusParams, SessionStatusInfo};
 use std::sync::Mutex;
 
 struct AppState {
@@ -10,19 +10,31 @@ struct AppState {
 #[tauri::command]
 fn open_session(
     state: tauri::State<'_, AppState>,
-    params: OpenSessionParams,
+    panel_id: String,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
 ) -> Result<SessionStartedMessage, String> {
     let manager = state.session_manager.lock().map_err(|_| "Lock poisoned")?;
-    manager.open_session(params)
+    manager.open_session(OpenSessionParams {
+        panel_id,
+        cwd,
+        cols,
+        rows,
+    })
 }
 
 #[tauri::command]
 fn write_session(
     state: tauri::State<'_, AppState>,
-    input: SessionInput,
+    panel_id: String,
+    data: String,
 ) -> Result<(), String> {
     let manager = state.session_manager.lock().map_err(|_| "Lock poisoned")?;
-    manager.write_session(input)
+    manager.write_session(SessionInput {
+        panel_id,
+        data,
+    })
 }
 
 #[tauri::command]
@@ -48,6 +60,36 @@ fn get_sessions(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String
     manager.get_all_sessions()
 }
 
+/// Focus a panel and return buffered output history
+#[tauri::command]
+fn focus_panel(
+    state: tauri::State<'_, AppState>,
+    panel_id: String,
+) -> Result<String, String> {
+    let manager = state.session_manager.lock().map_err(|_| "Lock poisoned")?;
+    manager.focus_panel(&panel_id)
+}
+
+/// Unfocus a panel (stop streaming, start buffering)
+#[tauri::command]
+fn unfocus_panel(
+    state: tauri::State<'_, AppState>,
+    panel_id: String,
+) -> Result<(), String> {
+    let manager = state.session_manager.lock().map_err(|_| "Lock poisoned")?;
+    manager.unfocus_panel(&panel_id)
+}
+
+/// Get status of a session (for debugging)
+#[tauri::command]
+fn get_session_status(
+    state: tauri::State<'_, AppState>,
+    panel_id: String,
+) -> Result<SessionStatusInfo, String> {
+    let manager = state.session_manager.lock().map_err(|_| "Lock poisoned")?;
+    manager.get_session_status(&panel_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -63,6 +105,9 @@ pub fn run() {
             resize_session,
             close_session,
             get_sessions,
+            focus_panel,
+            unfocus_panel,
+            get_session_status,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
