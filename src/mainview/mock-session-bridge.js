@@ -1,4 +1,4 @@
-const MOCK_HELP = "help  clear  pwd  ls  echo  split-right  split-down  map  focus  close";
+const MOCK_HELP = "help  clear  pwd  ls  flood  echo  split-right  split-down  map  focus  close";
 const cwdSequence = (cwd) => `\u001b]633;PlexiCwd=${cwd}\u0007`;
 
 function promptFor(session) {
@@ -67,6 +67,12 @@ function executeMockCommand(session, command, handlers) {
     case "ls":
       emitOutput(handlers, session, "README.md  src/  tests/  package.json\r\n");
       break;
+    case "flood": {
+      const count = Math.max(50, Math.min(2000, Number(args[0]) || 400));
+      const lines = Array.from({ length: count }, (_, index) => `line-${String(index + 1).padStart(4, "0")}`);
+      emitOutput(handlers, session, `${lines.join("\r\n")}\r\n`);
+      break;
+    }
     case "echo":
       emitOutput(handlers, session, `${args.join(" ")}\r\n`);
       break;

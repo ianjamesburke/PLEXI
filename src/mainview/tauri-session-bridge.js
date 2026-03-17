@@ -1,26 +1,95 @@
-/// Tauri session bridge - replaces Electrobun RPC with Tauri IPC
-/// Uses window.__TAURI__.invoke() for commands and polling for output
+/// Tauri session bridge for desktop IPC
+/// Uses native Tauri events for PTY output instead of JS-side polling.
+import { createMockSessionBridge } from "./mock-session-bridge.js";
+
+const SESSION_OUTPUT_EVENT = "plexi://session-output";
+const SESSION_EXIT_EVENT = "plexi://session-exit";
 
 function hasTauriRuntime() {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.__TAURI__ !== "undefined" &&
-    typeof window.__TAURI__.invoke === "function"
-  );
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return typeof window.__TAURI_INTERNALS__ !== "undefined";
+}
+
+function getInvoke() {
+  if (typeof window.__TAURI__?.core?.invoke === "function") {
+    return window.__TAURI__.core.invoke;
+  }
+
+  if (typeof window.__TAURI_INTERNALS__?.invoke === "function") {
+    return window.__TAURI_INTERNALS__.invoke;
+  }
+
+  throw new Error("Tauri invoke not available");
+}
+
+function getListen() {
+  if (typeof window.__TAURI__?.event?.listen === "function") {
+    return window.__TAURI__.event.listen;
+  }
+
+  if (typeof window.__TAURI_INTERNALS__?.event?.listen === "function") {
+    return window.__TAURI_INTERNALS__.event.listen;
+  }
+
+  throw new Error("Tauri event listen not available");
+}
+
+function normalizeInvokeError(error) {
+  if (error instanceof Error) {
+    return error;
+  }
+
+  if (typeof error === "string") {
+    return new Error(error);
+  }
+
+  const message = error?.message || error?.error || error?.cause || JSON.stringify(error);
+  return new Error(message || "Unknown Tauri error");
+}
+
+function normalizeSessionOutputPayload(payload) {
+  return {
+    panelId: payload?.panelId ?? payload?.panel_id ?? "",
+    data: payload?.data ?? "",
+    seq: payload?.seq,
+  };
+}
+
+function normalizeSessionExitPayload(payload) {
+  return {
+    panelId: payload?.panelId ?? payload?.panel_id ?? "",
+    exitCode: payload?.exitCode ?? payload?.exit_code ?? null,
+  };
 }
 
 function createTauriSessionBridge(handlers) {
-  const { invoke } = window.__TAURI__.core;
-  
-  // Poll for output from visible terminals
-  // In future: replace with proper event system or WebSocket
-  const pollIntervals = new Map();
+  const invoke = getInvoke();
+  const listen = getListen();
+  const sessionListeners = [];
+
+  const registerListener = async (eventName, callback) => {
+    const unlisten = await listen(eventName, (event) => {
+      callback(event.payload);
+    });
+    sessionListeners.push(unlisten);
+  };
+
+  const startup = Promise.all([
+    registerListener(SESSION_OUTPUT_EVENT, (payload) => {
+      handlers.onOutput?.(normalizeSessionOutputPayload(payload));
+    }),
+    registerListener(SESSION_EXIT_EVENT, (payload) => {
+      handlers.onExit?.(normalizeSessionExitPayload(payload));
+    }),
+  ]);
 
   return {
     mode: "tauri",
-    
+
     async getBackendInfo() {
-      // Not directly supported in Tauri; return synthetic info
       return {
         backend: "pty-process",
         platform: navigator.platform,
@@ -31,17 +100,24 @@ function createTauriSessionBridge(handlers) {
     },
 
     async openSession(params) {
-      const result = await invoke("open_session", {
-        panel_id: params.panelId,
-        cwd: params.cwd,
-        cols: params.cols,
-        rows: params.rows,
-      });
-      
-      // Convert response format
+      await startup;
+
+      let result;
+      try {
+        result = await invoke("open_session", {
+          panelId: params.panelId,
+          cwd: params.cwd || null,
+          cols: params.cols,
+          rows: params.rows,
+        });
+      } catch (error) {
+        throw normalizeInvokeError(error);
+      }
+
       if (result) {
         handlers.onStarted?.({
           panelId: result.panel_id,
+          cwd: result.cwd,
           backend: result.backend,
           platform: result.platform,
           shellPath: result.shell_path,
@@ -50,102 +126,43 @@ function createTauriSessionBridge(handlers) {
           rows: result.rows,
         });
       }
-      
+
       return result;
     },
 
     async writeToSession(params) {
-      return invoke("write_session", {
-        panel_id: params.panelId,
-        data: params.data,
-      });
+      try {
+        return await invoke("write_session", {
+          panelId: params.panelId,
+          data: params.data,
+        });
+      } catch (error) {
+        throw normalizeInvokeError(error);
+      }
     },
 
     async resizeSession(params) {
-      return invoke("resize_session", {
-        panel_id: params.panelId,
-        cols: params.cols,
-        rows: params.rows,
-      });
+      try {
+        return await invoke("resize_session", {
+          panelId: params.panelId,
+          cols: params.cols,
+          rows: params.rows,
+        });
+      } catch (error) {
+        throw normalizeInvokeError(error);
+      }
     },
 
     async closeSession(params) {
-      // Stop polling for this session
-      if (pollIntervals.has(params.panelId)) {
-        clearInterval(pollIntervals.get(params.panelId));
-        pollIntervals.delete(params.panelId);
-      }
-      
-      return invoke("close_session", {
-        panel_id: params.panelId,
-      });
-    },
-
-    async focusPanel(panelId) {
-      // Tell backend this panel is now visible
-      // Returns buffered history
-      const buffered = await invoke("focus_panel", {
-        panel_id: panelId,
-      });
-      
-      if (buffered) {
-        handlers.onOutput?.({
-          panelId,
-          data: buffered,
-          seq: 0,
+      try {
+        return await invoke("close_session", {
+          panelId: params.panelId,
         });
+      } catch (error) {
+        throw normalizeInvokeError(error);
       }
-
-      // Start polling for new output from this panel
-      this._startPolling(panelId, handlers);
-
-      return buffered;
     },
 
-    async unfocusPanel(panelId) {
-      // Tell backend this panel is now hidden
-      // Polling will stop, output queues in ring buffer
-      if (pollIntervals.has(panelId)) {
-        clearInterval(pollIntervals.get(panelId));
-        pollIntervals.delete(panelId);
-      }
-
-      return invoke("unfocus_panel", {
-        panel_id: panelId,
-      });
-    },
-
-    _startPolling(panelId, handlers) {
-      // Don't start multiple polls for same panel
-      if (pollIntervals.has(panelId)) {
-        return;
-      }
-
-      let lastSeq = 0;
-      const interval = setInterval(async () => {
-        try {
-          const result = await invoke("poll_session_output", {
-            panel_id: panelId,
-            last_seq: lastSeq,
-          });
-          
-          if (result && result.data) {
-            lastSeq = result.seq;
-            handlers.onOutput?.({
-              panelId,
-              data: result.data,
-              seq: result.seq,
-            });
-          }
-        } catch (e) {
-          console.error(`Error polling ${panelId}:`, e);
-        }
-      }, 100);
-      
-      pollIntervals.set(panelId, interval);
-    },
-
-    // Workspace storage (filesystem-based in Tauri)
     async getWorkspaceStorageInfo() {
       return {
         profilePath: "~/.plexi",
@@ -154,17 +171,14 @@ function createTauriSessionBridge(handlers) {
     },
 
     async readWorkspaceDocument() {
-      // TODO: Implement via tauri-plugin-fs
       return { contexts: [], activeContext: null };
     },
 
-    async writeWorkspaceDocument(params) {
-      // TODO: Implement via tauri-plugin-fs
+    async writeWorkspaceDocument(_params) {
       return {};
     },
 
     async openExternalUrl(url) {
-      // Open in default browser
       if (typeof window !== "undefined" && window.open) {
         window.open(url, "_blank");
       }
@@ -172,12 +186,10 @@ function createTauriSessionBridge(handlers) {
     },
 
     async readClipboardText() {
-      // TODO: Implement via tauri-plugin-clipboard (if available)
-      // For now, use navigator.clipboard if available
       try {
         return await navigator.clipboard.readText();
-      } catch (e) {
-        console.error("Clipboard read failed:", e);
+      } catch (error) {
+        console.error("Clipboard read failed:", error);
         return "";
       }
     },
@@ -186,15 +198,13 @@ function createTauriSessionBridge(handlers) {
       try {
         await navigator.clipboard.writeText(text);
         return {};
-      } catch (e) {
-        console.error("Clipboard write failed:", e);
-        throw e;
+      } catch (error) {
+        console.error("Clipboard write failed:", error);
+        throw error;
       }
     },
 
     async quitApplication() {
-      // Tauri: invoke close command or use tauri-plugin-window
-      // For now, just close the window
       if (window.close) {
         window.close();
       }
@@ -202,11 +212,9 @@ function createTauriSessionBridge(handlers) {
     },
 
     async reset() {
-      // Clear all polling intervals
-      for (const interval of pollIntervals.values()) {
-        clearInterval(interval);
+      for (const unlisten of sessionListeners.splice(0)) {
+        await unlisten?.();
       }
-      pollIntervals.clear();
     },
   };
 }
@@ -216,7 +224,6 @@ export function createSessionBridge(handlers = {}) {
     return createTauriSessionBridge(handlers);
   }
 
-  // Fallback to mock for development without Tauri
   console.warn("Tauri runtime not detected, using mock bridge");
   return createMockSessionBridge(handlers);
 }

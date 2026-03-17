@@ -24,16 +24,7 @@ moveContextRecord,
 import { CONTEXT_COMMANDS, PANE_COMMANDS, WORKSPACE_COMMANDS, isWorkspaceCommand } from "../shared/commands.js";
 import { getDisplayContextLabel } from "../shared/workspace-document.js";
 import { resolveKeybind } from "../shared/keybinds.js";
-import { createSessionBridge as createTauriSessionBridge } from "./tauri-session-bridge.js";
-import { createSessionBridge as createElectrobunSessionBridge } from "./session-bridge.js";
-
-// Use Tauri bridge if available, else use Electrobun
-const createSessionBridge = (handlers) => {
-  if (typeof window.__TAURI__ !== "undefined") {
-    return createTauriSessionBridge(handlers);
-  }
-  return createElectrobunSessionBridge(handlers);
-};
+import { createSessionBridge } from "./tauri-session-bridge.js";
 import { applyPlatformClasses, MAX_BUFFER_CHARS } from "./app-constants.js";
 import { dom } from "./dom.js";
 import { APP_KEYBINDS } from "./keybind-config.js";
@@ -63,6 +54,7 @@ const paneRuntimes = new Map();
 const panelBuffers = new Map();
 const panelMeta = new Map();
 const panelSessions = new Set();
+const panelSessionFailed = new Set();
 const outputSequences = window.__PLEXI_OUTPUT_SEQUENCES__ || (window.__PLEXI_OUTPUT_SEQUENCES__ = new Map());
 let backendInfo = null;
 let homeDirectory = null;
@@ -87,19 +79,21 @@ const sessionBridge = createSessionBridge({
       shellPath: message.shellPath,
       backend: message.backend,
     });
-    homeDirectory = homeDirectory || inferHomeDirectory(message.cwd, message.cwdLabel);
     const panel = state.panels.find((item) => item.id === message.panelId);
     if (!panel) {
       return;
     }
 
-    panel.cwd = message.cwd;
-    panel.cwdLabel = message.cwdLabel;
+    if (message.cwd) {
+      panel.cwd = message.cwd;
+      panel.cwdLabel = formatPathLabel(message.cwd, homeDirectory);
+      homeDirectory = homeDirectory || inferHomeDirectory(panel.cwd, panel.cwdLabel);
+    }
     saveState();
     render();
   },
   onOutput(message) {
-    if (typeof message.seq === "number") {
+    if (typeof message.seq === "number" && message.seq > 0) {
       const lastSeq = outputSequences.get(message.panelId) ?? 0;
       if (message.seq <= lastSeq) {
         return;
@@ -121,10 +115,7 @@ const sessionBridge = createSessionBridge({
 
     const runtime = getPaneRuntime(message.panelId);
     if (runtime) {
-      runtime.terminal.write(cleaned);
-      if (!runtime.interactive) {
-        runtime.terminal.scrollToBottom?.();
-      }
+      runtime.enqueueWrite(cleaned, { scrollToBottom: !runtime.interactive });
     }
   },
   onExit(message) {
@@ -134,8 +125,7 @@ const sessionBridge = createSessionBridge({
 
     const runtime = getPaneRuntime(message.panelId);
     if (runtime) {
-      runtime.terminal.write(`\r\n[session exited ${message.exitCode}]\r\n`);
-      runtime.terminal.scrollToBottom?.();
+      runtime.enqueueWrite(`\r\n[session exited ${message.exitCode}]\r\n`, { scrollToBottom: true });
     }
   },
   onError(message) {
@@ -298,6 +288,12 @@ function resetDeleteConfirmation() {
 function replayBuffer(runtime) {
   runtime.mountNode?.classList.add("terminal-mount--hydrating");
   runtime.terminal.options.cursorBlink = false;
+  runtime.pendingWrites.length = 0;
+  runtime.needsScrollToBottom = false;
+  if (runtime.writeFrame) {
+    window.cancelAnimationFrame(runtime.writeFrame);
+    runtime.writeFrame = 0;
+  }
   runtime.terminal.reset();
   runtime.terminal.clear();
   runtime.terminal.write(panelBuffers.get(runtime.panel.id) || "", () => {
@@ -392,7 +388,7 @@ async function pasteClipboard(runtime) {
 }
 
 async function ensurePanelSession(panel) {
-  if (!panel || panel.type !== "terminal" || panelSessions.has(panel.id)) {
+  if (!panel || panel.type !== "terminal" || panelSessions.has(panel.id) || panelSessionFailed.has(panel.id)) {
     return;
   }
 
@@ -408,7 +404,9 @@ async function ensurePanelSession(panel) {
     });
   } catch (error) {
     panelSessions.delete(panel.id);
-    appendPanelBuffer(panel.id, `\r\n[session failed] ${error.message}\r\n`);
+    panelSessionFailed.add(panel.id);
+    const message = error?.message || String(error);
+    appendPanelBuffer(panel.id, `\r\n[session failed] ${message}\r\n`);
     setLastAction(`Session failed for ${panel.title}`);
     saveState();
     render();
@@ -424,6 +422,7 @@ function ensurePanelSessions() {
 function closePanelSession(panelId) {
   disposePaneRuntime(panelId);
   panelSessions.delete(panelId);
+  panelSessionFailed.delete(panelId);
   panelMeta.delete(panelId);
   panelBuffers.delete(panelId);
   outputSequences.delete(panelId);
@@ -1466,10 +1465,15 @@ bindUiEvents();
 syncViewportMetrics();
 window.addEventListener("resize", syncViewportMetrics);
 window.visualViewport?.addEventListener("resize", syncViewportMetrics);
+window.addEventListener("beforeunload", () => {
+  state.panels.forEach((panel) => closePanelSession(panel.id));
+  void sessionBridge.reset?.();
+});
 
 window.__PLEXI_DEBUG__ = {
   getState: () => clone(state),
   getTerminalProfile: () => getTerminalProfile(getActivePanel(state)?.fontSize),
+  getPanelBuffer: (panelId = state.activePanelId) => panelBuffers.get(panelId) || "",
   runCommand,
   deleteContextFromUi: deleteContext,
   reset: () => {
