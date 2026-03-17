@@ -3,8 +3,30 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+use crate::pty::PtyManager;
 
 const RING_BUFFER_SIZE: usize = 1024 * 1024; // 1MB per session
+
+/// Detect the user's preferred shell
+fn detect_shell() -> String {
+    // Try to get shell from environment
+    if let Ok(shell) = std::env::var("SHELL") {
+        if std::path::Path::new(&shell).exists() {
+            return shell;
+        }
+    }
+
+    // Check common shell paths
+    let shells = ["/bin/zsh", "/usr/bin/zsh", "/bin/bash", "/usr/bin/bash", "/bin/sh"];
+    for shell in &shells {
+        if std::path::Path::new(shell).exists() {
+            return shell.to_string();
+        }
+    }
+
+    // Fallback to sh
+    "/bin/sh".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStartedMessage {
@@ -87,8 +109,10 @@ pub struct SessionRecord {
     pub is_visible: bool,
     pub output_buffer: OutputRingBuffer,
     pub output_seq: u32,
-    // In real implementation, would hold PTY handle:
-    // pub pty: Box<dyn pty_process::Child>,
+    pub pty: Option<PtyManager>,
+    pub shell_path: String,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 pub struct SessionManager {
@@ -109,6 +133,19 @@ impl SessionManager {
             return Err("Session already exists".to_string());
         }
 
+        // Detect shell (prefer zsh, fallback to bash, then sh)
+        let shell_path = detect_shell();
+        let shell_name = std::path::Path::new(&shell_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("shell")
+            .to_string();
+
+        // Create and spawn PTY
+        let mut pty = PtyManager::new();
+        pty.spawn_shell(&shell_path, params.cwd.as_deref(), params.cols, params.rows)
+            .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
+
         // Create new session with ring buffer
         sessions.insert(
             params.panel_id.clone(),
@@ -117,27 +154,43 @@ impl SessionManager {
                 is_visible: true, // New sessions are visible by default
                 output_buffer: OutputRingBuffer::new(RING_BUFFER_SIZE),
                 output_seq: 0,
+                pty: Some(pty),
+                shell_path: shell_path.clone(),
+                cols: params.cols,
+                rows: params.rows,
             },
+        );
+
+        log::info!(
+            "Opened session {} with shell {} ({}x{})",
+            params.panel_id,
+            shell_name,
+            params.cols,
+            params.rows
         );
 
         Ok(SessionStartedMessage {
             panel_id: params.panel_id,
             backend: "pty-process".to_string(),
             platform: std::env::consts::OS.to_string(),
-            shell_path: "/bin/zsh".to_string(), // TODO: detect shell
-            shell_name: "zsh".to_string(),
+            shell_path,
+            shell_name,
             cols: params.cols,
             rows: params.rows,
         })
     }
 
     pub fn write_session(&self, input: SessionInput) -> Result<(), String> {
-        let sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        if !sessions.contains_key(&input.panel_id) {
-            return Err("Session not found".to_string());
+        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
+        let session = sessions.get_mut(&input.panel_id)
+            .ok_or_else(|| "Session not found".to_string())?;
+
+        if let Some(ref mut pty) = session.pty {
+            pty.write_input(input.data.as_bytes())
+                .map_err(|e| format!("Failed to write to PTY: {}", e))
+        } else {
+            Err("PTY not initialized".to_string())
         }
-        // Placeholder: in real implementation, write to PTY
-        Ok(())
     }
 
     pub fn append_output(&self, panel_id: &str, data: &[u8]) -> Result<(), String> {
@@ -187,12 +240,19 @@ impl SessionManager {
     }
 
     pub fn resize_session(&self, panel_id: String, cols: u16, rows: u16) -> Result<(), String> {
-        let sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        if !sessions.contains_key(&panel_id) {
-            return Err("Session not found".to_string());
+        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
+        let session = sessions.get_mut(&panel_id)
+            .ok_or_else(|| "Session not found".to_string())?;
+
+        session.cols = cols;
+        session.rows = rows;
+
+        if let Some(ref mut pty) = session.pty {
+            pty.resize(cols, rows)
+                .map_err(|e| format!("Failed to resize PTY: {}", e))
+        } else {
+            Err("PTY not initialized".to_string())
         }
-        // Placeholder: resize PTY
-        Ok(())
     }
 
     pub fn close_session(&self, panel_id: String) -> Result<(), String> {

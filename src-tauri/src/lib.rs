@@ -1,3 +1,4 @@
+mod pty;
 mod session;
 
 use session::{SessionManager, OpenSessionParams, SessionInput, SessionStartedMessage, FocusParams, SessionStatusInfo};
