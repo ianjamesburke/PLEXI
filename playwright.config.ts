@@ -4,11 +4,13 @@ export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30000,
   webServer: {
-    command: 'python3 -m http.server 4173 --directory .',
-    port: 4173,
+    command: 'npm run tauri dev',
+    port: 1415,
     reuseExistingServer: false,
+    timeout: 120000,
   },
   use: {
+    baseURL: 'http://localhost:1415',
     headless: true,
   },
 });

@@ -24,7 +24,16 @@ moveContextRecord,
 import { CONTEXT_COMMANDS, PANE_COMMANDS, WORKSPACE_COMMANDS, isWorkspaceCommand } from "../shared/commands.js";
 import { getDisplayContextLabel } from "../shared/workspace-document.js";
 import { resolveKeybind } from "../shared/keybinds.js";
-import { createSessionBridge } from "./session-bridge.js";
+import { createSessionBridge as createTauriSessionBridge } from "./tauri-session-bridge.js";
+import { createSessionBridge as createElectrobunSessionBridge } from "./session-bridge.js";
+
+// Use Tauri bridge if available, else use Electrobun
+const createSessionBridge = (handlers) => {
+  if (typeof window.__TAURI__ !== "undefined") {
+    return createTauriSessionBridge(handlers);
+  }
+  return createElectrobunSessionBridge(handlers);
+};
 import { applyPlatformClasses, MAX_BUFFER_CHARS } from "./app-constants.js";
 import { dom } from "./dom.js";
 import { APP_KEYBINDS } from "./keybind-config.js";
