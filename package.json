@@ -3,11 +3,10 @@
   "version": "0.1.0",
   "description": "Infinite 2D canvas terminal multiplexer",
   "scripts": {
-    "start": "electrobun dev",
-    "dev": "electrobun dev --watch",
+    "start": "tauri dev",
+    "dev": "tauri dev",
     "dev:clean": "bun run scripts/dev-clean.ts",
-    "build": "electrobun build",
-    "build:cef": "PLEXI_RENDERER=cef electrobun build",
+    "build": "tauri build",
     "test": "bun test ./tests/unit/*.test.ts",
     "test:e2e": "bun run build && playwright test",
     "verify": "bun run test && bun run test:e2e"
@@ -21,6 +20,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@tauri-apps/cli": "^2.10.1",
     "@types/bun": "latest"
   }
 }
