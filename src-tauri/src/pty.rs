@@ -48,11 +48,15 @@ impl PtyManager {
         Ok(())
     }
 
-    /// Read available output from PTY
+    /// Read available output from PTY (blocking, but typically returns quickly)
+    /// Returns number of bytes read. Returns 0 if no data available (after short timeout).
     pub fn read_output(&mut self, buf: &mut [u8]) -> Result<usize, Box<dyn std::error::Error>> {
         if let Some(ref mut pty) = self.pty {
+            // Use a very short timeout to make reads non-blocking for polling
             match pty.read(buf) {
                 Ok(n) => Ok(n),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(0),
                 Err(e) => Err(Box::new(e)),
             }
         } else {
