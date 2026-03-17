@@ -3,20 +3,19 @@
   "version": "0.1.0",
   "description": "Infinite 2D canvas terminal multiplexer",
   "scripts": {
-    "start": "tauri dev",
-    "dev": "tauri dev",
+    "copy-vendor": "node -e \"const fs=require('fs');const p='src/mainview/vendor/xterm';fs.mkdirSync(p,{recursive:true});['xterm.css:node_modules/@xterm/xterm/css/xterm.css','xterm.js:node_modules/@xterm/xterm/lib/xterm.js','xterm.js.map:node_modules/@xterm/xterm/lib/xterm.js.map','addon-fit.js:node_modules/@xterm/addon-fit/lib/addon-fit.js','addon-fit.js.map:node_modules/@xterm/addon-fit/lib/addon-fit.js.map','addon-web-links.js:node_modules/@xterm/addon-web-links/lib/addon-web-links.js','addon-web-links.js.map:node_modules/@xterm/addon-web-links/lib/addon-web-links.js.map'].forEach(e=>{const[d,s]=e.split(':');fs.copyFileSync(s,p+'/'+d)});console.log('vendor assets copied')\"",
+    "start": "npm run copy-vendor && tauri dev",
+    "dev": "npm run copy-vendor && tauri dev",
     "dev:clean": "bun run scripts/dev-clean.ts",
-    "build": "tauri build",
-    "test": "bun test ./tests/unit/*.test.ts",
-    "test:e2e": "bun run build && playwright test",
-    "verify": "bun run test && bun run test:e2e"
+    "build": "npm run copy-vendor && tauri build",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:e2e": "playwright test",
+    "verify": "npm run test:rust && npm run test:e2e"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/xterm": "^6.0.0",
-    "bun-pty": "^0.4.8",
-    "electrobun": "^1.15.1"
+    "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

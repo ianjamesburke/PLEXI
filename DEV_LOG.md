@@ -1,5 +1,78 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-17 — Real PTY sessions fixed on macOS Tauri
+
+**Status: resolved**
+
+The actual root cause of `[session failed] undefined` was not the frontend retry loop. It was the PTY backend.
+
+- `pty-process 0.4` was being used with the older borrowed-PTS spawn API. On macOS this fails during controlling-terminal setup with `Inappropriate ioctl for device (os error 25)`, so `open_session` rejected before the shell ever started.
+- The frontend then rendered `error.message`, but Tauri invoke errors can arrive as plain strings/objects, so the user-facing result became `undefined` instead of the real backend error.
+
+**Fixes applied:**
+
+1. Upgraded `pty-process` from `0.4` to `0.5.3`.
+2. Switched PTY creation to `blocking::open()` and moved the slave PTY into `Command::spawn(...)` using the current API, which works on macOS.
+3. `spawn_shell()` now returns the resolved working directory so the frontend gets a real `cwd` immediately.
+4. Tauri bridge errors are normalized to real `Error` objects before surfacing to the UI.
+5. Added a Rust session test that opens a real shell, sends `printf '__PLEXI_OK__\n'`, and verifies the output round-trip.
+6. Native `npm run dev` smoke check now shows successful session creation in logs:
+   - `Spawned shell: /bin/zsh (80x24)`
+   - `Opened session panel-1 with shell zsh (80x24)`
+
+**Additional Tauri architecture issue found:**
+
+- `beforeDevCommand` used `npx serve src -l 1415`, and if port `1415` was busy it silently picked a random port while Tauri still loaded `http://localhost:1415/mainview/`. That creates stale-frontend debugging traps. Replaced it with `python3 -m http.server 1415 --bind 127.0.0.1 --directory src` so port conflicts fail loudly instead of drifting.
+
+## 2026-03-17 — Real PTY sessions not opening: current blocker
+
+**Status: unresolved — handing off**
+
+The Tauri IPC bridge is now wired up and `window.__TAURI_INTERNALS__` is detected correctly, so the app is no longer falling back to the mock shell. However, real zsh sessions are still not starting successfully. Symptoms:
+
+- UI shows `[session failed] <error>` in the terminal panel
+- `poll_session_output` floods the console with "Session not found" (hundreds of times before stopping)
+
+**What was fixed in this session:**
+
+1. **`window.__TAURI__` not injected**: `withGlobalTauri: true` added to `tauri.conf.json` under `app`. Without it, `window.__TAURI__` is undefined and the bridge falls back to mock every time.
+
+2. **Wrong detection check**: `hasTauriRuntime()` was checking `window.__TAURI__.invoke` (Tauri 1.x location) but Tauri 2.x puts it at `window.__TAURI__.core.invoke`. Fixed to use `window.__TAURI_INTERNALS__` for detection (always injected by Tauri regardless of `withGlobalTauri`) and `getInvoke()` helper that tries `__TAURI__.core.invoke` then falls back to `__TAURI_INTERNALS__.invoke`.
+
+3. **PTY spawn with bad CWD**: Workspace restored from localStorage had `cwd: "/mock/project"` (from old mock sessions). `pty.spawn_shell()` with a non-existent CWD fails. Fixed in `pty.rs` to silently fall back to `$HOME` if the saved CWD path doesn't exist.
+
+4. **Infinite retry loop on session failure**: `ensurePanelSession` was called on every `render()`. When `openSession` threw, it called `panelSessions.delete(panel.id)`, which allowed the next render to retry immediately — infinite loop. Also called `render()` from inside the catch block, making it worse. Fixed by adding a `panelSessionFailed` Set; failed sessions are not retried until explicitly closed.
+
+5. **Polling loop on session not found**: `_startPolling` caught errors with `console.error` but never stopped the interval. 1000+ "Session not found" errors per run. Fixed: stop polling after 3 consecutive errors.
+
+6. **`just dev-fresh`**: Added `justfile` with `dev` and `dev-fresh` recipes. `dev-fresh` uses `tauri dev --config` to override `devUrl` to `src/fresh.html`, which clears `localStorage["plexi.workspace.v2"]` before redirecting to `/mainview/`. Eliminates stale mock-era workspace state on startup.
+
+**Current state / what the next agent should investigate:**
+
+After all the above fixes, `just dev-fresh` + `Cmd+N` still shows `[session failed]` and "Session not found" errors (though now only ~13 instead of 1000+). The root cause is not yet confirmed. Key things to check:
+
+- **What is the actual error message from `open_session`?** Add `console.error("openSession failed:", error)` to the catch block in `ensurePanelSession` in `app.js` and check DevTools console. The error string from Rust will say whether it's "Failed to spawn PTY: ..." or "Session already exists" or something else.
+- **Is `open_session` even being called?** Add a `console.log` before the `invoke("open_session", ...)` call in `tauri-session-bridge.js` to confirm IPC is reaching Rust.
+- **Is the Tauri app being fully rebuilt?** Changes to `pty.rs` require a full Rust rebuild. `npm run dev` triggers this, but `just dev` may not if the Tauri watcher doesn't detect the change. Confirm with `cargo build` directly.
+- **Check Tauri logs**: Run `RUST_LOG=debug npm run dev` or look at `~/Library/Logs/dev.plexi/` for PTY spawn errors.
+- **The remaining 13 "Session not found" errors**: These come AFTER the polling stop-on-3-errors fix. 13 / 3 = ~4 separate polling intervals were started, meaning `open_session` succeeded for ~4 sessions before they disappeared. This suggests sessions ARE being opened (Rust side OK) but then something calls `close_session` or removes them. Possible culprit: `syncVisiblePaneRuntimes` disposes runtimes on re-render, but does NOT call `closePanelSession` — check whether `disposePaneRuntime` is inadvertently triggering session cleanup.
+
+## 2026-03-17 — Fix Tauri app initialization and IPC bridge
+
+Multiple issues prevented the Tauri rebuild from being functional:
+
+1. **Electrobun bare import crash**: `session-bridge.js` had `import { Electroview } from "electrobun/view"` — a bare specifier that crashes in any non-Electrobun environment (Tauri, browser). `app.js` imported both bridges unconditionally, so this killed the entire module graph. Fix: removed Electrobun bridge import from `app.js`; `tauri-session-bridge.js` now falls back to mock bridge directly.
+
+2. **Double log plugin registration**: `lib.rs` had `.plugin(tauri_plugin_log::...)` on the builder AND again inside `.setup()`. Also had two `.setup()` blocks. Consolidated to one empty `.setup()`.
+
+3. **IPC parameter naming**: Tauri 2.x auto-converts camelCase JS args → snake_case Rust params. Original bridge used `panel_id` (snake_case) in JS which wouldn't match. Fixed all IPC calls to use camelCase (`panelId`, `lastSeq`, etc.).
+
+4. **Blocking PTY reads under mutex**: `poll_session_output` locked the SessionManager mutex then did a blocking `read()` on the PTY fd. If no data, this blocked all other IPC commands. Fix: set PTY fd to `O_NONBLOCK` via `libc::fcntl` after spawn.
+
+5. **Polling never started after openSession**: `openSession()` fired `onStarted` but never called `_startPolling()`. Terminal output never arrived. Fix: start polling immediately after successful open.
+
+6. **Dev server for Playwright**: Added `beforeDevCommand` with `npx serve src` to `tauri.conf.json` so Tauri dev mode serves frontend over HTTP. Playwright tests now point to `/mainview/` path. All 10 e2e tests pass.
+
 ## 2026-03-15 — Fix 14px black gap on right side of xterm terminal
 
 xterm's FitAddon (v6) subtracts a scrollbar width when `scrollback > 0`: `overviewRuler?.width || 14`. With no `overviewRuler` option set, it always subtracts 14px, leaving a black gap where the canvas doesn't reach the terminal frame edge.

@@ -167,6 +167,9 @@ export function createTerminalRuntime({
     terminal,
     fitAddon,
     webLinksAddon,
+    pendingWrites: [],
+    writeFrame: 0,
+    needsScrollToBottom: false,
     resizeFrame: 0,
     resizeObserver: null,
     resizeHandler: () => {
@@ -180,7 +183,35 @@ export function createTerminalRuntime({
         }
       });
     },
+    enqueueWrite(chunk, { scrollToBottom = false } = {}) {
+      if (!chunk) {
+        return;
+      }
+
+      runtime.pendingWrites.push(chunk);
+      runtime.needsScrollToBottom = runtime.needsScrollToBottom || scrollToBottom;
+
+      if (runtime.writeFrame) {
+        return;
+      }
+
+      runtime.writeFrame = window.requestAnimationFrame(() => {
+        runtime.writeFrame = 0;
+        const nextChunk = runtime.pendingWrites.join("");
+        runtime.pendingWrites.length = 0;
+        const shouldScroll = runtime.needsScrollToBottom;
+        runtime.needsScrollToBottom = false;
+        terminal.write(nextChunk, () => {
+          if (shouldScroll) {
+            terminal.scrollToBottom?.();
+          }
+        });
+      });
+    },
     dispose() {
+      if (runtime.writeFrame) {
+        window.cancelAnimationFrame(runtime.writeFrame);
+      }
       if (runtime.resizeFrame) {
         window.cancelAnimationFrame(runtime.resizeFrame);
       }

@@ -1,5 +1,5 @@
 const child = Bun.spawn(
-  [process.execPath, "x", "electrobun", "dev", "--watch"],
+  [process.execPath, "x", "tauri", "dev"],
   {
     stdio: ["inherit", "inherit", "inherit"],
     env: {

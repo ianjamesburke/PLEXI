@@ -1,36 +1,43 @@
-/// Session management for PTY terminals with visibility-aware output buffering
+use crate::pty::{resize as resize_pty, write_input, PtySession};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use uuid::Uuid;
-use crate::pty::PtyManager;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Runtime};
+use tokio::io::AsyncReadExt;
+use tokio::process::Child;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
-const RING_BUFFER_SIZE: usize = 1024 * 1024; // 1MB per session
+const OUTPUT_EVENT: &str = "plexi://session-output";
+const EXIT_EVENT: &str = "plexi://session-exit";
+const POLL_READ_CHUNK_SIZE: usize = 16 * 1024;
 
-/// Detect the user's preferred shell
 fn detect_shell() -> String {
-    // Try to get shell from environment
     if let Ok(shell) = std::env::var("SHELL") {
         if std::path::Path::new(&shell).exists() {
             return shell;
         }
     }
 
-    // Check common shell paths
-    let shells = ["/bin/zsh", "/usr/bin/zsh", "/bin/bash", "/usr/bin/bash", "/bin/sh"];
-    for shell in &shells {
+    for shell in [
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/sh",
+    ] {
         if std::path::Path::new(shell).exists() {
             return shell.to_string();
         }
     }
 
-    // Fallback to sh
     "/bin/sh".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStartedMessage {
     pub panel_id: String,
+    pub cwd: String,
     pub backend: String,
     pub platform: String,
     pub shell_path: String,
@@ -66,74 +73,45 @@ pub struct SessionInput {
     pub data: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FocusParams {
+#[derive(Debug, Serialize)]
+pub struct SessionStatusInfo {
     pub panel_id: String,
-}
-
-/// Ring buffer for storing terminal output
-/// Automatically evicts old data when buffer fills
-struct OutputRingBuffer {
-    buffer: VecDeque<u8>,
-    max_size: usize,
-}
-
-impl OutputRingBuffer {
-    fn new(max_size: usize) -> Self {
-        OutputRingBuffer {
-            buffer: VecDeque::with_capacity(max_size),
-            max_size,
-        }
-    }
-
-    fn append(&mut self, data: &[u8]) {
-        for &byte in data {
-            if self.buffer.len() >= self.max_size {
-                self.buffer.pop_front(); // Evict oldest byte
-            }
-            self.buffer.push_back(byte);
-        }
-    }
-
-    fn drain_all(&mut self) -> Vec<u8> {
-        self.buffer.drain(..).collect()
-    }
-
-    fn len(&self) -> usize {
-        self.buffer.len()
-    }
-}
-
-pub struct SessionRecord {
-    pub panel_id: String,
-    pub is_visible: bool,
-    pub output_buffer: OutputRingBuffer,
-    pub output_seq: u32,
-    pub pty: Option<PtyManager>,
-    pub shell_path: String,
     pub cols: u16,
     pub rows: u16,
+    pub output_seq: u32,
+}
+
+struct SessionRecord {
+    panel_id: String,
+    writer: Arc<Mutex<pty_process::OwnedWritePty>>,
+    child: Arc<Mutex<Child>>,
+    reader_task: JoinHandle<()>,
+    cols: u16,
+    rows: u16,
+    output_seq: Arc<Mutex<u32>>,
 }
 
 pub struct SessionManager {
-    sessions: Arc<Mutex<HashMap<String, SessionRecord>>>,
+    sessions: Mutex<HashMap<String, SessionRecord>>,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
-        SessionManager {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+        Self {
+            sessions: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn open_session(&self, params: OpenSessionParams) -> Result<SessionStartedMessage, String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-
+    pub async fn open_session<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        params: OpenSessionParams,
+    ) -> Result<SessionStartedMessage, String> {
+        let mut sessions = self.sessions.lock().await;
         if sessions.contains_key(&params.panel_id) {
             return Err("Session already exists".to_string());
         }
 
-        // Detect shell (prefer zsh, fallback to bash, then sh)
         let shell_path = detect_shell();
         let shell_name = std::path::Path::new(&shell_path)
             .file_name()
@@ -141,262 +119,219 @@ impl SessionManager {
             .unwrap_or("shell")
             .to_string();
 
-        // Create and spawn PTY
-        let mut pty = PtyManager::new();
-        pty.spawn_shell(&shell_path, params.cwd.as_deref(), params.cols, params.rows)
-            .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
+        let session =
+            PtySession::spawn_shell(&shell_path, params.cwd.as_deref(), params.cols, params.rows)
+                .map_err(|e| format!("Failed to spawn PTY: {e}"))?;
 
-        // Create new session with ring buffer
-        sessions.insert(
+        let output_seq = Arc::new(Mutex::new(0u32));
+        let writer = Arc::new(Mutex::new(session.writer));
+        let child = Arc::new(Mutex::new(session.child));
+        let reader_task = spawn_reader_loop(
+            app,
             params.panel_id.clone(),
-            SessionRecord {
-                panel_id: params.panel_id.clone(),
-                is_visible: true, // New sessions are visible by default
-                output_buffer: OutputRingBuffer::new(RING_BUFFER_SIZE),
-                output_seq: 0,
-                pty: Some(pty),
-                shell_path: shell_path.clone(),
-                cols: params.cols,
-                rows: params.rows,
-            },
+            session.reader,
+            Arc::clone(&child),
+            Arc::clone(&output_seq),
         );
 
-        log::info!(
-            "Opened session {} with shell {} ({}x{})",
-            params.panel_id,
-            shell_name,
-            params.cols,
-            params.rows
-        );
-
-        Ok(SessionStartedMessage {
-            panel_id: params.panel_id,
+        let started = SessionStartedMessage {
+            panel_id: params.panel_id.clone(),
+            cwd: session.cwd,
             backend: "pty-process".to_string(),
             platform: std::env::consts::OS.to_string(),
             shell_path,
             shell_name,
             cols: params.cols,
             rows: params.rows,
-        })
-    }
+        };
 
-    pub fn write_session(&self, input: SessionInput) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        let session = sessions.get_mut(&input.panel_id)
-            .ok_or_else(|| "Session not found".to_string())?;
-
-        if let Some(ref mut pty) = session.pty {
-            pty.write_input(input.data.as_bytes())
-                .map_err(|e| format!("Failed to write to PTY: {}", e))
-        } else {
-            Err("PTY not initialized".to_string())
-        }
-    }
-
-    pub fn append_output(&self, panel_id: &str, data: &[u8]) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        let session = sessions.get_mut(panel_id)
-            .ok_or_else(|| "Session not found".to_string())?;
-
-        // Always buffer the data (whether visible or not)
-        session.output_buffer.append(data);
-        session.output_seq += 1;
-
-        // TODO: If visible, emit event to frontend
-        // tauri::api::ipc::InvokeResponse::Ok(...)
-
-        Ok(())
-    }
-
-    pub fn focus_panel(&self, panel_id: &str) -> Result<String, String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        let session = sessions.get_mut(panel_id)
-            .ok_or_else(|| "Session not found".to_string())?;
-
-        session.is_visible = true;
-
-        // Return all buffered output as string (converted from bytes)
-        let buffered_bytes = session.output_buffer.drain_all();
-        let buffered_string = String::from_utf8_lossy(&buffered_bytes).to_string();
-
-        log::info!(
-            "Focused panel {} with {} bytes of buffered history",
-            panel_id,
-            buffered_bytes.len()
+        sessions.insert(
+            params.panel_id.clone(),
+            SessionRecord {
+                panel_id: params.panel_id,
+                writer,
+                child,
+                reader_task,
+                cols: params.cols,
+                rows: params.rows,
+                output_seq,
+            },
         );
 
-        Ok(buffered_string)
+        Ok(started)
     }
 
-    pub fn unfocus_panel(&self, panel_id: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        let session = sessions.get_mut(panel_id)
-            .ok_or_else(|| "Session not found".to_string())?;
+    pub async fn write_session(&self, input: SessionInput) -> Result<(), String> {
+        let writer = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(&input.panel_id)
+                .map(|session| Arc::clone(&session.writer))
+                .ok_or_else(|| "Session not found".to_string())?
+        };
 
-        session.is_visible = false;
-        log::info!("Unfocused panel {}, buffering future output", panel_id);
+        let mut writer = writer.lock().await;
+        write_input(&mut writer, input.data.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write to PTY: {e}"))
+    }
+
+    pub async fn resize_session(
+        &self,
+        panel_id: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        let writer = {
+            let mut sessions = self.sessions.lock().await;
+            let session = sessions
+                .get_mut(&panel_id)
+                .ok_or_else(|| "Session not found".to_string())?;
+            session.cols = cols;
+            session.rows = rows;
+            Arc::clone(&session.writer)
+        };
+
+        let writer = writer.lock().await;
+        resize_pty(&writer, cols, rows).map_err(|e| format!("Failed to resize PTY: {e}"))
+    }
+
+    pub async fn close_session(&self, panel_id: String) -> Result<(), String> {
+        let record = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.remove(&panel_id)
+        };
+
+        if let Some(record) = record {
+            record.reader_task.abort();
+            terminate_child(&record.child).await;
+        }
 
         Ok(())
     }
 
-    pub fn resize_session(&self, panel_id: String, cols: u16, rows: u16) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        let session = sessions.get_mut(&panel_id)
-            .ok_or_else(|| "Session not found".to_string())?;
+    pub async fn close_all_sessions(&self) {
+        let sessions = {
+            let mut sessions = self.sessions.lock().await;
+            sessions
+                .drain()
+                .map(|(_, session)| session)
+                .collect::<Vec<_>>()
+        };
 
-        session.cols = cols;
-        session.rows = rows;
-
-        if let Some(ref mut pty) = session.pty {
-            pty.resize(cols, rows)
-                .map_err(|e| format!("Failed to resize PTY: {}", e))
-        } else {
-            Err("PTY not initialized".to_string())
+        for session in sessions {
+            session.reader_task.abort();
+            terminate_child(&session.child).await;
         }
     }
 
-    pub fn close_session(&self, panel_id: String) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        sessions.remove(&panel_id);
-        log::info!("Closed session {}", panel_id);
-        Ok(())
+    pub async fn get_all_sessions(&self) -> Vec<String> {
+        let sessions = self.sessions.lock().await;
+        sessions.keys().cloned().collect()
     }
 
-    pub fn get_all_sessions(&self) -> Result<Vec<String>, String> {
-        let sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        Ok(sessions.keys().cloned().collect())
-    }
+    pub async fn get_session_status(&self, panel_id: &str) -> Result<SessionStatusInfo, String> {
+        let (panel_id, cols, rows, output_seq) = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(panel_id)
+                .ok_or_else(|| "Session not found".to_string())?;
+            (
+                session.panel_id.clone(),
+                session.cols,
+                session.rows,
+                Arc::clone(&session.output_seq),
+            )
+        };
 
-    pub fn get_session_status(&self, panel_id: &str) -> Result<SessionStatusInfo, String> {
-        let sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        let session = sessions.get(panel_id)
-            .ok_or_else(|| "Session not found".to_string())?;
+        let output_seq = *output_seq.lock().await;
 
         Ok(SessionStatusInfo {
-            panel_id: session.panel_id.clone(),
-            is_visible: session.is_visible,
-            buffered_bytes: session.output_buffer.len(),
-            output_seq: session.output_seq,
+            panel_id,
+            cols,
+            rows,
+            output_seq,
         })
     }
+}
 
-    /// Poll for output from a visible session
-    /// This is a temporary polling mechanism for testing/simple cases
-    /// In production, consider WebSocket or Tauri event system
-    pub fn poll_session_output(&self, panel_id: &str, last_seq: u32) -> Result<PollOutputResult, String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "Lock poisoned")?;
-        let session = sessions.get_mut(panel_id)
-            .ok_or_else(|| "Session not found".to_string())?;
+fn spawn_reader_loop<R: Runtime>(
+    app: AppHandle<R>,
+    panel_id: String,
+    mut reader: pty_process::OwnedReadPty,
+    child: Arc<Mutex<Child>>,
+    output_seq: Arc<Mutex<u32>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; POLL_READ_CHUNK_SIZE];
 
-        // Read from PTY if visible
-        if session.is_visible && session.pty.is_some() {
-            let pty = session.pty.as_mut().unwrap();
-            let mut buf = vec![0u8; 4096];
-            match pty.read_output(&mut buf) {
-                Ok(n) if n > 0 => {
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => {
+                    if let Some(exit_code) = try_wait_exit_code(&child).await {
+                        emit_exit(&app, &panel_id, Some(exit_code));
+                        break;
+                    }
+                }
+                Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    session.output_seq += 1;
-                    return Ok(PollOutputResult {
-                        panel_id: panel_id.to_string(),
+                    let seq = {
+                        let mut seq = output_seq.lock().await;
+                        *seq += 1;
+                        *seq
+                    };
+
+                    let payload = SessionOutputMessage {
+                        panel_id: panel_id.clone(),
                         data,
-                        seq: session.output_seq,
-                    });
+                        seq,
+                    };
+
+                    if app.emit(OUTPUT_EVENT, payload).is_err() {
+                        break;
+                    }
                 }
-                Ok(_) => {
-                    // No data available
-                }
-                Err(e) => {
-                    log::error!("Error reading from PTY {}: {}", panel_id, e);
+                Err(error) => {
+                    log::warn!("PTY read loop failed for {}: {}", panel_id, error);
+                    let exit_code = try_wait_exit_code(&child).await;
+                    emit_exit(&app, &panel_id, exit_code);
+                    break;
                 }
             }
         }
+    })
+}
 
-        // No new output
-        Ok(PollOutputResult {
-            panel_id: panel_id.to_string(),
-            data: String::new(),
-            seq: session.output_seq,
-        })
+async fn try_wait_exit_code(child: &Arc<Mutex<Child>>) -> Option<i32> {
+    let mut child = child.lock().await;
+    match child.try_wait() {
+        Ok(Some(status)) => status.code(),
+        Ok(None) => None,
+        Err(error) => {
+            log::warn!("Failed to check child exit status: {}", error);
+            Some(1)
+        }
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct SessionStatusInfo {
-    pub panel_id: String,
-    pub is_visible: bool,
-    pub buffered_bytes: usize,
-    pub output_seq: u32,
+async fn terminate_child(child: &Arc<Mutex<Child>>) {
+    let mut child = child.lock().await;
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PollOutputResult {
-    pub panel_id: String,
-    pub data: String,
-    pub seq: u32,
+fn emit_exit<R: Runtime>(app: &AppHandle<R>, panel_id: &str, exit_code: Option<i32>) {
+    let _ = app.emit(
+        EXIT_EVENT,
+        SessionExitMessage {
+            panel_id: panel_id.to_string(),
+            exit_code,
+        },
+    );
 }
 
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_ring_buffer_append() {
-        let mut buf = OutputRingBuffer::new(100);
-        buf.append(b"hello");
-        assert_eq!(buf.len(), 5);
-        let drained = buf.drain_all();
-        assert_eq!(drained, b"hello");
-    }
-
-    #[test]
-    fn test_ring_buffer_eviction() {
-        let mut buf = OutputRingBuffer::new(10);
-        buf.append(b"12345"); // 5 bytes: [1,2,3,4,5]
-        buf.append(b"67890"); // 5 bytes: [1,2,3,4,5,6,7,8,9,0], now full
-        assert_eq!(buf.len(), 10);
-
-        buf.append(b"ABC"); // 3 bytes: evicts [1,2,3], keeps [4,5,6,7,8,9,0], adds [A,B,C]
-        assert_eq!(buf.len(), 10);
-        let drained = buf.drain_all();
-        // Expected: [4,5,6,7,8,9,0,A,B,C] = "4567890ABC"
-        assert_eq!(&drained[..], b"4567890ABC");
-    }
-
-    #[test]
-    fn test_session_visibility() {
-        let manager = SessionManager::new();
-        let params = OpenSessionParams {
-            panel_id: "test-panel".to_string(),
-            cwd: None,
-            cols: 80,
-            rows: 24,
-        };
-
-        manager.open_session(params).unwrap();
-        manager
-            .append_output("test-panel", b"hello world")
-            .unwrap();
-
-        // Panel is visible by default, so focus returns empty (already draining)
-        let buffered = manager.focus_panel("test-panel").unwrap();
-        assert!(buffered.is_empty() || buffered == "hello world");
-
-        // Hide the panel
-        manager.unfocus_panel("test-panel").unwrap();
-
-        // Add more output while hidden
-        manager
-            .append_output("test-panel", b" from background")
-            .unwrap();
-
-        // When we focus again, we get the buffered content
-        let buffered = manager.focus_panel("test-panel").unwrap();
-        assert_eq!(buffered, " from background");
     }
 }

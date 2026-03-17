@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Plexi** is an infinite 2D canvas terminal multiplexer built with Electrobun (Bun-native Electron alternative).
+**Plexi** is an infinite 2D canvas terminal multiplexer built with Tauri.
 
 ## Product Specs
 
@@ -19,22 +19,14 @@ Deferred architecture work and longer-horizon refactors can be documented in [`d
 
 When the user explicitly asks about future work, deep refactors, or deferred improvements, check that directory for relevant markdown specs before planning or implementing. Treat those docs as supporting guidance, not default MVP scope.
 
-## Electrobun Reference
+## Tauri Runtime
 
-When working with Electrobun APIs or platform behavior, consult [`llms.txt`](./llms.txt) alongside this file. It contains the project's framework-specific guidance for main-process imports, `views://` URLs, and other Electrobun constraints.
-
-### Electrobun Menu Notes
-
-- For macOS application menus, follow Electrobun's documented shape: the first top-level menu should be an unlabeled item with a `submenu`, which macOS renders as the app menu.
-- Only use `accelerator` on custom action items. Built-in `role` items like `quit`, `close`, `copy`, and `paste` should rely on the native role shortcut handling.
-- Prefer simple lowercase single-character accelerators for custom actions unless Electrobun explicitly documents a more complex pattern.
-- Plexi's observed macOS fix was not a menu-shape change by itself. The menu only became reliable after reapplying `ApplicationMenu.setApplicationMenu(...)` during startup: once immediately, again on a zero-delay timeout, again after a short delay, and again when the main window receives focus.
-- Treat that repeated install as a project-specific Electrobun workaround for macOS app activation timing, not as a documented framework best practice. Keep it unless a future Electrobun release makes it unnecessary and local native testing confirms removal is safe.
+The active desktop runtime is Tauri. Prefer the Rust backend in `src-tauri/` and the Tauri browser bridge in `src/mainview/tauri-session-bridge.js` when working on session management, filesystem access, or app lifecycle behavior.
 
 ## Self-Verification Loop (WORKING ✅)
 
 The verification loop uses **Playwright headless browser only** to test UI without needing a display.
-Agents must not launch the native Electrobun window for routine verification unless the user explicitly asks for a native-window check.
+Agents must not launch the native Tauri window for routine verification unless the user explicitly asks for a native-window check.
 
 ### How It Works
 
@@ -85,7 +77,7 @@ test('new feature works', async ({ page }) => {
 ## Development Phases
 
 ### Phase 0: Hello World (COMPLETE ✅)
-- [x] Initialize Electrobun project
+- [x] Initialize desktop project
 - [x] UI renders with "Plexi" title
 - [x] Playwright test verifies UI
 - [x] Screenshot captured and verified
@@ -123,20 +115,19 @@ plexi/
 ├── tests/
 │   └── e2e/            # Playwright tests
 ├── package.json
-├── electrobun.config.ts
 └── AGENTS.md           # This file
 ```
 
 ## Key Constraints
 
 1. **Windows-first** - MVP targets Windows 11+ (dev on Linux ok)
-2. **Electrobun** - NOT Electron (smaller, faster)
+2. **Tauri** - Rust backend plus webview frontend
 3. **Self-testing** - All features must have e2e tests
 4. **Spec-driven** - MVP PRD before implementation, future ideas go in the future PRD
 
 ## Tech Stack
 
-- **Runtime:** Bun (via Electrobun)
+- **Runtime:** Tauri + Rust
 - **UI:** TypeScript + HTML/CSS (no framework initially)
 - **Terminal:** xterm.js → libghostty (later)
 - **Testing:** Playwright
