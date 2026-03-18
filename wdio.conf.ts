@@ -1,7 +1,11 @@
 import { spawn, execSync, ChildProcess } from "child_process";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import type { Options } from "@wdio/types";
 
 let tauriDriver: ChildProcess | null = null;
+let tempHome: string | null = null;
 
 function killStaleProcesses() {
   try { execSync("pkill -f tauri-webdriver", { stdio: "ignore" }); } catch {}
@@ -32,8 +36,13 @@ export const config: Options.Testrunner = {
   onPrepare() {
     killStaleProcesses();
 
+    // Use a temp HOME so the app starts with a clean ~/.plexi (no saved workspace)
+    tempHome = mkdtempSync(join(tmpdir(), "plexi-e2e-"));
+    process.env.HOME = tempHome;
+
     tauriDriver = spawn("tauri-webdriver", ["--port", "4444"], {
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, HOME: tempHome },
     });
 
     tauriDriver.stderr?.on("data", (data: Buffer) => {
@@ -52,5 +61,11 @@ export const config: Options.Testrunner = {
       tauriDriver = null;
     }
     killStaleProcesses();
+
+    // Clean up temp home
+    if (tempHome) {
+      try { rmSync(tempHome, { recursive: true, force: true }); } catch {}
+      tempHome = null;
+    }
   },
 };

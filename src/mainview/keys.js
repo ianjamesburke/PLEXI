@@ -10,6 +10,7 @@
 const KEY_LABELS = {
   cmd: "⌘",
   command: "⌘",
+  super: "⌘",
   "⌘": "⌘",
   ctrl: "⌃",
   control: "⌃",

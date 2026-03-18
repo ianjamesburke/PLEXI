@@ -8,9 +8,29 @@ dev:
 build:
     npx tauri build
 
-# Run e2e tests (requires dev server running separately)
+# Run Playwright e2e tests (mock session, browser only)
 test:
     npx playwright test
+
+# Run Playwright e2e tests with 4x timeouts for slow machines
+test-slow:
+    SLOW=1 npx playwright test
+
+# Run Tauri backend tests (Rust unit + integration)
+test-tauri:
+    cd src-tauri && cargo test
+
+# Build debug binary with webdriver support and run binary e2e tests
+test-binary:
+    cd src-tauri && cargo build --features webdriver
+    npx @wdio/cli run wdio.conf.ts
+
+# Run binary e2e tests only (assumes debug binary already built)
+test-binary-run:
+    npx @wdio/cli run wdio.conf.ts
+
+# Run all tests (Rust + Playwright + binary e2e)
+test-all: test-tauri test test-binary
 
 # Open the built app
 open:

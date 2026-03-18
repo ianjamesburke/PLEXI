@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { T } from "./test-helpers";
 
-const MOD = process.platform === "darwin" ? "Meta" : "Control";
+const MOD = "Meta";
 
 test.describe("Tauri Plexi", () => {
   test.beforeEach(async ({ page }) => {
@@ -8,10 +9,10 @@ test.describe("Tauri Plexi", () => {
     await page.goto("/mainview/");
 
     // Wait for app to initialize (async init)
-    await page.waitForSelector("#app-shell", { timeout: 10000 });
+    await page.waitForSelector("#app-shell", { timeout: 10000 * T });
     await page.waitForFunction(
       () => document.querySelectorAll("#context-list > li").length > 0,
-      { timeout: 10000 },
+      { timeout: 10000 * T },
     );
   });
 
