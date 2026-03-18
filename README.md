@@ -62,7 +62,6 @@ Your layout and working directories are saved automatically to `~/.plexi/` — p
 ## Known Issues
 
 *   **TUI apps (Claude Code, opencode, etc.) have rendering artifacts.** Ink-based and other full-screen TUI apps show garbled re-renders, text overlap, and missing glyphs. This is a known xterm.js limitation — the fitAddon's column count can drift from what the WebGL renderer actually displays. Native terminals (Ghostty, iTerm2) don't have this issue. The long-term fix is replacing xterm.js with libghostty (see roadmap).
-*   No SSH support yet (planned alongside session persistence).
 *   **Shell integration is zsh-only** — bash/fish cwd tracking not yet implemented (fish has OSC 7 built-in, bash script coming later).
 
 ---
