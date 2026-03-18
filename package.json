@@ -9,6 +9,8 @@
     "build": "tauri build",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:e2e": "playwright test",
+    "test:e2e:binary": "wdio run wdio.conf.ts",
+    "test:e2e:binary:build": "cd src-tauri && cargo build --features webdriver && cd .. && wdio run wdio.conf.ts",
     "verify": "npm run test:rust && npm run test:e2e"
   },
   "dependencies": {
@@ -21,6 +23,10 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@tauri-apps/cli": "^2.10.1",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@wdio/cli": "^9.26.1",
+    "@wdio/local-runner": "^9.26.1",
+    "@wdio/mocha-framework": "^9.26.1",
+    "@wdio/spec-reporter": "^9.26.1"
   }
 }
