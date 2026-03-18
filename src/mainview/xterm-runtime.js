@@ -288,6 +288,7 @@ export function createTerminalRuntime({
     });
     runtime.resizeObserver.observe(mountNode);
   }
+
   runtime.resizeHandler();
   replayBuffer(runtime);
 
