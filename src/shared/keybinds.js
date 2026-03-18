@@ -4,6 +4,7 @@ const MODIFIER_ALIASES = {
   command: "super",
   control: "ctrl",
   equal: "=",
+  minus: "-",
   opt: "alt",
   option: "alt",
 };

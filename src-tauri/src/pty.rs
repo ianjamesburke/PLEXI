@@ -30,10 +30,13 @@ impl PtySession {
         };
 
         let child = Command::new(shell_path)
+            .arg("-l")
             .current_dir(&resolved_cwd)
             .kill_on_drop(true)
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
+            .env("LANG", std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()))
+            .env("LC_ALL", std::env::var("LC_ALL").unwrap_or_else(|_| "en_US.UTF-8".to_string()))
             .env("PATH", full_path)
             .spawn(pts)?;
 

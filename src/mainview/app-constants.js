@@ -13,6 +13,11 @@ const TERMINAL_FONT_FAMILY = [
 ].join(", ");
 
 export const STORAGE_KEY = "plexi.workspace.v2";
+
+// The workspace file loaded on startup. Maps to ~/.plexi/workspaces/default.json.
+// Multiple named workspaces can exist alongside it, but this is always the one
+// Plexi opens automatically. Switching workspaces at runtime isn't supported yet.
+export const DEFAULT_WORKSPACE_NAME = "default";
 export const MAX_BUFFER_CHARS = 120000;
 export const platformName = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent;
 export const isMacOS = /\bMac/i.test(platformName);

@@ -164,18 +164,120 @@ function createTauriSessionBridge(handlers) {
     },
 
     async getWorkspaceStorageInfo() {
-      return {
-        profilePath: "~/.plexi",
-        configPath: "~/.plexi/config.json",
-      };
+      try {
+        const paths = await invoke("get_plexi_paths", {});
+        return {
+          profilePath: paths.base,
+          configPath: paths.config,
+          workspacesPath: paths.workspaces,
+          source: "disk",
+        };
+      } catch (error) {
+        console.error("getWorkspaceStorageInfo failed:", error);
+        return {
+          profilePath: "~/.plexi",
+          configPath: "~/.plexi/config.json",
+          source: "disk",
+        };
+      }
     },
 
-    async readWorkspaceDocument() {
-      return { contexts: [], activeContext: null };
+    async readWorkspaceDocument(params) {
+      const name = params?.name;
+      let raw;
+      try {
+        raw = await invoke("read_workspace", { name });
+      } catch (error) {
+        console.error(`Failed to read workspace "${name}":`, error);
+        return { document: null };
+      }
+
+      if (!raw) {
+        return { document: null };
+      }
+
+      try {
+        return { document: JSON.parse(raw) };
+      } catch (parseError) {
+        console.error(
+          `Workspace file "${name}.json" contains invalid JSON:`,
+          parseError.message
+        );
+
+        // Rename the corrupt file so the next save doesn't overwrite it.
+        // The user can find it, fix the typo, and rename it back.
+        let backupName = null;
+        try {
+          backupName = await invoke("backup_workspace", { name });
+          console.warn(`Corrupt workspace backed up to ~/.plexi/workspaces/${backupName}`);
+        } catch (backupError) {
+          console.error("Could not back up corrupt workspace file:", backupError);
+        }
+
+        return {
+          document: null,
+          warning: backupName
+            ? `Workspace file had invalid JSON — backed up to ${backupName}. Fix it and rename to ${name}.json to restore.`
+            : "Workspace file had invalid JSON and could not be backed up — starting fresh.",
+        };
+      }
     },
 
-    async writeWorkspaceDocument(_params) {
-      return {};
+    async writeWorkspaceDocument(params) {
+      const name = params?.name;
+      try {
+        const contents = JSON.stringify(params.document, null, 2);
+        await invoke("write_workspace", { name, contents });
+        return {};
+      } catch (error) {
+        console.error("writeWorkspaceDocument failed:", error);
+        throw normalizeInvokeError(error);
+      }
+    },
+
+    async listWorkspaces() {
+      try {
+        return await invoke("list_workspaces", {});
+      } catch (error) {
+        console.error("listWorkspaces failed:", error);
+        return [];
+      }
+    },
+
+    async readConfig() {
+      let raw;
+      try {
+        raw = await invoke("read_config", {});
+      } catch (error) {
+        console.error("Failed to read ~/.plexi/config.json:", error);
+        return null;
+      }
+
+      if (!raw) {
+        return null;
+      }
+
+      try {
+        return JSON.parse(raw);
+      } catch (error) {
+        console.error(
+          "~/.plexi/config.json contains invalid JSON:",
+          error.message,
+          "\nFalling back to defaults. Fix the JSON syntax and restart."
+        );
+        return null;
+      }
+    },
+
+    async writeConfig(config) {
+      try {
+        const contents = JSON.stringify(config, null, 2);
+        await invoke("write_config", { contents });
+        return {};
+      } catch (error) {
+        console.error("writeConfig failed:", error);
+        throw normalizeInvokeError(error);
+      }
     },
 
     async openExternalUrl(url) {

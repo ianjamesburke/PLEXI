@@ -49,6 +49,7 @@ import {
   getTerminalZoomStep,
   setXtermError,
 } from "./xterm-runtime.js";
+import { loadConfig, getConfigWarnings } from "./plexi-config.js";
 
 const paneRuntimes = new Map();
 const panelBuffers = new Map();
@@ -147,7 +148,7 @@ const sessionBridge = createSessionBridge({
   },
 });
 
-if (sessionBridge.mode !== "live") {
+if (sessionBridge.mode !== "live" && sessionBridge.mode !== "tauri") {
   state = loadWorkspaceState();
 }
 
@@ -1441,6 +1442,11 @@ function bindUiEvents() {
     }
   });
 
+  const tauriListen = window.__TAURI__?.event?.listen ?? window.__TAURI_INTERNALS__?.event?.listen;
+  if (tauriListen) {
+    tauriListen("plexi-menu-command", (event) => runCommand(event.payload));
+  }
+
   window.addEventListener("keydown", (event) => {
     if (event.metaKey && event.key === "q" && !event.repeat) {
       event.preventDefault();
@@ -1502,21 +1508,32 @@ async function initializeApp() {
   const [info, hydrated] = await Promise.all([
     sessionBridge.getBackendInfo(),
     hydrateWorkspaceState(sessionBridge),
+    loadConfig(sessionBridge),
   ]);
 
   backendInfo = info;
   state = hydrated.state;
   updateWorkspaceStorage(hydrated.storage);
 
-  if (sessionBridge.mode === "live" && !hydrated.storage) {
+  if (hydrated.warning) {
+    showToast(hydrated.warning);
+  }
+
+  if ((sessionBridge.mode === "live" || sessionBridge.mode === "tauri") && !hydrated.storage) {
     updateWorkspaceStorage({
       path: "Workspace file unavailable",
       source: "disk",
     });
   }
 
-  if (sessionBridge.mode === "live" && hydrated.storage && hydrated.state.lastAction === "Ready") {
+  if ((sessionBridge.mode === "live" || sessionBridge.mode === "tauri") && hydrated.storage && hydrated.state.lastAction === "Ready") {
     saveState();
+  }
+
+  const warnings = getConfigWarnings();
+  if (warnings.length > 0) {
+    console.warn("Config warnings:", warnings);
+    showToast(`Config: ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ""}`);
   }
 
   syncViewportMetrics();

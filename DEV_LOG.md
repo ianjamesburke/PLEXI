@@ -1,5 +1,63 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-17 — Double input bug in production Tauri builds (RESOLVED)
+
+**Status: fixed**
+
+First keystroke after each prompt appeared doubled in production builds (`tauri build`), but worked perfectly in dev mode (`tauri dev`). Same bug existed in the earlier Electrobun version. Typing "echo hi" rendered as "ececho hi".
+
+**Root cause:** Missing locale environment + non-login shell. When a macOS app launches from `/Applications` (via Finder/launchd), it gets a barebones environment — no `LANG`, no `LC_ALL`. In dev mode, `tauri dev` inherits the full terminal environment, so everything works. Without `LANG=en_US.UTF-8`, zsh's ZLE and plugins (autosuggestions, syntax highlighting, Starship) miscalculate character widths on the first keystroke, position the cursor wrong, and the first character renders with ghost artifacts.
+
+**Fix (pty.rs):**
+```rust
+Command::new(shell_path)
+    .arg("-l")  // login shell — sources ~/.zprofile, /etc/zprofile
+    .env("LANG", "en_US.UTF-8")
+    .env("LC_ALL", "en_US.UTF-8")
+```
+
+**What we ruled out first (all dead ends):**
+- Custom native menu / `Menu::default` — no effect
+- Menu event listener in JS — no effect
+- Ghost processes — none found
+- Doubled IPC calls — debug logs showed input fires once, output seq numbers are clean
+- xterm.js `attachCustomKeyEventHandler` workaround intercepting all printable chars — no effect
+- Recent code regression — bug existed in older commits too (`b190e64`, `c761d23`)
+
+**Lesson:** When spawning PTY shells from a GUI app on macOS, ALWAYS set locale env vars and spawn as a login shell. The launchd environment is not the same as a terminal environment. This applies to any framework (Tauri, Electrobun, Electron).
+
+## 2026-03-17 — Implement ~/.plexi directory: workspace persistence + config file
+
+Added filesystem persistence for workspaces and a global config file. Structure:
+
+```
+~/.plexi/
+  config.json          # global settings (terminal, shell, keyboard)
+  workspaces/
+    default.json       # workspace layout + contexts + panel metadata
+    <name>.json        # future: multiple named workspaces
+```
+
+**Key decisions:**
+
+1. **Workspaces are named files, not a single workspace.json.** Each workspace is `~/.plexi/workspaces/<name>.json`. Currently only "default" is used, but the API supports multiple named workspaces for future workspace switching.
+
+2. **Config overrides in workspace files.** Workspace documents already serialize `terminal` and `keyboard` keys. These can override the global config via `resolveConfig()` in `plexi-config.js`. No new format needed.
+
+3. **Config file written on first launch.** If `~/.plexi/config.json` doesn't exist, defaults are written from `plexi-config.js`. Values come from the existing hardcoded constants in `app-constants.js`. Comments in the code note which settings aren't actually wired up yet (theme, fonts, keybinds).
+
+4. **localStorage kept as fallback.** Every save still writes to localStorage in addition to disk. This means the app degrades gracefully if the disk write fails.
+
+5. **Skipped "profiles" concept.** Profiles would bundle config + workspace together — unnecessary complexity until users ask for it.
+
+6. **Rust side uses `dirs` crate** for `home_dir()`. Workspace names are sanitized to prevent path traversal.
+
+**New files:** `src-tauri/src/config.rs`, `src/mainview/plexi-config.js`
+**Modified:** `lib.rs` (6 new commands), `tauri-session-bridge.js` (bridge stubs → real IPC), `workspace-storage.js` (tauri mode support), `app.js` (config loading + mode checks)
+
+## 2026-03-17 — Future enhancement: scriptable workspace layouts
+Like tmuxinator/tmuxp — user-defined named layouts that open split panes with specific commands pre-launched (e.g. "dev stack" = frontend + backend side-by-side). First-class differentiator for Plexi. Not MVP — shelved until there are users.
+
 ## 2026-03-17 — Real PTY sessions fixed on macOS Tauri
 
 **Status: resolved**
