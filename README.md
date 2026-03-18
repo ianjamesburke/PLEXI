@@ -20,76 +20,68 @@ Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) —
 
 ---
 
-> **⚠️ Not production ready.** Electrobun may be too early-stage to support a project of this complexity — there's a confusing bug in the local build that I haven't been able to crack, and I may need to switch to Electron. See [Known Issues](#known-issues) below. If you have experience with Electrobun internals and want to help, please let me know.
-
----
-
 ## Quick Start
 
 1. **New pane right** — `Cmd+N` / **New pane below** — `Cmd+Shift+N`
 2. **Navigate panes** — `Cmd+Arrow` or `Cmd+H/J/K/L`
 3. **Switch contexts** — `Cmd+Opt+1`, `Cmd+Opt+2`, etc.
 
-Your layout and working directories are saved automatically to local storage — pick up where you left off.
+Your layout and working directories are saved automatically to `~/.plexi/` — pick up where you left off.
 
 ---
 
 ## The Present
 
 *   **Infinite 2D canvas** — terminals arranged on a spatial grid, navigable with arrow keys or vim-style `h/j/k/l`
-*   **Contexts** — named workspaces to separate projects; cycle between them with `Cmd+[` and `Cmd+]` , rename or delete on the fly
+*   **Contexts** — named workspaces to separate projects; cycle between them with `Cmd+[` and `Cmd+]`, rename or delete on the fly
 *   **Sidebar & minimap** — visual overview of your layout; click nodes to jump to a terminal
 *   **Overlay minimap** — toggleable full-canvas map (`Cmd+M`)
 *   **Terminal management** — open new terminals to the right (`Cmd+N`) or below (`Cmd+Shift+N`), close with `Cmd+W`
-*   **Workspace persistence** — layout, context, and working directories saved locally
+*   **Workspace persistence** — layout, context, and working directories saved to `~/.plexi/workspaces/`
+*   **Shell integration** — automatic cwd tracking via OSC 7 (ZDOTDIR injection for zsh); split panes and workspace restores open in the correct directory
 *   **Copy/paste** — selection-aware clipboard support
 *   **Font zoom** — `Cmd++/−` to adjust terminal font size
 *   **Keyboard reference** — `Cmd+/` to show all shortcuts
 *   **Ghost slot hints** — empty adjacent slots show shortcut hints when the canvas is sparse
 *   **Status toolbar** — shows current context, working directory, and active process name
+*   **WebGL renderer** — GPU-accelerated xterm.js rendering for accurate colors in TUI apps
 
 ## The Future
 
 *   **True Session Persistence and Multiplexing**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI. (SSH auto-connect, connection pooling)
 *   **Coding Agent Support**: Session labels, awaiting-response indicators, and notifications — so you can run multiple agents across panes without babysitting them.
-*   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas the terminals.
-*   **Support Multiple Workspaces**: Add the abbility to switch between whole families of contexts (might be overkill)
+*   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas alongside the terminals.
+*   **Support Multiple Workspaces**: Add the ability to switch between whole families of contexts (might be overkill)
 *   **libghostty Integration**: Swap out `xterm.js` for `libghostty` to get GPU-accelerated, native-grade terminal rendering.
 *   **Ergonomics**: Vi-style copy mode and scrollback buffers. (as well as many other Vim style interactions on the canvas)
 *   **Pane Management**: Considering tmux-style split pane management within a single canvas node.
+*   **Scriptable Layouts**: tmuxinator-style named layouts that open split panes with specific commands pre-launched (e.g. "dev stack" = frontend + backend side-by-side).
 
 ---
 
 ## Known Issues
 
-
 *   **opencode visually bugs sometimes.**
-*   No SSH atm (Will add when i add session persistance)
-*   **Graphics rendering isn't great:** `xterm.js` is okay for now, but this will be fixed with the planned migration to `libghostty`.
-*   **Built app double-input glitch:** I'm seeing double inputs on the built version of the app. It works fine when running dev mode, but the standalone built app just does not want to behave. If anybody can figure it out, that would be spectacular.
-    Current state: `bunx electrobun run` against the built app works perfectly. Double-clicking the `.app` is what breaks.
-    Things we've tried that did not fix it:
-    - hiding xterm helper/composition layers more aggressively
-    - changing terminal input handling paths (`onData` vs `onKey`)
-    - disabling terminal transparency / forcing an opaque background
-    - deduping PTY output with sequence numbers
-    - switching the built app to CEF instead of the native renderer
-    Current suspects:
-    - the standalone app launch path is different from `electrobun run`
-    - shell startup / environment differences when launched from Finder vs terminal
-    - the build surface is more complicated than it needs to be, especially around copying view assets into `views/`
-    I still suspect the build surface may be wrong or at least noisier than necessary, but at this point it does not look like a simple CSS bug.
+*   No SSH support yet (planned alongside session persistence).
+*   **Shell integration is zsh-only** — bash/fish cwd tracking not yet implemented (fish has OSC 7 built-in, bash script coming later).
 
 ---
 
 ## Development
 
-```bash
-# Install dependencies
-bun install
+Built with [Tauri](https://tauri.app/) (Rust backend, WebView frontend).
 
-# Start dev server
-bun run dev
+```bash
+# Install JS dependencies
+npm install
+
+# Start dev server (hot reload)
+npm run dev
+
+# Build release app
+npm run build
 ```
+
+The dev server runs the frontend with Vite and launches the Tauri WebView pointing at it. The release build produces a native `.app` in `src-tauri/target/release/bundle/`.
 
 ---

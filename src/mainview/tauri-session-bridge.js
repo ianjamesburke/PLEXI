@@ -118,6 +118,7 @@ function createTauriSessionBridge(handlers) {
         handlers.onStarted?.({
           panelId: result.panel_id,
           cwd: result.cwd,
+          homeDir: result.home_dir,
           backend: result.backend,
           platform: result.platform,
           shellPath: result.shell_path,
@@ -281,9 +282,8 @@ function createTauriSessionBridge(handlers) {
     },
 
     async openExternalUrl(url) {
-      if (typeof window !== "undefined" && window.open) {
-        window.open(url, "_blank");
-      }
+      const invoke = getInvoke();
+      await invoke("plugin:shell|open", { path: url });
       return {};
     },
 

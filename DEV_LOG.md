@@ -1,5 +1,73 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-17 — Switch xterm.js to WebGL renderer for better color fidelity
+
+Added `@xterm/addon-webgl` and activated it after `terminal.open()` in `xterm-runtime.js`. Fixes wrong colorization in TUI apps (Claude Code, etc.) vs Ghostty. The default Canvas 2D renderer was the culprit — it's less accurate than a GPU-composited path.
+
+Includes an `onContextLoss` handler that disposes the WebGL addon if the GPU context is lost (can happen when window backgrounds on macOS), falling back to canvas automatically. Without this handler, a context loss leaves the terminal blank permanently.
+
+Vendor script added at `vendor/xterm/addon-webgl.js`; `copy-vendor` script updated to include it.
+
+---
+
+## 2026-03-17 — Fix Cmd+V paste showing permission popup instead of pasting
+
+Pressing Cmd+V in the terminal showed a WebView permission popup ("Paste from clipboard?") at the cursor instead of cleanly pasting text.
+
+**Root cause:** The `paste_from_clipboard` keybind handler in `app.js` was intercepting Cmd+V, calling `event.preventDefault()`, then manually reading the clipboard via `navigator.clipboard.readText()`. In Tauri's WKWebView on macOS, that API triggers a native clipboard permission dialog.
+
+**Fix:** Removed the manual clipboard read. The keybind handler now returns `true` to let the keypress pass through to xterm.js, which has its own built-in `paste` event listener. The browser fires the native `paste` event (no permission needed), xterm.js picks it up, and routes the text through `onData` into the PTY session.
+
+**Dead end:** Tried using `tauri-plugin-clipboard-manager` to bypass the WebView permission system via native OS clipboard access. Plugin compiled and registered fine, but the invoke calls silently failed — paste did nothing at all. Reverted. The xterm.js native paste path is simpler and requires zero Rust changes.
+
+**Lesson:** Don't fight the browser's clipboard security model — use the native `paste` event flow instead of `navigator.clipboard.readText()`. xterm.js already handles this correctly if you let the key event through.
+
+---
+
+## 2026-03-17 — Custom title bar and window dragging with titleBarStyle Overlay
+
+Switched from default macOS gray title bar to a transparent overlay bar (`"titleBarStyle": "Overlay"`, `"hiddenTitle": true` in `tauri.conf.json`) so the app background color extends into the title bar area. Bumped `--window-top-inset` from `6px` to `28px` for macOS so content clears the traffic light buttons.
+
+**Window dragging:** `data-tauri-drag-region` on the toolbar elements wasn't enough — the attribute only applies to the exact element it's on, not children, so child `div`s and `span`s inside the toolbar swallow the mousedown before it reaches the drag region. Fixed by adding a `mousedown` listener that calls `getCurrentWindow().startDragging()` when the click target isn't an interactive element.
+
+**Critical:** `startDragging()` requires the capability permission `core:window:allow-start-dragging` in `src-tauri/capabilities/default.json`. Without it, the call silently fails — no error, no drag. This is a Tauri 2.x security sandbox requirement.
+
+## Future: Single-instance enforcement
+
+By default Tauri does not prevent multiple app instances from running simultaneously. A second launch opens a second process with its own config read/write cycle — potential for concurrent writes to `~/.plexi/`. Not an issue now (no users, macOS Dock typically re-focuses the existing window anyway). When it matters, add the official [`tauri-plugin-single-instance`](https://v2.tauri.app/plugin/single-instance/).
+
+---
+
+## Future: E2E test suite with tauri-driver
+
+Full end-to-end tests using `tauri-driver` + WebdriverIO against a compiled binary. Spin up a clean, unconfigured app (no `~/.plexi` state) and exercise every major user flow:
+
+- Create a new terminal session, run a command, verify output appears
+- Split panes horizontally and vertically
+- Close a pane, verify others are unaffected
+- Workspace save + restore (relaunch app, verify layout and sessions recover)
+- Resize terminal, verify PTY SIGWINCH propagates correctly
+
+This is the right long-term confidence net before releases. Not MVP — defer until the core feature set stabilizes and there are real users to break things. When implementing, start with the official Tauri guide: https://tauri.app/develop/tests/webdriver/
+
+---
+
+## 2026-03-17 — Shell integration via ZDOTDIR injection for cwd tracking
+
+Split terminals and workspace saves were always showing the initial session directory (e.g. `~`) instead of the user's current directory. `panel.cwd` was only set once at session spawn and never updated because the shell wasn't emitting any cwd signal.
+
+**Fix:** ZDOTDIR injection — the same approach used by Ghostty, iTerm2, and WezTerm.
+- `shell_integration.rs` writes `~/.plexi/shell-integration/zsh/{.zshrc,.zprofile}` at startup (idempotent)
+- The `.zshrc` sources the user's real `~/.zshrc` (via `PLEXI_ORIG_ZDOTDIR`), then appends a `precmd` hook
+- The hook emits **OSC 7** (`\e]7;file://hostname/path\a`) — the standard cwd protocol
+- Replaced the custom `PlexiCwd` OSC 633 sequence with OSC 7 in `session-output.js`, mock bridge, and tests
+
+**Why OSC 7 over the custom PlexiCwd sequence:** OSC 7 is already supported by fish (built-in), and shell integration scripts for bash/fish are widely available. fish users already get cwd tracking for free. Bash support just needs an additional `shell_integration.rs` script later.
+
+**Also fixed:** `home_dir` is now returned from `SessionStartedMessage` so the frontend initializes `homeDirectory` immediately (fixes `cwdLabel` showing full paths instead of `~` in workspace saves).
+
+**Zsh only for now** — bash/fish integration scripts are the next step when needed.
+
 ## 2026-03-17 — Double input bug in production Tauri builds (RESOLVED)
 
 **Status: fixed**

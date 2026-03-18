@@ -1,6 +1,7 @@
 mod config;
 mod pty;
 mod session;
+mod shell_integration;
 
 use session::{
     OpenSessionParams, SessionInput, SessionManager, SessionStartedMessage, SessionStatusInfo,
@@ -194,7 +195,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(AppState {
-            session_manager: SessionManager::new(),
+            session_manager: SessionManager::new(
+                shell_integration::ensure_shell_integration()
+                    .ok()
+                    .and_then(|p| p.to_str().map(str::to_string)),
+            ),
         })
         .invoke_handler(tauri::generate_handler![
             open_session,

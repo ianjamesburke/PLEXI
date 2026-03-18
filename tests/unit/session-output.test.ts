@@ -6,9 +6,11 @@ import {
 } from "../../src/mainview/session-output.js";
 
 describe("session output metadata", () => {
-  test("strips cwd markers from terminal output and returns the last cwd", () => {
+  test("strips OSC 7 cwd sequences from terminal output and returns the last cwd", () => {
+    // OSC 7 format: \e]7;file://hostname/path\a — standard protocol used by
+    // iTerm2, Ghostty, Kitty, WezTerm, fish, and now Plexi's shell integration.
     const result = extractSessionOutputMetadata(
-      "before\u001b]633;PlexiCwd=/tmp/project\u0007after\u001b]633;PlexiCwd=/tmp/next\u0007",
+      "before\u001b]7;file://localhost/tmp/project\u0007after\u001b]7;file:///tmp/next\u0007",
     );
 
     expect(result.cleaned).toBe("beforeafter");

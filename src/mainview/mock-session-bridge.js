@@ -1,5 +1,5 @@
 const MOCK_HELP = "help  clear  pwd  ls  flood  echo  split-right  split-down  map  focus  close";
-const cwdSequence = (cwd) => `\u001b]633;PlexiCwd=${cwd}\u0007`;
+const cwdSequence = (cwd) => `\u001b]7;file://localhost${cwd}\u0007`;
 
 function promptFor(session) {
   return `plexi:${session.cwdLabel}$ `;

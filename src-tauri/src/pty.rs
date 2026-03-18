@@ -14,6 +14,7 @@ impl PtySession {
     pub fn spawn_shell(
         shell_path: &str,
         cwd: Option<&str>,
+        zdotdir: Option<&str>,
         cols: u16,
         rows: u16,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -29,7 +30,7 @@ impl PtySession {
             format!("{extra}:{path}")
         };
 
-        let child = Command::new(shell_path)
+        let cmd = Command::new(shell_path)
             .arg("-l")
             .current_dir(&resolved_cwd)
             .kill_on_drop(true)
@@ -37,8 +38,19 @@ impl PtySession {
             .env("COLORTERM", "truecolor")
             .env("LANG", std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()))
             .env("LC_ALL", std::env::var("LC_ALL").unwrap_or_else(|_| "en_US.UTF-8".to_string()))
-            .env("PATH", full_path)
-            .spawn(pts)?;
+            .env("PATH", full_path);
+
+        // Inject ZDOTDIR so the shell sources Plexi's integration script, which
+        // emits the cwd after each prompt for split-terminal directory inheritance.
+        let cmd = if let Some(zdotdir) = zdotdir {
+            let orig = std::env::var("ZDOTDIR")
+                .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_default());
+            cmd.env("PLEXI_ORIG_ZDOTDIR", orig).env("ZDOTDIR", zdotdir)
+        } else {
+            cmd
+        };
+
+        let child = cmd.spawn(pts)?;
 
         let (reader, writer) = pty.into_split();
 
