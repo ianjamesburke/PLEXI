@@ -27,6 +27,9 @@ skills-lock.json
 *.swp
 *.swo
 
+# Scratch/scratch work
+docs/scratch/
+
 # OS
 .DS_Store
 Thumbs.db

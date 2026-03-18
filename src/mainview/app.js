@@ -1442,6 +1442,13 @@ function bindUiEvents() {
   });
 
   window.addEventListener("keydown", (event) => {
+    if (event.metaKey && event.key === "q" && !event.repeat) {
+      event.preventDefault();
+      const invoke = window.__TAURI__?.core?.invoke ?? window.__TAURI_INTERNALS__?.invoke;
+      if (invoke) invoke("quit_app");
+      return;
+    }
+
     if (event.key === "Escape" && uiState.contextModalOpen) {
       event.preventDefault();
       closeContextModal();
