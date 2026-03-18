@@ -51,6 +51,15 @@ async function waitForPtyReady(): Promise<void> {
   );
 }
 
+/** Get the cwd reported by the active panel (from OSC 7 tracking). */
+async function getActivePanelCwd(): Promise<string> {
+  return browser.execute(() => {
+    const state = (window as any).__PLEXI_DEBUG__?.getState?.();
+    const panel = state?.panels?.find((p: any) => p.id === state.activePanelId);
+    return panel?.cwd || "";
+  });
+}
+
 async function closeAllPanels(): Promise<void> {
   const panels = (await getState()).panels?.length ?? 0;
   for (let i = 0; i < panels; i++) {
@@ -183,6 +192,74 @@ describe("Plexi binary E2E", () => {
     expect(state.panels.length).toBe(3);
   });
 
+  // --- Ephemeral directory: cwd propagation across splits ---
+
+  const TEMP_DIR_NAME = `__plexi_e2e_${Date.now()}`;
+  const TEMP_DIR_PATH = `~/.plexi/${TEMP_DIR_NAME}`;
+
+  it("setup: create ephemeral temp directory", async () => {
+    // Close everything first to start fresh
+    await closeAllPanels();
+
+    await runCommand("new-node-right");
+    await waitForPanelCount(1, "Terminal did not open");
+    await waitForPtyReady();
+    await browser.pause(1000);
+
+    // Create the temp dir and cd into it
+    await sendInput(`mkdir -p ${TEMP_DIR_PATH} && cd ${TEMP_DIR_PATH}\r`);
+    await browser.pause(2000);
+
+    // Verify we're in the temp dir (OSC 7 cwd tracking)
+    await browser.waitUntil(
+      async () => (await getActivePanelCwd()).includes(TEMP_DIR_NAME),
+      { timeout: 8000, timeoutMsg: "cwd did not update to temp dir" },
+    );
+  });
+
+  it("split inherits cwd from the active terminal", async () => {
+    await runCommand("new-terminal-right");
+    await waitForPanelCount(2, "Split did not create second panel");
+    await waitForPtyReady();
+    await browser.pause(2000);
+
+    // The new split pane should have started in the same directory
+    await browser.waitUntil(
+      async () => (await getActivePanelCwd()).includes(TEMP_DIR_NAME),
+      { timeout: 8000, timeoutMsg: "Split pane did not inherit cwd" },
+    );
+  });
+
+  it("can create a file in the temp dir and verify from the other pane", async () => {
+    // Both panes are cd'd into the temp dir.
+    // Write a file from the split pane (currently active).
+    await sendInput("echo PLEXI_E2E > testfile.txt\r");
+    await browser.pause(1000);
+
+    // Switch to original pane and verify the file exists there too
+    await runCommand("pane-1");
+    await browser.pause(500);
+    await sendInput("cat testfile.txt\r");
+
+    await browser.waitUntil(
+      async () => (await getPanelBuffer()).includes("PLEXI_E2E"),
+      { timeout: 5000, timeoutMsg: "File content not visible from other pane" },
+    );
+  });
+
+  it("teardown: remove ephemeral temp directory", async () => {
+    // Clean up the temp dir from whichever pane we're in
+    await sendInput(`rm -rf ${TEMP_DIR_PATH}\r`);
+    await browser.pause(1000);
+
+    // Verify it's gone
+    await sendInput(`test -d ${TEMP_DIR_PATH} && echo EXISTS || echo GONE\r`);
+    await browser.waitUntil(
+      async () => (await getPanelBuffer()).includes("GONE"),
+      { timeout: 5000, timeoutMsg: "Temp directory was not removed" },
+    );
+  });
+
   // --- Context management ---
   // TODO: new-context opens a modal requiring user input (name).
   // Need to either: (a) add a programmatic createContext API, or
@@ -194,5 +271,24 @@ describe("Plexi binary E2E", () => {
   it("final cleanup: close all panels", async () => {
     await closeAllPanels();
     expect((await getState()).panels?.length ?? 0).toBe(0);
+  });
+
+  // Safety net: clean up temp dir even if tests fail mid-way
+  after(async () => {
+    try {
+      // If any panels are still open, use one to clean up
+      const state = await getState();
+      if ((state.panels?.length ?? 0) === 0) {
+        await runCommand("new-node-right");
+        await waitForPanelCount(1, "Could not open cleanup terminal");
+        await waitForPtyReady();
+        await browser.pause(1000);
+      }
+      await sendInput(`rm -rf ~/.plexi/__plexi_e2e_*\r`);
+      await browser.pause(1000);
+      await closeAllPanels();
+    } catch {
+      // Best-effort cleanup — don't fail the suite on cleanup errors
+    }
   });
 });
