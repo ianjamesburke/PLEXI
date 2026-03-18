@@ -108,8 +108,13 @@ impl SessionManager {
         params: OpenSessionParams,
     ) -> Result<SessionStartedMessage, String> {
         let mut sessions = self.sessions.lock().await;
-        if sessions.contains_key(&params.panel_id) {
-            return Err("Session already exists".to_string());
+
+        // If a stale session exists (e.g. webview reloaded), clean it up first.
+        if let Some(old) = sessions.remove(&params.panel_id) {
+            old.reader_task.abort();
+            let mut child = old.child.lock().await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
         }
 
         let shell_path = detect_shell();

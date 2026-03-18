@@ -64,6 +64,11 @@ async fn close_session(state: tauri::State<'_, AppState>, panel_id: String) -> R
 }
 
 #[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
 async fn get_sessions(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     Ok(state.session_manager.get_all_sessions().await)
 }
@@ -79,6 +84,7 @@ async fn get_session_status(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .menu(tauri::menu::Menu::default)
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -92,6 +98,7 @@ pub fn run() {
             close_session,
             get_sessions,
             get_session_status,
+            quit_app,
         ])
         .on_window_event(|window, event| {
             if matches!(
