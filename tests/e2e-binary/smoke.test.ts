@@ -11,6 +11,18 @@ async function getPanelBuffer(panelId?: string): Promise<string> {
   });
 }
 
+/** Read text directly from the ghostty-web WASM terminal buffer (rendered content). */
+async function getTerminalContent(panelId?: string): Promise<string> {
+  if (panelId) {
+    return browser.execute((id: string) => {
+      return (window as any).__PLEXI_DEBUG__?.getTerminalContent?.(id) || "";
+    }, panelId);
+  }
+  return browser.execute(() => {
+    return (window as any).__PLEXI_DEBUG__?.getTerminalContent?.() || "";
+  });
+}
+
 async function sendInput(text: string): Promise<void> {
   await browser.execute((input: string) => {
     const state = (window as any).__PLEXI_DEBUG__?.getState?.();
@@ -47,7 +59,18 @@ async function waitForPanelCount(count: number, msg: string): Promise<void> {
 async function waitForPtyReady(): Promise<void> {
   await browser.waitUntil(
     async () => (await getPanelBuffer()).length > 20,
-    { timeout: 15000, timeoutMsg: "PTY session did not produce output" },
+    { timeout: 15000, timeoutMsg: "PTY session did not produce output in panel buffer" },
+  );
+}
+
+/**
+ * Wait for the ghostty-web terminal to actually render content from the WASM buffer.
+ * This catches issues where data reaches the JS buffer but never makes it to the terminal.
+ */
+async function waitForTerminalReady(): Promise<void> {
+  await browser.waitUntil(
+    async () => (await getTerminalContent()).length > 5,
+    { timeout: 15000, timeoutMsg: "Ghostty terminal WASM buffer has no rendered content" },
   );
 }
 
@@ -145,17 +168,70 @@ describe("Plexi binary E2E", () => {
     await waitForPtyReady();
   });
 
-  it("executes a command and receives output", async () => {
-    // Wait for shell to be fully initialized before sending input
+  it("ghostty-web terminal renders PTY output (not just buffer)", async () => {
+    // Verify that the ghostty-web WASM terminal actually has content,
+    // not just the JS panelBuffer.
+    await waitForTerminalReady();
+
+    const termContent = await getTerminalContent();
+    const bufContent = await getPanelBuffer();
+
+    expect(termContent.length).toBeGreaterThan(0);
+    expect(bufContent.length).toBeGreaterThan(0);
+  });
+
+  it("executes a command and output appears in BOTH buffer and terminal", async () => {
     await waitForPtyReady();
+    await waitForTerminalReady();
     await browser.pause(1000);
 
-    await sendInput("echo __CMD_TEST__\r");
+    const marker = `__E2E_ECHO_${Date.now()}__`;
+    await sendInput(`echo ${marker}\r`);
 
+    // Wait for it in the panel buffer (JS-side)
     await browser.waitUntil(
-      async () => (await getPanelBuffer()).includes("__CMD_TEST__"),
-      { timeout: 8000, timeoutMsg: "Command output not in PTY buffer" },
+      async () => (await getPanelBuffer()).includes(marker),
+      { timeout: 8000, timeoutMsg: "echo marker not found in panel buffer" },
     );
+
+    // Wait for it in the actual ghostty-web terminal (WASM-side)
+    await browser.pause(500);
+    await browser.waitUntil(
+      async () => (await getTerminalContent()).includes(marker),
+      {
+        timeout: 8000,
+        timeoutMsg: "echo marker in panel buffer but NOT in ghostty-web terminal — " +
+          "data received from PTY but terminal.write() not reaching WASM buffer",
+      },
+    );
+  });
+
+  it("executes multiple commands and all appear in terminal", async () => {
+    const markers = [
+      `__MULTI_A_${Date.now()}__`,
+      `__MULTI_B_${Date.now()}__`,
+      `__MULTI_C_${Date.now()}__`,
+    ];
+
+    for (const marker of markers) {
+      await sendInput(`echo ${marker}\r`);
+      await browser.pause(300);
+    }
+
+    // Verify all markers appear in both buffer and terminal
+    for (const marker of markers) {
+      await browser.waitUntil(
+        async () => (await getPanelBuffer()).includes(marker),
+        { timeout: 8000, timeoutMsg: `Marker ${marker} not in panel buffer` },
+      );
+    }
+
+    await browser.pause(1000);
+
+    const termContent = await getTerminalContent();
+    for (const marker of markers) {
+      expect(termContent).toContain(marker);
+    }
   });
 
   // --- Split panes (within an existing node) ---
@@ -224,6 +300,7 @@ describe("Plexi binary E2E", () => {
     await runCommand("new-node-right");
     await waitForPanelCount(1, "Terminal did not open");
     await waitForPtyReady();
+    await waitForTerminalReady();
     await browser.pause(1000);
 
     // Create the temp dir and cd into it

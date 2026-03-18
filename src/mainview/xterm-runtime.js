@@ -145,7 +145,8 @@ export function createTerminalRuntime({
         return;
       }
 
-      runtime.writeFrame = window.requestAnimationFrame(() => {
+      runtime.writeFrame = 1; // sentinel to coalesce
+      queueMicrotask(() => {
         runtime.writeFrame = 0;
         const nextChunk = runtime.pendingWrites.join("");
         runtime.pendingWrites.length = 0;
@@ -159,9 +160,7 @@ export function createTerminalRuntime({
       });
     },
     dispose() {
-      if (runtime.writeFrame) {
-        window.cancelAnimationFrame(runtime.writeFrame);
-      }
+      runtime.writeFrame = 0;
       if (runtime.resizeFrame) {
         window.cancelAnimationFrame(runtime.resizeFrame);
       }

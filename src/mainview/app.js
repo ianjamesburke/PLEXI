@@ -294,10 +294,7 @@ function replayBuffer(runtime) {
   runtime.terminal.options.cursorBlink = false;
   runtime.pendingWrites.length = 0;
   runtime.needsScrollToBottom = false;
-  if (runtime.writeFrame) {
-    window.cancelAnimationFrame(runtime.writeFrame);
-    runtime.writeFrame = 0;
-  }
+  runtime.writeFrame = 0;
   if (runtime.resizeFrame) {
     window.cancelAnimationFrame(runtime.resizeFrame);
     runtime.resizeFrame = 0;
@@ -1499,6 +1496,18 @@ window.__PLEXI_DEBUG__ = {
   getState: () => clone(state),
   getTerminalProfile: () => getTerminalProfile(getActivePanel(state)?.fontSize),
   getPanelBuffer: (panelId = state.activePanelId) => panelBuffers.get(panelId) || "",
+  /** Read text directly from the ghostty-web WASM terminal buffer (what is actually rendered). */
+  getTerminalContent: (panelId = state.activePanelId) => {
+    const runtime = getPaneRuntime(panelId);
+    if (!runtime?.terminal?.buffer?.active) return "";
+    const buf = runtime.terminal.buffer.active;
+    const lines = [];
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (line) lines.push(line.translateToString(true));
+    }
+    return lines.join("\n");
+  },
   runCommand,
   deleteContextFromUi: deleteContext,
   reset: () => {
