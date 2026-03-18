@@ -1,5 +1,102 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-18 — Future enhancement: Claude Code notification routing + conversation cycling
+
+**Feature idea:** Surface Claude Code conversations/notifications in the Plexi UI so you can cycle through multiple sessions waiting for input (e.g., "5 chats need responses, hop between them").
+
+**How cmux does it:** Uses a hook injection system. It wraps Claude Code with environment variables pointing to hook commands (`CMUX_ON_NOTIFICATION`, `CMUX_ON_WAITING_FOR_INPUT`, etc.). When Claude Code hits lifecycle events, it executes the hooks, which fire back to cmux via socket API with structured metadata (status, notification text, waiting_for_input flag).
+
+**Options for Plexi (in priority order):**
+
+1. **Request hook support from Anthropic** (preferred, Option A): File a feature request with Claude Code team to support `PLEXI_ON_*` environment variables. If Claude Code adopts this, Plexi can inject them when spawning sessions and get structured notifications via IPC callback.
+
+2. **Parse OSC sequences Claude Code already emits** (Option B): Check if Claude Code emits OSC 777 (desktop notification) or OSC 9/99 (status). If so, parse them from PTY output like OSC 7 (cwd tracking). Less structured than hooks but works today.
+
+3. **Implement hook system yourself** (Option C, medium effort): Patch or wrap Claude Code to inject Plexi's own hook environment variables. Hooks call back to Tauri backend via IPC. Full control but requires maintaining a Claude Code wrapper.
+
+**MVP approach:** Defer until users ask for it. If this becomes a priority, start with Option A (upstream request) or Option B (parse existing sequences). Option C is a fallback.
+
+**References:** cmux architecture at [manaflow-ai/cmux](https://github.com/manaflow-ai/cmux) PR #1306.
+
+---
+
+## 2026-03-18 — TUI rendering: root cause analysis + libghostty evaluated (deferred)
+
+**Why Plexi is janky with TUIs (Claude Code, htop, lazygit, etc.):**
+
+xterm.js measures cell size *backward*: render HTML → measure DOM element → derive cell dimensions → set PTY size. Native terminals (Ghostty, iTerm2) go the other way: read OS font metrics → derive cell dimensions → render. Any browser rounding or CSS approximation in the xterm.js path compounds into a PTY col count that doesn't match what's actually displayed. TUI apps query `TIOCGWINSZ`, get the wrong number, and wrap/overlap content.
+
+Specific xterm.js failure modes:
+- **FitAddon col math**: documented upstream; approximates scrollbar width rather than measuring it
+- **Unicode width tables**: shipped tables are ~2019 vintage — newer emoji are 1-cell in xterm.js but 2-cell in the PTY. This was the immediate autocomplete bug (emoji in completion entries pushed cursor wrong)
+- **No synchronized rendering** (ANSI 2026): Ghostty supports batched frame commits to eliminate partial-render flicker; xterm.js doesn't
+- **No Kitty Keyboard Protocol**: modern TUIs increasingly rely on this for reliable modifier+key combos
+
+**libghostty evaluated and rejected for now:**
+
+libghostty would fix the rendering accuracy (it uses OS font metrics → Metal on macOS), but it cannot be embedded in a Tauri app:
+- Its rendering layer expects direct Metal/OpenGL GPU surface access — it renders into a native AppKit/GTK view, not an offscreen buffer you can composite into a WebView
+- The apps that have embedded it (cmux, mdnb, pynb) are all native Swift/AppKit — cmux's creators explicitly rejected Tauri/Electron for this reason
+- Unstable C API (officially marked in-progress; stable release targeted sometime 2026), requires Zig toolchain, no pre-built binaries
+
+**Decision:** Accept xterm.js limitations for the MVP. Simple shell usage works fine; TUI-heavy apps suffer. If TUI quality becomes a core differentiator (e.g., "the terminal for Claude Code users"), the right long-term path is a native rendering layer — either a native AppKit view overlay in Tauri, or rebuilding the terminal component entirely outside the WebView. Defer until there are real users to justify the effort.
+
+**Deferred fixes to revisit when needed:**
+1. Patch the acute emoji width bug: force double-width emoji in xterm.js via a custom `unicodeService` override
+2. Replace fitAddon column calc: measure cell size from canvas `measureText()` on the actual font instead of the DOM probe span
+3. Monitor libghostty C API stability (aimed for late 2026 stable) — revisit embedding feasibility then
+
+---
+
+## 2026-03-18 — TUI rendering artifacts: UNSOLVED — known limitation
+
+**Status:** Reverted all attempted fixes. The column-count safety margin, CSS specificity fix, and timing fix were all insufficient — Claude Code's Ink-based TUI still renders with garbled re-renders, missing icons (◆ rendered as `???`), and text overlap.
+
+**What we know:**
+- The issue is a column-count mismatch between what xterm.js fitAddon reports to the PTY and what the WebGL renderer actually displays
+- Native terminals (Ghostty, iTerm2) don't have this because their renderer and column math are the same code path — xterm.js has an inherent measurement gap between fitAddon (CSS pixels) and the WebGL renderer
+- The missing diamond icons (`◆` → `???`) are a separate issue — likely a font/glyph coverage problem in the WebGL renderer's texture atlas
+- Multiple fix attempts (safety margin subtraction, CSS scrollbar specificity, fit timing) failed to fully resolve it
+
+**Attempted fixes (all reverted):**
+1. Subtracting 1 column after fitAddon.fit() — still garbled
+2. Fixing CSS specificity on scrollbar width (6px override) — no visible improvement
+3. Synchronous fit + rAF re-fit after WebGL addon load — no visible improvement
+
+**This is a known class of xterm.js issues.** TUI-heavy apps (Claude Code, htop, etc.) are affected. Simple shell usage works fine. Needs deeper investigation — possibly a custom fitAddon that reads dimensions directly from the active renderer, or disabling WebGL for affected sessions.
+
+---
+
+## 2026-03-17 — TUI rendering artifacts in xterm.js (Claude Code, Ink apps) — OPEN
+
+**Symptom:** Claude Code (and likely other Ink/TUI apps) renders with column-alignment artifacts inside Plexi. Specific issues observed:
+- Two `◆◆` glyphs in the separator line appear and disappear as the window is resized — confirmed to be a wrapping/column-width issue, not a missing font glyph issue
+- Right-panel header content shows a `m]` prefix (truncated label, visible as wrap artifact)
+- Bottom status bar sections overlap or concatenate without proper spacing
+- Text content from one logical row bleeds onto the next visual row
+
+**Key observation:** The `◆` glyphs in the separator line become MORE numerous when the window is narrower and FEWER when wider — they are real rendered glyphs, but wrapping causes them to spill onto adjacent lines, implying the PTY is reporting MORE columns than xterm.js is actually displaying.
+
+**Root cause hypothesis (unconfirmed):** The PTY col count and xterm.js display col count are mismatched. Likely causes:
+1. The fitAddon subtracts scrollbar width incorrectly (see CSS below)
+2. The `overviewRuler: { width: 1 }` option may not map correctly in some xterm.js 6 paths
+3. CSS specificity conflict: `.scrollbar.scrollbar.vertical { width: 6px !important }` overrides `.scrollbar.vertical { width: 0 !important }` due to higher specificity — the scrollbar may be taking 6px of layout space while fitAddon only subtracts 1px (the ruler width), creating a ~5px discrepancy
+
+**What was tried and ruled out:**
+- Adding `"Apple Color Emoji"` and `"Apple Symbols"` to the font-family fallback → made column alignment WORSE (emoji font metrics interfere with xterm.js char-width calculations). Reverted.
+- Adding `@xterm/addon-unicode11` and activating it before `terminal.open()` → PARTIAL FIX. Eliminated the garbled full-layout issues (misaligned text across the whole terminal). The major rendering is now correct. The remaining `◆◆` and alignment issues persist. **This fix is in place and correct — do not revert.**
+- Moving `ensurePanelSessions()` to after `syncVisiblePaneRuntimes()` + synchronous `fitAddon.fit()` before `terminal.open()` → no visible improvement. Reverted. The PTY size mismatch hypothesis (PTY spawning at 80×24) was not the primary cause since Claude Code receives SIGWINCH and redraws.
+
+**Current state (after unicode11 fix, emoji fonts reverted, timing revert):** Most of the layout is correct. The remaining issue is a consistent column-count discrepancy between PTY and xterm.js display, causing TUI apps that use the full terminal width to overflow by ~2–5 cols and wrap content onto the next line.
+
+**Next steps to investigate:**
+- Audit CSS scrollbar rules for specificity conflicts — the 6px `.scrollbar.scrollbar.vertical` override may be the culprit
+- Add a diagnostic: run `tput cols` in a Plexi session and compare to `window.innerWidth` / observed char count to confirm the actual discrepancy
+- Consider whether `overviewRuler: { width: 1 }` in TERMINAL_PROFILE is correctly recognized by xterm.js 6 (vs the older `overviewRulerWidth` flat option)
+- The fitAddon source reads: `t = scrollback === 0 ? 0 : overviewRuler?.width || 14` — if `overviewRuler` is not stored in `terminal.options`, t defaults to 14, causing fitAddon to under-report cols by ~1
+
+---
+
 ## 2026-03-17 — Switch xterm.js to WebGL renderer for better color fidelity
 
 Added `@xterm/addon-webgl` and activated it after `terminal.open()` in `xterm-runtime.js`. Fixes wrong colorization in TUI apps (Claude Code, etc.) vs Ghostty. The default Canvas 2D renderer was the culprit — it's less accurate than a GPU-composited path.
