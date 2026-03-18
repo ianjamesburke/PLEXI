@@ -173,7 +173,12 @@ fn create_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<ta
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    #[cfg(feature = "webdriver")]
+    let builder = builder.plugin(tauri_plugin_webdriver::init());
+
+    builder
         .menu(create_menu)
         .on_menu_event(|app, event| {
             let cmd = match event.id().as_ref() {
