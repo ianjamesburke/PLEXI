@@ -23,11 +23,11 @@ impl PtySession {
         pty.resize(Size::new(rows, cols))?;
 
         let path = std::env::var("PATH").unwrap_or_default();
-        let extra = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin";
-        let full_path = if path.contains("/opt/homebrew/bin") {
-            path
-        } else {
+        let full_path = if cfg!(target_os = "macos") && !path.contains("/opt/homebrew/bin") {
+            let extra = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin";
             format!("{extra}:{path}")
+        } else {
+            path
         };
 
         let cmd = Command::new(shell_path)
