@@ -1,4 +1,4 @@
-import { ASSET_CANDIDATES, TERMINAL_PROFILE, isMacOS } from "./app-constants.js";
+import { GHOSTTY_MODULE_PATH, TERMINAL_PROFILE, isMacOS } from "./app-constants.js";
 
 let xtermStatus = "loading";
 let terminalFontReady = null;
@@ -6,53 +6,14 @@ const MIN_TERMINAL_FONT_SIZE = 10;
 const MAX_TERMINAL_FONT_SIZE = 28;
 const TERMINAL_FONT_STEP = 1;
 
-async function loadStylesheet(candidates) {
-  if (document.querySelector('link[data-plexi-xterm="true"]')) {
-    return;
+let ghosttyModule = null;
+
+async function loadGhosttyModule() {
+  if (ghosttyModule) {
+    return ghosttyModule;
   }
-
-  for (const href of candidates) {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = href;
-    link.dataset.plexiXterm = "true";
-
-    const loaded = await new Promise((resolve) => {
-      link.onload = () => resolve(true);
-      link.onerror = () => resolve(false);
-      document.head.append(link);
-    });
-
-    if (loaded) {
-      return;
-    }
-
-    link.remove();
-  }
-
-  throw new Error("Unable to load xterm stylesheet");
-}
-
-async function loadScript(candidates) {
-  for (const src of candidates) {
-    const loaded = await new Promise((resolve) => {
-      const script = document.createElement("script");
-      script.src = src;
-      script.async = false;
-      script.onload = () => resolve(true);
-      script.onerror = () => {
-        script.remove();
-        resolve(false);
-      };
-      document.head.append(script);
-    });
-
-    if (loaded) {
-      return;
-    }
-  }
-
-  throw new Error(`Unable to load script: ${candidates.join(", ")}`);
+  ghosttyModule = await import(GHOSTTY_MODULE_PATH);
+  return ghosttyModule;
 }
 
 export async function ensureTerminalFont() {
@@ -75,27 +36,8 @@ export async function ensureXtermAssets() {
     return { status: xtermStatus };
   }
 
-  await loadStylesheet(ASSET_CANDIDATES.xtermCss);
-
-  if (!window.Terminal) {
-    await loadScript(ASSET_CANDIDATES.xtermJs);
-  }
-
-  if (!window.FitAddon) {
-    await loadScript(ASSET_CANDIDATES.fitJs);
-  }
-
-  if (!window.WebLinksAddon) {
-    await loadScript(ASSET_CANDIDATES.webLinksJs);
-  }
-
-  if (!window.WebglAddon) {
-    await loadScript(ASSET_CANDIDATES.webGlJs);
-  }
-
-  if (!window.Unicode11Addon) {
-    await loadScript(ASSET_CANDIDATES.unicode11Js);
-  }
+  const mod = await loadGhosttyModule();
+  await mod.init();
 
   xtermStatus = "ready";
   return { status: xtermStatus };
@@ -123,53 +65,32 @@ export function createTerminalRuntime({
   onLinkClick,
   interactive = true,
 }) {
-  const terminal = new window.Terminal({
+  const { Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } = ghosttyModule;
+
+  const terminal = new Terminal({
     ...TERMINAL_PROFILE,
     cursorBlink: interactive && TERMINAL_PROFILE.cursorBlink,
     disableStdin: !interactive,
     fontSize: clampTerminalFontSize(panel?.fontSize ?? TERMINAL_PROFILE.fontSize),
-    macOptionIsMeta: isMacOS,
-    overviewRulerLanes: 0,
-    overviewRuler: { width: 1 },
   });
-  const fitAddon = new window.FitAddon.FitAddon();
-  const webLinksAddon = window.WebLinksAddon ? new window.WebLinksAddon.WebLinksAddon(
-    (event, uri) => {
-      if (event.metaKey || event.ctrlKey) {
-        event.preventDefault();
-        onLinkClick?.(uri);
-      }
-    }
-  ) : null;
+  const fitAddon = new FitAddon();
 
   terminal.loadAddon(fitAddon);
-  if (webLinksAddon) {
-    terminal.loadAddon(webLinksAddon);
-  }
-
-  if (window.Unicode11Addon) {
-    try {
-      const unicode11Addon = new window.Unicode11Addon.Unicode11Addon();
-      terminal.loadAddon(unicode11Addon);
-      terminal.unicode.activeVersion = "11";
-    } catch (_e) {
-      // Unicode11 not available — default width tables stay active.
-    }
-  }
 
   terminal.open(mountNode);
 
-  if (window.WebglAddon) {
-    try {
-      const webglAddon = new window.WebglAddon.WebglAddon();
-      webglAddon.onContextLoss(() => {
-        webglAddon.dispose();
-      });
-      terminal.loadAddon(webglAddon);
-    } catch (_e) {
-      // WebGL not available — canvas renderer stays active, no action needed.
-    }
+  try {
+    terminal.registerLinkProvider(new UrlRegexProvider(terminal));
+  } catch (_e) {
+    // URL regex provider not available
   }
+
+  try {
+    terminal.registerLinkProvider(new OSC8LinkProvider(terminal));
+  } catch (_e) {
+    // OSC8 link provider not available
+  }
+
   mountNode.dataset.terminalFontFamily = TERMINAL_PROFILE.fontFamily;
 
   function safeFit() {
@@ -196,7 +117,6 @@ export function createTerminalRuntime({
     mountNode,
     terminal,
     fitAddon,
-    webLinksAddon,
     pendingWrites: [],
     writeFrame: 0,
     needsScrollToBottom: false,

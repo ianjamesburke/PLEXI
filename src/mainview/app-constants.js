@@ -22,43 +22,19 @@ export const MAX_BUFFER_CHARS = 120000;
 export const platformName = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent;
 export const isMacOS = /\bMac/i.test(platformName);
 
-export const ASSET_CANDIDATES = {
-  xtermCss: [
-    "./vendor/xterm/xterm.css",
-  ],
-  xtermJs: [
-    "./vendor/xterm/xterm.js",
-  ],
-  fitJs: [
-    "./vendor/xterm/addon-fit.js",
-  ],
-  webLinksJs: [
-    "./vendor/xterm/addon-web-links.js",
-  ],
-  webGlJs: [
-    "./vendor/xterm/addon-webgl.js",
-  ],
-  unicode11Js: [
-    "./vendor/xterm/addon-unicode11.js",
-  ],
-};
+export const GHOSTTY_MODULE_PATH = "./vendor/ghostty/ghostty-web.js";
 
 export const TERMINAL_PROFILE = {
   cursorBlink: true,
   convertEol: false,
   fontFamily: TERMINAL_FONT_FAMILY,
   fontSize: 14,
-  fontWeight: "400",
-  fontWeightBold: "600",
-  letterSpacing: 0,
-  lineHeight: 1,
-  drawBoldTextInBrightColors: false,
   allowTransparency: false,
   theme: {
     background: "#0d0f13",
     foreground: "#f3f5f7",
     cursor: "#d57936",
-    selectionBackground: "rgba(213, 121, 54, 0.3)",
+    selection: "rgba(213, 121, 54, 0.3)",
     black: "#0d0f13",
     brightBlack: "#66707b",
     red: "#ef8b7b",

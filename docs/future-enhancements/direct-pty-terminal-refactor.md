@@ -1,4 +1,6 @@
-# Direct PTY Terminal Refactor
+# Direct PTY Terminal Refactor — OUTDATED
+
+> **Note (2026-03-18):** Terminal rendering has been switched from xterm.js to ghostty-web. Some details below about xterm.js column mismatches and WebGL rendering are no longer applicable.
 
 ## Purpose
 

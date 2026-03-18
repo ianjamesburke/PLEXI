@@ -38,7 +38,7 @@ async function runCommand(cmd: string): Promise<void> {
 
 async function waitForPanelCount(count: number, msg: string): Promise<void> {
   await browser.waitUntil(
-    async () => (await getState()).panels?.length === count,
+    async () => (await getActiveContextPanelCount()) === count,
     { timeout: 8000, timeoutMsg: msg },
   );
 }
@@ -60,14 +60,27 @@ async function getActivePanelCwd(): Promise<string> {
   });
 }
 
+/** Count panels in the currently active context. */
+async function getActiveContextPanelCount(): Promise<number> {
+  return browser.execute(() => {
+    const state = (window as any).__PLEXI_DEBUG__?.getState?.();
+    if (!state) return 0;
+    const idx = state.activeContextIndex ?? 0;
+    return (state.panels ?? []).filter((p: any) => p.contextIndex === idx).length;
+  });
+}
+
 async function closeAllPanels(): Promise<void> {
-  const panels = (await getState()).panels?.length ?? 0;
+  const panels = await getActiveContextPanelCount();
   for (let i = 0; i < panels; i++) {
     await runCommand("close-terminal");
     await browser.pause(500);
   }
   if (panels > 0) {
-    await waitForPanelCount(0, "Could not close all panels");
+    await browser.waitUntil(
+      async () => (await getActiveContextPanelCount()) === 0,
+      { timeout: 8000, timeoutMsg: "Could not close all panels in active context" },
+    );
     await browser.pause(1000);
   }
 }
@@ -109,8 +122,8 @@ describe("Plexi binary E2E", () => {
     expect(items.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("starts with no panels (clean state)", async () => {
-    expect((await getState()).panels?.length ?? 0).toBe(0);
+  it("starts with no panels in active context (clean state)", async () => {
+    expect(await getActiveContextPanelCount()).toBe(0);
   });
 
   // --- Terminal lifecycle ---
@@ -119,8 +132,15 @@ describe("Plexi binary E2E", () => {
     await runCommand("new-node-right");
     await waitForPanelCount(1, "Terminal did not open");
 
-    const xterm = await $(".xterm");
-    await xterm.waitForDisplayed({ timeout: 8000 });
+    await browser.waitUntil(
+      async () => {
+        const exists = await browser.execute(() =>
+          document.querySelector(".terminal-mount canvas") !== null
+        );
+        return exists;
+      },
+      { timeout: 8000, timeoutMsg: "Terminal canvas did not appear" },
+    );
 
     await waitForPtyReady();
   });
@@ -270,7 +290,7 @@ describe("Plexi binary E2E", () => {
 
   it("final cleanup: close all panels", async () => {
     await closeAllPanels();
-    expect((await getState()).panels?.length ?? 0).toBe(0);
+    expect(await getActiveContextPanelCount()).toBe(0);
   });
 
   // Safety net: clean up temp dir even if tests fail mid-way

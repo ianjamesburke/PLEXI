@@ -505,8 +505,8 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   -webkit-app-region: no-drag;
 }
 
-.terminal-mount--hydrating .xterm,
-.terminal-mount--hydrating .xterm-helpers {
+.terminal-mount--hydrating canvas,
+.terminal-mount--hydrating textarea {
   opacity: 0;
 }
 
@@ -514,21 +514,15 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   cursor: pointer;
 }
 
-.terminal-mount--preview .xterm-screen,
-.terminal-mount--preview .xterm-helpers,
+.terminal-mount--preview canvas,
 .terminal-mount--preview textarea {
   pointer-events: none;
 }
 
-.terminal-mount .xterm {
+.terminal-mount canvas {
+  display: block;
   width: 100%;
   height: 100%;
-  background: var(--bg-terminal);
-}
-
-.terminal-mount .xterm .xterm-viewport,
-.terminal-mount .xterm .xterm-screen {
-  background: var(--bg-terminal);
 }
 
 .terminal-mount,
@@ -912,48 +906,7 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   background: transparent;
 }
 
-/* Hide native scrollbar entirely — no reserved space, no gap. */
-.terminal-mount .xterm .xterm-viewport {
-  scrollbar-width: none;
-  overflow-x: hidden !important;
-}
-
-.terminal-mount .xterm .xterm-viewport::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
-/* Collapse xterm's native scrollbar and overview ruler to eliminate the black gap.
-   FitAddon subtracts overviewRuler.width (set to 1px) instead of the default 14px. */
-.terminal-mount .xterm .xterm-scrollable-element > .scrollbar.vertical {
-  width: 0 !important;
-}
-
-.terminal-mount .xterm .xterm-decoration-overview-ruler {
-  display: none !important;
-}
-
-/* Monaco virtual scrollbar — overlay, auto-hide */
-.xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical {
-  width: 6px !important;
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-
-.terminal-mount--scrolling .xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical {
-  opacity: 1;
-}
-
-.xterm .xterm-scrollable-element > .scrollbar.scrollbar.vertical > .slider {
-  width: 6px !important;
-  right: 0 !important;
-  border-radius: 5px;
-  background: rgba(216, 221, 227, 0.28) !important;
-}
-
-.xterm .xterm-scrollable-element > .scrollbar.scrollbar.horizontal {
-  display: none !important;
-}
+/* ghostty-web renders its own scrollbar overlay on the canvas — no DOM scrollbar CSS needed. */
 
 .toast-layer {
   position: fixed;

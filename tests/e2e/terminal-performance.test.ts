@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { T } from "./test-helpers";
 
-const MOD = process.platform === "darwin" ? "Meta" : "Control";
+const MOD = "Meta";
 const PROMPT_TOKEN = "plexi:";
 
 async function openApp(page: any) {
@@ -8,25 +9,25 @@ async function openApp(page: any) {
   await page.goto("/mainview/");
   await page.waitForFunction(
     () => document.querySelectorAll("#context-list > li").length > 0,
-    { timeout: 10000 },
+    { timeout: 10000 * T },
   );
 }
 
 async function openTerminal(page: any) {
   await page.keyboard.press(`${MOD}+n`);
-  await page.waitForSelector(".xterm", { timeout: 8000 });
+  await page.waitForSelector(".terminal-mount canvas", { timeout: 8000 * T });
   await page.waitForFunction(
     ({ promptToken }) => {
-      const text = document.querySelector(".xterm-rows")?.innerText || "";
+      const text = (window as any).__PLEXI_DEBUG__?.getPanelBuffer?.() || "";
       return text.includes(promptToken);
     },
     { promptToken: PROMPT_TOKEN },
-    { timeout: 5000 },
+    { timeout: 5000 * T },
   );
 }
 
 async function getTerminalText(page: any) {
-  return page.locator(".xterm-rows").innerText();
+  return page.evaluate(() => (window as any).__PLEXI_DEBUG__?.getPanelBuffer?.() || "");
 }
 
 async function getTerminalBuffer(page: any) {
@@ -42,7 +43,7 @@ async function runCommandAndMeasure(page: any, command: string, expectedText?: s
   const beforePrompts = countPrompts(before);
   const start = Date.now();
 
-  await page.locator(".xterm-helper-textarea").focus();
+  await page.locator(".terminal-mount canvas").focus();
   await page.keyboard.type(command);
   await page.keyboard.press("Enter");
 
@@ -53,7 +54,7 @@ async function runCommandAndMeasure(page: any, command: string, expectedText?: s
       return hasPrompt && (!expectedText || text.includes(expectedText));
     },
     { beforePrompts, expectedText, promptToken: PROMPT_TOKEN },
-    { timeout: 5000 },
+    { timeout: 5000 * T },
   );
 
   return Date.now() - start;

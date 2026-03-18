@@ -1,5 +1,33 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-18 — Replace xterm.js with ghostty-web for terminal rendering
+
+**Problem:** xterm.js v6 has column-count mismatches between its fitAddon and WebGL renderer. TUI apps like Claude Code render with text wrapping/overlap, missing glyphs, and flicker because xterm.js measures cell size backward (DOM → derive dimensions) instead of using font metrics directly. Multiple fix attempts failed (see earlier DEV_LOG entries).
+
+**Solution:** Replaced xterm.js with [ghostty-web](https://github.com/coder/ghostty-web) (npm `ghostty-web` v0.4.0, by Coder). ghostty-web compiles Ghostty's VT parser to WASM with an xterm.js-compatible API. It uses canvas-based dirty-row rendering at 60fps, has better unicode/grapheme handling, and a ~400KB WASM bundle (embedded inline as base64 in the JS module).
+
+**What changed:**
+- **Dependencies:** Removed `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`, `@xterm/addon-webgl`, `@xterm/addon-unicode11`. Added `ghostty-web`.
+- **Vendor:** `src/mainview/vendor/xterm/` → `src/mainview/vendor/ghostty/` (ghostty-web.js + ghostty-vt.wasm)
+- **`app-constants.js`:** `ASSET_CANDIDATES` (multiple script/CSS paths) → `GHOSTTY_MODULE_PATH` (single ES module). `TERMINAL_PROFILE` trimmed: dropped `fontWeight`, `fontWeightBold`, `letterSpacing`, `lineHeight`, `drawBoldTextInBrightColors` (ghostty handles font rendering natively). `selectionBackground` → `selection`.
+- **`xterm-runtime.js`:** Replaced `loadStylesheet()`/`loadScript()` globals-based loading with ES dynamic `import()` + `init()` (WASM init). Removed WebGL addon, Unicode11 addon. Replaced `WebLinksAddon` with `terminal.registerLinkProvider(new UrlRegexProvider(...))` + `OSC8LinkProvider`. Dropped `macOptionIsMeta`, `overviewRulerLanes`, `overviewRuler` from constructor options.
+- **`index.css`:** Removed all `.xterm`, `.xterm-viewport`, `.xterm-screen`, `.xterm-helpers`, `.xterm-scrollable-element`, `.xterm-decoration-overview-ruler` selectors (ghostty-web is canvas-based with no CSS classes). Replaced with `.terminal-mount canvas` targeting.
+- **Tests:** `.xterm` selector → `.terminal-mount canvas`. Deprecated Playwright tests updated to use `__PLEXI_DEBUG__` buffer instead of `.xterm-rows` DOM text extraction (canvas rendering has no DOM text nodes).
+
+**Key API differences from xterm.js:**
+- `new Terminal(opts)` directly (ES module import, not `window.Terminal`)
+- `new FitAddon()` directly (not `new window.FitAddon.FitAddon()`)
+- `terminal.registerLinkProvider()` instead of `terminal.loadAddon(new WebLinksAddon())`
+- `init()` must be called before creating Terminal instances (loads WASM)
+- No CSS classes on DOM — just a `<canvas>` and hidden `<textarea>` inside the mount element
+- `ITheme.selection` instead of `ITheme.selectionBackground`
+- No WebGL addon needed (canvas 2D rendering is native)
+- No Unicode11 addon needed (grapheme handling is native)
+
+**File names kept unchanged** (`xterm-runtime.js`, `ensureXtermAssets`, `setXtermError`, `getXtermStatus`) to minimize diff. Renaming is a follow-up task.
+
+---
+
 ## 2026-03-18 — E2E binary testing with tauri-plugin-webdriver
 
 **Problem:** The official `tauri-driver` does not work on macOS — it prints "not supported on this platform" because Apple provides no WKWebView WebDriver tool. The existing Playwright tests run against a static HTTP server (mock backend, no real PTY sessions).

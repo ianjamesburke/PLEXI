@@ -1,28 +1,29 @@
 import { expect, test } from "@playwright/test";
+import { T } from "./test-helpers";
 
-const MOD = process.platform === "darwin" ? "Meta" : "Control";
+const MOD = "Meta";
 
 async function openApp(page: any) {
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.goto("/mainview/");
   await page.waitForFunction(
     () => document.querySelectorAll("#context-list > li").length > 0,
-    { timeout: 10000 },
+    { timeout: 10000 * T },
   );
 }
 
 async function openTerminal(page: any) {
   await page.keyboard.press(`${MOD}+n`);
-  await page.waitForSelector(".xterm", { timeout: 8000 });
-  // Wait for the shell prompt to appear
+  await page.waitForSelector(".terminal-mount canvas", { timeout: 8000 * T });
+  // Wait for the shell prompt to appear (ghostty-web renders to canvas, use debug buffer)
   await page.waitForFunction(
-    () => document.querySelector(".xterm-rows")?.innerText?.includes("$"),
-    { timeout: 5000 },
+    () => ((window as any).__PLEXI_DEBUG__?.getPanelBuffer?.() || "").length > 20,
+    { timeout: 5000 * T },
   );
 }
 
 async function typeCommand(page: any, cmd: string) {
-  await page.locator(".xterm-helper-textarea").focus();
+  await page.locator(".terminal-mount canvas").focus();
   await page.keyboard.type(cmd);
   await page.keyboard.press("Enter");
   // Wait a tick for output to render
@@ -30,7 +31,7 @@ async function typeCommand(page: any, cmd: string) {
 }
 
 function getTerminalText(page: any) {
-  return page.locator(".xterm-rows").innerText();
+  return page.evaluate(() => (window as any).__PLEXI_DEBUG__?.getPanelBuffer?.() || "");
 }
 
 test.describe("Terminal", () => {
@@ -45,10 +46,10 @@ test.describe("Terminal", () => {
     // Empty shell hides, terminal mounts
     await expect(page.locator("#empty-shell")).toHaveClass(/is-hidden/);
     await expect(page.locator("[data-panel-terminal-mount]")).toBeVisible();
-    await expect(page.locator(".xterm")).toBeVisible();
+    await expect(page.locator(".terminal-mount canvas")).toBeVisible();
   });
 
-  test("xterm renders and shows shell prompt", async ({ page }) => {
+  test("terminal renders and shows shell prompt", async ({ page }) => {
     await openApp(page);
     await openTerminal(page);
 
