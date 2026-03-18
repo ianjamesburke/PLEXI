@@ -26,6 +26,14 @@
 - Computer Use / AI vision: non-deterministic, expensive, no DOM assertions
 - `danielraffel/tauri-webdriver`: similar approach but macOS-only, 3 open bugs, stale
 
+**Test coverage (17 tests, ~25s):**
+- App shell: title, sidebar/workspace render, context list, clean state
+- Terminal lifecycle: open with real PTY, execute command + verify output
+- Splits: split-right, close-keeps-original, split-down
+- Top-level nodes: new-node-right, new-node-down
+- Ephemeral directory: creates temp dir under `~/.plexi/`, cd's into it, splits pane and verifies cwd propagation via OSC 7, creates a file in one pane and reads it from the sibling, tears down temp dir (with `after()` safety net for failed runs)
+- Cleanup: close all panels
+
 **TODO:**
 - Add keyboard shortcut for `new-context` (currently only accessible via sidebar button / modal)
 - Context creation test needs modal automation or a programmatic API
