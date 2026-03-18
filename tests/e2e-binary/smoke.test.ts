@@ -51,6 +51,18 @@ async function waitForPtyReady(): Promise<void> {
   );
 }
 
+async function closeAllPanels(): Promise<void> {
+  const panels = (await getState()).panels?.length ?? 0;
+  for (let i = 0; i < panels; i++) {
+    await runCommand("close-terminal");
+    await browser.pause(500);
+  }
+  if (panels > 0) {
+    await waitForPanelCount(0, "Could not close all panels");
+    await browser.pause(1000);
+  }
+}
+
 /**
  * Sequential E2E tests against the real Tauri binary.
  *
@@ -68,15 +80,7 @@ describe("Plexi binary E2E", () => {
     );
 
     // Close any panels from saved workspace
-    const initialPanels = (await getState()).panels?.length ?? 0;
-    if (initialPanels > 0) {
-      for (let i = 0; i < initialPanels; i++) {
-        await runCommand("close-terminal");
-        await browser.pause(500);
-      }
-      await waitForPanelCount(0, "Could not close all initial panels");
-      await browser.pause(2000);
-    }
+    await closeAllPanels();
   });
 
   // --- App shell ---
@@ -113,8 +117,9 @@ describe("Plexi binary E2E", () => {
   });
 
   it("executes a command and receives output", async () => {
-    // Terminal already open from previous test — wait for shell to be ready
+    // Wait for shell to be fully initialized before sending input
     await waitForPtyReady();
+    await browser.pause(1000);
 
     await sendInput("echo __CMD_TEST__\r");
 
@@ -124,9 +129,9 @@ describe("Plexi binary E2E", () => {
     );
   });
 
-  // --- Split panes ---
+  // --- Split panes (within an existing node) ---
 
-  it("split right creates a second panel", async () => {
+  it("split right creates a second panel in the same node", async () => {
     await runCommand("new-terminal-right");
     await waitForPanelCount(2, "Split right did not create second panel");
     await browser.pause(1000);
@@ -142,20 +147,52 @@ describe("Plexi binary E2E", () => {
     expect(buf.length).toBeGreaterThan(10);
   });
 
-  it("split down creates a second panel", async () => {
+  it("split down creates a second panel in the same node", async () => {
     await runCommand("new-terminal-down");
     await waitForPanelCount(2, "Split down did not create second panel");
     await browser.pause(1000);
   });
 
-  // --- Cleanup ---
-
+  // Clean up splits before node tests
   it("closing all terminals restores empty shell", async () => {
+    await closeAllPanels();
+    expect((await getState()).panels?.length ?? 0).toBe(0);
+  });
+
+  // --- Top-level nodes (new independent terminal groups) ---
+
+  it("new-node-right creates a top-level terminal to the right", async () => {
+    await runCommand("new-node-right");
+    await waitForPanelCount(1, "First node did not open");
+    await waitForPtyReady();
+
+    await runCommand("new-node-right");
+    await waitForPanelCount(2, "Second node-right did not open");
+    await browser.pause(1000);
+
     const state = await getState();
-    for (let i = 0; i < (state.panels?.length ?? 0); i++) {
-      await runCommand("close-terminal");
-      await browser.pause(500);
-    }
-    await waitForPanelCount(0, "Not all panels closed");
+    expect(state.panels.length).toBe(2);
+  });
+
+  it("new-node-down creates a top-level terminal below", async () => {
+    await runCommand("new-node-down");
+    await waitForPanelCount(3, "Node-down did not open");
+    await browser.pause(1000);
+
+    const state = await getState();
+    expect(state.panels.length).toBe(3);
+  });
+
+  // --- Context management ---
+  // TODO: new-context opens a modal requiring user input (name).
+  // Need to either: (a) add a programmatic createContext API, or
+  // (b) automate the modal interaction via WebDriver.
+  // Also: no keyboard shortcut for new-context exists yet — add one.
+
+  // --- Final cleanup ---
+
+  it("final cleanup: close all panels", async () => {
+    await closeAllPanels();
+    expect((await getState()).panels?.length ?? 0).toBe(0);
   });
 });

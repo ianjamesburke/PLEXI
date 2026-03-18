@@ -1,5 +1,37 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-18 — E2E binary testing with tauri-plugin-webdriver
+
+**Problem:** The official `tauri-driver` does not work on macOS — it prints "not supported on this platform" because Apple provides no WKWebView WebDriver tool. The existing Playwright tests run against a static HTTP server (mock backend, no real PTY sessions).
+
+**Solution:** Community crate `tauri-plugin-webdriver` (Choochmeque) embeds a W3C WebDriver server inside debug builds. A companion `tauri-webdriver` CLI on port 4444 launches the `.app` binary and proxies WebDriver commands. WebdriverIO connects as the test client.
+
+**Setup:**
+- `tauri-plugin-webdriver` added as optional dep behind `webdriver` Cargo feature
+- Plugin registered in `lib.rs` with `#[cfg(feature = "webdriver")]`
+- Build: `cargo build --features webdriver` (or `npm run test:e2e:binary:build`)
+- Run: `npm run test:e2e:binary`
+
+**Key gotchas discovered:**
+1. `browser.execute()` serializes `undefined` args as `null`, which bypasses JS default parameter values. Workaround: branch on whether the arg is defined before calling execute.
+2. xterm.js with WebGL addon renders to `<canvas>`, not `.xterm-rows` divs — DOM text queries on `.xterm-rows` return empty. Use `__PLEXI_DEBUG__.getPanelBuffer()` instead.
+3. `Cmd+N` / `Cmd+W` are native menu accelerators handled by macOS, not DOM key events. WebDriver can't trigger them. Use `__PLEXI_DEBUG__.runCommand()` to invoke app commands.
+4. PTY sessions need ~1s after `openSession` before the shell prompt arrives. Tests must `waitForPtyReady()` before sending input.
+5. No headless mode on macOS — WKWebView requires a window server. On Linux CI, Xvfb provides a virtual display.
+
+**Alternatives evaluated and rejected:**
+- `tauri-driver` (official): macOS not supported
+- Appium mac2: can't access WKWebView DOM
+- Playwright WebKit: can't connect to WKWebView in native apps
+- Computer Use / AI vision: non-deterministic, expensive, no DOM assertions
+- `danielraffel/tauri-webdriver`: similar approach but macOS-only, 3 open bugs, stale
+
+**TODO:**
+- Add keyboard shortcut for `new-context` (currently only accessible via sidebar button / modal)
+- Context creation test needs modal automation or a programmatic API
+
+---
+
 ## 2026-03-18 — Future enhancement: Claude Code notification routing + conversation cycling
 
 **Feature idea:** Surface Claude Code conversations/notifications in the Plexi UI so you can cycle through multiple sessions waiting for input (e.g., "5 chats need responses, hop between them").
