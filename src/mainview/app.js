@@ -85,6 +85,9 @@ const sessionBridge = createSessionBridge({
       return;
     }
 
+    if (message.homeDir) {
+      homeDirectory = homeDirectory || message.homeDir;
+    }
     if (message.cwd) {
       panel.cwd = message.cwd;
       panel.cwdLabel = formatPathLabel(message.cwd, homeDirectory);
@@ -295,10 +298,28 @@ function replayBuffer(runtime) {
     window.cancelAnimationFrame(runtime.writeFrame);
     runtime.writeFrame = 0;
   }
+  if (runtime.resizeFrame) {
+    window.cancelAnimationFrame(runtime.resizeFrame);
+    runtime.resizeFrame = 0;
+  }
   runtime.terminal.reset();
   runtime.terminal.clear();
+  // Fit the terminal and notify the PTY BEFORE replaying the buffer so the PTY
+  // is already at the correct dimensions. This avoids a post-replay SIGWINCH
+  // causing the shell to redraw its prompt on top of the replayed one.
+  try {
+    runtime.fitAddon.fit();
+    if (runtime.terminal.cols > 0 && runtime.terminal.rows > 0) {
+      void sessionBridge.resizeSession({
+        panelId: runtime.panel.id,
+        cols: runtime.terminal.cols,
+        rows: runtime.terminal.rows,
+      });
+    }
+  } catch (_error) {
+    // Ignore fit errors during replay — container may not be fully laid out yet.
+  }
   runtime.terminal.write(panelBuffers.get(runtime.panel.id) || "", () => {
-    runtime.resizeHandler();
     runtime.terminal.scrollToBottom?.();
     runtime.mountNode?.classList.remove("terminal-mount--hydrating");
     runtime.terminal.options.cursorBlink = runtime.interactive;
@@ -462,9 +483,11 @@ function createPaneRuntime(panel, mountNode, interactive) {
       }
 
       if (match.action.name === "paste_from_clipboard") {
-        event.preventDefault();
-        void pasteClipboard(runtime);
-        return false;
+        // Let the browser handle Cmd+V natively — xterm.js picks up the
+        // paste event via its own listener and routes it through onData.
+        // Intercepting it ourselves and calling navigator.clipboard.readText()
+        // triggers a WebView permission popup on macOS.
+        return true;
       }
 
       if (match.consume) {
@@ -1209,29 +1232,6 @@ function renderActiveNode(activeNode, activePanel) {
     frame.style.gridColumn = `${panel.splitX + 1} / span ${panel.splitWidth || 1}`;
     frame.style.gridRow = `${panel.splitY + 1} / span ${panel.splitHeight || 1}`;
 
-    let header = frame.querySelector(".pane-header");
-    if (!(header instanceof HTMLElement)) {
-      header = document.createElement("div");
-      header.className = "pane-header";
-      frame.append(header);
-    }
-
-    let title = header.querySelector(".pane-title");
-    if (!(title instanceof HTMLElement)) {
-      title = document.createElement("span");
-      title.className = "pane-title";
-      header.append(title);
-    }
-    title.textContent = panel.title;
-
-    let badge = header.querySelector(".pane-badge");
-    if (!(badge instanceof HTMLElement)) {
-      badge = document.createElement("span");
-      header.append(badge);
-    }
-    badge.className = `pane-badge ${panel.id === activePanel.id ? "pane-badge--active" : "pane-badge--idle"}`.trim();
-    badge.setAttribute("aria-label", panel.id === activePanel.id ? "Active terminal" : "Idle terminal");
-
     let body = frame.querySelector(".pane-body");
     if (!(body instanceof HTMLElement)) {
       body = document.createElement("div");
@@ -1441,6 +1441,18 @@ function bindUiEvents() {
       runCommand(command);
     }
   });
+
+  const tauriWindow = window.__TAURI__?.window ?? window.__TAURI__?.webviewWindow;
+  if (tauriWindow) {
+    const dragRegions = document.querySelectorAll('[data-tauri-drag-region]');
+    dragRegions.forEach(el => {
+      el.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('button, input, textarea, select')) return;
+        tauriWindow.getCurrentWindow().startDragging();
+      });
+    });
+  }
 
   const tauriListen = window.__TAURI__?.event?.listen ?? window.__TAURI_INTERNALS__?.event?.listen;
   if (tauriListen) {

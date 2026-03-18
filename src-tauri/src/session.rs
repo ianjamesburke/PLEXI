@@ -38,6 +38,7 @@ fn detect_shell() -> String {
 pub struct SessionStartedMessage {
     pub panel_id: String,
     pub cwd: String,
+    pub home_dir: String,
     pub backend: String,
     pub platform: String,
     pub shell_path: String,
@@ -93,12 +94,14 @@ struct SessionRecord {
 
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, SessionRecord>>,
+    zdotdir: Option<String>,
 }
 
 impl SessionManager {
-    pub fn new() -> Self {
+    pub fn new(zdotdir: Option<String>) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            zdotdir,
         }
     }
 
@@ -125,7 +128,7 @@ impl SessionManager {
             .to_string();
 
         let session =
-            PtySession::spawn_shell(&shell_path, params.cwd.as_deref(), params.cols, params.rows)
+            PtySession::spawn_shell(&shell_path, params.cwd.as_deref(), self.zdotdir.as_deref(), params.cols, params.rows)
                 .map_err(|e| format!("Failed to spawn PTY: {e}"))?;
 
         let output_seq = Arc::new(Mutex::new(0u32));
@@ -139,9 +142,14 @@ impl SessionManager {
             Arc::clone(&output_seq),
         );
 
+        let home_dir = dirs::home_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
         let started = SessionStartedMessage {
             panel_id: params.panel_id.clone(),
             cwd: session.cwd,
+            home_dir,
             backend: "pty-process".to_string(),
             platform: std::env::consts::OS.to_string(),
             shell_path,
@@ -337,6 +345,6 @@ fn emit_exit<R: Runtime>(app: &AppHandle<R>, panel_id: &str, exit_code: Option<i
 
 impl Default for SessionManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }

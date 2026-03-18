@@ -89,6 +89,14 @@ export async function ensureXtermAssets() {
     await loadScript(ASSET_CANDIDATES.webLinksJs);
   }
 
+  if (!window.WebglAddon) {
+    await loadScript(ASSET_CANDIDATES.webGlJs);
+  }
+
+  if (!window.Unicode11Addon) {
+    await loadScript(ASSET_CANDIDATES.unicode11Js);
+  }
+
   xtermStatus = "ready";
   return { status: xtermStatus };
 }
@@ -138,8 +146,30 @@ export function createTerminalRuntime({
   if (webLinksAddon) {
     terminal.loadAddon(webLinksAddon);
   }
-  
+
+  if (window.Unicode11Addon) {
+    try {
+      const unicode11Addon = new window.Unicode11Addon.Unicode11Addon();
+      terminal.loadAddon(unicode11Addon);
+      terminal.unicode.activeVersion = "11";
+    } catch (_e) {
+      // Unicode11 not available — default width tables stay active.
+    }
+  }
+
   terminal.open(mountNode);
+
+  if (window.WebglAddon) {
+    try {
+      const webglAddon = new window.WebglAddon.WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon.dispose();
+      });
+      terminal.loadAddon(webglAddon);
+    } catch (_e) {
+      // WebGL not available — canvas renderer stays active, no action needed.
+    }
+  }
   mountNode.dataset.terminalFontFamily = TERMINAL_PROFILE.fontFamily;
 
   function safeFit() {

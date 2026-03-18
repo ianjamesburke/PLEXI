@@ -35,6 +35,12 @@ export const ASSET_CANDIDATES = {
   webLinksJs: [
     "./vendor/xterm/addon-web-links.js",
   ],
+  webGlJs: [
+    "./vendor/xterm/addon-webgl.js",
+  ],
+  unicode11Js: [
+    "./vendor/xterm/addon-unicode11.js",
+  ],
 };
 
 export const TERMINAL_PROFILE = {

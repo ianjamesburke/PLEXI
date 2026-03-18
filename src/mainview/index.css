@@ -78,6 +78,11 @@ textarea {
   -webkit-app-region: no-drag;
 }
 
+.workspace-toolbar *:not(button):not(input):not(textarea),
+.sidebar-header *:not(button):not(input):not(textarea) {
+  -webkit-app-region: drag;
+}
+
 button {
   color: inherit;
 }
@@ -124,7 +129,7 @@ button {
 }
 
 body.platform-macos {
-  --window-top-inset: 6px;
+  --window-top-inset: 28px;
   --window-leading-inset: 76px;
 }
 
@@ -135,6 +140,7 @@ body.platform-macos {
   gap: 14px;
   padding-top: calc(12px + var(--window-top-inset));
   border-bottom: 1px solid var(--border-shell);
+  -webkit-app-region: drag;
 }
 
 .sidebar-brand {
@@ -302,6 +308,7 @@ body.platform-macos {
   padding-top: calc(8px + var(--window-top-inset));
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-shell);
+  -webkit-app-region: drag;
 }
 
 body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
@@ -426,7 +433,6 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
   height: 100%;
   border: 1px solid var(--canvas-border);
   background: var(--bg-terminal);
-  box-shadow: inset 0 1px 0 oklch(28% 0.01 60 / 0.32);
 }
 
 .terminal-frame--split {
@@ -436,51 +442,13 @@ body.platform-macos .app-shell--sidebar-hidden .workspace-toolbar {
 }
 
 .terminal-frame--active {
-  border-color: oklch(68% 0.08 240 / 0.8);
-  box-shadow:
-    0 0 0 1px oklch(68% 0.08 240 / 0.22),
-    inset 0 1px 0 oklch(28% 0.01 60 / 0.32);
+  border-color: oklch(68% 0.14 240 / 0.9);
 }
 
 .terminal-frame--inactive {
   background: var(--bg-terminal);
 }
 
-.pane-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--canvas-border);
-  background: oklch(16% 0.01 60 / 0.88);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.64rem;
-}
-
-.pane-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pane-badge {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.24);
-}
-
-.pane-badge--active {
-  background: #6fd27f;
-}
-
-.pane-badge--idle {
-  background: rgba(255, 255, 255, 0.82);
-}
 
 .pane-body {
   position: relative;
