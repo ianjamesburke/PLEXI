@@ -15,3 +15,10 @@ test:
 # Open the built app
 open:
     open src-tauri/target/release/bundle/macos/plexi.app
+
+# Build and install to /Applications
+release-local:
+    npx tauri build
+    killall Plexi || true
+    cp -r src-tauri/target/release/bundle/macos/Plexi.app /Applications/
+    open /Applications/Plexi.app

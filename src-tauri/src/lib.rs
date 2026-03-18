@@ -1,10 +1,12 @@
+mod config;
 mod pty;
 mod session;
 
 use session::{
     OpenSessionParams, SessionInput, SessionManager, SessionStartedMessage, SessionStatusInfo,
 };
-use tauri::Manager;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::{Emitter, Manager};
 
 struct AppState {
     session_manager: SessionManager,
@@ -81,10 +83,113 @@ async fn get_session_status(
     state.session_manager.get_session_status(&panel_id).await
 }
 
+fn create_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    let pkg_name = app.package_info().name.clone();
+
+    let app_menu = SubmenuBuilder::new(app, &pkg_name)
+        .about(None)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let new_terminal = MenuItemBuilder::with_id("shell-new-terminal", "New Terminal")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let close_terminal = MenuItemBuilder::with_id("shell-close-terminal", "Close Terminal")
+        .accelerator("CmdOrCtrl+W")
+        .build(app)?;
+    let save_workspace = MenuItemBuilder::with_id("shell-save-workspace", "Save Workspace")
+        .accelerator("CmdOrCtrl+S")
+        .build(app)?;
+    let save_workspace_as = MenuItemBuilder::with_id("shell-save-workspace-as", "Save Workspace As…")
+        .enabled(false)
+        .build(app)?;
+    let load_workspace = MenuItemBuilder::with_id("shell-load-workspace", "Load Workspace…")
+        .enabled(false)
+        .build(app)?;
+
+    let shell_menu = SubmenuBuilder::new(app, "Shell")
+        .item(&new_terminal)
+        .item(&close_terminal)
+        .separator()
+        .item(&save_workspace)
+        .item(&save_workspace_as)
+        .item(&load_workspace)
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let zoom_in = MenuItemBuilder::with_id("view-zoom-in", "Increase Font Size")
+        .accelerator("CmdOrCtrl+=")
+        .build(app)?;
+    let zoom_out = MenuItemBuilder::with_id("view-zoom-out", "Decrease Font Size")
+        .accelerator("CmdOrCtrl+-")
+        .build(app)?;
+    let toggle_sidebar = MenuItemBuilder::with_id("view-toggle-sidebar", "Toggle Sidebar")
+        .accelerator("CmdOrCtrl+B")
+        .build(app)?;
+    let toggle_minimap = MenuItemBuilder::with_id("view-toggle-minimap", "Toggle Minimap")
+        .accelerator("CmdOrCtrl+M")
+        .build(app)?;
+    let show_shortcuts = MenuItemBuilder::with_id("view-show-shortcuts", "Keyboard Reference")
+        .accelerator("CmdOrCtrl+/")
+        .build(app)?;
+
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&zoom_in)
+        .item(&zoom_out)
+        .separator()
+        .item(&toggle_sidebar)
+        .item(&toggle_minimap)
+        .separator()
+        .item(&show_shortcuts)
+        .separator()
+        .fullscreen()
+        .build()?;
+
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .build()?;
+
+    MenuBuilder::new(app)
+        .items(&[&app_menu, &shell_menu, &edit_menu, &view_menu, &window_menu])
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .menu(tauri::menu::Menu::default)
+        .menu(create_menu)
+        .on_menu_event(|app, event| {
+            let cmd = match event.id().as_ref() {
+                "shell-new-terminal" => Some("new-node-right"),
+                "shell-close-terminal" => Some("close-terminal"),
+                "shell-save-workspace" => Some("save-workspace"),
+                "view-zoom-in" => Some("zoom-in"),
+                "view-zoom-out" => Some("zoom-out"),
+                "view-toggle-sidebar" => Some("toggle-sidebar"),
+                "view-toggle-minimap" => Some("toggle-minimap"),
+                "view-show-shortcuts" => Some("toggle-shortcuts"),
+                _ => None,
+            };
+            if let Some(cmd) = cmd {
+                let _ = app.emit("plexi-menu-command", cmd);
+            }
+        })
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -99,6 +204,13 @@ pub fn run() {
             get_sessions,
             get_session_status,
             quit_app,
+            config::get_plexi_paths,
+            config::read_config,
+            config::write_config,
+            config::read_workspace,
+            config::write_workspace,
+            config::backup_workspace,
+            config::list_workspaces,
         ])
         .on_window_event(|window, event| {
             if matches!(

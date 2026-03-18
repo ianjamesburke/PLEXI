@@ -1,5 +1,5 @@
 import { createContextRecord, makeDefaultState } from "../shared/workspace-state.js";
-import { STORAGE_KEY } from "./app-constants.js";
+import { DEFAULT_WORKSPACE_NAME, STORAGE_KEY } from "./app-constants.js";
 import {
   deserializeWorkspaceDocument,
   formatWorkspaceDocumentJson,
@@ -40,8 +40,12 @@ export function loadWorkspaceState() {
   }
 }
 
+function hasDiskBridge(sessionBridge) {
+  return sessionBridge && (sessionBridge.mode === "live" || sessionBridge.mode === "tauri");
+}
+
 export async function hydrateWorkspaceState(sessionBridge) {
-  if (!sessionBridge || sessionBridge.mode !== "live") {
+  if (!hasDiskBridge(sessionBridge)) {
     return {
       state: loadWorkspaceState(),
       storage: await sessionBridge?.getWorkspaceStorageInfo?.(),
@@ -50,20 +54,35 @@ export async function hydrateWorkspaceState(sessionBridge) {
 
   const [storage, stored] = await Promise.all([
     sessionBridge.getWorkspaceStorageInfo(),
-    sessionBridge.readWorkspaceDocument(),
+    sessionBridge.readWorkspaceDocument({ name: DEFAULT_WORKSPACE_NAME }),
   ]);
 
   if (!stored?.document) {
+    // No disk file (first launch, user deleted ~/.plexi, or corrupt JSON).
+    // In Tauri mode we do NOT fall back to localStorage — that would silently
+    // restore stale state and make deleting ~/.plexi appear to have no effect.
+    // localStorage is a write-through cache only; disk is the source of truth.
     return {
       state: bootDefaultState(),
       storage,
+      warning: stored?.warning ?? null,
     };
   }
 
-  return {
-    state: parseStoredState(stored.document),
-    storage,
-  };
+  try {
+    return {
+      state: parseStoredState(stored.document),
+      storage,
+    };
+  } catch (error) {
+    // Document parsed as JSON but failed to deserialize into app state.
+    console.error("Workspace file structure is invalid, starting fresh:", error);
+    return {
+      state: bootDefaultState(),
+      storage,
+      warning: "Workspace file structure was invalid and has been reset to defaults.",
+    };
+  }
 }
 
 export function getWorkspaceSnapshot(state) {
@@ -76,12 +95,16 @@ export function getWorkspaceSnapshot(state) {
 
 export async function saveWorkspaceState(state, sessionBridge) {
   const snapshot = getWorkspaceSnapshot(state);
+
+  // Always keep localStorage as a fast fallback
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot.document));
 
-  if (sessionBridge?.mode === "live") {
-    return sessionBridge.writeWorkspaceDocument({
+  if (hasDiskBridge(sessionBridge)) {
+    await sessionBridge.writeWorkspaceDocument({
+      name: DEFAULT_WORKSPACE_NAME,
       document: snapshot.document,
     });
+    return sessionBridge.getWorkspaceStorageInfo();
   }
 
   return sessionBridge?.getWorkspaceStorageInfo?.() || {
