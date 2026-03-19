@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-19 — Fix: `clear` content reappearing after zoom/navigate
+
+Root cause: alacritty's `grow_lines()` explicitly pulls scrollback content into the visible area whenever the terminal gains rows. This happens during zoom/navigate — a pane shrinks (tile tree placeholder size), then grows again (zoom overlay size), and old cleared content from scrollback fills the new rows.
+
+Fix in `deps/egui_term/src/backend/mod.rs::resize()`: capture `old_lines` before resize, then call `terminal.grid_mut().clear_history()` if lines grew. Also added `scroll_display(Scroll::Bottom)` after resize to snap viewport on any reflow.
+
+**Known tradeoff:** `clear_history()` nukes ALL scrollback when the terminal grows — not just the lines pulled in. Legitimate scrollback is lost on zoom-in. A future improvement would be to only trim the N lines that `grow_lines` pulled from history, rather than wiping everything.
+
+---
+
 ## 2026-03-19 — Repo cleanup: promote egui crate to root, remove legacy code
 
 Removed all legacy codebases (Tauri, Electrobun/Node.js, Playwright tests, npm configs) and promoted `plexi-egui/` to root level. Binary renamed from `plexi-egui` to `plexi`. The `deps/egui_term` path dependency updated accordingly. Icon copied from `src-tauri/icons/icon.png` to `assets/app-icon.png` before deleting `src-tauri/`. Now installable via `cargo install --git`. README rewritten for pure Rust egui architecture.
