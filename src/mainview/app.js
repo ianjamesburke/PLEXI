@@ -299,8 +299,21 @@ function replayBuffer(runtime) {
     window.cancelAnimationFrame(runtime.resizeFrame);
     runtime.resizeFrame = 0;
   }
-  runtime.terminal.reset();
-  runtime.terminal.clear();
+
+  const bufferData = panelBuffers.get(runtime.panel.id) || "";
+
+  // Only reset/clear if there's existing data to replay — calling these on a
+  // freshly-opened ghostty-web terminal can trigger WASM "Offset should not be
+  // negative" errors when the internal buffer hasn't been initialised yet.
+  if (bufferData) {
+    try {
+      runtime.terminal.reset();
+      runtime.terminal.clear();
+    } catch (_error) {
+      // ghostty-web WASM may throw during reset/clear on new terminals.
+    }
+  }
+
   // Fit the terminal and notify the PTY BEFORE replaying the buffer so the PTY
   // is already at the correct dimensions. This avoids a post-replay SIGWINCH
   // causing the shell to redraw its prompt on top of the replayed one.
@@ -316,8 +329,13 @@ function replayBuffer(runtime) {
   } catch (_error) {
     // Ignore fit errors during replay — container may not be fully laid out yet.
   }
-  runtime.terminal.write(panelBuffers.get(runtime.panel.id) || "", () => {
-    runtime.terminal.scrollToBottom?.();
+
+  function finishReplay() {
+    try {
+      runtime.terminal.scrollToBottom?.();
+    } catch (_error) {
+      // WASM scroll may fail if buffer is empty.
+    }
     runtime.mountNode?.classList.remove("terminal-mount--hydrating");
     runtime.terminal.options.cursorBlink = runtime.interactive;
     if (runtime.interactive) {
@@ -325,7 +343,17 @@ function replayBuffer(runtime) {
         runtime.terminal.focus();
       });
     }
-  });
+  }
+
+  if (bufferData) {
+    try {
+      runtime.terminal.write(bufferData, finishReplay);
+    } catch (_error) {
+      finishReplay();
+    }
+  } else {
+    finishReplay();
+  }
 }
 
 function getPaneRuntime(panelId) {
@@ -558,11 +586,17 @@ async function syncVisiblePaneRuntimes(activeNode, activePanel) {
     const needsRecreate = !existing
       || existing.panel.id !== panel.id
       || existing.panel.fontSize !== panel.fontSize
-      || existing.terminal.element?.parentElement !== mountNode;
+      || existing.terminal.element !== mountNode;
 
     if (needsRecreate) {
       disposePaneRuntime(panel.id);
-      paneRuntimes.set(panel.id, createPaneRuntime(panel, mountNode, interactive));
+      try {
+        paneRuntimes.set(panel.id, createPaneRuntime(panel, mountNode, interactive));
+      } catch (error) {
+        console.error("Terminal creation failed:", error);
+        mountNode.textContent = "Terminal failed to initialize";
+        mountNode.classList.add("terminal-mount--error");
+      }
       return;
     }
 
@@ -1507,6 +1541,118 @@ window.__PLEXI_DEBUG__ = {
       if (line) lines.push(line.translateToString(true));
     }
     return lines.join("\n");
+  },
+  inspectTerminal: (panelId = state.activePanelId) => {
+    const runtime = getPaneRuntime(panelId);
+    if (!runtime?.terminal) {
+      return { panelId, exists: false };
+    }
+
+    const { terminal } = runtime;
+    const activeBuffer = terminal.buffer?.active || null;
+    const activeLines = [];
+    const wasmLines = [];
+    const directLines = [];
+
+    try {
+      if (activeBuffer) {
+        for (let i = 0; i < Math.min(activeBuffer.length || 0, 8); i++) {
+          const line = activeBuffer.getLine(i);
+          activeLines.push({
+            index: i,
+            text: line?.translateToString?.(true) || "",
+            length: line?.length ?? null,
+            wrapped: line?.isWrapped ?? null,
+          });
+        }
+      }
+    } catch (error) {
+      activeLines.push({ error: String(error) });
+    }
+
+    try {
+      if (terminal.wasmTerm) {
+        for (let i = 0; i < Math.min(terminal.rows || 0, 8); i++) {
+          const row = terminal.wasmTerm.getLine(i);
+          wasmLines.push({
+            index: i,
+            text: Array.isArray(row)
+              ? row.map((cell) => {
+                const codepoint = cell?.codepoint ?? 0;
+                if (!codepoint || codepoint < 0) return "";
+                try {
+                  return String.fromCodePoint(codepoint);
+                } catch (_error) {
+                  return "";
+                }
+              }).join("").trimEnd()
+              : "",
+            cells: Array.isArray(row) ? row.length : null,
+          });
+        }
+      }
+    } catch (error) {
+      wasmLines.push({ error: String(error) });
+    }
+
+    try {
+      if (terminal.wasmTerm) {
+        const scrollbackLength = terminal.wasmTerm.getScrollbackLength?.() || 0;
+        for (let i = 0; i < Math.min(scrollbackLength, 4); i++) {
+          const row = terminal.wasmTerm.getScrollbackLine(i);
+          directLines.push({
+            index: i,
+            text: Array.isArray(row)
+              ? row.map((cell) => {
+                const codepoint = cell?.codepoint ?? 0;
+                if (!codepoint || codepoint < 0) return "";
+                try {
+                  return String.fromCodePoint(codepoint);
+                } catch (_error) {
+                  return "";
+                }
+              }).join("").trimEnd()
+              : "",
+            cells: Array.isArray(row) ? row.length : null,
+          });
+        }
+      }
+    } catch (error) {
+      directLines.push({ error: String(error) });
+    }
+
+    return {
+      panelId,
+      exists: true,
+      interactive: runtime.interactive,
+      pendingWrites: runtime.pendingWrites?.length ?? null,
+      mountClasses: [...(runtime.mountNode?.classList || [])],
+      mountTabIndex: runtime.mountNode?.tabIndex ?? null,
+      mountContentEditable: runtime.mountNode?.getAttribute?.("contenteditable") ?? null,
+      isOpen: terminal.isOpen ?? null,
+      cols: terminal.cols ?? null,
+      rows: terminal.rows ?? null,
+      viewportY: terminal.viewportY ?? null,
+      targetViewportY: terminal.targetViewportY ?? null,
+      canvasOpacity: terminal.canvas ? window.getComputedStyle(terminal.canvas).opacity : null,
+      canvasWidth: terminal.canvas?.width ?? null,
+      canvasHeight: terminal.canvas?.height ?? null,
+      canvasClientWidth: terminal.canvas?.clientWidth ?? null,
+      canvasClientHeight: terminal.canvas?.clientHeight ?? null,
+      activeBufferType: activeBuffer?.type ?? null,
+      activeBufferLength: activeBuffer?.length ?? null,
+      bufferCursorX: activeBuffer?.cursorX ?? null,
+      bufferCursorY: activeBuffer?.cursorY ?? null,
+      wasmScrollbackLength: terminal.wasmTerm?.getScrollbackLength?.() ?? null,
+      textareaFocused: document.activeElement === terminal.textarea,
+      activeElementTag: document.activeElement?.tagName ?? null,
+      activeElementClass: document.activeElement instanceof HTMLElement
+        ? document.activeElement.className
+        : null,
+      wasmActiveLines: wasmLines,
+      activeBufferLines: activeLines,
+      wasmScrollbackLines: directLines,
+    };
   },
   runCommand,
   deleteContextFromUi: deleteContext,

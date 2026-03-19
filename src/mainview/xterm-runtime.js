@@ -145,8 +145,7 @@ export function createTerminalRuntime({
         return;
       }
 
-      runtime.writeFrame = 1; // sentinel to coalesce
-      queueMicrotask(() => {
+      runtime.writeFrame = window.requestAnimationFrame(() => {
         runtime.writeFrame = 0;
         const nextChunk = runtime.pendingWrites.join("");
         runtime.pendingWrites.length = 0;
@@ -160,31 +159,40 @@ export function createTerminalRuntime({
       });
     },
     dispose() {
+      if (runtime.writeFrame) {
+        window.cancelAnimationFrame(runtime.writeFrame);
+      }
       runtime.writeFrame = 0;
       if (runtime.resizeFrame) {
         window.cancelAnimationFrame(runtime.resizeFrame);
       }
       clearTimeout(scrollHideTimer);
-      runtime.resizeObserver?.disconnect?.();
-      window.removeEventListener("resize", runtime.resizeHandler);
+      if (runtime.resizeObserver) {
+        runtime.resizeObserver.disconnect();
+      } else {
+        window.removeEventListener("resize", runtime.resizeHandler);
+      }
       terminal.dispose();
     },
   };
 
   if (interactive) {
+    // ghostty-web convention is inverted from xterm.js:
+    //   return true  → "I handled it, suppress terminal processing"
+    //   return false → "I didn't handle it, let terminal process normally"
     terminal.attachCustomKeyEventHandler((event) => {
       if (onShortcut(event, runtime) === false) {
-        return false;
+        return true;
       }
 
       const nativeInput = resolveNativeTerminalInput(event);
       if (!nativeInput) {
-        return true;
+        return false;
       }
 
       event.preventDefault();
       onData(runtime, nativeInput);
-      return false;
+      return true;
     });
     terminal.onData((rawData) => {
       onData(runtime, rawData);
@@ -200,12 +208,14 @@ export function createTerminalRuntime({
     }, 1500);
   });
 
-  window.addEventListener("resize", runtime.resizeHandler);
   if (window.ResizeObserver) {
     runtime.resizeObserver = new window.ResizeObserver(() => {
       runtime.resizeHandler();
     });
     runtime.resizeObserver.observe(mountNode);
+  } else {
+    // Fallback for browsers without ResizeObserver
+    window.addEventListener("resize", runtime.resizeHandler);
   }
 
   runtime.resizeHandler();

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Infinite 2D canvas terminal multiplexer",
   "scripts": {
-    "copy-vendor": "node -e \"const fs=require('fs');const p='src/mainview/vendor/ghostty';fs.mkdirSync(p,{recursive:true});['ghostty-web.js:node_modules/ghostty-web/dist/ghostty-web.js','ghostty-vt.wasm:node_modules/ghostty-web/ghostty-vt.wasm'].forEach(e=>{const[d,s]=e.split(':');fs.copyFileSync(s,p+'/'+d)});console.log('vendor assets copied')\"",
+    "copy-vendor": "node scripts/copy-ghostty-vendor.js",
     "start": "tauri dev",
     "dev": "tauri dev",
     "build": "tauri build",

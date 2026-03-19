@@ -1,5 +1,27 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-18 — Fix ghostty-web rendering: CSS canvas stretch, phantom scrollbar, write coalescing
+
+**Problem:** After the ghostty-web migration, TUI apps (Claude Code, file managers) rendered with severe column misalignment, broken layouts, and screen re-render artifacts.
+
+**Root causes found (three compounding bugs):**
+
+1. **CSS `width: 100%; height: 100%` on canvas** — ghostty-web sizes its canvas to exactly `cols * cellWidth × rows * cellHeight` pixels. The CSS rule `.terminal-mount canvas { width: 100%; height: 100% }` stretched the canvas to fill the container, distorting every cell. This was the primary cause of column misalignment.
+
+2. **FitAddon subtracts 15px for a phantom scrollbar** — ghostty-web's FitAddon (`gA = 15` in the minified source) reserves 15px for a DOM scrollbar, but ghostty paints its scrollbar directly on the canvas. This wasted ~2 columns at typical font sizes.
+
+3. **`queueMicrotask` write coalescing** — writes executed synchronously before the browser painted, causing multiple state changes without compositing between them. This caused the "horrific screen re-render" artifacts.
+
+**Fixes applied:**
+- Removed `width: 100%; height: 100%` from `.terminal-mount canvas` — let ghostty-web control canvas sizing
+- Overrode `fitAddon.proposeDimensions()` to add back the columns lost to the 15px scrollbar deduction
+- Switched write coalescing from `queueMicrotask` back to `requestAnimationFrame`
+- Removed redundant `window resize` listener (ResizeObserver on mount node already handles all cases; window listener kept as fallback only if ResizeObserver unavailable)
+
+**Why these were non-obvious:** The CSS canvas rule was added during the migration to ensure the canvas filled the pane, which seemed correct but conflicted with ghostty-web's internal sizing. The scrollbar constant is buried in minified vendor code. The queueMicrotask switch was intentional (to reduce latency) but caused rendering issues specific to canvas-based terminals.
+
+---
+
 ## 2026-03-18 — Replace xterm.js with ghostty-web for terminal rendering
 
 **Problem:** xterm.js v6 has column-count mismatches between its fitAddon and WebGL renderer. TUI apps like Claude Code render with text wrapping/overlap, missing glyphs, and flicker because xterm.js measures cell size backward (DOM → derive dimensions) instead of using font metrics directly. Multiple fix attempts failed (see earlier DEV_LOG entries).
