@@ -3,6 +3,13 @@ name = "plexi"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.bundle]
+name = "Plexi"
+identifier = "com.ianjamesburke.plexi"
+icon = ["assets/app-icon.icns"]
+short_description = "Spatial terminal window manager"
+osx_minimum_system_version = "12.0"
+
 [dependencies]
 egui = "0.31"
 eframe = { version = "0.31", features = ["default_fonts", "wgpu"] }
