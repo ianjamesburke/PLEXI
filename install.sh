@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 set -e
 
-# Install cargo-bundle if not already installed
+REPO="https://github.com/ianjamesburke/PLEXI.git"
+
+# If we're not inside the repo, clone it to a temp dir and build from there
+if [ ! -f "Cargo.toml" ] || ! grep -q 'name = "plexi"' Cargo.toml 2>/dev/null; then
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  echo "Cloning Plexi..."
+  git clone --depth=1 "$REPO" "$TMP/PLEXI"
+  cd "$TMP/PLEXI"
+fi
+
+# Install cargo-bundle if needed
 if ! command -v cargo-bundle &>/dev/null; then
   echo "Installing cargo-bundle..."
   cargo install cargo-bundle
