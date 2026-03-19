@@ -23,13 +23,13 @@ Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) —
 ## Quick Start
 
 ```bash
-cargo install --git https://github.com/ianburke/PLEXI.git
+cargo install --git https://github.com/ianjamesburke/PLEXI.git
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/ianburke/PLEXI.git
+git clone https://github.com/ianjamesburke/PLEXI.git
 cd PLEXI
 cargo build --release
 # binary at target/release/plexi
