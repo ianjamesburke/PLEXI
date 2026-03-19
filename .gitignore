@@ -5,6 +5,7 @@ node_modules/
 build/
 dist/
 .cache/
+target/
 
 # Generated vendor assets (copied from node_modules by copy-vendor script)
 src/mainview/vendor/

@@ -1,0 +1,11 @@
+[package]
+name = "egui-terminal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.31"
+eframe = { version = "0.31", features = ["default_fonts", "wgpu"] }
+egui_term = "0.1.0"
+env_logger = "0.11.9"
+log = "0.4"

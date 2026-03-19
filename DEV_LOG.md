@@ -1,5 +1,29 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-18 — egui rewrite: pure Rust terminal multiplexer (plexi-egui/)
+
+**Why:** The Tauri + xterm.js architecture has fundamental TUI rendering artifacts (column mismatch, missing glyphs, no synchronized rendering). Native egui rendering via `egui_term` (which wraps `alacritty_terminal`) eliminates all of these. The `egui-poc` branch proved the approach works.
+
+**Architecture:**
+- `plexi-egui/` is a standalone Rust crate (sibling to `src-tauri/`, doesn't replace it yet)
+- `egui_tiles 0.12.0` for tiled layout with drag-to-resize dividers
+- `egui_term 0.1.0` wraps `alacritty_terminal` for PTY + rendering
+- No Tokio — egui_term handles PTY I/O on background `std::thread` with `std::sync::mpsc`
+- `Tree<PaneId>` stores only u64 IDs; actual `TerminalPane` data lives in a `HashMap`
+
+**Key design decisions:**
+- egui_tiles over egui_dock: maintained by Rerun, supports `Linear` containers with H/V splits, `Behavior` trait gives full control (hide tab bars, custom gaps, focus painting)
+- Pane type is `u64` (not the full struct) — avoids borrow checker issues since Behavior receives `&mut Pane` but we need separate mutable access to the panes HashMap
+- Focus border via `paint_on_top_of_tile()` with `StrokeKind::Inside` to stay within tile bounds
+- Window close (`Cmd+W`) intercepted via `close_requested()` + `CancelClose` when multiple panes exist
+- Keyboard shortcuts consumed via `ctx.input_mut(|i| i.consume_key(...))` BEFORE `tree.ui()` so terminals don't see them
+- Split creates a new Linear container wrapping `[focused, new_tile]`, then replaces focused in its parent — egui_tiles `join_nested_linear_containers` simplification auto-flattens same-direction nesting
+
+**Deferred to Phase 3 (requires egui_term fork):**
+- `BackendSettings` has no `env` field — can't inject ZDOTDIR, LANG, COLORTERM, PATH/Homebrew. Need 3-line fork to wire env HashMap into alacritty_terminal's `tty::Options`.
+
+---
+
 ## 2026-03-18 — E2E binary testing with tauri-plugin-webdriver
 
 **Problem:** The official `tauri-driver` does not work on macOS — it prints "not supported on this platform" because Apple provides no WKWebView WebDriver tool. The existing Playwright tests run against a static HTTP server (mock backend, no real PTY sessions).
