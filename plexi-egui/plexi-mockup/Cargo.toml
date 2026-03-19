@@ -1,8 +1,0 @@
-[package]
-name = "plexi-mockup"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-egui = "0.31"
-eframe = { version = "0.31", features = ["default_fonts", "wgpu"] }

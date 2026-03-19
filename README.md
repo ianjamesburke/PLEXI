@@ -14,7 +14,7 @@
 
 <p align="center"><em>basically tmux for omarchy babes</em></p>
 
-**Tested on Mac only** — Linux may work but hasn't been tested.
+**Mac only** — Linux may work but hasn't been tested.
 
 Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) — although I've been dreaming of something similar for years.
 
@@ -22,65 +22,63 @@ Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) —
 
 ## Quick Start
 
-1. **New pane right** — `Cmd+N` / **New pane below** — `Cmd+Shift+N`
-2. **Navigate panes** — `Cmd+Arrow` or `Cmd+H/J/K/L`
-3. **Switch contexts** — `Cmd+Opt+1`, `Cmd+Opt+2`, etc.
+```bash
+cargo install --git https://github.com/ianburke/PLEXI.git
+```
 
-Your layout and working directories are saved automatically to `~/.plexi/` — pick up where you left off.
+Or build from source:
+
+```bash
+git clone https://github.com/ianburke/PLEXI.git
+cd PLEXI
+cargo build --release
+# binary at target/release/plexi
+```
+
+## Keyboard Shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Split right | `Cmd+D` |
+| Split below | `Cmd+Shift+D` |
+| Navigate panes | `Cmd+H/J/K/L` |
+| Close pane | `Cmd+W` |
+| New tab | `Cmd+T` |
+| Cycle tabs | `Cmd+]` / `Cmd+[` |
+| Switch context | `Cmd+1..9` |
+| Toggle sidebar | `Cmd+B` |
+| Zoom pane | `Cmd+Enter` |
+| Show shortcuts | `Cmd+/` |
+| Quit | `Cmd+Q` |
 
 ---
 
 ## The Present
 
-*   **Infinite 2D canvas** — terminals arranged on a spatial grid, navigable with arrow keys or vim-style `h/j/k/l`
-*   **Contexts** — named workspaces to separate projects; cycle between them with `Cmd+[` and `Cmd+]`, rename or delete on the fly
-*   **Sidebar & minimap** — visual overview of your layout; click nodes to jump to a terminal
-*   **Overlay minimap** — toggleable full-canvas map (`Cmd+M`)
-*   **Terminal management** — open new terminals to the right (`Cmd+N`) or below (`Cmd+Shift+N`), close with `Cmd+W`
-*   **Workspace persistence** — layout, context, and working directories saved to `~/.plexi/workspaces/`
-*   **Shell integration** — automatic cwd tracking via OSC 7 (ZDOTDIR injection for zsh); split panes and workspace restores open in the correct directory
-*   **Copy/paste** — selection-aware clipboard support
-*   **Font zoom** — `Cmd++/−` to adjust terminal font size
-*   **Keyboard reference** — `Cmd+/` to show all shortcuts
-*   **Ghost slot hints** — empty adjacent slots show shortcut hints when the canvas is sparse
-*   **Status toolbar** — shows current context, working directory, and active process name
-*   **WebGL renderer** — GPU-accelerated xterm.js rendering for accurate colors in TUI apps
+*   **Tiling terminal panes** — split, navigate, zoom, and tab-stack with keyboard shortcuts
+*   **Contexts** — named workspaces to separate projects; rename, reorder, or delete on the fly
+*   **Workspace persistence** — layout, contexts, and working directories saved to `~/.plexi/`; pick up where you left off
+*   **Catppuccin Mocha theme** — dark, easy on the eyes
 
 ## The Future
 
 *   **True Session Persistence and Multiplexing**: A headless daemon so underlying PTYs and SSH connections stay alive in the background when you close the UI. (SSH auto-connect, connection pooling)
 *   **Coding Agent Support**: Session labels, awaiting-response indicators, and notifications — so you can run multiple agents across panes without babysitting them.
+*   **Minimap**: A spatial overview of your layout — click nodes to jump to a terminal. Was prototyped and removed; will come back as a real interactive feature once pane navigation warrants it.
 *   **Other Node Types**: Embedding full web browsers and Excalidraw whiteboards directly on the canvas alongside the terminals.
-*   **Support Multiple Workspaces**: Add the ability to switch between whole families of contexts (might be overkill)
-*   **libghostty Integration**: Swap out `xterm.js` for `libghostty` to get GPU-accelerated, native-grade terminal rendering.
-*   **Ergonomics**: Vi-style copy mode and scrollback buffers. (as well as many other Vim style interactions on the canvas)
+*   **libghostty Integration**: Swap out the current terminal renderer for `libghostty` to get GPU-accelerated, native-grade terminal rendering.
+*   **Ergonomics**: Vi-style copy mode and scrollback buffers, font zoom, selection-aware copy/paste. (as well as many other Vim-style interactions on the canvas)
 *   **Pane Management**: Considering tmux-style split pane management within a single canvas node.
 *   **Scriptable Layouts**: tmuxinator-style named layouts that open split panes with specific commands pre-launched (e.g. "dev stack" = frontend + backend side-by-side).
 
 ---
 
-## Known Issues
-
-*   **TUI apps (Claude Code, opencode, etc.) have rendering artifacts.** Ink-based and other full-screen TUI apps show garbled re-renders, text overlap, and missing glyphs. This is a known xterm.js limitation — the fitAddon's column count can drift from what the WebGL renderer actually displays. Native terminals (Ghostty, iTerm2) don't have this issue. The long-term fix is replacing xterm.js with libghostty (see roadmap).
-*   **Shell integration is zsh-only** — bash/fish cwd tracking not yet implemented (fish has OSC 7 built-in, bash script coming later).
-
----
-
 ## Development
 
-Built with [Tauri](https://tauri.app/) (Rust backend, WebView frontend).
+Built with Rust, [egui](https://github.com/emilk/egui), and [egui_term](https://github.com/niceda/egui_term) (forked for cursor fixes).
 
 ```bash
-# Install JS dependencies
-npm install
-
-# Start dev server (hot reload)
-npm run dev
-
-# Build release app
-npm run build
+just dev     # cargo run
+just build   # cargo build --release
+just install # build + copy to /usr/local/bin
 ```
-
-The dev server runs the frontend with Vite and launches the Tauri WebView pointing at it. The release build produces a native `.app` in `src-tauri/target/release/bundle/`.
-
----

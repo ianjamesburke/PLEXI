@@ -1,5 +1,190 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-19 — Repo cleanup: promote egui crate to root, remove legacy code
+
+Removed all legacy codebases (Tauri, Electrobun/Node.js, Playwright tests, npm configs) and promoted `plexi-egui/` to root level. Binary renamed from `plexi-egui` to `plexi`. The `deps/egui_term` path dependency updated accordingly. Icon copied from `src-tauri/icons/icon.png` to `assets/app-icon.png` before deleting `src-tauri/`. Now installable via `cargo install --git`. README rewritten for pure Rust egui architecture.
+
+---
+
+## 2026-03-19 — Remove sidebar minimap
+
+Removed the non-functional minimap section (Map label, node count, visual minimap widget) from the sidebar. It was visual-only clutter with no interactivity. Candidate for future re-implementation as a real feature once pane navigation warrants it.
+
+---
+
+## 2026-03-19 — [FIX] Zoom + tab cycling desync
+
+Tab cycling (Cmd+]/[) while zoomed updated `focused_pane` to the new tab's TileId but left `zoomed_pane` pointing at the old TileId. Result: the dot indicator switched correctly but the overlay kept rendering the old terminal. Unzoom (Cmd+Enter) also failed on first press because the toggle's equality check (`zoomed_pane == Some(focused)`) was comparing two different TileIds. Fix: one conditional in `cycle_tab` — if `zoomed_pane.is_some()`, update it to match the new `focused_pane`. Reinforces the pattern: any code that changes `focused_pane` needs to check whether `zoomed_pane` should follow.
+
+---
+
+## 2026-03-19 — Zoom/maximize pane (Cmd+Enter)
+
+**What:** Cmd+Enter toggles a "zoom" mode that expands the focused pane to fill the central panel with a slight inset (10px), similar to tmux's zoom feature.
+
+**Rendering approach:** Instead of hiding other panes or reparenting, the zoomed pane's slot in the tile tree renders as a dark placeholder (no terminal). After `tree.ui()`, a semi-transparent scrim (black @ 63% opacity) is painted over the entire central panel, then the zoomed terminal is rendered in an inset overlay rect on top. This avoids double-rendering the terminal (which would cause double-input) and keeps the background layout visible but dimmed as a visual cue.
+
+**Auto-unzoom:** Split (Cmd+D/Shift+D), navigate (Cmd+HJKL), and close (Cmd+W) all clear zoom first. Tab cycling (Cmd+]/[) works while zoomed. Context switch inherently changes the active context which has its own `zoomed_pane` field.
+
+**State:** `zoomed_pane: Option<TileId>` on `Context`. Ephemeral — not persisted to workspace file.
+
+---
+
+## 2026-03-19 — [FIX] Focus landing on invisible tab after closing pane
+
+`find_first_pane_in` iterated all children for every container type, including `Tabs`. For a Tabs container, only the active tab is visible, but the function returned whichever child was first in the Vec — often an inactive/hidden tab. This meant after closing the last tab in a pane group, focus could land on a terminal hidden behind another tab. Fixed by checking for `Container::Tabs` and descending only into `tabs.active` instead of iterating all children. One function, ~3 lines added.
+
+---
+
+## 2026-03-19 — Functional contexts (workspaces) with disk persistence
+
+**What:** Contexts in the sidebar are now functional workspaces (like tmux sessions). Each context owns its own tile tree, panes HashMap, and focused pane. Switching contexts swaps the entire view; background terminals keep running. Workspace state persists to `~/.plexi/workspaces/default.json`.
+
+**Architecture decisions:**
+- Tree-walking methods (`find_ancestor_tabs`, `find_logical_parent`, `find_pane_in_direction_from`, etc.) moved from `PlexiApp` to `Context` to keep the borrow checker happy — `PlexiApp` methods that need both `self.next_pane_id` and `self.contexts[i].tree` can now call context methods without conflicting borrows.
+- `next_pane_id` stays global (on `PlexiApp`) because the PTY event channel is shared across all contexts — pane IDs must be unique globally.
+- `close_focused` was restructured into read-only / mutable / cleanup phases to satisfy the borrow checker when accessing `Context` fields.
+- Closing the last pane in a context deletes that context (unless it's the only one, then quit). This avoids empty zombie contexts.
+- Workspace save uses `egui_tiles::Tree<u64>` serialization directly (serde feature on egui_tiles). On restore, terminals are re-spawned at their saved cwds; stale cwds fall back to context path → home dir.
+- Corrupt workspace JSON is renamed to `.backup-{timestamp}.json` and a fresh workspace starts.
+
+**New features:** `+` button creates contexts, double-click renames, hover `x` deletes (2+ contexts), Cmd+1-9 switches contexts, Cmd+Q/exit saves workspace.
+
+**Explicitly deferred:** process persistence (needs daemon), auto-save timer (save-on-exit sufficient for MVP), drag-to-reorder, right-click menus.
+
+---
+
+## 2026-03-19 — [GOTCHA] 60% CPU in debug mode is expected — it's wgpu, not a bug
+
+Investigated high idle CPU usage (~60% in btop). Traced the full repaint chain: eframe 0.31 is already reactive (only repaints on `request_repaint()` / `request_repaint_after()`). The only idle repaint source is cursor blink at ~2 FPS via `request_repaint_after(530ms)`. The 60% is unoptimized wgpu rendering in debug builds — confirmed by running `cargo run --release` which dropped CPU to near-zero. No code fix needed. If debug perf becomes annoying, add `[profile.dev.package."*"] opt-level = 2` to Cargo.toml to optimize deps while keeping app code debuggable.
+
+Also removed a redundant `ctx.send_viewport_cmd(ViewportCommand::Title("Plexi"))` that ran every frame in `update()` — the title was already set once via `ViewportBuilder::with_title("Plexi")` in main.rs.
+
+---
+
+## 2026-03-19 — [FUTURE] Rename binary from plexi-egui to plexi
+
+btop shows the process as "plexi-egui" because `Cargo.toml` has `name = "plexi-egui"`. Defer renaming until the Tauri codebase is removed and `plexi-egui/` becomes the sole binary. Trivial one-liner when the time comes.
+
+---
+
+## 2026-03-19 — [FIX] Cursor rendering: visibility, shape, and unfocused style
+
+Fixed three cursor issues in the forked `egui_term`:
+
+1. **Cursor always visible** — `RenderableContent` never exposed `TermMode::SHOW_CURSOR`, so apps sending `\e[?25l` (hide cursor — used by Claude Code, vim, fzf) still showed a blinking block. Added `cursor_visible` field populated from `terminal.mode().contains(TermMode::SHOW_CURSOR)`.
+
+2. **Unfocused panes drew solid block** — standard terminal behavior (Ghostty, iTerm2, Alacritty) is a hollow 1px outline for unfocused panes. Changed from `RectShape::filled` to `RectShape::stroke` with `StrokeKind::Inside`.
+
+3. **No cursor shape support** — alacritty_terminal tracks `CursorShape` (Block/Beam/Underline/HollowBlock/Hidden) via `term.cursor_style().shape`, but the view always drew a filled block. Added `cursor_shape` field to `RenderableContent` and a `match` in the renderer for Beam (2px vertical line), Underline (2px horizontal line at bottom), and Block (filled rect).
+
+Also fixed text color inversion — was gated on `APP_CURSOR` mode (wrong), now gated on focused + block cursor + cursor visible (correct).
+
+---
+
+## 2026-03-19 — Flat tile tree for equal splits + share equalization on close
+
+**What:** Splitting in the same direction as the parent Linear container now inserts the new pane as a sibling instead of creating a nested container. This keeps the tree flat: three horizontal splits produce three equal thirds, not 50/25/25.
+
+**Key detail — shares on close:** The initial implementation only changed `split_focused` but missed that `close_focused` was manually transferring the closing pane's share to its neighbor (preserving uneven ratios from drag-resizing). Fixed by resetting all sibling shares to `1.0` on close, so remaining panes always redistribute equally.
+
+**Lesson:** Create and destroy paths are coupled. When changing how something is created (split), always read the corresponding teardown (close) in the same pass. The existing share-transfer logic in `close_focused` was the clue that egui_tiles doesn't auto-equalize.
+
+---
+
+## 2026-03-19 — Tab stacking via egui_tiles Tabs containers
+
+**What:** Cmd+T creates a new terminal tab stacked behind the focused pane. Cmd+]/[ cycles between tabs. Replaces Cmd+N (which created a new split alongside root).
+
+**How it works:** `egui_tiles` has a native `Container::Tabs` type. Cmd+T wraps the focused pane + new pane in a Tabs container (or appends to an existing one if focused pane is already in a Tabs container). The tab bar (24px) only appears when a Tabs container has 2+ children — the default `SimplificationOptions::prune_single_child_tabs` auto-removes single-child Tabs containers each frame, so lone panes never show a tab bar.
+
+**Tab bar styling:** Active tab gets terminal bg color (`0x1e1e2e`), inactive tabs get `BG_DARKEST`. Tab titles show "Terminal N" in dim text.
+
+**New tabs inherit cwd** from the focused pane (same as splits).
+
+**Keybindings changed:** Cmd+N removed, Cmd+T added, Cmd+]/[ added for tab cycling.
+
+---
+
+## 2026-03-19 — Post-MVP: tmux-style session persistence
+
+**Deferred until after MVP ships.** Background daemon that owns PTY sessions, GUI connects as a client. Sessions survive GUI restart, processes keep running. This is the #1 differentiator from the UX research but requires an architectural shift (daemon/client split) that touches everything. Validate that people want Plexi first.
+
+---
+
+## 2026-03-19 — TODO: Tauri codebase cleanup / removal
+
+**Deferred.** Once the egui rewrite is feature-complete, remove `src-tauri/`, the Node/npm toolchain, xterm.js, and all Tauri-related config. `plexi-egui/` becomes the sole binary. Benefit is operational: one Rust binary, no webview, no IPC serialization, faster startup, smaller binary.
+
+---
+
+## 2026-03-19 — Keybindings overhaul + app icon + macOS menu FFI (plexi-egui/)
+
+**New keybindings:** Cmd+N (new pane), Cmd+Q (force quit — bypasses close-pane guard via `quitting` flag), Cmd+/ (shortcuts overlay, was Shift+/).
+
+**Cmd+H fix via Cocoa FFI:** macOS intercepts Cmd+H as "Hide Application" before egui/winit see it. Tried three alternatives first:
+1. `with_default_menu(false)` — removes entire menu bar, losing Edit (copy/paste) and Window menus. Too aggressive.
+2. Alt+HJKL — macOS Option key produces special Unicode chars (∆, ˚, etc.) instead of the base letter, so winit reports the wrong logical key. egui docs explicitly warn against Alt-based shortcuts for this reason.
+3. Cmd+[ for left + Cmd+J/K/L for rest — asymmetric and awkward.
+
+**Solution:** Keep default menu, surgically remove "Hide" and "Hide Others" menu items via `objc2-app-kit` FFI in `macos_menu.rs`. Called from `PlexiApp::new()` (after eframe creates the window). Uses `NSApplication::mainMenu()` → first submenu → iterate items → remove those with `hide:` and `hideOtherApplications:` selectors. ~40 lines of safe-ish Rust wrapping unsafe AppKit calls. This is the same approach Ghostty uses.
+
+**App icon:** Embedded via `include_bytes!("../../src-tauri/icons/icon.png")` + `eframe::icon_data::from_png_bytes()` + `ViewportBuilder::with_icon()`. Shows in Dock.
+
+**New pane (Cmd+N):** Creates a fresh terminal (no inherited cwd) and inserts it alongside the root as a horizontal split.
+
+**Dependencies added:** `objc2`, `objc2-app-kit`, `objc2-foundation` (macOS-only, behind `cfg(target_os = "macos")`). These are already transitive deps of winit so no new downloads.
+
+---
+
+## 2026-03-19 — Pane padding color + sizing (plexi-egui/)
+
+Added `TERMINAL_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e)` color constant to match the Catppuccin Mocha terminal background. Updated the pane frame in `tiling.rs` to fill with this color instead of leaving it transparent, so the inner padding inside each pane blends seamlessly with the terminal text area. Increased pane `inner_margin` from 4 to 8 for more breathing room. The outer window margin remains `BG_DARKEST` (darker black) at 4px to match the inter-pane `gap_width`, creating visual consistency around the border.
+
+---
+
+## 2026-03-19 — UX research: competitive patterns + opportunities
+
+**What's working well in the space (patterns worth adopting):**
+- cmux's vertical sidebar with per-workspace metadata (branch, ports, notification badges) is the breakout UX pattern — gives spatial context at a glance
+- Zellij's stacked panes (collapsed title bars showing what's behind) is the cleanest "tabs behind a pane" visual — avoids the tab-bar clutter problem
+- Emerging keybinding consensus: Alt+hjkl or Cmd+hjkl for splits, Cmd+[/] for tab cycling, Cmd+1-9 for workspace jumping
+- Fixed sidebar ordering is a must — users cite reordering-by-activity as a top cmux frustration; muscle memory depends on stability
+- Activity indicators (dot, badge, color change) on hidden/background tabs are considered essential, not nice-to-have
+
+**cmux pain points = our opportunities:**
+1. No process persistence across restart — sessions die on quit; the hardest problem but highest-value differentiator
+2. Keybindings not customizable enough — low effort to fix, high user satisfaction payoff
+3. Sidebar reorders by activity — actively breaks muscle memory; fixed ordering is a one-liner policy decision
+
+**For MVP:** Don't act on any of this yet. Priority is getting a working multiplexer in front of users. Revisit sidebar metadata and activity indicators once the core split/navigate/close loop is solid.
+
+---
+
+## 2026-03-19 — Uniform spacing + terminal text padding (plexi-egui/)
+
+Changed `gap_width` from `6.0` to `4.0` in `tiling.rs` so inter-pane gaps match the outer `inner_margin: Margin::same(4)` set in `app.rs`. Wrapped both the live terminal and the exited-pane message in `egui::Frame::new().inner_margin(Margin::same(4))` to give text 4px breathing room from pane edges. The focus border in `paint_on_top_of_tile()` operates on the full tile rect (before the frame inset), so it still sits flush at the tile boundary.
+
+---
+
+## 2026-03-18 — Phases 3–4: shell integration + polish (plexi-egui/)
+
+**Shell integration (Phase 3):**
+- Forked `egui_term` into `deps/egui_term/` as a path dependency — added `env: HashMap<String, String>` field to `BackendSettings` and wired it into `tty::Options`. Only 3 lines changed in the upstream crate.
+- `shell::build_env()` sets TERM, COLORTERM, LANG, LC_ALL, prepends Homebrew PATH on macOS, and injects ZDOTDIR for zsh shell integration.
+- `shell::ensure_shell_integration()` writes `.zprofile`/`.zshrc` to `~/.plexi/shell-integration/zsh/` — these source the user's real dotfiles then add a precmd hook emitting OSC 7 (cwd tracking for future split-inherits-cwd).
+
+**Why fork instead of upstream PR:** The egui_term crate is young (v0.1.0) and the maintainer may not want env passthrough in the public API. A local path dep is the lowest-risk approach for MVP. If upstream accepts, we switch back to a version dep.
+
+**Polish (Phase 4):**
+- Exited panes show "[process exited]" centered, auto-close on any keypress.
+- Window title set to "Plexi" via `ViewportCommand::Title`.
+- Removed all `log::info!` debug spam from keys.rs and split_focused.
+- Zeroed CentralPanel margins to eliminate padding around terminals.
+- Renamed `TerminalPane.id` → `_id` to suppress unused warning.
+
+---
+
 ## 2026-03-18 — egui rewrite: pure Rust terminal multiplexer (plexi-egui/)
 
 **Why:** The Tauri + xterm.js architecture has fundamental TUI rendering artifacts (column mismatch, missing glyphs, no synchronized rendering). Native egui rendering via `egui_term` (which wraps `alacritty_terminal`) eliminates all of these. The `egui-poc` branch proved the approach works.
