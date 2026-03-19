@@ -22,17 +22,21 @@ Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) —
 
 ## Quick Start
 
-```bash
-cargo install --git https://github.com/ianjamesburke/PLEXI.git
-```
-
-Or build from source:
+**Install as a macOS app** (launches from Spotlight/Dock, no terminal required):
 
 ```bash
 git clone https://github.com/ianjamesburke/PLEXI.git
 cd PLEXI
-cargo build --release
-# binary at target/release/plexi
+./install.sh
+```
+
+This builds `Plexi.app` and copies it to `/Applications`. Requires Rust — install via [rustup.rs](https://rustup.rs) if you don't have it.
+
+**Or run from the terminal:**
+
+```bash
+cargo install --git https://github.com/ianjamesburke/PLEXI.git
+plexi
 ```
 
 ## Keyboard Shortcuts
