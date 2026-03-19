@@ -17,6 +17,8 @@ pub enum Action {
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
+    ToggleZoom,
+    SwitchContext(usize),
 }
 
 pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
@@ -76,9 +78,32 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
             actions.push(Action::ToggleSidebar);
         }
 
+        // Toggle zoom (Cmd+Enter)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter) {
+            actions.push(Action::ToggleZoom);
+        }
+
         // Toggle shortcuts overlay (Cmd+/)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash) {
             actions.push(Action::ToggleShortcuts);
+        }
+
+        // Switch context (Cmd+1 through Cmd+9)
+        let num_keys = [
+            egui::Key::Num1,
+            egui::Key::Num2,
+            egui::Key::Num3,
+            egui::Key::Num4,
+            egui::Key::Num5,
+            egui::Key::Num6,
+            egui::Key::Num7,
+            egui::Key::Num8,
+            egui::Key::Num9,
+        ];
+        for (i, key) in num_keys.into_iter().enumerate() {
+            if input.consume_key(egui::Modifiers::COMMAND, key) {
+                actions.push(Action::SwitchContext(i));
+            }
         }
     });
 

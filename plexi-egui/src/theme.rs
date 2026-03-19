@@ -14,8 +14,6 @@ impl Colors {
     pub const BG_TOOLBAR: Color32 = Color32::from_rgb(0x18, 0x18, 0x25);
     pub const BG_HOVER: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x3c);
     pub const BG_ACTIVE: Color32 = Color32::from_rgb(0x31, 0x31, 0x44);
-    pub const TERMINAL_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e);
-
     // Text
     pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
     pub const TEXT_DIM: Color32 = Color32::from_rgb(0x6c, 0x70, 0x86);
@@ -24,10 +22,6 @@ impl Colors {
     // Accent
     pub const ACCENT: Color32 = Color32::from_rgb(0x89, 0xb4, 0xfa);
     pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x45, 0x5a, 0x7d);
-
-    // Minimap
-    pub const MINIMAP_PANE: Color32 = Color32::from_rgb(0x31, 0x31, 0x44);
-    pub const MINIMAP_BORDER: Color32 = Color32::from_rgb(0x45, 0x47, 0x5a);
 
     // Borders
     pub const BORDER: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x3c);
