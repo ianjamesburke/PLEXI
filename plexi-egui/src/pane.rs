@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 
 pub struct TerminalPane {
     pub backend: TerminalBackend,
-    pub id: u64,
+    pub _id: u64,
     pub exited: bool,
 }
 
@@ -23,7 +23,7 @@ impl TerminalPane {
         };
         Some(Self {
             backend,
-            id,
+            _id: id,
             exited: false,
         })
     }
