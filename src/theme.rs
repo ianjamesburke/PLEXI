@@ -43,6 +43,7 @@ pub fn catppuccin_mocha() -> TerminalTheme {
     TerminalTheme::new(Box::new(ColorPalette {
         foreground: "#cdd6f4".into(),
         background: "#1e1e2e".into(),
+        // Normal colors
         black: "#45475a".into(),
         red: "#f38ba8".into(),
         green: "#a6e3a1".into(),
@@ -51,6 +52,7 @@ pub fn catppuccin_mocha() -> TerminalTheme {
         magenta: "#f5c2e7".into(),
         cyan: "#94e2d5".into(),
         white: "#bac2de".into(),
+        // Bright colors
         bright_black: "#585b70".into(),
         bright_red: "#f38ba8".into(),
         bright_green: "#a6e3a1".into(),
@@ -59,7 +61,19 @@ pub fn catppuccin_mocha() -> TerminalTheme {
         bright_magenta: "#f5c2e7".into(),
         bright_cyan: "#94e2d5".into(),
         bright_white: "#a6adc8".into(),
-        ..Default::default()
+        bright_foreground: Some("#cdd6f4".into()),
+        // Dim colors — set to normal colors since view.rs already applies
+        // linear_multiply(0.7) when the DIM flag is set. Using pre-dimmed
+        // values here would cause double-dimming.
+        dim_foreground: "#cdd6f4".into(),
+        dim_black: "#45475a".into(),
+        dim_red: "#f38ba8".into(),
+        dim_green: "#a6e3a1".into(),
+        dim_yellow: "#f9e2af".into(),
+        dim_blue: "#89b4fa".into(),
+        dim_magenta: "#f5c2e7".into(),
+        dim_cyan: "#94e2d5".into(),
+        dim_white: "#bac2de".into(),
     }))
 }
 
