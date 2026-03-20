@@ -975,6 +975,7 @@ impl PlexiApp {
                     )
                     .frame(false),
                 )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Toggle sidebar (\u{2318}B)")
                 .clicked()
             {
@@ -1016,6 +1017,7 @@ impl PlexiApp {
                         )
                         .frame(false),
                     )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text("Keyboard shortcuts (\u{2318}/)")
                     .clicked()
                 {
@@ -1071,6 +1073,7 @@ impl PlexiApp {
                         )
                         .frame(false),
                     )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text("New context")
                     .clicked()
                 {
@@ -1091,12 +1094,25 @@ impl PlexiApp {
             let is_active = i == self.active_context;
             let is_renaming = self.renaming_context == Some(i);
 
+            // Reserve the row rect first for the background interaction
+            let row_rect = ui.cursor();
+            let row_rect = Rect::from_min_size(
+                row_rect.min,
+                Vec2::new(sidebar_width, 26.0),
+            );
+
+            // Create the row interaction FIRST so buttons painted later get priority
+            let row_response = ui.interact(row_rect, egui::Id::new(("ctx_row", i)), egui::Sense::click());
+            if row_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let hover = ui.rect_contains_pointer(row_rect);
+
             let response = ui.allocate_ui_with_layout(
                 Vec2::new(sidebar_width, 26.0),
                 Layout::left_to_right(Align::Center),
                 |ui| {
                     let rect = ui.max_rect();
-                    let hover = ui.rect_contains_pointer(rect);
 
                     let fill = if is_active {
                         Colors::BG_ACTIVE
@@ -1170,7 +1186,7 @@ impl PlexiApp {
                         if hover && num_contexts > 1 {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(8.0);
-                                if ui
+                                let x_btn = ui
                                     .add(
                                         egui::Button::new(
                                             RichText::new("\u{2715}")
@@ -1179,9 +1195,9 @@ impl PlexiApp {
                                         )
                                         .frame(false),
                                     )
-                                    .on_hover_text("Delete context")
-                                    .clicked()
-                                {
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text("Delete context");
+                                if x_btn.clicked() {
                                     delete_context = Some(i);
                                 }
                             });
@@ -1189,47 +1205,47 @@ impl PlexiApp {
                     }
                 },
             );
-
-            // Interact on the full row rect for click/right-click sensing
-            let row_rect = response.response.rect;
-            let row_response = ui.interact(row_rect, egui::Id::new(("ctx_row", i)), egui::Sense::click());
+            let _ = response;
 
             if !is_renaming {
-                row_response.context_menu(|ui| {
-                    if ui.button("Rename").clicked() {
-                        menu_action = Some((i, ContextMenuAction::Rename));
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if i > 0 {
-                        if ui.button("Move to Top").clicked() {
-                            menu_action = Some((i, ContextMenuAction::MoveToTop));
+                // Only process row clicks if the delete button didn't consume the click
+                if delete_context.is_none() {
+                    row_response.context_menu(|ui| {
+                        if ui.button("Rename").clicked() {
+                            menu_action = Some((i, ContextMenuAction::Rename));
                             ui.close_menu();
                         }
-                        if ui.button("Move Up").clicked() {
-                            menu_action = Some((i, ContextMenuAction::MoveUp));
-                            ui.close_menu();
-                        }
-                    }
-                    if i < num_contexts - 1 {
-                        if ui.button("Move Down").clicked() {
-                            menu_action = Some((i, ContextMenuAction::MoveDown));
-                            ui.close_menu();
-                        }
-                    }
-                    if num_contexts > 1 {
                         ui.separator();
-                        if ui.button("Delete").clicked() {
-                            menu_action = Some((i, ContextMenuAction::Delete));
-                            ui.close_menu();
+                        if i > 0 {
+                            if ui.button("Move to Top").clicked() {
+                                menu_action = Some((i, ContextMenuAction::MoveToTop));
+                                ui.close_menu();
+                            }
+                            if ui.button("Move Up").clicked() {
+                                menu_action = Some((i, ContextMenuAction::MoveUp));
+                                ui.close_menu();
+                            }
                         }
-                    }
-                });
+                        if i < num_contexts - 1 {
+                            if ui.button("Move Down").clicked() {
+                                menu_action = Some((i, ContextMenuAction::MoveDown));
+                                ui.close_menu();
+                            }
+                        }
+                        if num_contexts > 1 {
+                            ui.separator();
+                            if ui.button("Delete").clicked() {
+                                menu_action = Some((i, ContextMenuAction::Delete));
+                                ui.close_menu();
+                            }
+                        }
+                    });
 
-                if row_response.double_clicked() {
-                    double_clicked_context = Some(i);
-                } else if row_response.clicked() {
-                    clicked_context = Some(i);
+                    if row_response.double_clicked() {
+                        double_clicked_context = Some(i);
+                    } else if row_response.clicked() {
+                        clicked_context = Some(i);
+                    }
                 }
             }
         }
