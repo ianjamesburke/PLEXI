@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 pub const FONT_SIZE: f32 = 14.0;
 const FONT_NAME: &str = "JetBrainsMono Nerd Font";
+const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
 
 pub struct Colors;
 
@@ -69,12 +70,18 @@ pub fn terminal_font() -> TerminalFont {
     })
 }
 
-pub fn setup_fonts(ctx: &egui::Context) {
+pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
             "../fonts/JetBrainsMonoNerdFont-Regular.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        FALLBACK_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../fonts/DejaVuSans.ttf"
         ))),
     );
     fonts
@@ -84,8 +91,69 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .insert(0, FONT_NAME.to_owned());
     fonts
         .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(1, FALLBACK_FONT_NAME.to_owned());
+    fonts
+        .families
         .entry(egui::FontFamily::Monospace)
         .or_default()
         .insert(0, FONT_NAME.to_owned());
-    ctx.set_fonts(fonts);
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(1, FALLBACK_FONT_NAME.to_owned());
+    fonts
+}
+
+pub fn setup_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_data_loads() {
+        let defs = font_definitions();
+        assert!(
+            defs.font_data.contains_key(FONT_NAME),
+            "JetBrainsMono Nerd Font data missing"
+        );
+        assert!(
+            defs.font_data.contains_key(FALLBACK_FONT_NAME),
+            "DejaVu Sans font data missing"
+        );
+    }
+
+    #[test]
+    fn font_families_have_fallback_chain() {
+        let defs = font_definitions();
+
+        let proportional = defs.families.get(&egui::FontFamily::Proportional).unwrap();
+        assert_eq!(proportional[0], FONT_NAME);
+        assert_eq!(proportional[1], FALLBACK_FONT_NAME);
+
+        let monospace = defs.families.get(&egui::FontFamily::Monospace).unwrap();
+        assert_eq!(monospace[0], FONT_NAME);
+        assert_eq!(monospace[1], FALLBACK_FONT_NAME);
+    }
+
+    #[test]
+    fn font_data_is_valid_ttf() {
+        let defs = font_definitions();
+        for (name, data) in &defs.font_data {
+            // TrueType fonts start with 0x00010000 or 'true' (0x74727565)
+            let bytes = &data.font;
+            assert!(
+                bytes.len() > 4,
+                "Font {name} is too small to be a valid TTF"
+            );
+            let magic = &bytes[0..4];
+            let is_ttf = magic == [0x00, 0x01, 0x00, 0x00] || magic == b"true";
+            assert!(is_ttf, "Font {name} has invalid TTF magic bytes: {magic:?}");
+        }
+    }
 }
