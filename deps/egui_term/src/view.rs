@@ -231,6 +231,20 @@ impl<'a> TerminalView<'a> {
             }
         }
 
+        // Check for link hover every frame (not just on mouse move) so that
+        // pressing/releasing Cmd updates the hyperlink state immediately.
+        if has_pointer && modifiers.command_only() {
+            self.backend.process_command(BackendCommand::ProcessLink(
+                LinkAction::Hover,
+                state.current_mouse_position_on_grid,
+            ));
+        } else if has_pointer {
+            self.backend.process_command(BackendCommand::ProcessLink(
+                LinkAction::Clear,
+                state.current_mouse_position_on_grid,
+            ));
+        }
+
         self
     }
 
@@ -247,6 +261,13 @@ impl<'a> TerminalView<'a> {
         let cell_width = content.terminal_size.cell_width as f32;
         let global_bg =
             self.theme.get_color(Color::Named(NamedColor::Background));
+
+        // Show pointer cursor when hovering a hyperlink
+        if content.hovered_hyperlink.as_ref().is_some_and(|r| {
+            r.contains(&state.current_mouse_position_on_grid)
+        }) {
+            layout.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
 
         let mut shapes = vec![Shape::Rect(RectShape::filled(
             Rect::from_min_max(layout_min, layout_max),
@@ -703,13 +724,7 @@ fn process_mouse_move(
         actions.push(cmd);
     }
 
-    // Handle link hover if applicable
-    if modifiers.command_only() {
-        actions.push(InputAction::BackendCall(BackendCommand::ProcessLink(
-            LinkAction::Hover,
-            state.current_mouse_position_on_grid,
-        )));
-    }
+    // Link hover is handled per-frame in process_input, not per mouse-move.
 
     actions
 }
