@@ -9,6 +9,7 @@ pub struct BackendSettings {
     pub args: Vec<String>,
     pub working_directory: Option<PathBuf>,
     pub env: HashMap<String, String>,
+    pub dynamic_colors: HashMap<usize, [u8; 3]>,
 }
 
 impl Default for BackendSettings {
@@ -18,6 +19,7 @@ impl Default for BackendSettings {
             args: vec![],
             working_directory: None,
             env: HashMap::new(),
+            dynamic_colors: HashMap::new(),
         }
     }
 }

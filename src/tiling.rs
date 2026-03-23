@@ -25,15 +25,19 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         tile_id: TileId,
         pane_id: &mut PaneId,
     ) -> UiResponse {
-        // Detect clicks for focus
-        if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect()) {
+        // Detect clicks for focus (skip when a pane is zoomed — input belongs to the overlay)
+        if self.zoomed_pane.is_none()
+            && ui.input(|i| i.pointer.any_pressed())
+            && ui.rect_contains_pointer(ui.max_rect())
+        {
             self.new_focused = Some(tile_id);
         }
 
         let is_focused = self.focused_tile == Some(tile_id);
 
-        // If this pane is zoomed, render a dark placeholder instead of the terminal
-        if self.zoomed_pane == Some(tile_id) {
+        // When any pane is zoomed, render ALL panes as dark placeholders.
+        // The zoomed pane is rendered separately in the overlay (app.rs).
+        if self.zoomed_pane.is_some() {
             egui::Frame::new()
                 .fill(egui::Color32::from_rgb(0x11, 0x11, 0x1b))
                 .inner_margin(egui::Margin::same(8))
@@ -43,7 +47,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         if let Some(pane) = self.panes.get_mut(pane_id) {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgb(0x1e, 0x1e, 0x2e))
+                .fill(Colors::TERMINAL_BG)
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     if pane.exited {
@@ -52,7 +56,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         ui.painter().rect_filled(
                             rect,
                             0.0,
-                            egui::Color32::from_rgb(0x1e, 0x1e, 0x2e),
+                            Colors::TERMINAL_BG,
                         );
                         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
                             ui.centered_and_justified(|ui| {

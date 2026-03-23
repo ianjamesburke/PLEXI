@@ -1,6 +1,7 @@
 mod backend;
 mod bindings;
 mod font;
+mod graphics;
 mod theme;
 mod types;
 mod view;

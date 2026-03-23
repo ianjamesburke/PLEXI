@@ -15,12 +15,13 @@ use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{
     self, cell::Cell, test::TermSize, viewport_to_point, Term, TermMode,
 };
-use alacritty_terminal::vte::ansi::CursorShape;
+use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use alacritty_terminal::{tty, Grid};
 use egui::Modifiers;
 use settings::BackendSettings;
 use std::borrow::Cow;
 use std::cmp::min;
+use std::collections::HashMap;
 use std::io::Result;
 use std::ops::{Index, RangeInclusive};
 use std::sync::mpsc::Sender;
@@ -151,6 +152,7 @@ impl TerminalBackend {
         pty_event_proxy_sender: Sender<(u64, PtyEvent)>,
         settings: BackendSettings,
     ) -> Result<Self> {
+        let dynamic_colors = settings.dynamic_colors.clone();
         let pty_config = tty::Options {
             shell: Some(tty::Shell::new(settings.shell, settings.args)),
             working_directory: settings.working_directory,
@@ -177,13 +179,24 @@ impl TerminalBackend {
         let term = Arc::new(FairMutex::new(term));
         let pty_event_loop =
             EventLoop::new(term.clone(), event_proxy, pty, false, false)?;
-        let notifier = Notifier(pty_event_loop.channel());
+        let event_loop_sender = pty_event_loop.channel();
+        let notifier = Notifier(event_loop_sender.clone());
+        let event_notifier = Notifier(event_loop_sender);
         let url_regex = RegexSearch::new(r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`]+"#).unwrap();
         let _pty_event_loop_thread = pty_event_loop.spawn();
+        let event_term = term.clone();
         let _pty_event_subscription = std::thread::Builder::new()
             .name(format!("pty_event_subscription_{}", id))
             .spawn(move || loop {
                 if let Ok(event) = event_receiver.recv() {
+                    if let Event::ColorRequest(index, formatter) = &event {
+                        if let Some(color) =
+                            resolve_dynamic_color(&event_term, &dynamic_colors, *index)
+                        {
+                            event_notifier.notify(formatter(color).into_bytes());
+                        }
+                        continue;
+                    }
                     pty_event_proxy_sender
                         .send((id, event.clone()))
                         .unwrap_or_else(|_| {
@@ -554,6 +567,24 @@ fn visible_regex_match_iter<'a>(
     RegexIter::new(start, end, Direction::Right, term, regex)
         .skip_while(move |rm| rm.end().line < viewport_start)
         .take_while(move |rm| rm.start().line <= viewport_end)
+}
+
+fn resolve_dynamic_color(
+    term: &Arc<FairMutex<Term<EventProxy>>>,
+    dynamic_colors: &HashMap<usize, [u8; 3]>,
+    index: usize,
+) -> Option<Rgb> {
+    if let Some(color) = term.lock().colors()[index] {
+        return Some(color);
+    }
+
+    dynamic_colors
+        .get(&index)
+        .map(|[r, g, b]| Rgb {
+            r: *r,
+            g: *g,
+            b: *b,
+        })
 }
 
 pub struct RenderableContent {
