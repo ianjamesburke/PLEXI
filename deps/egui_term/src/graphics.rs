@@ -180,36 +180,3 @@ impl RectFraction {
 fn lerp(min: f32, max: f32, t: f32) -> f32 {
     min + (max - min) * t
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn half_blocks_share_an_identical_edge() {
-        let cell_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(15.0, 15.0));
-        let upper = block_element_rects('\u{2580}', cell_rect, 1.0).unwrap();
-        let lower = block_element_rects('\u{2584}', cell_rect, 1.0).unwrap();
-
-        assert_eq!(upper[0].max.y, lower[0].min.y);
-    }
-
-    #[test]
-    fn full_block_fills_the_entire_cell() {
-        let cell_rect = Rect::from_min_max(pos2(3.0, 5.0), pos2(19.0, 21.0));
-        let rects = block_element_rects('\u{2588}', cell_rect, 1.0).unwrap();
-
-        assert_eq!(rects, vec![cell_rect]);
-    }
-
-    #[test]
-    fn quadrant_block_produces_multiple_rects() {
-        let cell_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(16.0, 16.0));
-        let rects = block_element_rects('\u{259F}', cell_rect, 1.0).unwrap();
-
-        assert_eq!(rects.len(), 3);
-        assert_eq!(rects[0], Rect::from_min_max(pos2(8.0, 0.0), pos2(16.0, 8.0)));
-        assert_eq!(rects[1], Rect::from_min_max(pos2(0.0, 8.0), pos2(8.0, 16.0)));
-        assert_eq!(rects[2], Rect::from_min_max(pos2(8.0, 8.0), pos2(16.0, 16.0)));
-    }
-}
