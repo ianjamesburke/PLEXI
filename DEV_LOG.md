@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-24 — [FIX] Apple Symbols loaded at runtime for missing glyph coverage
+
+The existing font chain (JBM Nerd Font → DejaVu Sans → egui defaults) still left some characters as squares in the terminal — specifically symbols from ranges like Miscellaneous Technical (⌥ ⌘ ⏺ etc.), Geometric Shapes, and Dingbats used by Claude Code, Starship, and similar CLI tools. JBM Nerd Font covers the Nerd Font PUA but not all of these standard Unicode ranges, and DejaVu is focused on Latin extended / Braille.
+
+Fix: load `/System/Library/Fonts/Apple Symbols.ttf` at runtime and insert it at position 2 in both Proportional and Monospace family chains (after JBM and DejaVu, before egui's bundled Ubuntu/NotoEmoji). The font is loaded with `std::fs::read` so it adds zero binary size and silently skips if not found. Apple Symbols is always present on macOS 10.x+, making this safe. Bundling was rejected — 23M Arial Unicode and 900k Apple Symbols adds bloat; runtime loading is cleaner.
+
 ## 2026-03-24 — [FIX] File drag target now follows cursor across panes
 
 winit-0.30.13's macOS impl only fires `WindowEvent::HoveredFile` in `draggingEntered:` — there is no `draggingUpdated:` handler. This means egui never receives `CursorMoved` events during an external file drag, leaving `pointer.hover_pos()` stale at the drag-entry position. The previous fix (#23) worked for the first pane but not when moving between panes. Fixed by querying `NSWindow.mouseLocationOutsideOfEventStream()` each frame when `hovered_files` is non-empty, converting from AppKit window-base coords (Y-up, bottom-left origin) to egui coords (`egui_y = content_height - base.y`). Requires the `NSWindow` feature on `objc2-app-kit`. The native position is used for the pane hit-test (`max_rect().contains(pos)`) instead of the stale `rect_contains_pointer`.
