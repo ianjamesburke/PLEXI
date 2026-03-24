@@ -228,6 +228,7 @@ impl PlexiApp {
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
         let config = config::PlexiConfig::load();
         let theme_cfg = config.theme.unwrap_or_default();
