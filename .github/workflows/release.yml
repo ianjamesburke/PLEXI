@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle
+
+      - name: Build app bundle
+        run: cargo bundle --release
+
+      - name: Ad-hoc sign (required for ARM64)
+        run: codesign --force --deep --sign - target/release/bundle/osx/Plexi.app
+
+      - name: Create zip
+        run: |
+          cd target/release/bundle/osx
+          zip -r Plexi-${{ github.ref_name }}.zip Plexi.app
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip
+          generate_release_notes: true

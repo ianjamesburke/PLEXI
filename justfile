@@ -36,3 +36,19 @@ bump:
     git commit -m "chore: bump version to $new"
     git tag "v$new"
     echo "Tagged v$new"
+
+release:
+    #!/usr/bin/env bash
+    set -e
+    version=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    tag="v$version"
+    if git ls-remote --tags origin "$tag" | grep -q "$tag"; then
+      echo "Error: $tag already exists on remote. Run 'just bump' first."
+      exit 1
+    fi
+    if ! git tag -l "$tag" | grep -q "$tag"; then
+      echo "Error: local tag $tag not found. Run 'just bump' first."
+      exit 1
+    fi
+    git push origin main "$tag"
+    echo "Pushed $tag — release workflow will run on GitHub Actions"
