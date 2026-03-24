@@ -108,8 +108,8 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
             actions.push(Action::NewContext);
         }
 
-        // Per-pane font size (Cmd+= / Cmd+-)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals) {
+        // Per-pane font size (Cmd++ / Cmd+-)
+        if input.consume_key(cmd_shift, egui::Key::Equals) {
             actions.push(Action::IncreasePaneFontSize);
         }
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus) {
