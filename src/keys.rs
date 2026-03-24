@@ -12,8 +12,7 @@ pub enum Action {
     Navigate(Direction),
     ClosePane,
     NewTab,
-    NextTab,
-    PrevTab,
+    SwitchTab(usize),
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
@@ -21,7 +20,8 @@ pub enum Action {
     ToggleCommandPalette,
     RenamePane,
     NewContext,
-    SwitchContext(usize),
+    NextContext,
+    PrevContext,
 }
 
 pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
@@ -63,12 +63,12 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
             actions.push(Action::NewTab);
         }
 
-        // Cycle tabs (Cmd+] / Cmd+[)
+        // Cycle contexts (Cmd+] / Cmd+[)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
-            actions.push(Action::NextTab);
+            actions.push(Action::NextContext);
         }
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
-            actions.push(Action::PrevTab);
+            actions.push(Action::PrevContext);
         }
 
         // Quit (Cmd+Q)
@@ -106,7 +106,7 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
             actions.push(Action::NewContext);
         }
 
-        // Switch context (Cmd+1 through Cmd+9)
+        // Switch tab (Cmd+1 through Cmd+9)
         let num_keys = [
             egui::Key::Num1,
             egui::Key::Num2,
@@ -120,7 +120,7 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
             if input.consume_key(egui::Modifiers::COMMAND, key) {
-                actions.push(Action::SwitchContext(i));
+                actions.push(Action::SwitchTab(i));
             }
         }
     });

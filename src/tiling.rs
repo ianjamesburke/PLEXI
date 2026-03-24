@@ -18,6 +18,7 @@ pub struct PlexiBehavior<'a> {
     pub zoomed_pane: Option<TileId>,
     pub colors: Colors,
     pub pane_names: HashMap<PaneId, String>,
+    pub drag_cursor_pos: Option<egui::Pos2>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -27,11 +28,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         tile_id: TileId,
         pane_id: &mut PaneId,
     ) -> UiResponse {
-        // Detect clicks for focus (skip when a pane is zoomed — input belongs to the overlay)
-        if self.zoomed_pane.is_none()
-            && ui.input(|i| i.pointer.any_pressed())
-            && ui.rect_contains_pointer(ui.max_rect())
-        {
+        // Detect clicks or file drags for focus (skip when a pane is zoomed — input belongs to the overlay)
+        let is_click = ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect());
+        let is_drag_hovering = match self.drag_cursor_pos {
+            Some(pos) => ui.max_rect().contains(pos),
+            None => ui.input(|i| !i.raw.hovered_files.is_empty()) && ui.rect_contains_pointer(ui.max_rect()),
+        };
+        if self.zoomed_pane.is_none() && (is_click || is_drag_hovering) {
             self.new_focused = Some(tile_id);
         }
 
@@ -91,7 +94,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
                                 let dot_radius = 4.0;
                                 let dot_spacing = 12.0;
-                                let start_x = bar_rect.left() - 6.0;
+                                let start_x = bar_rect.left() + 6.0;
                                 let y = bar_rect.center().y;
                                 let dim = self.colors.bg_active;
 
@@ -129,7 +132,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             let dot_radius = 4.0;
                             let dot_spacing = 12.0;
                             let rect = ui.max_rect();
-                            let start_x = rect.left() + 2.0;
+                            let start_x = rect.left() + 6.0;
                             let y = rect.top() + 2.0 + dot_radius;
 
                             let dim = self.colors.bg_active;

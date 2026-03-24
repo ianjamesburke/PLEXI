@@ -59,7 +59,8 @@ pub fn build_env() -> HashMap<String, String> {
     if shell.ends_with("/zsh") || shell.ends_with("/zsh-5") {
         match ensure_shell_integration() {
             Ok(zdotdir) => {
-                let orig = std::env::var("ZDOTDIR")
+                let orig = std::env::var("PLEXI_ORIG_ZDOTDIR")
+                    .or_else(|_| std::env::var("ZDOTDIR"))
                     .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_default());
                 env.insert("PLEXI_ORIG_ZDOTDIR".into(), orig);
                 env.insert("ZDOTDIR".into(), zdotdir.to_string_lossy().into());
