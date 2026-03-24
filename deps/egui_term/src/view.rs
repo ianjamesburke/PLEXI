@@ -161,13 +161,17 @@ impl<'a> TerminalView<'a> {
         layout: &Response,
         state: &mut TerminalViewState,
     ) -> Self {
-        if !layout.has_focus() {
+        let has_focus = layout.has_focus();
+        let has_pointer = layout.contains_pointer();
+
+        // Process mouse wheel for any pane the cursor is over, regardless of focus.
+        // All other input (keyboard, pointer clicks/moves) still requires focus.
+        if !has_focus && !has_pointer {
             return self;
         }
 
         let modifiers = layout.ctx.input(|i| i.modifiers);
         let events = layout.ctx.input(|i| i.events.clone());
-        let has_pointer = layout.contains_pointer();
         for event in events {
             let mut input_actions = vec![];
 
@@ -176,6 +180,9 @@ impl<'a> TerminalView<'a> {
                 | egui::Event::Key { .. }
                 | egui::Event::Copy
                 | egui::Event::Paste(_) => {
+                    if !has_focus {
+                        continue;
+                    }
                     state.cursor_visible = true;
                     state.last_cursor_toggle = Instant::now();
                     input_actions.push(process_keyboard_event(
