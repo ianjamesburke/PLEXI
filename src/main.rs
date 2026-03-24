@@ -1,12 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod command_palette;
 mod config;
+mod context;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+mod overlays;
 mod pane;
+mod pane_ops;
 mod shell;
+mod sidebar;
 mod theme;
 mod tiling;
 mod workspace;

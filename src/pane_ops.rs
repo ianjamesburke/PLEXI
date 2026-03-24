@@ -1,0 +1,387 @@
+use crate::context::{replace_child, Context};
+use crate::keys::Direction;
+use crate::pane::TerminalPane;
+use crate::shell;
+use crate::workspace::WorkspaceFile;
+use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::app::PlexiApp;
+
+impl PlexiApp {
+    pub(crate) fn split_focused(&mut self, vertical: bool) {
+        let Some(focused) = self.contexts[self.active_context].focused_pane else {
+            return;
+        };
+
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
+        let settings = Self::make_backend_settings(cwd, &self.colors);
+        let Some(pane) =
+            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+        else {
+            log::error!("Failed to create new terminal pane");
+            return;
+        };
+        self.contexts[self.active_context]
+            .panes
+            .insert(new_id, pane);
+
+        let split_target =
+            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+                Some((tabs_id, _)) => tabs_id,
+                None => focused,
+            };
+
+        let ctx = &mut self.contexts[self.active_context];
+        let parent = ctx.tree.tiles.parent_of(split_target);
+        let new_tile = ctx.tree.tiles.insert_pane(new_id);
+
+        let split_dir = if vertical {
+            egui_tiles::LinearDir::Vertical
+        } else {
+            egui_tiles::LinearDir::Horizontal
+        };
+
+        let inserted_as_sibling = if let Some(parent_id) = parent {
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                ctx.tree.tiles.get_mut(parent_id)
+            {
+                if linear.dir == split_dir {
+                    if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
+                        linear.children.insert(pos + 1, new_tile);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !inserted_as_sibling {
+            let container_tile = if vertical {
+                ctx.tree
+                    .tiles
+                    .insert_vertical_tile(vec![split_target, new_tile])
+            } else {
+                ctx.tree
+                    .tiles
+                    .insert_horizontal_tile(vec![split_target, new_tile])
+            };
+
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
+                    replace_child(parent, split_target, container_tile);
+                }
+            } else {
+                ctx.tree.root = Some(container_tile);
+            }
+        }
+
+        ctx.focused_pane = Some(new_tile);
+    }
+
+    pub(crate) fn new_tab(&mut self) {
+        let Some(focused) = self.contexts[self.active_context].focused_pane else {
+            return;
+        };
+
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
+        let settings = Self::make_backend_settings(cwd, &self.colors);
+        let Some(pane) =
+            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+        else {
+            log::error!("Failed to create new terminal pane");
+            return;
+        };
+        self.contexts[self.active_context]
+            .panes
+            .insert(new_id, pane);
+
+        let ctx = &mut self.contexts[self.active_context];
+        let new_tile = ctx.tree.tiles.insert_pane(new_id);
+
+        if let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) {
+            if let Some(Tile::Container(Container::Tabs(tabs))) =
+                ctx.tree.tiles.get_mut(tabs_id)
+            {
+                tabs.add_child(new_tile);
+                tabs.set_active(new_tile);
+            }
+            ctx.focused_pane = Some(new_tile);
+            return;
+        }
+
+        let parent = ctx.tree.tiles.parent_of(focused);
+        let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![focused, new_tile]);
+
+        if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tab_tile) {
+            tabs.set_active(new_tile);
+        }
+
+        if let Some(parent_id) = parent {
+            if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
+                replace_child(parent_container, focused, tab_tile);
+            }
+        } else {
+            ctx.tree.root = Some(tab_tile);
+        }
+
+        ctx.focused_pane = Some(new_tile);
+    }
+
+    pub(crate) fn switch_tab_by_index(&mut self, n: usize) {
+        let ctx = &self.contexts[self.active_context];
+        let Some(focused) = ctx.focused_pane else {
+            return;
+        };
+
+        let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) else {
+            return;
+        };
+
+        let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get(tabs_id) else {
+            return;
+        };
+
+        let children = &tabs.children;
+        if n >= children.len() {
+            return;
+        }
+        let target = children[n];
+
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tabs_id) {
+            tabs.set_active(target);
+        }
+
+        if let Some(pane_tile) = ctx.find_first_pane_in(target) {
+            ctx.focused_pane = Some(pane_tile);
+            if ctx.zoomed_pane.is_some() {
+                ctx.zoomed_pane = Some(pane_tile);
+            }
+        }
+    }
+
+    pub(crate) fn close_focused(&mut self) {
+        let focused = match self.contexts[self.active_context].focused_pane {
+            Some(f) => f,
+            None => return,
+        };
+
+        // Phase 1: Read-only — determine sibling and container type
+        let parent_info = self.contexts[self.active_context].find_logical_parent(focused);
+
+        let next = if let Some((parent_id, child_in_parent)) = parent_info {
+            let sibling_info = {
+                let ctx = &self.contexts[self.active_context];
+                if let Some(Tile::Container(container)) = ctx.tree.tiles.get(parent_id) {
+                    let children: Vec<TileId> = container.children().copied().collect();
+                    children
+                        .iter()
+                        .position(|&c| c == child_in_parent)
+                        .map(|pos| {
+                            let sibling = if pos > 0 {
+                                children[pos - 1]
+                            } else {
+                                children[pos + 1]
+                            };
+                            let is_tabs = matches!(container, Container::Tabs(_));
+                            let is_linear = matches!(container, Container::Linear(_));
+                            (sibling, is_tabs, is_linear, children)
+                        })
+                } else {
+                    None
+                }
+            };
+
+            if let Some((sibling, is_tabs, is_linear, all_children)) = sibling_info {
+                // Phase 2: Mutable — update container state
+                let ctx = &mut self.contexts[self.active_context];
+                if is_tabs {
+                    if let Some(Tile::Container(Container::Tabs(tabs))) =
+                        ctx.tree.tiles.get_mut(parent_id)
+                    {
+                        tabs.set_active(sibling);
+                    }
+                }
+                if is_linear {
+                    if let Some(Tile::Container(Container::Linear(linear))) =
+                        ctx.tree.tiles.get_mut(parent_id)
+                    {
+                        for &child in &all_children {
+                            linear.shares.set_share(child, 1.0);
+                        }
+                    }
+                }
+
+                self.contexts[self.active_context].find_first_pane_in(sibling)
+            } else {
+                self.contexts[self.active_context].find_next_focus(focused)
+            }
+        } else {
+            self.contexts[self.active_context].find_next_focus(focused)
+        };
+
+        // Phase 3: Remove tile and pane
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some(parent_id) = ctx.tree.tiles.parent_of(focused) {
+            if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
+                parent.remove_child(focused);
+            }
+        }
+
+        if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(focused) {
+            ctx.panes.remove(&pane_id);
+        }
+
+        ctx.tree.simplify(&SimplificationOptions {
+            all_panes_must_have_tabs: true,
+            ..SimplificationOptions::default()
+        });
+        ctx.focused_pane = next;
+    }
+
+    pub(crate) fn navigate(&mut self, dir: Direction) {
+        let ctx = &self.contexts[self.active_context];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(target) = ctx.find_pane_in_direction_from(focused, dir) {
+                self.contexts[self.active_context].focused_pane = Some(target);
+            }
+        }
+    }
+
+    pub(crate) fn new_context(&mut self) {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let settings = Self::make_backend_settings(Some(home.clone()), &self.colors);
+        let Some(pane) =
+            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+        else {
+            log::error!("Failed to create terminal for new context");
+            return;
+        };
+
+        let mut panes = HashMap::new();
+        panes.insert(new_id, pane);
+
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(new_id);
+        let tree = egui_tiles::Tree::new("plexi", root_tile, tiles);
+
+        let name = format!("Context {}", self.contexts.len() + 1);
+        self.contexts.push(Context {
+            name,
+            path: home,
+            tree,
+            panes,
+            focused_pane: Some(root_tile),
+            zoomed_pane: None,
+        });
+        self.active_context = self.contexts.len() - 1;
+    }
+
+    pub(crate) fn reset_active_context(&mut self) {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let settings = Self::make_backend_settings(Some(home.clone()), &self.colors);
+        let Some(pane) =
+            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+        else {
+            log::error!("Failed to create terminal for reset context");
+            return;
+        };
+
+        let mut panes = HashMap::new();
+        panes.insert(new_id, pane);
+
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(new_id);
+        let tree = egui_tiles::Tree::new("plexi", root_tile, tiles);
+
+        let ctx = &mut self.contexts[self.active_context];
+        ctx.tree = tree;
+        ctx.panes = panes;
+        ctx.focused_pane = Some(root_tile);
+        ctx.zoomed_pane = None;
+    }
+
+    pub(crate) fn delete_context(&mut self, index: usize) {
+        if self.contexts.len() <= 1 {
+            return;
+        }
+        self.contexts.remove(index);
+        if self.active_context >= self.contexts.len() {
+            self.active_context = self.contexts.len() - 1;
+        }
+        // Clear rename state if it referenced the deleted context
+        if self.renaming_context == Some(index) {
+            self.renaming_context = None;
+        } else if let Some(r) = self.renaming_context {
+            if r > index {
+                self.renaming_context = Some(r - 1);
+            }
+        }
+    }
+
+    pub(crate) fn save_workspace(&self) {
+        let mut saved_contexts = Vec::new();
+        for context in &self.contexts {
+            let mut saved_panes = Vec::new();
+            for (&id, pane) in &context.panes {
+                let cwd = shell::get_pid_cwd(pane.backend.child_pid())
+                    .unwrap_or_else(|| context.path.clone());
+                saved_panes.push(crate::workspace::SavedPane {
+                    id,
+                    cwd,
+                    name: pane.name.clone(),
+                });
+            }
+            saved_contexts.push(crate::workspace::SavedContext {
+                name: context.name.clone(),
+                path: context.path.clone(),
+                tree: context.tree.clone(),
+                panes: saved_panes,
+                focused_pane: context.focused_pane,
+            });
+        }
+
+        let ws = WorkspaceFile {
+            version: 1,
+            active_context: self.active_context,
+            sidebar_visible: self.sidebar_visible,
+            next_pane_id: self.next_pane_id,
+            contexts: saved_contexts,
+        };
+
+        if let Err(e) = ws.save() {
+            log::error!("Failed to save workspace: {e}");
+        }
+    }
+
+    pub(crate) fn adjust_focused_pane_font_size(&mut self, delta: f32) {
+        let ctx = &mut self.contexts[self.active_context];
+        let Some(focused_tile) = ctx.focused_pane else { return };
+        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
+        let pane_id = *pane_id;
+        if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+            pane.font_size = (pane.font_size + delta).clamp(8.0, 32.0);
+        }
+    }
+}

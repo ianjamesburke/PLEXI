@@ -1,0 +1,211 @@
+use crate::tiling::PaneId;
+use egui::{Align, Align2, CornerRadius, Layout, RichText, Stroke, Vec2};
+
+use crate::app::PlexiApp;
+
+pub(crate) const MODAL_WIDTH: f32 = 400.0;
+const R6: CornerRadius = CornerRadius::same(6);
+
+impl PlexiApp {
+    pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let active_ctx = &self.contexts[self.active_context];
+
+            // Sidebar toggle
+            let toggle_text = if self.sidebar_visible {
+                "\u{25C0}"
+            } else {
+                "\u{25B6}"
+            };
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new(toggle_text).size(11.0).color(self.colors.text_dim),
+                    )
+                    .frame(false),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Toggle sidebar (\u{2318}B)")
+                .clicked()
+            {
+                self.sidebar_visible = !self.sidebar_visible;
+            }
+
+            ui.add_space(8.0);
+
+            // Context info
+            ui.label(
+                RichText::new(&active_ctx.name)
+                    .size(12.0)
+                    .color(self.colors.text_primary)
+                    .strong(),
+            );
+            ui.label(
+                RichText::new(active_ctx.path.display().to_string())
+                    .size(11.0)
+                    .color(self.colors.text_dim)
+                    .family(egui::FontFamily::Monospace),
+            );
+            let pane_count = active_ctx.panes.len();
+            ui.label(
+                RichText::new(format!(
+                    "{} pane{}",
+                    pane_count,
+                    if pane_count == 1 { "" } else { "s" }
+                ))
+                .size(11.0)
+                .color(self.colors.text_section),
+            );
+
+            // Right side — help button
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("?").size(12.0).color(self.colors.text_dim),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Keyboard shortcuts (\u{2318}/)")
+                    .clicked()
+                {
+                    self.show_shortcuts = !self.show_shortcuts;
+                }
+            });
+        });
+    }
+
+    pub(crate) fn draw_shortcuts_overlay(&self, ctx: &egui::Context) {
+        egui::Area::new(egui::Id::new("shortcuts_overlay"))
+            .anchor(Align2::RIGHT_TOP, Vec2::new(-16.0, 44.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(240.0);
+                        ui.label(
+                            RichText::new("Keyboard Shortcuts")
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(8.0);
+
+                        let shortcuts = [
+                            ("\u{2318}P", "Command palette"),
+                            ("\u{2318}\u{21E7}R", "Rename pane"),
+                            ("\u{2318}T", "New tab"),
+                            ("\u{2318}]/[", "Next/prev tab"),
+                            ("\u{2318}D", "Split right"),
+                            ("\u{2318}\u{21E7}D", "Split down"),
+                            ("\u{2318}W", "Close pane"),
+                            ("\u{2318}B", "Toggle sidebar"),
+                            ("\u{2318}H/J/K/L", "Focus pane"),
+                            ("\u{2318}\u{21A9}", "Zoom pane"),
+                            ("\u{2318}N", "New context"),
+                            ("\u{2318}1-9", "Switch context"),
+                            ("\u{2318}/", "This help"),
+                            ("\u{2318}Q", "Quit"),
+                        ];
+
+                        for (key, desc) in shortcuts {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(key)
+                                        .size(11.0)
+                                        .color(self.colors.accent)
+                                        .family(egui::FontFamily::Monospace),
+                                );
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new(desc)
+                                        .size(11.0)
+                                        .color(self.colors.text_dim),
+                                );
+                            });
+                        }
+                    });
+            });
+    }
+
+    pub(crate) fn draw_rename_pane_overlay(&mut self, ctx: &egui::Context) {
+        let pane_id: PaneId = match self.renaming_pane {
+            Some(id) => id,
+            None => return,
+        };
+
+        egui::Area::new(egui::Id::new("rename_pane_overlay"))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+                        ui.label(
+                            RichText::new("Rename Pane")
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+
+                        let te_id = egui::Id::new("rename_pane_input");
+                        let te = ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_buffer)
+                                .id(te_id)
+                                .desired_width(MODAL_WIDTH)
+                                .hint_text("Pane name...")
+                                .font(egui::TextStyle::Body),
+                        );
+
+                        if te.lost_focus() {
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                self.renaming_pane = None;
+                            } else {
+                                // Apply rename
+                                let new_name = self.rename_buffer.trim().to_string();
+                                if let Some(pane) =
+                                    self.contexts[self.active_context].panes.get_mut(&pane_id)
+                                {
+                                    pane.name = if new_name.is_empty() {
+                                        None
+                                    } else {
+                                        Some(new_name)
+                                    };
+                                }
+                                self.renaming_pane = None;
+                            }
+                            // Consume Enter/Escape
+                            ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                            });
+                        }
+
+                        // Auto-focus and select all
+                        if !te.has_focus() {
+                            te.request_focus();
+                            if let Some(mut state) =
+                                egui::TextEdit::load_state(ui.ctx(), te_id)
+                            {
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(self.rename_buffer.len()),
+                                    )));
+                                state.store(ui.ctx(), te_id);
+                            }
+                        }
+                    });
+            });
+    }
+}
