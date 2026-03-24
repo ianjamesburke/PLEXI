@@ -916,6 +916,31 @@ impl eframe::App for PlexiApp {
                 let suppress_focus = self.renaming_context.is_some()
                     || self.show_command_palette
                     || self.renaming_pane.is_some();
+
+                #[cfg(target_os = "macos")]
+                let drag_cursor_pos: Option<egui::Pos2> = {
+                    let has_drag = ui.input(|i| !i.raw.hovered_files.is_empty());
+                    if has_drag {
+                        use objc2_app_kit::NSApplication;
+                        use objc2_foundation::MainThreadMarker;
+                        MainThreadMarker::new()
+                            .and_then(|mtm| {
+                                let app = NSApplication::sharedApplication(mtm);
+                                app.keyWindow()
+                                    .or_else(|| unsafe { app.mainWindow() })
+                            })
+                            .map(|w| {
+                                let p = unsafe { w.mouseLocationOutsideOfEventStream() };
+                                let content_height = ui.ctx().screen_rect().height();
+                                egui::pos2(p.x as f32, content_height - p.y as f32)
+                            })
+                    } else {
+                        None
+                    }
+                };
+                #[cfg(not(target_os = "macos"))]
+                let drag_cursor_pos: Option<egui::Pos2> = None;
+
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     focused_tile: if suppress_focus { None } else { ctx.focused_pane },
@@ -927,6 +952,7 @@ impl eframe::App for PlexiApp {
                     zoomed_pane,
                     colors: self.colors,
                     pane_names,
+                    drag_cursor_pos,
                 };
                 ctx.tree.ui(&mut behavior, ui);
 

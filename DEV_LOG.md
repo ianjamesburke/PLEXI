@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-24 — [FIX] File drag target now follows cursor across panes
+
+winit-0.30.13's macOS impl only fires `WindowEvent::HoveredFile` in `draggingEntered:` — there is no `draggingUpdated:` handler. This means egui never receives `CursorMoved` events during an external file drag, leaving `pointer.hover_pos()` stale at the drag-entry position. The previous fix (#23) worked for the first pane but not when moving between panes. Fixed by querying `NSWindow.mouseLocationOutsideOfEventStream()` each frame when `hovered_files` is non-empty, converting from AppKit window-base coords (Y-up, bottom-left origin) to egui coords (`egui_y = content_height - base.y`). Requires the `NSWindow` feature on `objc2-app-kit`. The native position is used for the pane hit-test (`max_rect().contains(pos)`) instead of the stale `rect_contains_pointer`.
+
 ## 2026-03-23 — Install now builds a proper .app bundle via cargo-bundle
 
 `just install` switched from manually assembling the `.app` directory to using `cargo bundle --release`, which generates the bundle from `Cargo.toml` metadata (matching what `install.sh` does for fresh installs). Binary is also copied to `/usr/local/bin/plexi` for CLI access. Don't revert to manual mkdir/cp — `cargo bundle` keeps `Info.plist` in sync with `Cargo.toml` automatically.

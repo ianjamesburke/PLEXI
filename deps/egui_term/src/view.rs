@@ -528,6 +528,13 @@ fn process_text_event(
     backend: &TerminalBackend,
     bindings_layout: &BindingsLayout,
 ) -> InputAction {
+    // On macOS, Option+letter fires a Text event with a unicode character (e.g. ƒ for Option+f).
+    // The Key event with Modifiers::ALT handles sending the correct escape sequence, so suppress
+    // the Text event here to avoid writing the unicode character to the PTY.
+    if modifiers.alt {
+        return InputAction::Ignore;
+    }
+
     if let Some(key) = Key::from_name(text) {
         if bindings_layout.get_action(
             InputKind::KeyCode(key),
