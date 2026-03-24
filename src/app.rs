@@ -1,3 +1,4 @@
+use crate::config;
 use crate::keys::{self, Action, Direction};
 use crate::pane::TerminalPane;
 use crate::shell;
@@ -194,6 +195,7 @@ pub struct PlexiApp {
     pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     theme: TerminalTheme,
     font: TerminalFont,
+    colors: Colors,
     next_pane_id: u64,
     ctx: egui::Context,
     contexts: Vec<Context>,
@@ -203,6 +205,10 @@ pub struct PlexiApp {
     quitting: bool,
     renaming_context: Option<usize>,
     rename_buffer: String,
+    show_command_palette: bool,
+    palette_query: String,
+    palette_selected: usize,
+    renaming_pane: Option<PaneId>,
 }
 
 impl PlexiApp {
@@ -212,7 +218,11 @@ impl PlexiApp {
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        theme::setup_style(&cc.egui_ctx);
+
+        let config = config::PlexiConfig::load();
+        let theme_cfg = config.theme.unwrap_or_default();
+        let colors = Colors::from_config(&theme_cfg);
+        theme::setup_style(&cc.egui_ctx, &colors);
 
         let (tx, rx) = mpsc::channel();
 
@@ -229,10 +239,11 @@ impl PlexiApp {
                     } else {
                         dirs::home_dir()
                     };
-                    let settings = Self::make_backend_settings(cwd);
-                    if let Some(pane) =
+                    let settings = Self::make_backend_settings(cwd, &colors);
+                    if let Some(mut pane) =
                         TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings)
                     {
+                        pane.name = saved_pane.name.clone();
                         panes.insert(saved_pane.id, pane);
                     }
                 }
@@ -253,8 +264,9 @@ impl PlexiApp {
                 return Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
-                    theme: theme::rebecca(),
+                    theme: theme::terminal_theme(&theme_cfg),
                     font: theme::terminal_font(),
+                    colors,
                     next_pane_id: ws.next_pane_id,
                     ctx: cc.egui_ctx.clone(),
                     contexts,
@@ -264,12 +276,16 @@ impl PlexiApp {
                     quitting: false,
                     renaming_context: None,
                     rename_buffer: String::new(),
+                    show_command_palette: false,
+                    palette_query: String::new(),
+                    palette_selected: 0,
+                    renaming_pane: None,
                 };
             }
         }
 
         // Default: single context with single pane
-        let settings = Self::make_backend_settings(None);
+        let settings = Self::make_backend_settings(None, &colors);
         let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings)
             .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
@@ -285,8 +301,9 @@ impl PlexiApp {
         Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
-            theme: theme::rebecca(),
+            theme: theme::terminal_theme(&theme_cfg),
             font: theme::terminal_font(),
+            colors,
             next_pane_id: 1,
             ctx: cc.egui_ctx.clone(),
             contexts: vec![Context {
@@ -303,15 +320,19 @@ impl PlexiApp {
             quitting: false,
             renaming_context: None,
             rename_buffer: String::new(),
+            show_command_palette: false,
+            palette_query: String::new(),
+            palette_selected: 0,
+            renaming_pane: None,
         }
     }
 
-    fn make_backend_settings(working_directory: Option<PathBuf>) -> BackendSettings {
+    fn make_backend_settings(working_directory: Option<PathBuf>, colors: &Colors) -> BackendSettings {
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
             env: shell::build_env(),
-            dynamic_colors: theme::terminal_dynamic_colors(),
+            dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
             ..Default::default()
         }
@@ -339,7 +360,7 @@ impl PlexiApp {
         self.next_pane_id += 1;
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(cwd);
+        let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) =
             TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
         else {
@@ -419,7 +440,7 @@ impl PlexiApp {
         self.next_pane_id += 1;
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(cwd);
+        let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) =
             TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
         else {
@@ -598,7 +619,7 @@ impl PlexiApp {
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
 
-        let settings = Self::make_backend_settings(Some(home.clone()));
+        let settings = Self::make_backend_settings(Some(home.clone()), &self.colors);
         let Some(pane) =
             TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
         else {
@@ -650,7 +671,11 @@ impl PlexiApp {
             for (&id, pane) in &context.panes {
                 let cwd = shell::get_pid_cwd(pane.backend.child_pid())
                     .unwrap_or_else(|| context.path.clone());
-                saved_panes.push(crate::workspace::SavedPane { id, cwd });
+                saved_panes.push(crate::workspace::SavedPane {
+                    id,
+                    cwd,
+                    name: pane.name.clone(),
+                });
             }
             saved_contexts.push(crate::workspace::SavedContext {
                 name: context.name.clone(),
@@ -730,6 +755,27 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
                 Action::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
+                Action::ToggleCommandPalette => {
+                    self.show_command_palette = !self.show_command_palette;
+                    if self.show_command_palette {
+                        self.palette_query.clear();
+                        self.palette_selected = 0;
+                    }
+                }
+                Action::RenamePane => {
+                    let active_ctx = &self.contexts[self.active_context];
+                    if let Some(focused_tile) = active_ctx.focused_pane {
+                        if let Some(Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(focused_tile) {
+                            let pane_id = *pane_id;
+                            self.rename_buffer = active_ctx
+                                .panes
+                                .get(&pane_id)
+                                .and_then(|p| p.name.clone())
+                                .unwrap_or_default();
+                            self.renaming_pane = Some(pane_id);
+                        }
+                    }
+                }
                 Action::SwitchContext(i) => {
                     if i < self.contexts.len() {
                         self.active_context = i;
@@ -766,7 +812,7 @@ impl eframe::App for PlexiApp {
             .exact_height(28.0)
             .frame(
                 egui::Frame::new()
-                    .fill(Colors::BG_TOOLBAR)
+                    .fill(self.colors.bg_toolbar)
                     .inner_margin(egui::Margin {
                         left: 8,
                         right: 8,
@@ -781,7 +827,7 @@ impl eframe::App for PlexiApp {
         // Separator line under toolbar
         egui::TopBottomPanel::top("toolbar_sep")
             .exact_height(1.0)
-            .frame(egui::Frame::new().fill(Colors::BORDER))
+            .frame(egui::Frame::new().fill(self.colors.border))
             .show(ctx, |_ui| {});
 
         // Sidebar
@@ -790,7 +836,7 @@ impl eframe::App for PlexiApp {
                 .exact_width(220.0)
                 .frame(
                     egui::Frame::new()
-                        .fill(Colors::BG_SIDEBAR)
+                        .fill(self.colors.bg_sidebar)
                         .inner_margin(egui::Margin::same(0)),
                 )
                 .show(ctx, |ui| {
@@ -801,7 +847,7 @@ impl eframe::App for PlexiApp {
         // Central panel — terminal tiles
         egui::CentralPanel::default()
             .frame(egui::Frame {
-                fill: Colors::BG_DARKEST,
+                fill: self.colors.bg_darkest,
                 inner_margin: egui::Margin::same(4),
                 outer_margin: egui::Margin::ZERO,
                 ..Default::default()
@@ -825,15 +871,25 @@ impl eframe::App for PlexiApp {
 
                 let zoomed_pane = ctx.zoomed_pane;
                 let tab_info = ctx.compute_tab_info();
+                let pane_names: HashMap<PaneId, String> = ctx
+                    .panes
+                    .iter()
+                    .filter_map(|(&id, p)| p.name.as_ref().map(|n| (id, n.clone())))
+                    .collect();
+                let suppress_focus = self.renaming_context.is_some()
+                    || self.show_command_palette
+                    || self.renaming_pane.is_some();
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
-                    focused_tile: if self.renaming_context.is_some() { None } else { ctx.focused_pane },
+                    focused_tile: if suppress_focus { None } else { ctx.focused_pane },
                     theme: self.theme.clone(),
                     font: self.font.clone(),
                     new_focused: None,
                     close_exited: None,
                     tab_info,
                     zoomed_pane,
+                    colors: self.colors,
+                    pane_names,
                 };
                 ctx.tree.ui(&mut behavior, ui);
 
@@ -864,12 +920,11 @@ impl eframe::App for PlexiApp {
                         let inset = 10.0;
                         let zoom_rect = panel_rect.shrink(inset);
 
-                        // Thicker blue border (2px)
-                        let accent = Color32::from_rgb(137, 180, 250);
+                        // Thicker accent border (2px)
                         ui.painter().rect_stroke(
                             zoom_rect,
                             CornerRadius::same(4),
-                            Stroke::new(2.0, accent),
+                            Stroke::new(2.0, self.colors.accent),
                             StrokeKind::Inside,
                         );
 
@@ -879,7 +934,7 @@ impl eframe::App for PlexiApp {
                             egui::UiBuilder::new().max_rect(inner_rect),
                         );
                         egui::Frame::new()
-                            .fill(Colors::TERMINAL_BG)
+                            .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
                             .show(&mut child_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
@@ -888,14 +943,14 @@ impl eframe::App for PlexiApp {
                                         ui.painter().rect_filled(
                                             rect,
                                             0.0,
-                                            Colors::TERMINAL_BG,
+                                            self.colors.terminal_bg,
                                         );
                                         ui.allocate_new_ui(
                                             egui::UiBuilder::new().max_rect(rect),
                                             |ui| {
                                                 ui.centered_and_justified(|ui| {
                                                     ui.colored_label(
-                                                        Color32::from_rgb(0x6c, 0x70, 0x86),
+                                                        self.colors.text_dim,
                                                         "[process exited]",
                                                     );
                                                 });
@@ -927,12 +982,11 @@ impl eframe::App for PlexiApp {
                                     let start_x = rect.left() + 2.0;
                                     let y = rect.top() + 2.0 + dot_radius;
 
-                                    let accent = Color32::from_rgb(137, 180, 250);
-                                    let dim = Color32::from_rgb(0x45, 0x47, 0x5a);
+                                    let dim = self.colors.bg_active;
 
                                     for i in 0..count {
                                         let cx = start_x + (i as f32) * dot_spacing + dot_radius;
-                                        let color = if i == active_idx { accent } else { dim };
+                                        let color = if i == active_idx { self.colors.accent } else { dim };
                                         ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
                                     }
                                 }
@@ -953,6 +1007,16 @@ impl eframe::App for PlexiApp {
         if self.show_shortcuts {
             self.draw_shortcuts_overlay(ctx);
         }
+
+        // Command palette overlay
+        if self.show_command_palette {
+            self.draw_command_palette(ctx);
+        }
+
+        // Rename pane overlay
+        if self.renaming_pane.is_some() {
+            self.draw_rename_pane_overlay(ctx);
+        }
     }
 }
 
@@ -972,7 +1036,7 @@ impl PlexiApp {
             if ui
                 .add(
                     egui::Button::new(
-                        RichText::new(toggle_text).size(11.0).color(Colors::TEXT_DIM),
+                        RichText::new(toggle_text).size(11.0).color(self.colors.text_dim),
                     )
                     .frame(false),
                 )
@@ -989,13 +1053,13 @@ impl PlexiApp {
             ui.label(
                 RichText::new(&active_ctx.name)
                     .size(12.0)
-                    .color(Colors::TEXT_PRIMARY)
+                    .color(self.colors.text_primary)
                     .strong(),
             );
             ui.label(
                 RichText::new(active_ctx.path.display().to_string())
                     .size(11.0)
-                    .color(Colors::TEXT_DIM)
+                    .color(self.colors.text_dim)
                     .family(egui::FontFamily::Monospace),
             );
             let pane_count = active_ctx.panes.len();
@@ -1006,7 +1070,7 @@ impl PlexiApp {
                     if pane_count == 1 { "" } else { "s" }
                 ))
                 .size(11.0)
-                .color(Colors::TEXT_SECTION),
+                .color(self.colors.text_section),
             );
 
             // Right side — help button
@@ -1014,7 +1078,7 @@ impl PlexiApp {
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("?").size(12.0).color(Colors::TEXT_DIM),
+                            RichText::new("?").size(12.0).color(self.colors.text_dim),
                         )
                         .frame(false),
                     )
@@ -1038,7 +1102,7 @@ impl PlexiApp {
             ui.label(
                 RichText::new("PLEXI")
                     .size(16.0)
-                    .color(Colors::TEXT_PRIMARY)
+                    .color(self.colors.text_primary)
                     .strong(),
             );
         });
@@ -1051,7 +1115,7 @@ impl PlexiApp {
                 egui::pos2(rect.min.x, rect.min.y),
                 egui::pos2(rect.min.x + sidebar_width, rect.min.y),
             ],
-            Stroke::new(1.0, Colors::BORDER),
+            Stroke::new(1.0, self.colors.border),
         );
         ui.add_space(4.0);
 
@@ -1063,14 +1127,14 @@ impl PlexiApp {
             ui.label(
                 RichText::new("Contexts")
                     .size(10.0)
-                    .color(Colors::TEXT_SECTION),
+                    .color(self.colors.text_section),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("+").size(12.0).color(Colors::TEXT_DIM),
+                            RichText::new("+").size(12.0).color(self.colors.text_dim),
                         )
                         .frame(false),
                     )
@@ -1116,9 +1180,9 @@ impl PlexiApp {
                     let rect = ui.max_rect();
 
                     let fill = if is_active {
-                        Colors::BG_ACTIVE
+                        self.colors.bg_active
                     } else if hover {
-                        Colors::BG_HOVER
+                        self.colors.bg_hover
                     } else {
                         Color32::TRANSPARENT
                     };
@@ -1129,7 +1193,7 @@ impl PlexiApp {
                         ui.painter().rect_filled(
                             Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
                             CornerRadius::ZERO,
-                            Colors::ACCENT,
+                            self.colors.accent,
                         );
                     }
 
@@ -1173,9 +1237,9 @@ impl PlexiApp {
                         }
                     } else {
                         let text_color = if is_active {
-                            Colors::TEXT_PRIMARY
+                            self.colors.text_primary
                         } else {
-                            Colors::TEXT_DIM
+                            self.colors.text_dim
                         };
                         ui.label(
                             RichText::new(&self.contexts[i].name)
@@ -1191,8 +1255,8 @@ impl PlexiApp {
                                     .add(
                                         egui::Button::new(
                                             RichText::new("\u{2715}")
-                                                .size(10.0)
-                                                .color(Colors::TEXT_DIM),
+                                                .size(13.0)
+                                                .color(self.colors.text_dim),
                                         )
                                         .frame(false),
                                     )
@@ -1307,8 +1371,8 @@ impl PlexiApp {
             .anchor(Align2::RIGHT_TOP, Vec2::new(-16.0, 44.0))
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(Colors::BG_SIDEBAR)
-                    .stroke(Stroke::new(1.0, Colors::BORDER))
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
@@ -1316,12 +1380,14 @@ impl PlexiApp {
                         ui.label(
                             RichText::new("Keyboard Shortcuts")
                                 .size(13.0)
-                                .color(Colors::TEXT_PRIMARY)
+                                .color(self.colors.text_primary)
                                 .strong(),
                         );
                         ui.add_space(8.0);
 
                         let shortcuts = [
+                            ("\u{2318}P", "Command palette"),
+                            ("\u{2318}\u{21E7}R", "Rename pane"),
                             ("\u{2318}T", "New tab"),
                             ("\u{2318}]/[", "Next/prev tab"),
                             ("\u{2318}D", "Split right"),
@@ -1340,16 +1406,314 @@ impl PlexiApp {
                                 ui.label(
                                     RichText::new(key)
                                         .size(11.0)
-                                        .color(Colors::ACCENT)
+                                        .color(self.colors.accent)
                                         .family(egui::FontFamily::Monospace),
                                 );
                                 ui.add_space(8.0);
                                 ui.label(
                                     RichText::new(desc)
                                         .size(11.0)
-                                        .color(Colors::TEXT_DIM),
+                                        .color(self.colors.text_dim),
                                 );
                             });
+                        }
+                    });
+            });
+    }
+
+    fn draw_command_palette(&mut self, ctx: &egui::Context) {
+        // Build entries from all contexts
+        let mut entries: Vec<(usize, String, TileId, PaneId, String, String)> = Vec::new();
+        for (ci, context) in self.contexts.iter().enumerate() {
+            for (&pane_id, pane) in &context.panes {
+                let display_name = pane
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Terminal {}", pane_id + 1));
+                let cwd = shell::get_pid_cwd(pane.backend.child_pid())
+                    .map(|p| {
+                        let s = p.display().to_string();
+                        if let Some(home) = dirs::home_dir() {
+                            s.strip_prefix(&home.display().to_string())
+                                .map(|rest| format!("~{rest}"))
+                                .unwrap_or(s)
+                        } else {
+                            s
+                        }
+                    })
+                    .unwrap_or_default();
+                // Find the tile_id for this pane
+                if let Some(tile_id) = context.tree.tiles.find_pane(&pane_id) {
+                    entries.push((ci, context.name.clone(), tile_id, pane_id, display_name, cwd));
+                }
+            }
+        }
+
+        // Filter by query
+        let query = self.palette_query.to_lowercase();
+        let filtered: Vec<_> = entries
+            .into_iter()
+            .filter(|(_, ctx_name, _, _, name, cwd)| {
+                if query.is_empty() {
+                    return true;
+                }
+                name.to_lowercase().contains(&query)
+                    || ctx_name.to_lowercase().contains(&query)
+                    || cwd.to_lowercase().contains(&query)
+            })
+            .collect();
+
+        // Clamp selection
+        if self.palette_selected >= filtered.len() && !filtered.is_empty() {
+            self.palette_selected = filtered.len() - 1;
+        }
+
+        // Handle keyboard nav before rendering
+        let mut jump_to: Option<(usize, TileId)> = None;
+        ctx.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                self.show_command_palette = false;
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                if !filtered.is_empty() && self.palette_selected < filtered.len() - 1 {
+                    self.palette_selected += 1;
+                }
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                if self.palette_selected > 0 {
+                    self.palette_selected -= 1;
+                }
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                if let Some(entry) = filtered.get(self.palette_selected) {
+                    jump_to = Some((entry.0, entry.2));
+                }
+            }
+        });
+
+        if let Some((ctx_idx, tile_id)) = jump_to {
+            self.active_context = ctx_idx;
+            self.contexts[ctx_idx].focused_pane = Some(tile_id);
+            self.contexts[ctx_idx].zoomed_pane = None;
+            self.show_command_palette = false;
+            return;
+        }
+
+        if !self.show_command_palette {
+            return;
+        }
+
+        // Render scrim
+        let screen_rect = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("palette_scrim"))
+            .fixed_pos(screen_rect.min)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    Color32::from_black_alpha(120),
+                );
+                // Consume clicks on scrim to close
+                let scrim_response = ui.allocate_rect(screen_rect, egui::Sense::click());
+                if scrim_response.clicked() {
+                    self.show_command_palette = false;
+                }
+            });
+
+        // Render palette
+        egui::Area::new(egui::Id::new("command_palette"))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(400.0);
+
+                        // Search input
+                        let te_id = egui::Id::new("palette_search");
+                        let te = ui.add(
+                            egui::TextEdit::singleline(&mut self.palette_query)
+                                .id(te_id)
+                                .desired_width(400.0)
+                                .hint_text("Jump to pane...")
+                                .font(egui::TextStyle::Body),
+                        );
+                        if !te.has_focus() {
+                            te.request_focus();
+                        }
+
+                        // Reset selection when query changes
+                        if te.changed() {
+                            self.palette_selected = 0;
+                        }
+
+                        ui.add_space(6.0);
+
+                        // Results list
+                        let current_ctx = self.active_context;
+                        let current_focused = self.contexts[self.active_context].focused_pane;
+                        for (i, (ci, ctx_name, tile_id, _pane_id, name, cwd)) in
+                            filtered.iter().enumerate()
+                        {
+                            let is_selected = i == self.palette_selected;
+                            let is_current = *ci == current_ctx
+                                && current_focused == Some(*tile_id);
+
+                            let fill = if is_selected {
+                                self.colors.bg_active
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+
+                            let row_rect = ui.cursor();
+                            let row_rect = Rect::from_min_size(
+                                row_rect.min,
+                                Vec2::new(400.0, 36.0),
+                            );
+                            ui.painter()
+                                .rect_filled(row_rect, CornerRadius::same(4), fill);
+
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(400.0, 36.0),
+                                Layout::left_to_right(Align::Center),
+                                |ui| {
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.add_space(2.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(ctx_name)
+                                                    .size(10.0)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            ui.label(
+                                                RichText::new("\u{203A}")
+                                                    .size(10.0)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            let name_color = if is_current {
+                                                self.colors.accent
+                                            } else {
+                                                self.colors.text_primary
+                                            };
+                                            ui.label(
+                                                RichText::new(name)
+                                                    .size(12.0)
+                                                    .color(name_color),
+                                            );
+                                        });
+                                        if !cwd.is_empty() {
+                                            ui.label(
+                                                RichText::new(cwd)
+                                                    .size(9.0)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        }
+                                    });
+                                },
+                            );
+
+                            // Click to jump
+                            let click_response =
+                                ui.interact(row_rect, egui::Id::new(("palette_row", i)), egui::Sense::click());
+                            if click_response.clicked() {
+                                self.active_context = *ci;
+                                self.contexts[*ci].focused_pane = Some(*tile_id);
+                                self.contexts[*ci].zoomed_pane = None;
+                                self.show_command_palette = false;
+                            }
+                            if click_response.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                        }
+
+                        if filtered.is_empty() {
+                            ui.label(
+                                RichText::new("No matching panes")
+                                    .size(11.0)
+                                    .color(self.colors.text_dim),
+                            );
+                        }
+                    });
+            });
+    }
+
+    fn draw_rename_pane_overlay(&mut self, ctx: &egui::Context) {
+        let pane_id = match self.renaming_pane {
+            Some(id) => id,
+            None => return,
+        };
+
+        egui::Area::new(egui::Id::new("rename_pane_overlay"))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(300.0);
+                        ui.label(
+                            RichText::new("Rename Pane")
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+
+                        let te_id = egui::Id::new("rename_pane_input");
+                        let te = ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_buffer)
+                                .id(te_id)
+                                .desired_width(300.0)
+                                .hint_text("Pane name...")
+                                .font(egui::TextStyle::Body),
+                        );
+
+                        if te.lost_focus() {
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                self.renaming_pane = None;
+                            } else {
+                                // Apply rename
+                                let new_name = self.rename_buffer.trim().to_string();
+                                if let Some(pane) =
+                                    self.contexts[self.active_context].panes.get_mut(&pane_id)
+                                {
+                                    pane.name = if new_name.is_empty() {
+                                        None
+                                    } else {
+                                        Some(new_name)
+                                    };
+                                }
+                                self.renaming_pane = None;
+                            }
+                            // Consume Enter/Escape
+                            ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                            });
+                        }
+
+                        // Auto-focus and select all
+                        if !te.has_focus() {
+                            te.request_focus();
+                            if let Some(mut state) =
+                                egui::TextEdit::load_state(ui.ctx(), te_id)
+                            {
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(self.rename_buffer.len()),
+                                    )));
+                                state.store(ui.ctx(), te_id);
+                            }
                         }
                     });
             });

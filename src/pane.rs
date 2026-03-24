@@ -5,6 +5,7 @@ pub struct TerminalPane {
     pub backend: TerminalBackend,
     pub _id: u64,
     pub exited: bool,
+    pub name: Option<String>,
 }
 
 impl TerminalPane {
@@ -25,6 +26,7 @@ impl TerminalPane {
             backend,
             _id: id,
             exited: false,
+            name: None,
         })
     }
 }

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod config;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos_menu;
