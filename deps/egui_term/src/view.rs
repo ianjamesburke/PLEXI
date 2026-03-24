@@ -234,6 +234,23 @@ impl<'a> TerminalView<'a> {
             }
         }
 
+        // Handle file drops — paste paths into PTY
+        let dropped_files = layout.ctx.input(|i| i.raw.dropped_files.clone());
+        for file in dropped_files {
+            if let Some(path) = &file.path {
+                let path_str = path.display().to_string();
+                let escaped = if path_str
+                    .contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c))
+                {
+                    format!("'{}'", path_str.replace('\'', "'\\''"))
+                } else {
+                    path_str
+                };
+                self.backend
+                    .process_command(BackendCommand::Write(escaped.as_bytes().to_vec()));
+            }
+        }
+
         // Check for link hover every frame (not just on mouse move) so that
         // pressing/releasing Cmd updates the hyperlink state immediately.
         if has_pointer && modifiers.command_only() {
