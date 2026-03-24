@@ -8,7 +8,7 @@ use crate::workspace::WorkspaceFile;
 use egui::{
     Align, Align2, Color32, CornerRadius, Layout, Rect, RichText, Stroke, StrokeKind, Vec2,
 };
-use egui_term::{BackendSettings, PtyEvent, TerminalFont, TerminalTheme, TerminalView};
+use egui_term::{BackendSettings, PtyEvent, TerminalTheme, TerminalView};
 use egui_tiles::{Container, SimplificationOptions, Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -205,7 +205,6 @@ pub struct PlexiApp {
     pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     theme: TerminalTheme,
-    font: TerminalFont,
     colors: Colors,
     next_pane_id: u64,
     ctx: egui::Context,
@@ -276,7 +275,6 @@ impl PlexiApp {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
                     theme: theme::terminal_theme(&theme_cfg),
-                    font: theme::terminal_font(),
                     colors,
                     next_pane_id: ws.next_pane_id,
                     ctx: cc.egui_ctx.clone(),
@@ -313,7 +311,6 @@ impl PlexiApp {
             pty_event_rx: rx,
             pty_event_tx: tx,
             theme: theme::terminal_theme(&theme_cfg),
-            font: theme::terminal_font(),
             colors,
             next_pane_id: 1,
             ctx: cc.egui_ctx.clone(),
@@ -727,6 +724,16 @@ impl PlexiApp {
             log::error!("Failed to save workspace: {e}");
         }
     }
+
+    fn adjust_focused_pane_font_size(&mut self, delta: f32) {
+        let ctx = &mut self.contexts[self.active_context];
+        let Some(focused_tile) = ctx.focused_pane else { return };
+        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
+        let pane_id = *pane_id;
+        if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+            pane.font_size = (pane.font_size + delta).clamp(8.0, 32.0);
+        }
+    }
 }
 
 impl eframe::App for PlexiApp {
@@ -817,6 +824,12 @@ impl eframe::App for PlexiApp {
                 }
                 Action::SwitchTab(n) => {
                     self.switch_tab_by_index(n);
+                }
+                Action::IncreasePaneFontSize => {
+                    self.adjust_focused_pane_font_size(1.0);
+                }
+                Action::DecreasePaneFontSize => {
+                    self.adjust_focused_pane_font_size(-1.0);
                 }
             }
         }
@@ -945,7 +958,6 @@ impl eframe::App for PlexiApp {
                     panes: &mut ctx.panes,
                     focused_tile: if suppress_focus { None } else { ctx.focused_pane },
                     theme: self.theme.clone(),
-                    font: self.font.clone(),
                     new_focused: None,
                     close_exited: None,
                     tab_info,
@@ -1024,11 +1036,12 @@ impl eframe::App for PlexiApp {
                                         if zoomed_tab_info.is_some() {
                                             ui.add_space(14.0);
                                         }
+                                        let font_size = pane.font_size;
                                         let terminal =
                                             TerminalView::new(ui, &mut pane.backend)
                                                 .set_focus(true)
                                                 .set_theme(self.theme.clone())
-                                                .set_font(self.font.clone())
+                                                .set_font(theme::terminal_font(font_size))
                                                 .set_size(Vec2::new(
                                                     ui.available_width(),
                                                     ui.available_height(),

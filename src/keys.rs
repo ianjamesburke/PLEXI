@@ -22,6 +22,8 @@ pub enum Action {
     NewContext,
     NextContext,
     PrevContext,
+    IncreasePaneFontSize,
+    DecreasePaneFontSize,
 }
 
 pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
@@ -104,6 +106,14 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         // New context (Cmd+N)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
             actions.push(Action::NewContext);
+        }
+
+        // Per-pane font size (Cmd+= / Cmd+-)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals) {
+            actions.push(Action::IncreasePaneFontSize);
+        }
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus) {
+            actions.push(Action::DecreasePaneFontSize);
         }
 
         // Switch tab (Cmd+1 through Cmd+9)
