@@ -1,3 +1,4 @@
+use crate::config;
 use crate::keys::{self, Action, Direction};
 use crate::pane::TerminalPane;
 use crate::shell;
@@ -194,6 +195,7 @@ pub struct PlexiApp {
     pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     theme: TerminalTheme,
     font: TerminalFont,
+    colors: Colors,
     next_pane_id: u64,
     ctx: egui::Context,
     contexts: Vec<Context>,
@@ -212,7 +214,11 @@ impl PlexiApp {
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        theme::setup_style(&cc.egui_ctx);
+
+        let config = config::PlexiConfig::load();
+        let theme_cfg = config.theme.unwrap_or_default();
+        let colors = Colors::from_config(&theme_cfg);
+        theme::setup_style(&cc.egui_ctx, &colors);
 
         let (tx, rx) = mpsc::channel();
 
@@ -229,7 +235,7 @@ impl PlexiApp {
                     } else {
                         dirs::home_dir()
                     };
-                    let settings = Self::make_backend_settings(cwd);
+                    let settings = Self::make_backend_settings(cwd, &colors);
                     if let Some(pane) =
                         TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings)
                     {
@@ -253,8 +259,9 @@ impl PlexiApp {
                 return Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
-                    theme: theme::rebecca(),
+                    theme: theme::terminal_theme(&theme_cfg),
                     font: theme::terminal_font(),
+                    colors,
                     next_pane_id: ws.next_pane_id,
                     ctx: cc.egui_ctx.clone(),
                     contexts,
@@ -269,7 +276,7 @@ impl PlexiApp {
         }
 
         // Default: single context with single pane
-        let settings = Self::make_backend_settings(None);
+        let settings = Self::make_backend_settings(None, &colors);
         let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings)
             .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
@@ -285,8 +292,9 @@ impl PlexiApp {
         Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
-            theme: theme::rebecca(),
+            theme: theme::terminal_theme(&theme_cfg),
             font: theme::terminal_font(),
+            colors,
             next_pane_id: 1,
             ctx: cc.egui_ctx.clone(),
             contexts: vec![Context {
@@ -306,12 +314,12 @@ impl PlexiApp {
         }
     }
 
-    fn make_backend_settings(working_directory: Option<PathBuf>) -> BackendSettings {
+    fn make_backend_settings(working_directory: Option<PathBuf>, colors: &Colors) -> BackendSettings {
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
             env: shell::build_env(),
-            dynamic_colors: theme::terminal_dynamic_colors(),
+            dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
             ..Default::default()
         }
@@ -339,7 +347,7 @@ impl PlexiApp {
         self.next_pane_id += 1;
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(cwd);
+        let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) =
             TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
         else {
@@ -419,7 +427,7 @@ impl PlexiApp {
         self.next_pane_id += 1;
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(cwd);
+        let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) =
             TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
         else {
@@ -598,7 +606,7 @@ impl PlexiApp {
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
 
-        let settings = Self::make_backend_settings(Some(home.clone()));
+        let settings = Self::make_backend_settings(Some(home.clone()), &self.colors);
         let Some(pane) =
             TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
         else {
@@ -766,7 +774,7 @@ impl eframe::App for PlexiApp {
             .exact_height(28.0)
             .frame(
                 egui::Frame::new()
-                    .fill(Colors::BG_TOOLBAR)
+                    .fill(self.colors.bg_toolbar)
                     .inner_margin(egui::Margin {
                         left: 8,
                         right: 8,
@@ -781,7 +789,7 @@ impl eframe::App for PlexiApp {
         // Separator line under toolbar
         egui::TopBottomPanel::top("toolbar_sep")
             .exact_height(1.0)
-            .frame(egui::Frame::new().fill(Colors::BORDER))
+            .frame(egui::Frame::new().fill(self.colors.border))
             .show(ctx, |_ui| {});
 
         // Sidebar
@@ -790,7 +798,7 @@ impl eframe::App for PlexiApp {
                 .exact_width(220.0)
                 .frame(
                     egui::Frame::new()
-                        .fill(Colors::BG_SIDEBAR)
+                        .fill(self.colors.bg_sidebar)
                         .inner_margin(egui::Margin::same(0)),
                 )
                 .show(ctx, |ui| {
@@ -801,7 +809,7 @@ impl eframe::App for PlexiApp {
         // Central panel — terminal tiles
         egui::CentralPanel::default()
             .frame(egui::Frame {
-                fill: Colors::BG_DARKEST,
+                fill: self.colors.bg_darkest,
                 inner_margin: egui::Margin::same(4),
                 outer_margin: egui::Margin::ZERO,
                 ..Default::default()
@@ -834,6 +842,7 @@ impl eframe::App for PlexiApp {
                     close_exited: None,
                     tab_info,
                     zoomed_pane,
+                    colors: self.colors,
                 };
                 ctx.tree.ui(&mut behavior, ui);
 
@@ -864,12 +873,11 @@ impl eframe::App for PlexiApp {
                         let inset = 10.0;
                         let zoom_rect = panel_rect.shrink(inset);
 
-                        // Thicker blue border (2px)
-                        let accent = Color32::from_rgb(137, 180, 250);
+                        // Thicker accent border (2px)
                         ui.painter().rect_stroke(
                             zoom_rect,
                             CornerRadius::same(4),
-                            Stroke::new(2.0, accent),
+                            Stroke::new(2.0, self.colors.accent),
                             StrokeKind::Inside,
                         );
 
@@ -879,7 +887,7 @@ impl eframe::App for PlexiApp {
                             egui::UiBuilder::new().max_rect(inner_rect),
                         );
                         egui::Frame::new()
-                            .fill(Colors::TERMINAL_BG)
+                            .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
                             .show(&mut child_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
@@ -888,14 +896,14 @@ impl eframe::App for PlexiApp {
                                         ui.painter().rect_filled(
                                             rect,
                                             0.0,
-                                            Colors::TERMINAL_BG,
+                                            self.colors.terminal_bg,
                                         );
                                         ui.allocate_new_ui(
                                             egui::UiBuilder::new().max_rect(rect),
                                             |ui| {
                                                 ui.centered_and_justified(|ui| {
                                                     ui.colored_label(
-                                                        Color32::from_rgb(0x6c, 0x70, 0x86),
+                                                        self.colors.text_dim,
                                                         "[process exited]",
                                                     );
                                                 });
@@ -927,12 +935,11 @@ impl eframe::App for PlexiApp {
                                     let start_x = rect.left() + 2.0;
                                     let y = rect.top() + 2.0 + dot_radius;
 
-                                    let accent = Color32::from_rgb(137, 180, 250);
-                                    let dim = Color32::from_rgb(0x45, 0x47, 0x5a);
+                                    let dim = self.colors.bg_active;
 
                                     for i in 0..count {
                                         let cx = start_x + (i as f32) * dot_spacing + dot_radius;
-                                        let color = if i == active_idx { accent } else { dim };
+                                        let color = if i == active_idx { self.colors.accent } else { dim };
                                         ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
                                     }
                                 }
@@ -972,7 +979,7 @@ impl PlexiApp {
             if ui
                 .add(
                     egui::Button::new(
-                        RichText::new(toggle_text).size(11.0).color(Colors::TEXT_DIM),
+                        RichText::new(toggle_text).size(11.0).color(self.colors.text_dim),
                     )
                     .frame(false),
                 )
@@ -989,13 +996,13 @@ impl PlexiApp {
             ui.label(
                 RichText::new(&active_ctx.name)
                     .size(12.0)
-                    .color(Colors::TEXT_PRIMARY)
+                    .color(self.colors.text_primary)
                     .strong(),
             );
             ui.label(
                 RichText::new(active_ctx.path.display().to_string())
                     .size(11.0)
-                    .color(Colors::TEXT_DIM)
+                    .color(self.colors.text_dim)
                     .family(egui::FontFamily::Monospace),
             );
             let pane_count = active_ctx.panes.len();
@@ -1006,7 +1013,7 @@ impl PlexiApp {
                     if pane_count == 1 { "" } else { "s" }
                 ))
                 .size(11.0)
-                .color(Colors::TEXT_SECTION),
+                .color(self.colors.text_section),
             );
 
             // Right side — help button
@@ -1014,7 +1021,7 @@ impl PlexiApp {
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("?").size(12.0).color(Colors::TEXT_DIM),
+                            RichText::new("?").size(12.0).color(self.colors.text_dim),
                         )
                         .frame(false),
                     )
@@ -1038,7 +1045,7 @@ impl PlexiApp {
             ui.label(
                 RichText::new("PLEXI")
                     .size(16.0)
-                    .color(Colors::TEXT_PRIMARY)
+                    .color(self.colors.text_primary)
                     .strong(),
             );
         });
@@ -1051,7 +1058,7 @@ impl PlexiApp {
                 egui::pos2(rect.min.x, rect.min.y),
                 egui::pos2(rect.min.x + sidebar_width, rect.min.y),
             ],
-            Stroke::new(1.0, Colors::BORDER),
+            Stroke::new(1.0, self.colors.border),
         );
         ui.add_space(4.0);
 
@@ -1063,14 +1070,14 @@ impl PlexiApp {
             ui.label(
                 RichText::new("Contexts")
                     .size(10.0)
-                    .color(Colors::TEXT_SECTION),
+                    .color(self.colors.text_section),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("+").size(12.0).color(Colors::TEXT_DIM),
+                            RichText::new("+").size(12.0).color(self.colors.text_dim),
                         )
                         .frame(false),
                     )
@@ -1116,9 +1123,9 @@ impl PlexiApp {
                     let rect = ui.max_rect();
 
                     let fill = if is_active {
-                        Colors::BG_ACTIVE
+                        self.colors.bg_active
                     } else if hover {
-                        Colors::BG_HOVER
+                        self.colors.bg_hover
                     } else {
                         Color32::TRANSPARENT
                     };
@@ -1129,7 +1136,7 @@ impl PlexiApp {
                         ui.painter().rect_filled(
                             Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
                             CornerRadius::ZERO,
-                            Colors::ACCENT,
+                            self.colors.accent,
                         );
                     }
 
@@ -1173,9 +1180,9 @@ impl PlexiApp {
                         }
                     } else {
                         let text_color = if is_active {
-                            Colors::TEXT_PRIMARY
+                            self.colors.text_primary
                         } else {
-                            Colors::TEXT_DIM
+                            self.colors.text_dim
                         };
                         ui.label(
                             RichText::new(&self.contexts[i].name)
@@ -1192,7 +1199,7 @@ impl PlexiApp {
                                         egui::Button::new(
                                             RichText::new("\u{2715}")
                                                 .size(13.0)
-                                                .color(Colors::TEXT_DIM),
+                                                .color(self.colors.text_dim),
                                         )
                                         .frame(false),
                                     )
@@ -1307,8 +1314,8 @@ impl PlexiApp {
             .anchor(Align2::RIGHT_TOP, Vec2::new(-16.0, 44.0))
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(Colors::BG_SIDEBAR)
-                    .stroke(Stroke::new(1.0, Colors::BORDER))
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
@@ -1316,7 +1323,7 @@ impl PlexiApp {
                         ui.label(
                             RichText::new("Keyboard Shortcuts")
                                 .size(13.0)
-                                .color(Colors::TEXT_PRIMARY)
+                                .color(self.colors.text_primary)
                                 .strong(),
                         );
                         ui.add_space(8.0);
@@ -1340,14 +1347,14 @@ impl PlexiApp {
                                 ui.label(
                                     RichText::new(key)
                                         .size(11.0)
-                                        .color(Colors::ACCENT)
+                                        .color(self.colors.accent)
                                         .family(egui::FontFamily::Monospace),
                                 );
                                 ui.add_space(8.0);
                                 ui.label(
                                     RichText::new(desc)
                                         .size(11.0)
-                                        .color(Colors::TEXT_DIM),
+                                        .color(self.colors.text_dim),
                                 );
                             });
                         }

@@ -16,6 +16,7 @@ pub struct PlexiBehavior<'a> {
     pub close_exited: Option<TileId>,
     pub tab_info: HashMap<TileId, (usize, usize)>, // tile_id -> (index, count)
     pub zoomed_pane: Option<TileId>,
+    pub colors: Colors,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -39,7 +40,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         // The zoomed pane is rendered separately in the overlay (app.rs).
         if self.zoomed_pane.is_some() {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgb(0x11, 0x11, 0x1b))
+                .fill(self.colors.bg_darkest)
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |_ui| {});
             return UiResponse::None;
@@ -47,7 +48,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         if let Some(pane) = self.panes.get_mut(pane_id) {
             egui::Frame::new()
-                .fill(Colors::TERMINAL_BG)
+                .fill(self.colors.terminal_bg)
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     if pane.exited {
@@ -56,12 +57,12 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         ui.painter().rect_filled(
                             rect,
                             0.0,
-                            Colors::TERMINAL_BG,
+                            self.colors.terminal_bg,
                         );
                         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
                             ui.centered_and_justified(|ui| {
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(0x6c, 0x70, 0x86),
+                                    self.colors.text_dim,
                                     "[process exited]",
                                 );
                             });
@@ -91,12 +92,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         let start_x = rect.left() + 2.0;
                         let y = rect.top() + 2.0 + dot_radius;
 
-                        let accent = egui::Color32::from_rgb(137, 180, 250); // Catppuccin blue
-                        let dim = egui::Color32::from_rgb(0x45, 0x47, 0x5a);
+                        let dim = self.colors.bg_active;
 
                         for i in 0..count {
                             let cx = start_x + (i as f32) * dot_spacing + dot_radius;
-                            let color = if i == active_idx { accent } else { dim };
+                            let color = if i == active_idx { self.colors.accent } else { dim };
                             ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
                         }
                     }
@@ -110,7 +110,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         let label = format!("Terminal {}", pane + 1);
         egui::RichText::new(label)
             .size(11.0)
-            .color(Colors::TEXT_DIM)
+            .color(self.colors.text_dim)
             .into()
     }
 
@@ -151,8 +151,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         rect: egui::Rect,
     ) {
         if self.focused_tile == Some(tile_id) {
-            // Catppuccin Mocha blue
-            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(137, 180, 250));
+            let stroke = egui::Stroke::new(1.5, self.colors.accent);
             let rect = rect.shrink(0.75);
             painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
         }
