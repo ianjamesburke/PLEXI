@@ -7,6 +7,14 @@ Always confirm best practices by researching the docs.
 - **idea** — speculative feature, out of scope for MVP; park it and revisit when there are real users asking for it
 - Use `idea` liberally to prevent backlog bloat — if it's not needed to ship a usable terminal multiplexer, it's an idea.
 
+## Worktrees
+
+Two worktrees are set up:
+- `/Users/ianburke/Documents/GitHub/PLEXI` — `main` (stable)
+- `/Users/ianburke/Documents/GitHub/PLEXI-dev` — `dev` (active development)
+
+Iterate on `dev`, merge to `main` when stable.
+
 ## Build & Install
 
 `just install` uses `cargo bundle --release` to produce a proper macOS `.app` bundle (reads metadata from `Cargo.toml`), then copies it to `/Applications/Plexi.app` and extracts the binary to `/usr/local/bin/plexi`. The `install.sh` curl script does the same thing for fresh installs from GitHub.
