@@ -22,6 +22,17 @@ Loosely inspired by [this rant](https://www.youtube.com/watch?v=EUE8N6mqtGg) —
 
 ## Quick Start
 
+### Download (recommended)
+
+1. Grab the latest `Plexi-vX.Y.Z.zip` from [Releases](https://github.com/ianjamesburke/PLEXI/releases)
+2. Unzip and move `Plexi.app` to `/Applications`
+3. On first launch, macOS will block the app because it's unsigned. To allow it:
+   - **macOS 14 and earlier:** Right-click `Plexi.app` → Open → confirm
+   - **macOS 15 (Sequoia)+:** Go to System Settings → Privacy & Security → scroll down and click "Open Anyway"
+   - **Terminal shortcut (any version):** `xattr -cr /Applications/Plexi.app`
+
+### Build from source
+
 Requires Rust — install via [rustup.rs](https://rustup.rs) if you don't have it.
 
 ```bash
