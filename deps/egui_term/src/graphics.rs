@@ -1,6 +1,6 @@
 use egui::emath::GuiRounding;
 use egui::epaint::RectShape;
-use egui::{pos2, Color32, CornerRadius, Rect, Shape};
+use egui::{pos2, Color32, CornerRadius, Rect, Shape, Stroke};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RectFraction {
@@ -90,6 +90,43 @@ impl RectFraction {
     }
 }
 
+// Render corner/line-drawing characters that are commonly missing from fonts as
+// precise geometric shapes. This covers characters like U+23BF (⎿, used by Claude
+// Code for conversation tree connectors) that aren't in most monospace fonts.
+fn corner_shapes(c: char, cell_rect: Rect, fg: Color32) -> Option<Vec<Shape>> {
+    let cx = cell_rect.center().x;
+    let cy = cell_rect.center().y;
+    let top = cell_rect.min.y;
+    let bottom = cell_rect.max.y;
+    let left = cell_rect.min.x;
+    let right = cell_rect.max.x;
+    let stroke = Stroke::new(1.0, fg);
+
+    // Each arm goes from the cell center to the midpoint of an edge.
+    // Names: U=up (center→top), D=down (center→bottom), L=left, R=right.
+    let seg_u = || Shape::line_segment([pos2(cx, cy), pos2(cx, top)], stroke);
+    let seg_d = || Shape::line_segment([pos2(cx, cy), pos2(cx, bottom)], stroke);
+    let seg_l = || Shape::line_segment([pos2(cx, cy), pos2(left, cy)], stroke);
+    let seg_r = || Shape::line_segment([pos2(cx, cy), pos2(right, cy)], stroke);
+
+    let shapes = match c {
+        // U+23BF ⎿ BOTTOM RIGHT CORNER — Claude Code conversation tree tip (L-bracket)
+        // Vertical arm goes UP, horizontal arm goes RIGHT.
+        '\u{23BF}' => vec![seg_u(), seg_r()],
+
+        // Arc box-drawing corners (╭╮╯╰) — rendered as two straight arms.
+        // These are in JBM Nerd Font but rendering geometrically gives pixel-perfect results.
+        '\u{256D}' => vec![seg_d(), seg_r()], // ╭ down + right
+        '\u{256E}' => vec![seg_d(), seg_l()], // ╮ down + left
+        '\u{256F}' => vec![seg_u(), seg_l()], // ╯ up   + left
+        '\u{2570}' => vec![seg_u(), seg_r()], // ╰ up   + right
+
+        _ => return None,
+    };
+
+    Some(shapes)
+}
+
 pub(crate) fn maybe_push_graphics_element(
     shapes: &mut Vec<Shape>,
     c: char,
@@ -97,6 +134,11 @@ pub(crate) fn maybe_push_graphics_element(
     fg: Color32,
     pixels_per_point: f32,
 ) -> bool {
+    if let Some(corner_shapes) = corner_shapes(c, cell_rect, fg) {
+        shapes.extend(corner_shapes);
+        return true;
+    }
+
     let Some(rects) = block_element_rects(c, cell_rect, pixels_per_point) else {
         return false;
     };
