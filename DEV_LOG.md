@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-23 — Install now builds a proper .app bundle via cargo-bundle
+
+`just install` switched from manually assembling the `.app` directory to using `cargo bundle --release`, which generates the bundle from `Cargo.toml` metadata (matching what `install.sh` does for fresh installs). Binary is also copied to `/usr/local/bin/plexi` for CLI access. Don't revert to manual mkdir/cp — `cargo bundle` keeps `Info.plist` in sync with `Cargo.toml` automatically.
+
 ## 2026-03-23 — [FIX] Gemini/Ink rendering issues came from missing terminal protocol support plus font-rasterized block glyphs
 
 The black Gemini input bars were not a generic background-paint bug: Gemini queries `OSC 11` for the terminal background color and fell back to `black` because `egui_term` dropped `alacritty_terminal::Event::ColorRequest` instead of replying on the PTY. Fixed by wiring dynamic color responses through the backend and exposing Rebecca's foreground/background as terminal dynamic colors. The faint seams around Gemini's half-block borders and the Claude-style block logo were a second issue: `▀`, `▄`, `█`, and quadrant blocks were being rendered through the font path, which introduced antialiasing seams that Ghostty avoids by drawing geometry directly. Added a primitive block-element renderer in `deps/egui_term/src/graphics.rs` and changed render-time cell geometry to derive from the actual layout rect instead of truncated integer cell sizes, which removed the remaining right/bottom gutter artifacts. The important lesson is to treat terminal protocol round-trips and Unicode graphics elements as core emulator behavior, not per-app compatibility hacks.

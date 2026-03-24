@@ -75,5 +75,5 @@ Built with Rust, [egui](https://github.com/emilk/egui), and [egui_term](https://
 ```bash
 just dev     # cargo run
 just build   # cargo build --release
-just install # build + copy to /usr/local/bin
+just install # build + install to /Applications and /usr/local/bin
 ```

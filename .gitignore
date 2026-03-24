@@ -24,6 +24,9 @@ Thumbs.db
 .env
 .env.local
 
+# Generated bundle assets (cargo bundle generates its own from Cargo.toml)
+assets/Info.plist
+
 # Misc
 *.log
 *.swp
