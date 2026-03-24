@@ -141,9 +141,9 @@ pub fn terminal_dynamic_colors(colors: &Colors) -> HashMap<usize, [u8; 3]> {
     ])
 }
 
-pub fn terminal_font() -> TerminalFont {
+pub fn terminal_font(size: f32) -> TerminalFont {
     TerminalFont::new(FontSettings {
-        font_type: FontId::proportional(FONT_SIZE),
+        font_type: FontId::proportional(size),
     })
 }
 

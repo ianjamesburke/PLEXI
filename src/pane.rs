@@ -1,3 +1,4 @@
+use crate::theme;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::sync::mpsc::Sender;
 
@@ -6,6 +7,7 @@ pub struct TerminalPane {
     pub _id: u64,
     pub exited: bool,
     pub name: Option<String>,
+    pub font_size: f32,
 }
 
 impl TerminalPane {
@@ -27,6 +29,7 @@ impl TerminalPane {
             _id: id,
             exited: false,
             name: None,
+            font_size: theme::FONT_SIZE,
         })
     }
 }
