@@ -1,7 +1,9 @@
 use alacritty_terminal::index::Point as TerminalGridPoint;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
+use egui::emath::GuiRounding;
 use egui::epaint::RectShape;
 use egui::{CornerRadius, Key};
 use egui::Modifiers;
@@ -18,6 +20,7 @@ use crate::backend::{LinkAction, MouseButton, SelectionType};
 use crate::bindings::Binding;
 use crate::bindings::{BindingAction, BindingsLayout, InputKind};
 use crate::font::TerminalFont;
+use crate::graphics;
 use crate::theme::TerminalTheme;
 use crate::types::Size;
 
@@ -257,8 +260,10 @@ impl<'a> TerminalView<'a> {
         let content = self.backend.sync();
         let layout_min = layout.rect.min;
         let layout_max = layout.rect.max;
-        let cell_height = content.terminal_size.cell_height as f32;
-        let cell_width = content.terminal_size.cell_width as f32;
+        let cols = content.terminal_size.columns() as f32;
+        let lines = content.terminal_size.screen_lines() as f32;
+        let cell_height = layout.rect.height() / lines;
+        let cell_width = layout.rect.width() / cols;
         let global_bg =
             self.theme.get_color(Color::Named(NamedColor::Background));
 
@@ -308,6 +313,14 @@ impl<'a> TerminalView<'a> {
             } else {
                 cell_width
             };
+            let cell_rect = Rect::from_min_max(
+                Pos2::new(x, y),
+                Pos2::new(
+                    (x + cell_width).min(layout_max.x),
+                    (y + cell_height).min(layout_max.y),
+                ),
+            )
+            .round_to_pixels(painter.pixels_per_point());
 
             if is_dim {
                 fg = fg.linear_multiply(0.7);
@@ -319,11 +332,7 @@ impl<'a> TerminalView<'a> {
 
             if global_bg != bg {
                 shapes.push(Shape::Rect(RectShape::filled(
-                    Rect::from_min_size(
-                        Pos2::new(x, y),
-                        // + 1.0 is to fill grid border
-                        Vec2::new(cell_width + 1., cell_height + 1.),
-                    ),
+                    cell_rect,
                     CornerRadius::ZERO,
                     bg,
                 )));
@@ -347,10 +356,6 @@ impl<'a> TerminalView<'a> {
                 && content.cursor_shape != CursorShape::Hidden
             {
                 let cursor_color = self.theme.get_color(content.cursor.fg);
-                let cell_rect = Rect::from_min_size(
-                    Pos2::new(x, y),
-                    Vec2::new(cell_width, cell_height),
-                );
 
                 if self.has_focus {
                     // Focused: blink the cursor
@@ -407,25 +412,37 @@ impl<'a> TerminalView<'a> {
 
             // Draw text content
             if indexed.c != ' ' && indexed.c != '\t' {
-                if content.grid.cursor.point == indexed.point
+                let glyph_fg = if content.grid.cursor.point == indexed.point
                     && self.has_focus
                     && content.cursor_visible
                     && matches!(content.cursor_shape, CursorShape::Block | CursorShape::HollowBlock)
                     && state.cursor_visible
                 {
-                    std::mem::swap(&mut fg, &mut bg);
+                    bg
+                } else {
+                    fg
+                };
+
+                if graphics::maybe_push_graphics_element(
+                    &mut shapes,
+                    indexed.c,
+                    cell_rect,
+                    glyph_fg,
+                    painter.pixels_per_point(),
+                ) {
+                    continue;
                 }
 
                 shapes.push(Shape::text(
                     &painter.fonts(|c| c.clone()),
                     Pos2 {
-                        x: x + (cell_width / 2.0),
-                        y,
+                        x: cell_rect.center().x,
+                        y: cell_rect.min.y,
                     },
                     Align2::CENTER_TOP,
                     indexed.c,
                     self.font.font_type(),
-                    fg,
+                    glyph_fg,
                 ));
             }
         }

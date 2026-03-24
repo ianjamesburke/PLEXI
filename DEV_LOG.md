@@ -1,5 +1,49 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-23 — [FIX] Gemini/Ink rendering issues came from missing terminal protocol support plus font-rasterized block glyphs
+
+The black Gemini input bars were not a generic background-paint bug: Gemini queries `OSC 11` for the terminal background color and fell back to `black` because `egui_term` dropped `alacritty_terminal::Event::ColorRequest` instead of replying on the PTY. Fixed by wiring dynamic color responses through the backend and exposing Rebecca's foreground/background as terminal dynamic colors. The faint seams around Gemini's half-block borders and the Claude-style block logo were a second issue: `▀`, `▄`, `█`, and quadrant blocks were being rendered through the font path, which introduced antialiasing seams that Ghostty avoids by drawing geometry directly. Added a primitive block-element renderer in `deps/egui_term/src/graphics.rs` and changed render-time cell geometry to derive from the actual layout rect instead of truncated integer cell sizes, which removed the remaining right/bottom gutter artifacts. The important lesson is to treat terminal protocol round-trips and Unicode graphics elements as core emulator behavior, not per-app compatibility hacks.
+
+## 2026-03-23 — [FIX] Washed-out TUI colors were mostly a theme mismatch, not a renderer bug
+
+Plexi was being compared against Ghostty while hardcoding a Catppuccin Mocha terminal palette, but the local Ghostty install was actually running `theme = Rebecca`. Swapped Plexi's terminal theme to Rebecca (matching Ghostty's background and ANSI 0-15 colors) and the washed-out look in `btop` corrected immediately. Important lesson: before debugging color math, verify both terminals are using the same palette; otherwise "renderer mismatch" can be a false lead.
+
+## 2026-03-23 — [GOTCHA] Ghostty TERM/terminfo parity did not fix Gemini CLI's black input bars
+
+Tried matching Ghostty's terminal identity by exporting `TERM=xterm-ghostty` plus `TERMINFO` pointing at Ghostty's bundled terminfo when available, with fallback to `xterm-256color`. This changed Plexi's advertised capabilities to line up with Ghostty, but it did not change Gemini CLI's black wrapping/input-bar behavior. That strongly suggests the remaining Gemini issue is not terminfo-driven; it is more likely tied to how `egui_term` paints cell backgrounds for ANSI black/default background combinations.
+
+## 2026-03-23 — [CHANGED] Pane wrapper background was still using old Catppuccin color
+
+After switching the terminal palette to Rebecca, the pane/frame wrappers and zoomed-pane wrapper were still hardcoded to the old Catppuccin terminal background (`#1e1e2e`). This caused a thin inner band/padding region around terminals to render in the wrong shade even when the terminal content itself was correct. Added a shared `Colors::TERMINAL_BG` constant for Rebecca and updated the pane wrappers to use it. This fixes app chrome mismatch around the terminal, but does not resolve Gemini CLI's black per-row bars.
+
+## 2026-03-23 — [FUTURE] Claude CLI missing square/icon is probably a separate font fallback issue
+
+While investigating Gemini colors, Claude CLI still showed a square/placeholder where an icon or glyph should likely render. This does not appear related to the color pipeline work above and should be treated as a separate font/glyph fallback investigation after the Gemini background issue is solved.
+
+## 2026-03-23 — Investigating washed-out / gray terminal colors vs Ghostty
+
+**Problem:** TUI apps (btop, Gemini CLI) look washed out and gray in Plexi compared to Ghostty. The Gemini CLI input box also shows black padding that doesn't match the terminal background.
+
+**Attempted fix (reverted):** Added bold→bright color promotion in `deps/egui_term/src/view.rs`. When a cell had the `BOLD` flag, we promoted normal named colors (0-7) to their bright variants (8-15) before calling `get_color()`. This is standard terminal behavior (alacritty_terminal sets the BOLD flag but leaves color promotion to the renderer). Did not fix the visual issue — colors still looked washed out.
+
+**What we know so far:**
+- PR #16 (`fix/dim-color-palette`) correctly sets dim colors to normal Catppuccin values to avoid double-dimming (view.rs already applies `linear_multiply(0.7)` for DIM flag)
+- The `..Default::default()` in the old palette was pulling in base16 colors for dim variants — that part is confirmed fixed
+- Bold→bright promotion alone didn't solve the gray appearance, suggesting the root cause is elsewhere (possibly in how egui renders colors, gamma/sRGB handling, or how the 256-color palette is constructed)
+- The black padding on Gemini CLI input box may be a separate issue with how `Named(Black)` (#45475a) vs `Named(Background)` (#1e1e2e) are handled as background colors
+
+**Still needs investigation:** Compare actual RGB values rendered per-cell between Plexi and Ghostty for the same content to isolate whether it's a palette issue, a rendering pipeline issue (sRGB/linear), or something else entirely.
+
+---
+
+## 2026-03-23 — Merged PRs #13 and #14, reviewed PR #16
+
+Merged PR #13 (DejaVu Sans fallback font for Braille/Unicode symbols) and PR #14 (sidebar cursor/X button fixes + link hover improvements). Added per-frame link hover detection so Cmd+hover triggers instantly instead of requiring a mouse move. Also added pointer cursor when Cmd+hovering URLs.
+
+PR #16 (dim color palette fix) is rebased onto main and ready but blocked on the broader color investigation above.
+
+---
+
 ## 2026-03-19 — Fix: `clear` content reappearing after zoom/navigate
 
 Root cause: alacritty's `grow_lines()` explicitly pulls scrollback content into the visible area whenever the terminal gains rows. This happens during zoom/navigate — a pane shrinks (tile tree placeholder size), then grows again (zoom overlay size), and old cleared content from scrollback fills the new rows.

@@ -253,7 +253,7 @@ impl PlexiApp {
                 return Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
-                    theme: theme::catppuccin_mocha(),
+                    theme: theme::rebecca(),
                     font: theme::terminal_font(),
                     next_pane_id: ws.next_pane_id,
                     ctx: cc.egui_ctx.clone(),
@@ -285,7 +285,7 @@ impl PlexiApp {
         Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
-            theme: theme::catppuccin_mocha(),
+            theme: theme::rebecca(),
             font: theme::terminal_font(),
             next_pane_id: 1,
             ctx: cc.egui_ctx.clone(),
@@ -311,6 +311,7 @@ impl PlexiApp {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
             env: shell::build_env(),
+            dynamic_colors: theme::terminal_dynamic_colors(),
             working_directory,
             ..Default::default()
         }
@@ -878,7 +879,7 @@ impl eframe::App for PlexiApp {
                             egui::UiBuilder::new().max_rect(inner_rect),
                         );
                         egui::Frame::new()
-                            .fill(Color32::from_rgb(0x1e, 0x1e, 0x2e))
+                            .fill(Colors::TERMINAL_BG)
                             .inner_margin(egui::Margin::same(8))
                             .show(&mut child_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
@@ -887,7 +888,7 @@ impl eframe::App for PlexiApp {
                                         ui.painter().rect_filled(
                                             rect,
                                             0.0,
-                                            Color32::from_rgb(0x1e, 0x1e, 0x2e),
+                                            Colors::TERMINAL_BG,
                                         );
                                         ui.allocate_new_ui(
                                             egui::UiBuilder::new().max_rect(rect),

@@ -28,7 +28,12 @@ pub fn detect_shell() -> String {
 pub fn build_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
 
-    env.insert("TERM".into(), "xterm-256color".into());
+    if let Some(terminfo_dir) = detect_ghostty_terminfo_dir() {
+        env.insert("TERM".into(), "xterm-ghostty".into());
+        env.insert("TERMINFO".into(), terminfo_dir);
+    } else {
+        env.insert("TERM".into(), "xterm-256color".into());
+    }
     env.insert("COLORTERM".into(), "truecolor".into());
 
     env.insert(
@@ -66,6 +71,35 @@ pub fn build_env() -> HashMap<String, String> {
     }
 
     env
+}
+
+fn detect_ghostty_terminfo_dir() -> Option<String> {
+    let candidates = [
+        "/Applications/Ghostty.app/Contents/Resources/terminfo",
+        "/opt/homebrew/Cellar/ghostty",
+        "/usr/local/Cellar/ghostty",
+    ];
+
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.join("78/xterm-ghostty").is_file() {
+            return Some(path.to_string_lossy().into_owned());
+        }
+
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let terminfo_path =
+                    entry.path().join("share/terminfo/78/xterm-ghostty");
+                if terminfo_path.is_file() {
+                    if let Some(dir) = terminfo_path.parent().and_then(Path::parent) {
+                        return Some(dir.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
