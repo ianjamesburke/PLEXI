@@ -17,6 +17,7 @@ pub struct PlexiBehavior<'a> {
     pub tab_info: HashMap<TileId, (usize, usize)>, // tile_id -> (index, count)
     pub zoomed_pane: Option<TileId>,
     pub colors: Colors,
+    pub pane_names: HashMap<PaneId, String>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -84,6 +85,26 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         ui.add(terminal);
                     }
 
+                    // Draw pane name label (top-left) if named
+                    if let Some(name) = self.pane_names.get(pane_id) {
+                        let rect = ui.max_rect();
+                        let has_tabs = self.tab_info.contains_key(&tile_id);
+                        let dots_offset = if has_tabs {
+                            let count = self.tab_info[&tile_id].1;
+                            (count as f32) * 12.0 + 8.0
+                        } else {
+                            0.0
+                        };
+                        let text_pos = egui::pos2(rect.left() + 4.0 + dots_offset, rect.top() + 2.0);
+                        ui.painter().text(
+                            text_pos,
+                            egui::Align2::LEFT_TOP,
+                            name,
+                            egui::FontId::proportional(10.0),
+                            self.colors.text_dim,
+                        );
+                    }
+
                     // Draw tab indicator dots (top-left) when 2+ tabs
                     if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
                         let dot_radius = 4.0;
@@ -107,7 +128,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn tab_title_for_pane(&mut self, pane: &PaneId) -> egui::WidgetText {
-        let label = format!("Terminal {}", pane + 1);
+        let label = if let Some(name) = self.pane_names.get(pane) {
+            name.clone()
+        } else {
+            format!("Terminal {}", pane + 1)
+        };
         egui::RichText::new(label)
             .size(11.0)
             .color(self.colors.text_dim)

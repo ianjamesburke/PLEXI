@@ -18,6 +18,8 @@ pub enum Action {
     ToggleSidebar,
     ToggleShortcuts,
     ToggleZoom,
+    ToggleCommandPalette,
+    RenamePane,
     SwitchContext(usize),
 }
 
@@ -86,6 +88,16 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         // Toggle shortcuts overlay (Cmd+/)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash) {
             actions.push(Action::ToggleShortcuts);
+        }
+
+        // Command palette (Cmd+P)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
+            actions.push(Action::ToggleCommandPalette);
+        }
+
+        // Rename pane (Cmd+Shift+R)
+        if input.consume_key(cmd_shift, egui::Key::R) {
+            actions.push(Action::RenamePane);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

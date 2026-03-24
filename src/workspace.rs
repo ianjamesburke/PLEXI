@@ -26,6 +26,8 @@ pub struct SavedContext {
 pub struct SavedPane {
     pub id: u64,
     pub cwd: PathBuf,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 fn workspace_path() -> PathBuf {
