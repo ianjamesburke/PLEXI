@@ -73,10 +73,47 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         }
                     } else {
                         let has_tabs = self.tab_info.contains_key(&tile_id);
-                        // Reserve space for dot indicators above terminal
-                        if has_tabs {
+                        let has_name = self.pane_names.contains_key(pane_id);
+                        let name_bar_height = 20.0;
+
+                        // Reserve space for name bar or dot indicators above terminal
+                        if has_name {
+                            // Draw centered name bar
+                            let bar_rect = egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(ui.available_width(), name_bar_height),
+                            );
+                            ui.advance_cursor_after_rect(bar_rect);
+
+                            let name = &self.pane_names[pane_id];
+
+                            // If tabs exist, draw dots on the left side of the bar
+                            if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
+                                let dot_radius = 4.0;
+                                let dot_spacing = 12.0;
+                                let start_x = bar_rect.left() - 6.0;
+                                let y = bar_rect.center().y;
+                                let dim = self.colors.bg_active;
+
+                                for i in 0..count {
+                                    let cx = start_x + (i as f32) * dot_spacing + dot_radius;
+                                    let color = if i == active_idx { self.colors.accent } else { dim };
+                                    ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
+                                }
+                            }
+
+                            // Center the name text in the bar
+                            ui.painter().text(
+                                bar_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                name,
+                                egui::FontId::proportional(11.0),
+                                self.colors.text_dim,
+                            );
+                        } else if has_tabs {
                             ui.add_space(14.0);
                         }
+
                         let terminal = TerminalView::new(ui, &mut pane.backend)
                             .set_focus(is_focused)
                             .set_theme(self.theme.clone())
@@ -85,40 +122,23 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         ui.add(terminal);
                     }
 
-                    // Draw pane name label (top-left) if named
-                    if let Some(name) = self.pane_names.get(pane_id) {
-                        let rect = ui.max_rect();
-                        let has_tabs = self.tab_info.contains_key(&tile_id);
-                        let dots_offset = if has_tabs {
-                            let count = self.tab_info[&tile_id].1;
-                            (count as f32) * 12.0 + 8.0
-                        } else {
-                            0.0
-                        };
-                        let text_pos = egui::pos2(rect.left() + 4.0 + dots_offset, rect.top() + 2.0);
-                        ui.painter().text(
-                            text_pos,
-                            egui::Align2::LEFT_TOP,
-                            name,
-                            egui::FontId::proportional(10.0),
-                            self.colors.text_dim,
-                        );
-                    }
+                    // Draw tab indicator dots (top-left) when 2+ tabs and NO name bar
+                    // (when a name bar exists, dots are already drawn inside it)
+                    if !self.pane_names.contains_key(pane_id) {
+                        if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
+                            let dot_radius = 4.0;
+                            let dot_spacing = 12.0;
+                            let rect = ui.max_rect();
+                            let start_x = rect.left() + 2.0;
+                            let y = rect.top() + 2.0 + dot_radius;
 
-                    // Draw tab indicator dots (top-left) when 2+ tabs
-                    if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
-                        let dot_radius = 4.0;
-                        let dot_spacing = 12.0;
-                        let rect = ui.max_rect();
-                        let start_x = rect.left() + 2.0;
-                        let y = rect.top() + 2.0 + dot_radius;
+                            let dim = self.colors.bg_active;
 
-                        let dim = self.colors.bg_active;
-
-                        for i in 0..count {
-                            let cx = start_x + (i as f32) * dot_spacing + dot_radius;
-                            let color = if i == active_idx { self.colors.accent } else { dim };
-                            ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
+                            for i in 0..count {
+                                let cx = start_x + (i as f32) * dot_spacing + dot_radius;
+                                let color = if i == active_idx { self.colors.accent } else { dim };
+                                ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
+                            }
                         }
                     }
                 });

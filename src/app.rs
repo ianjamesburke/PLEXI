@@ -46,6 +46,17 @@ impl Context {
         }
     }
 
+    fn activate_tab_for(&mut self, tile_id: TileId) {
+        let result = self.find_ancestor_tabs(tile_id);
+        if let Some((tabs_id, child_tile)) = result {
+            if let Some(Tile::Container(Container::Tabs(tabs))) =
+                self.tree.tiles.get_mut(tabs_id)
+            {
+                tabs.set_active(child_tile);
+            }
+        }
+    }
+
     fn find_logical_parent(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;
         loop {
@@ -1021,6 +1032,7 @@ impl eframe::App for PlexiApp {
 }
 
 const R6: CornerRadius = CornerRadius::same(6);
+const MODAL_WIDTH: f32 = 400.0;
 
 impl PlexiApp {
     fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
@@ -1495,6 +1507,7 @@ impl PlexiApp {
             self.active_context = ctx_idx;
             self.contexts[ctx_idx].focused_pane = Some(tile_id);
             self.contexts[ctx_idx].zoomed_pane = None;
+            self.contexts[ctx_idx].activate_tab_for(tile_id);
             self.show_command_palette = false;
             return;
         }
@@ -1531,14 +1544,14 @@ impl PlexiApp {
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
-                        ui.set_width(400.0);
+                        ui.set_width(MODAL_WIDTH);
 
                         // Search input
                         let te_id = egui::Id::new("palette_search");
                         let te = ui.add(
                             egui::TextEdit::singleline(&mut self.palette_query)
                                 .id(te_id)
-                                .desired_width(400.0)
+                                .desired_width(MODAL_WIDTH)
                                 .hint_text("Jump to pane...")
                                 .font(egui::TextStyle::Body),
                         );
@@ -1624,6 +1637,7 @@ impl PlexiApp {
                                 self.active_context = *ci;
                                 self.contexts[*ci].focused_pane = Some(*tile_id);
                                 self.contexts[*ci].zoomed_pane = None;
+                                self.contexts[*ci].activate_tab_for(*tile_id);
                                 self.show_command_palette = false;
                             }
                             if click_response.hovered() {
@@ -1658,7 +1672,7 @@ impl PlexiApp {
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
-                        ui.set_width(300.0);
+                        ui.set_width(MODAL_WIDTH);
                         ui.label(
                             RichText::new("Rename Pane")
                                 .size(13.0)
@@ -1671,7 +1685,7 @@ impl PlexiApp {
                         let te = ui.add(
                             egui::TextEdit::singleline(&mut self.rename_buffer)
                                 .id(te_id)
-                                .desired_width(300.0)
+                                .desired_width(MODAL_WIDTH)
                                 .hint_text("Pane name...")
                                 .font(egui::TextStyle::Body),
                         );
