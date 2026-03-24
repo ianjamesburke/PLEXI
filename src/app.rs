@@ -1191,7 +1191,7 @@ impl PlexiApp {
                                     .add(
                                         egui::Button::new(
                                             RichText::new("\u{2715}")
-                                                .size(10.0)
+                                                .size(13.0)
                                                 .color(Colors::TEXT_DIM),
                                         )
                                         .frame(false),
