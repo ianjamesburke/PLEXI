@@ -85,10 +85,10 @@ impl PlexiApp {
             }
             let hover = ui.rect_contains_pointer(row_rect);
 
-            let response = ui.allocate_ui_with_layout(
+            let inner = ui.allocate_ui_with_layout(
                 Vec2::new(sidebar_width, 26.0),
                 Layout::left_to_right(Align::Center),
-                |ui| {
+                |ui| -> Option<egui::Response> {
                     let rect = ui.max_rect();
 
                     let fill = if is_active {
@@ -147,17 +147,21 @@ impl PlexiApp {
                                 state.store(ui.ctx(), te_id);
                             }
                         }
+                        None
                     } else {
                         let text_color = if is_active {
                             self.colors.text_primary
                         } else {
                             self.colors.text_dim
                         };
-                        ui.label(
-                            RichText::new(&self.contexts[i].name)
-                                .size(12.0)
-                                .color(text_color),
-                        );
+                        let label_resp = ui.add(
+                            egui::Label::new(
+                                RichText::new(&self.contexts[i].name)
+                                    .size(12.0)
+                                    .color(text_color),
+                            )
+                            .sense(egui::Sense::click()),
+                        ).on_hover_cursor(egui::CursorIcon::PointingHand);
 
                         // Delete button on hover when 2+ contexts
                         if hover && num_contexts > 1 {
@@ -179,10 +183,11 @@ impl PlexiApp {
                                 }
                             });
                         }
+                        Some(label_resp)
                     }
                 },
             );
-            let _ = response;
+            let label_response = inner.inner;
 
             if !is_renaming {
                 // Only process row clicks if the delete button didn't consume the click
@@ -218,9 +223,14 @@ impl PlexiApp {
                         }
                     });
 
-                    if row_response.double_clicked() {
+                    // Use label response for clicks on the name text (it has
+                    // event priority over row_response in egui's interaction
+                    // stack). Fall back to row_response for clicks on the row
+                    // background outside the label.
+                    let on_label = label_response.as_ref();
+                    if on_label.is_some_and(|r| r.double_clicked()) {
                         double_clicked_context = Some(i);
-                    } else if row_response.clicked() {
+                    } else if on_label.is_some_and(|r| r.clicked()) || row_response.clicked() {
                         clicked_context = Some(i);
                     }
                 }
