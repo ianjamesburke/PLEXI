@@ -152,7 +152,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
     fonts.font_data.insert(
         FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
-            "../fonts/JetBrainsMonoNerdFont-Regular.ttf"
+            "../fonts/JetBrainsMonoNerdFont-Light.ttf"
         ))),
     );
     fonts.font_data.insert(
