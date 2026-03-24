@@ -787,6 +787,12 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
+                Action::NewContext => {
+                    self.new_context();
+                    let idx = self.active_context;
+                    self.rename_buffer = self.contexts[idx].name.clone();
+                    self.renaming_context = Some(idx);
+                }
                 Action::SwitchContext(i) => {
                     if i < self.contexts.len() {
                         self.active_context = i;
@@ -1408,6 +1414,7 @@ impl PlexiApp {
                             ("\u{2318}B", "Toggle sidebar"),
                             ("\u{2318}H/J/K/L", "Focus pane"),
                             ("\u{2318}\u{21A9}", "Zoom pane"),
+                            ("\u{2318}N", "New context"),
                             ("\u{2318}1-9", "Switch context"),
                             ("\u{2318}/", "This help"),
                             ("\u{2318}Q", "Quit"),

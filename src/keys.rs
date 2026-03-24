@@ -20,6 +20,7 @@ pub enum Action {
     ToggleZoom,
     ToggleCommandPalette,
     RenamePane,
+    NewContext,
     SwitchContext(usize),
 }
 
@@ -98,6 +99,11 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         // Rename pane (Cmd+Shift+R)
         if input.consume_key(cmd_shift, egui::Key::R) {
             actions.push(Action::RenamePane);
+        }
+
+        // New context (Cmd+N)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+            actions.push(Action::NewContext);
         }
 
         // Switch context (Cmd+1 through Cmd+9)
