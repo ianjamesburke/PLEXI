@@ -182,6 +182,8 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         ArrowLeft,  +TerminalMode::APP_CURSOR; BindingAction::Esc("\x1bOD".into());
         ArrowRight, +TerminalMode::APP_CURSOR; BindingAction::Esc("\x1bOC".into());
         // CTRL
+        Backspace,  Modifiers::COMMAND; BindingAction::Char('\x15');
+        Delete,     Modifiers::COMMAND; BindingAction::Char('\x0b');
         ArrowUp,    Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5A".into());
         ArrowDown,  Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5B".into());
         ArrowLeft,  Modifiers::COMMAND; BindingAction::Esc("\x1b[1;5D".into());
