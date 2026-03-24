@@ -494,13 +494,14 @@ impl PlexiApp {
         ctx.focused_pane = Some(new_tile);
     }
 
-    fn cycle_tab(&mut self, forward: bool) {
+
+    fn switch_tab_by_index(&mut self, n: usize) {
         let ctx = &self.contexts[self.active_context];
         let Some(focused) = ctx.focused_pane else {
             return;
         };
 
-        let Some((tabs_id, current_tab_child)) = ctx.find_ancestor_tabs(focused) else {
+        let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) else {
             return;
         };
 
@@ -509,27 +510,17 @@ impl PlexiApp {
         };
 
         let children = &tabs.children;
-        if children.len() < 2 {
+        if n >= children.len() {
             return;
         }
-
-        let Some(pos) = children.iter().position(|&c| c == current_tab_child) else {
-            return;
-        };
-
-        let next_pos = if forward {
-            (pos + 1) % children.len()
-        } else {
-            (pos + children.len() - 1) % children.len()
-        };
-        let next_tile = children[next_pos];
+        let target = children[n];
 
         let ctx = &mut self.contexts[self.active_context];
         if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tabs_id) {
-            tabs.set_active(next_tile);
+            tabs.set_active(target);
         }
 
-        if let Some(pane_tile) = ctx.find_first_pane_in(next_tile) {
+        if let Some(pane_tile) = ctx.find_first_pane_in(target) {
             ctx.focused_pane = Some(pane_tile);
             if ctx.zoomed_pane.is_some() {
                 ctx.zoomed_pane = Some(pane_tile);
@@ -657,6 +648,33 @@ impl PlexiApp {
         self.active_context = self.contexts.len() - 1;
     }
 
+    fn reset_active_context(&mut self) {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let settings = Self::make_backend_settings(Some(home.clone()), &self.colors);
+        let Some(pane) =
+            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+        else {
+            log::error!("Failed to create terminal for reset context");
+            return;
+        };
+
+        let mut panes = HashMap::new();
+        panes.insert(new_id, pane);
+
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(new_id);
+        let tree = Tree::new("plexi", root_tile, tiles);
+
+        let ctx = &mut self.contexts[self.active_context];
+        ctx.tree = tree;
+        ctx.panes = panes;
+        ctx.focused_pane = Some(root_tile);
+        ctx.zoomed_pane = None;
+    }
+
     fn delete_context(&mut self, index: usize) {
         if self.contexts.len() <= 1 {
             return;
@@ -742,13 +760,10 @@ impl eframe::App for PlexiApp {
                     } else if self.contexts.len() > 1 {
                         self.delete_context(self.active_context);
                     } else {
-                        self.save_workspace();
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.reset_active_context();
                     }
                 }
                 Action::NewTab => self.new_tab(),
-                Action::NextTab => self.cycle_tab(true),
-                Action::PrevTab => self.cycle_tab(false),
                 Action::ToggleZoom => {
                     let ctx = &mut self.contexts[self.active_context];
                     if let Some(focused) = ctx.focused_pane {
@@ -793,10 +808,15 @@ impl eframe::App for PlexiApp {
                     self.rename_buffer = self.contexts[idx].name.clone();
                     self.renaming_context = Some(idx);
                 }
-                Action::SwitchContext(i) => {
-                    if i < self.contexts.len() {
-                        self.active_context = i;
-                    }
+                Action::NextContext => {
+                    self.active_context = (self.active_context + 1) % self.contexts.len();
+                }
+                Action::PrevContext => {
+                    self.active_context =
+                        (self.active_context + self.contexts.len() - 1) % self.contexts.len();
+                }
+                Action::SwitchTab(n) => {
+                    self.switch_tab_by_index(n);
                 }
             }
         }
@@ -996,7 +1016,7 @@ impl eframe::App for PlexiApp {
                                     let dot_radius = 4.0;
                                     let dot_spacing = 12.0;
                                     let rect = ui.max_rect();
-                                    let start_x = rect.left() + 2.0;
+                                    let start_x = rect.left() + 6.0;
                                     let y = rect.top() + 2.0 + dot_radius;
 
                                     let dim = self.colors.bg_active;

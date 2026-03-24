@@ -29,7 +29,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     ) -> UiResponse {
         // Detect clicks for focus (skip when a pane is zoomed — input belongs to the overlay)
         if self.zoomed_pane.is_none()
-            && ui.input(|i| i.pointer.any_pressed())
+            && (ui.input(|i| i.pointer.any_pressed())
+                || ui.input(|i| !i.raw.hovered_files.is_empty()))
             && ui.rect_contains_pointer(ui.max_rect())
         {
             self.new_focused = Some(tile_id);
@@ -91,7 +92,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
                                 let dot_radius = 4.0;
                                 let dot_spacing = 12.0;
-                                let start_x = bar_rect.left() - 6.0;
+                                let start_x = bar_rect.left() + 6.0;
                                 let y = bar_rect.center().y;
                                 let dim = self.colors.bg_active;
 
@@ -129,7 +130,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             let dot_radius = 4.0;
                             let dot_spacing = 12.0;
                             let rect = ui.max_rect();
-                            let start_x = rect.left() + 2.0;
+                            let start_x = rect.left() + 6.0;
                             let y = rect.top() + 2.0 + dot_radius;
 
                             let dim = self.colors.bg_active;
