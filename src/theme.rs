@@ -147,6 +147,13 @@ pub fn terminal_font(size: f32) -> TerminalFont {
     })
 }
 
+// System fonts tried at runtime as additional fallbacks (macOS only).
+// Apple Symbols covers geometric shapes, Miscellaneous Technical (⌘ ⌥ ⏺ etc.),
+// and Dingbats that CLI tools like Claude Code and Starship commonly use.
+const SYSTEM_FALLBACK_FONTS: &[(&str, &str)] = &[
+    ("Apple Symbols", "/System/Library/Fonts/Apple Symbols.ttf"),
+];
+
 pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -181,6 +188,26 @@ pub fn font_definitions() -> egui::FontDefinitions {
         .entry(egui::FontFamily::Monospace)
         .or_default()
         .insert(1, FALLBACK_FONT_NAME.to_owned());
+
+    // Load system fonts as additional fallbacks after bundled fonts but before egui defaults.
+    for (name, path) in SYSTEM_FALLBACK_FONTS {
+        if let Ok(data) = std::fs::read(path) {
+            fonts
+                .font_data
+                .insert((*name).to_owned(), Arc::new(egui::FontData::from_owned(data)));
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(2, (*name).to_owned());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .insert(2, (*name).to_owned());
+        }
+    }
+
     fonts
 }
 
