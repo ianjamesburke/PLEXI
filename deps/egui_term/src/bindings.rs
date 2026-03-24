@@ -234,7 +234,7 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         Backslash,    Modifiers::CTRL; BindingAction::Char('\x1c');
         Minus,        Modifiers::CTRL; BindingAction::Char('\x1f');
         // SHIFT
-        Enter,      Modifiers::SHIFT; BindingAction::Char('\x0d');
+        Enter,      Modifiers::SHIFT; BindingAction::Esc("\x1b[13;2u".into());
         Backspace,  Modifiers::SHIFT; BindingAction::Char('\x7f');
         Tab,        Modifiers::SHIFT; BindingAction::Esc("\x1b[Z".into());
         End,        Modifiers::SHIFT, +TerminalMode::ALT_SCREEN; BindingAction::Esc("\x1b[1;2F".into());
