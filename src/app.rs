@@ -1438,10 +1438,9 @@ impl PlexiApp {
         let mut entries: Vec<(usize, String, TileId, PaneId, String, String)> = Vec::new();
         for (ci, context) in self.contexts.iter().enumerate() {
             for (&pane_id, pane) in &context.panes {
-                let display_name = pane
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("Terminal {}", pane_id + 1));
+                let Some(display_name) = pane.name.clone() else {
+                    continue;
+                };
                 let cwd = shell::get_pid_cwd(pane.backend.child_pid())
                     .map(|p| {
                         let s = p.display().to_string();
