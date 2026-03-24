@@ -258,6 +258,34 @@ impl<'a> TerminalView<'a> {
             }
         }
 
+        // Auto-scroll during drag selection at viewport edges.
+        // Runs every frame (not just on PointerMoved) so scrolling continues
+        // while the mouse is held stationary near an edge.
+        if state.is_dragged {
+            if let Some(pos) = layout.ctx.input(|i| i.pointer.latest_pos()) {
+                let edge_zone = 20.0_f32;
+                let scroll_lines = if pos.y < layout.rect.min.y + edge_zone {
+                    1 // scroll up (show earlier content)
+                } else if pos.y > layout.rect.max.y - edge_zone {
+                    -1 // scroll down (show later content)
+                } else {
+                    0
+                };
+
+                if scroll_lines != 0 {
+                    self.backend
+                        .process_command(BackendCommand::Scroll(scroll_lines));
+                    let cursor_x = pos.x - layout.rect.min.x;
+                    let cursor_y = pos.y - layout.rect.min.y;
+                    self.backend
+                        .process_command(BackendCommand::SelectUpdate(cursor_x, cursor_y));
+                    layout
+                        .ctx
+                        .request_repaint_after(Duration::from_millis(50));
+                }
+            }
+        }
+
         // Check for link hover every frame (not just on mouse move) so that
         // pressing/releasing Cmd updates the hyperlink state immediately.
         if has_pointer && modifiers.command_only() {
