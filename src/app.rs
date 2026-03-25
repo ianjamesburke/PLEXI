@@ -37,7 +37,7 @@ pub struct PlexiApp {
 impl PlexiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         #[cfg(target_os = "macos")]
-        crate::macos_menu::remove_intercepted_menu_items();
+        crate::macos_menu::customize_app_menu();
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());

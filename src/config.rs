@@ -43,11 +43,65 @@ pub struct ThemeConfig {
     pub bright_foreground: Option<String>,
 }
 
-fn config_path() -> PathBuf {
-    dirs::config_dir()
+pub fn config_path() -> PathBuf {
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("plexi")
+        .join(".plexi")
         .join("config.toml")
+}
+
+const CONFIG_TEMPLATE: &str = r##"# Plexi Configuration
+# Changes take effect on next launch.
+
+font_size = 14.0
+
+[theme]
+# UI chrome
+# bg_darkest = "#11111b"
+# bg_sidebar = "#181825"
+# bg_toolbar = "#181825"
+# terminal_bg = "#292a44"
+# bg_hover = "#2a2a3c"
+# bg_active = "#313144"
+# text_primary = "#cdd6f4"
+# text_dim = "#6c7086"
+# text_section = "#585b70"
+accent = "#89b4fa"
+# border = "#2a2a3c"
+
+# Terminal ANSI palette
+# foreground = "#e8e6ed"
+# background = "#292a44"
+# black = "#12131e"
+# red = "#dd7755"
+# green = "#04dbb5"
+# yellow = "#f2e7b7"
+# blue = "#7aa5ff"
+# magenta = "#bf9cf9"
+# cyan = "#56d3c2"
+# white = "#e4e3e9"
+# bright_black = "#666699"
+# bright_red = "#ff92cd"
+# bright_green = "#01eac0"
+# bright_yellow = "#fffca8"
+# bright_blue = "#69c0fa"
+# bright_magenta = "#c17ff8"
+# bright_cyan = "#8bfde1"
+# bright_white = "#f4f2f9"
+# bright_foreground = "#f4f2f9"
+"##;
+
+pub fn open_config_file() {
+    let path = config_path();
+
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, CONFIG_TEMPLATE);
+    }
+
+    let _ = std::process::Command::new("open").arg(&path).spawn();
 }
 
 impl PlexiConfig {
