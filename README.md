@@ -7,9 +7,7 @@
 <p align="center">An experiment in spatial terminal window management.</p>
 
 <p align="center">
-  <img src="media/screenshot-1.png" width="48%" alt="Screenshot 1" />
-  &nbsp;
-  <img src="media/screenshot-2.png" width="48%" alt="Screenshot 2" />
+  <img src="media/screenshot-3.png" width="96%" alt="Screenshot" />
 </p>
 
 <p align="center"><em>basically tmux for omarchy babes</em></p>
