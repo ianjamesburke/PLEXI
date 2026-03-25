@@ -12,7 +12,9 @@ pub enum Action {
     Navigate(Direction),
     ClosePane,
     NewTab,
-    SwitchTab(usize),
+    SwitchContext(usize),
+    NextTab,
+    PrevTab,
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
@@ -20,8 +22,6 @@ pub enum Action {
     ToggleCommandPalette,
     RenamePane,
     NewContext,
-    NextContext,
-    PrevContext,
     IncreasePaneFontSize,
     DecreasePaneFontSize,
 }
@@ -65,16 +65,12 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
             actions.push(Action::NewTab);
         }
 
-        // Cycle contexts (Cmd+Shift+] / Cmd+Shift+[, also Cmd+] / Cmd+[)
-        if input.consume_key(cmd_shift, egui::Key::CloseBracket) {
-            actions.push(Action::NextContext);
-        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
-            actions.push(Action::NextContext);
+        // Cycle tabs (Cmd+] / Cmd+[)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
+            actions.push(Action::NextTab);
         }
-        if input.consume_key(cmd_shift, egui::Key::OpenBracket) {
-            actions.push(Action::PrevContext);
-        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
-            actions.push(Action::PrevContext);
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
+            actions.push(Action::PrevTab);
         }
 
         // Quit (Cmd+Q)
@@ -122,7 +118,7 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
             actions.push(Action::DecreasePaneFontSize);
         }
 
-        // Switch tab (Cmd+1 through Cmd+9)
+        // Switch context (Cmd+1 through Cmd+9)
         let num_keys = [
             egui::Key::Num1,
             egui::Key::Num2,
@@ -136,7 +132,7 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
             if input.consume_key(egui::Modifiers::COMMAND, key) {
-                actions.push(Action::SwitchTab(i));
+                actions.push(Action::SwitchContext(i));
             }
         }
     });

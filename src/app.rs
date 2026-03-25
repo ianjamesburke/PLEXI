@@ -248,19 +248,17 @@ impl eframe::App for PlexiApp {
                 }
                 Action::NewContext => {
                     self.new_context();
-                    let idx = self.active_context;
-                    self.rename_buffer = self.contexts[idx].name.clone();
-                    self.renaming_context = Some(idx);
                 }
-                Action::NextContext => {
-                    self.active_context = (self.active_context + 1) % self.contexts.len();
+                Action::SwitchContext(n) => {
+                    if n < self.contexts.len() {
+                        self.active_context = n;
+                    }
                 }
-                Action::PrevContext => {
-                    self.active_context =
-                        (self.active_context + self.contexts.len() - 1) % self.contexts.len();
+                Action::NextTab => {
+                    self.cycle_tab(true);
                 }
-                Action::SwitchTab(n) => {
-                    self.switch_tab_by_index(n);
+                Action::PrevTab => {
+                    self.cycle_tab(false);
                 }
                 Action::IncreasePaneFontSize => {
                     self.adjust_focused_pane_font_size(1.0);

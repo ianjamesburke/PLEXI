@@ -154,6 +154,13 @@ impl PlexiApp {
                         } else {
                             self.colors.text_dim
                         };
+                        if i < 9 {
+                            ui.label(
+                                RichText::new(format!("{}", i + 1))
+                                    .size(11.0)
+                                    .color(self.colors.text_dim),
+                            );
+                        }
                         let label_resp = ui.add(
                             egui::Label::new(
                                 RichText::new(&self.contexts[i].name)

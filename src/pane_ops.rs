@@ -142,7 +142,7 @@ impl PlexiApp {
         ctx.focused_pane = Some(new_tile);
     }
 
-    pub(crate) fn switch_tab_by_index(&mut self, n: usize) {
+    pub(crate) fn cycle_tab(&mut self, forward: bool) {
         let ctx = &self.contexts[self.active_context];
         let Some(focused) = ctx.focused_pane else {
             return;
@@ -157,10 +157,21 @@ impl PlexiApp {
         };
 
         let children = &tabs.children;
-        if n >= children.len() {
+        if children.len() < 2 {
             return;
         }
-        let target = children[n];
+
+        let active_idx = tabs
+            .active
+            .and_then(|a| children.iter().position(|&c| c == a))
+            .unwrap_or(0);
+
+        let new_idx = if forward {
+            (active_idx + 1) % children.len()
+        } else {
+            (active_idx + children.len() - 1) % children.len()
+        };
+        let target = children[new_idx];
 
         let ctx = &mut self.contexts[self.active_context];
         if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tabs_id) {

@@ -2,10 +2,22 @@ Always confirm best practices by researching the docs.
 
 ## GitHub Issue Labels
 
-- **bug** — something broken that needs fixing
+Every issue gets exactly one **type** and one **priority**. Optionally add a **status** label.
+
+**Type** (mutually exclusive):
+- **bug** — something broken
 - **enhancement** — concrete improvement scoped for active development
-- **idea** — speculative feature, out of scope for MVP; park it and revisit when there are real users asking for it
-- Use `idea` liberally to prevent backlog bloat — if it's not needed to ship a usable terminal multiplexer, it's an idea.
+- **idea** — speculative feature, out of scope for MVP. Use liberally — if it's not needed to ship a usable terminal multiplexer, it's an idea.
+
+**Priority** (P1–P4):
+- **P1** — MVP / shipping blocker. Fix before anything else.
+- **P2** — important, not blocking. Next up after P1s are clear.
+- **P3** — nice to have. Do when there's breathing room.
+- **P4** — backlog / someday. Revisit when users ask for it.
+
+**Status** (optional):
+- **ready** — fully researched, can be picked up immediately
+- **blocked** — waiting on an external dependency or upstream fix
 
 ## Worktrees
 
