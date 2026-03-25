@@ -1,5 +1,5 @@
 use egui::emath::GuiRounding;
-use egui::epaint::RectShape;
+use egui::epaint::{CircleShape, RectShape};
 use egui::{pos2, Color32, CornerRadius, Rect, Shape, Stroke};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,6 +127,52 @@ fn corner_shapes(c: char, cell_rect: Rect, fg: Color32) -> Option<Vec<Shape>> {
     Some(shapes)
 }
 
+// Render circle/dot characters geometrically so they stay within cell bounds.
+// Fallback fonts often render these wider than monospace cell width, causing
+// clipping at column 0 where the painter's clip rect starts.
+fn circle_shape(c: char, cell_rect: Rect, fg: Color32) -> Option<Shape> {
+    let center = cell_rect.center();
+    // Use cell width as the constraining dimension (cells are taller than wide).
+    let half_w = cell_rect.width() / 2.0;
+
+    match c {
+        // ● BLACK CIRCLE — Claude Code status indicators, Starship prompt dots
+        '\u{25CF}' => {
+            let radius = half_w * 0.72;
+            Some(Shape::Circle(CircleShape::filled(center, radius, fg)))
+        }
+        // ○ WHITE CIRCLE — outline variant
+        '\u{25CB}' => {
+            let radius = half_w * 0.72;
+            let stroke = Stroke::new(1.0, fg);
+            Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
+        }
+        // ◉ FISHEYE — filled circle with smaller inner circle
+        '\u{25C9}' => {
+            let radius = half_w * 0.72;
+            let stroke = Stroke::new(1.0, fg);
+            Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
+        }
+        // ⏺ BLACK CIRCLE FOR RECORD
+        '\u{23FA}' => {
+            let radius = half_w * 0.72;
+            Some(Shape::Circle(CircleShape::filled(center, radius, fg)))
+        }
+        // • BULLET (smaller dot)
+        '\u{2022}' => {
+            let radius = half_w * 0.38;
+            Some(Shape::Circle(CircleShape::filled(center, radius, fg)))
+        }
+        // ◦ WHITE BULLET (smaller outline dot)
+        '\u{25E6}' => {
+            let radius = half_w * 0.38;
+            let stroke = Stroke::new(1.0, fg);
+            Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn maybe_push_graphics_element(
     shapes: &mut Vec<Shape>,
     c: char,
@@ -136,6 +182,11 @@ pub(crate) fn maybe_push_graphics_element(
 ) -> bool {
     if let Some(corner_shapes) = corner_shapes(c, cell_rect, fg) {
         shapes.extend(corner_shapes);
+        return true;
+    }
+
+    if let Some(circle) = circle_shape(c, cell_rect, fg) {
+        shapes.push(circle);
         return true;
     }
 
