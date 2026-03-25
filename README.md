@@ -86,3 +86,5 @@ just dev     # cargo run
 just build   # cargo build --release
 just install # build + install to /Applications and /usr/local/bin
 ```
+
+hi
