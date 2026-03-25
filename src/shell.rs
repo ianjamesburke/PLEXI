@@ -166,3 +166,30 @@ precmd_functions+=(__plexi_precmd)
 
     Ok(zsh_dir)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_shell_returns_existing_path() {
+        let shell = detect_shell();
+        assert!(Path::new(&shell).exists(), "detect_shell returned non-existent path: {shell}");
+    }
+
+    #[test]
+    fn detect_shell_returns_absolute_path() {
+        let shell = detect_shell();
+        assert!(shell.starts_with('/'), "detect_shell should return absolute path, got: {shell}");
+    }
+
+    #[test]
+    fn build_env_sets_required_vars() {
+        let env = build_env();
+        assert!(env.contains_key("TERM"));
+        assert!(env.contains_key("COLORTERM"));
+        assert_eq!(env["COLORTERM"], "truecolor");
+        assert!(env.contains_key("LANG"));
+        assert!(env.contains_key("LC_ALL"));
+    }
+}

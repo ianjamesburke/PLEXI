@@ -1,11 +1,33 @@
 use crate::pane::TerminalPane;
 use crate::theme::{self, Colors};
-use egui::Vec2;
+use egui::{Color32, Vec2};
 use egui_term::{TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
 
 pub type PaneId = u64;
+
+const DOT_RADIUS: f32 = 4.0;
+const DOT_SPACING: f32 = 12.0;
+const DOT_LEFT_MARGIN: f32 = 6.0;
+pub(crate) const TAB_DOT_RESERVED_HEIGHT: f32 = 14.0;
+
+pub(crate) fn paint_tab_dots(
+    painter: &egui::Painter,
+    left_x: f32,
+    center_y: f32,
+    active_idx: usize,
+    count: usize,
+    active_color: Color32,
+    inactive_color: Color32,
+) {
+    let start_x = left_x + DOT_LEFT_MARGIN;
+    for i in 0..count {
+        let cx = start_x + (i as f32) * DOT_SPACING + DOT_RADIUS;
+        let color = if i == active_idx { active_color } else { inactive_color };
+        painter.circle_filled(egui::pos2(cx, center_y), DOT_RADIUS, color);
+    }
+}
 
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, TerminalPane>,
@@ -91,17 +113,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
                             // If tabs exist, draw dots on the left side of the bar
                             if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
-                                let dot_radius = 4.0;
-                                let dot_spacing = 12.0;
-                                let start_x = bar_rect.left() + 6.0;
-                                let y = bar_rect.center().y;
-                                let dim = self.colors.bg_active;
-
-                                for i in 0..count {
-                                    let cx = start_x + (i as f32) * dot_spacing + dot_radius;
-                                    let color = if i == active_idx { self.colors.accent } else { dim };
-                                    ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
-                                }
+                                paint_tab_dots(
+                                    ui.painter(),
+                                    bar_rect.left(),
+                                    bar_rect.center().y,
+                                    active_idx,
+                                    count,
+                                    self.colors.accent,
+                                    self.colors.bg_active,
+                                );
                             }
 
                             // Center the name text in the bar
@@ -113,7 +133,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                 self.colors.text_dim,
                             );
                         } else if has_tabs {
-                            ui.add_space(14.0);
+                            ui.add_space(TAB_DOT_RESERVED_HEIGHT);
                         }
 
                         let font_size = pane.font_size;
@@ -129,19 +149,16 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     // (when a name bar exists, dots are already drawn inside it)
                     if !self.pane_names.contains_key(pane_id) {
                         if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
-                            let dot_radius = 4.0;
-                            let dot_spacing = 12.0;
                             let rect = ui.max_rect();
-                            let start_x = rect.left() + 6.0;
-                            let y = rect.top() + 2.0 + dot_radius;
-
-                            let dim = self.colors.bg_active;
-
-                            for i in 0..count {
-                                let cx = start_x + (i as f32) * dot_spacing + dot_radius;
-                                let color = if i == active_idx { self.colors.accent } else { dim };
-                                ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
-                            }
+                            paint_tab_dots(
+                                ui.painter(),
+                                rect.left(),
+                                rect.top() + 2.0 + DOT_RADIUS,
+                                active_idx,
+                                count,
+                                self.colors.accent,
+                                self.colors.bg_active,
+                            );
                         }
                     }
                 });

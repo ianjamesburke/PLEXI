@@ -18,6 +18,7 @@ pub struct PlexiApp {
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     pub(crate) theme: TerminalTheme,
     pub(crate) colors: Colors,
+    pub(crate) default_font_size: f32,
     pub(crate) next_pane_id: u64,
     pub(crate) ctx: egui::Context,
     pub(crate) contexts: Vec<Context>,
@@ -43,6 +44,7 @@ impl PlexiApp {
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
         let config = config::PlexiConfig::load();
+        let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = config.theme.unwrap_or_default();
         let colors = Colors::from_config(&theme_cfg);
         theme::setup_style(&cc.egui_ctx, &colors);
@@ -64,7 +66,7 @@ impl PlexiApp {
                     };
                     let settings = Self::make_backend_settings(cwd, &colors);
                     if let Some(mut pane) =
-                        TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings)
+                        TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
                     {
                         pane.name = saved_pane.name.clone();
                         panes.insert(saved_pane.id, pane);
@@ -89,6 +91,7 @@ impl PlexiApp {
                     pty_event_tx: tx,
                     theme: theme::terminal_theme(&theme_cfg),
                     colors,
+                    default_font_size,
                     next_pane_id: ws.next_pane_id,
                     ctx: cc.egui_ctx.clone(),
                     contexts,
@@ -108,7 +111,7 @@ impl PlexiApp {
 
         // Default: single context with single pane
         let settings = Self::make_backend_settings(None, &colors);
-        let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings)
+        let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
             .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
         panes.insert(0u64, pane);
@@ -125,6 +128,7 @@ impl PlexiApp {
             pty_event_tx: tx,
             theme: theme::terminal_theme(&theme_cfg),
             colors,
+            default_font_size,
             next_pane_id: 1,
             ctx: cc.egui_ctx.clone(),
             contexts: vec![Context {
@@ -155,7 +159,6 @@ impl PlexiApp {
             env: shell::build_env(),
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
-            ..Default::default()
         }
     }
 
@@ -469,7 +472,7 @@ impl eframe::App for PlexiApp {
                                     } else {
                                         // Reserve space for tab dots if in a tab group
                                         if zoomed_tab_info.is_some() {
-                                            ui.add_space(14.0);
+                                            ui.add_space(crate::tiling::TAB_DOT_RESERVED_HEIGHT);
                                         }
                                         let font_size = pane.font_size;
                                         let terminal =
@@ -487,19 +490,16 @@ impl eframe::App for PlexiApp {
 
                                 // Draw tab indicator dots (same style as tiling.rs)
                                 if let Some((active_idx, count)) = zoomed_tab_info {
-                                    let dot_radius = 4.0;
-                                    let dot_spacing = 12.0;
                                     let rect = ui.max_rect();
-                                    let start_x = rect.left() + 6.0;
-                                    let y = rect.top() + 2.0 + dot_radius;
-
-                                    let dim = self.colors.bg_active;
-
-                                    for i in 0..count {
-                                        let cx = start_x + (i as f32) * dot_spacing + dot_radius;
-                                        let color = if i == active_idx { self.colors.accent } else { dim };
-                                        ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
-                                    }
+                                    crate::tiling::paint_tab_dots(
+                                        ui.painter(),
+                                        rect.left(),
+                                        rect.top() + 2.0 + 4.0, // 4.0 = dot radius
+                                        active_idx,
+                                        count,
+                                        self.colors.accent,
+                                        self.colors.bg_active,
+                                    );
                                 }
                             });
                     } else {

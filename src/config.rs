@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Deserialize, Default)]
 pub struct PlexiConfig {
+    pub font_size: Option<f32>,
     pub theme: Option<ThemeConfig>,
 }
 
@@ -63,5 +64,57 @@ impl PlexiConfig {
                 Self::default()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config() {
+        let cfg = PlexiConfig::default();
+        assert!(cfg.theme.is_none());
+        assert!(cfg.font_size.is_none());
+    }
+
+    #[test]
+    fn parse_empty_toml() {
+        let cfg: PlexiConfig = toml::from_str("").unwrap();
+        assert!(cfg.theme.is_none());
+        assert!(cfg.font_size.is_none());
+    }
+
+    #[test]
+    fn parse_font_size() {
+        let cfg: PlexiConfig = toml::from_str("font_size = 16.0").unwrap();
+        assert_eq!(cfg.font_size, Some(16.0));
+    }
+
+    #[test]
+    fn parse_theme_colors() {
+        let toml_str = r##"
+[theme]
+accent = "#ff0000"
+bg_darkest = "#000000"
+"##;
+        let cfg: PlexiConfig = toml::from_str(toml_str).unwrap();
+        let theme = cfg.theme.unwrap();
+        assert_eq!(theme.accent, Some("#ff0000".into()));
+        assert_eq!(theme.bg_darkest, Some("#000000".into()));
+        assert!(theme.bg_sidebar.is_none());
+    }
+
+    #[test]
+    fn parse_terminal_palette() {
+        let toml_str = r##"
+[theme]
+foreground = "#e8e6ed"
+black = "#12131e"
+"##;
+        let cfg: PlexiConfig = toml::from_str(toml_str).unwrap();
+        let theme = cfg.theme.unwrap();
+        assert_eq!(theme.foreground, Some("#e8e6ed".into()));
+        assert_eq!(theme.black, Some("#12131e".into()));
     }
 }

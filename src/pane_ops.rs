@@ -2,14 +2,35 @@ use crate::context::{replace_child, Context};
 use crate::keys::Direction;
 use crate::pane::TerminalPane;
 use crate::shell;
+use crate::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
-use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
+use egui_tiles::{Container, SimplificationOptions, Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::app::PlexiApp;
 
 impl PlexiApp {
+    fn create_single_pane_tree(
+        &mut self,
+        cwd: Option<PathBuf>,
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, TerminalPane>, TileId)> {
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let settings = Self::make_backend_settings(cwd, &self.colors);
+        let pane = TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)?;
+
+        let mut panes = HashMap::new();
+        panes.insert(new_id, pane);
+
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(new_id);
+        let tree = Tree::new("plexi", root_tile, tiles);
+
+        Some((tree, panes, root_tile))
+    }
+
     pub(crate) fn split_focused(&mut self, vertical: bool) {
         let Some(focused) = self.contexts[self.active_context].focused_pane else {
             return;
@@ -21,7 +42,7 @@ impl PlexiApp {
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)
         else {
             log::error!("Failed to create new terminal pane");
             return;
@@ -101,7 +122,7 @@ impl PlexiApp {
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)
         else {
             log::error!("Failed to create new terminal pane");
             return;
@@ -276,23 +297,11 @@ impl PlexiApp {
 
     pub(crate) fn new_context(&mut self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
-
-        let settings = Self::make_backend_settings(Some(home.clone()), &self.colors);
-        let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))
         else {
             log::error!("Failed to create terminal for new context");
             return;
         };
-
-        let mut panes = HashMap::new();
-        panes.insert(new_id, pane);
-
-        let mut tiles = egui_tiles::Tiles::default();
-        let root_tile = tiles.insert_pane(new_id);
-        let tree = egui_tiles::Tree::new("plexi", root_tile, tiles);
 
         let name = format!("Context {}", self.contexts.len() + 1);
         self.contexts.push(Context {
@@ -308,23 +317,11 @@ impl PlexiApp {
 
     pub(crate) fn reset_active_context(&mut self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
-
-        let settings = Self::make_backend_settings(Some(home.clone()), &self.colors);
-        let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings)
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))
         else {
             log::error!("Failed to create terminal for reset context");
             return;
         };
-
-        let mut panes = HashMap::new();
-        panes.insert(new_id, pane);
-
-        let mut tiles = egui_tiles::Tiles::default();
-        let root_tile = tiles.insert_pane(new_id);
-        let tree = egui_tiles::Tree::new("plexi", root_tile, tiles);
 
         let ctx = &mut self.contexts[self.active_context];
         ctx.tree = tree;

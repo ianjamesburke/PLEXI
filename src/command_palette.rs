@@ -57,15 +57,16 @@ impl PlexiApp {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                if !filtered.is_empty() && self.palette_selected < filtered.len() - 1 {
-                    self.palette_selected += 1;
-                }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                && !filtered.is_empty()
+                && self.palette_selected < filtered.len() - 1
+            {
+                self.palette_selected += 1;
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
-                if self.palette_selected > 0 {
-                    self.palette_selected -= 1;
-                }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                && self.palette_selected > 0
+            {
+                self.palette_selected -= 1;
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 if let Some(entry) = filtered.get(self.palette_selected) {

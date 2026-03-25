@@ -9,21 +9,8 @@ const FONT_NAME: &str = "JetBrainsMono Nerd Font";
 const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
 
 fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
-    let s = match s {
-        Some(s) => s.trim_start_matches('#'),
-        None => return default,
-    };
-    if s.len() != 6 {
-        return default;
-    }
-    match (
-        u8::from_str_radix(&s[0..2], 16),
-        u8::from_str_radix(&s[2..4], 16),
-        u8::from_str_radix(&s[4..6], 16),
-    ) {
-        (Ok(r), Ok(g), Ok(b)) => Color32::from_rgb(r, g, b),
-        _ => default,
-    }
+    let [r, g, b] = hex_to_bytes(s.as_deref(), [default.r(), default.g(), default.b()]);
+    Color32::from_rgb(r, g, b)
 }
 
 #[derive(Clone, Copy)]
@@ -213,4 +200,54 @@ pub fn font_definitions() -> egui::FontDefinitions {
 
 pub fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_to_bytes_valid_with_hash() {
+        assert_eq!(hex_to_bytes(Some("#ff0000"), [0, 0, 0]), [255, 0, 0]);
+        assert_eq!(hex_to_bytes(Some("#00ff00"), [0, 0, 0]), [0, 255, 0]);
+        assert_eq!(hex_to_bytes(Some("#0000ff"), [0, 0, 0]), [0, 0, 255]);
+        assert_eq!(hex_to_bytes(Some("#292a44"), [0, 0, 0]), [0x29, 0x2a, 0x44]);
+    }
+
+    #[test]
+    fn hex_to_bytes_valid_without_hash() {
+        assert_eq!(hex_to_bytes(Some("ff0000"), [0, 0, 0]), [255, 0, 0]);
+    }
+
+    #[test]
+    fn hex_to_bytes_invalid_returns_default() {
+        let d = [1, 2, 3];
+        assert_eq!(hex_to_bytes(Some("#xyz123"), d), d);
+        assert_eq!(hex_to_bytes(Some("#ff"), d), d);
+        assert_eq!(hex_to_bytes(Some("#ff00ff00"), d), d);
+        assert_eq!(hex_to_bytes(Some(""), d), d);
+    }
+
+    #[test]
+    fn hex_to_bytes_none_returns_default() {
+        assert_eq!(hex_to_bytes(None, [10, 20, 30]), [10, 20, 30]);
+    }
+
+    #[test]
+    fn parse_hex_or_delegates_to_hex_to_bytes() {
+        let c = parse_hex_or(&Some("#ff0000".into()), Color32::BLACK);
+        assert_eq!(c, Color32::from_rgb(255, 0, 0));
+
+        let c = parse_hex_or(&None, Color32::from_rgb(1, 2, 3));
+        assert_eq!(c, Color32::from_rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn colors_from_default_config() {
+        let cfg = ThemeConfig::default();
+        let colors = Colors::from_config(&cfg);
+        // Should use Rebecca Purple defaults
+        assert_eq!(colors.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b));
+        assert_eq!(colors.accent, Color32::from_rgb(0x89, 0xb4, 0xfa));
+    }
 }

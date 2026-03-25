@@ -134,7 +134,7 @@ impl Context {
 
                 let tier = if has_overlap { 0 } else { 1 };
                 let score = (tier, primary_dist);
-                if best.map_or(true, |(_, s)| score < s) {
+                if best.is_none_or(|(_, s)| score < s) {
                     best = Some((tile_id, score));
                 }
             }

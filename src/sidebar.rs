@@ -215,11 +215,11 @@ impl PlexiApp {
                                 ui.close_menu();
                             }
                         }
-                        if i < num_contexts - 1 {
-                            if ui.button("Move Down").clicked() {
-                                menu_action = Some((i, ContextMenuAction::MoveDown));
-                                ui.close_menu();
-                            }
+                        if i < num_contexts - 1
+                            && ui.button("Move Down").clicked()
+                        {
+                            menu_action = Some((i, ContextMenuAction::MoveDown));
+                            ui.close_menu();
                         }
                         if num_contexts > 1 {
                             ui.separator();
