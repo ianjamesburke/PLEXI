@@ -268,11 +268,24 @@ impl TerminalBackend {
         let content = self.last_content();
         let mut result = String::new();
         if let Some(range) = content.selectable_range {
+            let mut prev_line: Option<Line> = None;
             for indexed in content.grid.display_iter() {
                 if range.contains(indexed.point) {
+                    if let Some(prev) = prev_line {
+                        if prev != indexed.point.line {
+                            // Trim trailing spaces from the completed line
+                            let trimmed_len = result.trim_end_matches(' ').len();
+                            result.truncate(trimmed_len);
+                            result.push('\n');
+                        }
+                    }
                     result.push(indexed.c);
+                    prev_line = Some(indexed.point.line);
                 }
             }
+            // Trim trailing spaces from the last line
+            let trimmed_len = result.trim_end_matches(' ').len();
+            result.truncate(trimmed_len);
         }
         result
     }

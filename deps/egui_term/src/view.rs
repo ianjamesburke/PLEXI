@@ -10,7 +10,7 @@ use egui::Modifiers;
 use egui::MouseWheelUnit;
 use egui::Shape;
 use egui::Widget;
-use egui::{Align2, Painter, Pos2, Rect, Response, Stroke, Vec2};
+use egui::{Align2, Color32, Painter, Pos2, Rect, Response, Stroke, Vec2};
 use egui::{Id, PointerButton};
 use std::time::{Duration, Instant};
 
@@ -206,22 +206,34 @@ impl<'a> TerminalView<'a> {
                     modifiers,
                     pos,
                     ..
-                } if has_pointer => input_actions.push(process_button_click(
-                    state,
-                    layout,
-                    self.backend,
-                    &self.bindings_layout,
-                    button,
-                    pos,
-                    &modifiers,
-                    pressed,
-                )),
-                egui::Event::PointerMoved(pos) if has_pointer => {
+                } if has_pointer || (!pressed && state.is_dragged) => {
+                    // Allow button release to reach the pane even when the
+                    // pointer is outside, so is_dragged gets cleared.
+                    input_actions.push(process_button_click(
+                        state,
+                        layout,
+                        self.backend,
+                        &self.bindings_layout,
+                        button,
+                        pos,
+                        &modifiers,
+                        pressed,
+                    ))
+                },
+                egui::Event::PointerMoved(pos)
+                    if has_pointer || state.is_dragged =>
+                {
+                    // Clamp position to pane rect so selection extends to
+                    // the nearest edge when the cursor leaves the pane.
+                    let clamped = Pos2::new(
+                        pos.x.clamp(layout.rect.min.x, layout.rect.max.x),
+                        pos.y.clamp(layout.rect.min.y, layout.rect.max.y),
+                    );
                     input_actions = process_mouse_move(
                         state,
                         layout,
                         self.backend,
-                        pos,
+                        clamped,
                         &modifiers,
                     )
                 },
@@ -275,14 +287,19 @@ impl<'a> TerminalView<'a> {
                 if scroll_lines != 0 {
                     self.backend
                         .process_command(BackendCommand::Scroll(scroll_lines));
-                    let cursor_x = pos.x - layout.rect.min.x;
-                    let cursor_y = pos.y - layout.rect.min.y;
-                    self.backend
-                        .process_command(BackendCommand::SelectUpdate(cursor_x, cursor_y));
                     layout
                         .ctx
                         .request_repaint_after(Duration::from_millis(50));
                 }
+
+                // Always update selection while dragging, clamping to
+                // the pane rect so it extends to the nearest edge.
+                let clamped_x = pos.x.clamp(layout.rect.min.x, layout.rect.max.x);
+                let clamped_y = pos.y.clamp(layout.rect.min.y, layout.rect.max.y);
+                self.backend.process_command(BackendCommand::SelectUpdate(
+                    clamped_x - layout.rect.min.x,
+                    clamped_y - layout.rect.min.y,
+                ));
             }
         }
 
@@ -378,8 +395,15 @@ impl<'a> TerminalView<'a> {
                 fg = fg.linear_multiply(0.7);
             }
 
-            if is_inverse || is_selected {
+            if is_inverse {
                 std::mem::swap(&mut fg, &mut bg);
+            }
+
+            if is_selected {
+                // Uniform selection highlight: fixed tint over the global
+                // background so the band looks consistent regardless of
+                // per-cell fg/bg colors from ANSI escapes.
+                bg = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
             }
 
             if global_bg != bg {
