@@ -16,6 +16,7 @@ Every issue gets exactly one **type** and one **priority**. Optionally add a **s
 - **P4** — backlog / someday. Revisit when users ask for it.
 
 **Status** (optional):
+- **in progress** — currently being worked on
 - **ready** — fully researched, can be picked up immediately
 - **blocked** — waiting on an external dependency or upstream fix
 
