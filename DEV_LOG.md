@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-25 — [DECISION] V1 gate cleared — moving to P2 polish
+
+All P1 blockers resolved: code smell refactor complete, unit/integration tests added, and #56 (copy not preserving newlines) fixed. Remaining open issues are P2–P4. Rather than shipping V1 immediately, picking up #54 (drag screenshot duplication across panes) and #53 (Open Config menu item) as quality-of-life polish before the release. These aren't blockers but they're the kind of rough edges early adopters will hit.
+
 ## 2026-03-24 — [FIX] Apple Symbols loaded at runtime for missing glyph coverage
 
 The existing font chain (JBM Nerd Font → DejaVu Sans → egui defaults) still left some characters as squares in the terminal — specifically symbols from ranges like Miscellaneous Technical (⌥ ⌘ ⏺ etc.), Geometric Shapes, and Dingbats used by Claude Code, Starship, and similar CLI tools. JBM Nerd Font covers the Nerd Font PUA but not all of these standard Unicode ranges, and DejaVu is focused on Latin extended / Braille.
