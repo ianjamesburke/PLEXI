@@ -65,11 +65,15 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
             actions.push(Action::NewTab);
         }
 
-        // Cycle contexts (Cmd+] / Cmd+[)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
+        // Cycle contexts (Cmd+Shift+] / Cmd+Shift+[, also Cmd+] / Cmd+[)
+        if input.consume_key(cmd_shift, egui::Key::CloseBracket) {
+            actions.push(Action::NextContext);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
             actions.push(Action::NextContext);
         }
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
+        if input.consume_key(cmd_shift, egui::Key::OpenBracket) {
+            actions.push(Action::PrevContext);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
             actions.push(Action::PrevContext);
         }
 

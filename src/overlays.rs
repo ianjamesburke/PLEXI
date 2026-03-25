@@ -11,27 +11,28 @@ impl PlexiApp {
         ui.horizontal(|ui| {
             let active_ctx = &self.contexts[self.active_context];
 
-            // Sidebar toggle
-            let toggle_text = if self.sidebar_visible {
-                "\u{25C0}"
-            } else {
-                "\u{25B6}"
-            };
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new(toggle_text).size(11.0).color(self.colors.text_dim),
-                    )
-                    .frame(false),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Toggle sidebar (\u{2318}B)")
-                .clicked()
-            {
-                self.sidebar_visible = !self.sidebar_visible;
+            // Context dots (page indicators)
+            if self.contexts.len() > 1 {
+                let dot_radius = 3.5;
+                let dot_spacing = 10.0;
+                let total_width = (self.contexts.len() as f32) * dot_spacing;
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new(total_width, ui.available_height()),
+                    egui::Sense::hover(),
+                );
+                let y = rect.center().y;
+                let start_x = rect.left() + dot_radius;
+                for i in 0..self.contexts.len() {
+                    let cx = start_x + (i as f32) * dot_spacing;
+                    let color = if i == self.active_context {
+                        self.colors.accent
+                    } else {
+                        self.colors.bg_active
+                    };
+                    ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
+                }
+                ui.add_space(4.0);
             }
-
-            ui.add_space(8.0);
 
             // Context info
             ui.label(
@@ -99,7 +100,8 @@ impl PlexiApp {
                             ("\u{2318}P", "Command palette"),
                             ("\u{2318}\u{21E7}R", "Rename pane"),
                             ("\u{2318}T", "New tab"),
-                            ("\u{2318}]/[", "Next/prev tab"),
+                            ("\u{2318}]/[", "Next/prev context"),
+                            ("\u{2318}\u{21E7}]/[", "Next/prev context"),
                             ("\u{2318}D", "Split right"),
                             ("\u{2318}\u{21E7}D", "Split down"),
                             ("\u{2318}W", "Close pane"),
