@@ -253,23 +253,6 @@ impl<'a> TerminalView<'a> {
             }
         }
 
-        // Handle file drops — paste paths into PTY
-        let dropped_files = layout.ctx.input(|i| i.raw.dropped_files.clone());
-        for file in dropped_files {
-            if let Some(path) = &file.path {
-                let path_str = path.display().to_string();
-                let escaped = if path_str
-                    .contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c))
-                {
-                    format!("'{}'", path_str.replace('\'', "'\\''"))
-                } else {
-                    path_str
-                };
-                self.backend
-                    .process_command(BackendCommand::Write(escaped.as_bytes().to_vec()));
-            }
-        }
-
         // Auto-scroll during drag selection at viewport edges.
         // Runs every frame (not just on PointerMoved) so scrolling continues
         // while the mouse is held stationary near an edge.

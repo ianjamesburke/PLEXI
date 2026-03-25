@@ -1,7 +1,7 @@
 use crate::pane::TerminalPane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Vec2};
-use egui_term::{TerminalTheme, TerminalView};
+use egui_term::{BackendCommand, TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
 
@@ -60,6 +60,31 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         }
 
         let is_focused = self.focused_tile == Some(tile_id);
+
+        // Handle file drops — use the same geometric hit test as hover detection
+        // so the drop target matches the visual focus with no frame delay.
+        if is_drag_hovering {
+            let dropped = ui.input(|i| i.raw.dropped_files.clone());
+            if !dropped.is_empty() {
+                if let Some(pane) = self.panes.get_mut(pane_id) {
+                    for file in dropped {
+                        if let Some(path) = &file.path {
+                            let path_str = path.display().to_string();
+                            let escaped = if path_str.contains(|c: char| {
+                                c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)
+                            }) {
+                                format!("'{}'", path_str.replace('\'', "'\\''"))
+                            } else {
+                                path_str
+                            };
+                            pane.backend.process_command(BackendCommand::Write(
+                                escaped.as_bytes().to_vec(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         // When any pane is zoomed, render ALL panes as dark placeholders.
         // The zoomed pane is rendered separately in the overlay (app.rs).

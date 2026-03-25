@@ -370,8 +370,11 @@ impl eframe::App for PlexiApp {
 
                 #[cfg(target_os = "macos")]
                 let drag_cursor_pos: Option<egui::Pos2> = {
-                    let has_drag = ui.input(|i| !i.raw.hovered_files.is_empty());
+                    let has_drag = ui.input(|i| {
+                        !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty()
+                    });
                     if has_drag {
+                        ui.ctx().request_repaint(); // continuous repaints while dragging
                         use objc2_app_kit::NSApplication;
                         use objc2_foundation::MainThreadMarker;
                         MainThreadMarker::new()

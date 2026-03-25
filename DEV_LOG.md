@@ -1,5 +1,17 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-03-25 — [GOTCHA] File drop target must use geometric hit test, not focus state
+
+The initial fix for duplicate file drops (guarding `dropped_files` with `has_focus` in view.rs) caused drops to land in the wrong pane. Root cause: `focused_tile` in `PlexiBehavior` is derived from `ctx.focused_pane`, which is updated AFTER `tree.ui()` completes — so it's always 1 frame behind the actual hover detection (`new_focused`). On the drop frame, `has_focus` could point to the previously-focused pane, not the one under the cursor.
+
+Fix: moved drop handling from `view.rs` into `pane_ui` in `tiling.rs`, using the same `drag_cursor_pos` / `max_rect().contains(pos)` hit test as hover detection. Also extended `has_drag` to check `dropped_files` (not just `hovered_files`) so `drag_cursor_pos` is computed on the drop frame. Lesson: when an action must target the pane under the cursor, use the geometric hit test directly — never rely on focus state, which has inherent frame delay.
+
+## 2026-03-25 — [FIX] File drag focus was slow (~500ms) because no repaints were requested
+
+During an external file drag, winit on macOS only fires `HoveredFile` once (on `draggingEntered:`). No `CursorMoved` events fire during the drag. The app already worked around this by querying `NSWindow.mouseLocationOutsideOfEventStream()` each frame — but "each frame" only meant every ~530ms (cursor blink timer) when the terminal was idle. This made focus tracking during drags feel sluggish (0.5–1.5s delay) and caused focus to "stick" on panes with active PTY output (like Claude Code) since those triggered more frequent repaints.
+
+Fix: `ui.ctx().request_repaint()` when `hovered_files` is non-empty. This is the idiomatic egui approach — there is no continuous repaint mode or drag-specific hook. The repaint loop is self-terminating: it only runs while files are being dragged. `hovered_files` persists across frames (egui clones it in `RawInput::take()`, unlike `dropped_files` which uses `mem::take`), so the check stays true for the duration of the drag.
+
 ## 2026-03-25 — [DECISION] V1 gate cleared — moving to P2 polish
 
 All P1 blockers resolved: code smell refactor complete, unit/integration tests added, and #56 (copy not preserving newlines) fixed. Remaining open issues are P2–P4. Rather than shipping V1 immediately, picking up #54 (drag screenshot duplication across panes) and #53 (Open Config menu item) as quality-of-life polish before the release. These aren't blockers but they're the kind of rough edges early adopters will hit.
