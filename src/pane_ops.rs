@@ -4,6 +4,7 @@ use crate::pane::TerminalPane;
 use crate::shell;
 use crate::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
+use egui_term::BackendCommand;
 use egui_tiles::{Container, SimplificationOptions, Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -380,6 +381,16 @@ impl PlexiApp {
 
         if let Err(e) = ws.save() {
             log::error!("Failed to save workspace: {e}");
+        }
+    }
+
+    pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
+        let ctx = &mut self.contexts[self.active_context];
+        let Some(focused_tile) = ctx.focused_pane else { return };
+        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
+        let pane_id = *pane_id;
+        if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+            pane.backend.process_command(BackendCommand::Scroll(lines));
         }
     }
 

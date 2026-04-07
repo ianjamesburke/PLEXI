@@ -10,7 +10,7 @@ use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme, TerminalView};
 use egui_tiles::{Tile, Tree};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 pub struct PlexiApp {
@@ -31,6 +31,7 @@ pub struct PlexiApp {
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
+    pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) renaming_pane: Option<PaneId>,
 }
 
@@ -104,6 +105,7 @@ impl PlexiApp {
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
+                    pane_visit_history: Vec::new(),
                     renaming_pane: None,
                 };
             }
@@ -148,6 +150,7 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            pane_visit_history: Vec::new(),
             renaming_pane: None,
         }
     }
@@ -179,6 +182,20 @@ impl PlexiApp {
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_pty_events();
+
+        // Update window title to reflect active pane — readable by AppleScript / OS scripts
+        {
+            let context = &self.contexts[self.active_context];
+            let pane_name = context.focused_pane
+                .and_then(|tile_id| context.tree.tiles.get(tile_id))
+                .and_then(|tile| if let egui_tiles::Tile::Pane(pane_id) = tile { context.panes.get(pane_id) } else { None })
+                .and_then(|pane| pane.name.clone());
+            let title = match pane_name {
+                Some(name) => format!("{} — {}", context.name, name),
+                None => context.name.clone(),
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
 
         // Handle keyboard shortcuts
         for action in keys::poll_actions(ctx) {
@@ -269,22 +286,17 @@ impl eframe::App for PlexiApp {
                 Action::DecreasePaneFontSize => {
                     self.adjust_focused_pane_font_size(-1.0);
                 }
+                Action::ScrollUp => {
+                    self.scroll_focused_pane(3);
+                }
+                Action::ScrollDown => {
+                    self.scroll_focused_pane(-3);
+                }
             }
         }
 
-        // Handle window close request (X button, Cmd+W on macOS)
+        // Handle window close request (X button / system shutdown) — always quit
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
-            let total_panes: usize = self.contexts.iter().map(|c| c.panes.len()).sum();
-            if total_panes > 1 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                let active_panes = self.contexts[self.active_context].panes.len();
-                if active_panes > 1 {
-                    self.close_focused();
-                } else if self.contexts.len() > 1 {
-                    self.delete_context(self.active_context);
-                }
-            }
-            // Always save on close (X button, system shutdown, last pane)
             self.save_workspace();
         }
 
@@ -530,6 +542,30 @@ impl eframe::App for PlexiApp {
         // Rename pane overlay
         if self.renaming_pane.is_some() {
             self.draw_rename_pane_overlay(ctx);
+        }
+    }
+}
+
+impl PlexiApp {
+    pub(crate) fn record_pane_visit(&mut self, ctx_idx: usize, tile_id: egui_tiles::TileId) {
+        self.pane_visit_history.retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
+        self.pane_visit_history.insert(0, (ctx_idx, tile_id));
+        self.pane_visit_history.truncate(100);
+    }
+
+    pub(crate) fn abbreviate_home_path(path: &Path) -> String {
+        let raw = path.display().to_string();
+        if let Some(home) = dirs::home_dir() {
+            let home_display = home.display().to_string();
+            if raw == home_display {
+                "~".to_string()
+            } else if let Some(rest) = raw.strip_prefix(&(home_display + "/")) {
+                format!("~/{rest}")
+            } else {
+                raw
+            }
+        } else {
+            raw
         }
     }
 }

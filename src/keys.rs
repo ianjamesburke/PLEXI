@@ -24,6 +24,8 @@ pub enum Action {
     NewContext,
     IncreasePaneFontSize,
     DecreasePaneFontSize,
+    ScrollUp,
+    ScrollDown,
 }
 
 pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
@@ -106,6 +108,14 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         // New context (Cmd+N)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
             actions.push(Action::NewContext);
+        }
+
+        // Scrollback (Cmd+Up / Cmd+Down)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::ArrowUp) {
+            actions.push(Action::ScrollUp);
+        }
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::ArrowDown) {
+            actions.push(Action::ScrollDown);
         }
 
         // Per-pane font size (Cmd+= / Cmd+-)

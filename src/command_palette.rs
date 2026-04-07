@@ -14,17 +14,11 @@ impl PlexiApp {
                     continue;
                 };
                 let cwd = shell::get_pid_cwd(pane.backend.child_pid())
-                    .map(|p| {
-                        let s = p.display().to_string();
-                        if let Some(home) = dirs::home_dir() {
-                            s.strip_prefix(&home.display().to_string())
-                                .map(|rest| format!("~{rest}"))
-                                .unwrap_or(s)
-                        } else {
-                            s
-                        }
-                    })
-                    .unwrap_or_default();
+                    .as_deref()
+                    .map(crate::app::PlexiApp::abbreviate_home_path)
+                    .unwrap_or_else(|| {
+                        crate::app::PlexiApp::abbreviate_home_path(&context.path)
+                    });
                 // Find the tile_id for this pane
                 if let Some(tile_id) = context.tree.tiles.find_pane(&pane_id) {
                     entries.push((ci, context.name.clone(), tile_id, pane_id, display_name, cwd));
@@ -44,7 +38,16 @@ impl PlexiApp {
                     || ctx_name.to_lowercase().contains(&query)
                     || cwd.to_lowercase().contains(&query)
             })
-            .collect();
+            .collect::<Vec<_>>();
+
+        // Sort by visit history: most recently visited first, unvisited after
+        let mut filtered = filtered;
+        filtered.sort_by_key(|(ci, _, tile_id, _, _, _)| {
+            self.pane_visit_history
+                .iter()
+                .position(|&(c, t)| c == *ci && t == *tile_id)
+                .unwrap_or(usize::MAX)
+        });
 
         // Clamp selection
         if self.palette_selected >= filtered.len() && !filtered.is_empty() {
@@ -76,6 +79,7 @@ impl PlexiApp {
         });
 
         if let Some((ctx_idx, tile_id)) = jump_to {
+            self.record_pane_visit(ctx_idx, tile_id);
             self.active_context = ctx_idx;
             self.contexts[ctx_idx].focused_pane = Some(tile_id);
             self.contexts[ctx_idx].zoomed_pane = None;
@@ -206,6 +210,7 @@ impl PlexiApp {
                             let click_response =
                                 ui.interact(row_rect, egui::Id::new(("palette_row", i)), egui::Sense::click());
                             if click_response.clicked() {
+                                self.record_pane_visit(*ci, *tile_id);
                                 self.active_context = *ci;
                                 self.contexts[*ci].focused_pane = Some(*tile_id);
                                 self.contexts[*ci].zoomed_pane = None;
