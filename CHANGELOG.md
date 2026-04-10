@@ -2,6 +2,15 @@
 
 Newest releases appear first.
 
+## [1.1.2] — 2026-04-10
+
+### Fixed
+- **Cloud folder crash** — file browser no longer freezes when opening Google Drive, iCloud, or other FUSE-backed cloud folders. Eliminated per-entry `stat` syscalls in favor of cached directory entry types.
+- **PTY escape query hangs** — programs like fzf that query cursor position or text area size no longer hang waiting for a response.
+
+### Improved
+- **CWD tracking performance** — cached `lsof` lookups with 300ms TTL instead of calling every frame.
+
 ## [1.1.1] — 2026-04-10
 
 ### Added
