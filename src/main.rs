@@ -12,6 +12,7 @@ mod command_palette;
 mod file_browser;
 mod process_app;
 mod quick_note_app;
+mod text_editor_app;
 mod config;
 mod context;
 mod keys;
