@@ -50,7 +50,7 @@ impl PlexiApp {
         let config = config::PlexiConfig::load();
         let features = crate::features::FeatureFlags::from_config(&config);
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
-        let theme_cfg = config.theme.unwrap_or_default();
+        let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         theme::setup_style(&cc.egui_ctx, &colors);
 
@@ -206,6 +206,18 @@ impl PlexiApp {
             registry: AppRegistry::load(),
             features,
         }
+    }
+
+    fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
+        let user_theme = config.theme.clone().unwrap_or_default();
+        if let Some(preset_name) = &config.theme_preset {
+            if let Some(preset) = theme::preset_colors(preset_name) {
+                log::info!("Applying theme preset: {}", preset_name.trim());
+                return theme::apply_preset(&preset, &user_theme);
+            }
+            log::warn!("Unknown theme preset: {preset_name}");
+        }
+        user_theme
     }
 
     pub(crate) fn make_backend_settings(working_directory: Option<PathBuf>, colors: &Colors) -> BackendSettings {

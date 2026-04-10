@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Deserialize, Default)]
 pub struct PlexiConfig {
     pub font_size: Option<f32>,
+    pub theme_preset: Option<String>,
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
 }
@@ -15,7 +16,7 @@ pub struct BetaConfig {
     pub ghost: Option<bool>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct ThemeConfig {
     // UI chrome
     pub bg_darkest: Option<String>,
@@ -81,6 +82,11 @@ const CONFIG_TEMPLATE: &str = r##"# Plexi Configuration
 # Changes take effect on next launch.
 
 font_size = 14.0
+
+# Theme preset — uncomment one to use it as a base.
+# Individual [theme] values below will override the preset.
+# Options: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
+# theme_preset = "catppuccin-mocha"
 
 [theme]
 # UI chrome
