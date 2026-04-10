@@ -28,6 +28,14 @@ Two worktrees are set up:
 
 Iterate on `dev`, merge to `main` when stable.
 
+## Releases
+
+Before tagging a release (`just bump` + `just release`):
+1. Update `CHANGELOG.md` at the repo root — add a new `## [x.y.z] — YYYY-MM-DD` section with a brief summary of what changed (features, fixes, breaking changes).
+2. Entries are newest-first. Keep them user-facing (not internal refactor detail).
+
+If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the first entry.
+
 ## Build & Install
 
 `just install` uses `cargo bundle --release` to produce a proper macOS `.app` bundle (reads metadata from `Cargo.toml`), then copies it to `/Applications/Plexi.app` and extracts the binary to `/usr/local/bin/plexi`. The `install.sh` curl script does the same thing for fresh installs from GitHub.
