@@ -26,9 +26,17 @@ pub enum Action {
     DecreasePaneFontSize,
     ScrollUp,
     ScrollDown,
+    /// Dismiss the active app surface and return to full terminal.
+    CloseApp,
+    /// Toggle the terminal between command bar and 50% split when an app is active.
+    ToggleTerminalSplit,
+    /// Open the file browser app in the focused terminal.
+    OpenFileBrowser,
 }
 
-pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
+/// Poll global keyboard actions. `app_active` indicates whether the focused
+/// pane currently has an app surface open (affects Escape and Tab handling).
+pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
     let mut actions = Vec::new();
     let cmd_shift = egui::Modifiers {
         shift: true,
@@ -126,6 +134,23 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         }
         if !input.modifiers.shift && input.consume_key(cmd_only, egui::Key::Minus) {
             actions.push(Action::DecreasePaneFontSize);
+        }
+
+        // App surface: Escape closes app, Tab toggles terminal split.
+        // These are only intercepted at the global level when an app is active,
+        // so that Escape and Tab work normally in a plain terminal.
+        if app_active {
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                actions.push(Action::CloseApp);
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                actions.push(Action::ToggleTerminalSplit);
+            }
+        }
+
+        // Open file browser (Cmd+E)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::E) {
+            actions.push(Action::OpenFileBrowser);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

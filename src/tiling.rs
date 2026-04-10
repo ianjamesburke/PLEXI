@@ -1,9 +1,13 @@
+use crate::app_trait::{AppRenderContext, SurfaceMode};
 use crate::pane::TerminalPane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Vec2};
 use egui_term::{BackendCommand, TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
+
+/// Fixed height in logical pixels for the terminal command bar when an app is active.
+const COMMAND_BAR_HEIGHT: f32 = 72.0;
 
 pub type PaneId = u64;
 
@@ -104,74 +108,142 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     if pane.exited {
                         // Show exit message centered, auto-close on any key
                         let rect = ui.max_rect();
-                        ui.painter().rect_filled(
-                            rect,
-                            0.0,
-                            self.colors.terminal_bg,
-                        );
+                        ui.painter().rect_filled(rect, 0.0, self.colors.terminal_bg);
                         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
                             ui.centered_and_justified(|ui| {
-                                ui.colored_label(
-                                    self.colors.text_dim,
-                                    "[process exited]",
-                                );
+                                ui.colored_label(self.colors.text_dim, "[process exited]");
                             });
                         });
-                        if is_focused && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))) {
+                        if is_focused
+                            && ui.input(|i| {
+                                i.events.iter().any(|e| {
+                                    matches!(e, egui::Event::Key { pressed: true, .. })
+                                })
+                            })
+                        {
                             self.close_exited = Some(tile_id);
                         }
-                    } else {
-                        let has_tabs = self.tab_info.contains_key(&tile_id);
-                        let has_name = self.pane_names.contains_key(pane_id);
-                        let name_bar_height = 20.0;
+                        return;
+                    }
 
-                        // Reserve space for name bar or dot indicators above terminal
-                        if has_name {
-                            // Draw centered name bar
-                            let bar_rect = egui::Rect::from_min_size(
-                                ui.cursor().min,
-                                egui::vec2(ui.available_width(), name_bar_height),
+                    match pane.surface_mode {
+                        SurfaceMode::FullTerminal => {
+                            render_name_bar_and_dots(
+                                ui,
+                                tile_id,
+                                pane_id,
+                                &self.tab_info,
+                                &self.pane_names,
+                                &self.colors,
                             );
-                            ui.advance_cursor_after_rect(bar_rect);
-
-                            let name = &self.pane_names[pane_id];
-
-                            // If tabs exist, draw dots on the left side of the bar
-                            if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
-                                paint_tab_dots(
-                                    ui.painter(),
-                                    bar_rect.left(),
-                                    bar_rect.center().y,
-                                    active_idx,
-                                    count,
-                                    self.colors.accent,
-                                    self.colors.bg_active,
-                                );
-                            }
-
-                            // Center the name text in the bar
-                            ui.painter().text(
-                                bar_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                name,
-                                egui::FontId::proportional(11.0),
-                                self.colors.text_dim,
-                            );
-                        } else if has_tabs {
-                            ui.add_space(TAB_DOT_RESERVED_HEIGHT);
+                            let font_size = pane.font_size;
+                            let terminal = TerminalView::new(ui, &mut pane.backend)
+                                .set_focus(is_focused)
+                                .set_theme(self.theme.clone())
+                                .set_font(theme::terminal_font(font_size))
+                                .set_size(Vec2::new(
+                                    ui.available_width(),
+                                    ui.available_height(),
+                                ));
+                            ui.add(terminal);
                         }
 
-                        let font_size = pane.font_size;
-                        let terminal = TerminalView::new(ui, &mut pane.backend)
-                            .set_focus(is_focused)
-                            .set_theme(self.theme.clone())
-                            .set_font(theme::terminal_font(font_size))
-                            .set_size(Vec2::new(ui.available_width(), ui.available_height()));
-                        ui.add(terminal);
+                        SurfaceMode::AppWithCommandBar | SurfaceMode::AppWithTerminalSplit => {
+                            if let Some(app) = pane.active_app.as_mut() {
+                                let total_height = ui.available_height();
+                                let total_width = ui.available_width();
+
+                                // Animate terminal height fraction for smooth expand/collapse.
+                                let target_fraction = match pane.surface_mode {
+                                    SurfaceMode::AppWithCommandBar => 0.0,
+                                    SurfaceMode::AppWithTerminalSplit => 0.5,
+                                    SurfaceMode::FullTerminal => 1.0,
+                                };
+                                let anim_id = egui::Id::new(("surface_anim", tile_id));
+                                let terminal_fraction = ui.ctx().animate_value_with_time(
+                                    anim_id,
+                                    target_fraction,
+                                    0.18,
+                                );
+
+                                let terminal_height = if pane.surface_mode
+                                    == SurfaceMode::AppWithCommandBar
+                                {
+                                    // Command bar: fixed height, not animated to zero to keep
+                                    // the terminal process alive and visible.
+                                    COMMAND_BAR_HEIGHT
+                                } else {
+                                    (total_height * terminal_fraction).max(COMMAND_BAR_HEIGHT)
+                                };
+                                let app_height = total_height - terminal_height;
+
+                                // App region
+                                let app_rect = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(total_width, app_height),
+                                );
+                                let app_ctx = AppRenderContext {
+                                    colors: &self.colors,
+                                    is_focused,
+                                    linked_terminal: *pane_id,
+                                };
+                                ui.allocate_new_ui(
+                                    egui::UiBuilder::new().max_rect(app_rect),
+                                    |ui| {
+                                        app.ui(ui, &app_ctx);
+                                    },
+                                );
+                                ui.advance_cursor_after_rect(app_rect);
+
+                                // Divider line
+                                let divider_rect = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(total_width, 1.0),
+                                );
+                                ui.painter().rect_filled(
+                                    divider_rect,
+                                    0.0,
+                                    self.colors.bg_active,
+                                );
+                                ui.advance_cursor_after_rect(divider_rect);
+
+                                // Terminal region (command bar or half-split)
+                                let term_rect = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(total_width, terminal_height - 1.0),
+                                );
+                                ui.allocate_new_ui(
+                                    egui::UiBuilder::new().max_rect(term_rect),
+                                    |ui| {
+                                        let font_size = pane.font_size;
+                                        let terminal = TerminalView::new(ui, &mut pane.backend)
+                                            .set_focus(is_focused)
+                                            .set_theme(self.theme.clone())
+                                            .set_font(theme::terminal_font(font_size))
+                                            .set_size(Vec2::new(
+                                                term_rect.width(),
+                                                term_rect.height(),
+                                            ));
+                                        ui.add(terminal);
+                                    },
+                                );
+                            } else {
+                                // App was dropped but mode wasn't reset — fall back.
+                                let font_size = pane.font_size;
+                                let terminal = TerminalView::new(ui, &mut pane.backend)
+                                    .set_focus(is_focused)
+                                    .set_theme(self.theme.clone())
+                                    .set_font(theme::terminal_font(font_size))
+                                    .set_size(Vec2::new(
+                                        ui.available_width(),
+                                        ui.available_height(),
+                                    ));
+                                ui.add(terminal);
+                            }
+                        }
                     }
 
                     // Draw tab indicator dots (top-left) when 2+ tabs and NO name bar
-                    // (when a name bar exists, dots are already drawn inside it)
                     if !self.pane_names.contains_key(pane_id) {
                         if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
                             let rect = ui.max_rect();
@@ -245,5 +317,51 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let rect = rect.shrink(0.75);
             painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
         }
+    }
+}
+
+/// Render the pane name bar (if named) and tab dot indicators for a terminal in FullTerminal mode.
+fn render_name_bar_and_dots(
+    ui: &mut egui::Ui,
+    tile_id: TileId,
+    pane_id: &PaneId,
+    tab_info: &HashMap<TileId, (usize, usize)>,
+    pane_names: &HashMap<PaneId, String>,
+    colors: &Colors,
+) {
+    let name_bar_height = 20.0;
+    let has_name = pane_names.contains_key(pane_id);
+    let has_tabs = tab_info.contains_key(&tile_id);
+
+    if has_name {
+        let bar_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), name_bar_height),
+        );
+        ui.advance_cursor_after_rect(bar_rect);
+
+        let name = &pane_names[pane_id];
+
+        if let Some(&(active_idx, count)) = tab_info.get(&tile_id) {
+            paint_tab_dots(
+                ui.painter(),
+                bar_rect.left(),
+                bar_rect.center().y,
+                active_idx,
+                count,
+                colors.accent,
+                colors.bg_active,
+            );
+        }
+
+        ui.painter().text(
+            bar_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            name,
+            egui::FontId::proportional(11.0),
+            colors.text_dim,
+        );
+    } else if has_tabs {
+        ui.add_space(TAB_DOT_RESERVED_HEIGHT);
     }
 }

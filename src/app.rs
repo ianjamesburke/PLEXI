@@ -197,8 +197,23 @@ impl eframe::App for PlexiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
 
+        // Determine if the focused pane has an active app surface.
+        let app_active = {
+            let context = &self.contexts[self.active_context];
+            context.focused_pane
+                .and_then(|tile_id| {
+                    if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
+                        context.panes.get(pane_id)
+                    } else {
+                        None
+                    }
+                })
+                .map(|pane| pane.active_app.is_some())
+                .unwrap_or(false)
+        };
+
         // Handle keyboard shortcuts
-        for action in keys::poll_actions(ctx) {
+        for action in keys::poll_actions(ctx, app_active) {
             match action {
                 Action::SplitHorizontal => {
                     self.contexts[self.active_context].zoomed_pane = None;
@@ -291,6 +306,15 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ScrollDown => {
                     self.scroll_focused_pane(-3);
+                }
+                Action::CloseApp => {
+                    self.close_focused_app();
+                }
+                Action::ToggleTerminalSplit => {
+                    self.toggle_focused_terminal_split();
+                }
+                Action::OpenFileBrowser => {
+                    self.open_file_browser();
                 }
             }
         }

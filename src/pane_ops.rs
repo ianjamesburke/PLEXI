@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::app::PlexiApp;
+use crate::app_trait::App;
 
 impl PlexiApp {
     fn create_single_pane_tree(
@@ -402,5 +403,44 @@ impl PlexiApp {
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             pane.font_size = (pane.font_size + delta).clamp(8.0, 32.0);
         }
+    }
+
+    /// Close the active app on the focused terminal pane, returning to full terminal.
+    pub(crate) fn close_focused_app(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.close_app();
+        }
+    }
+
+    /// Toggle the terminal between command-bar and 50% split when an app is active.
+    pub(crate) fn toggle_focused_terminal_split(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.toggle_terminal_split();
+        }
+    }
+
+    /// Open an app on the focused terminal pane.
+    pub(crate) fn open_app_on_focused(&mut self, app: Box<dyn App>) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.open_app(app);
+        }
+    }
+
+    /// Open the file browser app on the focused terminal pane.
+    pub(crate) fn open_file_browser(&mut self) {
+        // Resolve cwd from the focused terminal before mutably borrowing.
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| {
+                    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+                })
+        };
+        let app = Box::new(crate::file_browser_app::FileBrowserApp::new(cwd));
+        self.open_app_on_focused(app);
     }
 }
