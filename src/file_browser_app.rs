@@ -4,6 +4,7 @@ use egui::{Color32, CornerRadius, Stroke, StrokeKind};
 use image::imageops::FilterType;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::SystemTime;
 
 const ROW_HEIGHT: f32 = 58.0;
@@ -56,10 +57,27 @@ pub struct FileBrowserApp {
     /// Remembers which entry was selected when leaving a directory,
     /// so navigating back restores the selection.
     directory_selection_memory: std::collections::HashMap<PathBuf, String>,
+    // Audio preview
+    audio_tx: mpsc::Sender<AudioMsg>,
+    audio_playing_path: Option<PathBuf>,
+    audio_playing: bool,
+    audio_play_started: Option<std::time::Instant>,
+    audio_elapsed_before_pause: f32,
+    audio_paused: bool,
+}
+
+enum AudioMsg {
+    Play(PathBuf),
+    Pause,
+    Resume,
+    Stop,
 }
 
 impl FileBrowserApp {
     pub fn new(cwd: PathBuf) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || audio_thread(rx));
+
         let mut app = Self {
             cwd,
             entries: Vec::new(),
@@ -77,6 +95,12 @@ impl FileBrowserApp {
             pending_cmds: Vec::new(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
+            audio_tx: tx,
+            audio_playing_path: None,
+            audio_playing: false,
+            audio_play_started: None,
+            audio_elapsed_before_pause: 0.0,
+            audio_paused: false,
         };
         app.refresh();
         app
@@ -367,6 +391,8 @@ impl FileBrowserApp {
 
         if entry.is_image {
             self.draw_image_sidebar(ui, colors, &entry);
+        } else if entry.is_audio {
+            self.draw_audio_sidebar(ui, colors, &entry);
         } else if entry.is_dir {
             self.draw_dir_sidebar(ui, colors, &entry);
         } else if is_text_file(&entry.path) {
@@ -498,6 +524,123 @@ impl FileBrowserApp {
                         );
                     });
             });
+    }
+
+    fn draw_audio_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
+        let is_this_playing = self.audio_playing_path.as_ref() == Some(&entry.path);
+
+        // Request repaints while playing for elapsed counter.
+        if is_this_playing && self.audio_playing {
+            ui.ctx().request_repaint();
+        }
+
+        egui::Frame::new()
+            .fill(colors.bg_sidebar)
+            .stroke(Stroke::new(1.0, colors.border))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Audio · {}", entry.name))
+                        .size(10.5)
+                        .color(colors.text_primary)
+                        .strong(),
+                );
+                if let Some(size) = entry.size_bytes {
+                    ui.label(egui::RichText::new(format_size(Some(size))).size(9.5).color(colors.text_dim));
+                }
+                ui.add_space(8.0);
+
+                // Play/pause button
+                let button_label = if is_this_playing && self.audio_playing {
+                    "⏸ Pause"
+                } else if is_this_playing && self.audio_paused {
+                    "▶ Resume"
+                } else {
+                    "▶ Play"
+                };
+                if ui.button(button_label).clicked() {
+                    if is_this_playing && self.audio_playing {
+                        self.audio_pause();
+                    } else if is_this_playing && self.audio_paused {
+                        self.audio_resume();
+                    } else {
+                        self.audio_play(&entry.path);
+                    }
+                }
+
+                // Stop button (only when something is playing/paused)
+                if is_this_playing && (self.audio_playing || self.audio_paused) {
+                    if ui.button("⏹ Stop").clicked() {
+                        self.audio_stop();
+                    }
+                }
+
+                // Elapsed time
+                if is_this_playing {
+                    let elapsed = self.audio_elapsed();
+                    let mins = (elapsed / 60.0) as u32;
+                    let secs = (elapsed % 60.0) as u32;
+                    let state = if self.audio_playing { "Playing" } else { "Paused" };
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("{state} — {mins}:{secs:02}"))
+                            .size(11.0)
+                            .color(colors.accent)
+                            .monospace(),
+                    );
+                }
+
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("Space to play/pause")
+                        .size(9.0)
+                        .color(colors.text_dim),
+                );
+            });
+    }
+
+    fn audio_play(&mut self, path: &Path) {
+        let _ = self.audio_tx.send(AudioMsg::Stop);
+        let _ = self.audio_tx.send(AudioMsg::Play(path.to_path_buf()));
+        self.audio_playing_path = Some(path.to_path_buf());
+        self.audio_playing = true;
+        self.audio_paused = false;
+        self.audio_play_started = Some(std::time::Instant::now());
+        self.audio_elapsed_before_pause = 0.0;
+    }
+
+    fn audio_pause(&mut self) {
+        let _ = self.audio_tx.send(AudioMsg::Pause);
+        self.audio_playing = false;
+        self.audio_paused = true;
+        if let Some(started) = self.audio_play_started {
+            self.audio_elapsed_before_pause += started.elapsed().as_secs_f32();
+        }
+        self.audio_play_started = None;
+    }
+
+    fn audio_resume(&mut self) {
+        let _ = self.audio_tx.send(AudioMsg::Resume);
+        self.audio_playing = true;
+        self.audio_paused = false;
+        self.audio_play_started = Some(std::time::Instant::now());
+    }
+
+    fn audio_stop(&mut self) {
+        let _ = self.audio_tx.send(AudioMsg::Stop);
+        self.audio_playing = false;
+        self.audio_paused = false;
+        self.audio_playing_path = None;
+        self.audio_play_started = None;
+        self.audio_elapsed_before_pause = 0.0;
+    }
+
+    fn audio_elapsed(&self) -> f32 {
+        let current = self.audio_play_started
+            .map(|s| s.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
+        self.audio_elapsed_before_pause + current
     }
 
     fn draw_generic_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
@@ -686,6 +829,23 @@ impl App for FileBrowserApp {
         if input.key_pressed(egui::Key::R) {
             self.refresh();
             consumed = true;
+        }
+
+        // Space: toggle audio play/pause on selected audio file
+        if input.key_pressed(egui::Key::Space) {
+            if let Some(entry) = self.selected_entry().cloned() {
+                if entry.is_audio {
+                    let is_this = self.audio_playing_path.as_ref() == Some(&entry.path);
+                    if is_this && self.audio_playing {
+                        self.audio_pause();
+                    } else if is_this && self.audio_paused {
+                        self.audio_resume();
+                    } else {
+                        self.audio_play(&entry.path);
+                    }
+                    consumed = true;
+                }
+            }
         }
 
         consumed
@@ -925,4 +1085,41 @@ fn is_text_file(path: &Path) -> bool {
         | "fish" | "lua" | "rb" | "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5"
         | "ini" | "cfg" | "conf" | "env" | "log" | "rtf" | "rst" | "mdx"
     )
+}
+
+/// Audio thread — owns rodio OutputStream and Sink (not Send).
+fn audio_thread(rx: mpsc::Receiver<AudioMsg>) {
+    let Ok((_stream, handle)) = rodio::OutputStream::try_default() else {
+        log::error!("FileBrowser audio: failed to open output stream");
+        return;
+    };
+    let mut sink: Option<rodio::Sink> = None;
+
+    loop {
+        let msg = match rx.recv() {
+            Ok(m) => m,
+            Err(_) => break,
+        };
+        match msg {
+            AudioMsg::Play(path) => {
+                if let Some(s) = sink.take() {
+                    s.stop();
+                }
+                let Ok(file) = std::fs::File::open(&path) else { continue };
+                let Ok(source) = rodio::Decoder::new(std::io::BufReader::new(file)) else { continue };
+                let Ok(new_sink) = rodio::Sink::try_new(&handle) else { continue };
+                new_sink.append(source);
+                sink = Some(new_sink);
+            }
+            AudioMsg::Pause => {
+                if let Some(s) = &sink { s.pause(); }
+            }
+            AudioMsg::Resume => {
+                if let Some(s) = &sink { s.play(); }
+            }
+            AudioMsg::Stop => {
+                if let Some(s) = sink.take() { s.stop(); }
+            }
+        }
+    }
 }
