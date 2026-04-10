@@ -55,10 +55,7 @@ impl TextEditorApp {
         let path = match &self.file_path {
             Some(p) => p.clone(),
             None => {
-                let notes_dir = dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".plexi")
-                    .join("scratch");
+                let notes_dir = crate::config::config_dir().join("scratch");
                 if let Err(e) = std::fs::create_dir_all(&notes_dir) {
                     log::error!("TextEditorApp: failed to create scratch dir: {e}");
                     return;

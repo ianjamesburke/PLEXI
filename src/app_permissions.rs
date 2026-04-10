@@ -236,8 +236,5 @@ impl PermissionsConfig {
 }
 
 fn permissions_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".plexi")
-        .join("permissions.toml")
+    crate::config::config_dir().join("permissions.toml")
 }

@@ -230,10 +230,7 @@ impl AppRegistry {
 
 /// Returns the path to the apps directory: `~/.plexi/apps/`.
 pub fn apps_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".plexi")
-        .join("apps")
+    crate::config::config_dir().join("apps")
 }
 
 /// Find the executable binary inside an app directory.

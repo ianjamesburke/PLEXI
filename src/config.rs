@@ -51,11 +51,30 @@ pub struct ThemeConfig {
     pub bright_foreground: Option<String>,
 }
 
+/// Returns the config directory name based on the running binary name.
+/// `plexi-alpha` → `.plexi-alpha`, `plexi-beta` → `.plexi-beta`, anything else → `.plexi`
+fn config_dir_name() -> &'static str {
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    match binary.as_deref() {
+        Some(name) if name.contains("alpha") => ".plexi-alpha",
+        Some(name) if name.contains("beta") => ".plexi-beta",
+        _ => ".plexi",
+    }
+}
+
 pub fn config_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".plexi")
+        .join(config_dir_name())
         .join("config.toml")
+}
+
+pub fn config_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(config_dir_name())
 }
 
 const CONFIG_TEMPLATE: &str = r##"# Plexi Configuration

@@ -13,12 +13,18 @@ install:
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
 
+# Deprecated: use install-alpha or install-beta instead
 install-apps:
+    #!/usr/bin/env bash
+    echo "install-apps is deprecated. Use 'just install-alpha' or 'just install-beta' instead."
+    exit 1
+
+install-alpha:
     #!/usr/bin/env bash
     set -euo pipefail
 
     if [[ "$(uname)" != "Darwin" ]]; then
-      echo "install-apps is macOS-only."
+      echo "install-alpha is macOS-only."
       exit 1
     fi
 
@@ -33,16 +39,16 @@ install-apps:
     }
     trap cleanup EXIT
 
-    sed -i '' 's/^name = "plexi"/name = "plexi-apps"/' Cargo.toml
-    sed -i '' 's/name = "Plexi"/name = "Plexi Apps"/' Cargo.toml
-    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-apps"/' Cargo.toml
-    sed -i '' 's/with_title("Plexi")/with_title("Plexi Apps")/' src/main.rs
-    sed -i '' 's/"plexi",/"plexi-apps",/' src/main.rs
+    sed -i '' 's/^name = "plexi"/name = "plexi-alpha"/' Cargo.toml
+    sed -i '' 's/name = "Plexi"/name = "Plexi Alpha"/' Cargo.toml
+    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-alpha"/' Cargo.toml
+    sed -i '' 's/with_title("Plexi")/with_title("Plexi Alpha")/' src/main.rs
+    sed -i '' 's/"plexi",/"plexi-alpha",/' src/main.rs
 
     cargo bundle --release
 
-    app_src="target/release/bundle/osx/Plexi Apps.app"
-    app_dest="/Applications/Plexi Apps.app"
+    app_src="target/release/bundle/osx/Plexi Alpha.app"
+    app_dest="/Applications/Plexi Alpha.app"
     if [[ ! -d "$app_src" ]]; then
       echo "Error: bundle not found at $app_src"
       exit 1
@@ -51,11 +57,57 @@ install-apps:
     rm -rf "$app_dest"
     cp -R "$app_src" "$app_dest"
 
-    apps_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
-    cp "$apps_bin" /usr/local/bin/plexi-apps
+    alpha_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
+    cp "$alpha_bin" /usr/local/bin/plexi-alpha
 
     echo "Installed $app_dest"
-    echo "CLI binary: /usr/local/bin/plexi-apps"
+    echo "CLI binary: /usr/local/bin/plexi-alpha"
+    echo "Config dir: ~/.plexi-alpha/"
+
+install-beta:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ "$(uname)" != "Darwin" ]]; then
+      echo "install-beta is macOS-only."
+      exit 1
+    fi
+
+    backup_dir="$(mktemp -d)"
+    cp Cargo.toml "$backup_dir/Cargo.toml"
+    cp src/main.rs "$backup_dir/main.rs"
+
+    cleanup() {
+      cp "$backup_dir/Cargo.toml" Cargo.toml
+      cp "$backup_dir/main.rs" src/main.rs
+      rm -rf "$backup_dir"
+    }
+    trap cleanup EXIT
+
+    sed -i '' 's/^name = "plexi"/name = "plexi-beta"/' Cargo.toml
+    sed -i '' 's/name = "Plexi"/name = "Plexi Beta"/' Cargo.toml
+    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-beta"/' Cargo.toml
+    sed -i '' 's/with_title("Plexi")/with_title("Plexi Beta")/' src/main.rs
+    sed -i '' 's/"plexi",/"plexi-beta",/' src/main.rs
+
+    cargo bundle --release
+
+    app_src="target/release/bundle/osx/Plexi Beta.app"
+    app_dest="/Applications/Plexi Beta.app"
+    if [[ ! -d "$app_src" ]]; then
+      echo "Error: bundle not found at $app_src"
+      exit 1
+    fi
+
+    rm -rf "$app_dest"
+    cp -R "$app_src" "$app_dest"
+
+    beta_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
+    cp "$beta_bin" /usr/local/bin/plexi-beta
+
+    echo "Installed $app_dest"
+    echo "CLI binary: /usr/local/bin/plexi-beta"
+    echo "Config dir: ~/.plexi-beta/"
 
 bump:
     #!/usr/bin/env bash

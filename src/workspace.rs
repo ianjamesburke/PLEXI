@@ -40,8 +40,7 @@ pub struct SavedPane {
 }
 
 fn workspace_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".plexi")
+    crate::config::config_dir()
         .join("workspaces")
         .join("default.json")
 }

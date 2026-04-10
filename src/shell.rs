@@ -133,11 +133,7 @@ pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
 }
 
 fn ensure_shell_integration() -> io::Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory not found"))?;
-
-    let zsh_dir = home
-        .join(".plexi")
+    let zsh_dir = crate::config::config_dir()
         .join("shell-integration")
         .join("zsh");
 

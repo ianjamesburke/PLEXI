@@ -42,10 +42,7 @@ impl QuickNoteApp {
         let header = format!("# Quick Note — {}", display_time);
         let content = format!("{}\n\n{}\n", header, self.text.trim());
 
-        let backlog_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".plexi")
-            .join("backlog");
+        let backlog_dir = crate::config::config_dir().join("backlog");
         if let Err(e) = std::fs::create_dir_all(&backlog_dir) {
             log::error!("QuickNote: failed to create backlog dir: {e}");
         }
