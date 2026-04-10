@@ -79,7 +79,7 @@ impl PlexiApp {
                             let app: Option<Box<dyn crate::app_trait::App>> = match app_type.as_str() {
                                 "file_browser" => {
                                     let cwd = saved_pane.cwd.clone();
-                                    let mut fb = crate::file_browser_app::FileBrowserApp::new(cwd.clone());
+                                    let mut fb = crate::file_browser::FileBrowserApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         fb.restore_state(state);

@@ -9,7 +9,7 @@ mod audio_app;
 mod app_trait;
 mod cli;
 mod command_palette;
-mod file_browser_app;
+mod file_browser;
 mod process_app;
 mod quick_note_app;
 mod config;

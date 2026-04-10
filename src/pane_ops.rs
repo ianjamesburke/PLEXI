@@ -583,7 +583,7 @@ impl PlexiApp {
         let app: Box<dyn App> = self
             .registry
             .launch("file_browser", &cwd, &[])
-            .unwrap_or_else(|| Box::new(crate::file_browser_app::FileBrowserApp::new(cwd.clone())));
+            .unwrap_or_else(|| Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone())));
 
         // Built-in file browser gets full permissions.
         let perms = crate::app_permissions::AppPermissions::builtin();
