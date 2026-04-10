@@ -84,6 +84,15 @@ impl PlexiApp {
                                     }
                                     Some(Box::new(fb))
                                 }
+                                "quick_note" => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd);
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        note.restore_state(state);
+                                    }
+                                    Some(Box::new(note))
+                                }
                                 _ => None,
                             };
                             if let Some(app) = app {
@@ -459,6 +468,9 @@ impl eframe::App for PlexiApp {
                 }
                 Action::OpenFileBrowser => {
                     self.open_file_browser();
+                }
+                Action::OpenQuickNote => {
+                    self.open_quick_note();
                 }
             }
         }

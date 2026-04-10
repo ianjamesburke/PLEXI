@@ -10,6 +10,7 @@ mod cli;
 mod command_palette;
 mod file_browser_app;
 mod process_app;
+mod quick_note_app;
 mod config;
 mod context;
 mod keys;

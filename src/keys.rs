@@ -32,6 +32,8 @@ pub enum Action {
     ToggleAppFocus,
     /// Open the file browser app in the focused terminal.
     OpenFileBrowser,
+    /// Open the quick note app (full pane, no terminal split).
+    OpenQuickNote,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -151,6 +153,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open file browser (Cmd+E)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::E) {
             actions.push(Action::OpenFileBrowser);
+        }
+
+        // Open quick note (Cmd+0)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0) {
+            actions.push(Action::OpenQuickNote);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

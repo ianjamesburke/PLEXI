@@ -573,6 +573,36 @@ impl PlexiApp {
         self.open_app_on_focused(app, perms, cwd);
     }
 
+    /// Open an app on the focused pane WITHOUT creating a linked terminal split.
+    /// The app takes the full pane. Used for apps like Quick Note that don't
+    /// need a terminal.
+    pub(crate) fn open_app_fullscreen(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: crate::app_permissions::AppPermissions,
+        scope: PathBuf,
+    ) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.open_app(app, permissions, scope);
+            // No linked terminal — app takes the full pane.
+        }
+    }
+
+    /// Open the quick note app (full pane, no terminal split).
+    pub(crate) fn open_quick_note(&mut self) {
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        let app = Box::new(crate::quick_note_app::QuickNoteApp::new(cwd.clone()));
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_fullscreen(app, perms, cwd);
+    }
+
     /// Open the appropriate app for a file, based on its extension.
     /// Falls back to opening the file path in the terminal if no app is registered.
     pub(crate) fn open_file_with_app(&mut self, file_path: PathBuf) {
