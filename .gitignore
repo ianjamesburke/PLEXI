@@ -32,3 +32,4 @@ assets/Info.plist
 *.swp
 *.swo
 here.md
+examples/*/target/
