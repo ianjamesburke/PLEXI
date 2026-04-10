@@ -23,6 +23,11 @@
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
 // K, L, Backspace, or other keys that Plexi uses with Cmd modifier.
+//
+// GOTCHA: consume_key(Modifiers::NONE, Key) does NOT mean "key with no
+// modifiers" — it matches the key regardless of modifiers. To distinguish
+// plain Enter from Shift+Enter, check `input.modifiers.shift` BEFORE
+// calling consume_key.
 // ───────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
