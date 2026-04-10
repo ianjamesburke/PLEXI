@@ -1,3 +1,30 @@
+// ─── Reserved Plexi shortcuts (apps must NOT consume these) ───────────────
+//
+// Cmd+D / Cmd+Shift+D  — split horizontal / vertical
+// Cmd+W                 — close pane
+// Cmd+H/J/K/L          — navigate panes
+// Cmd+T                 — new tab
+// Cmd+] / Cmd+[         — cycle tabs
+// Cmd+Q                 — quit
+// Cmd+B                 — toggle sidebar
+// Cmd+Enter             — toggle zoom
+// Cmd+/                 — toggle shortcuts overlay
+// Cmd+P                 — command palette
+// Cmd+Shift+R           — rename pane
+// Cmd+N                 — new context
+// Cmd+Up / Cmd+Down     — scroll
+// Cmd+= / Cmd+-         — font size
+// Cmd+E                 — file browser
+// Cmd+0                 — quick note
+// Cmd+1–9               — switch context
+// Escape (app active)   — close app
+// Tab (app active)      — navigate to linked terminal
+//
+// Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
+// Always guard with `!input.modifiers.command` before consuming Enter, H, J,
+// K, L, Backspace, or other keys that Plexi uses with Cmd modifier.
+// ───────────────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
     Left,

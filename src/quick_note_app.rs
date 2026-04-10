@@ -92,7 +92,7 @@ impl App for QuickNoteApp {
                 );
                 ui.add_space(16.0);
                 ui.label(
-                    egui::RichText::new("⌘Enter to save · Esc to discard")
+                    egui::RichText::new("⌘S to save · Esc to discard")
                         .color(colors.text_dim.linear_multiply(0.6))
                         .size(12.0)
                         .family(egui::FontFamily::Monospace),
@@ -123,8 +123,8 @@ impl App for QuickNoteApp {
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
         let cmd = input.modifiers.mac_cmd || input.modifiers.command;
 
-        // Cmd+Enter → save
-        if cmd && input.key_pressed(egui::Key::Enter) {
+        // Cmd+S → save (Cmd+Enter is reserved for Plexi zoom toggle)
+        if cmd && input.key_pressed(egui::Key::S) {
             self.save();
             return true;
         }
