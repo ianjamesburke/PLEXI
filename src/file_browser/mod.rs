@@ -17,6 +17,7 @@ use icons::paint_entry_icon;
 
 const ROW_HEIGHT: f32 = 58.0;
 const MIN_SIDEBAR_WIDTH: f32 = 920.0;
+const DIR_PREVIEW_CAP: usize = 500;
 
 pub struct FileBrowserApp {
     pub cwd: PathBuf,
@@ -100,7 +101,7 @@ impl FileBrowserApp {
                             return None;
                         }
                         let path = e.path();
-                        let is_dir = path.is_dir();
+                        let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
                         let meta = e.metadata().ok();
                         let size_bytes = meta.as_ref().and_then(|m| {
                             if is_dir { None } else { Some(m.len()) }
@@ -281,9 +282,14 @@ impl FileBrowserApp {
         let mut file_count = 0usize;
         let mut dir_count = 0usize;
         let mut total_bytes = 0u64;
+        let mut truncated = false;
         if let Ok(entries) = fs::read_dir(path) {
             for e in entries.flatten() {
-                let is_dir = e.path().is_dir();
+                if file_count + dir_count >= DIR_PREVIEW_CAP {
+                    truncated = true;
+                    break;
+                }
+                let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
                 if is_dir {
                     dir_count += 1;
                 } else {
@@ -294,13 +300,13 @@ impl FileBrowserApp {
                 }
             }
         }
-        self.dir_preview_stats = Some(DirStats { file_count, dir_count, total_bytes });
+        self.dir_preview_stats = Some(DirStats { file_count, dir_count, total_bytes, truncated });
     }
 
     // ─── Drawing ─────────────────────────────────────────────────────────────
 
-    fn draw_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<PathBuf> {
-        let mut navigate_to: Option<PathBuf> = None;
+    fn draw_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
+        let mut navigate_to: Option<(PathBuf, bool)> = None;
         let should_scroll = self.pending_scroll;
         self.pending_scroll = false;
         let entry_count = self.entries.len();
@@ -368,7 +374,7 @@ impl FileBrowserApp {
             }
             if resp.double_clicked() {
                 self.selected = idx;
-                navigate_to = Some(entry.path.clone());
+                navigate_to = Some((entry.path.clone(), entry.is_dir));
             }
             ui.add_space(4.0);
         }
@@ -466,9 +472,11 @@ impl FileBrowserApp {
                 );
                 ui.separator();
                 ui.label(egui::RichText::new(format!("Path: {}", entry.path.display())).size(9.5).color(colors.text_dim));
+                let truncated = stats.map(|s| s.truncated).unwrap_or(false);
+                let suffix = if truncated { "+" } else { "" };
                 ui.label(
                     egui::RichText::new(format!(
-                        "Contains: {} folders, {} files",
+                        "Contains: {}{suffix} folders, {}{suffix} files",
                         stats.map(|s| s.dir_count).unwrap_or(0),
                         stats.map(|s| s.file_count).unwrap_or(0),
                     ))
@@ -740,7 +748,7 @@ impl App for FileBrowserApp {
                 }
 
                 let show_sidebar = ui.available_width() >= MIN_SIDEBAR_WIDTH;
-                let mut navigate_to: Option<PathBuf> = None;
+                let mut navigate_to: Option<(PathBuf, bool)> = None;
 
                 if show_sidebar {
                     ui.columns(2, |columns| {
@@ -759,8 +767,8 @@ impl App for FileBrowserApp {
                         });
                 }
 
-                if let Some(path) = navigate_to {
-                    if path.is_dir() {
+                if let Some((path, is_dir)) = navigate_to {
+                    if is_dir {
                         self.navigate_into(path);
                     } else {
                         let _ = std::process::Command::new("open").arg(&path).spawn();

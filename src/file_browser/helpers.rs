@@ -23,6 +23,7 @@ pub(crate) struct DirStats {
     pub file_count: usize,
     pub dir_count: usize,
     pub total_bytes: u64,
+    pub truncated: bool,
 }
 
 pub(crate) fn format_size(bytes: Option<u64>) -> String {
