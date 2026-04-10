@@ -264,10 +264,10 @@ impl PlexiApp {
                 pane.backend.process_command(BackendCommand::Write(bytes));
             }
             AppCommand::Cd(path) => {
-                // Write cd command to actually change the shell's working directory.
-                // The shell itself emits OSC 7 after cd (via precmd hooks in modern shells),
-                // so we don't need to emit it ourselves.
-                let cmd = format!("cd {}\n", shell_escape(&path.display().to_string()));
+                // Clear the terminal then cd, so the user doesn't see the raw
+                // `cd` command printing and reflowing. The next prompt appears
+                // clean in the new directory.
+                let cmd = format!("clear && cd {}\n", shell_escape(&path.display().to_string()));
                 pane.backend
                     .process_command(BackendCommand::Write(cmd.into_bytes()));
             }
