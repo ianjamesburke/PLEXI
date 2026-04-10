@@ -108,6 +108,14 @@ impl App for QuickNoteApp {
                 );
             });
 
+            // Check for Cmd+S BEFORE the TextEdit consumes key events.
+            let should_save = ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
+            });
+            if should_save {
+                self.save();
+            }
+
             ui.add_space(12.0);
 
             // Text editor
