@@ -406,27 +406,142 @@ impl PlexiApp {
     }
 
     /// Close the active app on the focused terminal pane, returning to full terminal.
+    /// Also closes the linked terminal pane and collapses the split.
     pub(crate) fn close_focused_app(&mut self) {
         let ctx = &mut self.contexts[self.active_context];
-        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
-            pane.close_app();
+        let linked = if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.close_app()
+        } else {
+            None
+        };
+
+        // Close the linked terminal pane if it exists.
+        if let Some(linked_id) = linked {
+            // Find the tile ID for the linked pane and remove it.
+            let tile_to_remove = ctx
+                .tree
+                .tiles
+                .iter()
+                .find(|(_, tile)| matches!(tile, Tile::Pane(id) if *id == linked_id))
+                .map(|(tile_id, _)| tile_id);
+            if let Some(tile_id) = tile_to_remove {
+                ctx.tree.tiles.remove(*tile_id);
+            }
+            ctx.panes.remove(&linked_id);
         }
     }
 
-    /// Toggle the terminal between command-bar and 50% split when an app is active.
-    pub(crate) fn toggle_focused_terminal_split(&mut self) {
+    /// Toggle keyboard focus between app surface and terminal command bar.
+    pub(crate) fn toggle_focused_surface(&mut self) {
         let ctx = &mut self.contexts[self.active_context];
         if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
-            pane.toggle_terminal_split();
+            pane.toggle_surface_focus();
         }
     }
 
-    /// Open an app on the focused terminal pane.
-    pub(crate) fn open_app_on_focused(&mut self, app: Box<dyn App>) {
+    /// Open an app on the focused pane: auto-splits vertically, app on top,
+    /// fresh linked terminal on bottom.
+    pub(crate) fn open_app_on_focused(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: crate::app_permissions::AppPermissions,
+        scope: PathBuf,
+    ) {
+        let Some(focused) = self.contexts[self.active_context].focused_pane else {
+            return;
+        };
+
+        // Create a new terminal pane for the bottom split (same as split_focused).
+        let new_term_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let cwd = self.contexts[self.active_context]
+            .get_focused_pane_cwd(focused)
+            .unwrap_or_else(|| scope.clone());
+
+        let settings = Self::make_backend_settings(Some(cwd), &self.colors);
+        let Some(new_pane) = TerminalPane::new(
+            new_term_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
+            log::error!("Failed to create linked terminal pane for app");
+            return;
+        };
+        self.contexts[self.active_context]
+            .panes
+            .insert(new_term_id, new_pane);
+
+        // Split using the exact same logic as split_focused (which works).
+        let split_target =
+            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+                Some((tabs_id, _)) => tabs_id,
+                None => focused,
+            };
+
         let ctx = &mut self.contexts[self.active_context];
-        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
-            pane.open_app(app);
+        let parent = ctx.tree.tiles.parent_of(split_target);
+        let new_tile = ctx.tree.tiles.insert_pane(new_term_id);
+
+        let inserted_as_sibling = if let Some(parent_id) = parent {
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                ctx.tree.tiles.get_mut(parent_id)
+            {
+                if linear.dir == egui_tiles::LinearDir::Vertical {
+                    if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
+                        linear.children.insert(pos + 1, new_tile);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !inserted_as_sibling {
+            let container_tile = ctx
+                .tree
+                .tiles
+                .insert_vertical_tile(vec![split_target, new_tile]);
+
+            // Set 75/25 ratio for app (top) vs terminal (bottom).
+            if let Some(Tile::Container(Container::Linear(ref mut lin))) =
+                ctx.tree.tiles.get_mut(container_tile)
+            {
+                lin.shares.set_share(split_target, 3.0);
+                lin.shares.set_share(new_tile, 1.0);
+            }
+
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent_container)) =
+                    ctx.tree.tiles.get_mut(parent_id)
+                {
+                    replace_child(parent_container, split_target, container_tile);
+                }
+            } else {
+                ctx.tree.root = Some(container_tile);
+            }
         }
+
+        // Set the app on the focused (top) pane and link to the bottom terminal.
+        if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+            let pane_id = *pane_id;
+            if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                pane.open_app(app, permissions, scope);
+                pane.linked_terminal_pane = Some(new_term_id);
+            }
+        }
+
+        // Focus stays on the app pane (not the new terminal).
+        ctx.focused_pane = Some(focused);
     }
 
     /// Open the file browser app on the focused terminal pane.
@@ -443,9 +558,11 @@ impl PlexiApp {
         let app: Box<dyn App> = self
             .registry
             .launch("file_browser", &cwd, &[])
-            .unwrap_or_else(|| Box::new(crate::file_browser_app::FileBrowserApp::new(cwd)));
+            .unwrap_or_else(|| Box::new(crate::file_browser_app::FileBrowserApp::new(cwd.clone())));
 
-        self.open_app_on_focused(app);
+        // Built-in file browser gets full permissions.
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_on_focused(app, perms, cwd);
     }
 
     /// Open the appropriate app for a file, based on its extension.
@@ -457,7 +574,9 @@ impl PlexiApp {
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
         if let Some(app) = self.registry.launch_for_file(&file_path, &cwd) {
-            self.open_app_on_focused(app);
+            // Third-party app — sandboxed by default, scoped to launch directory.
+            let perms = crate::app_permissions::AppPermissions::default();
+            self.open_app_on_focused(app, perms, cwd.clone());
         } else {
             // No registered app — fall back to writing the path into the terminal.
             let ctx = &mut self.contexts[self.active_context];

@@ -183,11 +183,8 @@ impl PlexiApp {
     }
 
     /// Feed keyboard input to the focused pane's active app and dispatch any
-    /// resulting AppCommands to the terminal backend.
+    /// resulting AppCommands to the linked terminal pane.
     fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
-        use crate::app_trait::AppCommand;
-        use egui_term::BackendCommand;
-
         let active = self.active_context;
         let Some(focused_tile) = self.contexts[active].focused_pane else {
             return;
@@ -199,23 +196,39 @@ impl PlexiApp {
         };
         let pane_id = *pane_id;
 
-        let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
-            return;
-        };
-        let Some(app) = pane.active_app.as_mut() else {
-            return;
-        };
-
-        let commands: Vec<AppCommand> = ctx.input(|i| {
-            if app.handle_key(i) {
-                vec![] // app consumed the keys; no terminal command
-            } else {
-                vec![]
+        // Gather commands from the app.
+        let (commands, scope, perms, linked_id) = {
+            let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
+                return;
+            };
+            if pane.active_app.is_none() {
+                return;
             }
-        });
+            let app = pane.active_app.as_mut().unwrap();
+            ctx.input(|i| {
+                app.handle_key(i);
+            });
+            let cmds = app.take_pending_commands();
+            let scope = pane.app_scope.clone().unwrap_or_else(|| PathBuf::from("/"));
+            let perms = pane.app_permissions.clone();
+            let linked = pane.linked_terminal_pane;
+            (cmds, scope, perms, linked)
+        };
 
-        for cmd in commands {
-            Self::execute_app_command(cmd, pane);
+        // Route commands to the linked terminal pane (the one below).
+        if let Some(linked_id) = linked_id {
+            if let Some(target_pane) = self.contexts[active].panes.get_mut(&linked_id) {
+                for cmd in commands {
+                    match crate::app_permissions::check_command(&cmd, &perms, &scope) {
+                        crate::app_permissions::PermissionCheck::Allowed => {
+                            Self::execute_app_command(cmd, target_pane);
+                        }
+                        crate::app_permissions::PermissionCheck::Denied(reason) => {
+                            log::warn!("App command denied: {reason}");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -230,6 +243,9 @@ impl PlexiApp {
                 pane.backend.process_command(BackendCommand::Write(bytes));
             }
             AppCommand::Cd(path) => {
+                // Write cd command to actually change the shell's working directory.
+                // The shell itself emits OSC 7 after cd (via precmd hooks in modern shells),
+                // so we don't need to emit it ourselves.
                 let cmd = format!("cd {}\n", shell_escape(&path.display().to_string()));
                 pane.backend
                     .process_command(BackendCommand::Write(cmd.into_bytes()));
@@ -381,8 +397,10 @@ impl eframe::App for PlexiApp {
                 Action::CloseApp => {
                     self.close_focused_app();
                 }
-                Action::ToggleTerminalSplit => {
-                    self.toggle_focused_terminal_split();
+                Action::ToggleAppFocus => {
+                    // Tab navigates between the app pane and the linked
+                    // terminal pane below (they're separate tiles now).
+                    self.navigate(crate::keys::Direction::Down);
                 }
                 Action::OpenFileBrowser => {
                     self.open_file_browser();

@@ -1,5 +1,17 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-09 — [DECISION] App focus uses SurfaceLayer enum + animated dim, not a split-pane model
+
+The original plan for app+terminal coexistence had three `SurfaceMode` variants: `FullTerminal`, `AppWithCommandBar`, and `AppWithTerminalSplit` — Tab would toggle between the last two. Dropped in favour of two modes (`FullTerminal` / `AppActive`) with a separate `SurfaceLayer` enum (`App` / `Terminal`) tracking which surface owns keyboard focus. Tab toggles `focused_surface` rather than changing pane geometry. When the terminal has focus, the app dims to `APP_DIM_OPACITY = 0.45` via `animate_value_with_time` (0.15s). The divider line switches from `bg_active` to `accent` as an additional focus cue. Reason: the split-pane approach added geometry complexity and a third rendering path; the dim-and-focus approach gives the same UX signal with zero geometry change and is simpler to reason about.
+
+## 2026-04-09 — [ADDED] File browser rewritten with vector icons and sidebar preview
+
+`file_browser_app.rs` rewrote from a plain 20px monospace list to match the beta/v2 `CanvasPane` style: 58px rows with vector-drawn file type icons (folder tab+body, image mountain, audio speaker, markdown pen, code brackets, config sliders, PDF label, archive grid, generic lines), `format_size`/`format_modified` subtitles, and a 920px+ sidebar preview panel (image texture preview, directory stats, text preview, generic metadata). Keyboard nav extended to J/K/H/L, Backspace (parent), Home/End, and Enter (open). `image` crate added to Cargo.toml for texture loading. Sidebar uses `allocate_new_ui` with manual rect geometry (55/45 split) rather than `ui.columns()` because columns don't allow independent scroll areas.
+
+## 2026-04-09 — [GOTCHA] pane_ops method name diverged from TerminalPane after action rename
+
+`keys.rs` renamed `ToggleTerminalSplit` → `ToggleAppFocus` and `pane.rs` renamed `toggle_terminal_split()` → `toggle_surface_focus()`, but `pane_ops.rs` kept the old method `toggle_focused_terminal_split()` calling the old method name. Build would have failed if the rename on `TerminalPane` was complete. Always grep for the old name across all files when renaming a method — the pane_ops wrapper layer is easy to miss since it's a thin delegation and doesn't appear in the action handler directly.
+
 ## 2026-03-25 — [GOTCHA] File drop target must use geometric hit test, not focus state
 
 The initial fix for duplicate file drops (guarding `dropped_files` with `has_focus` in view.rs) caused drops to land in the wrong pane. Root cause: `focused_tile` in `PlexiBehavior` is derived from `ctx.focused_pane`, which is updated AFTER `tree.ui()` completes — so it's always 1 frame behind the actual hover detection (`new_focused`). On the drop frame, `has_focus` could point to the previously-focused pane, not the one under the cursor.

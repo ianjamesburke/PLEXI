@@ -28,8 +28,8 @@ pub enum Action {
     ScrollDown,
     /// Dismiss the active app surface and return to full terminal.
     CloseApp,
-    /// Toggle the terminal between command bar and 50% split when an app is active.
-    ToggleTerminalSplit,
+    /// Toggle keyboard focus between app surface and terminal command bar.
+    ToggleAppFocus,
     /// Open the file browser app in the focused terminal.
     OpenFileBrowser,
 }
@@ -144,7 +144,7 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
                 actions.push(Action::CloseApp);
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
-                actions.push(Action::ToggleTerminalSplit);
+                actions.push(Action::ToggleAppFocus);
             }
         }
 

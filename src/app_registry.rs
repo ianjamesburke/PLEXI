@@ -56,6 +56,40 @@ pub struct AppCapabilities {
     pub file_types: Vec<String>,
     #[serde(default)]
     pub keybinding: Option<String>,
+    /// Can send commands to the linked terminal PTY.
+    #[serde(default)]
+    pub terminal_write: bool,
+    /// Filesystem access: "none", "read_only", "read_write". Default: "read_only".
+    #[serde(default = "default_fs_permission")]
+    pub filesystem: String,
+    /// Can read .env / credentials files.
+    #[serde(default)]
+    pub env_file_access: bool,
+    /// Can make network requests.
+    #[serde(default)]
+    pub network: bool,
+}
+
+fn default_fs_permission() -> String {
+    "read_only".to_string()
+}
+
+impl AppCapabilities {
+    /// Convert manifest-declared capabilities to runtime permissions.
+    pub fn to_permissions(&self) -> crate::app_permissions::AppPermissions {
+        use crate::app_permissions::{AppPermissions, FsPermission, TrustLevel};
+        AppPermissions {
+            trust_level: TrustLevel::Sandboxed, // manifest apps are always sandboxed
+            terminal_write: self.terminal_write,
+            filesystem: match self.filesystem.as_str() {
+                "none" => FsPermission::None,
+                "read_write" => FsPermission::ReadWrite,
+                _ => FsPermission::ReadOnly,
+            },
+            env_file_access: self.env_file_access,
+            network: self.network,
+        }
+    }
 }
 
 /// A discovered but not-yet-launched app.
@@ -156,6 +190,11 @@ impl AppRegistry {
     /// Look up an app by id.
     pub fn app_by_id(&self, id: &str) -> Option<&InstalledApp> {
         self.apps.get(id)
+    }
+
+    /// Get the manifest-declared permissions for an app.
+    pub fn permissions_for(&self, app_id: &str) -> Option<crate::app_permissions::AppPermissions> {
+        self.apps.get(app_id).map(|app| app.manifest.capabilities.to_permissions())
     }
 
     /// Launch an app and return a boxed `App` trait object.

@@ -40,6 +40,13 @@ pub trait App: Send {
         false
     }
 
+    /// Drain any commands the app has queued since the last call.
+    /// Apps that navigate internally (e.g. file browser) push commands here
+    /// so the host can act on them each frame without changing the trait signature.
+    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+        vec![]
+    }
+
     /// Called when the user submits a command via the terminal command bar.
     /// The app may interpret it and return a command to execute, or return `None`
     /// to let it pass through to the terminal as a normal shell command.
@@ -62,24 +69,25 @@ pub trait App: Send {
     fn restore_state(&mut self, _state: &serde_json::Value) {}
 }
 
-/// How much of the pane the terminal occupies when an app is active.
+/// Whether the app surface or the terminal command bar has keyboard focus.
+/// Only relevant when `SurfaceMode::AppActive`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceLayer {
+    /// App receives keyboard input. App is fully opaque.
+    App,
+    /// Terminal command bar receives keyboard input. App dims to signal background state.
+    Terminal,
+}
+
+/// Whether an app surface is active on this pane.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceMode {
     /// No app active — terminal fills the whole pane.
     FullTerminal,
-    /// App fills most of the pane; terminal is a 4-line command bar at the bottom.
-    AppWithCommandBar,
-    /// App and terminal each take 50% of the pane height.
-    AppWithTerminalSplit,
+    /// App active — occupies pane minus a fixed command bar at the bottom.
+    /// `SurfaceLayer` controls which surface has keyboard focus.
+    AppActive,
 }
 
-impl SurfaceMode {
-    /// Fraction of the pane height the terminal occupies.
-    pub fn terminal_fraction(self) -> f32 {
-        match self {
-            SurfaceMode::FullTerminal => 1.0,
-            SurfaceMode::AppWithCommandBar => 0.0, // command bar height is fixed, not fractional
-            SurfaceMode::AppWithTerminalSplit => 0.5,
-        }
-    }
-}
+/// Opacity applied to the app region when the terminal command bar has focus.
+pub const APP_DIM_OPACITY: f32 = 0.45;

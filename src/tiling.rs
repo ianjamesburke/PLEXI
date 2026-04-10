@@ -1,4 +1,4 @@
-use crate::app_trait::{AppRenderContext, SurfaceMode};
+use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPACITY};
 use crate::pane::TerminalPane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Vec2};
@@ -6,8 +6,8 @@ use egui_term::{BackendCommand, TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
 
-/// Fixed height in logical pixels for the terminal command bar when an app is active.
-const COMMAND_BAR_HEIGHT: f32 = 72.0;
+/// Default height in logical pixels for the terminal command bar when an app is active.
+const COMMAND_BAR_HEIGHT: f32 = 140.0;
 
 pub type PaneId = u64;
 
@@ -148,87 +148,18 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             ui.add(terminal);
                         }
 
-                        SurfaceMode::AppWithCommandBar | SurfaceMode::AppWithTerminalSplit => {
+                        SurfaceMode::AppActive => {
                             if let Some(app) = pane.active_app.as_mut() {
-                                let total_height = ui.available_height();
-                                let total_width = ui.available_width();
-
-                                // Animate terminal height fraction for smooth expand/collapse.
-                                let target_fraction = match pane.surface_mode {
-                                    SurfaceMode::AppWithCommandBar => 0.0,
-                                    SurfaceMode::AppWithTerminalSplit => 0.5,
-                                    SurfaceMode::FullTerminal => 1.0,
-                                };
-                                let anim_id = egui::Id::new(("surface_anim", tile_id));
-                                let terminal_fraction = ui.ctx().animate_value_with_time(
-                                    anim_id,
-                                    target_fraction,
-                                    0.18,
-                                );
-
-                                let terminal_height = if pane.surface_mode
-                                    == SurfaceMode::AppWithCommandBar
-                                {
-                                    // Command bar: fixed height, not animated to zero to keep
-                                    // the terminal process alive and visible.
-                                    COMMAND_BAR_HEIGHT
-                                } else {
-                                    (total_height * terminal_fraction).max(COMMAND_BAR_HEIGHT)
-                                };
-                                let app_height = total_height - terminal_height;
-
-                                // App region
-                                let app_rect = egui::Rect::from_min_size(
-                                    ui.cursor().min,
-                                    egui::vec2(total_width, app_height),
-                                );
+                                // App renders full height — the terminal is a
+                                // separate pane below (created by auto-split).
                                 let app_ctx = AppRenderContext {
                                     colors: &self.colors,
                                     is_focused,
                                     linked_terminal: *pane_id,
                                 };
-                                ui.allocate_new_ui(
-                                    egui::UiBuilder::new().max_rect(app_rect),
-                                    |ui| {
-                                        app.ui(ui, &app_ctx);
-                                    },
-                                );
-                                ui.advance_cursor_after_rect(app_rect);
-
-                                // Divider line
-                                let divider_rect = egui::Rect::from_min_size(
-                                    ui.cursor().min,
-                                    egui::vec2(total_width, 1.0),
-                                );
-                                ui.painter().rect_filled(
-                                    divider_rect,
-                                    0.0,
-                                    self.colors.bg_active,
-                                );
-                                ui.advance_cursor_after_rect(divider_rect);
-
-                                // Terminal region (command bar or half-split)
-                                let term_rect = egui::Rect::from_min_size(
-                                    ui.cursor().min,
-                                    egui::vec2(total_width, terminal_height - 1.0),
-                                );
-                                ui.allocate_new_ui(
-                                    egui::UiBuilder::new().max_rect(term_rect),
-                                    |ui| {
-                                        let font_size = pane.font_size;
-                                        let terminal = TerminalView::new(ui, &mut pane.backend)
-                                            .set_focus(is_focused)
-                                            .set_theme(self.theme.clone())
-                                            .set_font(theme::terminal_font(font_size))
-                                            .set_size(Vec2::new(
-                                                term_rect.width(),
-                                                term_rect.height(),
-                                            ));
-                                        ui.add(terminal);
-                                    },
-                                );
+                                app.ui(ui, &app_ctx);
                             } else {
-                                // App was dropped but mode wasn't reset — fall back.
+                                // App was dropped — fall back to full terminal.
                                 let font_size = pane.font_size;
                                 let terminal = TerminalView::new(ui, &mut pane.backend)
                                     .set_focus(is_focused)
