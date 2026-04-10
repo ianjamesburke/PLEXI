@@ -430,17 +430,47 @@ impl PlexiApp {
     }
 
     /// Open the file browser app on the focused terminal pane.
+    /// Checks the app registry for an external "file_browser" app first;
+    /// falls back to the built-in FileBrowserApp.
     pub(crate) fn open_file_browser(&mut self) {
-        // Resolve cwd from the focused terminal before mutably borrowing.
         let cwd = {
             let ctx = &self.contexts[self.active_context];
             ctx.focused_pane
                 .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
-                .unwrap_or_else(|| {
-                    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
-                })
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
         };
-        let app = Box::new(crate::file_browser_app::FileBrowserApp::new(cwd));
+
+        let app: Box<dyn App> = self
+            .registry
+            .launch("file_browser", &cwd)
+            .unwrap_or_else(|| Box::new(crate::file_browser_app::FileBrowserApp::new(cwd)));
+
         self.open_app_on_focused(app);
+    }
+
+    /// Open the appropriate app for a file, based on its extension.
+    /// Falls back to opening the file path in the terminal if no app is registered.
+    pub(crate) fn open_file_with_app(&mut self, file_path: PathBuf) {
+        let cwd = file_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        if let Some(app) = self.registry.launch_for_file(&file_path, &cwd) {
+            self.open_app_on_focused(app);
+        } else {
+            // No registered app — fall back to writing the path into the terminal.
+            let ctx = &mut self.contexts[self.active_context];
+            if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+                let path_str = file_path.display().to_string();
+                let escaped = if path_str.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
+                    format!("'{}'", path_str.replace('\'', "'\\''"))
+                } else {
+                    path_str
+                };
+                pane.backend
+                    .process_command(egui_term::BackendCommand::Write(escaped.into_bytes()));
+            }
+        }
     }
 }

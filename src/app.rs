@@ -1,3 +1,4 @@
+use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
 use crate::keys::{self, Action};
@@ -28,6 +29,7 @@ pub struct PlexiApp {
     pub(crate) quitting: bool,
     pub(crate) renaming_context: Option<usize>,
     pub(crate) rename_buffer: String,
+    pub(crate) registry: AppRegistry,
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
@@ -107,6 +109,7 @@ impl PlexiApp {
                     palette_selected: 0,
                     pane_visit_history: Vec::new(),
                     renaming_pane: None,
+                    registry: AppRegistry::load(),
                 };
             }
         }
@@ -152,6 +155,7 @@ impl PlexiApp {
             palette_selected: 0,
             pane_visit_history: Vec::new(),
             renaming_pane: None,
+            registry: AppRegistry::load(),
         }
     }
 

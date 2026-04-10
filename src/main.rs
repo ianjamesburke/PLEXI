@@ -1,9 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod app_protocol;
+mod app_registry;
 mod app_trait;
 mod command_palette;
 mod file_browser_app;
+mod process_app;
 mod config;
 mod context;
 mod keys;
