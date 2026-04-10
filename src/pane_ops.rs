@@ -552,10 +552,27 @@ impl PlexiApp {
         ctx.focused_pane = Some(focused);
     }
 
-    /// Open the file browser app on the focused terminal pane.
-    /// Checks the app registry for an external "file_browser" app first;
-    /// falls back to the built-in FileBrowserApp.
+    /// Toggle the file browser: if the focused pane has a file browser open,
+    /// close it. Otherwise, open one.
     pub(crate) fn open_file_browser(&mut self) {
+        // Check if the focused pane (or its linked app pane above) already has
+        // a file browser open. If so, close it.
+        let ctx = &self.contexts[self.active_context];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                let pane_id = *pane_id;
+                if let Some(pane) = ctx.panes.get(&pane_id) {
+                    if let Some(app) = &pane.active_app {
+                        if app.type_id() == "file_browser" {
+                            // Close the file browser.
+                            self.close_focused_app();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         let cwd = {
             let ctx = &self.contexts[self.active_context];
             ctx.focused_pane
