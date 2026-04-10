@@ -41,7 +41,16 @@ impl QuickNoteApp {
         let filename = format!("note-{}.md", timestamp);
         let header = format!("# Quick Note — {}", display_time);
         let content = format!("{}\n\n{}\n", header, self.text.trim());
-        let path = self.save_dir.join(&filename);
+
+        // Save to ~/.plexi/backlog/ by default.
+        let backlog_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".plexi")
+            .join("backlog");
+        if let Err(e) = std::fs::create_dir_all(&backlog_dir) {
+            log::error!("QuickNote: failed to create backlog dir: {e}");
+        }
+        let path = backlog_dir.join(&filename);
 
         match std::fs::write(&path, &content) {
             Ok(()) => {
