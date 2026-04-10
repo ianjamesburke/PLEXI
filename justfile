@@ -13,6 +13,50 @@ install:
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
 
+install-apps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ "$(uname)" != "Darwin" ]]; then
+      echo "install-apps is macOS-only."
+      exit 1
+    fi
+
+    backup_dir="$(mktemp -d)"
+    cp Cargo.toml "$backup_dir/Cargo.toml"
+    cp src/main.rs "$backup_dir/main.rs"
+
+    cleanup() {
+      cp "$backup_dir/Cargo.toml" Cargo.toml
+      cp "$backup_dir/main.rs" src/main.rs
+      rm -rf "$backup_dir"
+    }
+    trap cleanup EXIT
+
+    sed -i '' 's/^name = "plexi"/name = "plexi-apps"/' Cargo.toml
+    sed -i '' 's/name = "Plexi"/name = "Plexi Apps"/' Cargo.toml
+    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-apps"/' Cargo.toml
+    sed -i '' 's/with_title("Plexi")/with_title("Plexi Apps")/' src/main.rs
+    sed -i '' 's/"plexi",/"plexi-apps",/' src/main.rs
+
+    cargo bundle --release
+
+    app_src="target/release/bundle/osx/Plexi Apps.app"
+    app_dest="/Applications/Plexi Apps.app"
+    if [[ ! -d "$app_src" ]]; then
+      echo "Error: bundle not found at $app_src"
+      exit 1
+    fi
+
+    rm -rf "$app_dest"
+    cp -R "$app_src" "$app_dest"
+
+    apps_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
+    cp "$apps_bin" /usr/local/bin/plexi-apps
+
+    echo "Installed $app_dest"
+    echo "CLI binary: /usr/local/bin/plexi-apps"
+
 bump:
     #!/usr/bin/env bash
     set -e

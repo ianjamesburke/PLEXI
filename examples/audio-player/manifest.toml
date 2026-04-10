@@ -1,0 +1,8 @@
+[app]
+id = "audio-player"
+name = "Audio Player"
+version = "0.1.0"
+description = "Keyboard-driven audio player — play/pause any audio file"
+
+[app.capabilities]
+file_types = ["wav", "mp3", "aiff", "aif", "flac", "ogg"]

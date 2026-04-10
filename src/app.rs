@@ -1,3 +1,4 @@
+use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
 use crate::keys::{self, Action};
@@ -28,6 +29,7 @@ pub struct PlexiApp {
     pub(crate) quitting: bool,
     pub(crate) renaming_context: Option<usize>,
     pub(crate) rename_buffer: String,
+    pub(crate) registry: AppRegistry,
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
@@ -52,6 +54,8 @@ impl PlexiApp {
 
         let (tx, rx) = mpsc::channel();
 
+        let registry = AppRegistry::load();
+
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut contexts = Vec::new();
@@ -70,6 +74,49 @@ impl PlexiApp {
                         TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
                     {
                         pane.name = saved_pane.name.clone();
+                        // Restore active app if one was saved.
+                        if let Some(app_type) = &saved_pane.active_app_type {
+                            let app: Option<Box<dyn crate::app_trait::App>> = match app_type.as_str() {
+                                "file_browser" => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    let mut fb = crate::file_browser::FileBrowserApp::new(cwd.clone());
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        fb.restore_state(state);
+                                    }
+                                    Some(Box::new(fb))
+                                }
+                                "quick_note" => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd);
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        note.restore_state(state);
+                                    }
+                                    Some(Box::new(note))
+                                }
+                                "audio_player" => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    let mut player = crate::audio_app::AudioApp::new(cwd);
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        player.restore_state(state);
+                                    }
+                                    Some(Box::new(player))
+                                }
+                                // Third-party apps: launch via registry using type_id.
+                                other => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    registry.launch(other, &cwd, &[])
+                                }
+                            };
+                            if let Some(app) = app {
+                                let perms = crate::app_permissions::AppPermissions::builtin();
+                                let scope = saved_pane.cwd.clone();
+                                pane.open_app(app, perms, scope);
+                                pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
+                            }
+                        }
                         panes.insert(saved_pane.id, pane);
                     }
                 }
@@ -107,6 +154,7 @@ impl PlexiApp {
                     palette_selected: 0,
                     pane_visit_history: Vec::new(),
                     renaming_pane: None,
+                    registry,
                 };
             }
         }
@@ -152,6 +200,7 @@ impl PlexiApp {
             palette_selected: 0,
             pane_visit_history: Vec::new(),
             renaming_pane: None,
+            registry: AppRegistry::load(),
         }
     }
 
@@ -177,11 +226,145 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Feed keyboard input to the focused pane's active app and dispatch any
+    /// resulting AppCommands to the linked terminal pane.
+    fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
+        let active = self.active_context;
+        let Some(focused_tile) = self.contexts[active].focused_pane else {
+            return;
+        };
+        let Some(egui_tiles::Tile::Pane(pane_id)) =
+            self.contexts[active].tree.tiles.get(focused_tile)
+        else {
+            return;
+        };
+        let pane_id = *pane_id;
+
+        // Gather commands from the app.
+        let (commands, scope, perms, linked_id) = {
+            let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
+                return;
+            };
+            if pane.active_app.is_none() {
+                return;
+            }
+            let app = pane.active_app.as_mut().unwrap();
+            ctx.input(|i| {
+                app.handle_key(i);
+            });
+            let cmds = app.take_pending_commands();
+            let scope = pane.app_scope.clone().unwrap_or_else(|| PathBuf::from("/"));
+            let perms = pane.app_permissions.clone();
+            let linked = pane.linked_terminal_pane;
+            (cmds, scope, perms, linked)
+        };
+
+        // Route commands to the linked terminal pane (the one below).
+        if let Some(linked_id) = linked_id {
+            if let Some(target_pane) = self.contexts[active].panes.get_mut(&linked_id) {
+                for cmd in commands {
+                    match crate::app_permissions::check_command(&cmd, &perms, &scope) {
+                        crate::app_permissions::PermissionCheck::Allowed => {
+                            Self::execute_app_command(cmd, target_pane);
+                        }
+                        crate::app_permissions::PermissionCheck::Denied(reason) => {
+                            log::warn!("App command denied: {reason}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn execute_app_command(cmd: crate::app_trait::AppCommand, pane: &mut crate::pane::TerminalPane) {
+        use crate::app_trait::AppCommand;
+        use egui_term::BackendCommand;
+
+        match cmd {
+            AppCommand::RunInTerminal(command) => {
+                let mut bytes = command.into_bytes();
+                bytes.push(b'\n');
+                pane.backend.process_command(BackendCommand::Write(bytes));
+            }
+            AppCommand::Cd(path) => {
+                // Clear the terminal then cd, so the user doesn't see the raw
+                // `cd` command printing and reflowing. The next prompt appears
+                // clean in the new directory.
+                let cmd = format!("clear && cd {}\n", shell_escape(&path.display().to_string()));
+                pane.backend
+                    .process_command(BackendCommand::Write(cmd.into_bytes()));
+            }
+            AppCommand::Notify(_msg) => {
+                // Notification system not yet wired — no-op for now.
+            }
+        }
+    }
+
+    /// Poll the linked terminal's CWD and sync it to the active app.
+    /// This enables two-way directory sync: terminal cd → file browser updates.
+    fn sync_app_cwd(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        // Collect pane IDs that have an active app with a linked terminal.
+        let app_panes: Vec<(PaneId, PaneId)> = ctx
+            .panes
+            .iter()
+            .filter_map(|(&pane_id, pane)| {
+                let linked = pane.linked_terminal_pane?;
+                if pane.active_app.is_some() {
+                    Some((pane_id, linked))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (app_pane_id, linked_id) in app_panes {
+            // Get the linked terminal's CWD via lsof.
+            let cwd = ctx.panes.get(&linked_id).and_then(|linked_pane| {
+                crate::shell::get_pid_cwd(linked_pane.backend.child_pid())
+            });
+            if let Some(cwd) = cwd {
+                if let Some(app_pane) = ctx.panes.get_mut(&app_pane_id) {
+                    if let Some(app) = app_pane.active_app.as_mut() {
+                        app.sync_cwd(&cwd);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn shell_escape(s: &str) -> String {
+    if s.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    } else {
+        s.to_string()
+    }
 }
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_pty_events();
+        self.dispatch_app_key_events(ctx);
+        self.sync_app_cwd();
+
+        // Check if the focused app wants to close itself (e.g. after saving).
+        {
+            let ctx_ref = &self.contexts[self.active_context];
+            let should_close = ctx_ref.focused_pane
+                .and_then(|tile| ctx_ref.tree.tiles.get(tile))
+                .and_then(|tile| {
+                    if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None }
+                })
+                .and_then(|pid| ctx_ref.panes.get(&pid))
+                .and_then(|pane| pane.active_app.as_ref())
+                .map(|app| app.wants_close())
+                .unwrap_or(false);
+            if should_close {
+                self.close_focused_app();
+            }
+        }
 
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
@@ -197,8 +380,23 @@ impl eframe::App for PlexiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
 
+        // Determine if the focused pane has an active app surface.
+        let app_active = {
+            let context = &self.contexts[self.active_context];
+            context.focused_pane
+                .and_then(|tile_id| {
+                    if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
+                        context.panes.get(pane_id)
+                    } else {
+                        None
+                    }
+                })
+                .map(|pane| pane.active_app.is_some())
+                .unwrap_or(false)
+        };
+
         // Handle keyboard shortcuts
-        for action in keys::poll_actions(ctx) {
+        for action in keys::poll_actions(ctx, app_active) {
             match action {
                 Action::SplitHorizontal => {
                     self.contexts[self.active_context].zoomed_pane = None;
@@ -291,6 +489,26 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ScrollDown => {
                     self.scroll_focused_pane(-3);
+                }
+                Action::CloseApp => {
+                    self.close_focused_app();
+                }
+                Action::ToggleAppFocus => {
+                    // Tab navigates between the app pane and the linked
+                    // terminal pane below (they're separate tiles now).
+                    self.navigate(crate::keys::Direction::Down);
+                }
+                Action::OpenFileBrowser => {
+                    self.open_file_browser();
+                }
+                Action::OpenQuickNote => {
+                    self.open_quick_note();
+                }
+                Action::OpenAudioPlayer => {
+                    self.open_audio_player();
+                }
+                Action::OpenConfig => {
+                    self.open_config_editor();
                 }
             }
         }
@@ -441,11 +659,11 @@ impl eframe::App for PlexiApp {
                         ui.painter().rect_filled(
                             panel_rect,
                             0.0,
-                            Color32::from_black_alpha(80),
+                            Color32::from_black_alpha(75),
                         );
 
                         // Inset rect for the zoomed pane
-                        let inset = 10.0;
+                        let inset = 5.0;
                         let zoom_rect = panel_rect.shrink(inset);
 
                         // Thicker accent border (2px)
@@ -484,6 +702,16 @@ impl eframe::App for PlexiApp {
                                                 });
                                             },
                                         );
+                                    } else if pane.surface_mode == crate::app_trait::SurfaceMode::AppActive {
+                                        // Zoomed app: render the app surface full-size.
+                                        if let Some(app) = pane.active_app.as_mut() {
+                                            let app_ctx = crate::app_trait::AppRenderContext {
+                                                colors: &self.colors,
+                                                is_focused: true,
+                                                linked_terminal: pane_id,
+                                            };
+                                            app.ui(ui, &app_ctx);
+                                        }
                                     } else {
                                         // Reserve space for tab dots if in a tab group
                                         if zoomed_tab_info.is_some() {

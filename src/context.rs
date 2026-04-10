@@ -186,6 +186,17 @@ impl Context {
         let pane = self.panes.get(&pane_id)?;
         shell::get_pid_cwd(pane.backend.child_pid())
     }
+
+    /// Returns (pane_id, &mut TerminalPane) for the currently focused pane, if any.
+    pub(crate) fn focused_pane_mut(&mut self) -> Option<(PaneId, &mut TerminalPane)> {
+        let tile_id = self.focused_pane?;
+        let pane_id = match self.tree.tiles.get(tile_id)? {
+            Tile::Pane(id) => *id,
+            _ => return None,
+        };
+        let pane = self.panes.get_mut(&pane_id)?;
+        Some((pane_id, pane))
+    }
 }
 
 pub(crate) fn replace_child(container: &mut Container, old: TileId, new: TileId) {

@@ -1,3 +1,35 @@
+// ─── Reserved Plexi shortcuts (apps must NOT consume these) ───────────────
+//
+// Cmd+D / Cmd+Shift+D  — split horizontal / vertical
+// Cmd+W                 — close pane
+// Cmd+H/J/K/L          — navigate panes
+// Cmd+T                 — new tab
+// Cmd+] / Cmd+[         — cycle tabs
+// Cmd+Q                 — quit
+// Cmd+B                 — toggle sidebar
+// Cmd+Enter             — toggle zoom
+// Cmd+/                 — toggle shortcuts overlay
+// Cmd+P                 — command palette
+// Cmd+Shift+R           — rename pane
+// Cmd+N                 — new context
+// Cmd+Up / Cmd+Down     — scroll
+// Cmd+= / Cmd+-         — font size
+// Cmd+E                 — file browser
+// Cmd+0                 — quick note
+// Cmd+1–9               — switch context
+// Escape (app active)   — close app
+// Tab (app active)      — navigate to linked terminal
+//
+// Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
+// Always guard with `!input.modifiers.command` before consuming Enter, H, J,
+// K, L, Backspace, or other keys that Plexi uses with Cmd modifier.
+//
+// GOTCHA: consume_key(Modifiers::NONE, Key) does NOT mean "key with no
+// modifiers" — it matches the key regardless of modifiers. To distinguish
+// plain Enter from Shift+Enter, check `input.modifiers.shift` BEFORE
+// calling consume_key.
+// ───────────────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
     Left,
@@ -26,9 +58,23 @@ pub enum Action {
     DecreasePaneFontSize,
     ScrollUp,
     ScrollDown,
+    /// Dismiss the active app surface and return to full terminal.
+    CloseApp,
+    /// Toggle keyboard focus between app surface and terminal command bar.
+    ToggleAppFocus,
+    /// Open the file browser app in the focused terminal.
+    OpenFileBrowser,
+    /// Open the quick note app (full pane, no terminal split).
+    OpenQuickNote,
+    /// Open the audio player app.
+    OpenAudioPlayer,
+    /// Open config file in the text editor.
+    OpenConfig,
 }
 
-pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
+/// Poll global keyboard actions. `app_active` indicates whether the focused
+/// pane currently has an app surface open (affects Escape and Tab handling).
+pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
     let mut actions = Vec::new();
     let cmd_shift = egui::Modifiers {
         shift: true,
@@ -126,6 +172,38 @@ pub fn poll_actions(ctx: &egui::Context) -> Vec<Action> {
         }
         if !input.modifiers.shift && input.consume_key(cmd_only, egui::Key::Minus) {
             actions.push(Action::DecreasePaneFontSize);
+        }
+
+        // App surface: Escape closes app, Tab toggles terminal split.
+        // These are only intercepted at the global level when an app is active,
+        // so that Escape and Tab work normally in a plain terminal.
+        if app_active {
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                actions.push(Action::CloseApp);
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                actions.push(Action::ToggleAppFocus);
+            }
+        }
+
+        // Open file browser (Cmd+E)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::E) {
+            actions.push(Action::OpenFileBrowser);
+        }
+
+        // Open quick note (Cmd+0)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0) {
+            actions.push(Action::OpenQuickNote);
+        }
+
+        // Open audio player (Cmd+Shift+A)
+        if input.consume_key(cmd_shift, egui::Key::A) {
+            actions.push(Action::OpenAudioPlayer);
+        }
+
+        // Open config (Cmd+,)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma) {
+            actions.push(Action::OpenConfig);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

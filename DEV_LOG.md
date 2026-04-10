@@ -1,5 +1,45 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-10 — [FUTURE] Collaborative state via SpacetimeDB + append-only snapshots
+
+The `serialize_state()`/`restore_state()` contract on the App trait is transport-agnostic — JSON in, JSON out. This means collaborative features could be layered in by replacing disk read/write with SpacetimeDB table subscriptions. Each pane's state = a row. Mutations push deltas to subscribers. Apps don't know they're collaborative. Additionally, snapshotting state every ~5 seconds as append-only rows gives full rewind/undo history across restarts for free. Locally, the same pattern works as an append-only JSON log file. v1 conflict resolution: last-write-wins on full state blob. CRDTs or OT per app type would come later. Not building now — the foundation supports it without changes.
+
+## 2026-04-10 — [DECISION] Directory-scoped workspace persistence is the next step
+
+Current workspace saves to `~/.plexi/workspaces/default.json` (global). The next concrete step is saving to `.plexi/workspace.json` in the current project directory instead. This unlocks: shareable project folders (share the dir, other person opens Plexi, layout restores), git-trackable workspace state, and the spatial zoom vision where navigating into a `.plexi/` directory restores that project's context. The `serialize_state()`/`restore_state()` App trait methods already handle per-app state — just need to change where the file is written. Gotchas to watch: multiple Plexi instances in same directory (file locking), binary files in git (audio/video — use LFS or .gitignore), and relative paths in serialized state (apps should not store absolute paths).
+
+## 2026-04-10 — [CHANGED] App+terminal refactored from embedded bar to separate panes
+
+The embedded terminal command bar (fixed 72px at bottom of app pane, animated opacity) was abandoned after testing. Scroll events didn't propagate through `allocate_new_ui`, click-to-focus was awkward, and the embedded terminal was too small to be useful. Replaced with auto-split: opening an app creates a real vertical split (75% app / 25% terminal) using the existing tile tree. Both are normal panes with natural resize, focus, and zoom behavior. Tab navigates down from app to terminal. Cmd+K navigates back up. Escape closes the app and collapses the split. This means `SurfaceMode::AppActive` now renders the app full-height with no embedded terminal at all — the old `COMMAND_BAR_HEIGHT`, opacity animation, and divider code in tiling.rs is dead.
+
+## 2026-04-10 — [DECISION] Two-way CWD sync via lsof polling, not OSC 7
+
+Tried emitting OSC 7 escape sequences to the PTY to track directory changes. The shell printed the raw escape as text because OSC 7 is an output-direction protocol (shell→emulator), not input (emulator→shell). Removed OSC writes entirely. Instead: file browser→terminal uses `AppCommand::Cd` which writes `cd path\n`. Terminal→file browser uses `shell::get_pid_cwd(child_pid)` (lsof on macOS) polled each frame in `sync_app_cwd`, same mechanism as beta/v2. The `sync_cwd` method on the App trait allows any app to respond to terminal directory changes.
+
+## 2026-04-10 — [GOTCHA] allocate_new_ui breaks ScrollArea mouse events
+
+The sidebar layout initially used `ui.allocate_new_ui()` with manual rect geometry for the two-column file browser (list + preview). Mouse wheel scrolling didn't work — events weren't propagated to the ScrollArea inside the allocated UI. Switched to `ui.columns(2, ...)` which is what beta/v2 uses and works correctly. Lesson: prefer egui's built-in layout primitives over manual rect allocation when scroll interaction is needed.
+
+## 2026-04-10 — [ADDED] Capability-gated permission system and secrets management
+
+Built in one session with 4 parallel agents: `secrets.rs` (macOS Keychain via `security` CLI, directory walk-up resolution), `app_api.rs` (structured ListDir/ReadFile/WriteFile/SecretGet/SecretStore with path-scope enforcement), `cli.rs` (`plexi run` reads `.plexi/commands.toml`, injects secrets as env vars), `app_registry.rs` extended with capability declarations. `app_permissions.rs` gates every `AppCommand` through `check_command()` — sandboxed apps can't escape their launch directory or write to the terminal without explicit permission. Built-in apps are pre-approved. The protocol spec is at `docs/specs/app-infrastructure.md`.
+
+## 2026-04-10 — [GOTCHA] handle_key must check modifiers to avoid swallowing Plexi shortcuts
+
+The file browser's `handle_key` consumed Enter, H, L, Backspace unconditionally. This swallowed Cmd+Enter (zoom toggle) and Cmd+H/J/K/L (pane navigation). Fix: guard all non-modifier keys with `!input.modifiers.command`. This is a general rule for all apps: Cmd-modified keys belong to Plexi, not the app.
+
+## 2026-04-09 — [DECISION] App focus uses SurfaceLayer enum + animated dim, not a split-pane model
+
+The original plan for app+terminal coexistence had three `SurfaceMode` variants: `FullTerminal`, `AppWithCommandBar`, and `AppWithTerminalSplit` — Tab would toggle between the last two. Dropped in favour of two modes (`FullTerminal` / `AppActive`) with a separate `SurfaceLayer` enum (`App` / `Terminal`) tracking which surface owns keyboard focus. Tab toggles `focused_surface` rather than changing pane geometry. When the terminal has focus, the app dims to `APP_DIM_OPACITY = 0.45` via `animate_value_with_time` (0.15s). The divider line switches from `bg_active` to `accent` as an additional focus cue. Reason: the split-pane approach added geometry complexity and a third rendering path; the dim-and-focus approach gives the same UX signal with zero geometry change and is simpler to reason about.
+
+## 2026-04-09 — [ADDED] File browser rewritten with vector icons and sidebar preview
+
+`file_browser_app.rs` rewrote from a plain 20px monospace list to match the beta/v2 `CanvasPane` style: 58px rows with vector-drawn file type icons (folder tab+body, image mountain, audio speaker, markdown pen, code brackets, config sliders, PDF label, archive grid, generic lines), `format_size`/`format_modified` subtitles, and a 920px+ sidebar preview panel (image texture preview, directory stats, text preview, generic metadata). Keyboard nav extended to J/K/H/L, Backspace (parent), Home/End, and Enter (open). `image` crate added to Cargo.toml for texture loading. Sidebar uses `allocate_new_ui` with manual rect geometry (55/45 split) rather than `ui.columns()` because columns don't allow independent scroll areas.
+
+## 2026-04-09 — [GOTCHA] pane_ops method name diverged from TerminalPane after action rename
+
+`keys.rs` renamed `ToggleTerminalSplit` → `ToggleAppFocus` and `pane.rs` renamed `toggle_terminal_split()` → `toggle_surface_focus()`, but `pane_ops.rs` kept the old method `toggle_focused_terminal_split()` calling the old method name. Build would have failed if the rename on `TerminalPane` was complete. Always grep for the old name across all files when renaming a method — the pane_ops wrapper layer is easy to miss since it's a thin delegation and doesn't appear in the action handler directly.
+
 ## 2026-03-25 — [GOTCHA] File drop target must use geometric hit test, not focus state
 
 The initial fix for duplicate file drops (guarding `dropped_files` with `has_focus` in view.rs) caused drops to land in the wrong pane. Root cause: `focused_tile` in `PlexiBehavior` is derived from `ctx.focused_pane`, which is updated AFTER `tree.ui()` completes — so it's always 1 frame behind the actual hover detection (`new_focused`). On the drop frame, `has_focus` could point to the previously-focused pane, not the one under the cursor.

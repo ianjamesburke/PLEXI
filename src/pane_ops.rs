@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::app::PlexiApp;
+use crate::app_trait::App;
 
 impl PlexiApp {
     fn create_single_pane_tree(
@@ -356,10 +357,18 @@ impl PlexiApp {
             for (&id, pane) in &context.panes {
                 let cwd = shell::get_pid_cwd(pane.backend.child_pid())
                     .unwrap_or_else(|| context.path.clone());
+                let (app_type, app_state) = if let Some(app) = &pane.active_app {
+                    (Some(app.type_id().to_string()), app.serialize_state())
+                } else {
+                    (None, None)
+                };
                 saved_panes.push(crate::workspace::SavedPane {
                     id,
                     cwd,
                     name: pane.name.clone(),
+                    active_app_type: app_type,
+                    active_app_state: app_state,
+                    linked_terminal_pane: pane.linked_terminal_pane,
                 });
             }
             saved_contexts.push(crate::workspace::SavedContext {
@@ -401,6 +410,290 @@ impl PlexiApp {
         let pane_id = *pane_id;
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             pane.font_size = (pane.font_size + delta).clamp(8.0, 32.0);
+        }
+    }
+
+    /// Close the active app on the focused terminal pane, returning to full terminal.
+    /// Also closes the linked terminal pane and collapses the split.
+    pub(crate) fn close_focused_app(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        let linked = if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.close_app()
+        } else {
+            None
+        };
+
+        // Close the linked terminal pane if it exists.
+        if let Some(linked_id) = linked {
+            // Find the tile ID for the linked pane and remove it.
+            let tile_to_remove = ctx
+                .tree
+                .tiles
+                .iter()
+                .find(|(_, tile)| matches!(tile, Tile::Pane(id) if *id == linked_id))
+                .map(|(tile_id, _)| tile_id);
+            if let Some(tile_id) = tile_to_remove {
+                ctx.tree.tiles.remove(*tile_id);
+            }
+            ctx.panes.remove(&linked_id);
+        }
+    }
+
+    /// Toggle keyboard focus between app surface and terminal command bar.
+    pub(crate) fn toggle_focused_surface(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.toggle_surface_focus();
+        }
+    }
+
+    /// Open an app on the focused pane: auto-splits vertically, app on top,
+    /// fresh linked terminal on bottom.
+    pub(crate) fn open_app_on_focused(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: crate::app_permissions::AppPermissions,
+        scope: PathBuf,
+    ) {
+        let Some(focused) = self.contexts[self.active_context].focused_pane else {
+            return;
+        };
+
+        // Create a new terminal pane for the bottom split (same as split_focused).
+        let new_term_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let cwd = self.contexts[self.active_context]
+            .get_focused_pane_cwd(focused)
+            .unwrap_or_else(|| scope.clone());
+
+        let settings = Self::make_backend_settings(Some(cwd), &self.colors);
+        let Some(new_pane) = TerminalPane::new(
+            new_term_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
+            log::error!("Failed to create linked terminal pane for app");
+            return;
+        };
+        self.contexts[self.active_context]
+            .panes
+            .insert(new_term_id, new_pane);
+
+        // Split using the exact same logic as split_focused (which works).
+        let split_target =
+            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+                Some((tabs_id, _)) => tabs_id,
+                None => focused,
+            };
+
+        let ctx = &mut self.contexts[self.active_context];
+        let parent = ctx.tree.tiles.parent_of(split_target);
+        let new_tile = ctx.tree.tiles.insert_pane(new_term_id);
+
+        let inserted_as_sibling = if let Some(parent_id) = parent {
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                ctx.tree.tiles.get_mut(parent_id)
+            {
+                if linear.dir == egui_tiles::LinearDir::Vertical {
+                    if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
+                        linear.children.insert(pos + 1, new_tile);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !inserted_as_sibling {
+            let container_tile = ctx
+                .tree
+                .tiles
+                .insert_vertical_tile(vec![split_target, new_tile]);
+
+            // Set 75/25 ratio for app (top) vs terminal (bottom).
+            if let Some(Tile::Container(Container::Linear(ref mut lin))) =
+                ctx.tree.tiles.get_mut(container_tile)
+            {
+                lin.shares.set_share(split_target, 3.0);
+                lin.shares.set_share(new_tile, 1.0);
+            }
+
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent_container)) =
+                    ctx.tree.tiles.get_mut(parent_id)
+                {
+                    replace_child(parent_container, split_target, container_tile);
+                }
+            } else {
+                ctx.tree.root = Some(container_tile);
+            }
+        }
+
+        // Set the app on the focused (top) pane and link to the bottom terminal.
+        if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+            let pane_id = *pane_id;
+            if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                pane.open_app(app, permissions, scope);
+                pane.linked_terminal_pane = Some(new_term_id);
+            }
+        }
+
+        // Focus stays on the app pane (not the new terminal).
+        ctx.focused_pane = Some(focused);
+    }
+
+    /// Toggle the file browser: if the focused pane has a file browser open,
+    /// close it. Otherwise, open one.
+    pub(crate) fn open_file_browser(&mut self) {
+        // Check if the focused pane (or its linked app pane above) already has
+        // a file browser open. If so, close it.
+        let ctx = &self.contexts[self.active_context];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                let pane_id = *pane_id;
+                if let Some(pane) = ctx.panes.get(&pane_id) {
+                    if let Some(app) = &pane.active_app {
+                        if app.type_id() == "file_browser" {
+                            // Close the file browser.
+                            self.close_focused_app();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        let app: Box<dyn App> = self
+            .registry
+            .launch("file_browser", &cwd, &[])
+            .unwrap_or_else(|| Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone())));
+
+        // Built-in file browser gets full permissions.
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_on_focused(app, perms, cwd);
+    }
+
+    /// Open an app on the focused pane WITHOUT creating a linked terminal split.
+    /// The app takes the full pane. Used for apps like Quick Note that don't
+    /// need a terminal.
+    pub(crate) fn open_app_fullscreen(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: crate::app_permissions::AppPermissions,
+        scope: PathBuf,
+    ) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            pane.open_app(app, permissions, scope);
+            // No linked terminal — app takes the full pane.
+        }
+    }
+
+    /// Open the quick note app (full pane, no terminal split).
+    pub(crate) fn open_quick_note(&mut self) {
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        let app = Box::new(crate::quick_note_app::QuickNoteApp::new(cwd.clone()));
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_fullscreen(app, perms, cwd);
+    }
+
+    /// Open the audio player app scoped to the current directory.
+    pub(crate) fn open_audio_player(&mut self) {
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        // Toggle: if audio player already open, close it.
+        let ctx = &self.contexts[self.active_context];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                if let Some(pane) = ctx.panes.get(pane_id) {
+                    if let Some(app) = &pane.active_app {
+                        if app.type_id() == "audio_player" {
+                            self.close_focused_app();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let app = Box::new(crate::audio_app::AudioApp::new(cwd.clone()));
+        // Audio player: read-only filesystem, no terminal write.
+        let mut perms = crate::app_permissions::AppPermissions::default();
+        perms.filesystem = crate::app_permissions::FsPermission::ReadOnly;
+        self.open_app_fullscreen(app, perms, cwd);
+    }
+
+    /// Open the Plexi config file in the text editor app.
+    pub(crate) fn open_config_editor(&mut self) {
+        let config_path = crate::config::config_path();
+        // Ensure config file exists with defaults.
+        if !config_path.exists() {
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&config_path, "# Plexi configuration\n# See docs for options\n");
+        }
+        let scope = config_path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let editor = crate::text_editor_app::TextEditorApp::from_file(config_path);
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_fullscreen(Box::new(editor), perms, scope);
+    }
+
+    /// Open the appropriate app for a file, based on its extension.
+    /// Falls back to opening the file path in the terminal if no app is registered.
+    pub(crate) fn open_file_with_app(&mut self, file_path: PathBuf) {
+        let cwd = file_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        if let Some(app) = self.registry.launch_for_file(&file_path, &cwd) {
+            // Third-party app — sandboxed by default, scoped to launch directory.
+            let perms = crate::app_permissions::AppPermissions::default();
+            self.open_app_on_focused(app, perms, cwd.clone());
+        } else {
+            // No registered app — fall back to writing the path into the terminal.
+            let ctx = &mut self.contexts[self.active_context];
+            if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+                let path_str = file_path.display().to_string();
+                let escaped = if path_str.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
+                    format!("'{}'", path_str.replace('\'', "'\\''"))
+                } else {
+                    path_str
+                };
+                pane.backend
+                    .process_command(egui_term::BackendCommand::Write(escaped.into_bytes()));
+            }
         }
     }
 }

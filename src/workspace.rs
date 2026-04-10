@@ -28,6 +28,15 @@ pub struct SavedPane {
     pub cwd: PathBuf,
     #[serde(default)]
     pub name: Option<String>,
+    /// If this pane had an active app, its type_id (e.g. "file_browser").
+    #[serde(default)]
+    pub active_app_type: Option<String>,
+    /// Serialised app state for restoration.
+    #[serde(default)]
+    pub active_app_state: Option<serde_json::Value>,
+    /// PaneId of the linked terminal (for split restoration).
+    #[serde(default)]
+    pub linked_terminal_pane: Option<u64>,
 }
 
 fn workspace_path() -> PathBuf {
@@ -96,11 +105,17 @@ mod tests {
                         id: 1,
                         cwd: PathBuf::from("/tmp"),
                         name: Some("my-pane".into()),
+                        active_app_type: None,
+                        active_app_state: None,
+                        linked_terminal_pane: None,
                     },
                     SavedPane {
                         id: 2,
                         cwd: PathBuf::from("/home"),
                         name: None,
+                        active_app_type: None,
+                        active_app_state: None,
+                        linked_terminal_pane: None,
                     },
                 ],
                 focused_pane: None,
