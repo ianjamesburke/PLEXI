@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::io::Result;
 use std::ops::{Index, RangeInclusive};
 use std::sync::mpsc::Sender;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 
 pub type TerminalMode = TermMode;
 pub type PtyEvent = Event;
@@ -140,6 +140,7 @@ pub struct TerminalBackend {
     pub url_regex: RegexSearch,
     term: Arc<FairMutex<Term<EventProxy>>>,
     size: TerminalSize,
+    shared_size: Arc<Mutex<TerminalSize>>,
     notifier: Notifier,
     last_content: RenderableContent,
     child_pid: u32,
@@ -183,8 +184,10 @@ impl TerminalBackend {
         let notifier = Notifier(event_loop_sender.clone());
         let event_notifier = Notifier(event_loop_sender);
         let url_regex = RegexSearch::new(r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`]+"#).unwrap();
+        let shared_size = Arc::new(Mutex::new(terminal_size));
         let _pty_event_loop_thread = pty_event_loop.spawn();
         let event_term = term.clone();
+        let shared_size_clone = shared_size.clone();
         let _pty_event_subscription = std::thread::Builder::new()
             .name(format!("pty_event_subscription_{}", id))
             .spawn(move || loop {
@@ -195,6 +198,17 @@ impl TerminalBackend {
                         {
                             event_notifier.notify(formatter(color).into_bytes());
                         }
+                        continue;
+                    }
+                    // Write responses directly back to the PTY so programs like fzf
+                    // that query cursor position (ESC[6n) or text-area size don't hang.
+                    if let Event::PtyWrite(text) = &event {
+                        event_notifier.notify(text.clone().into_bytes());
+                        continue;
+                    }
+                    if let Event::TextAreaSizeRequest(formatter) = &event {
+                        let size = *shared_size_clone.lock().unwrap();
+                        event_notifier.notify(formatter(size.into()).into_bytes());
                         continue;
                     }
                     pty_event_proxy_sender
@@ -214,6 +228,7 @@ impl TerminalBackend {
             url_regex,
             term: term.clone(),
             size: terminal_size,
+            shared_size,
             notifier,
             last_content: initial_content,
             child_pid,
@@ -524,6 +539,7 @@ impl TerminalBackend {
             num_lines: lines,
             num_cols: cols,
         };
+        *self.shared_size.lock().unwrap() = self.size;
 
         self.notifier.on_resize(self.size.into());
         terminal.resize(TermSize::new(cols as usize, lines as usize));
