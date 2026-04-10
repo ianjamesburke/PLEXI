@@ -68,6 +68,8 @@ pub enum Action {
     OpenQuickNote,
     /// Open the audio player app.
     OpenAudioPlayer,
+    /// Open config file in the text editor.
+    OpenConfig,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -197,6 +199,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open audio player (Cmd+Shift+A)
         if input.consume_key(cmd_shift, egui::Key::A) {
             actions.push(Action::OpenAudioPlayer);
+        }
+
+        // Open config (Cmd+,)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma) {
+            actions.push(Action::OpenConfig);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

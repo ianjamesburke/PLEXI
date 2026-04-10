@@ -507,6 +507,9 @@ impl eframe::App for PlexiApp {
                 Action::OpenAudioPlayer => {
                     self.open_audio_player();
                 }
+                Action::OpenConfig => {
+                    self.open_config_editor();
+                }
             }
         }
 

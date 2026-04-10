@@ -651,6 +651,24 @@ impl PlexiApp {
         self.open_app_fullscreen(app, perms, cwd);
     }
 
+    /// Open the Plexi config file in the text editor app.
+    pub(crate) fn open_config_editor(&mut self) {
+        let config_path = crate::config::config_path();
+        // Ensure config file exists with defaults.
+        if !config_path.exists() {
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&config_path, "# Plexi configuration\n# See docs for options\n");
+        }
+        let scope = config_path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let editor = crate::text_editor_app::TextEditorApp::from_file(config_path);
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_fullscreen(Box::new(editor), perms, scope);
+    }
+
     /// Open the appropriate app for a file, based on its extension.
     /// Falls back to opening the file path in the terminal if no app is registered.
     pub(crate) fn open_file_with_app(&mut self, file_path: PathBuf) {
