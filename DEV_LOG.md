@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-10 — [FUTURE] Collaborative state via SpacetimeDB + append-only snapshots
+
+The `serialize_state()`/`restore_state()` contract on the App trait is transport-agnostic — JSON in, JSON out. This means collaborative features could be layered in by replacing disk read/write with SpacetimeDB table subscriptions. Each pane's state = a row. Mutations push deltas to subscribers. Apps don't know they're collaborative. Additionally, snapshotting state every ~5 seconds as append-only rows gives full rewind/undo history across restarts for free. Locally, the same pattern works as an append-only JSON log file. v1 conflict resolution: last-write-wins on full state blob. CRDTs or OT per app type would come later. Not building now — the foundation supports it without changes.
+
+## 2026-04-10 — [DECISION] Directory-scoped workspace persistence is the next step
+
+Current workspace saves to `~/.plexi/workspaces/default.json` (global). The next concrete step is saving to `.plexi/workspace.json` in the current project directory instead. This unlocks: shareable project folders (share the dir, other person opens Plexi, layout restores), git-trackable workspace state, and the spatial zoom vision where navigating into a `.plexi/` directory restores that project's context. The `serialize_state()`/`restore_state()` App trait methods already handle per-app state — just need to change where the file is written. Gotchas to watch: multiple Plexi instances in same directory (file locking), binary files in git (audio/video — use LFS or .gitignore), and relative paths in serialized state (apps should not store absolute paths).
+
 ## 2026-04-10 — [CHANGED] App+terminal refactored from embedded bar to separate panes
 
 The embedded terminal command bar (fixed 72px at bottom of app pane, animated opacity) was abandoned after testing. Scroll events didn't propagate through `allocate_new_ui`, click-to-focus was awkward, and the embedded terminal was too small to be useful. Replaced with auto-split: opening an app creates a real vertical split (75% app / 25% terminal) using the existing tile tree. Both are normal panes with natural resize, focus, and zoom behavior. Tab navigates down from app to terminal. Cmd+K navigates back up. Escape closes the app and collapses the split. This means `SurfaceMode::AppActive` now renders the app full-height with no embedded terminal at all — the old `COMMAND_BAR_HEIGHT`, opacity animation, and divider code in tiling.rs is dead.
