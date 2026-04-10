@@ -155,7 +155,7 @@ impl FileBrowserApp {
 
     fn navigate_up(&mut self) {
         if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
-            // Remember the directory we're leaving so it gets re-selected.
+            // Capture the name of the directory we're leaving BEFORE changing cwd.
             let leaving_name = self.cwd
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string());
@@ -179,6 +179,32 @@ impl FileBrowserApp {
 
     fn selected_entry(&self) -> Option<&Entry> {
         self.entries.get(self.selected)
+    }
+
+    /// Called by the host when the linked terminal's CWD changes.
+    /// Updates the file browser to show the new directory.
+    /// Skips if the directory matches what we already navigated to internally
+    /// (avoids resetting selection from our own cd commands).
+    pub fn sync_cwd(&mut self, new_cwd: PathBuf) {
+        if new_cwd == self.cwd {
+            return;
+        }
+        // Remember selection in the old directory.
+        if let Some(entry) = self.selected_entry() {
+            self.directory_selection_memory
+                .insert(self.cwd.clone(), entry.name.clone());
+        }
+        // Try to restore selection for the new directory.
+        let restore_name = self.directory_selection_memory.get(&new_cwd).cloned();
+        self.cwd = new_cwd;
+        self.selected = 0;
+        self.refresh();
+        if let Some(name) = restore_name {
+            if let Some(idx) = self.entries.iter().position(|e| e.name == name) {
+                self.selected = idx;
+            }
+        }
+        self.pending_scroll = true;
     }
 
     fn ensure_image_preview(&mut self, ctx: &egui::Context, path: &Path) {
@@ -554,64 +580,30 @@ impl App for FileBrowserApp {
                 }
 
                 let show_sidebar = ui.available_width() >= MIN_SIDEBAR_WIDTH;
+                let mut navigate_to: Option<PathBuf> = None;
 
                 if show_sidebar {
-                    // Two-column layout: list left, preview right
-                    let total_w = ui.available_width();
-                    let list_w = total_w * 0.55;
-                    let sidebar_w = total_w - list_w - 8.0;
-
-                    let avail_rect = ui.available_rect_before_wrap();
-                    let list_rect = egui::Rect::from_min_size(
-                        avail_rect.min,
-                        egui::vec2(list_w, avail_rect.height()),
-                    );
-                    let sidebar_rect = egui::Rect::from_min_size(
-                        egui::pos2(avail_rect.min.x + list_w + 8.0, avail_rect.min.y),
-                        egui::vec2(sidebar_w, avail_rect.height()),
-                    );
-
-                    // List column
-                    let mut navigate_to: Option<PathBuf> = None;
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
+                    ui.columns(2, |columns| {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
-                            .show(ui, |ui| {
+                            .show(&mut columns[0], |ui| {
                                 navigate_to = self.draw_list(ui, colors);
                             });
+                        self.draw_sidebar_preview(&mut columns[1], colors);
                     });
-
-                    // Sidebar column
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                self.draw_sidebar_preview(ui, colors);
-                            });
-                    });
-
-                    if let Some(path) = navigate_to {
-                        if path.is_dir() {
-                            self.navigate_into(path);
-                        } else {
-                            // open file via system default
-                            let _ = std::process::Command::new("open").arg(&path).spawn();
-                        }
-                    }
                 } else {
-                    // Single column
-                    let mut navigate_to: Option<PathBuf> = None;
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             navigate_to = self.draw_list(ui, colors);
                         });
-                    if let Some(path) = navigate_to {
-                        if path.is_dir() {
-                            self.navigate_into(path);
-                        } else {
-                            let _ = std::process::Command::new("open").arg(&path).spawn();
-                        }
+                }
+
+                if let Some(path) = navigate_to {
+                    if path.is_dir() {
+                        self.navigate_into(path);
+                    } else {
+                        let _ = std::process::Command::new("open").arg(&path).spawn();
                     }
                 }
             });
@@ -662,8 +654,8 @@ impl App for FileBrowserApp {
             consumed = true;
         }
 
-        // Enter / open
-        if input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::L) {
+        // Enter / open — but NOT when Cmd is held (Cmd+Enter = Plexi zoom).
+        if !input.modifiers.command && (input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::L)) {
             if let Some(entry) = self.selected_entry().cloned() {
                 if entry.is_dir {
                     self.navigate_into(entry.path);
@@ -674,8 +666,8 @@ impl App for FileBrowserApp {
             consumed = true;
         }
 
-        // Back / parent
-        if input.key_pressed(egui::Key::Backspace) || input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::H) {
+        // Back / parent — but NOT when Cmd is held (Cmd+HJKL = pane navigation).
+        if !input.modifiers.command && (input.key_pressed(egui::Key::Backspace) || input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::H)) {
             self.navigate_up();
             consumed = true;
         }
@@ -717,6 +709,10 @@ impl App for FileBrowserApp {
             }
             _ => Some(AppCommand::RunInTerminal(cmd.to_string())),
         }
+    }
+
+    fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
+        self.sync_cwd(new_cwd.to_path_buf());
     }
 
     fn accepted_extensions(&self) -> &[&str] {

@@ -357,10 +357,18 @@ impl PlexiApp {
             for (&id, pane) in &context.panes {
                 let cwd = shell::get_pid_cwd(pane.backend.child_pid())
                     .unwrap_or_else(|| context.path.clone());
+                let (app_type, app_state) = if let Some(app) = &pane.active_app {
+                    (Some(app.type_id().to_string()), app.serialize_state())
+                } else {
+                    (None, None)
+                };
                 saved_panes.push(crate::workspace::SavedPane {
                     id,
                     cwd,
                     name: pane.name.clone(),
+                    active_app_type: app_type,
+                    active_app_state: app_state,
+                    linked_terminal_pane: pane.linked_terminal_pane,
                 });
             }
             saved_contexts.push(crate::workspace::SavedContext {

@@ -72,6 +72,27 @@ impl PlexiApp {
                         TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
                     {
                         pane.name = saved_pane.name.clone();
+                        // Restore active app if one was saved.
+                        if let Some(app_type) = &saved_pane.active_app_type {
+                            let app: Option<Box<dyn crate::app_trait::App>> = match app_type.as_str() {
+                                "file_browser" => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    let mut fb = crate::file_browser_app::FileBrowserApp::new(cwd.clone());
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        fb.restore_state(state);
+                                    }
+                                    Some(Box::new(fb))
+                                }
+                                _ => None,
+                            };
+                            if let Some(app) = app {
+                                let perms = crate::app_permissions::AppPermissions::builtin();
+                                let scope = saved_pane.cwd.clone();
+                                pane.open_app(app, perms, scope);
+                                pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
+                            }
+                        }
                         panes.insert(saved_pane.id, pane);
                     }
                 }
@@ -255,6 +276,39 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Poll the linked terminal's CWD and sync it to the active app.
+    /// This enables two-way directory sync: terminal cd → file browser updates.
+    fn sync_app_cwd(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        // Collect pane IDs that have an active app with a linked terminal.
+        let app_panes: Vec<(PaneId, PaneId)> = ctx
+            .panes
+            .iter()
+            .filter_map(|(&pane_id, pane)| {
+                let linked = pane.linked_terminal_pane?;
+                if pane.active_app.is_some() {
+                    Some((pane_id, linked))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (app_pane_id, linked_id) in app_panes {
+            // Get the linked terminal's CWD via lsof.
+            let cwd = ctx.panes.get(&linked_id).and_then(|linked_pane| {
+                crate::shell::get_pid_cwd(linked_pane.backend.child_pid())
+            });
+            if let Some(cwd) = cwd {
+                if let Some(app_pane) = ctx.panes.get_mut(&app_pane_id) {
+                    if let Some(app) = app_pane.active_app.as_mut() {
+                        app.sync_cwd(&cwd);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn shell_escape(s: &str) -> String {
@@ -269,6 +323,7 @@ impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_pty_events();
         self.dispatch_app_key_events(ctx);
+        self.sync_app_cwd();
 
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
@@ -554,11 +609,11 @@ impl eframe::App for PlexiApp {
                         ui.painter().rect_filled(
                             panel_rect,
                             0.0,
-                            Color32::from_black_alpha(80),
+                            Color32::from_black_alpha(75),
                         );
 
                         // Inset rect for the zoomed pane
-                        let inset = 10.0;
+                        let inset = 5.0;
                         let zoom_rect = panel_rect.shrink(inset);
 
                         // Thicker accent border (2px)
@@ -597,6 +652,16 @@ impl eframe::App for PlexiApp {
                                                 });
                                             },
                                         );
+                                    } else if pane.surface_mode == crate::app_trait::SurfaceMode::AppActive {
+                                        // Zoomed app: render the app surface full-size.
+                                        if let Some(app) = pane.active_app.as_mut() {
+                                            let app_ctx = crate::app_trait::AppRenderContext {
+                                                colors: &self.colors,
+                                                is_focused: true,
+                                                linked_terminal: pane_id,
+                                            };
+                                            app.ui(ui, &app_ctx);
+                                        }
                                     } else {
                                         // Reserve space for tab dots if in a tab group
                                         if zoomed_tab_info.is_some() {

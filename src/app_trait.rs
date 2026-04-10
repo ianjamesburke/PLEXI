@@ -60,6 +60,10 @@ pub trait App: Send {
         &[]
     }
 
+    /// Called when the linked terminal's CWD changes.
+    /// Apps that track directories (like the file browser) should update.
+    fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
+
     /// Serialise app state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {
         None
