@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 pub fn detect_shell() -> String {
     if let Ok(shell) = std::env::var("SHELL") {
@@ -103,7 +105,32 @@ fn detect_ghostty_terminfo_dir() -> Option<String> {
     None
 }
 
+static CWD_CACHE: LazyLock<Mutex<HashMap<u32, (PathBuf, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const CWD_CACHE_TTL: Duration = Duration::from_millis(300);
+
 pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
+    // Check cache first — lsof is expensive and called every frame on macOS.
+    if let Ok(cache) = CWD_CACHE.lock() {
+        if let Some((path, ts)) = cache.get(&pid) {
+            if ts.elapsed() < CWD_CACHE_TTL {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    let result = get_pid_cwd_uncached(pid);
+
+    if let Some(ref path) = result {
+        if let Ok(mut cache) = CWD_CACHE.lock() {
+            cache.insert(pid, (path.clone(), Instant::now()));
+        }
+    }
+
+    result
+}
+
+fn get_pid_cwd_uncached(pid: u32) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let output = Command::new("/usr/sbin/lsof")
