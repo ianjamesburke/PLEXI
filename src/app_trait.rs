@@ -60,6 +60,11 @@ pub trait App: Send {
         &[]
     }
 
+    /// Returns true if the app wants to close itself (e.g. after saving).
+    fn wants_close(&self) -> bool {
+        false
+    }
+
     /// Called when the linked terminal's CWD changes.
     /// Apps that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}

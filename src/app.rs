@@ -349,6 +349,23 @@ impl eframe::App for PlexiApp {
         self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
 
+        // Check if the focused app wants to close itself (e.g. after saving).
+        {
+            let ctx_ref = &self.contexts[self.active_context];
+            let should_close = ctx_ref.focused_pane
+                .and_then(|tile| ctx_ref.tree.tiles.get(tile))
+                .and_then(|tile| {
+                    if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None }
+                })
+                .and_then(|pid| ctx_ref.panes.get(&pid))
+                .and_then(|pane| pane.active_app.as_ref())
+                .map(|app| app.wants_close())
+                .unwrap_or(false);
+            if should_close {
+                self.close_focused_app();
+            }
+        }
+
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
             let context = &self.contexts[self.active_context];
