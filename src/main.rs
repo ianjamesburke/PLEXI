@@ -5,6 +5,7 @@ mod app_protocol;
 mod app_registry;
 mod app_api;
 mod app_permissions;
+mod audio_app;
 mod app_trait;
 mod cli;
 mod command_palette;

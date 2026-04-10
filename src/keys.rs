@@ -61,6 +61,8 @@ pub enum Action {
     OpenFileBrowser,
     /// Open the quick note app (full pane, no terminal split).
     OpenQuickNote,
+    /// Open the audio player app.
+    OpenAudioPlayer,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -185,6 +187,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open quick note (Cmd+0)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0) {
             actions.push(Action::OpenQuickNote);
+        }
+
+        // Open audio player (Cmd+Shift+A)
+        if input.consume_key(cmd_shift, egui::Key::A) {
+            actions.push(Action::OpenAudioPlayer);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

@@ -54,6 +54,8 @@ impl PlexiApp {
 
         let (tx, rx) = mpsc::channel();
 
+        let registry = AppRegistry::load();
+
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut contexts = Vec::new();
@@ -93,7 +95,20 @@ impl PlexiApp {
                                     }
                                     Some(Box::new(note))
                                 }
-                                _ => None,
+                                "audio_player" => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    let mut player = crate::audio_app::AudioApp::new(cwd);
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        player.restore_state(state);
+                                    }
+                                    Some(Box::new(player))
+                                }
+                                // Third-party apps: launch via registry using type_id.
+                                other => {
+                                    let cwd = saved_pane.cwd.clone();
+                                    registry.launch(other, &cwd, &[])
+                                }
                             };
                             if let Some(app) = app {
                                 let perms = crate::app_permissions::AppPermissions::builtin();
@@ -139,7 +154,7 @@ impl PlexiApp {
                     palette_selected: 0,
                     pane_visit_history: Vec::new(),
                     renaming_pane: None,
-                    registry: AppRegistry::load(),
+                    registry,
                 };
             }
         }
@@ -471,6 +486,9 @@ impl eframe::App for PlexiApp {
                 }
                 Action::OpenQuickNote => {
                     self.open_quick_note();
+                }
+                Action::OpenAudioPlayer => {
+                    self.open_audio_player();
                 }
             }
         }
