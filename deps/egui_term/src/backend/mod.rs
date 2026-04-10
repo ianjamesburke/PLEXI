@@ -13,7 +13,7 @@ use alacritty_terminal::selection::{
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{
-    self, cell::Cell, test::TermSize, viewport_to_point, Term, TermMode,
+    self, cell::{Cell, Flags as CellFlags}, test::TermSize, viewport_to_point, Term, TermMode,
 };
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use alacritty_terminal::{tty, Grid};
@@ -269,14 +269,22 @@ impl TerminalBackend {
         let mut result = String::new();
         if let Some(range) = content.selectable_range {
             let mut prev_line: Option<Line> = None;
+            let last_col = content.grid.last_column();
             for indexed in content.grid.display_iter() {
                 if range.contains(indexed.point) {
                     if let Some(prev) = prev_line {
                         if prev != indexed.point.line {
+                            // Only insert a newline if the previous row was NOT
+                            // soft-wrapped (WRAPLINE flag on its last cell).
+                            let was_wrapped = content.grid[prev][last_col]
+                                .flags
+                                .contains(CellFlags::WRAPLINE);
                             // Trim trailing spaces from the completed line
                             let trimmed_len = result.trim_end_matches(' ').len();
                             result.truncate(trimmed_len);
-                            result.push('\n');
+                            if !was_wrapped {
+                                result.push('\n');
+                            }
                         }
                     }
                     result.push(indexed.c);
