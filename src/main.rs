@@ -15,6 +15,7 @@ mod quick_note_app;
 mod text_editor_app;
 mod config;
 mod context;
+mod features;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos_menu;

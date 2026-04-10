@@ -35,6 +35,7 @@ pub struct PlexiApp {
     pub(crate) palette_selected: usize,
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) renaming_pane: Option<PaneId>,
+    pub(crate) features: crate::features::FeatureFlags,
 }
 
 impl PlexiApp {
@@ -47,6 +48,7 @@ impl PlexiApp {
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
         let config = config::PlexiConfig::load();
+        let features = crate::features::FeatureFlags::from_config(&config);
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = config.theme.unwrap_or_default();
         let colors = Colors::from_config(&theme_cfg);
@@ -155,6 +157,7 @@ impl PlexiApp {
                     pane_visit_history: Vec::new(),
                     renaming_pane: None,
                     registry,
+                    features: features.clone(),
                 };
             }
         }
@@ -201,6 +204,7 @@ impl PlexiApp {
             pane_visit_history: Vec::new(),
             renaming_pane: None,
             registry: AppRegistry::load(),
+            features,
         }
     }
 
@@ -771,6 +775,8 @@ impl eframe::App for PlexiApp {
         if self.renaming_pane.is_some() {
             self.draw_rename_pane_overlay(ctx);
         }
+
+        self.draw_feature_effects(ctx);
     }
 }
 
@@ -779,6 +785,69 @@ impl PlexiApp {
         self.pane_visit_history.retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
         self.pane_visit_history.insert(0, (ctx_idx, tile_id));
         self.pane_visit_history.truncate(100);
+    }
+
+    fn draw_feature_effects(&self, ctx: &egui::Context) {
+        use egui::{Color32, Stroke};
+
+        // CRT effect — scanlines + green phosphor tint
+        if self.features.is_enabled("crt") {
+            egui::Area::new(egui::Id::new("crt_overlay"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::Foreground)
+                .interactable(false)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let painter = ui.painter();
+
+                    // Green phosphor tint
+                    painter.rect_filled(
+                        screen,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(0, 40, 0, 18),
+                    );
+
+                    // Scanlines every 3 pixels
+                    let mut y = screen.top();
+                    while y < screen.bottom() {
+                        painter.line_segment(
+                            [egui::pos2(screen.left(), y), egui::pos2(screen.right(), y)],
+                            Stroke::new(0.5, Color32::from_black_alpha(38)),
+                        );
+                        y += 3.0;
+                    }
+
+                    ctx.request_repaint();
+                });
+        }
+
+        // Pulse — focused pane border gently breathes
+        if self.features.is_enabled("pulse") {
+            let time = ctx.input(|i| i.time);
+            let pulse_alpha = ((time * 2.0).sin() * 0.5 + 0.5) as f32;
+            let pulse_color = Color32::from_rgba_unmultiplied(
+                self.colors.accent.r(),
+                self.colors.accent.g(),
+                self.colors.accent.b(),
+                (pulse_alpha * 80.0 + 30.0) as u8,
+            );
+
+            egui::Area::new(egui::Id::new("pulse_overlay"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::Foreground)
+                .interactable(false)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let thickness = 2.0 + pulse_alpha * 1.5;
+                    ui.painter().rect_stroke(
+                        screen.shrink(1.0),
+                        0.0,
+                        Stroke::new(thickness, pulse_color),
+                        egui::StrokeKind::Inside,
+                    );
+                });
+            ctx.request_repaint();
+        }
     }
 
     pub(crate) fn abbreviate_home_path(path: &Path) -> String {

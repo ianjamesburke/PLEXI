@@ -5,6 +5,14 @@ use std::path::PathBuf;
 pub struct PlexiConfig {
     pub font_size: Option<f32>,
     pub theme: Option<ThemeConfig>,
+    pub beta: Option<BetaConfig>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct BetaConfig {
+    pub crt: Option<bool>,
+    pub pulse: Option<bool>,
+    pub ghost: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -89,6 +97,12 @@ accent = "#89b4fa"
 # bright_cyan = "#8bfde1"
 # bright_white = "#f4f2f9"
 # bright_foreground = "#f4f2f9"
+
+[beta]
+# Experimental visual effects. Set to true to enable.
+# crt = false     # Retro CRT scanlines + green phosphor tint
+# pulse = false   # Focused pane border gently breathes
+# ghost = false   # Unfocused panes render at reduced opacity
 "##;
 
 pub fn open_config_file() {
