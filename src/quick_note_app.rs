@@ -89,23 +89,17 @@ impl App for QuickNoteApp {
 
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         child.vertical_centered(|ui| {
-            // Check Shift+Enter FIRST (more specific), then plain Enter.
-            // Must check shift state manually because consume_key(NONE, Enter)
-            // matches even when shift is held.
-            let (shift_enter, plain_enter) = ui.input_mut(|i| {
-                let shift = i.modifiers.shift;
-                if shift {
-                    let consumed = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
-                    (consumed, false)
+            // Only intercept plain Enter (no shift) for save.
+            // Shift+Enter passes through to TextEdit which handles newlines naturally.
+            let plain_enter = ui.input_mut(|i| {
+                if !i.modifiers.shift && !i.modifiers.command {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
                 } else {
-                    let consumed = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                    (false, consumed)
+                    false
                 }
             });
 
-            if shift_enter {
-                self.text.push('\n');
-            } else if plain_enter && !self.text.trim().is_empty() {
+            if plain_enter && !self.text.trim().is_empty() {
                 self.save();
                 return;
             }
