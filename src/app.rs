@@ -177,11 +177,78 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Feed keyboard input to the focused pane's active app and dispatch any
+    /// resulting AppCommands to the terminal backend.
+    fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
+        use crate::app_trait::AppCommand;
+        use egui_term::BackendCommand;
+
+        let active = self.active_context;
+        let Some(focused_tile) = self.contexts[active].focused_pane else {
+            return;
+        };
+        let Some(egui_tiles::Tile::Pane(pane_id)) =
+            self.contexts[active].tree.tiles.get(focused_tile)
+        else {
+            return;
+        };
+        let pane_id = *pane_id;
+
+        let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
+            return;
+        };
+        let Some(app) = pane.active_app.as_mut() else {
+            return;
+        };
+
+        let commands: Vec<AppCommand> = ctx.input(|i| {
+            if app.handle_key(i) {
+                vec![] // app consumed the keys; no terminal command
+            } else {
+                vec![]
+            }
+        });
+
+        for cmd in commands {
+            Self::execute_app_command(cmd, pane);
+        }
+    }
+
+    fn execute_app_command(cmd: crate::app_trait::AppCommand, pane: &mut crate::pane::TerminalPane) {
+        use crate::app_trait::AppCommand;
+        use egui_term::BackendCommand;
+
+        match cmd {
+            AppCommand::RunInTerminal(command) => {
+                let mut bytes = command.into_bytes();
+                bytes.push(b'\n');
+                pane.backend.process_command(BackendCommand::Write(bytes));
+            }
+            AppCommand::Cd(path) => {
+                let cmd = format!("cd {}\n", shell_escape(&path.display().to_string()));
+                pane.backend
+                    .process_command(BackendCommand::Write(cmd.into_bytes()));
+            }
+            AppCommand::Notify(_msg) => {
+                // Notification system not yet wired — no-op for now.
+            }
+        }
+    }
+}
+
+fn shell_escape(s: &str) -> String {
+    if s.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    } else {
+        s.to_string()
+    }
 }
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_pty_events();
+        self.dispatch_app_key_events(ctx);
 
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
