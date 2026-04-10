@@ -37,8 +37,10 @@ impl ProcessApp {
         accepted_exts: Vec<String>,
         bin_path: &PathBuf,
         cwd: &PathBuf,
+        args: &[String],
     ) -> Result<Self, std::io::Error> {
         let mut child = std::process::Command::new(bin_path)
+            .args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

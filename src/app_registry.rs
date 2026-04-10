@@ -159,14 +159,15 @@ impl AppRegistry {
     }
 
     /// Launch an app and return a boxed `App` trait object.
-    pub fn launch(&self, id: &str, cwd: &PathBuf) -> Option<Box<dyn App>> {
+    pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
-            installed.manifest.capabilities.file_types.iter().map(|s| s.clone()).collect(),
+            installed.manifest.capabilities.file_types.iter().cloned().collect(),
             &installed.bin_path,
             cwd,
+            args,
         ) {
             Ok(app) => {
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);
@@ -179,11 +180,12 @@ impl AppRegistry {
         }
     }
 
-    /// Launch the app associated with a file extension.
+    /// Launch the app associated with a file extension, passing the file path as argv[1].
     pub fn launch_for_file(&self, file_path: &PathBuf, cwd: &PathBuf) -> Option<Box<dyn App>> {
         let ext = file_path.extension()?.to_string_lossy().to_lowercase();
         let id = self.extension_map.get(&ext)?.clone();
-        self.launch(&id, cwd)
+        let args = vec![file_path.display().to_string()];
+        self.launch(&id, cwd, &args)
     }
 }
 

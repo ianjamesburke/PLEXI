@@ -442,7 +442,7 @@ impl PlexiApp {
 
         let app: Box<dyn App> = self
             .registry
-            .launch("file_browser", &cwd)
+            .launch("file_browser", &cwd, &[])
             .unwrap_or_else(|| Box::new(crate::file_browser_app::FileBrowserApp::new(cwd)));
 
         self.open_app_on_focused(app);
