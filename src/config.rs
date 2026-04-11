@@ -7,6 +7,26 @@ pub struct PlexiConfig {
     pub theme_preset: Option<String>,
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
+    pub log: Option<LogConfig>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct LogConfig {
+    pub level: Option<String>,
+}
+
+impl LogConfig {
+    /// Convert the `level` string to a `log::LevelFilter`.
+    /// Returns `None` if unset; invalid values are ignored (returns `None`).
+    pub fn level_filter(&self) -> Option<log::LevelFilter> {
+        match self.level.as_deref() {
+            Some("error") => Some(log::LevelFilter::Error),
+            Some("warn")  => Some(log::LevelFilter::Warn),
+            Some("info")  => Some(log::LevelFilter::Info),
+            Some("debug") => Some(log::LevelFilter::Debug),
+            _             => None,
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -128,6 +148,9 @@ accent = "#89b4fa"
 # crt = false     # Retro CRT scanlines + green phosphor tint
 # pulse = false   # Focused pane border gently breathes
 # ghost = false   # Unfocused panes render at reduced opacity
+
+# [log]
+# level = "info"  # error | warn | info | debug  (default: info)
 "##;
 
 pub fn open_config_file() {

@@ -42,16 +42,36 @@ impl ProcessApp {
         cwd: &PathBuf,
         args: &[String],
     ) -> Result<Self, std::io::Error> {
+        let type_id: String = type_id.into();
+        let display_name: String = display_name.into();
+
         let mut child = std::process::Command::new(bin_path)
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null()) // suppress app stderr from leaking into terminal
+            .stderr(Stdio::piped()) // captured and forwarded to Plexi's logger
             .spawn()?;
 
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+
+        // Background thread: forward subprocess stderr lines to Plexi's logger.
+        let stderr_type_id = type_id.clone();
+        thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in std::io::BufRead::lines(reader) {
+                match line {
+                    Ok(l) if !l.trim().is_empty() => {
+                        let target = format!("app::{stderr_type_id}");
+                        log::warn!(target: &target, "stderr: {l}");
+                    }
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
 
         // Background thread: read draw commands line-by-line and forward via channel.
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
@@ -81,8 +101,8 @@ impl ProcessApp {
         });
 
         Ok(Self {
-            type_id: type_id.into(),
-            display_name: display_name.into(),
+            type_id,
+            display_name,
             accepted_exts,
             process: Some(child),
             stdin: Some(stdin),
@@ -207,8 +227,11 @@ impl ProcessApp {
                         });
                 }
 
-                // RunInTerminal / Cd / FrameDone handled at the App trait level, not here.
-                _ => {}
+                // RunInTerminal / Cd / Log / FrameDone handled at the App trait level, not here.
+                DrawCommand::RunInTerminal { .. }
+                | DrawCommand::Cd { .. }
+                | DrawCommand::Log { .. }
+                | DrawCommand::FrameDone => {}
             }
         }
     }
@@ -278,6 +301,15 @@ impl App for ProcessApp {
                     DrawCommand::Cd { path } => {
                         self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
                     }
+                    DrawCommand::Log { level, message } => {
+                        let target = format!("app::{}", self.type_id);
+                        match level.as_str() {
+                            "error" => log::error!(target: &target, "{message}"),
+                            "warn"  => log::warn!(target: &target, "{message}"),
+                            "debug" => log::debug!(target: &target, "{message}"),
+                            _       => log::info!(target: &target, "{message}"),
+                        }
+                    }
                     other => self.frame.push(other),
                 }
             }
@@ -291,6 +323,15 @@ impl App for ProcessApp {
                     }
                     DrawCommand::Cd { path } => {
                         self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
+                    }
+                    DrawCommand::Log { level, message } => {
+                        let target = format!("app::{}", self.type_id);
+                        match level.as_str() {
+                            "error" => log::error!(target: &target, "{message}"),
+                            "warn"  => log::warn!(target: &target, "{message}"),
+                            "debug" => log::debug!(target: &target, "{message}"),
+                            _       => log::info!(target: &target, "{message}"),
+                        }
                     }
                     other => self.frame.push(other),
                 }
@@ -313,17 +354,52 @@ impl App for ProcessApp {
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
         let mut consumed = false;
         for event in &input.events {
-            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
-                self.send_event(&PlexiEvent::Key {
-                    key: format!("{key:?}"),
-                    modifiers: Modifiers {
-                        shift: modifiers.shift,
-                        ctrl: modifiers.ctrl,
-                        alt: modifiers.alt,
-                        cmd: modifiers.command,
-                    },
-                });
-                consumed = true;
+            match event {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    // Skip letter keys (A–Z) — they are also fired as Event::Text with the
+                    // correct case and modifiers applied. Forwarding both would cause apps to
+                    // receive every letter keypress twice. Control/navigation keys (Backspace,
+                    // Enter, arrows, F-keys, etc.) are not fired as Event::Text, so they must
+                    // still be forwarded here. Modifier-held letter combos (Cmd+S, Ctrl+C, etc.)
+                    // are NOT fired as Event::Text either, so they're safe to forward.
+                    let is_bare_letter = matches!(key,
+                        egui::Key::A | egui::Key::B | egui::Key::C | egui::Key::D |
+                        egui::Key::E | egui::Key::F | egui::Key::G | egui::Key::H |
+                        egui::Key::I | egui::Key::J | egui::Key::K | egui::Key::L |
+                        egui::Key::M | egui::Key::N | egui::Key::O | egui::Key::P |
+                        egui::Key::Q | egui::Key::R | egui::Key::S | egui::Key::T |
+                        egui::Key::U | egui::Key::V | egui::Key::W | egui::Key::X |
+                        egui::Key::Y | egui::Key::Z
+                    ) && !modifiers.any();
+                    if !is_bare_letter {
+                        self.send_event(&PlexiEvent::Key {
+                            key: format!("{key:?}"),
+                            modifiers: Modifiers {
+                                shift: modifiers.shift,
+                                ctrl: modifiers.ctrl,
+                                alt: modifiers.alt,
+                                cmd: modifiers.command,
+                            },
+                        });
+                    }
+                    consumed = true;
+                }
+                egui::Event::Text(text) => {
+                    // Forward each typed character as a Key event with the character as the key
+                    // name. This covers letters, digits, and symbols with correct case applied.
+                    // Apps receive printable input by checking `len(key) == 1 and key.isprintable()`.
+                    for ch in text.chars() {
+                        if ch.is_control() {
+                            continue; // control chars come through Event::Key
+                        }
+                        self.send_event(&PlexiEvent::Key {
+                            key: ch.to_string(),
+                            modifiers: Modifiers::default(),
+                        });
+                    }
+                    consumed = true;
+                }
+                _ => {}
             }
         }
         consumed

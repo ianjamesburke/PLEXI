@@ -44,6 +44,26 @@ class Emitter:
         """Change the linked terminal's working directory."""
         print(json.dumps({"type": "cd", "path": path}), flush=True)
 
+    def log(self, level: str, message: str):
+        """Forward a log message to Plexi's logger (level: error|warn|info|debug)."""
+        print(json.dumps({"type": "log", "level": level, "message": message}), flush=True)
+
+    def info(self, message: str):
+        """Log at info level."""
+        self.log("info", message)
+
+    def warn(self, message: str):
+        """Log at warn level."""
+        self.log("warn", message)
+
+    def error(self, message: str):
+        """Log at error level."""
+        self.log("error", message)
+
+    def debug(self, message: str):
+        """Log at debug level."""
+        self.log("debug", message)
+
 
 class RenderContext:
     """
@@ -102,6 +122,26 @@ class RenderContext:
         """Queue a cd command for the linked terminal at end of this frame."""
         self._commands.append({"type": "cd", "path": path})
 
+    def log(self, level: str, message: str):
+        """Forward a log message to Plexi's logger (level: error|warn|info|debug)."""
+        self._commands.append({"type": "log", "level": level, "message": message})
+
+    def info(self, message: str):
+        """Log at info level."""
+        self.log("info", message)
+
+    def warn(self, message: str):
+        """Log at warn level."""
+        self.log("warn", message)
+
+    def error(self, message: str):
+        """Log at error level."""
+        self.log("error", message)
+
+    def debug(self, message: str):
+        """Log at debug level."""
+        self.log("debug", message)
+
     def _flush(self):
         for cmd in self._commands:
             print(json.dumps(cmd), flush=True)
@@ -153,7 +193,7 @@ class App:
 
     def run(self):
         """Start the event loop. Blocks until Plexi sends Shutdown."""
-        sys.stdout.reconfigure(line_buffering=True)
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
         for line in sys.stdin:
             line = line.strip()

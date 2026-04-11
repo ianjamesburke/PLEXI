@@ -16,6 +16,7 @@ mod secrets_app;
 mod text_editor_app;
 mod config;
 mod context;
+mod logging;
 mod features;
 mod keys;
 #[cfg(target_os = "macos")]
@@ -31,7 +32,11 @@ mod tiling;
 mod workspace;
 
 fn main() -> eframe::Result {
-    env_logger::init();
+    let log_level = crate::config::PlexiConfig::load()
+        .log
+        .and_then(|l| l.level_filter())
+        .unwrap_or(log::LevelFilter::Info);
+    crate::logging::init(log_level);
 
     // Handle CLI subcommands before launching the GUI.
     let args: Vec<String> = std::env::args().collect();
