@@ -1,11 +1,77 @@
 use log::{error, warn};
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 const SERVICE_NAME: &str = "plexi";
 
+/// A parsed Keychain entry stored under service="plexi".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretEntry {
+    pub app_id: String,
+    pub directory: String,
+    pub key: String,
+}
+
 /// Build the Keychain account string: "{app_id}/{directory}/{key}"
 fn account_key(key: &str, app_id: &str, directory: &str) -> String {
     format!("{app_id}/{directory}/{key}")
+}
+
+// ── Index file (keys only — values stay in Keychain) ──────────────────
+
+fn index_path() -> std::path::PathBuf {
+    crate::config::config_dir().join("secrets-index.json")
+}
+
+fn read_index() -> Vec<SecretEntry> {
+    let path = index_path();
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            error!("secrets: failed to parse index at {:?}: {e}", path);
+            Vec::new()
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            error!("secrets: failed to read index: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn write_index(entries: &[SecretEntry]) {
+    let path = index_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            error!("secrets: failed to create config dir: {e}");
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(entries) {
+        Ok(s) => {
+            if let Err(e) = std::fs::write(&path, s) {
+                error!("secrets: failed to write index: {e}");
+            }
+        }
+        Err(e) => error!("secrets: failed to serialize index: {e}"),
+    }
+}
+
+fn index_add(key: &str, app_id: &str, directory: &str) {
+    let mut entries = read_index();
+    // Remove any existing entry with the same triple to avoid duplicates.
+    entries.retain(|e| !(e.key == key && e.app_id == app_id && e.directory == directory));
+    entries.push(SecretEntry {
+        app_id: app_id.to_string(),
+        directory: directory.to_string(),
+        key: key.to_string(),
+    });
+    write_index(&entries);
+}
+
+fn index_remove(key: &str, app_id: &str, directory: &str) {
+    let mut entries = read_index();
+    entries.retain(|e| !(e.key == key && e.app_id == app_id && e.directory == directory));
+    write_index(&entries);
 }
 
 // ── macOS Keychain implementation ──────────────────────────────────────
@@ -30,7 +96,10 @@ pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bo
         ])
         .output()
     {
-        Ok(output) if output.status.success() => true,
+        Ok(output) if output.status.success() => {
+            index_add(key, app_id, directory);
+            true
+        }
         Ok(output) => {
             error!(
                 "secrets::store_secret failed for account={account}: {}",
@@ -81,7 +150,10 @@ pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
         .args(["delete-generic-password", "-s", SERVICE_NAME, "-a", &account])
         .output()
     {
-        Ok(output) if output.status.success() => true,
+        Ok(output) if output.status.success() => {
+            index_remove(key, app_id, directory);
+            true
+        }
         Ok(output) => {
             error!(
                 "secrets::delete_secret failed for account={account}: {}",
@@ -96,76 +168,19 @@ pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
     }
 }
 
+/// List all secrets for a given app_id — reads from the index, no Keychain dump needed.
 #[cfg(target_os = "macos")]
 pub fn list_secrets(app_id: &str) -> Vec<String> {
-    use std::process::Command;
-
-    // `security dump-keychain` dumps all items. We parse it immediately into
-    // key names and drop the raw dump string before returning, so the full
-    // keychain contents don't linger in memory longer than necessary.
-    let result = {
-        match Command::new("security")
-            .args(["dump-keychain"])
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let keys = parse_keychain_dump(&text, app_id);
-                // `text` (the raw dump) is dropped here as the block ends
-                keys
-            }
-            Ok(output) => {
-                error!(
-                    "secrets::list_secrets failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-                Vec::new()
-            }
-            Err(e) => {
-                error!("secrets::list_secrets failed to run security CLI: {e}");
-                Vec::new()
-            }
-        }
-    };
-    result
+    read_index()
+        .into_iter()
+        .filter(|e| e.app_id == app_id)
+        .map(|e| account_key(&e.key, &e.app_id, &e.directory))
+        .collect()
 }
 
-#[cfg(target_os = "macos")]
-fn parse_keychain_dump(dump: &str, app_id: &str) -> Vec<String> {
-    let mut results = Vec::new();
-    let mut in_plexi_entry = false;
-    let prefix = format!("{app_id}/");
-
-    for line in dump.lines() {
-        let trimmed = line.trim();
-
-        // Detect service match
-        if trimmed.contains("svce")
-            && trimmed.contains(&format!("\"{}\"", SERVICE_NAME))
-        {
-            in_plexi_entry = true;
-            continue;
-        }
-
-        // If we're inside a matching entry, look for the account field
-        if in_plexi_entry && trimmed.contains("acct") {
-            // Format: "acct"<blob>="app_id/dir/key"
-            if let Some(start) = trimmed.rfind('=') {
-                let account = trimmed[start + 1..].trim().trim_matches('"');
-                if account.starts_with(&prefix) {
-                    results.push(account.to_string());
-                }
-            }
-            in_plexi_entry = false;
-        }
-
-        // Reset on new keychain entry boundary
-        if trimmed.starts_with("keychain:") || trimmed.starts_with("class:") {
-            in_plexi_entry = false;
-        }
-    }
-
-    results
+/// List every Plexi secret across all app_ids — reads from the index.
+pub fn list_all_secrets() -> Vec<SecretEntry> {
+    read_index()
 }
 
 /// Walk up from `launch_dir` to the user's home directory, returning the first
@@ -189,12 +204,10 @@ pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroi
             return Some(value);
         }
 
-        // Stop if we've reached home (or gone past it)
         if current == home {
             break;
         }
 
-        // Move to parent
         match current.parent() {
             Some(parent) if parent != current => current = parent.to_path_buf(),
             _ => break,
@@ -208,40 +221,30 @@ pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroi
 
 #[cfg(not(target_os = "macos"))]
 pub fn store_secret(key: &str, _value: &str, app_id: &str, directory: &str) -> bool {
-    warn!(
-        "secrets::store_secret({key}, {app_id}, {directory}): Keychain not available on this platform"
-    );
+    warn!("secrets::store_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     false
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
-    warn!(
-        "secrets::retrieve_secret({key}, {app_id}, {directory}): Keychain not available on this platform"
-    );
+    warn!("secrets::retrieve_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     None
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
-    warn!(
-        "secrets::delete_secret({key}, {app_id}, {directory}): Keychain not available on this platform"
-    );
+    warn!("secrets::delete_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     false
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn list_secrets(app_id: &str) -> Vec<String> {
-    warn!(
-        "secrets::list_secrets({app_id}): Keychain not available on this platform"
-    );
+    warn!("secrets::list_secrets({app_id}): Keychain not available on this platform");
     Vec::new()
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
-    warn!(
-        "secrets::resolve_secret({key}, {app_id}, {launch_dir}): Keychain not available on this platform"
-    );
+    warn!("secrets::resolve_secret({key}, {app_id}, {launch_dir}): Keychain not available on this platform");
     None
 }
