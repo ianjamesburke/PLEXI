@@ -108,7 +108,7 @@ impl PlexiApp {
                                     (Some(Box::new(player)), builtin_perms)
                                 }
                                 "secrets_manager" => {
-                                    let mut secrets = crate::secrets_app::SecretsApp::new();
+                                    let mut secrets = crate::secrets_app::SecretsApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         secrets.restore_state(state);

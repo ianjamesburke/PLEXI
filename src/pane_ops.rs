@@ -708,7 +708,7 @@ impl PlexiApp {
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
         };
 
-        let app = Box::new(crate::secrets_app::SecretsApp::new());
+        let app = Box::new(crate::secrets_app::SecretsApp::new(cwd.clone()));
         let perms = crate::app_permissions::AppPermissions::builtin();
         self.open_app_fullscreen(app, perms, cwd);
     }
