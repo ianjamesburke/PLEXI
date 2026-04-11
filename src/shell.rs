@@ -37,6 +37,7 @@ pub fn build_env() -> HashMap<String, String> {
         env.insert("TERM".into(), "xterm-256color".into());
     }
     env.insert("COLORTERM".into(), "truecolor".into());
+    env.insert("PLEXI_RUNNING".into(), "1".into());
 
     env.insert(
         "LANG".into(),

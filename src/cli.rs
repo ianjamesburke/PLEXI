@@ -1,10 +1,14 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::process::Command;
 
 const APP_ID: &str = "plexi-run";
 const COMMANDS_FILE: &str = ".plexi/commands.toml";
+
+// Embed the Python SDK at compile time so `plexi app init` can write it out.
+const PYTHON_SDK: &str = include_str!("../sdk/python/plexi_sdk.py");
 
 /// Parsed .plexi/commands.toml
 #[derive(Deserialize)]
@@ -198,6 +202,271 @@ pub fn list_secrets() -> i32 {
     }
 
     0
+}
+
+// ── plexi app subcommands ─────────────────────────────────────────────────────
+
+/// `plexi app init [--lang python|rust] <name>` — scaffold a new app in `.plexi/apps/<name>/`.
+pub fn app_init(name: &str, lang: &str) -> i32 {
+    if name.is_empty() {
+        eprintln!("Usage: plexi app init [--lang python|rust] <name>");
+        return 1;
+    }
+
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("error: {e}"); return 1; }
+    };
+
+    let app_dir = cwd.join(".plexi").join("apps").join(name);
+    if app_dir.exists() {
+        eprintln!("error: {} already exists", app_dir.display());
+        return 1;
+    }
+
+    if let Err(e) = std::fs::create_dir_all(&app_dir) {
+        eprintln!("error: could not create {}: {e}", app_dir.display());
+        return 1;
+    }
+
+    let result = match lang {
+        "rust" => scaffold_rust_app(&app_dir, name),
+        _      => scaffold_python_app(&app_dir, name),
+    };
+
+    match result {
+        Ok(()) => {
+            println!("Created app '{name}' at {}", app_dir.display());
+            if lang == "rust" {
+                println!("\nNext steps:");
+                println!("  cd {}", app_dir.display());
+                println!("  cargo build --release");
+                println!("  # then open a file in Plexi or run: plexi app launch {name}");
+            } else {
+                println!("\nNext steps:");
+                println!("  edit {}/main.py", app_dir.display());
+                println!("  # Plexi will pick it up on next launch (or reload)");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: failed to scaffold app: {e}");
+            1
+        }
+    }
+}
+
+fn scaffold_python_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // manifest.toml
+    std::fs::write(app_dir.join("manifest.toml"), format!(
+        "[app]\nid = \"{name}\"\nname = \"{display}\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
+        name = name,
+        display = to_title_case(name),
+    ))?;
+
+    // plexi_sdk.py — embedded at compile time
+    std::fs::write(app_dir.join("plexi_sdk.py"), PYTHON_SDK)?;
+
+    // main.py
+    let main_py = format!(
+        "#!/usr/bin/env python3\nimport sys, os\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nfrom plexi_sdk import App\n\napp = App()\n\n@app.on_render\ndef render(ctx):\n    ctx.rect(0, 0, ctx.width, ctx.height, fill=\"#1e1e2e\")\n    ctx.text(20, 20, \"{display}\", size=16, color=\"#cdd6f4\", bold=True)\n    ctx.text(20, 50, \"Edit main.py to build your app.\", size=13, color=\"#6c7086\")\n\n@app.on_key\ndef on_key(key, mods, emit):\n    pass  # handle key events here\n\napp.run()\n",
+        display = to_title_case(name),
+    );
+    let main_path = app_dir.join("main.py");
+    std::fs::write(&main_path, main_py)?;
+
+    // chmod +x main.py
+    let mut perms = std::fs::metadata(&main_path)?.permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    std::fs::set_permissions(&main_path, perms)?;
+
+    Ok(())
+}
+
+fn scaffold_rust_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
+    // manifest.toml
+    std::fs::write(app_dir.join("manifest.toml"), format!(
+        "[app]\nid = \"{name}\"\nname = \"{display}\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
+        name = name,
+        display = to_title_case(name),
+    ))?;
+
+    // Cargo.toml
+    std::fs::write(app_dir.join("Cargo.toml"), format!(
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"plexi-app\"\npath = \"src/main.rs\"\n\n[dependencies]\nplexi-sdk = {{ git = \"https://github.com/ianjamesburke/plexi\", branch = \"alpha\" }}\n",
+        name = name,
+    ))?;
+
+    // src/main.rs
+    let src_dir = app_dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+    std::fs::write(src_dir.join("main.rs"), format!(
+        "use plexi_sdk::{{App, Emitter, Modifiers, RenderContext, run}};\n\nstruct {struct_name};\n\nimpl App for {struct_name} {{\n    fn on_render(&mut self, ctx: &mut RenderContext) {{\n        ctx.rect(0.0, 0.0, ctx.width, ctx.height, \"#1e1e2e\");\n        ctx.text_bold(20.0, 20.0, \"{display}\", 16.0, \"#cdd6f4\");\n        ctx.text(20.0, 50.0, \"Edit src/main.rs to build your app.\", 13.0, \"#6c7086\");\n    }}\n\n    fn on_key(&mut self, _key: &str, _mods: &Modifiers, _emit: &mut Emitter) {{}}\n}}\n\nfn main() {{\n    run(&mut {struct_name});\n}}\n",
+        struct_name = to_struct_name(name),
+        display = to_title_case(name),
+    ))?;
+
+    Ok(())
+}
+
+/// `plexi app install <github-shorthand-or-url>` — clone + build an app from GitHub.
+pub fn app_install(source: &str) -> i32 {
+    let url = if source.starts_with("http://") || source.starts_with("https://") || source.starts_with("git@") {
+        source.to_string()
+    } else {
+        // Treat as github shorthand: "user/repo"
+        format!("https://github.com/{source}")
+    };
+
+    // Derive app id from repo name (last path segment, strip .git)
+    let repo_name = url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("app")
+        .trim_end_matches(".git");
+
+    let apps_dir = crate::app_registry::apps_dir();
+    if let Err(e) = std::fs::create_dir_all(&apps_dir) {
+        eprintln!("error: could not create apps dir: {e}");
+        return 1;
+    }
+
+    let dest = apps_dir.join(repo_name);
+    if dest.exists() {
+        eprintln!("error: {} already exists. Remove it first to reinstall.", dest.display());
+        return 1;
+    }
+
+    println!("Cloning {url} ...");
+    let status = Command::new("git")
+        .args(["clone", "--depth", "1", &url, &dest.to_string_lossy()])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!("error: git clone failed (exit {})", s.code().unwrap_or(1));
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("error: could not run git: {e}");
+            return 1;
+        }
+    }
+
+    // If the app has a Cargo.toml, build it.
+    if dest.join("Cargo.toml").exists() {
+        println!("Building Rust app (cargo build --release)...");
+        let status = Command::new("cargo")
+            .args(["build", "--release"])
+            .current_dir(&dest)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                // Copy the compiled binary to bin/plexi-app
+                let bin_dir = dest.join("bin");
+                if let Err(e) = std::fs::create_dir_all(&bin_dir) {
+                    eprintln!("warning: could not create bin dir: {e}");
+                } else {
+                    let src_bin = dest.join("target").join("release").join("plexi-app");
+                    if src_bin.exists() {
+                        if let Err(e) = std::fs::copy(&src_bin, bin_dir.join("plexi-app")) {
+                            eprintln!("warning: could not copy binary: {e}");
+                        }
+                    }
+                }
+            }
+            Ok(s) => {
+                eprintln!("error: cargo build failed (exit {})", s.code().unwrap_or(1));
+                let _ = std::fs::remove_dir_all(&dest);
+                return 1;
+            }
+            Err(e) => {
+                eprintln!("error: could not run cargo: {e}");
+                let _ = std::fs::remove_dir_all(&dest);
+                return 1;
+            }
+        }
+    } else {
+        // Python (or other): chmod +x any executable entry points
+        for candidate in ["main.py", "app.py", repo_name] {
+            let p = dest.join(candidate);
+            if p.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(&p) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(perms.mode() | 0o111);
+                        let _ = std::fs::set_permissions(&p, perms);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    println!("Installed '{repo_name}'. Restart Plexi to load the app.");
+    0
+}
+
+/// `plexi app uninstall <id>` — remove a globally installed app.
+pub fn app_uninstall(id: &str) -> i32 {
+    let app_dir = crate::app_registry::apps_dir().join(id);
+    if !app_dir.exists() {
+        eprintln!("error: app '{id}' not found in global apps dir");
+        return 1;
+    }
+    if let Err(e) = std::fs::remove_dir_all(&app_dir) {
+        eprintln!("error: could not remove {}: {e}", app_dir.display());
+        return 1;
+    }
+    println!("Uninstalled '{id}'.");
+    0
+}
+
+/// `plexi app list` — list installed apps.
+pub fn app_list() -> i32 {
+    let registry = crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+    let apps = registry.list();
+    if apps.is_empty() {
+        println!("No apps installed.");
+        println!("Install one with: plexi app install <github-user/repo>");
+    } else {
+        for app in apps {
+            println!("{:20} {}  {}", app.manifest.id, app.manifest.version, app.manifest.description);
+        }
+    }
+    0
+}
+
+fn to_title_case(s: &str) -> String {
+    s.split(['-', '_'])
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn to_struct_name(s: &str) -> String {
+    s.split(['-', '_'])
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect::<String>()
 }
 
 /// Read a line from stdin with echo disabled (for password-style input).

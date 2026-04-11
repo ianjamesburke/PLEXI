@@ -108,26 +108,40 @@ pub struct AppRegistry {
 }
 
 impl AppRegistry {
-    /// Scan `~/.plexi/apps/` and load all valid app manifests.
-    pub fn load() -> Self {
+    /// Scan `~/.plexi/apps/` (global) plus `.plexi/apps/` directories found by
+    /// walking up from `cwd` (local). Local apps override global ones with the same id.
+    pub fn load(cwd: &std::path::Path) -> Self {
         let mut registry = Self {
             apps: HashMap::new(),
             extension_map: HashMap::new(),
         };
 
-        let apps_dir = apps_dir();
-        if !apps_dir.exists() {
-            if let Err(e) = std::fs::create_dir_all(&apps_dir) {
-                log::warn!("AppRegistry: could not create apps dir: {e}");
+        // Global apps first (lowest priority).
+        let global_dir = apps_dir();
+        if !global_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&global_dir) {
+                log::warn!("AppRegistry: could not create global apps dir: {e}");
             }
-            return registry;
+        } else {
+            registry.scan_apps_dir(&global_dir);
         }
 
-        let read_dir = match std::fs::read_dir(&apps_dir) {
+        // Local apps — walk up from cwd, deepest last so closest dir wins.
+        for local_dir in collect_local_app_dirs(cwd).into_iter().rev() {
+            registry.scan_apps_dir(&local_dir);
+        }
+
+        registry
+    }
+
+    /// Scan one `apps/` directory, inserting discovered apps.
+    /// Later calls override earlier ones (local beats global).
+    fn scan_apps_dir(&mut self, apps_dir: &std::path::Path) {
+        let read_dir = match std::fs::read_dir(apps_dir) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("AppRegistry: failed to read apps dir: {e}");
-                return registry;
+                log::warn!("AppRegistry: failed to read {:?}: {e}", apps_dir);
+                return;
             }
         };
 
@@ -137,24 +151,20 @@ impl AppRegistry {
                 continue;
             }
 
-            match registry.load_app(&app_dir) {
+            match self.load_app(&app_dir) {
                 Ok(installed) => {
-                    log::info!("AppRegistry: loaded app '{}'", installed.manifest.id);
+                    log::info!("AppRegistry: loaded app '{}' from {:?}", installed.manifest.id, apps_dir);
                     for ext in &installed.manifest.capabilities.file_types {
-                        registry
-                            .extension_map
-                            .entry(ext.to_lowercase())
-                            .or_insert_with(|| installed.manifest.id.clone());
+                        // Plain insert — local apps override global for extension map too.
+                        self.extension_map.insert(ext.to_lowercase(), installed.manifest.id.clone());
                     }
-                    registry.apps.insert(installed.manifest.id.clone(), installed);
+                    self.apps.insert(installed.manifest.id.clone(), installed);
                 }
                 Err(e) => {
                     log::warn!("AppRegistry: skipping {:?}: {e}", app_dir.file_name());
                 }
             }
         }
-
-        registry
     }
 
     fn load_app(&self, app_dir: &PathBuf) -> Result<InstalledApp, String> {
@@ -228,9 +238,35 @@ impl AppRegistry {
     }
 }
 
-/// Returns the path to the apps directory: `~/.plexi/apps/`.
+/// Returns the path to the global apps directory: `~/.plexi/apps/`.
 pub fn apps_dir() -> PathBuf {
     crate::config::config_dir().join("apps")
+}
+
+/// Walk up from `cwd` toward home, collecting `.plexi/apps/` directories that exist.
+/// Returns dirs ordered from home→cwd (deepest last), so callers that iterate in reverse
+/// get the most-local directory applied last (highest priority).
+fn collect_local_app_dirs(cwd: &std::path::Path) -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut dirs = Vec::new();
+    let mut current = cwd;
+
+    loop {
+        let candidate = current.join(".plexi").join("apps");
+        if candidate.is_dir() {
+            dirs.push(candidate);
+        }
+        if current == home || current.parent().is_none() {
+            break;
+        }
+        current = match current.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
+
+    dirs.reverse(); // home→cwd order; callers iterate .rev() to apply closest last
+    dirs
 }
 
 /// Find the executable binary inside an app directory.

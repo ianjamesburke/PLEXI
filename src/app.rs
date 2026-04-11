@@ -56,7 +56,8 @@ impl PlexiApp {
 
         let (tx, rx) = mpsc::channel();
 
-        let registry = AppRegistry::load();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let registry = AppRegistry::load(&cwd);
 
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
@@ -203,7 +204,7 @@ impl PlexiApp {
             palette_selected: 0,
             pane_visit_history: Vec::new(),
             renaming_pane: None,
-            registry: AppRegistry::load(),
+            registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
         }
     }

@@ -1,0 +1,10 @@
+[app]
+id = "process-monitor"
+name = "Process Monitor"
+version = "0.1.0"
+description = "Browse running processes. Enter sends kill to linked terminal."
+
+[app.capabilities]
+file_types = []
+terminal_write = true
+filesystem = "read_only"

@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""
+git-log — Plexi app
+Browse recent git commits for the linked terminal's working directory.
+
+Controls:
+  j / ArrowDown   Next commit
+  k / ArrowUp     Previous commit
+  Enter           Run `git show <hash>` in linked terminal
+  r               Refresh log
+"""
+
+import subprocess
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from plexi_sdk import App
+
+app = App()
+
+commits = []   # list of (short_hash, subject)
+selected = 0
+
+
+def load_commits():
+    global commits
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-40"],
+            capture_output=True, text=True, timeout=3,
+        )
+        commits = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                commits.append((parts[0], parts[1]))
+    except Exception:
+        commits = []
+
+
+load_commits()
+
+COLORS = {
+    "bg":      "#1e1e2e",
+    "header":  "#181825",
+    "text":    "#cdd6f4",
+    "muted":   "#6c7086",
+    "accent":  "#89b4fa",
+    "surface": "#313244",
+}
+
+
+@app.on_render
+def render(ctx):
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=COLORS["bg"])
+
+    # Header bar
+    ctx.rect(0, 0, ctx.width, 44, fill=COLORS["header"])
+    ctx.text(16, 13, "git log", size=14, color=COLORS["accent"], bold=True)
+    hint = "j/k navigate  Enter=show  r=refresh"
+    ctx.text(ctx.width - len(hint) * 7.5, 13, hint, size=11, color=COLORS["muted"])
+
+    if not commits:
+        ctx.text(16, 64, "No commits found — not a git repo?", size=13, color=COLORS["muted"])
+        ctx.list([], selected=0)
+        return
+
+    items = [
+        {"label": subject, "secondary": hash_str, "is_dir": False}
+        for hash_str, subject in commits
+    ]
+    ctx.list(items, selected=selected, item_height=44)
+
+
+@app.on_key
+def on_key(key, mods, emit):
+    global selected
+    if key in ("j", "ArrowDown"):
+        selected = min(selected + 1, len(commits) - 1)
+    elif key in ("k", "ArrowUp"):
+        selected = max(selected - 1, 0)
+    elif key == "Enter" and commits:
+        hash_str, _ = commits[selected]
+        emit.run_in_terminal(f"git show {hash_str}")
+    elif key == "r":
+        load_commits()
+        selected = 0
+
+
+@app.on_command
+def on_command(text, emit):
+    # Allow typing a hash or index directly in the command bar
+    text = text.strip()
+    if text.isdigit():
+        idx = int(text)
+        if 0 <= idx < len(commits):
+            emit.run_in_terminal(f"git show {commits[idx][0]}")
+    elif text == "r":
+        load_commits()
+
+
+app.run()
