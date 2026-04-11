@@ -40,6 +40,50 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 
 `just install` uses `cargo bundle --release` to produce a proper macOS `.app` bundle (reads metadata from `Cargo.toml`), then copies it to `/Applications/Plexi.app` and extracts the binary to `/usr/local/bin/plexi`. The `install.sh` curl script does the same thing for fresh installs from GitHub.
 
+## Logging
+
+### Log file
+Plexi writes to `~/.plexi-alpha/plexi.log` (or `~/.plexi/plexi.log` on stable). Rotates to `plexi.log.1` at startup if over 10 MB. Also printed to stderr during CLI/dev runs.
+
+### Log level
+Set in `config.toml`:
+```toml
+[log]
+level = "info"  # error | warn | info | debug
+```
+Default: `info`. Use `debug` during development — it emits detailed event traces. Third-party crates (egui, wgpu, etc.) are always clamped to `warn` regardless of this setting.
+
+### App logs (external apps → Plexi log)
+External apps can forward log messages into Plexi's log file via the draw protocol. Plexi tags them with `app::<app_id>` as the log target.
+
+**Python SDK:**
+```python
+# Inside a render frame (via RenderContext):
+ctx.info("rendered 42 items")
+ctx.warn("no data found")
+ctx.error("subprocess failed")
+ctx.debug("selected index: 3")
+
+# Outside a frame (via Emitter — e.g. in on_key, on_command):
+emit.info("user pressed enter")
+emit.log("warn", "fallback triggered")
+```
+
+**Rust SDK:**
+Emit a `DrawCommand::Log { level, message }` — the `log()` method on `RenderContext` and `Emitter` handles this.
+
+### App stderr
+External app stderr is piped and forwarded to Plexi's log as `warn`-level entries tagged `app::<app_id>`. Python tracebacks and Rust panics from external apps will appear in `plexi.log`.
+
+### Reading logs during development
+```sh
+tail -f ~/.plexi-alpha/plexi.log           # live stream
+grep "app::git-log" ~/.plexi-alpha/plexi.log   # filter by app
+grep "ERROR\|WARN" ~/.plexi-alpha/plexi.log    # errors only
+```
+
+Sub-agents working in any worktree can read the same log file at the fixed path above.
+
 ## Lessons
 
 - **Coupled state:** When adding new state that derives from or shadows existing state (e.g., `zoomed_pane` tracking `focused_pane`), grep for all mutation sites of the original state and update each one to handle the new state.
