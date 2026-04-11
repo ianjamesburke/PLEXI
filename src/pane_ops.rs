@@ -684,6 +684,35 @@ impl PlexiApp {
         }
     }
 
+    /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
+    pub(crate) fn open_secrets_manager(&mut self) {
+        // Toggle: if already open, close it.
+        let ctx = &self.contexts[self.active_context];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                if let Some(pane) = ctx.panes.get(pane_id) {
+                    if let Some(app) = &pane.active_app {
+                        if app.type_id() == "secrets_manager" {
+                            self.close_focused_app();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        let app = Box::new(crate::secrets_app::SecretsApp::new());
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_fullscreen(app, perms, cwd);
+    }
+
     /// Open the appropriate app for a file, based on its extension.
     /// Falls back to opening the file path in the terminal if no app is registered.
     pub(crate) fn open_file_with_app(&mut self, file_path: PathBuf) {

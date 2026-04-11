@@ -70,6 +70,8 @@ pub enum Action {
     OpenAudioPlayer,
     /// Open config file in the text editor.
     OpenConfig,
+    /// Open the secrets manager (read-only vault viewer).
+    OpenSecretsManager,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -204,6 +206,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open config (Cmd+,)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma) {
             actions.push(Action::OpenConfig);
+        }
+
+        // Open secrets manager (Cmd+Shift+S)
+        if input.consume_key(cmd_shift, egui::Key::S) {
+            actions.push(Action::OpenSecretsManager);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

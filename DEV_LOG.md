@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-10 — [ADDED] Secrets Manager builtin app (read-only vault viewer)
+
+Added `secrets_app.rs` — a read-only viewer for all Plexi Keychain secrets. Opens fullscreen (no terminal split) via `Cmd+Shift+S`, toggles closed on repeat. Parses `security dump-keychain` output via new `list_all_secrets() -> Vec<SecretEntry>` in `secrets.rs`, splitting the account string `"{app_id}/{directory}/{key}"` at first and last slash. j/k navigation, r to refresh, no inline add/delete to keep attack surface minimal. Wired into workspace restore under the `"secrets_manager"` type_id arm.
+
 ## 2026-04-10 — [FUTURE] Collaborative state via SpacetimeDB + append-only snapshots
 
 The `serialize_state()`/`restore_state()` contract on the App trait is transport-agnostic — JSON in, JSON out. This means collaborative features could be layered in by replacing disk read/write with SpacetimeDB table subscriptions. Each pane's state = a row. Mutations push deltas to subscribers. Apps don't know they're collaborative. Additionally, snapshotting state every ~5 seconds as append-only rows gives full rewind/undo history across restarts for free. Locally, the same pattern works as an append-only JSON log file. v1 conflict resolution: last-write-wins on full state blob. CRDTs or OT per app type would come later. Not building now — the foundation supports it without changes.

@@ -107,6 +107,14 @@ impl PlexiApp {
                                     }
                                     (Some(Box::new(player)), builtin_perms)
                                 }
+                                "secrets_manager" => {
+                                    let mut secrets = crate::secrets_app::SecretsApp::new();
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        secrets.restore_state(state);
+                                    }
+                                    (Some(Box::new(secrets)), builtin_perms)
+                                }
                                 // Third-party apps: launch via registry using type_id.
                                 other => {
                                     let app = registry.launch(other, &cwd, &[]);
@@ -526,6 +534,9 @@ impl eframe::App for PlexiApp {
                 }
                 Action::OpenConfig => {
                     self.open_config_editor();
+                }
+                Action::OpenSecretsManager => {
+                    self.open_secrets_manager();
                 }
             }
         }
