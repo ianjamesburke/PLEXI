@@ -261,7 +261,7 @@ fn scaffold_python_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "[app]\nid = \"{name}\"\nname = \"{display}\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
+        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
         name = name,
         display = to_title_case(name),
     ))?;
@@ -288,7 +288,7 @@ fn scaffold_python_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
 fn scaffold_rust_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "[app]\nid = \"{name}\"\nname = \"{display}\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
+        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
         name = name,
         display = to_title_case(name),
     ))?;

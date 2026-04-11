@@ -1,6 +1,7 @@
 [app]
 id = "git-log"
 name = "Git Log"
+entry = "git-log"
 version = "0.1.0"
 description = "Browse recent git commits for the linked terminal's working directory"
 

@@ -1,6 +1,7 @@
 [app]
 id = "process-monitor"
 name = "Process Monitor"
+entry = "bin/plexi-app"
 version = "0.1.0"
 description = "Browse running processes. Enter sends kill to linked terminal."
 

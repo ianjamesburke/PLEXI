@@ -42,6 +42,7 @@ pub struct AppManifest {
 pub struct AppManifestApp {
     pub id: String,
     pub name: String,
+    pub entry: String,
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -175,7 +176,7 @@ impl AppRegistry {
         let manifest: AppManifest = toml::from_str(&manifest_str)
             .map_err(|e| format!("invalid manifest: {e}"))?;
 
-        let bin_path = find_bin(app_dir, &manifest.app.id)?;
+        let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
         Ok(InstalledApp {
             manifest: manifest.app,
@@ -269,40 +270,25 @@ fn collect_local_app_dirs(cwd: &std::path::Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Find the executable binary inside an app directory.
-///
-/// Checks in order:
-///   1. `<app_dir>/bin/plexi-app`
-///   2. `<app_dir>/bin/<id>`
-///   3. `<app_dir>/plexi-app`
-///   4. `<app_dir>/<id>`
-fn find_bin(app_dir: &PathBuf, id: &str) -> Result<PathBuf, String> {
-    let candidates = [
-        app_dir.join("bin").join("plexi-app"),
-        app_dir.join("bin").join(id),
-        app_dir.join("plexi-app"),
-        app_dir.join(id),
-    ];
+/// Resolve the `entry` field from manifest.toml to an executable path.
+/// Fails fast — no guessing, no fallbacks.
+fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
+    let path = app_dir.join(entry);
 
-    for candidate in &candidates {
-        if candidate.exists() {
-            // Check it's executable on unix.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = std::fs::metadata(candidate)
-                    .map(|m| m.permissions().mode())
-                    .unwrap_or(0);
-                if mode & 0o111 == 0 {
-                    return Err(format!("{:?} exists but is not executable", candidate));
-                }
-            }
-            return Ok(candidate.clone());
+    if !path.exists() {
+        return Err(format!("entry '{entry}' not found in {:?}", app_dir));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0);
+        if mode & 0o111 == 0 {
+            return Err(format!("entry '{entry}' exists but is not executable (run: chmod +x {entry})"));
         }
     }
 
-    Err(format!(
-        "no executable found in {:?} (tried bin/plexi-app, bin/{}, plexi-app, {})",
-        app_dir, id, id
-    ))
+    Ok(path)
 }
