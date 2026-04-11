@@ -669,6 +669,21 @@ impl PlexiApp {
         self.open_app_fullscreen(Box::new(editor), perms, scope);
     }
 
+    /// Launch an installed app by id in the focused pane.
+    pub(crate) fn launch_app_by_id(&mut self, id: &str) {
+        let cwd = self.contexts[self.active_context]
+            .focused_pane
+            .and_then(|fp| self.contexts[self.active_context].get_focused_pane_cwd(fp))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        if let Some(app) = self.registry.launch(id, &cwd, &[]) {
+            let perms = crate::app_permissions::AppPermissions::default();
+            self.open_app_on_focused(app, perms, cwd);
+        } else {
+            log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
+        }
+    }
+
     /// Open the appropriate app for a file, based on its extension.
     /// Falls back to opening the file path in the terminal if no app is registered.
     pub(crate) fn open_file_with_app(&mut self, file_path: PathBuf) {
