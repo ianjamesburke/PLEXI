@@ -17,8 +17,9 @@
 //!
 //!     fn on_key(&mut self, key: &str, _mods: &Modifiers, _emit: &mut Emitter) {
 //!         match key {
-//!             "j" | "ArrowDown" => self.count += 1,
-//!             "k" | "ArrowUp"   => self.count = self.count.saturating_sub(1),
+//!             // egui serializes Key enum as PascalCase: Key::J → "J"
+//!             "J" | "ArrowDown" => self.count += 1,
+//!             "K" | "ArrowUp"   => self.count = self.count.saturating_sub(1),
 //!             _ => {}
 //!         }
 //!     }
