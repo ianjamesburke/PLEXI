@@ -841,7 +841,7 @@ impl PlexiApp {
                         y += 3.0;
                     }
 
-                    ctx.request_repaint();
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 });
         }
 
@@ -870,7 +870,7 @@ impl PlexiApp {
                         egui::StrokeKind::Inside,
                     );
                 });
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 

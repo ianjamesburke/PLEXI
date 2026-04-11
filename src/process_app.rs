@@ -22,8 +22,12 @@ pub struct ProcessApp {
     stdin: Option<ChildStdin>,
     /// Receives draw commands from the subprocess on a background thread.
     draw_rx: Option<Receiver<DrawCommand>>,
-    /// Buffered draw commands for the current frame.
+    /// The last fully committed frame (commands between two FrameDones).
+    /// Always valid — only replaced atomically when a complete new frame arrives.
     frame: Vec<DrawCommand>,
+    /// Accumulates draw commands for the frame currently being received.
+    /// Committed into `frame` on FrameDone; never shown until complete.
+    pending_frame: Vec<DrawCommand>,
     /// Pending RunInTerminal / Cd commands collected from the subprocess, to be
     /// drained by the host via take_pending_commands().
     pending_commands: Vec<crate::app_trait::AppCommand>,
@@ -108,6 +112,7 @@ impl ProcessApp {
             stdin: Some(stdin),
             draw_rx: Some(draw_rx),
             frame: Vec::new(),
+            pending_frame: Vec::new(),
             pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
@@ -278,63 +283,36 @@ impl App for ProcessApp {
 
         // Drain all draw commands that arrived since last frame (including response
         // to the Render we just sent — they come async so we take whatever is ready).
+        //
+        // Two-buffer design: `pending_frame` accumulates commands for the frame
+        // currently being received. On FrameDone it is atomically swapped into
+        // `frame` (the last fully committed frame). This guarantees `frame` is
+        // always a complete, valid snapshot — partial frames never reach the painter.
+        // If multiple FrameDones arrive in one drain, the LAST complete frame wins.
         let new_cmds = self.drain_draw_commands();
-
-        // Commit frame: use new commands if we got any, otherwise re-render last frame.
-        // This avoids a blank frame on the first render before the process responds.
-        let got_frame_done = new_cmds.iter().any(|c| matches!(c, DrawCommand::FrameDone));
-        if got_frame_done {
-            // Collect draw commands up to FrameDone; route RunInTerminal/Cd to pending_commands.
-            self.frame.clear();
-            let mut past_frame_done = false;
-            for cmd in new_cmds {
-                if past_frame_done {
-                    // Commands after FrameDone belong to the next frame — leave them
-                    // for the next drain cycle. We can't put them back so just skip.
-                    break;
+        for cmd in new_cmds {
+            match cmd {
+                DrawCommand::FrameDone => {
+                    // Commit: swap pending into frame, reset pending for next frame.
+                    std::mem::swap(&mut self.frame, &mut self.pending_frame);
+                    self.pending_frame.clear();
                 }
-                match cmd {
-                    DrawCommand::FrameDone => past_frame_done = true,
-                    DrawCommand::RunInTerminal { command } => {
-                        self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
-                    }
-                    DrawCommand::Cd { path } => {
-                        self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
-                    }
-                    DrawCommand::Log { level, message } => {
-                        let target = format!("app::{}", self.type_id);
-                        match level.as_str() {
-                            "error" => log::error!(target: &target, "{message}"),
-                            "warn"  => log::warn!(target: &target, "{message}"),
-                            "debug" => log::debug!(target: &target, "{message}"),
-                            _       => log::info!(target: &target, "{message}"),
-                        }
-                    }
-                    other => self.frame.push(other),
+                DrawCommand::RunInTerminal { command } => {
+                    self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
                 }
-            }
-        } else {
-            // Merge — append any partial draw commands received; collect side-channel commands.
-            for cmd in new_cmds {
-                match cmd {
-                    DrawCommand::FrameDone => {}
-                    DrawCommand::RunInTerminal { command } => {
-                        self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
-                    }
-                    DrawCommand::Cd { path } => {
-                        self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
-                    }
-                    DrawCommand::Log { level, message } => {
-                        let target = format!("app::{}", self.type_id);
-                        match level.as_str() {
-                            "error" => log::error!(target: &target, "{message}"),
-                            "warn"  => log::warn!(target: &target, "{message}"),
-                            "debug" => log::debug!(target: &target, "{message}"),
-                            _       => log::info!(target: &target, "{message}"),
-                        }
-                    }
-                    other => self.frame.push(other),
+                DrawCommand::Cd { path } => {
+                    self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
                 }
+                DrawCommand::Log { level, message } => {
+                    let target = format!("app::{}", self.type_id);
+                    match level.as_str() {
+                        "error" => log::error!(target: &target, "{message}"),
+                        "warn"  => log::warn!(target: &target, "{message}"),
+                        "debug" => log::debug!(target: &target, "{message}"),
+                        _       => log::info!(target: &target, "{message}"),
+                    }
+                }
+                other => self.pending_frame.push(other),
             }
         }
 

@@ -106,16 +106,16 @@ def render(ctx):
 @app.on_key
 def on_key(key, mods, emit):
     global selected
-    # egui serializes Key enum variants as PascalCase debug strings:
-    # Key::J → "J", Key::K → "K", Key::ArrowDown → "ArrowDown", etc.
-    if key in ("J", "ArrowDown"):
+    # Plexi sends printable characters via Event::Text as lowercase (e.g. "j", "r").
+    # Control/navigation keys come via Event::Key as PascalCase (e.g. "ArrowDown", "Enter").
+    if key in ("j", "ArrowDown"):
         selected = min(selected + 1, len(commits) - 1)
-    elif key in ("K", "ArrowUp"):
+    elif key in ("k", "ArrowUp"):
         selected = max(selected - 1, 0)
     elif key == "Enter" and commits:
         hash_str, _ = commits[selected]
         emit.run_in_terminal(f"git show {hash_str}")
-    elif key == "R":
+    elif key == "r":
         load_commits()
         selected = 0
 

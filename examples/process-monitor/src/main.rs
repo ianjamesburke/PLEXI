@@ -129,12 +129,13 @@ impl App for ProcessMonitor {
     }
 
     fn on_key(&mut self, key: &str, _mods: &Modifiers, emit: &mut Emitter) {
-        // egui serializes Key enum as PascalCase: Key::J → "J"
+        // Plexi sends printable characters via Event::Text as lowercase (e.g. "j", "r").
+        // Control/navigation keys come via Event::Key as PascalCase (e.g. "ArrowDown", "Enter").
         match key {
-            "J" | "ArrowDown" => {
+            "j" | "ArrowDown" => {
                 self.selected = (self.selected + 1).min(self.procs.len().saturating_sub(1));
             }
-            "K" | "ArrowUp" => {
+            "k" | "ArrowUp" => {
                 self.selected = self.selected.saturating_sub(1);
             }
             "Enter" => {
@@ -142,7 +143,7 @@ impl App for ProcessMonitor {
                     emit.run_in_terminal(&format!("kill {}", p.pid));
                 }
             }
-            "R" => self.refresh(),
+            "r" => self.refresh(),
             _ => {}
         }
     }
