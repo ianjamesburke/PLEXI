@@ -214,13 +214,30 @@ impl PlexiApp {
             Some(f) => f,
             None => return,
         };
+        self.close_tile(self.active_context, focused);
+    }
 
+    /// Close a specific pane by its PaneId (the u64 backend ID, not the TileId).
+    /// Searches all contexts to find the tile containing this pane.
+    pub(crate) fn close_pane_by_id(&mut self, pane_id: PaneId) {
+        // Find which context and tile owns this pane_id.
+        for ctx_idx in 0..self.contexts.len() {
+            if let Some(tile_id) = self.contexts[ctx_idx].tree.tiles.find_pane(&pane_id) {
+                self.close_tile(ctx_idx, tile_id);
+                return;
+            }
+        }
+    }
+
+    /// Close a tile in a specific context by its TileId. Handles sibling focus
+    /// transfer, container cleanup, and pane removal.
+    fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
         // Phase 1: Read-only — determine sibling and container type
-        let parent_info = self.contexts[self.active_context].find_logical_parent(focused);
+        let parent_info = self.contexts[ctx_idx].find_logical_parent(tile_id);
 
         let next = if let Some((parent_id, child_in_parent)) = parent_info {
             let sibling_info = {
-                let ctx = &self.contexts[self.active_context];
+                let ctx = &self.contexts[ctx_idx];
                 if let Some(Tile::Container(container)) = ctx.tree.tiles.get(parent_id) {
                     let children: Vec<TileId> = container.children().copied().collect();
                     children
@@ -243,7 +260,7 @@ impl PlexiApp {
 
             if let Some((sibling, is_tabs, is_linear, all_children)) = sibling_info {
                 // Phase 2: Mutable — update container state
-                let ctx = &mut self.contexts[self.active_context];
+                let ctx = &mut self.contexts[ctx_idx];
                 if is_tabs {
                     if let Some(Tile::Container(Container::Tabs(tabs))) =
                         ctx.tree.tiles.get_mut(parent_id)
@@ -261,23 +278,23 @@ impl PlexiApp {
                     }
                 }
 
-                self.contexts[self.active_context].find_first_pane_in(sibling)
+                self.contexts[ctx_idx].find_first_pane_in(sibling)
             } else {
-                self.contexts[self.active_context].find_next_focus(focused)
+                self.contexts[ctx_idx].find_next_focus(tile_id)
             }
         } else {
-            self.contexts[self.active_context].find_next_focus(focused)
+            self.contexts[ctx_idx].find_next_focus(tile_id)
         };
 
         // Phase 3: Remove tile and pane
-        let ctx = &mut self.contexts[self.active_context];
-        if let Some(parent_id) = ctx.tree.tiles.parent_of(focused) {
+        let ctx = &mut self.contexts[ctx_idx];
+        if let Some(parent_id) = ctx.tree.tiles.parent_of(tile_id) {
             if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
-                parent.remove_child(focused);
+                parent.remove_child(tile_id);
             }
         }
 
-        if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(focused) {
+        if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
             ctx.panes.remove(&pane_id);
         }
 

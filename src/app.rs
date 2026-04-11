@@ -240,15 +240,32 @@ impl PlexiApp {
     }
 
     fn drain_pty_events(&mut self) {
+        let mut panes_to_close: Vec<u64> = Vec::new();
+
         while let Ok((id, event)) = self.pty_event_rx.try_recv() {
-            if matches!(event, PtyEvent::Exit) {
-                for context in &mut self.contexts {
-                    if let Some(pane) = context.panes.get_mut(&id) {
-                        pane.exited = true;
-                        break;
+            match &event {
+                PtyEvent::Exit => {
+                    for context in &mut self.contexts {
+                        if let Some(pane) = context.panes.get_mut(&id) {
+                            pane.exited = true;
+                            break;
+                        }
                     }
                 }
+                PtyEvent::Title(title) => {
+                    if let Some(cmd) = title.strip_prefix("plexi:") {
+                        match cmd {
+                            "close" => panes_to_close.push(id),
+                            _ => log::debug!("unknown plexi command: {}", cmd),
+                        }
+                    }
+                }
+                _ => {}
             }
+        }
+
+        for pane_id in panes_to_close {
+            self.close_pane_by_id(pane_id);
         }
     }
 
@@ -632,7 +649,7 @@ impl eframe::App for PlexiApp {
                         !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty()
                     });
                     if has_drag {
-                        ui.ctx().request_repaint(); // continuous repaints while dragging
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16)); // continuous repaints while dragging
                         use objc2_app_kit::NSApplication;
                         use objc2_foundation::MainThreadMarker;
                         MainThreadMarker::new()
