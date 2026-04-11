@@ -40,6 +40,12 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 
 `just install` uses `cargo bundle --release` to produce a proper macOS `.app` bundle (reads metadata from `Cargo.toml`), then copies it to `/Applications/Plexi.app` and extracts the binary to `/usr/local/bin/plexi`. The `install.sh` curl script does the same thing for fresh installs from GitHub.
 
+**After every completed code change, run the install command for the active branch:**
+- `alpha` branch → `just install-alpha`
+- `main` branch → `just install`
+
+Do this before reporting a task complete so the user can immediately test in the running app.
+
 ## Logging
 
 ### Log file
