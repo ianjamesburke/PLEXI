@@ -2,7 +2,8 @@ use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::secrets::SecretEntry;
 use std::path::PathBuf;
 
-const APP_ID_USER: &str = "user";
+/// Match the CLI app_id so `plexi secret list` sees manually-stored entries.
+const APP_ID_USER: &str = "plexi-run";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -81,9 +82,18 @@ impl SecretsApp {
         }
 
         if crate::secrets::store_secret(&key, &value, APP_ID_USER, &dir) {
+            // Optimistic update: push directly instead of re-dumping the keychain
+            // (dump-keychain triggers a macOS permission prompt every call).
+            // Remove any existing entry with the same key+dir to avoid duplicates.
+            self.entries.retain(|e| !(e.key == key && e.directory == dir && e.app_id == APP_ID_USER));
+            self.entries.push(SecretEntry {
+                app_id: APP_ID_USER.to_string(),
+                directory: dir,
+                key: key.clone(),
+            });
+            self.selected = self.entries.len().saturating_sub(1);
             self.mode = Mode::List;
-            self.status_msg = Some(format!("Stored '{key}'."));
-            self.refresh();
+            self.status_msg = Some(format!("Stored '{key}'. Press r to sync."));
         } else {
             self.status_msg = Some("Failed to store secret - check logs.".to_string());
         }
@@ -92,11 +102,12 @@ impl SecretsApp {
     fn delete_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.selected).cloned() {
             if crate::secrets::delete_secret(&entry.key, &entry.app_id, &entry.directory) {
-                self.status_msg = Some(format!("Deleted '{}'.", entry.key));
-                self.refresh();
+                // Optimistic removal — no keychain dump needed.
+                self.entries.remove(self.selected);
                 if self.selected > 0 && self.selected >= self.entries.len() {
                     self.selected = self.entries.len().saturating_sub(1);
                 }
+                self.status_msg = Some(format!("Deleted '{}'.", entry.key));
             } else {
                 self.status_msg = Some("Failed to delete - check logs.".to_string());
             }
