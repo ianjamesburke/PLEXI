@@ -89,7 +89,7 @@ pub fn run_command(command_name: &str) -> i32 {
 
     // Resolve secrets from Keychain
     let dir_str = cwd.to_string_lossy();
-    let mut resolved: Vec<(String, String)> = Vec::new();
+    let mut resolved: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();
 
     for key in &secret_keys {
@@ -161,6 +161,26 @@ pub fn set_secret(key: &str) -> i32 {
         0
     } else {
         eprintln!("error: failed to store secret '{key}'");
+        1
+    }
+}
+
+/// Entry point for `plexi secret delete <key>` — deletes a secret for the current directory.
+pub fn delete_secret_cli(key: &str) -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: could not determine current directory: {e}");
+            return 1;
+        }
+    };
+
+    let dir_str = cwd.to_string_lossy();
+    if crate::secrets::delete_secret(key, APP_ID, &dir_str) {
+        eprintln!("Deleted secret '{key}' for {}", cwd.display());
+        0
+    } else {
+        eprintln!("error: failed to delete secret '{key}' (does it exist?)");
         1
     }
 }

@@ -69,6 +69,9 @@ pub struct AppCapabilities {
     /// Can make network requests.
     #[serde(default)]
     pub network: bool,
+    /// Can write secrets to Keychain via the API.
+    #[serde(default)]
+    pub secrets_write: bool,
 }
 
 fn default_fs_permission() -> String {
@@ -89,6 +92,7 @@ impl AppCapabilities {
             },
             env_file_access: self.env_file_access,
             network: self.network,
+            secrets_write: self.secrets_write,
         }
     }
 }

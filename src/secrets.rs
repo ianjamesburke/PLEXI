@@ -1,4 +1,5 @@
 use log::{error, warn};
+use zeroize::Zeroizing;
 
 const SERVICE_NAME: &str = "plexi";
 
@@ -45,7 +46,7 @@ pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bo
 }
 
 #[cfg(target_os = "macos")]
-pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<String> {
+pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
     use std::process::Command;
 
     let account = account_key(key, app_id, directory);
@@ -60,7 +61,7 @@ pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Strin
         .output()
     {
         Ok(output) if output.status.success() => {
-            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            Some(Zeroizing::new(String::from_utf8_lossy(&output.stdout).trim().to_string()))
         }
         Ok(_) => None, // not found is normal, not an error
         Err(e) => {
@@ -99,28 +100,34 @@ pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
 pub fn list_secrets(app_id: &str) -> Vec<String> {
     use std::process::Command;
 
-    // `security dump-keychain` dumps all items; we grep for our service+app_id.
-    // This is the simplest approach without pulling in a keychain crate.
-    match Command::new("security")
-        .args(["dump-keychain"])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout);
-            parse_keychain_dump(&text, app_id)
+    // `security dump-keychain` dumps all items. We parse it immediately into
+    // key names and drop the raw dump string before returning, so the full
+    // keychain contents don't linger in memory longer than necessary.
+    let result = {
+        match Command::new("security")
+            .args(["dump-keychain"])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let keys = parse_keychain_dump(&text, app_id);
+                // `text` (the raw dump) is dropped here as the block ends
+                keys
+            }
+            Ok(output) => {
+                error!(
+                    "secrets::list_secrets failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+                Vec::new()
+            }
+            Err(e) => {
+                error!("secrets::list_secrets failed to run security CLI: {e}");
+                Vec::new()
+            }
         }
-        Ok(output) => {
-            error!(
-                "secrets::list_secrets failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            Vec::new()
-        }
-        Err(e) => {
-            error!("secrets::list_secrets failed to run security CLI: {e}");
-            Vec::new()
-        }
-    }
+    };
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -164,7 +171,7 @@ fn parse_keychain_dump(dump: &str, app_id: &str) -> Vec<String> {
 /// Walk up from `launch_dir` to the user's home directory, returning the first
 /// matching secret. Returns `None` if no match is found at any level.
 #[cfg(target_os = "macos")]
-pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<String> {
+pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
     use std::path::PathBuf;
 
     let home = match dirs::home_dir() {
@@ -208,7 +215,7 @@ pub fn store_secret(key: &str, _value: &str, app_id: &str, directory: &str) -> b
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<String> {
+pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
     warn!(
         "secrets::retrieve_secret({key}, {app_id}, {directory}): Keychain not available on this platform"
     );
@@ -232,7 +239,7 @@ pub fn list_secrets(app_id: &str) -> Vec<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<String> {
+pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
     warn!(
         "secrets::resolve_secret({key}, {app_id}, {launch_dir}): Keychain not available on this platform"
     );

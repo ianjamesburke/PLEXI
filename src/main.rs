@@ -45,7 +45,7 @@ fn main() -> eframe::Result {
             }
             "secret" => {
                 if args.len() < 3 {
-                    eprintln!("Usage: plexi secret <set|list> [key]");
+                    eprintln!("Usage: plexi secret <set|list|delete> [key]");
                     std::process::exit(1);
                 }
                 match args[2].as_str() {
@@ -59,9 +59,16 @@ fn main() -> eframe::Result {
                     "list" => {
                         std::process::exit(cli::list_secrets());
                     }
+                    "delete" => {
+                        if args.len() < 4 {
+                            eprintln!("Usage: plexi secret delete <key>");
+                            std::process::exit(1);
+                        }
+                        std::process::exit(cli::delete_secret_cli(&args[3]));
+                    }
                     other => {
                         eprintln!("Unknown secret subcommand: {other}");
-                        eprintln!("Usage: plexi secret <set|list>");
+                        eprintln!("Usage: plexi secret <set|list|delete>");
                         std::process::exit(1);
                     }
                 }

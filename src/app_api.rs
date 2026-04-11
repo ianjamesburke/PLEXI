@@ -4,7 +4,7 @@
 /// and scope, executes, and returns `ApiResponse` over stdout. Apps never
 /// get raw filesystem or terminal access.
 
-use crate::app_permissions::{AppPermissions, FsPermission, TrustLevel};
+use crate::app_permissions::{AppPermissions, FsPermission};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -21,9 +21,7 @@ pub enum ApiRequest {
     ReadFile { path: String },
     /// Write content to a file. Requires filesystem = ReadWrite.
     WriteFile { path: String, content: String },
-    /// Get a secret from Keychain (scoped to app + directory, with walk-up).
-    SecretGet { key: String },
-    /// Store a secret in Keychain (scoped to app + directory).
+    /// Store a secret in Keychain (scoped to app + directory). Requires secrets_write.
     SecretStore { key: String, value: String },
     /// Request secure input from user (Plexi renders the masked field).
     SecureInput { prompt: String, mask: bool },
@@ -36,7 +34,6 @@ pub enum ApiResponse {
     DirListing { entries: Vec<DirEntry> },
     FileContent { content: String },
     WriteOk,
-    Secret { value: Option<String> },
     SecretStored,
     /// The secure input result comes asynchronously after user interaction.
     SecureInputPending { request_id: String },
@@ -116,8 +113,12 @@ pub fn handle_api_request(
         ApiRequest::WriteFile { path, content } => {
             handle_write_file(path, content, permissions, scope_root)
         }
-        ApiRequest::SecretGet { key } => handle_secret_get(key, app_id, scope_root),
         ApiRequest::SecretStore { key, value } => {
+            if !permissions.secrets_write {
+                return ApiResponse::Error {
+                    message: "secrets_write capability required".into(),
+                };
+            }
             handle_secret_store(key, value, app_id, scope_root)
         }
         ApiRequest::SecureInput { prompt, mask } => handle_secure_input(prompt, *mask),
@@ -269,12 +270,6 @@ fn handle_write_file(
             message: format!("Failed to write {}: {e}", final_path.display()),
         },
     }
-}
-
-fn handle_secret_get(key: &str, app_id: &str, scope_root: &Path) -> ApiResponse {
-    let dir_str = scope_root.display().to_string();
-    let value = crate::secrets::resolve_secret(key, app_id, &dir_str);
-    ApiResponse::Secret { value }
 }
 
 fn handle_secret_store(key: &str, value: &str, app_id: &str, scope_root: &Path) -> ApiResponse {
