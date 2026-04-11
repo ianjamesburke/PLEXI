@@ -24,6 +24,9 @@ pub struct ProcessApp {
     draw_rx: Option<Receiver<DrawCommand>>,
     /// Buffered draw commands for the current frame.
     frame: Vec<DrawCommand>,
+    /// Pending RunInTerminal / Cd commands collected from the subprocess, to be
+    /// drained by the host via take_pending_commands().
+    pending_commands: Vec<crate::app_trait::AppCommand>,
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
@@ -85,6 +88,7 @@ impl ProcessApp {
             stdin: Some(stdin),
             draw_rx: Some(draw_rx),
             frame: Vec::new(),
+            pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
         })
@@ -257,19 +261,37 @@ impl App for ProcessApp {
         // This avoids a blank frame on the first render before the process responds.
         let got_frame_done = new_cmds.iter().any(|c| matches!(c, DrawCommand::FrameDone));
         if got_frame_done {
-            // Collect only up to FrameDone, discard any pending commands / out-of-band
-            // RunInTerminal etc (they're handled below as AppCommands).
-            self.frame = new_cmds
-                .into_iter()
-                .take_while(|c| !matches!(c, DrawCommand::FrameDone | DrawCommand::RunInTerminal { .. } | DrawCommand::Cd { .. }))
-                .collect();
+            // Collect draw commands up to FrameDone; route RunInTerminal/Cd to pending_commands.
+            self.frame.clear();
+            let mut past_frame_done = false;
+            for cmd in new_cmds {
+                if past_frame_done {
+                    // Commands after FrameDone belong to the next frame — leave them
+                    // for the next drain cycle. We can't put them back so just skip.
+                    break;
+                }
+                match cmd {
+                    DrawCommand::FrameDone => past_frame_done = true,
+                    DrawCommand::RunInTerminal { command } => {
+                        self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
+                    }
+                    DrawCommand::Cd { path } => {
+                        self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
+                    }
+                    other => self.frame.push(other),
+                }
+            }
         } else {
-            // Merge — append any partial commands received
+            // Merge — append any partial draw commands received; collect side-channel commands.
             for cmd in new_cmds {
                 match cmd {
-                    DrawCommand::FrameDone
-                    | DrawCommand::RunInTerminal { .. }
-                    | DrawCommand::Cd { .. } => {}
+                    DrawCommand::FrameDone => {}
+                    DrawCommand::RunInTerminal { command } => {
+                        self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
+                    }
+                    DrawCommand::Cd { path } => {
+                        self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
+                    }
                     other => self.frame.push(other),
                 }
             }
@@ -283,8 +305,9 @@ impl App for ProcessApp {
                 Self::render_draw_commands(ui, &frame_clone, ctx.colors);
             });
 
-        // Ask egui to repaint next frame so we keep polling the subprocess.
-        ui.ctx().request_repaint();
+        // Poll the subprocess at ~60 fps. Using request_repaint() with no delay
+        // causes unlimited repaints and visible flickering.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
@@ -304,6 +327,10 @@ impl App for ProcessApp {
             }
         }
         consumed
+    }
+
+    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+        std::mem::take(&mut self.pending_commands)
     }
 
     fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {

@@ -21,6 +21,20 @@ app = App()
 
 commits = []   # list of (short_hash, subject)
 selected = 0
+scroll_offset = 0  # index of first visible row
+
+HEADER_H = 44
+ITEM_H = 44
+
+COLORS = {
+    "bg":      "#1e1e2e",
+    "header":  "#181825",
+    "text":    "#cdd6f4",
+    "muted":   "#6c7086",
+    "accent":  "#89b4fa",
+    "surface": "#313244",
+    "sel_bg":  "#313244",
+}
 
 
 def load_commits():
@@ -41,49 +55,67 @@ def load_commits():
 
 load_commits()
 
-COLORS = {
-    "bg":      "#1e1e2e",
-    "header":  "#181825",
-    "text":    "#cdd6f4",
-    "muted":   "#6c7086",
-    "accent":  "#89b4fa",
-    "surface": "#313244",
-}
-
 
 @app.on_render
 def render(ctx):
+    global scroll_offset
+
+    # Background
     ctx.rect(0, 0, ctx.width, ctx.height, fill=COLORS["bg"])
 
-    # Header bar
-    ctx.rect(0, 0, ctx.width, 44, fill=COLORS["header"])
+    # Clamp scroll so selected row is always visible
+    visible_rows = max(1, int((ctx.height - HEADER_H) / ITEM_H))
+    if selected < scroll_offset:
+        scroll_offset = selected
+    elif selected >= scroll_offset + visible_rows:
+        scroll_offset = selected - visible_rows + 1
+
+    # Render commit rows BEFORE the header so the header paints on top
+    if not commits:
+        ctx.text(16, HEADER_H + 14, "No commits found — not a git repo?",
+                 size=13, color=COLORS["muted"])
+    else:
+        for i, (hash_str, subject) in enumerate(commits):
+            if i < scroll_offset:
+                continue
+            row_index = i - scroll_offset
+            if row_index >= visible_rows:
+                break
+
+            y = HEADER_H + row_index * ITEM_H
+            is_sel = (i == selected)
+
+            if is_sel:
+                ctx.rect(0, y, ctx.width, ITEM_H, fill=COLORS["sel_bg"])
+
+            text_color = COLORS["text"] if is_sel else COLORS["muted"]
+            # Subject on the left
+            ctx.text(16, y + 14, subject, size=12,
+                     color=text_color, monospace=False)
+            # Hash on the right, dimmed
+            ctx.text(ctx.width - len(hash_str) * 7.5 - 12, y + 14,
+                     hash_str, size=11, color=COLORS["muted"], monospace=True)
+
+    # Header bar — rendered AFTER rows so it always paints on top
+    ctx.rect(0, 0, ctx.width, HEADER_H, fill=COLORS["header"])
     ctx.text(16, 13, "git log", size=14, color=COLORS["accent"], bold=True)
     hint = "j/k navigate  Enter=show  r=refresh"
     ctx.text(ctx.width - len(hint) * 7.5, 13, hint, size=11, color=COLORS["muted"])
-
-    if not commits:
-        ctx.text(16, 64, "No commits found — not a git repo?", size=13, color=COLORS["muted"])
-        ctx.list([], selected=0)
-        return
-
-    items = [
-        {"label": subject, "secondary": hash_str, "is_dir": False}
-        for hash_str, subject in commits
-    ]
-    ctx.list(items, selected=selected, item_height=44)
 
 
 @app.on_key
 def on_key(key, mods, emit):
     global selected
-    if key in ("j", "ArrowDown"):
+    # egui serializes Key enum variants as PascalCase debug strings:
+    # Key::J → "J", Key::K → "K", Key::ArrowDown → "ArrowDown", etc.
+    if key in ("J", "ArrowDown"):
         selected = min(selected + 1, len(commits) - 1)
-    elif key in ("k", "ArrowUp"):
+    elif key in ("K", "ArrowUp"):
         selected = max(selected - 1, 0)
     elif key == "Enter" and commits:
         hash_str, _ = commits[selected]
         emit.run_in_terminal(f"git show {hash_str}")
-    elif key == "r":
+    elif key == "R":
         load_commits()
         selected = 0
 
