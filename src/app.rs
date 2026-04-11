@@ -79,44 +79,44 @@ impl PlexiApp {
                         pane.name = saved_pane.name.clone();
                         // Restore active app if one was saved.
                         if let Some(app_type) = &saved_pane.active_app_type {
-                            let app: Option<Box<dyn crate::app_trait::App>> = match app_type.as_str() {
+                            let cwd = saved_pane.cwd.clone();
+                            let builtin_perms = crate::app_permissions::AppPermissions::builtin();
+
+                            let (app, perms): (Option<Box<dyn crate::app_trait::App>>, _) = match app_type.as_str() {
                                 "file_browser" => {
-                                    let cwd = saved_pane.cwd.clone();
                                     let mut fb = crate::file_browser::FileBrowserApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         fb.restore_state(state);
                                     }
-                                    Some(Box::new(fb))
+                                    (Some(Box::new(fb)), builtin_perms)
                                 }
                                 "quick_note" => {
-                                    let cwd = saved_pane.cwd.clone();
-                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd);
+                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         note.restore_state(state);
                                     }
-                                    Some(Box::new(note))
+                                    (Some(Box::new(note)), builtin_perms)
                                 }
                                 "audio_player" => {
-                                    let cwd = saved_pane.cwd.clone();
-                                    let mut player = crate::audio_app::AudioApp::new(cwd);
+                                    let mut player = crate::audio_app::AudioApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         player.restore_state(state);
                                     }
-                                    Some(Box::new(player))
+                                    (Some(Box::new(player)), builtin_perms)
                                 }
                                 // Third-party apps: launch via registry using type_id.
                                 other => {
-                                    let cwd = saved_pane.cwd.clone();
-                                    registry.launch(other, &cwd, &[])
+                                    let app = registry.launch(other, &cwd, &[]);
+                                    let perms = registry.permissions_for(other)
+                                        .unwrap_or(builtin_perms);
+                                    (app, perms)
                                 }
                             };
                             if let Some(app) = app {
-                                let perms = crate::app_permissions::AppPermissions::builtin();
-                                let scope = saved_pane.cwd.clone();
-                                pane.open_app(app, perms, scope);
+                                pane.open_app(app, perms, cwd);
                                 pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
                             }
                         }
