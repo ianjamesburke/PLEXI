@@ -17,7 +17,7 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App
+from plexi_sdk import App  # type: ignore[import]
 
 # ---------------------------------------------------------------------------
 # Colors — Catppuccin Mocha
@@ -399,7 +399,7 @@ def render_browse(ctx, now: float):
         ctx.text(12, ctx.height - 18, hints, size=10, color=C["dimmed"])
 
 
-def render_detail(ctx, now: float):
+def render_detail(ctx, _now: float):
     if not state.selected_entry:
         state.view = VIEW_BROWSE
         return
