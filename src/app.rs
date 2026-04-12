@@ -351,7 +351,7 @@ impl PlexiApp {
     }
 }
 
-fn shell_escape(s: &str) -> String {
+pub(crate) fn shell_escape(s: &str) -> String {
     if s.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
         format!("'{}'", s.replace('\'', "'\\''"))
     } else {
