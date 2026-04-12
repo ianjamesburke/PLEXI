@@ -232,6 +232,62 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     media_cache: self.media_cache,
                                 };
                                 app.ui(ui, &app_ctx);
+
+                                // Forward mouse events to the focused app.
+                                // The app surface origin is the inner margin (8px) from the Frame.
+                                if is_focused {
+                                    let inner_origin = ui.min_rect().min + egui::vec2(8.0, 8.0);
+
+                                    ui.input(|i| {
+                                        // Mouse button presses and releases.
+                                        for event in &i.events {
+                                            match event {
+                                                egui::Event::PointerButton { pos, button, pressed, .. } => {
+                                                    if ui.max_rect().contains(*pos) {
+                                                        let lx = pos.x - inner_origin.x;
+                                                        let ly = pos.y - inner_origin.y;
+                                                        let btn = match button {
+                                                            egui::PointerButton::Primary   => "left",
+                                                            egui::PointerButton::Secondary => "right",
+                                                            egui::PointerButton::Middle    => "middle",
+                                                            _                              => "left",
+                                                        };
+                                                        if *pressed {
+                                                            app.send_mouse_down(lx, ly, btn);
+                                                        } else {
+                                                            app.send_mouse_up(lx, ly, btn);
+                                                        }
+                                                    }
+                                                }
+                                                egui::Event::MouseMoved(_) => {
+                                                    // MouseMove: only forward if the app opted in.
+                                                    if app.mouse_tracking_enabled() {
+                                                        if let Some(pos) = i.pointer.hover_pos() {
+                                                            if ui.max_rect().contains(pos) {
+                                                                let lx = pos.x - inner_origin.x;
+                                                                let ly = pos.y - inner_origin.y;
+                                                                app.send_mouse_move(lx, ly);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+
+                                        // Scroll delta — send whenever there is a non-zero scroll.
+                                        let scroll = i.smooth_scroll_delta;
+                                        if scroll.length_sq() > 0.0 {
+                                            if let Some(pos) = i.pointer.hover_pos() {
+                                                if ui.max_rect().contains(pos) {
+                                                    let lx = pos.x - inner_origin.x;
+                                                    let ly = pos.y - inner_origin.y;
+                                                    app.send_scroll(lx, ly, scroll.x, scroll.y);
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
                             } else {
                                 // App was dropped — fall back to full terminal.
                                 let font_size = pane.font_size;

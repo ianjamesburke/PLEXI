@@ -48,7 +48,7 @@ pub enum PlexiEvent {
         pixels_per_point: f32,
     },
     /// Request a new frame. App should reply with DrawCommands + FrameDone.
-    Render { width: f32, height: f32 },
+    Render { width: f32, height: f32, delta_time: f32 },
     /// Surface was resized.
     Resize { width: f32, height: f32 },
     /// A key was pressed.
@@ -58,6 +58,15 @@ pub enum PlexiEvent {
     },
     /// Mouse click at logical coordinates within the app surface.
     Click { x: f32, y: f32, button: MouseButton },
+    /// Mouse button pressed (distinct from Click which fires on release).
+    MouseDown { x: f32, y: f32, button: String },
+    /// Mouse button released.
+    MouseUp { x: f32, y: f32, button: String },
+    /// Mouse moved over the app surface. Only sent when `mouse_tracking = true`
+    /// in the app's manifest capabilities.
+    MouseMove { x: f32, y: f32 },
+    /// Scroll wheel / trackpad scroll over the app surface.
+    Scroll { x: f32, y: f32, delta_x: f32, delta_y: f32 },
     /// User submitted a command via the terminal command bar.
     Command { text: String },
     /// Files were dropped on a registered drop target region.
@@ -282,6 +291,16 @@ pub enum DrawCommand {
         #[serde(default)]
         label: Option<String>,
     },
+    /// Set the cursor icon for the app pane.
+    ///
+    /// Values: `"default"`, `"pointer"`, `"grab"`, `"grabbing"`, `"crosshair"`, `"text"`.
+    /// The cursor reverts to `"default"` at the start of each frame; apps must
+    /// re-emit this on every render frame where they want a non-default cursor.
+    SetCursor { cursor: String },
+    /// Enable or disable mouse-move event delivery. When disabled (default),
+    /// Plexi does not send `MouseMove` events to avoid flooding the pipe.
+    /// This command is stateful — the setting persists until changed.
+    MouseTracking { enabled: bool },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,
 }

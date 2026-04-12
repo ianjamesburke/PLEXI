@@ -149,7 +149,6 @@ class RenderContext:
     def __init__(self, width: float, height: float, app_id: str = ""):
         self.width = width
         self.height = height
-        self.delta_time: float = 0.0
         self._app_id = app_id
         self._commands: list = []
 
@@ -318,23 +317,6 @@ class RenderContext:
             cmd["columns"] = columns
         self._commands.append(cmd)
 
-    def set_cursor(self, cursor: str):
-        """Set the cursor icon for the app pane for this frame.
-
-        Values: 'default', 'pointer', 'grab', 'grabbing', 'crosshair', 'text'.
-        Must be re-emitted each frame to persist (cursor resets to 'default' each frame).
-        """
-        self._commands.append({"type": "set_cursor", "cursor": cursor})
-
-    def mouse_tracking(self, enabled: bool):
-        """Enable or disable mouse-move event delivery.
-
-        When enabled, Plexi sends MouseMove events to this app on every frame.
-        Off by default — enable only when needed to avoid flooding the pipe.
-        This setting persists until changed; you do not need to re-emit each frame.
-        """
-        self._commands.append({"type": "mouse_tracking", "enabled": enabled})
-
     def run_in_terminal(self, command: str):
         """Queue a terminal command to run at end of this frame."""
         self._commands.append({"type": "run_in_terminal", "command": command})
@@ -396,24 +378,19 @@ class App:
     Base class for Plexi apps. Register event handlers via decorators.
 
     Handlers:
-        @app.on_render        fn(ctx: RenderContext)
-        @app.on_key           fn(key: str, mods: dict, emit: Emitter)
-        @app.on_click         fn(x: float, y: float, button: str, emit: Emitter)
-        @app.on_command       fn(text: str, emit: Emitter)
-        @app.on_resize        fn(width: float, height: float)
-        @app.on_get_state     fn() -> dict with keys: user_state, derived, session, persistent
-        @app.on_set_state     fn(state: dict) — restore app from state buckets
-        @app.on_drop          fn(target_id: str, paths: list[str], emit: Emitter)
-        @app.on_mouse_down    fn(x: float, y: float, button: str, emit: Emitter)
-        @app.on_mouse_up      fn(x: float, y: float, button: str, emit: Emitter)
-        @app.on_mouse_move    fn(x: float, y: float, emit: Emitter)
-        @app.on_scroll        fn(x: float, y: float, delta_x: float, delta_y: float, emit: Emitter)
+        @app.on_render      fn(ctx: RenderContext)
+        @app.on_key         fn(key: str, mods: dict, emit: Emitter)
+        @app.on_click       fn(x: float, y: float, button: str, emit: Emitter)
+        @app.on_command     fn(text: str, emit: Emitter)
+        @app.on_resize      fn(width: float, height: float)
+        @app.on_get_state   fn() -> dict with keys: user_state, derived, session, persistent
+        @app.on_set_state   fn(state: dict) — restore app from state buckets
+        @app.on_drop        fn(target_id: str, paths: list[str], emit: Emitter)
     """
 
     def __init__(self, app_id: str = ""):
         self.width: float = 800.0
         self.height: float = 600.0
-        self.delta_time: float = 0.0
         self._on_render: Optional[Callable] = None
         self._on_key: Optional[Callable] = None
         self._on_click: Optional[Callable] = None
@@ -422,10 +399,6 @@ class App:
         self._on_get_state: Optional[Callable] = None
         self._on_set_state: Optional[Callable] = None
         self._on_drop: Optional[Callable] = None
-        self._on_mouse_down: Optional[Callable] = None
-        self._on_mouse_up: Optional[Callable] = None
-        self._on_mouse_move: Optional[Callable] = None
-        self._on_scroll: Optional[Callable] = None
         self._emitter = Emitter(app_id=app_id)
 
     def on_render(self, fn: Callable) -> Callable:
@@ -469,43 +442,6 @@ class App:
         accept list.
         """
         self._on_drop = fn
-        return fn
-
-    def on_mouse_down(self, fn: Callable) -> Callable:
-        """Register a handler for mouse button presses.
-
-        The handler receives (x: float, y: float, button: str, emit: Emitter).
-        `button` is one of 'left', 'right', 'middle'.
-        """
-        self._on_mouse_down = fn
-        return fn
-
-    def on_mouse_up(self, fn: Callable) -> Callable:
-        """Register a handler for mouse button releases.
-
-        The handler receives (x: float, y: float, button: str, emit: Emitter).
-        `button` is one of 'left', 'right', 'middle'.
-        """
-        self._on_mouse_up = fn
-        return fn
-
-    def on_mouse_move(self, fn: Callable) -> Callable:
-        """Register a handler for mouse movement.
-
-        The handler receives (x: float, y: float, emit: Emitter).
-        Only called when mouse_tracking = true in manifest capabilities or after
-        the app emits a MouseTracking draw command.
-        """
-        self._on_mouse_move = fn
-        return fn
-
-    def on_scroll(self, fn: Callable) -> Callable:
-        """Register a handler for scroll wheel / trackpad scroll events.
-
-        The handler receives (x: float, y: float, delta_x: float, delta_y: float, emit: Emitter).
-        `x, y` is the cursor position; `delta_x, delta_y` is the scroll amount in logical pixels.
-        """
-        self._on_scroll = fn
         return fn
 
     def _handle_get_state(self):
@@ -559,9 +495,7 @@ class App:
             elif event_type == "render":
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
-                self.delta_time = event.get("delta_time", 0.0)
                 ctx = RenderContext(self.width, self.height, app_id=self._emitter._app_id)
-                ctx.delta_time = self.delta_time
                 if self._on_render:
                     self._on_render(ctx)
                 ctx._flush()
@@ -598,42 +532,6 @@ class App:
                     self._on_drop(
                         event.get("target_id", ""),
                         event.get("paths", []),
-                        self._emitter,
-                    )
-
-            elif event_type == "mouse_down":
-                if self._on_mouse_down:
-                    self._on_mouse_down(
-                        event.get("x", 0.0),
-                        event.get("y", 0.0),
-                        event.get("button", "left"),
-                        self._emitter,
-                    )
-
-            elif event_type == "mouse_up":
-                if self._on_mouse_up:
-                    self._on_mouse_up(
-                        event.get("x", 0.0),
-                        event.get("y", 0.0),
-                        event.get("button", "left"),
-                        self._emitter,
-                    )
-
-            elif event_type == "mouse_move":
-                if self._on_mouse_move:
-                    self._on_mouse_move(
-                        event.get("x", 0.0),
-                        event.get("y", 0.0),
-                        self._emitter,
-                    )
-
-            elif event_type == "scroll":
-                if self._on_scroll:
-                    self._on_scroll(
-                        event.get("x", 0.0),
-                        event.get("y", 0.0),
-                        event.get("delta_x", 0.0),
-                        event.get("delta_y", 0.0),
                         self._emitter,
                     )
 

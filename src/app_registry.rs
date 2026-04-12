@@ -113,6 +113,9 @@ pub struct AppCapabilities {
     /// Can write secrets to Keychain via the API.
     #[serde(default)]
     pub secrets_write: bool,
+    /// Opt-in to receiving `MouseMove` events. Off by default to avoid pipe flooding.
+    #[serde(default)]
+    pub mouse_tracking: bool,
 }
 
 fn default_fs_permission() -> String {
@@ -263,6 +266,7 @@ impl AppRegistry {
             &installed.bin_path,
             cwd,
             args,
+            installed.manifest.capabilities.mouse_tracking,
         ) {
             Ok(app) => {
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);
