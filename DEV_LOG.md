@@ -1,5 +1,26 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [DECISION] Parallax viewer + linked companion pane (#113) — opt-in [app.launch] manifest section, reuse existing split machinery
+
+Shipped issue #113: the Parallax viewer app plus a new generic `[app.launch]` manifest section that lets any app declare a companion terminal pane on open.
+
+Key decisions (the non-obvious ones):
+
+- **No new tiling primitive.** Extended the existing `open_app_on_focused` into a `_with_launch(..)` variant. The legacy call site keeps its exact 75/25 vertical behavior by passing `None`. When a manifest declares `[app.launch]`, the same code path parameterizes direction (`bottom`/`right`), companion size (fraction), and companion cwd. Considered writing a dedicated "companion layout" module but it would have duplicated 90% of what `open_app_on_focused` already did. One path, one bug surface.
+- **`companion_cwd` template is literal `{launch_dir}` substitution, not a full template engine.** The spec only needs one variable for MVP; keeping it as substring-match means the schema can grow without breaking older apps.
+- **The viewer does NOT depend on a Parallax CLI.** It reads `.parallax/manifest.yaml` directly with a ~30-line stdlib-only YAML subset parser. PyYAML would have been cleaner but the Python SDK contract is zero-deps, and the manifest schema is intentionally tiny (project name + scenes list). When the real CLI lands, the viewer keeps working.
+- **mtime polling, not a watcher.** `os.stat` once per second on a single file is cheap and survives process restarts / missing files cleanly. A proper watcher would require inotify/FSEvents plumbing through the SDK, which is out of scope for #113.
+- **Empty-state is the default render.** If `.parallax/manifest.yaml` is missing, the viewer shows a friendly "run `parallax run \"your brief\"` in the terminal below" hint instead of a blank surface. Made this the first thing I wired so the app is useful before any CLI exists.
+- **`install-alpha` now also syncs `examples/*/` into `~/.plexi-alpha/apps/`.** Previously the justfile only built the bundle; apps had to be copied manually. This is a one-line loop but removes a whole class of "I installed the app but it doesn't show up" confusion.
+- **Pre-existing wasm breakage on alpha (unrelated):** `cargo build --target wasm32-unknown-unknown` fails at HEAD on alpha because `agent_mode` references `agent_llm` and `secrets` that are both `#[cfg(not(target_arch = "wasm32"))]`. My changes do not touch those modules. Filed mentally as a separate bug — do not roll this into #113.
+
+Files:
+- Rust: `src/app_registry.rs` (+`AppLaunchConfig`), `src/pane_ops.rs` (+`open_app_on_focused_with_launch`, updated `launch_app_by_id` + `open_file_with_app`)
+- Python: `examples/parallax/{manifest.toml, parallax.py, plexi_sdk.py, plexi_test.py, tests/test_parallax.py}`
+- Infra: `justfile` (install-alpha syncs example apps)
+- Sample: `~/Documents/parallax-projects/test-project/` with stub manifest, 3 JPG stills, 1 mp4 preview
+
+
 ## 2026-04-12 — [CHANGED] Massive parallel-agent build session — alpha now includes Layer 0/1/2/4 + WASM Phase 1 + media draw commands + Finder Service + notifications
 
 End-of-day state. Alpha is at `a9a181e`. Built and installed via `just install-alpha`. The session ran ~15 sub-agents in parallel worktrees and shipped 6 PRs (#108, #109, #110, #112, #117, #120) plus a follow-up roadmap rewrite.

@@ -1,0 +1,20 @@
+[app]
+id = "parallax"
+name = "Parallax Viewer"
+entry = "parallax.py"
+version = "0.1.0"
+description = "View-only dashboard for a Parallax video project — stills, preview, scenes"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "read_only"
+
+# Split the launching pane when the viewer opens: a companion terminal
+# scoped to the same project directory appears below. The user talks to
+# the Parallax CLI in the companion; the viewer just renders state.
+[app.launch]
+companion = "terminal"
+companion_position = "bottom"
+companion_size = 0.25
+companion_cwd = "{launch_dir}"

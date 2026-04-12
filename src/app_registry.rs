@@ -49,7 +49,48 @@ pub struct AppManifestApp {
     pub description: String,
     #[serde(default)]
     pub capabilities: AppCapabilities,
+    /// Optional companion-pane launch configuration. When present, Plexi splits
+    /// the launching pane and starts the companion in the secondary slot.
+    #[serde(default)]
+    pub launch: Option<AppLaunchConfig>,
 }
+
+/// Companion-pane launch configuration declared under `[app.launch]` in
+/// `manifest.toml`. All fields are optional; see defaults on each one.
+#[derive(Deserialize, Debug, Clone)]
+pub struct AppLaunchConfig {
+    /// What to run in the companion pane. Only `"terminal"` is supported for
+    /// MVP — other app ids will be accepted later.
+    #[serde(default = "default_companion")]
+    pub companion: String,
+    /// Where the companion sits relative to the app pane:
+    /// `"bottom"` (vertical split, default) or `"right"` (horizontal split).
+    #[serde(default = "default_companion_position")]
+    pub companion_position: String,
+    /// Fraction of the split allocated to the companion (0.0..1.0).
+    #[serde(default = "default_companion_size")]
+    pub companion_size: f32,
+    /// Working directory for the companion. Supported template:
+    /// `{launch_dir}` — resolves to the app's launch directory.
+    #[serde(default = "default_companion_cwd")]
+    pub companion_cwd: String,
+}
+
+impl Default for AppLaunchConfig {
+    fn default() -> Self {
+        Self {
+            companion: default_companion(),
+            companion_position: default_companion_position(),
+            companion_size: default_companion_size(),
+            companion_cwd: default_companion_cwd(),
+        }
+    }
+}
+
+fn default_companion() -> String { "terminal".to_string() }
+fn default_companion_position() -> String { "bottom".to_string() }
+fn default_companion_size() -> f32 { 0.25 }
+fn default_companion_cwd() -> String { "{launch_dir}".to_string() }
 
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct AppCapabilities {
