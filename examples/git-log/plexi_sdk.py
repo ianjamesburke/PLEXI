@@ -114,6 +114,30 @@ class Emitter:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }), flush=True)
 
+    def notification(
+        self,
+        title: str,
+        body: Optional[str] = None,
+        priority: int = 1,
+    ):
+        """
+        Raise a notification to Plexi's notification log.
+
+        Priority: 0 = info, 1 = normal, 2 = high, 3 = urgent.
+        The notification is recorded to ~/.plexi-alpha/notifications.jsonl,
+        increments the status-bar unread count, and appears in the
+        notification palette (Cmd+Shift+N).
+        """
+        cmd = {
+            "type": "notification",
+            "priority": priority,
+            "title": title,
+            "source_app": self._app_id,
+        }
+        if body:
+            cmd["body"] = body
+        print(json.dumps(cmd), flush=True)
+
 
 class RenderContext:
     """
@@ -122,9 +146,10 @@ class RenderContext:
     All coordinates are in logical pixels within the app surface.
     """
 
-    def __init__(self, width: float, height: float):
+    def __init__(self, width: float, height: float, app_id: str = ""):
         self.width = width
         self.height = height
+        self._app_id = app_id
         self._commands: list = []
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0):
@@ -229,6 +254,27 @@ class RenderContext:
     def debug(self, message: str):
         """Log at debug level."""
         self.log("debug", message)
+
+    def notification(
+        self,
+        title: str,
+        body: Optional[str] = None,
+        priority: int = 1,
+    ):
+        """
+        Raise a notification from inside a render frame.
+
+        Priority: 0 = info, 1 = normal, 2 = high, 3 = urgent.
+        """
+        cmd = {
+            "type": "notification",
+            "priority": priority,
+            "title": title,
+            "source_app": self._app_id,
+        }
+        if body:
+            cmd["body"] = body
+        self._commands.append(cmd)
 
     def _flush(self):
         for cmd in self._commands:
@@ -359,7 +405,7 @@ class App:
             elif event_type == "render":
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
-                ctx = RenderContext(self.width, self.height)
+                ctx = RenderContext(self.width, self.height, app_id=self._emitter._app_id)
                 if self._on_render:
                     self._on_render(ctx)
                 ctx._flush()

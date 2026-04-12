@@ -73,6 +73,10 @@ mod cost_tracker;
 #[cfg(not(target_arch = "wasm32"))]
 mod logging;
 #[cfg(not(target_arch = "wasm32"))]
+mod notification_log;
+#[cfg(not(target_arch = "wasm32"))]
+mod notification_palette;
+#[cfg(not(target_arch = "wasm32"))]
 mod keys;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos_menu;

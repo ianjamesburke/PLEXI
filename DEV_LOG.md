@@ -1,5 +1,25 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-11 — [DECISION] Notification system MVP — global singleton + Cmd+Shift+N palette
+
+Shipped the minimum viable notification system to unblock Parallax's "video finished" alerts without waiting on the full attention-queue vision (#74).
+
+**What landed:**
+- `DrawCommand::Notification { priority, title, body, source_app }` — additive, zero breakage to existing apps
+- `src/notification_log.rs` — in-memory Vec + append-only `~/.plexi-alpha/notifications.jsonl`, loaded on first access
+- Status bar unread counter in `draw_toolbar` (bell icon + count, clickable)
+- `src/notification_palette.rs` — separate palette modal (Cmd+Shift+N), newest-first list, click/Enter to mark read, "Mark all read" header button
+- Python SDK: `emit.notification(title, body, priority)` on both `Emitter` and `RenderContext`, mirrored into the 3 example `plexi_sdk.py` copies
+- Hello-app: press `n` to fire a test notification (round-trip smoke test)
+
+**Key decisions:**
+- **Singleton, not per-app injection.** `notification_log::global()` is a `OnceLock<Mutex<NotificationLog>>` accessed from both `ProcessApp::ui()` (write path) and `draw_toolbar` / `draw_notification_palette` (read path). Rejected the "thread an Arc through `AppRegistry::launch`" approach because the notification log is process-wide state, not per-app state — unlike `CostTracker` which is per-app for aggregation. This is the same pattern `cost_tracker.rs` uses for the on-disk JSONL, just hoisted to a global because every pane reads the same count.
+- **Cmd+Shift+N, not Cmd+N.** The spec said Cmd+N but that shortcut is already `NewContext` and is reserved per the `keys.rs` header. Rebinding would break muscle memory; Cmd+Shift+N is the closest mnemonic without a breaking change.
+- **Persistence semantics.** JSONL is append-only — we never rewrite the file. `read` flags are NOT persisted: on reload, all historical notifications come back as read so the unread counter starts at 0 each session. Avoids the "thousand unread" problem and keeps the on-disk format write-once.
+- **No hello-app SDK copy.** hello-app's `bin/plexi-app` is a self-contained bare script (no SDK import), so the test-app changes live in the bare script itself. Did not introduce a new `plexi_sdk.py` file just to add a notification call.
+
+**Explicitly deferred (per MVP constraints):**
+- Delivery acknowledgment / priority-based styling / toast popups / tray integration / focus-source-pane-on-click — all wait on #74's full attention queue work.
 ## 2026-04-12 — [DECISION] Finder "Open in Plexi" service via in-process NSServicesProvider
 
 Added the Layer 0 macOS Finder Service. Right-clicking a folder in Finder → Services → "Open in Plexi" launches/focuses Plexi and opens the folder as a new context. Same machinery handles `plexi <path>` from the terminal on first launch.
@@ -23,6 +43,7 @@ Added the Layer 0 macOS Finder Service. Right-clicking a folder in Finder → Se
 **Gotcha — `cargo-bundle` osx_info_plist_exts:** the mechanism is "blindly append the file contents before closing `<dict>`". This means the fragment file must contain raw `<key>/<value>` pairs (no wrapping `<dict>`, no `<?xml>` header). Easy to get wrong — validate every time with `plutil -lint <bundle>/Contents/Info.plist` after bundling.
 
 **Gotcha — objc2 msg_send! with Retained<AnyObject>:** the `msg_send!` macro path fails with "OptionEncode not implemented for Retained<AnyObject>" when the dep graph contains multiple objc2 versions (we have 0.5 direct + 0.6 pulled in by arboard). Use the generated typed bindings (`NSPasteboard::propertyListForType`) instead — they go through the single version we directly depend on.
+
 
 ## 2026-04-11 — [CHANGED] Layer 0/1/2/4 implemented in parallel via worktree sub-agents
 
