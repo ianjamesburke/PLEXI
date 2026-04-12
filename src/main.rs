@@ -1,40 +1,103 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod agent_context;
-mod agent_mode;
-mod agent_ui;
-mod app;
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 1 of the WASM/PWA split (see docs/specs/wasm-pwa-deployment.md).
+//
+// Every module that touches the OS — PTY, filesystem, subprocess, Keychain,
+// audio devices, file watching — is gated behind `cfg(not(target_arch = "wasm32"))`.
+// The UI rendering modules (`app`, `pane`, `pane_ops`, `tiling`, `theme`,
+// `command_palette`, `file_browser`) also depend transitively on `egui_term`
+// and `shell`, which are native-only, so they are gated here as well until a
+// later phase isolates the rendering core from the PTY/shell layer.
+//
+// The wasm build currently compiles only the self-contained leaf modules
+// (protocol types, trait definitions, pure state structs). A real wasm UI is
+// Phase 3 work — this phase just sets up the compile scaffolding.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Shared modules — compile on every target ────────────────────────────────
+//
+// These modules are pure data/protocol definitions with no OS dependencies.
+// They're the seed of what will eventually be the WASM-compilable UI layer.
 mod app_protocol;
-mod app_registry;
-mod app_api;
-mod app_permissions;
-mod audio_app;
-mod app_trait;
-mod cli;
-mod command_palette;
-mod file_browser;
-mod process_app;
-mod quick_note_app;
-mod secrets_app;
-mod text_editor_app;
-mod config;
-mod context;
-mod cost_tracker;
-mod logging;
+mod agent_mode;
+
+// `features` and `app_permissions` transitively reference `config` and
+// `app_trait`, which are native-only. Gated until they're decoupled.
+#[cfg(not(target_arch = "wasm32"))]
 mod features;
+#[cfg(not(target_arch = "wasm32"))]
+mod app_permissions;
+
+// ── Native-only modules ──────────────────────────────────────────────────────
+//
+// Everything below depends on `std::fs`, `std::process`, `egui_term`,
+// `rodio`, `notify`, `dirs`, or macOS-specific crates. Gated until Phase 2
+// introduces a WebSocket transport that replaces direct OS access.
+#[cfg(not(target_arch = "wasm32"))]
+mod agent_context;
+#[cfg(not(target_arch = "wasm32"))]
+mod agent_ui;
+#[cfg(not(target_arch = "wasm32"))]
+mod app;
+#[cfg(not(target_arch = "wasm32"))]
+mod app_registry;
+#[cfg(not(target_arch = "wasm32"))]
+mod app_api;
+#[cfg(not(target_arch = "wasm32"))]
+mod audio_app;
+#[cfg(not(target_arch = "wasm32"))]
+mod app_trait;
+#[cfg(not(target_arch = "wasm32"))]
+mod cli;
+#[cfg(not(target_arch = "wasm32"))]
+mod command_palette;
+#[cfg(not(target_arch = "wasm32"))]
+mod file_browser;
+#[cfg(not(target_arch = "wasm32"))]
+mod process_app;
+#[cfg(not(target_arch = "wasm32"))]
+mod quick_note_app;
+#[cfg(not(target_arch = "wasm32"))]
+mod secrets_app;
+#[cfg(not(target_arch = "wasm32"))]
+mod text_editor_app;
+#[cfg(not(target_arch = "wasm32"))]
+mod config;
+#[cfg(not(target_arch = "wasm32"))]
+mod context;
+#[cfg(not(target_arch = "wasm32"))]
+mod cost_tracker;
+#[cfg(not(target_arch = "wasm32"))]
+mod logging;
+#[cfg(not(target_arch = "wasm32"))]
 mod keys;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos_menu;
+#[cfg(not(target_arch = "wasm32"))]
 mod overlays;
+#[cfg(not(target_arch = "wasm32"))]
 mod pane;
+#[cfg(not(target_arch = "wasm32"))]
 mod pane_ops;
+#[cfg(not(target_arch = "wasm32"))]
 mod secrets;
+#[cfg(not(target_arch = "wasm32"))]
 mod shell;
+#[cfg(not(target_arch = "wasm32"))]
 mod sidebar;
+#[cfg(not(target_arch = "wasm32"))]
 mod theme;
+#[cfg(not(target_arch = "wasm32"))]
 mod tiling;
+#[cfg(not(target_arch = "wasm32"))]
 mod workspace;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Native entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let log_level = crate::config::PlexiConfig::load()
         .log
@@ -171,4 +234,19 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc)))),
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WASM entry point — stub for Phase 1
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// This compiles the shared modules above (protocol, trait, pure state) for
+// wasm32-unknown-unknown so we can verify the dependency gating in Cargo.toml
+// is correct. A real WASM UI requires Phase 3 (ws_bridge + WebRunner wiring).
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    // No-op: the real wasm entry point will live in a separate `wasm_main`
+    // module once Phase 3 wires up `eframe::WebRunner`. For now, `main` only
+    // exists so `cargo build --target wasm32-unknown-unknown` has an entry
+    // symbol for the binary crate.
 }
