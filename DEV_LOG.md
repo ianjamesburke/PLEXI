@@ -1,5 +1,20 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [DECISION] github-issues app — list/detail MVP shipped, mutation/authoring deferred
+
+Built `examples/github-issues/` as a sub-agent off `feature/github-issues-app`. ~440 lines of Python plus tests. Mirrors the wikipedia app's worker-thread + queue pattern (background `gh` calls push results onto `result_queue`, the render handler drains the queue at the top of every frame). No new Python deps, no Rust changes.
+
+**Non-obvious decisions:**
+
+- **Mocking `gh` via `PLEXI_GH_BIN` env var.** The test harness sets `PLEXI_GH_BIN=/tmp/.../gh` to point at a fake shell script. I considered monkey-patching subprocess from inside the test, but the app runs as a separate process under `plexi_test.AppTestHarness`, so env-var indirection was the only clean injection point. The production code falls back to `"gh"` when the env var is unset, so behavior is unchanged in real use. Same trick used for fake `git` (prepended to PATH) so `git remote get-url origin` returns a synthetic GitHub URL.
+- **Preflight runs once at startup, not on every render.** The spec describes re-running preflight on cwd change, but the cwd doesn't change inside a single app process — Plexi relaunches the app when the pane's cwd changes. So a one-shot preflight at startup, plus an `[r]` retry key in the error screen, covers the spec without polling.
+- **`gh issue view --json comments` works fine.** The spec hedged ("if it doesn't include comments by default, fall back to body-only"). It does — `comments` is a sibling field returned alongside `body` and contains an array of `{author.login, body, createdAt, ...}`. I left a fallback to `--json body` for safety (e.g. older `gh` versions), but the primary path uses both.
+- **Label colors: P1-P4 hard-coded, others use github color.** GitHub's label API returns hex colors per label (no `#` prefix). The app just adds `#` and uses the value directly as a chip background. P1-P4 are hard-coded to match Plexi's own palette (red/orange/blue/grey) regardless of what GitHub stores.
+- **No companion pane in manifest.** Standalone single-pane app. Pane label / Focus Manager integration is deferred to follow-up #130.
+- **Deferred to follow-ups (filed):** #127 (text-input flows: comment authoring, body editing, new issue — needs text editor primitive), #129 (state mutation keys: close/reopen/label/priority — needs trust gate decision), #130 (pane label + Focus Manager integration — needs pane metadata SDK surface).
+
+**Tests:** 4 passing — lifecycle, preflight error rendering, list view rendering with mock data, filter toggle. All mocked via the `PLEXI_GH_BIN` + PATH-prepended fake `git` trick.
+
 ## 2026-04-12 — [CHANGED] Advanced UI SDK (Python side) — Canvas, HitTester, DragHandler, FocusManager, FrameTimer, Tween + easings
 
 Shipped `sdk/python/plexi_sdk_advanced.py` (~460 lines, stdlib-only) and `sdk/python/tests/test_plexi_sdk_advanced.py` (17 tests, all passing). Imports and extends the simple SDK without forking it. Unblocks future canvas/game/animation apps (snake, aquarium, pyflow) on the Python side.
