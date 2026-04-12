@@ -1,5 +1,52 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [CHANGED] End-of-day session: file browser refactor, agent mode fixes, 10 new apps, --plexi standard proposed
+
+Massive session. Full picture:
+
+**Code shipped to alpha (direct commits for easy rollback):**
+- `feat: python_resolver` — `.py` apps now launch against Homebrew Python 3.11+, fixing pygame/numpy/anthropic dep errors. Probes /opt/homebrew, /usr/local, then shell fallback. Caches once per process.
+- `fix: file explorer propagates final cwd to underlying terminal on close` — writes `cd 'path'` to the PTY stdin before app close. Done via new `App::current_dir()` trait method.
+- `fix: agent mode subprocess errors surfaced, cwd set, session_id poisoning fixed` — logs were silently swallowing stderr. Also fabricating `unknown-{epoch}` session IDs on first-turn failure permanently poisoned `--resume` for every subsequent turn. Now errors route to `LlmResponse::Error` and empty session_id leaves state unchanged.
+- `feat(agent): Ctrl+C cancels in-flight LLM request` — kills subprocess, drains pending tokens, prints `^C — interrupted`. Only consumed when agent is in Processing state; falls through otherwise.
+- `fix: sync canonical SDK to all apps + app-store manifest schema` — 20/31 example apps had stale `plexi_sdk.py` missing `on_mouse_down`. Parallax was crash-looping because of it. Also `app-store/manifest.toml` used flat `app_id =` instead of `[app]` table, so the app didn't load at all. Found via `~/.plexi-alpha/plexi.log` — logs are fully working and earned their keep.
+- `feat(file_browser): Cmd+Backspace to trash files with Cmd+Z undo` — proper macOS Trash via `NSFileManager trashItemAtURL:`, plays Purr system sound, 50-entry undo stack.
+- `feat: preserve terminal identity on app open via in-pane companion mode` — THE big refactor. New `SurfaceMode::AppWithCompanion { companion_fraction }`. When a plain terminal pane opens an app, the same `TerminalPane` stays in place — app overlays the top 75%, existing terminal renders in the bottom 25%. No new `TerminalPane::new()`, no tree split, shell history/processes/agent conversations preserved. Legacy auto-split path still exists as fallback.
+
+**Key architectural note:** The companion-mode refactor changes the semantics of "linked terminal" — for companion panes, `linked_terminal_pane = None` and the pane's own id serves as its own linked terminal. `dispatch_app_key_events` and `sync_app_cwd` both check this. Workspace restore handles both modes.
+
+**Issues filed this session (#171–#192):**
+- #171–#173 aquarium polish (fish, grass, food)
+- #174 calculator mouse clicks broken
+- #175 learn-plexi global shortcut blocking
+- #176 lichen memory leak
+- #177 companion pane window management unification
+- #178–#179 pomodoro bugs
+- #180 SDK CLI scriptability (idea)
+- #181 pulse pygame/numpy dep error (rooted to python resolver)
+- #182 pane resize handle visual bugs (4-in-1)
+- #183 ZSH configurator app (researched)
+- #184 P1 file explorer refactor (most of it now shipped)
+- #185 SDK app startup message
+- #186 dotfiles share (research-backed)
+- #187 CLI Explorer app
+- #188 `--plexi` standard descriptor protocol (the novel primitive)
+- #189 zero-buy-in recursive `--help` crawler with secure secret handoff
+- #190 animated pane splits/resize
+- #191 OBS replacement spike (research-backed, macOS 13+, ScreenCaptureKit)
+
+**The `--plexi` thesis (#188):** CLIs opt in to exposing a structured UI descriptor via `--plexi` flag. Becomes a standard like `--help` / `--version`. Plexi hosts consume it to render rich UIs. Parallax is the ideal first adopter. #189 covers the zero-buy-in path via recursive `--help` crawling so it works on every existing CLI without author involvement. Together with #187 (the consuming app), this defines a whole new interaction model — terminals and UIs as complementary views over the same primitive.
+
+**Parallax end-to-end is the explicit top priority.** Everything else defers until it's verified working.
+
+## 2026-04-12 — [DECISION] Agent mode sandboxing — tool-disable vs. directory sandbox; sudo UX deferred
+
+Investigated whether agent mode prevents directory escape. Answer: yes, but via `--tools ""` (all tool execution disabled), NOT directory sandboxing. The `claude` subprocess has no `current_dir()` set, so it inherits Plexi's cwd. It doesn't matter because it literally can't do anything with it — no tools, no file reads, no shell execution. The `directory_scope` field is informational-only in the system prompt.
+
+**Proposal discussed:** A `sudo` UX toggle — normal agent keeps `--tools ""`, "sudo agent" removes it and warns the user Claude has full access. Real OS-level path restriction (chroot / macOS sandbox profile) is a separate, heavier problem.
+
+**Decision:** Defer the sudo UX toggle and any sandboxing work. No implementation started. If this gets picked up: the UX toggle is a small addition to `agent_llm.rs`; real path restriction requires OS-level enforcement (system prompt instructions are not a security boundary). Do NOT conflate the two.
+
 ## 2026-04-12 — [CHANGED] Mouse events, delta_time, SetCursor — issue #132
 
 Added full mouse input and animation timing to the app protocol. New `PlexiEvent` variants: `MouseDown`, `MouseUp`, `MouseMove`, `Scroll`. `Render` now carries `delta_time: f32` (seconds since last frame). New `DrawCommand` variants: `SetCursor` (maps string → `egui::CursorIcon`), `MouseTracking` (stateful opt-in for move events).
