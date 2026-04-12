@@ -361,6 +361,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     colors: &self.colors,
                                     is_focused: app_focused,
                                     linked_terminal: *pane_id,
+                                    media_cache: self.media_cache,
                                 };
                                 app.ui(&mut app_ui, &app_ctx);
                             }
