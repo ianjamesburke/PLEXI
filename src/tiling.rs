@@ -67,12 +67,46 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         // Handle file drops — use the same geometric hit test as hover detection
         // so the drop target matches the visual focus with no frame delay.
+        //
+        // Apps in AppActive mode get first crack at the drop via their declared
+        // DropTargets (see App::handle_drop). If no drop target claims the
+        // position, or the pane is in FullTerminal mode, fall back to the
+        // default behaviour: paste the shell-escaped path(s) into the terminal.
         if is_drag_hovering {
             let dropped = ui.input(|i| i.raw.dropped_files.clone());
             if !dropped.is_empty() {
-                if let Some(pane) = self.panes.get_mut(pane_id) {
-                    for file in dropped {
-                        if let Some(path) = &file.path {
+                let paths: Vec<std::path::PathBuf> = dropped
+                    .iter()
+                    .filter_map(|f| f.path.clone())
+                    .collect();
+
+                // Try the active app first. The Frame applied below uses an
+                // inner_margin of 8, so the app's local origin is offset from
+                // the pane's outer rect by (8, 8). Mirror that offset here so
+                // the position we pass to handle_drop matches the coordinate
+                // space of the DropTarget commands the app emitted.
+                let app_consumed = if let Some(pane) = self.panes.get_mut(pane_id) {
+                    if matches!(pane.surface_mode, SurfaceMode::AppActive)
+                        && pane.active_app.is_some()
+                    {
+                        let drop_pos = self
+                            .drag_cursor_pos
+                            .or_else(|| ui.input(|i| i.pointer.interact_pos()))
+                            .unwrap_or_else(|| ui.max_rect().center());
+                        let inner_origin = ui.max_rect().min + egui::vec2(8.0, 8.0);
+                        let local_pos = drop_pos - inner_origin.to_vec2();
+                        let app = pane.active_app.as_mut().unwrap();
+                        app.handle_drop(local_pos, &paths)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !app_consumed {
+                    if let Some(pane) = self.panes.get_mut(pane_id) {
+                        for path in &paths {
                             let path_str = path.display().to_string();
                             let escaped = if path_str.contains(|c: char| {
                                 c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)

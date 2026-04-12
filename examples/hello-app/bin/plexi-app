@@ -7,6 +7,7 @@ Demonstrates:
   - Drawing rects, text, and a list
   - Sending RunInTerminal commands back to the shell
   - Emitting a test notification (press 'n')
+  - Declaring a drop target and handling Drop events
 
 Drop this in ~/.plexi/apps/hello-app/bin/plexi-app (chmod +x) and add
 the manifest.toml alongside it.
@@ -18,6 +19,9 @@ import json
 def send(obj):
     print(json.dumps(obj), flush=True)
 
+def log(level, message):
+    send({"type": "log", "level": level, "message": message})
+
 width = 800
 height = 600
 items = [
@@ -28,6 +32,7 @@ items = [
 ]
 selected = 0
 last_command = None
+dropped_paths: list[str] = []  # most recent drop result, shown in the drop zone
 
 COMMANDS = [item["secondary"] for item in items]
 
@@ -49,12 +54,42 @@ def render():
     send({"type": "line", "x1": 0, "y1": 44, "x2": width, "y2": 44,
           "color": "#313244", "width": 1.0})
 
-    # Command list
+    # Command list (top half, above the drop zone)
+    drop_zone_h = 120
+    drop_zone_y = max(60, height - drop_zone_h - 40)
     send({
         "type": "list",
         "items": items,
         "selected": selected,
         "item_height": 28.0,
+    })
+
+    # Drop zone — drag files from Finder here.
+    send({"type": "rect",
+          "x": 20, "y": drop_zone_y, "w": width - 40, "h": drop_zone_h,
+          "fill": "#1a1b26", "radius": 8})
+    send({"type": "text", "x": 40, "y": drop_zone_y + 16,
+          "text": "Drop files here",
+          "size": 12.0, "color": "#89b4fa", "bold": True})
+    if dropped_paths:
+        for i, p in enumerate(dropped_paths[:4]):
+            send({"type": "text", "x": 40, "y": drop_zone_y + 40 + i * 14,
+                  "text": p, "size": 10.0, "color": "#a6e3a1",
+                  "monospace": True})
+    else:
+        send({"type": "text", "x": 40, "y": drop_zone_y + 40,
+              "text": "(drag any file from Finder onto this area)",
+              "size": 10.0, "color": "#585b70"})
+
+    # Register the drop target with Plexi. Empty accept = accept anything.
+    # This must be re-emitted every frame; Plexi does not persist it.
+    send({
+        "type": "drop_target",
+        "id": "assets",
+        "x": 20, "y": drop_zone_y,
+        "w": width - 40, "h": drop_zone_h,
+        "accept": [],
+        "label": "Drop to add to hello-app",
     })
 
     # Status bar at bottom
@@ -114,6 +149,15 @@ for line in sys.stdin:
                 "source_app": "hello-app",
             })
             last_command = "notification"
+
+    elif t == "drop":
+        target_id = event.get("target_id", "")
+        paths = event.get("paths", [])
+        dropped_paths = paths
+        # Print to stderr so we can verify the round-trip end-to-end
+        # (stderr from external apps is forwarded to plexi.log).
+        print(f"hello-app: drop on '{target_id}' -> {paths}", file=sys.stderr, flush=True)
+        log("info", f"drop on '{target_id}': {len(paths)} file(s)")
 
     elif t == "command":
         # User typed something in the terminal command bar

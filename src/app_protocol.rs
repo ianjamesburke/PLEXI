@@ -60,6 +60,16 @@ pub enum PlexiEvent {
     Click { x: f32, y: f32, button: MouseButton },
     /// User submitted a command via the terminal command bar.
     Command { text: String },
+    /// Files were dropped on a registered drop target region.
+    ///
+    /// `target_id` matches the `id` of the `DropTarget` draw command that
+    /// declared the region. Paths are absolute paths in the host filesystem.
+    /// Paths that don't match the target's `accept` list are filtered out
+    /// by Plexi before this event is sent.
+    Drop {
+        target_id: String,
+        paths: Vec<String>,
+    },
     /// Request the app's current state (for undo/redo/save).
     GetState,
     /// Restore app state from a previous snapshot.
@@ -183,6 +193,28 @@ pub enum DrawCommand {
         body: Option<String>,
         /// The `app_id` of the emitter (e.g. `"parallax"`).
         source_app: String,
+    },
+    /// Declare a drop target region. Stateless per frame: apps must re-emit
+    /// this on every render frame for the drop zone to remain active.
+    ///
+    /// When the user drags files from outside Plexi over this region, Plexi
+    /// will draw a subtle highlight and the optional `label`. When files are
+    /// dropped, Plexi filters paths by extension against `accept` (empty =
+    /// accept anything) and sends a `PlexiEvent::Drop` to the app with the
+    /// matching `id`.
+    DropTarget {
+        id: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        /// File extensions (lowercase, no dot) or MIME types to accept.
+        /// Empty list means accept anything.
+        #[serde(default)]
+        accept: Vec<String>,
+        /// Optional hint text shown over the target while hovering with files.
+        #[serde(default)]
+        label: Option<String>,
     },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,

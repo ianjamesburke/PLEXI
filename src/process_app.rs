@@ -458,6 +458,42 @@ impl ProcessApp {
                     );
                 }
 
+                DrawCommand::DropTarget { x, y, w, h, label, .. } => {
+                    // Drop targets are invisible by default. When files are being
+                    // dragged from outside Plexi, draw a subtle highlight + label so
+                    // the user can see where they can drop.
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let hovering_with_files = ui.input(|i| !i.raw.hovered_files.is_empty());
+                    if hovering_with_files {
+                        // Subtle fill + outline to signal "droppable here".
+                        let fill = Color32::from_rgba_unmultiplied(
+                            colors.accent.r(),
+                            colors.accent.g(),
+                            colors.accent.b(),
+                            28,
+                        );
+                        ui.painter().rect_filled(rect, 4.0, fill);
+                        ui.painter().rect_stroke(
+                            rect,
+                            4.0,
+                            egui::Stroke::new(1.5, colors.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                        if let Some(label_text) = label {
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                label_text,
+                                egui::FontId::proportional(12.0),
+                                colors.text_primary,
+                            );
+                        }
+                    }
+                }
+
                 DrawCommand::List { items, selected, item_height } => {
                     let row_h = if *item_height > 0.0 { *item_height } else { 20.0 };
                     egui::ScrollArea::vertical()
@@ -686,6 +722,65 @@ impl App for ProcessApp {
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_commands)
+    }
+
+    fn handle_drop(&mut self, local_pos: egui::Pos2, paths: &[PathBuf]) -> bool {
+        // Find the topmost DropTarget in the last committed frame whose rect
+        // contains the drop position. Iterate in reverse so later-declared
+        // targets (painted on top) take precedence.
+        let hit = self.frame.iter().rev().find_map(|cmd| {
+            if let DrawCommand::DropTarget { id, x, y, w, h, accept, .. } = cmd {
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(*x, *y),
+                    egui::vec2(*w, *h),
+                );
+                if rect.contains(local_pos) {
+                    Some((id.clone(), accept.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+
+        let Some((target_id, accept)) = hit else {
+            return false;
+        };
+
+        // Filter paths against the accept list. Empty accept = accept anything.
+        let accept_lower: Vec<String> =
+            accept.iter().map(|s| s.trim_start_matches('.').to_ascii_lowercase()).collect();
+        let filtered: Vec<String> = paths
+            .iter()
+            .filter(|p| {
+                if accept_lower.is_empty() {
+                    return true;
+                }
+                match p.extension().and_then(|e| e.to_str()) {
+                    Some(ext) => accept_lower.iter().any(|a| a == &ext.to_ascii_lowercase()),
+                    None => false,
+                }
+            })
+            .map(|p| p.display().to_string())
+            .collect();
+
+        if filtered.is_empty() {
+            // Target exists but no paths matched the accept filter. Still
+            // considered "consumed" — the app owns that region and the user's
+            // intent was clearly to drop there.
+            log::debug!(
+                "ProcessApp[{}]: drop on '{}' filtered out all {} path(s)",
+                self.type_id, target_id, paths.len()
+            );
+            return true;
+        }
+
+        self.send_event(&PlexiEvent::Drop {
+            target_id,
+            paths: filtered,
+        });
+        true
     }
 
     fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {
