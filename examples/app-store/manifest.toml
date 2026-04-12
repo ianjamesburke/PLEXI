@@ -1,6 +1,11 @@
-app_id = "app-store"
+[app]
+id = "app-store"
 name = "App Store"
-description = "Plexi app store — browse and install apps."
 entry = "app_store.py"
-icon = "🏪"
 version = "0.1.0"
+description = "Browse, install, and update Plexi apps from the registry"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "read_only"
