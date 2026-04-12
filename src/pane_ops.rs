@@ -468,7 +468,14 @@ impl PlexiApp {
     }
 
     /// Close the active app on the focused terminal pane, returning to full terminal.
-    /// Also closes the linked terminal pane and collapses the split.
+    ///
+    /// Behavior depends on the mode the app was opened in:
+    ///
+    /// * `AppWithCompanion` — the existing terminal simply expands back to
+    ///   full pane. No tile destruction. The terminal instance is unchanged
+    ///   (history, running processes, agent conversations all preserved).
+    /// * `AppActive` (legacy auto-split) — closes the linked sibling terminal
+    ///   pane (which `open_app_on_focused` created) and collapses the split.
     ///
     /// If the app was tracking a directory (e.g. the file browser) and the user
     /// navigated away from the opening directory, we propagate the final cwd back
@@ -476,6 +483,9 @@ impl PlexiApp {
     /// is the source of truth for cwd, so we let it run `cd` rather than mutating
     /// any in-memory cwd field.
     pub(crate) fn close_focused_app(&mut self) {
+        // Find the focused pane's tile id so we can collapse the split when
+        // it was a legacy auto-split. If the app was opened with a companion
+        // (no separate tile), `linked` will be None and we're done.
         let ctx = &mut self.contexts[self.active_context];
         let linked = if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
             // Before closing, if the app reports a current directory that differs
@@ -499,9 +509,11 @@ impl PlexiApp {
             None
         };
 
-        // Close the linked terminal pane if it exists.
         if let Some(linked_id) = linked {
-            // Find the tile ID for the linked pane and remove it.
+            // Legacy path: there was a separate terminal tile. Remove it
+            // from the tree and drop the pane. (Same cleanup as before this
+            // refactor — kept verbatim to avoid changing legacy behavior.)
+            let ctx = &mut self.contexts[self.active_context];
             let tile_to_remove = ctx
                 .tree
                 .tiles
@@ -523,8 +535,18 @@ impl PlexiApp {
         }
     }
 
-    /// Open an app on the focused pane: auto-splits vertically, app on top,
-    /// fresh linked terminal on bottom. Uses the default 75/25 vertical layout.
+    /// Open an app on the focused pane.
+    ///
+    /// Preferred path: if the focused tile is already a plain terminal pane
+    /// with no app currently active, the app is opened *in the same pane*
+    /// using `SurfaceMode::AppWithCompanion`. The user's existing terminal —
+    /// including history, running processes, and any agent conversations —
+    /// is preserved, and the app overlays the top portion of the same pane.
+    /// No new `TerminalPane` is created and the tile tree is unchanged.
+    ///
+    /// Fallback path (when the focused pane is already showing an app, or
+    /// the focused tile is not a plain pane): legacy auto-split behavior —
+    /// create a fresh linked terminal pane below and put the app on top.
     pub(crate) fn open_app_on_focused(
         &mut self,
         app: Box<dyn App>,
@@ -553,6 +575,36 @@ impl PlexiApp {
         let Some(focused) = self.contexts[self.active_context].focused_pane else {
             return;
         };
+
+        // Fast path: focused tile is a plain terminal pane with no app yet.
+        // Open the app in-place, preserving the terminal instance. This
+        // preserves shell history, running processes, and agent conversations.
+        let can_embed = {
+            let ctx = &self.contexts[self.active_context];
+            if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                ctx.panes
+                    .get(pane_id)
+                    .map(|p| p.active_app.is_none())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        };
+
+        if can_embed {
+            let ctx = &mut self.contexts[self.active_context];
+            if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                let pane_id = *pane_id;
+                if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                    pane.open_app_with_companion(app, permissions, scope);
+                }
+            }
+            ctx.focused_pane = Some(focused);
+            return;
+        }
+
+        // Fallback: legacy auto-split. Create a new terminal pane below and
+        // put the app in the existing focused pane.
 
         // Resolve launch options (defaults match legacy behavior).
         let vertical = match launch.as_ref().map(|l| l.companion_position.as_str()) {

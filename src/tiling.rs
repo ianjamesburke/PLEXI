@@ -3,7 +3,7 @@ use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPAC
 use crate::media_cache::MediaCache;
 use crate::pane::TerminalPane;
 use crate::theme::{self, Colors};
-use egui::{Color32, Vec2};
+use egui::{Color32, Stroke, Vec2};
 use egui_term::{BackendCommand, TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::cell::RefCell;
@@ -301,6 +301,128 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     ));
                                 ui.add(terminal);
                             }
+                        }
+
+                        SurfaceMode::AppWithCompanion { companion_fraction } => {
+                            // Render the app on the top portion of the pane
+                            // and the existing (preserved) terminal on the
+                            // bottom portion. Both share the same pane id.
+                            let pane_rect = ui.max_rect();
+                            let frac = companion_fraction.clamp(0.10, 0.90);
+                            let separator_h = 1.0;
+                            let term_h = (pane_rect.height() * frac).max(40.0);
+                            let app_h = (pane_rect.height() - term_h - separator_h).max(40.0);
+
+                            let app_rect = egui::Rect::from_min_size(
+                                pane_rect.min,
+                                egui::vec2(pane_rect.width(), app_h),
+                            );
+                            let sep_rect = egui::Rect::from_min_size(
+                                egui::pos2(pane_rect.left(), pane_rect.top() + app_h),
+                                egui::vec2(pane_rect.width(), separator_h),
+                            );
+                            let term_rect = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    pane_rect.left(),
+                                    pane_rect.top() + app_h + separator_h,
+                                ),
+                                egui::vec2(pane_rect.width(), term_h),
+                            );
+
+                            // Separator line between app and terminal.
+                            ui.painter().rect_filled(
+                                sep_rect,
+                                0.0,
+                                self.colors.border,
+                            );
+
+                            // Track which surface the pointer is currently
+                            // over so a click promotes that surface inside
+                            // the pane (handled below the per-surface UIs).
+                            let pointer_over_app = ui
+                                .input(|i| i.pointer.hover_pos())
+                                .map(|p| app_rect.contains(p))
+                                .unwrap_or(false);
+                            let pointer_over_term = ui
+                                .input(|i| i.pointer.hover_pos())
+                                .map(|p| term_rect.contains(p))
+                                .unwrap_or(false);
+                            let click_pressed =
+                                ui.input(|i| i.pointer.any_pressed());
+
+                            // App surface (top).
+                            let app_focused = is_focused
+                                && pane.focused_surface == SurfaceLayer::App;
+                            if let Some(app) = pane.active_app.as_mut() {
+                                let mut app_ui = ui.new_child(
+                                    egui::UiBuilder::new().max_rect(app_rect),
+                                );
+                                let app_ctx = AppRenderContext {
+                                    colors: &self.colors,
+                                    is_focused: app_focused,
+                                    linked_terminal: *pane_id,
+                                };
+                                app.ui(&mut app_ui, &app_ctx);
+                            }
+
+                            // Companion terminal surface (bottom). This is
+                            // the SAME terminal backend that was running in
+                            // this pane before the app opened — history,
+                            // running processes, agent sessions all intact.
+                            let term_focused = is_focused
+                                && pane.focused_surface == SurfaceLayer::Terminal;
+                            let mut term_ui = ui.new_child(
+                                egui::UiBuilder::new().max_rect(term_rect),
+                            );
+                            let font_size = pane.font_size;
+                            let terminal = TerminalView::new(&mut term_ui, &mut pane.backend)
+                                .set_focus(term_focused)
+                                .set_theme(self.theme.clone())
+                                .set_font(theme::terminal_font(font_size))
+                                .set_size(Vec2::new(term_rect.width(), term_rect.height()));
+                            term_ui.add(terminal);
+
+                            // Subtle highlight on the focused surface so the
+                            // user can see which one will receive keys.
+                            let highlight = Stroke::new(1.0, self.colors.accent);
+                            if app_focused {
+                                ui.painter().rect_stroke(
+                                    app_rect.shrink(0.5),
+                                    0.0,
+                                    highlight,
+                                    egui::StrokeKind::Inside,
+                                );
+                            } else if term_focused {
+                                ui.painter().rect_stroke(
+                                    term_rect.shrink(0.5),
+                                    0.0,
+                                    highlight,
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+
+                            // Click-to-focus inside the embedded layout: a
+                            // press inside the app rect promotes the app
+                            // surface; a press inside the terminal rect
+                            // promotes the terminal surface.
+                            if is_focused && click_pressed {
+                                if pointer_over_app
+                                    && pane.focused_surface != SurfaceLayer::App
+                                {
+                                    pane.focused_surface = SurfaceLayer::App;
+                                } else if pointer_over_term
+                                    && pane.focused_surface != SurfaceLayer::Terminal
+                                {
+                                    pane.focused_surface = SurfaceLayer::Terminal;
+                                }
+                            }
+
+                            // If the pointer is over a surface that isn't
+                            // the focused one, dim that surface slightly so
+                            // the user knows keys won't go there until they
+                            // click. Skipping for MVP — left intentionally
+                            // simple. The accent border is enough.
+                            let _ = APP_DIM_OPACITY;
                         }
                     }
 

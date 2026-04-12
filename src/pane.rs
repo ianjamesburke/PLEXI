@@ -1,6 +1,6 @@
 use crate::agent_mode::AgentMode;
 use crate::app_permissions::AppPermissions;
-use crate::app_trait::{App, SurfaceLayer, SurfaceMode};
+use crate::app_trait::{App, SurfaceLayer, SurfaceMode, DEFAULT_COMPANION_FRACTION};
 use crate::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::path::PathBuf;
@@ -60,7 +60,8 @@ impl TerminalPane {
         })
     }
 
-    /// Open an app — app gets focus immediately.
+    /// Open an app in legacy `AppActive` mode — the app fills the entire
+    /// pane. Used when there's a separate companion terminal in another tile.
     pub fn open_app(&mut self, app: Box<dyn App>, permissions: AppPermissions, scope: PathBuf) {
         self.active_app = Some(app);
         self.surface_mode = SurfaceMode::AppActive;
@@ -69,8 +70,30 @@ impl TerminalPane {
         self.app_scope = Some(scope);
     }
 
+    /// Open an app in `AppWithCompanion` mode — the app overlays the top
+    /// portion of the pane while the existing terminal continues to render
+    /// below. The terminal instance is preserved (no new TerminalPane created).
+    pub fn open_app_with_companion(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: AppPermissions,
+        scope: PathBuf,
+    ) {
+        self.active_app = Some(app);
+        self.surface_mode = SurfaceMode::AppWithCompanion {
+            companion_fraction: DEFAULT_COMPANION_FRACTION,
+        };
+        self.focused_surface = SurfaceLayer::App;
+        self.app_permissions = permissions;
+        self.app_scope = Some(scope);
+        // No linked pane — the companion terminal IS this same pane.
+        self.linked_terminal_pane = None;
+    }
+
     /// Close the active app and return to full terminal mode.
     /// Returns the linked terminal pane ID if there was one (caller should close it).
+    /// In `AppWithCompanion` mode this returns `None` and the existing
+    /// terminal simply expands back to full pane — no tile destruction.
     pub fn close_app(&mut self) -> Option<PaneId> {
         self.active_app = None;
         self.surface_mode = SurfaceMode::FullTerminal;
@@ -83,7 +106,7 @@ impl TerminalPane {
     /// Toggle keyboard focus between the app and the terminal command bar.
     /// No-op if no app is active.
     pub fn toggle_surface_focus(&mut self) {
-        if self.surface_mode == SurfaceMode::AppActive {
+        if self.surface_mode.has_app() {
             self.focused_surface = match self.focused_surface {
                 SurfaceLayer::App => SurfaceLayer::Terminal,
                 SurfaceLayer::Terminal => SurfaceLayer::App,

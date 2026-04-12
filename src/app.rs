@@ -133,8 +133,19 @@ impl PlexiApp {
                                 }
                             };
                             if let Some(app) = app {
-                                pane.open_app(app, perms, cwd);
-                                pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
+                                // Restore in the same mode the workspace was
+                                // saved in. If the saved pane had a linked
+                                // terminal sibling tile, restore as legacy
+                                // `AppActive`. Otherwise restore as the
+                                // in-pane `AppWithCompanion` mode so the same
+                                // terminal hosts the embedded companion view.
+                                if saved_pane.linked_terminal_pane.is_some() {
+                                    pane.open_app(app, perms, cwd);
+                                    pane.linked_terminal_pane =
+                                        saved_pane.linked_terminal_pane;
+                                } else {
+                                    pane.open_app_with_companion(app, perms, cwd);
+                                }
                             }
                         }
                         panes.insert(saved_pane.id, pane);
@@ -285,7 +296,12 @@ impl PlexiApp {
     }
 
     /// Feed keyboard input to the focused pane's active app and dispatch any
-    /// resulting AppCommands to the linked terminal pane.
+    /// resulting AppCommands to the appropriate terminal pane.
+    ///
+    /// Routing rules for AppCommands:
+    /// * `AppActive` (legacy split): commands go to the linked sibling pane.
+    /// * `AppWithCompanion`: commands go to the same pane (the embedded
+    ///   terminal IS the original terminal that was here before the app).
     fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
         let active = self.active_context;
         let Some(focused_tile) = self.contexts[active].focused_pane else {
@@ -298,28 +314,39 @@ impl PlexiApp {
         };
         let pane_id = *pane_id;
 
-        // Gather commands from the app.
-        let (commands, scope, perms, linked_id) = {
+        // Gather commands from the app. Only feed key events when the app
+        // surface is the focused layer — otherwise the user is interacting
+        // with the embedded terminal and the app should not steal keys.
+        let (commands, scope, perms, target_id) = {
             let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
                 return;
             };
             if pane.active_app.is_none() {
                 return;
             }
+            let surface_mode = pane.surface_mode;
+            let focused_surface = pane.focused_surface;
+            let app_has_focus =
+                focused_surface == crate::app_trait::SurfaceLayer::App;
+
             let app = pane.active_app.as_mut().unwrap();
-            ctx.input(|i| {
-                app.handle_key(i);
-            });
+            if app_has_focus {
+                ctx.input(|i| {
+                    app.handle_key(i);
+                });
+            }
             let cmds = app.take_pending_commands();
             let scope = pane.app_scope.clone().unwrap_or_else(|| PathBuf::from("/"));
             let perms = pane.app_permissions.clone();
-            let linked = pane.linked_terminal_pane;
-            (cmds, scope, perms, linked)
+            let target = match surface_mode {
+                crate::app_trait::SurfaceMode::AppWithCompanion { .. } => Some(pane_id),
+                _ => pane.linked_terminal_pane,
+            };
+            (cmds, scope, perms, target)
         };
 
-        // Route commands to the linked terminal pane (the one below).
-        if let Some(linked_id) = linked_id {
-            if let Some(target_pane) = self.contexts[active].panes.get_mut(&linked_id) {
+        if let Some(target_id) = target_id {
+            if let Some(target_pane) = self.contexts[active].panes.get_mut(&target_id) {
                 for cmd in commands {
                     match crate::app_permissions::check_command(&cmd, &perms, &scope) {
                         crate::app_permissions::PermissionCheck::Allowed => {
@@ -360,19 +387,25 @@ impl PlexiApp {
 
     /// Poll the linked terminal's CWD and sync it to the active app.
     /// This enables two-way directory sync: terminal cd → file browser updates.
+    ///
+    /// For `AppWithCompanion` panes the "linked" terminal is the same pane,
+    /// so we sync the app to its own backend's CWD.
     fn sync_app_cwd(&mut self) {
         let ctx = &mut self.contexts[self.active_context];
-        // Collect pane IDs that have an active app with a linked terminal.
+        // Collect (app_pane_id, terminal_pane_id) pairs for every pane that
+        // has an active app, regardless of routing mode.
         let app_panes: Vec<(PaneId, PaneId)> = ctx
             .panes
             .iter()
             .filter_map(|(&pane_id, pane)| {
-                let linked = pane.linked_terminal_pane?;
-                if pane.active_app.is_some() {
-                    Some((pane_id, linked))
-                } else {
-                    None
+                if pane.active_app.is_none() {
+                    return None;
                 }
+                let target = match pane.surface_mode {
+                    crate::app_trait::SurfaceMode::AppWithCompanion { .. } => pane_id,
+                    _ => pane.linked_terminal_pane?,
+                };
+                Some((pane_id, target))
             })
             .collect();
 
@@ -488,14 +521,42 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ClosePane => {
-                    self.contexts[self.active_context].zoomed_pane = None;
-                    let active_panes = self.contexts[self.active_context].panes.len();
-                    if active_panes > 1 {
-                        self.close_focused();
-                    } else if self.contexts.len() > 1 {
-                        self.delete_context(self.active_context);
+                    // In AppWithCompanion mode the app is layered onto the
+                    // same pane as the terminal. If the App surface has
+                    // focus, Cmd+W just dismisses the app (terminal remains
+                    // intact). If the Terminal surface has focus, Cmd+W
+                    // closes the whole pane (legacy behavior).
+                    let in_pane_app_focused = {
+                        let context = &self.contexts[self.active_context];
+                        context.focused_pane
+                            .and_then(|tile| {
+                                if let Some(Tile::Pane(pid)) = context.tree.tiles.get(tile) {
+                                    context.panes.get(pid)
+                                } else {
+                                    None
+                                }
+                            })
+                            .map(|pane| {
+                                matches!(
+                                    pane.surface_mode,
+                                    crate::app_trait::SurfaceMode::AppWithCompanion { .. }
+                                ) && pane.focused_surface
+                                    == crate::app_trait::SurfaceLayer::App
+                            })
+                            .unwrap_or(false)
+                    };
+                    if in_pane_app_focused {
+                        self.close_focused_app();
                     } else {
-                        self.reset_active_context();
+                        self.contexts[self.active_context].zoomed_pane = None;
+                        let active_panes = self.contexts[self.active_context].panes.len();
+                        if active_panes > 1 {
+                            self.close_focused();
+                        } else if self.contexts.len() > 1 {
+                            self.delete_context(self.active_context);
+                        } else {
+                            self.reset_active_context();
+                        }
                     }
                 }
                 Action::NewTab => self.new_tab(),
@@ -567,9 +628,33 @@ impl eframe::App for PlexiApp {
                     self.close_focused_app();
                 }
                 Action::ToggleAppFocus => {
-                    // Tab navigates between the app pane and the linked
-                    // terminal pane below (they're separate tiles now).
-                    self.navigate(crate::keys::Direction::Down);
+                    // For AppWithCompanion (in-pane embed), toggle the
+                    // focused surface within the same pane. For legacy
+                    // AppActive (separate tiles), navigate down to the
+                    // sibling terminal pane.
+                    let in_pane_companion = {
+                        let context = &self.contexts[self.active_context];
+                        context.focused_pane
+                            .and_then(|tile| {
+                                if let Some(Tile::Pane(pane_id)) =
+                                    context.tree.tiles.get(tile)
+                                {
+                                    context.panes.get(pane_id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .map(|pane| matches!(
+                                pane.surface_mode,
+                                crate::app_trait::SurfaceMode::AppWithCompanion { .. }
+                            ))
+                            .unwrap_or(false)
+                    };
+                    if in_pane_companion {
+                        self.toggle_focused_surface();
+                    } else {
+                        self.navigate(crate::keys::Direction::Down);
+                    }
                 }
                 Action::OpenFileBrowser => {
                     self.open_file_browser();
@@ -805,6 +890,66 @@ impl eframe::App for PlexiApp {
                                             };
                                             app.ui(ui, &app_ctx);
                                         }
+                                    } else if let crate::app_trait::SurfaceMode::AppWithCompanion {
+                                        companion_fraction,
+                                    } = pane.surface_mode
+                                    {
+                                        // Zoomed AppWithCompanion: same vertical
+                                        // split as in the tile renderer (app on
+                                        // top, embedded terminal on bottom).
+                                        let pane_rect = ui.max_rect();
+                                        let frac = companion_fraction.clamp(0.10, 0.90);
+                                        let separator_h = 1.0;
+                                        let term_h = (pane_rect.height() * frac).max(40.0);
+                                        let app_h =
+                                            (pane_rect.height() - term_h - separator_h).max(40.0);
+                                        let app_rect = egui::Rect::from_min_size(
+                                            pane_rect.min,
+                                            egui::vec2(pane_rect.width(), app_h),
+                                        );
+                                        let sep_rect = egui::Rect::from_min_size(
+                                            egui::pos2(pane_rect.left(), pane_rect.top() + app_h),
+                                            egui::vec2(pane_rect.width(), separator_h),
+                                        );
+                                        let term_rect = egui::Rect::from_min_size(
+                                            egui::pos2(
+                                                pane_rect.left(),
+                                                pane_rect.top() + app_h + separator_h,
+                                            ),
+                                            egui::vec2(pane_rect.width(), term_h),
+                                        );
+                                        ui.painter().rect_filled(
+                                            sep_rect,
+                                            0.0,
+                                            self.colors.border,
+                                        );
+                                        let app_focused = pane.focused_surface
+                                            == crate::app_trait::SurfaceLayer::App;
+                                        if let Some(app) = pane.active_app.as_mut() {
+                                            let mut app_ui = ui.new_child(
+                                                egui::UiBuilder::new().max_rect(app_rect),
+                                            );
+                                            let app_ctx = crate::app_trait::AppRenderContext {
+                                                colors: &self.colors,
+                                                is_focused: app_focused,
+                                                linked_terminal: pane_id,
+                                            };
+                                            app.ui(&mut app_ui, &app_ctx);
+                                        }
+                                        let mut term_ui = ui.new_child(
+                                            egui::UiBuilder::new().max_rect(term_rect),
+                                        );
+                                        let font_size = pane.font_size;
+                                        let terminal =
+                                            TerminalView::new(&mut term_ui, &mut pane.backend)
+                                                .set_focus(!app_focused)
+                                                .set_theme(self.theme.clone())
+                                                .set_font(theme::terminal_font(font_size))
+                                                .set_size(Vec2::new(
+                                                    term_rect.width(),
+                                                    term_rect.height(),
+                                                ));
+                                        term_ui.add(terminal);
                                     } else {
                                         // Reserve space for tab dots if in a tab group
                                         if zoomed_tab_info.is_some() {

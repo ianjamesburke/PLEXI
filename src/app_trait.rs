@@ -137,14 +137,30 @@ pub enum SurfaceLayer {
 }
 
 /// Whether an app surface is active on this pane.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum SurfaceMode {
     /// No app active — terminal fills the whole pane.
     FullTerminal,
-    /// App active — occupies pane minus a fixed command bar at the bottom.
-    /// `SurfaceLayer` controls which surface has keyboard focus.
+    /// App active — occupies the entire pane. The app is in a separate tile
+    /// from any companion terminal (legacy auto-split behavior).
     AppActive,
+    /// App active in the same pane as the existing terminal. The app overlays
+    /// the top `1.0 - companion_fraction` of the pane area; the original
+    /// terminal continues to render in the bottom `companion_fraction`.
+    /// No new TerminalPane is created — the user's existing terminal session
+    /// is preserved, including history and running processes.
+    AppWithCompanion { companion_fraction: f32 },
 }
+
+impl SurfaceMode {
+    pub fn has_app(self) -> bool {
+        matches!(self, SurfaceMode::AppActive | SurfaceMode::AppWithCompanion { .. })
+    }
+}
+
+/// Default fraction of the pane height the embedded companion terminal
+/// occupies when an app is opened in `AppWithCompanion` mode.
+pub const DEFAULT_COMPANION_FRACTION: f32 = 0.25;
 
 /// Opacity applied to the app region when the terminal command bar has focus.
 pub const APP_DIM_OPACITY: f32 = 0.45;
