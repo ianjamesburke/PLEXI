@@ -26,6 +26,7 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 rodio = { version = "0.19", default-features = false, features = ["mp3", "flac", "vorbis", "wav"] }
 zeroize = "1"
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+ureq = { version = "2.10", features = ["json", "tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

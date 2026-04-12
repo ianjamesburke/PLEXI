@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_context;
+mod agent_llm;
 mod agent_mode;
 mod agent_ui;
 mod app;
