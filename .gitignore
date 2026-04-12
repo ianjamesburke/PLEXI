@@ -33,3 +33,4 @@ assets/Info.plist
 *.swo
 here.md
 examples/*/target/
+sdk/*/target/

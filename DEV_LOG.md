@@ -1,5 +1,33 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-11 — [CHANGED] Secrets manager write UI, index-file listing, logging infrastructure
+
+Secrets manager upgraded from read-only viewer to full add/delete UI. Listing fixed by replacing `security dump-keychain` (triggers invisible macOS permission prompt) with a local `secrets-index.json`. Centralized file logging added via `fern` with config-driven log levels and `DrawCommand::Log` forwarding from external apps.
+
+**Progress:** Secrets manager: `n` adds (masked value, dir pre-filled from CWD), `d` deletes, optimistic in-memory updates, `app_id` aligned to `"plexi-run"` for CLI consistency. Index file at `~/.plexi-alpha/secrets-index.json` maintained by `store_secret`/`delete_secret`. Logger writes to `~/.plexi-alpha/plexi.log`, 10MB rotation, level from `[log]` in `config.toml`. External app stderr piped + forwarded as warn. Python SDK gains `emit.info/warn/error/debug`. App workspace restore now uses manifest permissions not `AppPermissions::builtin()`.
+**Open:** Directory-scoped workspace persistence (`.plexi/workspace.json`) still deferred. File browser async worktree fix not merged to alpha. SpacetimeDB shared workspace PoC in memory but not started.
+
+## 2026-04-11 — [CHANGED] Where Were We snapshot
+File browser async I/O fix (background thread for `refresh()`), Wikipedia and Plexi Browser apps built and installed, `plexi.json` manifest spec written, app install paths clarified by build variant.
+**Progress:** File browser no longer blocks UI thread on directory navigation (uses `mpsc` channel + background thread). Wikipedia and Plexi Browser apps installed to `~/.plexi-alpha/apps/`. `docs/plexi-json-spec.md` + JSON Schema written. `CLAUDE.md` updated with app install path table per build.
+**Open:** Wikipedia and Plexi Browser apps not yet smoke-tested in the running alpha build. Server test (`plexi-browser/server.py` + curl) not verified by user. File browser async fix built in a worktree — not merged to alpha branch yet.
+
+## 2026-04-10 — [FIX] ProcessApp now forwards Event::Text for typed characters; letter key protocol is lowercase
+
+`process_app.rs` `handle_key` only forwarded `egui::Event::Key`, which uses PascalCase enum variant names (`"J"`, `"K"`). Typed characters arrive via `egui::Event::Text` — those were never forwarded, so text input (search queries, URL bars) never worked in subprocess apps.
+
+Fix: add `Event::Text` forwarding, sending each printable char as `PlexiEvent::Key`. To avoid double-firing letters (egui fires both `Event::Key { key: Key::J }` AND `Event::Text("j")` for the same press), bare letter keys (A–Z, no modifiers) are suppressed from `Event::Key` forwarding. Modifier-held combos (Cmd+S, Ctrl+C) still come via `Event::Key` since egui never fires `Event::Text` for those.
+
+**Protocol contract:** Printable chars arrive lowercase/proper-case as single-char strings. Control keys (`"Backspace"`, `"Enter"`, `"ArrowDown"`, etc.) arrive as PascalCase. Modifier combos arrive uppercase PascalCase. Updated all apps: `"j"/"k"/"r"` instead of `"J"/"K"/"R"` in git-log, process-monitor, wikipedia.
+
+## 2026-04-10 — [ADDED] plexi.json manifest spec — declarative app format and /.well-known/ discovery
+
+Added `docs/plexi-json-spec.md`, `schemas/plexi-manifest-schema.json`, and `examples/wikipedia/plexi.json`. The format serves two modes: local declarative apps (no code needed) and website discovery via `/.well-known/plexi.json` (RFC 8615). Key design decisions: static mode (no `endpoint`) renders the `draw` array once with scroll only — no subprocess, no network. The `draw` array reuses the existing draw protocol vocabulary exactly (`rect`, `text`, `line`, `list`, `frame_done`) so static and dynamic apps are consistent. `display` enum (`standalone` | `panel` | `overlay`) borrowed from PWA manifest. Permissions follow `domain[.access]` pattern matching the existing capability system (`filesystem.read`, `filesystem.write`, `network`, `terminal`, `secrets`). Discovery uses `X-Plexi-Client: 1` request header so servers can distinguish Plexi from browsers. Schema is JSON Schema draft-07 with strict `additionalProperties: false` on draw command objects to fail fast on typos.
+
+## 2026-04-10 — [ADDED] Secrets Manager builtin app (read-only vault viewer)
+
+Added `secrets_app.rs` — a read-only viewer for all Plexi Keychain secrets. Opens fullscreen (no terminal split) via `Cmd+Shift+S`, toggles closed on repeat. Parses `security dump-keychain` output via new `list_all_secrets() -> Vec<SecretEntry>` in `secrets.rs`, splitting the account string `"{app_id}/{directory}/{key}"` at first and last slash. j/k navigation, r to refresh, no inline add/delete to keep attack surface minimal. Wired into workspace restore under the `"secrets_manager"` type_id arm.
+
 ## 2026-04-10 — [FUTURE] Collaborative state via SpacetimeDB + append-only snapshots
 
 The `serialize_state()`/`restore_state()` contract on the App trait is transport-agnostic — JSON in, JSON out. This means collaborative features could be layered in by replacing disk read/write with SpacetimeDB table subscriptions. Each pane's state = a row. Mutations push deltas to subscribers. Apps don't know they're collaborative. Additionally, snapshotting state every ~5 seconds as append-only rows gives full rewind/undo history across restarts for free. Locally, the same pattern works as an append-only JSON log file. v1 conflict resolution: last-write-wins on full state blob. CRDTs or OT per app type would come later. Not building now — the foundation supports it without changes.

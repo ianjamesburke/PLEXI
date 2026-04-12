@@ -22,8 +22,15 @@ pub struct ProcessApp {
     stdin: Option<ChildStdin>,
     /// Receives draw commands from the subprocess on a background thread.
     draw_rx: Option<Receiver<DrawCommand>>,
-    /// Buffered draw commands for the current frame.
+    /// The last fully committed frame (commands between two FrameDones).
+    /// Always valid — only replaced atomically when a complete new frame arrives.
     frame: Vec<DrawCommand>,
+    /// Accumulates draw commands for the frame currently being received.
+    /// Committed into `frame` on FrameDone; never shown until complete.
+    pending_frame: Vec<DrawCommand>,
+    /// Pending RunInTerminal / Cd commands collected from the subprocess, to be
+    /// drained by the host via take_pending_commands().
+    pending_commands: Vec<crate::app_trait::AppCommand>,
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
@@ -39,16 +46,36 @@ impl ProcessApp {
         cwd: &PathBuf,
         args: &[String],
     ) -> Result<Self, std::io::Error> {
+        let type_id: String = type_id.into();
+        let display_name: String = display_name.into();
+
         let mut child = std::process::Command::new(bin_path)
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null()) // suppress app stderr from leaking into terminal
+            .stderr(Stdio::piped()) // captured and forwarded to Plexi's logger
             .spawn()?;
 
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+
+        // Background thread: forward subprocess stderr lines to Plexi's logger.
+        let stderr_type_id = type_id.clone();
+        thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in std::io::BufRead::lines(reader) {
+                match line {
+                    Ok(l) if !l.trim().is_empty() => {
+                        let target = format!("app::{stderr_type_id}");
+                        log::warn!(target: &target, "stderr: {l}");
+                    }
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
 
         // Background thread: read draw commands line-by-line and forward via channel.
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
@@ -78,13 +105,15 @@ impl ProcessApp {
         });
 
         Ok(Self {
-            type_id: type_id.into(),
-            display_name: display_name.into(),
+            type_id,
+            display_name,
             accepted_exts,
             process: Some(child),
             stdin: Some(stdin),
             draw_rx: Some(draw_rx),
             frame: Vec::new(),
+            pending_frame: Vec::new(),
+            pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
         })
@@ -203,8 +232,11 @@ impl ProcessApp {
                         });
                 }
 
-                // RunInTerminal / Cd / FrameDone handled at the App trait level, not here.
-                _ => {}
+                // RunInTerminal / Cd / Log / FrameDone handled at the App trait level, not here.
+                DrawCommand::RunInTerminal { .. }
+                | DrawCommand::Cd { .. }
+                | DrawCommand::Log { .. }
+                | DrawCommand::FrameDone => {}
             }
         }
     }
@@ -251,27 +283,36 @@ impl App for ProcessApp {
 
         // Drain all draw commands that arrived since last frame (including response
         // to the Render we just sent — they come async so we take whatever is ready).
+        //
+        // Two-buffer design: `pending_frame` accumulates commands for the frame
+        // currently being received. On FrameDone it is atomically swapped into
+        // `frame` (the last fully committed frame). This guarantees `frame` is
+        // always a complete, valid snapshot — partial frames never reach the painter.
+        // If multiple FrameDones arrive in one drain, the LAST complete frame wins.
         let new_cmds = self.drain_draw_commands();
-
-        // Commit frame: use new commands if we got any, otherwise re-render last frame.
-        // This avoids a blank frame on the first render before the process responds.
-        let got_frame_done = new_cmds.iter().any(|c| matches!(c, DrawCommand::FrameDone));
-        if got_frame_done {
-            // Collect only up to FrameDone, discard any pending commands / out-of-band
-            // RunInTerminal etc (they're handled below as AppCommands).
-            self.frame = new_cmds
-                .into_iter()
-                .take_while(|c| !matches!(c, DrawCommand::FrameDone | DrawCommand::RunInTerminal { .. } | DrawCommand::Cd { .. }))
-                .collect();
-        } else {
-            // Merge — append any partial commands received
-            for cmd in new_cmds {
-                match cmd {
-                    DrawCommand::FrameDone
-                    | DrawCommand::RunInTerminal { .. }
-                    | DrawCommand::Cd { .. } => {}
-                    other => self.frame.push(other),
+        for cmd in new_cmds {
+            match cmd {
+                DrawCommand::FrameDone => {
+                    // Commit: swap pending into frame, reset pending for next frame.
+                    std::mem::swap(&mut self.frame, &mut self.pending_frame);
+                    self.pending_frame.clear();
                 }
+                DrawCommand::RunInTerminal { command } => {
+                    self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
+                }
+                DrawCommand::Cd { path } => {
+                    self.pending_commands.push(crate::app_trait::AppCommand::Cd(std::path::PathBuf::from(path)));
+                }
+                DrawCommand::Log { level, message } => {
+                    let target = format!("app::{}", self.type_id);
+                    match level.as_str() {
+                        "error" => log::error!(target: &target, "{message}"),
+                        "warn"  => log::warn!(target: &target, "{message}"),
+                        "debug" => log::debug!(target: &target, "{message}"),
+                        _       => log::info!(target: &target, "{message}"),
+                    }
+                }
+                other => self.pending_frame.push(other),
             }
         }
 
@@ -283,27 +324,67 @@ impl App for ProcessApp {
                 Self::render_draw_commands(ui, &frame_clone, ctx.colors);
             });
 
-        // Ask egui to repaint next frame so we keep polling the subprocess.
-        ui.ctx().request_repaint();
+        // Poll the subprocess at ~60 fps. Using request_repaint() with no delay
+        // causes unlimited repaints and visible flickering.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
         let mut consumed = false;
         for event in &input.events {
-            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
-                self.send_event(&PlexiEvent::Key {
-                    key: format!("{key:?}"),
-                    modifiers: Modifiers {
-                        shift: modifiers.shift,
-                        ctrl: modifiers.ctrl,
-                        alt: modifiers.alt,
-                        cmd: modifiers.command,
-                    },
-                });
-                consumed = true;
+            match event {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    // Skip letter keys (A–Z) — they are also fired as Event::Text with the
+                    // correct case and modifiers applied. Forwarding both would cause apps to
+                    // receive every letter keypress twice. Control/navigation keys (Backspace,
+                    // Enter, arrows, F-keys, etc.) are not fired as Event::Text, so they must
+                    // still be forwarded here. Modifier-held letter combos (Cmd+S, Ctrl+C, etc.)
+                    // are NOT fired as Event::Text either, so they're safe to forward.
+                    let is_bare_letter = matches!(key,
+                        egui::Key::A | egui::Key::B | egui::Key::C | egui::Key::D |
+                        egui::Key::E | egui::Key::F | egui::Key::G | egui::Key::H |
+                        egui::Key::I | egui::Key::J | egui::Key::K | egui::Key::L |
+                        egui::Key::M | egui::Key::N | egui::Key::O | egui::Key::P |
+                        egui::Key::Q | egui::Key::R | egui::Key::S | egui::Key::T |
+                        egui::Key::U | egui::Key::V | egui::Key::W | egui::Key::X |
+                        egui::Key::Y | egui::Key::Z
+                    ) && !modifiers.any();
+                    if !is_bare_letter {
+                        self.send_event(&PlexiEvent::Key {
+                            key: format!("{key:?}"),
+                            modifiers: Modifiers {
+                                shift: modifiers.shift,
+                                ctrl: modifiers.ctrl,
+                                alt: modifiers.alt,
+                                cmd: modifiers.command,
+                            },
+                        });
+                    }
+                    consumed = true;
+                }
+                egui::Event::Text(text) => {
+                    // Forward each typed character as a Key event with the character as the key
+                    // name. This covers letters, digits, and symbols with correct case applied.
+                    // Apps receive printable input by checking `len(key) == 1 and key.isprintable()`.
+                    for ch in text.chars() {
+                        if ch.is_control() {
+                            continue; // control chars come through Event::Key
+                        }
+                        self.send_event(&PlexiEvent::Key {
+                            key: ch.to_string(),
+                            modifiers: Modifiers::default(),
+                        });
+                    }
+                    consumed = true;
+                }
+                _ => {}
             }
         }
         consumed
+    }
+
+    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+        std::mem::take(&mut self.pending_commands)
     }
 
     fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {

@@ -45,6 +45,9 @@ pub struct AppPermissions {
     /// Can make network requests (future — not enforced at OS level yet).
     #[serde(default)]
     pub network: bool,
+    /// Can write secrets to Keychain via the API.
+    #[serde(default)]
+    pub secrets_write: bool,
 }
 
 impl Default for AppPermissions {
@@ -55,6 +58,7 @@ impl Default for AppPermissions {
             filesystem: FsPermission::ReadOnly,
             env_file_access: false,
             network: false,
+            secrets_write: false,
         }
     }
 }
@@ -68,6 +72,7 @@ impl AppPermissions {
             filesystem: FsPermission::ReadWrite,
             env_file_access: false, // even builtins don't need .env by default
             network: true,
+            secrets_write: false, // builtins use CLI directly; no API secret writes
         }
     }
 }

@@ -56,7 +56,8 @@ impl PlexiApp {
 
         let (tx, rx) = mpsc::channel();
 
-        let registry = AppRegistry::load();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let registry = AppRegistry::load(&cwd);
 
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
@@ -78,44 +79,52 @@ impl PlexiApp {
                         pane.name = saved_pane.name.clone();
                         // Restore active app if one was saved.
                         if let Some(app_type) = &saved_pane.active_app_type {
-                            let app: Option<Box<dyn crate::app_trait::App>> = match app_type.as_str() {
+                            let cwd = saved_pane.cwd.clone();
+                            let builtin_perms = crate::app_permissions::AppPermissions::builtin();
+
+                            let (app, perms): (Option<Box<dyn crate::app_trait::App>>, _) = match app_type.as_str() {
                                 "file_browser" => {
-                                    let cwd = saved_pane.cwd.clone();
                                     let mut fb = crate::file_browser::FileBrowserApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         fb.restore_state(state);
                                     }
-                                    Some(Box::new(fb))
+                                    (Some(Box::new(fb)), builtin_perms)
                                 }
                                 "quick_note" => {
-                                    let cwd = saved_pane.cwd.clone();
-                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd);
+                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         note.restore_state(state);
                                     }
-                                    Some(Box::new(note))
+                                    (Some(Box::new(note)), builtin_perms)
                                 }
                                 "audio_player" => {
-                                    let cwd = saved_pane.cwd.clone();
-                                    let mut player = crate::audio_app::AudioApp::new(cwd);
+                                    let mut player = crate::audio_app::AudioApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         player.restore_state(state);
                                     }
-                                    Some(Box::new(player))
+                                    (Some(Box::new(player)), builtin_perms)
+                                }
+                                "secrets_manager" => {
+                                    let mut secrets = crate::secrets_app::SecretsApp::new(cwd.clone());
+                                    if let Some(state) = &saved_pane.active_app_state {
+                                        use crate::app_trait::App;
+                                        secrets.restore_state(state);
+                                    }
+                                    (Some(Box::new(secrets)), builtin_perms)
                                 }
                                 // Third-party apps: launch via registry using type_id.
                                 other => {
-                                    let cwd = saved_pane.cwd.clone();
-                                    registry.launch(other, &cwd, &[])
+                                    let app = registry.launch(other, &cwd, &[]);
+                                    let perms = registry.permissions_for(other)
+                                        .unwrap_or(builtin_perms);
+                                    (app, perms)
                                 }
                             };
                             if let Some(app) = app {
-                                let perms = crate::app_permissions::AppPermissions::builtin();
-                                let scope = saved_pane.cwd.clone();
-                                pane.open_app(app, perms, scope);
+                                pane.open_app(app, perms, cwd);
                                 pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
                             }
                         }
@@ -203,7 +212,7 @@ impl PlexiApp {
             palette_selected: 0,
             pane_visit_history: Vec::new(),
             renaming_pane: None,
-            registry: AppRegistry::load(),
+            registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
         }
     }
@@ -231,15 +240,32 @@ impl PlexiApp {
     }
 
     fn drain_pty_events(&mut self) {
+        let mut panes_to_close: Vec<u64> = Vec::new();
+
         while let Ok((id, event)) = self.pty_event_rx.try_recv() {
-            if matches!(event, PtyEvent::Exit) {
-                for context in &mut self.contexts {
-                    if let Some(pane) = context.panes.get_mut(&id) {
-                        pane.exited = true;
-                        break;
+            match &event {
+                PtyEvent::Exit => {
+                    for context in &mut self.contexts {
+                        if let Some(pane) = context.panes.get_mut(&id) {
+                            pane.exited = true;
+                            break;
+                        }
                     }
                 }
+                PtyEvent::Title(title) => {
+                    if let Some(cmd) = title.strip_prefix("plexi:") {
+                        match cmd {
+                            "close" => panes_to_close.push(id),
+                            _ => log::debug!("unknown plexi command: {}", cmd),
+                        }
+                    }
+                }
+                _ => {}
             }
+        }
+
+        for pane_id in panes_to_close {
+            self.close_pane_by_id(pane_id);
         }
     }
 
@@ -526,6 +552,9 @@ impl eframe::App for PlexiApp {
                 Action::OpenConfig => {
                     self.open_config_editor();
                 }
+                Action::OpenSecretsManager => {
+                    self.open_secrets_manager();
+                }
             }
         }
 
@@ -620,7 +649,7 @@ impl eframe::App for PlexiApp {
                         !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty()
                     });
                     if has_drag {
-                        ui.ctx().request_repaint(); // continuous repaints while dragging
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16)); // continuous repaints while dragging
                         use objc2_app_kit::NSApplication;
                         use objc2_foundation::MainThreadMarker;
                         MainThreadMarker::new()
@@ -829,7 +858,7 @@ impl PlexiApp {
                         y += 3.0;
                     }
 
-                    ctx.request_repaint();
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 });
         }
 
@@ -858,7 +887,7 @@ impl PlexiApp {
                         egui::StrokeKind::Inside,
                     );
                 });
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 

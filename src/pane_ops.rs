@@ -214,13 +214,30 @@ impl PlexiApp {
             Some(f) => f,
             None => return,
         };
+        self.close_tile(self.active_context, focused);
+    }
 
+    /// Close a specific pane by its PaneId (the u64 backend ID, not the TileId).
+    /// Searches all contexts to find the tile containing this pane.
+    pub(crate) fn close_pane_by_id(&mut self, pane_id: PaneId) {
+        // Find which context and tile owns this pane_id.
+        for ctx_idx in 0..self.contexts.len() {
+            if let Some(tile_id) = self.contexts[ctx_idx].tree.tiles.find_pane(&pane_id) {
+                self.close_tile(ctx_idx, tile_id);
+                return;
+            }
+        }
+    }
+
+    /// Close a tile in a specific context by its TileId. Handles sibling focus
+    /// transfer, container cleanup, and pane removal.
+    fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
         // Phase 1: Read-only — determine sibling and container type
-        let parent_info = self.contexts[self.active_context].find_logical_parent(focused);
+        let parent_info = self.contexts[ctx_idx].find_logical_parent(tile_id);
 
         let next = if let Some((parent_id, child_in_parent)) = parent_info {
             let sibling_info = {
-                let ctx = &self.contexts[self.active_context];
+                let ctx = &self.contexts[ctx_idx];
                 if let Some(Tile::Container(container)) = ctx.tree.tiles.get(parent_id) {
                     let children: Vec<TileId> = container.children().copied().collect();
                     children
@@ -243,7 +260,7 @@ impl PlexiApp {
 
             if let Some((sibling, is_tabs, is_linear, all_children)) = sibling_info {
                 // Phase 2: Mutable — update container state
-                let ctx = &mut self.contexts[self.active_context];
+                let ctx = &mut self.contexts[ctx_idx];
                 if is_tabs {
                     if let Some(Tile::Container(Container::Tabs(tabs))) =
                         ctx.tree.tiles.get_mut(parent_id)
@@ -261,23 +278,23 @@ impl PlexiApp {
                     }
                 }
 
-                self.contexts[self.active_context].find_first_pane_in(sibling)
+                self.contexts[ctx_idx].find_first_pane_in(sibling)
             } else {
-                self.contexts[self.active_context].find_next_focus(focused)
+                self.contexts[ctx_idx].find_next_focus(tile_id)
             }
         } else {
-            self.contexts[self.active_context].find_next_focus(focused)
+            self.contexts[ctx_idx].find_next_focus(tile_id)
         };
 
         // Phase 3: Remove tile and pane
-        let ctx = &mut self.contexts[self.active_context];
-        if let Some(parent_id) = ctx.tree.tiles.parent_of(focused) {
+        let ctx = &mut self.contexts[ctx_idx];
+        if let Some(parent_id) = ctx.tree.tiles.parent_of(tile_id) {
             if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
-                parent.remove_child(focused);
+                parent.remove_child(tile_id);
             }
         }
 
-        if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(focused) {
+        if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
             ctx.panes.remove(&pane_id);
         }
 
@@ -667,6 +684,50 @@ impl PlexiApp {
         let editor = crate::text_editor_app::TextEditorApp::from_file(config_path);
         let perms = crate::app_permissions::AppPermissions::builtin();
         self.open_app_fullscreen(Box::new(editor), perms, scope);
+    }
+
+    /// Launch an installed app by id in the focused pane.
+    pub(crate) fn launch_app_by_id(&mut self, id: &str) {
+        let cwd = self.contexts[self.active_context]
+            .focused_pane
+            .and_then(|fp| self.contexts[self.active_context].get_focused_pane_cwd(fp))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        if let Some(app) = self.registry.launch(id, &cwd, &[]) {
+            let perms = crate::app_permissions::AppPermissions::default();
+            self.open_app_on_focused(app, perms, cwd);
+        } else {
+            log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
+        }
+    }
+
+    /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
+    pub(crate) fn open_secrets_manager(&mut self) {
+        // Toggle: if already open, close it.
+        let ctx = &self.contexts[self.active_context];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                if let Some(pane) = ctx.panes.get(pane_id) {
+                    if let Some(app) = &pane.active_app {
+                        if app.type_id() == "secrets_manager" {
+                            self.close_focused_app();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        let app = Box::new(crate::secrets_app::SecretsApp::new(cwd.clone()));
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_fullscreen(app, perms, cwd);
     }
 
     /// Open the appropriate app for a file, based on its extension.

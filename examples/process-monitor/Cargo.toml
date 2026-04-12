@@ -1,0 +1,12 @@
+[package]
+name = "process-monitor"
+version = "0.1.0"
+edition = "2021"
+description = "Example Plexi app — browse running processes (Rust)"
+
+[[bin]]
+name = "plexi-app"
+path = "src/main.rs"
+
+[dependencies]
+plexi-sdk = { path = "../../sdk/rust" }

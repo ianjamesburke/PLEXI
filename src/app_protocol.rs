@@ -127,6 +127,12 @@ pub enum DrawCommand {
     RunInTerminal { command: String },
     /// Tell Plexi to cd the linked terminal to this path.
     Cd { path: String },
+    /// Forward a log message to Plexi's logger. Tagged with the app's id.
+    Log {
+        /// One of: "error" | "warn" | "info" | "debug"
+        level: String,
+        message: String,
+    },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,
 }

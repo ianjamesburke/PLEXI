@@ -1,0 +1,14 @@
+/Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/deps/serde-037e9e1d2e86ddc3.d: /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/build/serde-ffe1212ea6083ba8/out/private.rs
+
+/Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/deps/libserde-037e9e1d2e86ddc3.rlib: /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/build/serde-ffe1212ea6083ba8/out/private.rs
+
+/Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/deps/libserde-037e9e1d2e86ddc3.rmeta: /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/build/serde-ffe1212ea6083ba8/out/private.rs
+
+/Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/ianburke/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/build/serde-ffe1212ea6083ba8/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/ianburke/Documents/GitHub/PLEXI/sdk/rust/target/debug/build/serde-ffe1212ea6083ba8/out
