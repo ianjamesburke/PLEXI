@@ -18,6 +18,21 @@ use icons::paint_entry_icon;
 const ROW_HEIGHT: f32 = 58.0;
 const MIN_SIDEBAR_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
+const UNDO_STACK_CAP: usize = 50;
+
+/// A reversible action performed in the file browser.
+pub struct FileBrowserAction {
+    pub kind: FileBrowserActionKind,
+}
+
+pub enum FileBrowserActionKind {
+    /// A file was moved to the Trash. `trashed_path` is where it lives now;
+    /// `original_path` is where to move it back to on undo.
+    Trashed {
+        original_path: PathBuf,
+        trashed_path: PathBuf,
+    },
+}
 
 pub struct FileBrowserApp {
     pub cwd: PathBuf,
@@ -51,6 +66,12 @@ pub struct FileBrowserApp {
     audio_play_started: Option<std::time::Instant>,
     audio_elapsed_before_pause: f32,
     audio_paused: bool,
+    /// Stack of reversible actions (trash, rename, etc.). Newest at the end.
+    /// Capped at `UNDO_STACK_CAP` entries.
+    undo_stack: Vec<FileBrowserAction>,
+    /// Transient status message shown in the header (e.g. "Moved foo.txt to Trash").
+    /// Cleared on next navigation or explicit dismissal.
+    status_message: Option<String>,
 }
 
 impl FileBrowserApp {
@@ -83,9 +104,134 @@ impl FileBrowserApp {
             audio_play_started: None,
             audio_elapsed_before_pause: 0.0,
             audio_paused: false,
+            undo_stack: Vec::new(),
+            status_message: None,
         };
         app.refresh();
         app
+    }
+
+    // ─── Trash / undo ────────────────────────────────────────────────────────
+
+    /// Delete the currently selected entry by moving it to the Trash.
+    /// Non-macOS builds just log and return.
+    fn trash_selected(&mut self) {
+        let Some(entry) = self.selected_entry().cloned() else {
+            return;
+        };
+        let original_path = entry.path.clone();
+        let name = entry.name.clone();
+
+        #[cfg(target_os = "macos")]
+        {
+            match crate::trash::trash_file(&original_path) {
+                Ok(trashed_path) => {
+                    crate::trash::play_trash_sound();
+                    self.push_undo(FileBrowserAction {
+                        kind: FileBrowserActionKind::Trashed {
+                            original_path: original_path.clone(),
+                            trashed_path,
+                        },
+                    });
+                    log::info!("FileBrowser: trashed {}", original_path.display());
+                    self.status_message = Some(format!("Moved \u{201C}{name}\u{201D} to Trash"));
+                    // Preserve the selection index so the user lands on the
+                    // next file in the list (or the last one if they deleted
+                    // the tail).
+                    let old_selected = self.selected;
+                    self.refresh();
+                    if !self.entries.is_empty() {
+                        self.selected = old_selected.min(self.entries.len() - 1);
+                    }
+                    self.pending_scroll = true;
+                }
+                Err(e) => {
+                    log::error!(
+                        "FileBrowser: failed to trash {}: {e}",
+                        original_path.display()
+                    );
+                    self.status_message = Some(format!("Trash failed: {e}"));
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            log::warn!("FileBrowser: trash not implemented on this platform");
+            self.status_message = Some("Trash not supported on this platform".to_string());
+            let _ = original_path;
+            let _ = name;
+        }
+    }
+
+    fn push_undo(&mut self, action: FileBrowserAction) {
+        self.undo_stack.push(action);
+        if self.undo_stack.len() > UNDO_STACK_CAP {
+            let drop_count = self.undo_stack.len() - UNDO_STACK_CAP;
+            self.undo_stack.drain(0..drop_count);
+        }
+    }
+
+    /// Pop the last action off the undo stack and reverse it.
+    fn undo_last(&mut self) {
+        let Some(action) = self.undo_stack.pop() else {
+            self.status_message = Some("Nothing to undo".to_string());
+            return;
+        };
+        match action.kind {
+            FileBrowserActionKind::Trashed {
+                original_path,
+                trashed_path,
+            } => {
+                #[cfg(target_os = "macos")]
+                {
+                    match crate::trash::restore_file(&trashed_path, &original_path) {
+                        Ok(()) => {
+                            log::info!(
+                                "FileBrowser: restored {} from {}",
+                                original_path.display(),
+                                trashed_path.display()
+                            );
+                            let name = original_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            self.status_message = Some(format!("Restored \u{201C}{name}\u{201D}"));
+                            self.refresh();
+                            // Try to re-select the restored file.
+                            if let Some(idx) = self
+                                .entries
+                                .iter()
+                                .position(|e| e.path == original_path)
+                            {
+                                self.selected = idx;
+                                self.pending_scroll = true;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "FileBrowser: failed to restore {} from {}: {e}",
+                                original_path.display(),
+                                trashed_path.display()
+                            );
+                            self.status_message = Some(format!("Undo failed: {e}"));
+                            // Re-push so the user can retry.
+                            self.undo_stack.push(FileBrowserAction {
+                                kind: FileBrowserActionKind::Trashed {
+                                    original_path,
+                                    trashed_path,
+                                },
+                            });
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = (original_path, trashed_path);
+                    self.status_message = Some("Undo not supported on this platform".to_string());
+                }
+            }
+        }
     }
 
     fn refresh(&mut self) {
@@ -153,6 +299,7 @@ impl FileBrowserApp {
         }
         self.cwd = path.clone();
         self.selected = 0;
+        self.status_message = None;
         self.refresh();
         self.pending_scroll = true;
         self.pending_cmds.push(AppCommand::Cd(path));
@@ -165,6 +312,7 @@ impl FileBrowserApp {
                 .map(|n| n.to_string_lossy().to_string());
             self.cwd = parent.clone();
             self.selected = 0;
+            self.status_message = None;
             self.refresh();
             let restore_name = self
                 .directory_selection_memory
@@ -733,6 +881,14 @@ impl App for FileBrowserApp {
                     });
                 });
 
+                if let Some(status) = self.status_message.clone() {
+                    ui.add_space(2.0);
+                    ui.colored_label(
+                        colors.text_dim,
+                        egui::RichText::new(status).size(10.5),
+                    );
+                }
+
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -778,12 +934,28 @@ impl App for FileBrowserApp {
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
+        // Cmd+Z — undo. Works even with an empty entry list (to restore a
+        // file that was just trashed).
+        if input.modifiers.command
+            && !input.modifiers.shift
+            && input.key_pressed(egui::Key::Z)
+        {
+            self.undo_last();
+            return true;
+        }
+
         if self.entries.is_empty() {
-            if input.key_pressed(egui::Key::Backspace) {
+            if !input.modifiers.command && input.key_pressed(egui::Key::Backspace) {
                 self.navigate_up();
                 return true;
             }
             return false;
+        }
+
+        // Cmd+Backspace — move the selected file to the Trash.
+        if input.modifiers.command && input.key_pressed(egui::Key::Backspace) {
+            self.trash_selected();
+            return true;
         }
 
         let last = self.entries.len().saturating_sub(1);

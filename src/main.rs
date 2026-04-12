@@ -105,6 +105,8 @@ mod sidebar;
 mod theme;
 #[cfg(not(target_arch = "wasm32"))]
 mod tiling;
+#[cfg(target_os = "macos")]
+mod trash;
 #[cfg(not(target_arch = "wasm32"))]
 mod workspace;
 
