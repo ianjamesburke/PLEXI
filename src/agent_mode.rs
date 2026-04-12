@@ -15,6 +15,10 @@ const ERROR_ANSI_SUFFIX: &str = "\x1b[0m\r\n";
 /// Dim gray prefix for system notices.
 const SYSTEM_ANSI_PREFIX: &str = "\r\n\x1b[2m# ";
 const SYSTEM_ANSI_SUFFIX: &str = "\x1b[0m\r\n";
+/// Dim gray line emitted when the user aborts an in-flight LLM request with
+/// Ctrl+C. Written inline into the terminal grid so it becomes part of
+/// scrollback, same as every other agent-mode line.
+const INTERRUPTED_ANSI: &str = "\r\n\x1b[2;90m^C — interrupted\x1b[0m\r\n";
 
 /// State machine for agent mode within a terminal pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +121,31 @@ impl AgentMode {
         self.state != AgentModeState::Inactive
     }
 
+    /// Abort the current in-flight LLM request (Ctrl+C from the user).
+    ///
+    /// Kills the spawned `claude` subprocess, drops any tokens that were
+    /// mid-flight in the worker channel, writes a dim gray "^C — interrupted"
+    /// line into the terminal grid, resets the partial response buffer, and
+    /// returns the agent to the ready state so the next prompt can be entered.
+    ///
+    /// No-op if the worker isn't initialized or no request is in flight.
+    pub fn cancel_llm(&mut self) {
+        if self.state != AgentModeState::Processing {
+            return;
+        }
+        if let Some(worker) = self.llm.as_ref() {
+            worker.cancel();
+            // Drop any streamed tokens still sitting in the channel so they
+            // don't leak into the next turn.
+            worker.drain_pending();
+        }
+        log::info!("agent_mode: LLM request cancelled by user (Ctrl+C)");
+        self.current_response.clear();
+        self.enqueue(INTERRUPTED_ANSI.as_bytes().to_vec());
+        self.state = AgentModeState::WaitingForInput;
+        self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
+    }
+
     /// Drain all pending ANSI output. The render layer calls this every frame
     /// and pipes the bytes into `TerminalBackend::write_agent_bytes`.
     pub fn drain_output(&mut self) -> Vec<Vec<u8>> {
@@ -159,6 +188,24 @@ impl AgentMode {
         if let egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } = event {
             self.deactivate();
             return true;
+        }
+
+        // Ctrl+C during an in-flight LLM request aborts it and returns to the
+        // prompt. Outside of Processing we deliberately let Ctrl+C fall through
+        // so the shell/terminal handles it normally (SIGINT to foreground job).
+        if self.state == AgentModeState::Processing {
+            if let egui::Event::Key {
+                key: egui::Key::C,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            {
+                if modifiers.ctrl {
+                    self.cancel_llm();
+                    return true;
+                }
+            }
         }
 
         if self.state != AgentModeState::WaitingForInput {

@@ -14,8 +14,9 @@
 //! `LlmResponse::Complete` and captures the session ID.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 /// Request sent from the UI thread to the LLM worker.
@@ -46,6 +47,14 @@ pub enum LlmResponse {
 pub struct LlmWorker {
     tx: mpsc::Sender<LlmRequest>,
     rx: mpsc::Receiver<LlmResponse>,
+    /// Shared handle to the currently-running `claude` subprocess, if any.
+    /// `cancel()` locks this and calls `kill()` on it. `call_claude` sets it
+    /// when spawning and clears it when the process finishes.
+    current_child: Arc<Mutex<Option<Child>>>,
+    /// Signal set by `cancel()` so the worker thread can suppress the final
+    /// `Complete` (or `Error`) response for a killed turn. The worker clears
+    /// it at the top of each new turn.
+    cancelled: Arc<AtomicBool>,
     _handle: thread::JoinHandle<()>,
 }
 
@@ -54,15 +63,21 @@ impl LlmWorker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = mpsc::channel::<LlmRequest>();
         let (resp_tx, resp_rx) = mpsc::channel::<LlmResponse>();
+        let current_child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+        let cancelled: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
+        let worker_child = Arc::clone(&current_child);
+        let worker_cancelled = Arc::clone(&cancelled);
         let handle = thread::Builder::new()
             .name("plexi-agent-llm".to_string())
-            .spawn(move || run_worker(req_rx, resp_tx))
+            .spawn(move || run_worker(req_rx, resp_tx, worker_child, worker_cancelled))
             .expect("failed to spawn agent LLM worker thread");
 
         Self {
             tx: req_tx,
             rx: resp_rx,
+            current_child,
+            cancelled,
             _handle: handle,
         }
     }
@@ -85,13 +100,57 @@ impl LlmWorker {
             }
         }
     }
+
+    /// Cancel the in-flight LLM request, if any. Sets the `cancelled` flag so
+    /// the worker thread suppresses the final `Complete`/`Error` response for
+    /// this turn, then kills the spawned `claude` child process. Safe to call
+    /// even when no request is running — it's a no-op.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let mut guard = match self.current_child.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!("agent_llm: current_child mutex poisoned on cancel");
+                poisoned.into_inner()
+            }
+        };
+        if let Some(mut child) = guard.take() {
+            match child.kill() {
+                Ok(()) => log::info!("agent_llm: killed in-flight claude subprocess"),
+                Err(e) => log::warn!("agent_llm: failed to kill claude subprocess: {e}"),
+            }
+            // Reap the zombie so the kernel releases the PID.
+            let _ = child.wait();
+        }
+    }
+
+    /// Drain any pending responses in the channel. Used after `cancel()` so
+    /// late streamed tokens from the killed turn don't surface in the next turn.
+    pub fn drain_pending(&self) {
+        while self.rx.try_recv().is_ok() {}
+    }
 }
 
-fn run_worker(rx: mpsc::Receiver<LlmRequest>, tx: mpsc::Sender<LlmResponse>) {
+fn run_worker(
+    rx: mpsc::Receiver<LlmRequest>,
+    tx: mpsc::Sender<LlmResponse>,
+    current_child: Arc<Mutex<Option<Child>>>,
+    cancelled: Arc<AtomicBool>,
+) {
     while let Ok(req) = rx.recv() {
         match req {
             LlmRequest::Complete { prompt, system, session_id } => {
-                if let Err(send_err) = call_claude(&prompt, &system, session_id.as_deref(), &tx) {
+                // Clear any stale cancel flag from a previous turn before
+                // starting a new one.
+                cancelled.store(false, Ordering::SeqCst);
+                if let Err(send_err) = call_claude(
+                    &prompt,
+                    &system,
+                    session_id.as_deref(),
+                    &tx,
+                    &current_child,
+                    &cancelled,
+                ) {
                     log::error!("agent_llm: failed to send response: {send_err}");
                     return;
                 }
@@ -108,6 +167,8 @@ fn call_claude(
     system: &str,
     session_id: Option<&str>,
     tx: &mpsc::Sender<LlmResponse>,
+    current_child: &Arc<Mutex<Option<Child>>>,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<(), mpsc::SendError<LlmResponse>> {
     // Locate the `claude` binary. Look in common user-local paths first so
     // macOS GUI apps (which don't inherit the user's shell PATH) can find it.
@@ -164,14 +225,33 @@ fn call_claude(
         }
     };
 
+    // Publish the child handle so `LlmWorker::cancel()` can kill it.
+    {
+        let mut guard = match current_child.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!("agent_llm: current_child mutex poisoned on spawn");
+                poisoned.into_inner()
+            }
+        };
+        *guard = Some(child);
+    }
+
     let reader = BufReader::new(stdout);
     let mut full_response = String::new();
     let mut captured_session_id: Option<String> = None;
+    let mut stream_error: Option<String> = None;
 
     for line_result in reader.lines() {
+        // If we were cancelled mid-stream, stop forwarding tokens immediately.
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+
         let line = match line_result {
             Ok(l) => l,
             Err(e) => {
+                // A broken pipe here typically means cancel() killed the child.
                 log::warn!("agent_llm: error reading claude stdout: {e}");
                 break;
             }
@@ -184,15 +264,18 @@ fn call_claude(
         match parse_stream_event(&line) {
             StreamEvent::AssistantText(chunk) => {
                 full_response.push_str(&chunk);
-                tx.send(LlmResponse::Token(chunk))?;
+                if !cancelled.load(Ordering::SeqCst) {
+                    tx.send(LlmResponse::Token(chunk))?;
+                }
             }
             StreamEvent::Result { session_id, is_error, error_text } => {
                 if let Some(sid) = session_id {
                     captured_session_id = Some(sid);
                 }
                 if is_error {
-                    let msg = error_text.unwrap_or_else(|| "claude CLI returned an error".to_string());
-                    return tx.send(LlmResponse::Error(msg));
+                    stream_error = Some(
+                        error_text.unwrap_or_else(|| "claude CLI returned an error".to_string()),
+                    );
                 }
             }
             StreamEvent::Unknown => {
@@ -201,7 +284,29 @@ fn call_claude(
         }
     }
 
-    let _ = child.wait();
+    // Reclaim the child handle (if still present) so we can wait on it here.
+    // If cancel() already took and killed it, this will be None.
+    let reclaimed = match current_child.lock() {
+        Ok(mut g) => g.take(),
+        Err(poisoned) => {
+            log::warn!("agent_llm: current_child mutex poisoned on reclaim");
+            poisoned.into_inner().take()
+        }
+    };
+    if let Some(mut child) = reclaimed {
+        let _ = child.wait();
+    }
+
+    // If the turn was cancelled, swallow any final response — the UI already
+    // rendered the "^C — interrupted" line and reset its state.
+    if cancelled.swap(false, Ordering::SeqCst) {
+        log::info!("agent_llm: turn cancelled; suppressing Complete/Error response");
+        return Ok(());
+    }
+
+    if let Some(msg) = stream_error {
+        return tx.send(LlmResponse::Error(msg));
+    }
 
     let sid = captured_session_id.unwrap_or_else(|| {
         // Fallback: generate a placeholder so the caller doesn't lose the turn.
