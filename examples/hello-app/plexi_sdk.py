@@ -51,6 +51,9 @@ Cost reporting (for apps that call LLM APIs):
     )
 """
 
+
+__version__ = "0.1.0"
+
 import json
 import sys
 import uuid
