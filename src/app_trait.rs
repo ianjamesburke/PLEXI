@@ -85,6 +85,13 @@ pub trait App: Send {
         false
     }
 
+    /// The directory this app is currently focused on, if any. Used by the host
+    /// to propagate the final navigation directory back to the underlying terminal
+    /// when the app closes (e.g. the file browser's final cwd).
+    fn current_dir(&self) -> Option<&std::path::Path> {
+        None
+    }
+
     /// Serialise app state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {
         None

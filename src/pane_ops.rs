@@ -469,9 +469,31 @@ impl PlexiApp {
 
     /// Close the active app on the focused terminal pane, returning to full terminal.
     /// Also closes the linked terminal pane and collapses the split.
+    ///
+    /// If the app was tracking a directory (e.g. the file browser) and the user
+    /// navigated away from the opening directory, we propagate the final cwd back
+    /// to the underlying terminal by writing `cd '<path>'\n` to its PTY. The shell
+    /// is the source of truth for cwd, so we let it run `cd` rather than mutating
+    /// any in-memory cwd field.
     pub(crate) fn close_focused_app(&mut self) {
         let ctx = &mut self.contexts[self.active_context];
         let linked = if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            // Before closing, if the app reports a current directory that differs
+            // from the scope it was launched in, cd the underlying terminal to it.
+            let final_dir = pane
+                .active_app
+                .as_ref()
+                .and_then(|app| app.current_dir().map(|p| p.to_path_buf()));
+            if let (Some(final_dir), Some(scope)) = (final_dir, pane.app_scope.clone()) {
+                if final_dir != scope {
+                    let cmd = format!(
+                        "cd {}\n",
+                        crate::app::shell_escape(&final_dir.display().to_string())
+                    );
+                    pane.backend
+                        .process_command(BackendCommand::Write(cmd.into_bytes()));
+                }
+            }
             pane.close_app()
         } else {
             None

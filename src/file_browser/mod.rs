@@ -893,6 +893,10 @@ impl App for FileBrowserApp {
         self.sync_cwd(new_cwd.to_path_buf());
     }
 
+    fn current_dir(&self) -> Option<&std::path::Path> {
+        Some(&self.cwd)
+    }
+
     fn accepted_extensions(&self) -> &[&str] {
         &[]
     }
