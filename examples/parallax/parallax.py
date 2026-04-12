@@ -60,6 +60,7 @@ _last_mtime: float = 0.0
 _last_poll: float = 0.0
 _manifest: dict = {}       # parsed manifest dict
 _manifest_error: str = ""
+_video_rect: tuple = (0, 0, 0, 0)  # (x, y, w, h) of latest video thumbnail
 
 # ---------------------------------------------------------------------------
 # Minimal YAML subset parser (stdlib only, no PyYAML dep).
@@ -375,11 +376,14 @@ def render(ctx):
              size=12, color=C["subtext"], bold=True)
     y += 18
     if latest:
+        global _video_rect
+        vw = ctx.width - PADDING * 2
+        _video_rect = (PADDING, y, vw, video_h)
         ctx.video_thumbnail(
             path=latest,
             x=PADDING,
             y=y,
-            w=ctx.width - PADDING * 2,
+            w=vw,
             h=video_h,
             show_play_button=True,
         )
@@ -443,6 +447,21 @@ def _render_empty(ctx):
              fill=C["surface"], radius=6.0)
     ctx.text(PADDING + 12, msg_y + 148, cmd2,
              size=12, color=C["green"], monospace=True)
+
+
+@app.on_mouse_down
+def on_mouse_down(x, y, button, emit):
+    if button != "left":
+        return
+    vx, vy, vw, vh = _video_rect
+    if vx <= x <= vx + vw and vy <= y <= vy + vh:
+        path = _latest_output()
+        if path:
+            import subprocess
+            try:
+                subprocess.Popen(["open", path])
+            except Exception as e:
+                emit.warn(f"could not open video: {e}")
 
 
 app.run()

@@ -9,6 +9,7 @@ description = "View-only dashboard for a Parallax video project — stills, prev
 file_types = []
 terminal_write = false
 filesystem = "read_only"
+mouse_tracking = true
 
 # Split the launching pane when the viewer opens: a companion terminal
 # scoped to the same project directory appears below. The user talks to
