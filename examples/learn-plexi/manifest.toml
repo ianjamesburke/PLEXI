@@ -1,0 +1,11 @@
+[app]
+id = "learn-plexi"
+name = "Learn Plexi"
+entry = "learn_plexi.py"
+version = "0.1.0"
+description = "Interactive tutorial — learn Plexi keybindings through a short game"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"
