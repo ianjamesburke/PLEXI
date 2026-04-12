@@ -1,0 +1,11 @@
+[app]
+id = "git-blame"
+name = "Git Blame Lens"
+entry = "git_blame.py"
+version = "0.1.0"
+description = "Live git blame with age-colored commits and inline diff viewer."
+icon = "🔍"
+
+[app.capabilities]
+terminal_write = true
+filesystem = "read_only"
