@@ -1,0 +1,9 @@
+[app]
+id = "pyflow"
+name = "PyFlow"
+entry = "pyflow.py"
+version = "0.1.0"
+description = "Visual node graph editor — connect nodes by wiring output ports to input ports"
+
+[app.capabilities]
+mouse_tracking = true
