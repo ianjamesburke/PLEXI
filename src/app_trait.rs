@@ -69,6 +69,17 @@ pub trait App: Send {
     /// Apps that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
 
+    /// Offer dropped files to the app. Return `true` if the app consumed the
+    /// drop (one of its declared drop targets contained `local_pos`). When
+    /// `true`, the host will NOT fall back to the default terminal-paste
+    /// behaviour for these paths.
+    ///
+    /// `local_pos` is in the app's local coordinate space (same origin as
+    /// DrawCommand coordinates — top-left of the app surface).
+    fn handle_drop(&mut self, _local_pos: egui::Pos2, _paths: &[PathBuf]) -> bool {
+        false
+    }
+
     /// Serialise app state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {
         None
