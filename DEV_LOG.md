@@ -1,5 +1,25 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [DECISION] Parallax viewer + linked companion pane (#113) — opt-in [app.launch] manifest section, reuse existing split machinery
+
+Shipped issue #113: the Parallax viewer app plus a new generic `[app.launch]` manifest section that lets any app declare a companion terminal pane on open.
+
+Key decisions (the non-obvious ones):
+
+- **No new tiling primitive.** Extended the existing `open_app_on_focused` into a `_with_launch(..)` variant. The legacy call site keeps its exact 75/25 vertical behavior by passing `None`. When a manifest declares `[app.launch]`, the same code path parameterizes direction (`bottom`/`right`), companion size (fraction), and companion cwd. Considered writing a dedicated "companion layout" module but it would have duplicated 90% of what `open_app_on_focused` already did. One path, one bug surface.
+- **`companion_cwd` template is literal `{launch_dir}` substitution, not a full template engine.** The spec only needs one variable for MVP; keeping it as substring-match means the schema can grow without breaking older apps.
+- **The viewer does NOT depend on a Parallax CLI.** It reads `.parallax/manifest.yaml` directly with a ~30-line stdlib-only YAML subset parser. PyYAML would have been cleaner but the Python SDK contract is zero-deps, and the manifest schema is intentionally tiny (project name + scenes list). When the real CLI lands, the viewer keeps working.
+- **mtime polling, not a watcher.** `os.stat` once per second on a single file is cheap and survives process restarts / missing files cleanly. A proper watcher would require inotify/FSEvents plumbing through the SDK, which is out of scope for #113.
+- **Empty-state is the default render.** If `.parallax/manifest.yaml` is missing, the viewer shows a friendly "run `parallax run \"your brief\"` in the terminal below" hint instead of a blank surface. Made this the first thing I wired so the app is useful before any CLI exists.
+- **`install-alpha` now also syncs `examples/*/` into `~/.plexi-alpha/apps/`.** Previously the justfile only built the bundle; apps had to be copied manually. This is a one-line loop but removes a whole class of "I installed the app but it doesn't show up" confusion.
+- **Pre-existing wasm breakage on alpha (unrelated):** `cargo build --target wasm32-unknown-unknown` fails at HEAD on alpha because `agent_mode` references `agent_llm` and `secrets` that are both `#[cfg(not(target_arch = "wasm32"))]`. My changes do not touch those modules. Filed mentally as a separate bug — do not roll this into #113.
+
+Files:
+- Rust: `src/app_registry.rs` (+`AppLaunchConfig`), `src/pane_ops.rs` (+`open_app_on_focused_with_launch`, updated `launch_app_by_id` + `open_file_with_app`)
+- Python: `examples/parallax/{manifest.toml, parallax.py, plexi_sdk.py, plexi_test.py, tests/test_parallax.py}`
+- Infra: `justfile` (install-alpha syncs example apps)
+- Sample: `~/Documents/parallax-projects/test-project/` with stub manifest, 3 JPG stills, 1 mp4 preview
+
 ## 2026-04-12 — [DECISION] github-issues app — list/detail MVP shipped, mutation/authoring deferred
 
 Built `examples/github-issues/` as a sub-agent off `feature/github-issues-app`. ~440 lines of Python plus tests. Mirrors the wikipedia app's worker-thread + queue pattern (background `gh` calls push results onto `result_queue`, the render handler drains the queue at the top of every frame). No new Python deps, no Rust changes.
@@ -40,6 +60,7 @@ Shipped `sdk/python/plexi_sdk_advanced.py` (~460 lines, stdlib-only) and `sdk/py
 **Why `time.monotonic()` for FrameTimer/Tween instead of protocol time:** the spec shows `ft.ready(ctx.delta_time)` but `delta_time` doesn't exist in the protocol yet. Wall-clock `time.monotonic()` is correct enough for MVP — frame timer accuracy is bounded by render frequency anyway, and a monotonic-clock-driven tween renders identically to a delta-driven tween at any given instant. The `dt_override` parameter on `FrameTimer.ready()` is the forward-compatibility hook: once Plexi sends `delta_time` on render events, apps pass it through and the API stays stable.
 
 **Out of scope and untouched:** all `src/*.rs` files, the simple `plexi_sdk.py`, all installed apps under `~/.plexi-alpha/apps/`, and `sdk/python/examples/`. `cargo check` passes (verified pre-commit). No new dependencies added.
+>>>>>>> origin/alpha
 
 ## 2026-04-12 — [CHANGED] Massive parallel-agent build session — alpha now includes Layer 0/1/2/4 + WASM Phase 1 + media draw commands + Finder Service + notifications
 

@@ -67,6 +67,20 @@ install-alpha:
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_dest" || true
     /System/Library/CoreServices/pbs -update || true
 
+    # Sync bundled example apps into ~/.plexi-alpha/apps/ so they appear
+    # in the launcher. Each directory under examples/ that has a manifest.toml
+    # is copied wholesale (overwriting any previous copy).
+    apps_dir="$HOME/.plexi-alpha/apps"
+    mkdir -p "$apps_dir"
+    for dir in examples/*/; do
+      if [[ -f "${dir}manifest.toml" ]]; then
+        name="$(basename "$dir")"
+        rm -rf "$apps_dir/$name"
+        cp -R "$dir" "$apps_dir/$name"
+        echo "Installed app: $name"
+      fi
+    done
+
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"

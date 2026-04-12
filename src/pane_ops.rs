@@ -502,26 +502,67 @@ impl PlexiApp {
     }
 
     /// Open an app on the focused pane: auto-splits vertically, app on top,
-    /// fresh linked terminal on bottom.
+    /// fresh linked terminal on bottom. Uses the default 75/25 vertical layout.
     pub(crate) fn open_app_on_focused(
         &mut self,
         app: Box<dyn App>,
         permissions: crate::app_permissions::AppPermissions,
         scope: PathBuf,
     ) {
+        self.open_app_on_focused_with_launch(app, permissions, scope, None);
+    }
+
+    /// Open an app on the focused pane with an optional manifest-declared
+    /// launch configuration that overrides the split direction, size, and
+    /// companion terminal cwd.
+    ///
+    /// When `launch` is `None`, the legacy 75/25 vertical split is used and the
+    /// companion terminal inherits the previous pane's cwd (unchanged behavior).
+    /// When `launch` is `Some`, the split direction, fraction, and companion
+    /// cwd come from the config. `{launch_dir}` in `companion_cwd` is resolved
+    /// to the app's `scope`.
+    pub(crate) fn open_app_on_focused_with_launch(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: crate::app_permissions::AppPermissions,
+        scope: PathBuf,
+        launch: Option<crate::app_registry::AppLaunchConfig>,
+    ) {
         let Some(focused) = self.contexts[self.active_context].focused_pane else {
             return;
         };
 
-        // Create a new terminal pane for the bottom split (same as split_focused).
+        // Resolve launch options (defaults match legacy behavior).
+        let vertical = match launch.as_ref().map(|l| l.companion_position.as_str()) {
+            Some("right") => false,
+            _ => true, // "bottom" or unset → vertical split (app on top)
+        };
+        // Fraction allocated to the companion terminal.
+        let companion_frac = launch
+            .as_ref()
+            .map(|l| l.companion_size.clamp(0.05, 0.95))
+            .unwrap_or(0.25);
+
+        // Companion terminal cwd:
+        //   - with launch config + `{launch_dir}` template → app's scope
+        //   - otherwise → previous focused pane's cwd (legacy)
+        let companion_cwd = if let Some(cfg) = launch.as_ref() {
+            if cfg.companion_cwd.contains("{launch_dir}") {
+                scope.clone()
+            } else {
+                PathBuf::from(&cfg.companion_cwd)
+            }
+        } else {
+            self.contexts[self.active_context]
+                .get_focused_pane_cwd(focused)
+                .unwrap_or_else(|| scope.clone())
+        };
+
+        // Create the companion terminal pane.
         let new_term_id = self.next_pane_id;
         self.next_pane_id += 1;
 
-        let cwd = self.contexts[self.active_context]
-            .get_focused_pane_cwd(focused)
-            .unwrap_or_else(|| scope.clone());
-
-        let settings = Self::make_backend_settings(Some(cwd), &self.colors);
+        let settings = Self::make_backend_settings(Some(companion_cwd), &self.colors);
         let Some(new_pane) = TerminalPane::new(
             new_term_id,
             self.ctx.clone(),
@@ -543,6 +584,12 @@ impl PlexiApp {
                 None => focused,
             };
 
+        let split_dir = if vertical {
+            egui_tiles::LinearDir::Vertical
+        } else {
+            egui_tiles::LinearDir::Horizontal
+        };
+
         let ctx = &mut self.contexts[self.active_context];
         let parent = ctx.tree.tiles.parent_of(split_target);
         let new_tile = ctx.tree.tiles.insert_pane(new_term_id);
@@ -551,7 +598,7 @@ impl PlexiApp {
             if let Some(Tile::Container(Container::Linear(linear))) =
                 ctx.tree.tiles.get_mut(parent_id)
             {
-                if linear.dir == egui_tiles::LinearDir::Vertical {
+                if linear.dir == split_dir {
                     if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
                         linear.children.insert(pos + 1, new_tile);
                         true
@@ -569,17 +616,19 @@ impl PlexiApp {
         };
 
         if !inserted_as_sibling {
-            let container_tile = ctx
-                .tree
-                .tiles
-                .insert_vertical_tile(vec![split_target, new_tile]);
+            let container_tile = if vertical {
+                ctx.tree.tiles.insert_vertical_tile(vec![split_target, new_tile])
+            } else {
+                ctx.tree.tiles.insert_horizontal_tile(vec![split_target, new_tile])
+            };
 
-            // Set 75/25 ratio for app (top) vs terminal (bottom).
+            // Set app / companion share ratio from config (or 0.75 / 0.25 default).
             if let Some(Tile::Container(Container::Linear(ref mut lin))) =
                 ctx.tree.tiles.get_mut(container_tile)
             {
-                lin.shares.set_share(split_target, 3.0);
-                lin.shares.set_share(new_tile, 1.0);
+                let app_share = (1.0 - companion_frac).max(0.05);
+                lin.shares.set_share(split_target, app_share);
+                lin.shares.set_share(new_tile, companion_frac);
             }
 
             if let Some(parent_id) = parent {
@@ -593,7 +642,7 @@ impl PlexiApp {
             }
         }
 
-        // Set the app on the focused (top) pane and link to the bottom terminal.
+        // Set the app on the focused (top) pane and link to the companion terminal.
         if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
             let pane_id = *pane_id;
             if let Some(pane) = ctx.panes.get_mut(&pane_id) {
@@ -730,9 +779,16 @@ impl PlexiApp {
             .and_then(|fp| self.contexts[self.active_context].get_focused_pane_cwd(fp))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
+        // Snapshot the manifest-declared launch config BEFORE calling into the
+        // registry (keeps the borrow of `self.registry` short).
+        let launch_cfg = self
+            .registry
+            .app_by_id(id)
+            .and_then(|installed| installed.manifest.launch.clone());
+
         if let Some(app) = self.registry.launch(id, &cwd, &[]) {
             let perms = crate::app_permissions::AppPermissions::default();
-            self.open_app_on_focused(app, perms, cwd);
+            self.open_app_on_focused_with_launch(app, perms, cwd, launch_cfg);
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
         }
@@ -778,7 +834,12 @@ impl PlexiApp {
         if let Some(app) = self.registry.launch_for_file(&file_path, &cwd) {
             // Third-party app — sandboxed by default, scoped to launch directory.
             let perms = crate::app_permissions::AppPermissions::default();
-            self.open_app_on_focused(app, perms, cwd.clone());
+            // If the app declared [app.launch], honor its companion split config.
+            let launch_cfg = self
+                .registry
+                .app_by_id(app.type_id())
+                .and_then(|installed| installed.manifest.launch.clone());
+            self.open_app_on_focused_with_launch(app, perms, cwd.clone(), launch_cfg);
         } else {
             // No registered app — fall back to writing the path into the terminal.
             let ctx = &mut self.contexts[self.active_context];
