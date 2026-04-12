@@ -1,5 +1,33 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [CHANGED] Mouse events, delta_time, SetCursor — issue #132
+
+Added full mouse input and animation timing to the app protocol. New `PlexiEvent` variants: `MouseDown`, `MouseUp`, `MouseMove`, `Scroll`. `Render` now carries `delta_time: f32` (seconds since last frame). New `DrawCommand` variants: `SetCursor` (maps string → `egui::CursorIcon`), `MouseTracking` (stateful opt-in for move events).
+
+**Key decisions:**
+- Mouse methods (`send_mouse_down`, `send_mouse_up`, `send_mouse_move`, `send_scroll`, `mouse_tracking_enabled`) live on the `App` trait with default no-ops, not on `ProcessApp` directly. This avoids downcasting in `tiling.rs` and keeps the pattern consistent with `handle_drop`.
+- Mouse events detected in `tiling.rs` inside the `AppActive` arm, gated on `is_focused`. `PointerButton` events (press/release) and `MouseMoved` events are pulled from `ui.input(|i| i.events)`. Scroll uses `i.smooth_scroll_delta` — smoother than raw scroll delta on trackpads.
+- `mouse_tracking` initialized from manifest at launch via new `ProcessApp::launch(mouse_tracking: bool)` parameter (one call site). Apps can also toggle it at runtime via `MouseTracking` draw command.
+- `SetCursor` is stateless per-frame: cleared by `pending_cursor.take()` each `ui()` call. Apps must re-emit it every frame (same as `DropTarget`).
+- `delta_time` computed from `Instant::now()` diff on `ProcessApp`. Reset on hot-reload restart.
+- Python SDK: `RenderContext` gets `delta_time` field populated from event. New decorators `on_mouse_down/up/move/scroll`. New `ctx.set_cursor()` and `ctx.mouse_tracking()` draw helpers. `App.delta_time` stored at class level for access outside render handler.
+
+## 2026-04-12 — [GOTCHA] macOS system Python is 3.9 — `str | None` union syntax crashes all apps launched from the GUI
+
+When Plexi is installed as a `.app` bundle and launched from Finder (or Spotlight), macOS GUI apps do not inherit the user's shell PATH. The shebang `#!/usr/bin/env python3` resolves to `/usr/bin/python3` which is **Python 3.9.6** — Apple's system Python, frozen at a pre-union-type version. The user's Homebrew Python 3.11+ at `/usr/local/bin/python3` is **never found**.
+
+`str | None` (PEP 604 union syntax) requires Python 3.10+. Any app file using this syntax crashes immediately at module load time with `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`. Same for `list[str]` as a subscript in type annotations if on 3.8 (3.9 handles it fine).
+
+**Fix applied:** Add `from __future__ import annotations` as the first statement after the shebang in every app Python file. This defers ALL annotation evaluation to string form at compile time, making `str | None` safe on Python 3.7+.
+
+**Files fixed:** `examples/parallax/parallax.py`, `examples/hello-app/hello_app.py`, `examples/github-issues/github_issues.py`.
+
+**Do NOT do:** write `Optional[str]` as a workaround — that's uglier and still requires `from typing import Optional`. The `from __future__ import annotations` fix is global and cleaner.
+
+**Long-term fix:** Bundle a specific Python with the app so version is guaranteed. Track as a follow-up issue.
+
+**Also fixed:** `just install-alpha` syncs apps but doesn't set +x on .py entry points. After any `install-alpha`, run `chmod +x ~/.plexi-alpha/apps/*/*.py`.
+
 ## 2026-04-12 — [CHANGED] Inline (Warp-style) agent mode + fix #123 — bytes injected into the alacritty grid via a borrowed VTE parser
 
 Killed the full-pane agent panel. Agent turns now render directly into the same scrollback grid as shell output: a `>>> ` prompt indicator appears, keystrokes echo into the grid, the LLM reply is converted from markdown to ANSI and written into the grid, then a fresh `>>> ` appears for the next turn. Escape exits and hands control back to the shell.

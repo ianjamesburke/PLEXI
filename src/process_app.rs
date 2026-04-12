@@ -62,6 +62,12 @@ pub struct ProcessApp {
     pending_redo: bool,
     /// Per-app cost tracker for LLM API usage.
     cost_tracker: CostTracker,
+    /// Timestamp of the last Render event sent, used to compute delta_time.
+    last_render_time: Instant,
+    /// Whether this app should receive MouseMove events (opt-in via manifest or DrawCommand).
+    mouse_tracking: bool,
+    /// Pending cursor icon override requested by the app this frame.
+    pending_cursor: Option<egui::CursorIcon>,
 }
 
 /// Snapshot of an app's state buckets.
@@ -73,6 +79,54 @@ pub struct AppState {
     pub persistent: serde_json::Value,
 }
 
+/// Probe well-known locations for a Python interpreter that is >= 3.10.
+///
+/// macOS GUI app bundles do not inherit the user's shell PATH, so
+/// `/usr/bin/env python3` resolves to Apple's frozen system Python (3.9).
+/// We probe explicit paths — first match that reports version >= 3.10 wins.
+/// Falls back to `python3` (shebang-resolved) if none of the known paths work,
+/// so the old behaviour is preserved rather than failing silently.
+fn find_python() -> std::ffi::OsString {
+    let candidates = [
+        "/opt/homebrew/bin/python3",   // Apple Silicon Homebrew
+        "/usr/local/bin/python3",      // Intel Homebrew
+        "/opt/homebrew/bin/python3.13",
+        "/opt/homebrew/bin/python3.12",
+        "/opt/homebrew/bin/python3.11",
+        "/opt/homebrew/bin/python3.10",
+        "/usr/local/bin/python3.13",
+        "/usr/local/bin/python3.12",
+        "/usr/local/bin/python3.11",
+        "/usr/local/bin/python3.10",
+    ];
+
+    for candidate in &candidates {
+        let path = std::path::Path::new(candidate);
+        if !path.exists() {
+            continue;
+        }
+        // Ask the interpreter for its version string ("3.11.6\n").
+        let ok = std::process::Command::new(candidate)
+            .args(["-c", "import sys; v=sys.version_info; exit(0 if v>=(3,10) else 1)"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            log::debug!("process_app: using Python interpreter: {candidate}");
+            return std::ffi::OsString::from(candidate);
+        }
+    }
+
+    log::warn!(
+        "process_app: no Python >= 3.10 found at known paths; \
+         falling back to `python3` (may be system 3.9 in GUI context). \
+         Install Python 3.10+ via: brew install python@3.13"
+    );
+    std::ffi::OsString::from("python3")
+}
+
 impl ProcessApp {
     /// Spawn an app binary at `bin_path`.
     pub fn launch(
@@ -82,11 +136,22 @@ impl ProcessApp {
         bin_path: &PathBuf,
         cwd: &PathBuf,
         args: &[String],
+        mouse_tracking: bool,
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
 
-        let mut child = std::process::Command::new(bin_path)
+        // For Python scripts, bypass the shebang and use an explicit interpreter
+        // so macOS GUI bundles (which don't inherit shell PATH) always get >= 3.10.
+        let (cmd, extra_args): (std::ffi::OsString, Vec<std::ffi::OsString>) =
+            if bin_path.extension().and_then(|e| e.to_str()) == Some("py") {
+                (find_python(), vec![bin_path.as_os_str().to_owned()])
+            } else {
+                (bin_path.as_os_str().to_owned(), vec![])
+            };
+
+        let mut child = std::process::Command::new(&cmd)
+            .args(&extra_args)
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
@@ -171,6 +236,9 @@ impl ProcessApp {
             pending_undo: false,
             pending_redo: false,
             cost_tracker,
+            last_render_time: Instant::now(),
+            mouse_tracking,
+            pending_cursor: None,
         })
     }
 
@@ -236,8 +304,15 @@ impl ProcessApp {
         self.stdin = None;
         self.draw_rx = None;
 
-        // Respawn.
-        let mut child = match std::process::Command::new(&self.bin_path)
+        // Respawn — same Python interpreter logic as initial launch.
+        let (cmd, extra_args): (std::ffi::OsString, Vec<std::ffi::OsString>) =
+            if self.bin_path.extension().and_then(|e| e.to_str()) == Some("py") {
+                (find_python(), vec![self.bin_path.as_os_str().to_owned()])
+            } else {
+                (self.bin_path.as_os_str().to_owned(), vec![])
+            };
+        let mut child = match std::process::Command::new(&cmd)
+            .args(&extra_args)
             .args(&self.args)
             .current_dir(&self.cwd)
             .stdin(Stdio::piped())
@@ -305,6 +380,9 @@ impl ProcessApp {
         self.frame.clear();
         self.pending_frame.clear();
         self.initialized = false; // will re-send Init on next ui() call
+        self.last_render_time = Instant::now();
+        self.mouse_tracking = false; // new process must opt in again
+        self.pending_cursor = None;
     }
 
     /// Request the app's current state snapshot.
@@ -705,13 +783,15 @@ impl ProcessApp {
                 }
 
                 // RunInTerminal / Cd / Log / State / CostReport / Notification /
-                // FrameDone handled at the App trait level, not here.
+                // SetCursor / MouseTracking / FrameDone handled at the App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
                 | DrawCommand::State { .. }
                 | DrawCommand::CostReport { .. }
                 | DrawCommand::Notification { .. }
+                | DrawCommand::SetCursor { .. }
+                | DrawCommand::MouseTracking { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1007,7 +1087,9 @@ impl App for ProcessApp {
         }
 
         // Request a new frame.
-        self.send_event(&PlexiEvent::Render { width: size.x, height: size.y });
+        let delta_time = self.last_render_time.elapsed().as_secs_f32();
+        self.last_render_time = Instant::now();
+        self.send_event(&PlexiEvent::Render { width: size.x, height: size.y, delta_time });
 
         // Drain all draw commands that arrived since last frame (including response
         // to the Render we just sent — they come async so we take whatever is ready).
@@ -1070,8 +1152,27 @@ impl App for ProcessApp {
                     };
                     crate::notification_log::record(priority, title, body, src);
                 }
+                DrawCommand::SetCursor { cursor } => {
+                    let icon = match cursor.as_str() {
+                        "pointer"   => egui::CursorIcon::PointingHand,
+                        "grab"      => egui::CursorIcon::Grab,
+                        "grabbing"  => egui::CursorIcon::Grabbing,
+                        "crosshair" => egui::CursorIcon::Crosshair,
+                        "text"      => egui::CursorIcon::Text,
+                        _           => egui::CursorIcon::Default,
+                    };
+                    self.pending_cursor = Some(icon);
+                }
+                DrawCommand::MouseTracking { enabled } => {
+                    self.mouse_tracking = enabled;
+                }
                 other => self.pending_frame.push(other),
             }
+        }
+
+        // Apply cursor override requested by the app this frame, then clear it.
+        if let Some(icon) = self.pending_cursor.take() {
+            ui.ctx().set_cursor_icon(icon);
         }
 
         // Render the current frame.
@@ -1216,6 +1317,28 @@ impl App for ProcessApp {
         Some(serde_json::json!({
             "type_id": self.type_id,
         }))
+    }
+
+    fn mouse_tracking_enabled(&self) -> bool {
+        self.mouse_tracking
+    }
+
+    fn send_mouse_down(&mut self, x: f32, y: f32, button: &str) {
+        self.send_event(&PlexiEvent::MouseDown { x, y, button: button.to_string() });
+    }
+
+    fn send_mouse_up(&mut self, x: f32, y: f32, button: &str) {
+        self.send_event(&PlexiEvent::MouseUp { x, y, button: button.to_string() });
+    }
+
+    fn send_mouse_move(&mut self, x: f32, y: f32) {
+        if self.mouse_tracking {
+            self.send_event(&PlexiEvent::MouseMove { x, y });
+        }
+    }
+
+    fn send_scroll(&mut self, x: f32, y: f32, delta_x: f32, delta_y: f32) {
+        self.send_event(&PlexiEvent::Scroll { x, y, delta_x, delta_y });
     }
 
     fn undo(&mut self) {

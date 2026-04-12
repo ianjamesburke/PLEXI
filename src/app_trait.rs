@@ -97,6 +97,24 @@ pub trait App: Send {
     /// Only meaningful for ProcessApps that support the get_state/set_state protocol.
     fn undo(&mut self) {}
 
+    /// Returns true if this app wants to receive mouse-move events.
+    /// Default: false (opt-in via manifest or `MouseTracking` draw command).
+    fn mouse_tracking_enabled(&self) -> bool {
+        false
+    }
+
+    /// Forward a mouse-down event. `button` is one of `"left"`, `"right"`, `"middle"`.
+    fn send_mouse_down(&mut self, _x: f32, _y: f32, _button: &str) {}
+
+    /// Forward a mouse-up event. `button` is one of `"left"`, `"right"`, `"middle"`.
+    fn send_mouse_up(&mut self, _x: f32, _y: f32, _button: &str) {}
+
+    /// Forward a mouse-move event (only called when `mouse_tracking_enabled()` returns true).
+    fn send_mouse_move(&mut self, _x: f32, _y: f32) {}
+
+    /// Forward a scroll event. `x/y` is the cursor position; `delta_x/delta_y` is the scroll delta.
+    fn send_scroll(&mut self, _x: f32, _y: f32, _delta_x: f32, _delta_y: f32) {}
+
     /// Trigger redo (pop next state from redo stack and restore).
     fn redo(&mut self) {}
 }
