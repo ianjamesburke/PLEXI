@@ -5,13 +5,6 @@ use std::time::SystemTime;
 use crate::agent_ansi::markdown_to_ansi;
 use crate::agent_llm::{LlmRequest, LlmResponse, LlmWorker};
 
-/// Plexi's user-facing CLI app id. Secrets stored via the secrets manager
-/// or `plexi secret set` use this namespace, and agent mode reads from it.
-const SECRETS_APP_ID: &str = "plexi-run";
-
-/// Key the user must set to enable the LLM backend.
-const API_KEY_NAME: &str = "ANTHROPIC_API_KEY";
-
 /// Cyan foreground for the `>>> ` prompt indicator.
 const PROMPT_ANSI: &str = "\r\n\x1b[36m>>> \x1b[0m";
 /// Dim italics for the "thinking..." indicator.
@@ -53,8 +46,14 @@ pub struct AgentMode {
     /// frame. The render layer drains this and forwards it to the backend.
     pending_output: VecDeque<Vec<u8>>,
     /// Lazily-initialized LLM worker. `None` until activate() runs once
-    /// successfully; stays `None` if the API key is missing.
+    /// successfully; reused across turns for the session lifetime.
     llm: Option<LlmWorker>,
+    /// Session ID returned by `claude -p` on the first turn.
+    /// Passed as `--resume <id>` on all subsequent turns to maintain context.
+    session_id: Option<String>,
+    /// Buffer accumulating streamed token chunks for the current turn.
+    /// Flushed to `conversation` when `LlmResponse::Complete` arrives.
+    current_response: String,
 }
 
 /// A single message in the agent conversation. Kept around for future
@@ -81,6 +80,8 @@ impl AgentMode {
             pending_output: VecDeque::new(),
             directory_scope,
             llm: None,
+            session_id: None,
+            current_response: String::new(),
         }
     }
 
@@ -96,29 +97,11 @@ impl AgentMode {
         log::info!("Agent mode activated in {}", self.directory_scope.display());
 
         if self.llm.is_none() {
-            self.try_spawn_worker();
+            log::info!("agent_mode: spawning LLM worker (claude -p subprocess)");
+            self.llm = Some(LlmWorker::spawn());
         }
 
         self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
-    }
-
-    /// Attempt to load the API key from the Plexi secrets store and spawn a
-    /// worker thread. On failure, pushes an inline error into the terminal.
-    fn try_spawn_worker(&mut self) {
-        let dir_str = self.directory_scope.to_string_lossy().to_string();
-        match crate::secrets::resolve_secret(API_KEY_NAME, SECRETS_APP_ID, &dir_str) {
-            Some(key) => {
-                log::info!("agent_mode: loaded {API_KEY_NAME} from secrets, spawning LLM worker");
-                let worker = LlmWorker::spawn(key.to_string());
-                self.llm = Some(worker);
-            }
-            None => {
-                log::warn!("agent_mode: {API_KEY_NAME} not found in secrets (app_id={SECRETS_APP_ID})");
-                self.enqueue_system(&format!(
-                    "No {API_KEY_NAME} found. Open the Secrets manager and add a secret with key \"{API_KEY_NAME}\" to enable the agent."
-                ));
-            }
-        }
     }
 
     /// Deactivate agent mode. Emits a trailing newline so the shell's next
@@ -240,20 +223,25 @@ impl AgentMode {
             timestamp: SystemTime::now(),
         });
         self.input_buffer.clear();
+        self.current_response.clear();
 
         // Close the prompt line before the thinking indicator / reply.
         self.enqueue(b"\r\n".to_vec());
 
         let Some(worker) = self.llm.as_ref() else {
-            self.enqueue_error(&format!(
-                "Cannot reach the LLM: {API_KEY_NAME} is not set. Add it in the Secrets manager, then restart agent mode."
-            ));
+            self.enqueue_error(
+                "Cannot reach the LLM: agent worker not initialized. Restart agent mode."
+            );
             self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
             return;
         };
 
         let system = build_system_prompt(&self.directory_scope);
-        let request = LlmRequest::Complete { prompt: text, system };
+        let request = LlmRequest::Complete {
+            prompt: text,
+            system,
+            session_id: self.session_id.clone(),
+        };
         match worker.send(request) {
             Ok(()) => {
                 self.state = AgentModeState::Processing;
@@ -284,26 +272,50 @@ impl AgentMode {
 
         for resp in pending {
             match resp {
-                LlmResponse::Complete(text) => {
-                    let ansi = markdown_to_ansi(&text);
+                LlmResponse::Complete(text, session_id) => {
+                    // Store session ID for the next turn.
+                    log::info!("agent_mode: turn complete, session_id={session_id}");
+                    self.session_id = Some(session_id);
+
+                    // If no tokens were streamed (e.g. non-streaming path),
+                    // render the full text now. Otherwise, the terminal grid
+                    // already shows the streamed output — just push the newline
+                    // separator and the next prompt.
+                    if self.current_response.is_empty() && !text.is_empty() {
+                        let ansi = markdown_to_ansi(&text);
+                        let mut bytes = b"\r\n".to_vec();
+                        bytes.extend_from_slice(ansi.as_bytes());
+                        self.enqueue(bytes);
+                    } else {
+                        // Streaming mode: tokens already rendered inline.
+                        // Emit a trailing newline so the next prompt starts
+                        // on a clean line.
+                        self.enqueue(b"\r\n".to_vec());
+                    }
+
                     self.conversation.push(AgentMessage {
                         role: MessageRole::Agent,
                         content: text,
                         timestamp: SystemTime::now(),
                     });
-                    let mut bytes = b"\r\n".to_vec();
-                    bytes.extend_from_slice(ansi.as_bytes());
-                    self.enqueue(bytes);
+                    self.current_response.clear();
                     self.state = AgentModeState::WaitingForInput;
                     self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
                 }
                 LlmResponse::Token(chunk) => {
-                    // Streaming not wired yet — if a token arrives, dump it
-                    // inline. The final Complete follows.
-                    self.enqueue(chunk.into_bytes());
+                    // Streaming chunk — render it directly into the terminal grid.
+                    // The chunks arrive as plain text (not markdown), so we emit
+                    // them verbatim. Markdown rendering is applied to the full
+                    // text on Complete only when there was no streaming.
+                    self.current_response.push_str(&chunk);
+                    // Convert newlines to CRLF for the terminal emulator.
+                    let bytes = chunk.replace('\n', "\r\n").into_bytes();
+                    self.enqueue(bytes);
                 }
                 LlmResponse::Error(err) => {
+                    log::error!("agent_mode: LLM error: {err}");
                     self.enqueue_error(&format!("LLM error: {err}"));
+                    self.current_response.clear();
                     self.state = AgentModeState::WaitingForInput;
                     self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
                 }
