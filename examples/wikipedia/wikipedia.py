@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 wikipedia — Plexi app
 Browse Wikipedia: search articles and read summaries.
@@ -44,8 +45,14 @@ article       = None        # {"title": str, "description": str, "extract": str}
 article_scroll = 0          # first visible wrapped line index
 loading_msg   = ""
 
+# Cache: article slug → local image path (populated after download)
+image_cache: dict[str, str] = {}
+
 # Queue from background thread → render thread
 result_queue: queue.Queue = queue.Queue()
+
+# Cache directory for downloaded thumbnails
+_CACHE_DIR = os.path.expanduser("~/.plexi-alpha/cache/wikipedia")
 
 # ---------------------------------------------------------------------------
 # Colors — Catppuccin Mocha
@@ -104,8 +111,13 @@ def fetch_search(q: str):
         result_queue.put({"action": "error", "message": str(e)})
 
 
+def _article_slug(title: str) -> str:
+    """Sanitize article title into a safe cache filename."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", title)[:64]
+
+
 def fetch_article(title: str):
-    """Fetch article summary and push to queue."""
+    """Fetch article summary (and thumbnail if available) and push to queue."""
     try:
         encoded = urllib.parse.quote(title)
         data = _get(f"{SUMMARY_BASE}/page/summary/{encoded}")
@@ -115,8 +127,33 @@ def fetch_article(title: str):
             "description": data.get("description", "") or "",
             "extract":     data.get("extract", "") or "",
         })
+        # Download thumbnail in the same worker after pushing article data
+        thumbnail = data.get("thumbnail")
+        if thumbnail and thumbnail.get("source"):
+            _fetch_thumbnail(title, thumbnail["source"])
     except Exception as e:
         result_queue.put({"action": "error", "message": str(e)})
+
+
+def _fetch_thumbnail(title: str, url: str) -> None:
+    """Download thumbnail to disk cache; push image_ready when done."""
+    slug = _article_slug(title)
+    dest = os.path.join(_CACHE_DIR, f"{slug}.jpg")
+    # Already cached — just notify
+    if os.path.exists(dest):
+        result_queue.put({"action": "image_ready", "title": title, "path": dest})
+        return
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = resp.read()
+        with open(dest, "wb") as f:
+            f.write(data)
+        result_queue.put({"action": "image_ready", "title": title, "path": dest})
+    except Exception:
+        # Silently ignore — image is optional; don't disrupt article display
+        pass
 
 
 def start_fetch(fn, *args):
@@ -146,7 +183,7 @@ app = App()
 
 @app.on_render
 def render(ctx):
-    global view, results, selected, article, article_scroll, loading_msg
+    global view, results, selected, article, article_scroll, loading_msg, image_cache
 
     # Drain the result queue before drawing
     try:
@@ -166,6 +203,8 @@ def render(ctx):
                 }
                 article_scroll = 0
                 view = VIEW_ARTICLE
+            elif action == "image_ready":
+                image_cache[msg["title"]] = msg["path"]
             elif action == "error":
                 loading_msg = f"Error: {msg['message']}"
                 view = VIEW_SEARCH
@@ -227,6 +266,10 @@ def _render_search(ctx):
     ctx.line(0, HEADER_H, w, HEADER_H, color=C["surface"], width=1.0)
 
 
+IMG_W = 140
+IMG_H = 100
+
+
 def _render_article(ctx):
     if not article:
         return
@@ -251,6 +294,13 @@ def _render_article(ctx):
 
     ctx.line(0, desc_y + 4, w, desc_y + 4, color=C["surface"], width=1.0)
     body_start_y = desc_y + 14
+
+    # Thumbnail — top-right corner if downloaded
+    img_path = image_cache.get(title)
+    if img_path and os.path.exists(img_path):
+        img_x = w - IMG_W - PADDING
+        img_y = body_start_y
+        ctx.image(img_path, img_x, img_y, float(IMG_W), float(IMG_H))
 
     # Wrap extract to fit width
     char_width = 80
