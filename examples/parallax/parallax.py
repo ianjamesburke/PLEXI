@@ -2,21 +2,24 @@
 """
 parallax — Plexi viewer app for Parallax video projects.
 
-View-only dashboard. Watches `.parallax/manifest.yaml` under the launch
-directory and re-renders when the file changes. Never takes input beyond
-scroll / refresh — the chat lives in the linked companion terminal pane
-declared by [app.launch] in manifest.toml.
+View-only dashboard. Watches `.parallax/` under the launch directory and
+re-renders when the manifest changes. Supports both layouts produced by the
+Parallax CLI:
 
-Layout:
-  Header       — project name, scene count, total duration
-  File grid    — generated stills from stills/
-  Video        — latest output from output/ (video_thumbnail)
-  Scene list   — scenes from the manifest
+  parallax create  → flat manifest at  .parallax/manifest.yaml
+                     stills at         stills/
+                     output at         output/
 
-If the manifest is missing, renders a friendly "run `parallax run` in the
-terminal below" hint.
+  parallax run     → concept manifest at  .parallax/<concept_id>/manifest.yaml
+                     stills at            .parallax/<concept_id>/stills/  (and *.png)
+                     output at            .parallax/<concept_id>/output/
+
+Never takes input beyond scroll / refresh — the chat lives in the linked
+companion terminal pane declared by [app.launch] in manifest.toml.
 """
+from __future__ import annotations
 
+import glob
 import os
 import sys
 import time
@@ -51,11 +54,11 @@ IMAGE_EXTS = ("png", "jpg", "jpeg", "webp", "gif")
 # ---------------------------------------------------------------------------
 
 LAUNCH_DIR = os.getcwd()
-MANIFEST_PATH = os.path.join(LAUNCH_DIR, ".parallax", "manifest.yaml")
 
+_manifest_path: str = ""   # resolved dynamically by _poll_manifest()
 _last_mtime: float = 0.0
 _last_poll: float = 0.0
-_manifest: dict = {}  # parsed manifest dict
+_manifest: dict = {}       # parsed manifest dict
 _manifest_error: str = ""
 
 # ---------------------------------------------------------------------------
@@ -128,11 +131,42 @@ def _parse_manifest_yaml(text: str) -> dict:
     return result
 
 
-def _reload_manifest():
-    """Re-read the manifest file, resetting cached parse state."""
+def _resolve_manifest_path() -> str:
+    """
+    Find the most recently modified manifest.yaml under .parallax/.
+
+    Checks two layouts:
+      - .parallax/manifest.yaml          (parallax create / flat)
+      - .parallax/<concept_id>/manifest.yaml  (parallax run)
+
+    Returns the path with the highest mtime, or "" if none exist.
+    """
+    candidates = []
+
+    flat = os.path.join(LAUNCH_DIR, ".parallax", "manifest.yaml")
+    if os.path.isfile(flat):
+        try:
+            candidates.append((os.path.getmtime(flat), flat))
+        except OSError:
+            pass
+
+    for p in glob.glob(os.path.join(LAUNCH_DIR, ".parallax", "*", "manifest.yaml")):
+        try:
+            candidates.append((os.path.getmtime(p), p))
+        except OSError:
+            pass
+
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _reload_manifest(path: str) -> None:
+    """Re-read the manifest file at *path*, resetting cached parse state."""
     global _manifest, _manifest_error
     try:
-        with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             text = f.read()
         _manifest = _parse_manifest_yaml(text)
         _manifest_error = ""
@@ -144,24 +178,36 @@ def _reload_manifest():
         _manifest_error = f"manifest parse error: {e}"
 
 
-def _poll_manifest():
-    """Check manifest mtime once per second; reload on change."""
-    global _last_mtime, _last_poll
+def _poll_manifest() -> None:
+    """
+    Resolve the best manifest path once per second; reload if path or mtime
+    changed.
+    """
+    global _manifest_path, _last_mtime, _last_poll
     now = time.monotonic()
     if now - _last_poll < 1.0:
         return
     _last_poll = now
-    try:
-        st = os.stat(MANIFEST_PATH)
-        mtime = st.st_mtime
-    except FileNotFoundError:
-        if _last_mtime != 0.0:
+
+    resolved = _resolve_manifest_path()
+
+    if not resolved:
+        # No manifest anywhere — reset if we previously had one.
+        if _manifest_path or _last_mtime != 0.0:
+            _manifest_path = ""
             _last_mtime = 0.0
-            _reload_manifest()
+            _reload_manifest("")
         return
-    if mtime != _last_mtime:
+
+    try:
+        mtime = os.stat(resolved).st_mtime
+    except OSError:
+        mtime = 0.0
+
+    if resolved != _manifest_path or mtime != _last_mtime:
+        _manifest_path = resolved
         _last_mtime = mtime
-        _reload_manifest()
+        _reload_manifest(resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -169,22 +215,61 @@ def _poll_manifest():
 # ---------------------------------------------------------------------------
 
 
-def _list_stills() -> list[str]:
-    stills_dir = os.path.join(LAUNCH_DIR, "stills")
-    if not os.path.isdir(stills_dir):
-        return []
+def _project_dir() -> str:
+    """
+    Return the directory that contains stills and output for the current
+    manifest.  Falls back to LAUNCH_DIR when no manifest is loaded.
+
+    Layout rules:
+      flat manifest  (.parallax/manifest.yaml)   → LAUNCH_DIR
+      concept subdir (.parallax/<id>/manifest.yaml) → .parallax/<id>/
+    """
+    if not _manifest_path:
+        return LAUNCH_DIR
+
+    parallax_dir = os.path.join(LAUNCH_DIR, ".parallax")
+    manifest_dir = os.path.dirname(_manifest_path)
+
+    # Flat layout: manifest lives directly in .parallax/
+    if os.path.normpath(manifest_dir) == os.path.normpath(parallax_dir):
+        return LAUNCH_DIR
+
+    # Concept subdir layout
+    return manifest_dir
+
+
+def _list_stills() -> list:
+    proj = _project_dir()
+
+    # Prefer a dedicated stills/ subdirectory.
+    stills_dir = os.path.join(proj, "stills")
+    if os.path.isdir(stills_dir):
+        out = []
+        for name in sorted(os.listdir(stills_dir)):
+            if "." not in name:
+                continue
+            ext = name.rsplit(".", 1)[-1].lower()
+            if ext in IMAGE_EXTS:
+                out.append(os.path.join(stills_dir, name))
+        if out:
+            return out
+
+    # Fallback: loose image files directly in the project dir (TEST_MODE stills).
     out = []
-    for name in sorted(os.listdir(stills_dir)):
-        if "." not in name:
-            continue
-        ext = name.rsplit(".", 1)[-1].lower()
-        if ext in IMAGE_EXTS:
-            out.append(os.path.join(stills_dir, name))
+    try:
+        for name in sorted(os.listdir(proj)):
+            if "." not in name:
+                continue
+            ext = name.rsplit(".", 1)[-1].lower()
+            if ext in IMAGE_EXTS:
+                out.append(os.path.join(proj, name))
+    except OSError:
+        pass
     return out
 
 
 def _latest_output() -> str | None:
-    out_dir = os.path.join(LAUNCH_DIR, "output")
+    out_dir = os.path.join(_project_dir(), "output")
     if not os.path.isdir(out_dir):
         return None
     candidates = []
@@ -244,7 +329,7 @@ def render(ctx):
     ctx.line(0, HEADER_H, ctx.width, HEADER_H, color=C["surface"], width=1.0)
 
     # --- Empty-state (no manifest yet) ----------------------------------
-    if not os.path.exists(MANIFEST_PATH):
+    if not _manifest_path:
         _render_empty(ctx)
         return
 
@@ -280,7 +365,7 @@ def render(ctx):
             show_labels=False,
         )
     else:
-        ctx.text(PADDING, y + 8, "(no stills generated yet — stills/ is empty)",
+        ctx.text(PADDING, y + 8, "(no stills generated yet)",
                  size=12, color=C["muted"])
     y += grid_h + PADDING
 
@@ -302,7 +387,7 @@ def render(ctx):
         ctx.text(PADDING, y + video_h - 18, label,
                  size=11, color=C["text"], monospace=True)
     else:
-        ctx.text(PADDING, y + 8, "(no rendered video yet — output/ is empty)",
+        ctx.text(PADDING, y + 8, "(no rendered video yet)",
                  size=12, color=C["muted"])
     y += video_h + PADDING
 
@@ -340,24 +425,23 @@ def _render_empty(ctx):
     ctx.text(PADDING, msg_y + 28,
              "Describe what you want to create in the terminal below.",
              size=13, color=C["subtext"])
-    ctx.text(PADDING, msg_y + 58,
-             "Example — generate character stills:",
-             size=12, color=C["muted"])
 
-    cmd = '  parallax create "yoga mom, editorial style" --count 3'
-    ctx.rect(PADDING, msg_y + 78, w - PADDING * 2, 32,
+    ctx.text(PADDING, msg_y + 58,
+             "Run a footage edit:",
+             size=12, color=C["muted"])
+    cmd = '  parallax run "your brief"'
+    ctx.rect(PADDING, msg_y + 76, w - PADDING * 2, 32,
              fill=C["surface"], radius=6.0)
-    ctx.text(PADDING + 12, msg_y + 86, cmd,
+    ctx.text(PADDING + 12, msg_y + 84, cmd,
              size=12, color=C["green"], monospace=True)
 
-    ctx.text(PADDING, msg_y + 124,
-             "With a reference image:",
+    ctx.text(PADDING, msg_y + 122,
+             "Or scaffold a new project directory:",
              size=12, color=C["muted"])
-
-    cmd2 = '  parallax create "same character, different pose" --ref photo.jpg --count 3'
-    ctx.rect(PADDING, msg_y + 142, w - PADDING * 2, 32,
+    cmd2 = '  parallax project new <name>'
+    ctx.rect(PADDING, msg_y + 140, w - PADDING * 2, 32,
              fill=C["surface"], radius=6.0)
-    ctx.text(PADDING + 12, msg_y + 150, cmd2,
+    ctx.text(PADDING + 12, msg_y + 148, cmd2,
              size=12, color=C["green"], monospace=True)
 
 
