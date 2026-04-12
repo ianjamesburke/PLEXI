@@ -39,6 +39,8 @@ mod app_permissions;
 #[cfg(not(target_arch = "wasm32"))]
 mod agent_context;
 #[cfg(not(target_arch = "wasm32"))]
+mod agent_llm;
+#[cfg(not(target_arch = "wasm32"))]
 mod agent_ui;
 #[cfg(not(target_arch = "wasm32"))]
 mod app;
