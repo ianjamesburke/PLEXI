@@ -1,5 +1,38 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-11 — [DECISION] Full app ecosystem architecture — specs for agent mode, companion app, orchestration, sync
+
+Major design session establishing the Plexi app ecosystem architecture. Core decisions: apps manage their own LLM calls (no Plexi intelligence proxy — deferred); state management via `get_state`/`set_state` with four buckets (user_state, derived, session, persistent); Plexi owns undo/redo/save; agent mode is the terminal itself (`/` at empty prompt, not a separate app); agents live in `.plexi/agents/` separate from apps; trust scores are continuous floats (0.0–1.0) with self-tuning thresholds; orchestrator has a prediction model that learns from user approval patterns.
+**Progress:** 8 spec documents written/updated: Parallax app spec (updated with state/cost/SDK), Parallax packaging spec (decomposition into app+agents+tools), intelligence protocol (deferred with annotation), sync architecture, Telegram integration (reference), companion app (Face ID + voice), agent mode terminal, agent orchestration + trust system. Memory files saved for all key decisions.
+**Open:** Agent orchestration spec still writing. No code written — all conceptual. Next session should pick one spec and start implementing. Parallax manifest-first refactor (Phase 1 of packaging spec) is the highest-leverage code change. Finder right-click Service is the quickest UX win.
+
+## 2026-04-11 — [FIX] ProcessApp List draw command consumed all remaining UI layout space
+
+`DrawCommand::List` rendered via `egui::ScrollArea::vertical().auto_shrink([false, false])` which consumed every remaining pixel of vertical layout space in the outer `ui`. Commands after `List` that use `ui.painter()` (absolute coordinates) still painted correctly, masking the bug — but any future draw command type using `ui.allocate_*` would silently receive a zero-sized rect. Fixed by pre-allocating a bounded rect (`available_y.min(total_rows_height)`) and scoping the `ScrollArea` inside a child UI built from that rect. Layout space after the list is now preserved.
+
+## 2026-04-11 — [GOTCHA] Wikipedia REST API v1 search endpoint is dead
+
+`/api/rest_v1/page/search/title?q=...` returns 404 — the route no longer exists on Wikipedia's infrastructure despite still appearing in some older docs. The summary endpoint (`/api/rest_v1/page/summary/{title}`) still works. Fix: switch search to the MediaWiki Action API (`/w/api.php?action=query&list=search&srsearch=...&format=json`). Response shape is different — results are at `data["query"]["search"]` and descriptions come as `snippet` with HTML tags that must be stripped. Any future Wikipedia integration should use the Action API for search, REST v1 only for summaries.
+
+## 2026-04-11 — [FIX] Wikipedia loading_msg bled into search view after results arrived
+
+`loading_msg` was set to `"Searching…"` on query submission and never cleared when results arrived. `_render_search` rendered it unconditionally, so the loading text appeared on top of results every time. Root cause: shared mutable state crossing view boundaries. Fix: clear `loading_msg` in the `search_done` queue drain handler, and remove `loading_msg` rendering from `_render_search` entirely — each view now renders only its own state. Pattern to follow in future subprocess apps: views must be fully isolated; no shared display state that persists across view transitions.
+
+## 2026-04-11 — [CHANGED] Wrap-up snapshot — web app ecosystem + renderer fixes
+Wikipedia app debugged (wrong search API endpoint → MediaWiki action API; `loading_msg` state bleed fixed; `_render_search` and `_render_loading` now fully isolated). Systemic renderer fix: `List` draw command now allocates a bounded rect instead of consuming all remaining UI layout space — subsequent commands no longer starved. Demo server enriched with buttons, simulated dropdown, list, status bar. Wikipedia and Plexi Browser apps installed to `~/.plexi-alpha/apps/`.
+**Progress:** Wikipedia fix live (no rebuild needed). Renderer fix built (`cargo build` clean) — needs `just install-alpha`. File browser async worktree fix still unmerged.
+**Open:** `just install-alpha` to ship renderer fix. Smoke-test Wikipedia and Plexi Browser in running alpha. File browser async worktree needs merge.
+
+## 2026-04-11 — [DECISION] .plexi scope infrastructure — event log, pane ancestry, unified permissions
+Pure architecture session. Designed three interdependent primitives: JSON-L event log scoped to nearest `.plexi` ancestor (partitioned by date), `spawned_from: Option<PaneId>` pane ancestry field, and unified permissions pipeline that removes the builtin bypass at `app_permissions.rs:112`.
+**Progress:** Full system designed. GitHub issue #91 filed with exact file locations. Also established: `.plexi` write access is host-only, `children.json` registers with nearest parent (chained, not flat-to-root), notes app scoped to `.plexi/notes/` using `filesystem.read_write`.
+**Open:** children.json format (JSON-L vs array), attention visualization as app vs built-in, notes frontmatter decision.
+
+## 2026-04-11 — [DECISION] App ecosystem architecture — six issues specced
+Specced out six interconnected features for the Plexi app/workspace ecosystem through extended brainstorming. All captured as GitHub issues.
+**Progress:** #87 file explorer as embeddable primitive (full protocol design + scoping spec), #88 workspace config scoping (directory-scoped, pointer-based root index), #89 navigator app (Harpoon-style hotlist), #90 self-closing panes via OSC title channel (~35 lines of Rust, uses existing alacritty_terminal Event::Title), #92 context-aware atomic notes with multi-dimensional linking, #93 AI as scoped app capability with spend limits (fits existing ApiRequest/ApiResponse protocol).
+**Open:** All issues filed, none started. #90 is the smallest win (~35 LOC). #87/#88 are prerequisites for #89. #92/#93 are P4 ideas.
+
 ## 2026-04-11 — [CHANGED] Secrets manager write UI, index-file listing, logging infrastructure
 
 Secrets manager upgraded from read-only viewer to full add/delete UI. Listing fixed by replacing `security dump-keychain` (triggers invisible macOS permission prompt) with a local `secrets-index.json`. Centralized file logging added via `fern` with config-driven log levels and `DrawCommand::Log` forwarding from external apps.

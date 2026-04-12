@@ -1,0 +1,31 @@
+{
+  "name": "Wikipedia",
+  "version": "1.0.0",
+  "description": "The free encyclopedia — search articles and read summaries",
+  "icon": "https://en.wikipedia.org/static/favicon/wikipedia.ico",
+  "display": "standalone",
+  "permissions": ["network"],
+  "endpoint": "wss://en.wikipedia.org/.well-known/plexi-ws",
+  "min_width": 500,
+  "min_height": 300,
+  "author": "Wikimedia Foundation",
+  "homepage": "https://www.wikipedia.org",
+  "theme": {
+    "background": "#202122",
+    "foreground": "#eaecf0",
+    "accent": "#3366cc"
+  },
+  "draw": [
+    { "type": "rect", "x": 0,  "y": 0,   "w": 800, "h": 600, "fill": "#202122" },
+    { "type": "rect", "x": 0,  "y": 0,   "w": 800, "h": 64,  "fill": "#1a1a1b" },
+    { "type": "text", "x": 24, "y": 18,  "text": "W", "size": 32, "color": "#eaecf0", "bold": true },
+    { "type": "text", "x": 52, "y": 22,  "text": "Wikipedia", "size": 22, "color": "#eaecf0", "bold": true },
+    { "type": "text", "x": 52, "y": 46,  "text": "The Free Encyclopedia", "size": 11, "color": "#9ea3b0" },
+    { "type": "line", "x1": 0, "y1": 64, "x2": 800, "y2": 64, "color": "#3d3d3d" },
+    { "type": "rect", "x": 24, "y": 90,  "w": 560, "h": 36, "fill": "#2a2a2b", "radius": 4 },
+    { "type": "text", "x": 40, "y": 104, "text": "Search Wikipedia...", "size": 13, "color": "#6e7681" },
+    { "type": "line", "x1": 24, "y1": 146, "x2": 584, "y2": 146, "color": "#3d3d3d" },
+    { "type": "text", "x": 24, "y": 166, "text": "Connecting to Wikipedia...", "size": 13, "color": "#6e7681" },
+    { "type": "text", "x": 24, "y": 560, "text": "Content available under CC BY-SA 4.0 unless otherwise noted.", "size": 11, "color": "#6e7681" }
+  ]
+}

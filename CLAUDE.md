@@ -36,6 +36,27 @@ Before tagging a release (`just bump` + `just release`):
 
 If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the first entry.
 
+## App Installation Paths
+
+Apps are installed to a build-specific directory under `~`. The registry reads from `config_dir().join("apps")` where `config_dir` is resolved by the binary name at runtime:
+
+| Build | Binary name contains | Apps directory |
+|---|---|---|
+| Alpha | `alpha` | `~/.plexi-alpha/apps/` |
+| Beta | `beta` | `~/.plexi-beta/apps/` |
+| Stable | anything else | `~/.plexi/apps/` |
+
+**Always install to the correct directory for the active build.** Installing to `~/.plexi/apps/` when running the alpha build will silently do nothing — apps won't appear.
+
+Each app is a subdirectory with a `manifest.toml` and an executable entry point:
+```
+~/.plexi-alpha/apps/
+  wikipedia/
+    manifest.toml
+    wikipedia.py
+    plexi_sdk.py
+```
+
 ## Build & Install
 
 `just install` uses `cargo bundle --release` to produce a proper macOS `.app` bundle (reads metadata from `Cargo.toml`), then copies it to `/Applications/Plexi.app` and extracts the binary to `/usr/local/bin/plexi`. The `install.sh` curl script does the same thing for fresh installs from GitHub.
@@ -94,3 +115,27 @@ Sub-agents working in any worktree can read the same log file at the fixed path 
 
 - **Coupled state:** When adding new state that derives from or shadows existing state (e.g., `zoomed_pane` tracking `focused_pane`), grep for all mutation sites of the original state and update each one to handle the new state.
 - **Pane focus guards:** The focus condition in `pane_ui` (tiling.rs) combines a spatial guard (`rect_contains_pointer` / `max_rect().contains(pos)`) with an intent check (click or drag). Any refactor of this condition must keep the spatial guard on every branch independently.
+
+## Branching Strategy
+
+```
+feature/* → alpha → beta → main
+```
+
+- **`alpha`** — active development. Feature branches are created off alpha, worked in worktrees, and merged via PR. All Layer 0–1 work lands here first.
+- **`beta`** — staging. When a set of alpha features is stable and tested together, merge alpha → beta. Beta is what gets `just install-beta` for real-world testing.
+- **`main`** — stable releases. Beta → main when ready to tag a version and ship.
+
+**Sub-agent workflow:** Agents use `isolation: "worktree"` to create feature branches off alpha, do their work, and open PRs targeting alpha. Never push directly to alpha, beta, or main.
+
+**Branch naming:** `feature/<issue-number>-short-description` (e.g., `feature/83-hot-reload`).
+
+## General Rules
+
+- Before starting SSH/networking setup, always ask if machines are on the same local network or remote. Before starting any multi-step infrastructure task, clarify the physical/network topology first.
+- When user reports a bug or asks for a fix, focus on exactly what they asked for first. Don't pivot to QA, refactoring, or tangential improvements until the primary request is resolved.
+- When user provides multiple distinct ideas, always file them as separate entries. Never combine unrelated concepts into a single item unless explicitly asked.
+
+## Video Production
+
+For video production pipeline: always use manifest-first workflow, verify voice API uses IDs not names, use correct filename digit formats (check existing files), and map VO to scenes explicitly before assembly.
