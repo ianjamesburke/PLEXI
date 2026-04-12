@@ -77,6 +77,8 @@ install-alpha:
         name="$(basename "$dir")"
         rm -rf "$apps_dir/$name"
         cp -R "$dir" "$apps_dir/$name"
+        # Ensure Python entry points are executable (macOS strips +x on cp -R).
+        find "$apps_dir/$name" -maxdepth 1 -name "*.py" -exec chmod +x {} \;
         echo "Installed app: $name"
       fi
     done

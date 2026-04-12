@@ -335,20 +335,30 @@ def _render_empty(ctx):
     w = ctx.width
     msg_y = HEADER_H + 40
     ctx.text(PADDING, msg_y,
-             "No Parallax project here yet.",
+             "No project here yet.",
              size=16, color=C["text"], bold=True)
     ctx.text(PADDING, msg_y + 28,
-             f"Expected: {MANIFEST_PATH}",
-             size=11, color=C["muted"], monospace=True)
-    ctx.text(PADDING, msg_y + 58,
-             "Run this in the terminal below to start one:",
+             "Describe what you want to create in the terminal below.",
              size=13, color=C["subtext"])
+    ctx.text(PADDING, msg_y + 58,
+             "Example — generate character stills:",
+             size=12, color=C["muted"])
 
-    cmd = '  parallax run "your brief here"'
-    ctx.rect(PADDING, msg_y + 80, w - PADDING * 2, 32,
+    cmd = '  parallax create "yoga mom, editorial style" --count 3'
+    ctx.rect(PADDING, msg_y + 78, w - PADDING * 2, 32,
              fill=C["surface"], radius=6.0)
-    ctx.text(PADDING + 12, msg_y + 88, cmd,
-             size=13, color=C["green"], monospace=True)
+    ctx.text(PADDING + 12, msg_y + 86, cmd,
+             size=12, color=C["green"], monospace=True)
+
+    ctx.text(PADDING, msg_y + 124,
+             "With a reference image:",
+             size=12, color=C["muted"])
+
+    cmd2 = '  parallax create "same character, different pose" --ref photo.jpg --count 3'
+    ctx.rect(PADDING, msg_y + 142, w - PADDING * 2, 32,
+             fill=C["surface"], radius=6.0)
+    ctx.text(PADDING + 12, msg_y + 150, cmd2,
+             size=12, color=C["green"], monospace=True)
 
 
 app.run()

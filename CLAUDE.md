@@ -120,6 +120,8 @@ Sub-agents working in any worktree can read the same log file at the fixed path 
 
 ## Lessons
 
+- **Python version in GUI apps:** macOS GUI app bundles do NOT inherit the user's shell PATH. `#!/usr/bin/env python3` resolves to `/usr/bin/python3` (Apple's frozen 3.9.6), not the user's Homebrew 3.11+. **Always add `from __future__ import annotations` as the first line of every app Python file.** This makes `str | None` union syntax safe on Python 3.7+. Never use bare `X | Y` union types without it.
+- **Install-alpha doesn't chmod:** `just install-alpha` syncs app files but does NOT set executable bits on entry points. After any install, run `chmod +x ~/.plexi-alpha/apps/*/*.py` or add this to the justfile recipe.
 - **Coupled state:** When adding new state that derives from or shadows existing state (e.g., `zoomed_pane` tracking `focused_pane`), grep for all mutation sites of the original state and update each one to handle the new state.
 - **Pane focus guards:** The focus condition in `pane_ui` (tiling.rs) combines a spatial guard (`rect_contains_pointer` / `max_rect().contains(pos)`) with an intent check (click or drag). Any refactor of this condition must keep the spatial guard on every branch independently.
 
