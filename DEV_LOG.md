@@ -1,5 +1,61 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [CHANGED] Massive parallel-agent build session — alpha now includes Layer 0/1/2/4 + WASM Phase 1 + media draw commands + Finder Service + notifications
+
+End-of-day state. Alpha is at `a9a181e`. Built and installed via `just install-alpha`. The session ran ~15 sub-agents in parallel worktrees and shipped 6 PRs (#108, #109, #110, #112, #117, #120) plus a follow-up roadmap rewrite.
+
+**What's on alpha now (verified building, partially verified working):**
+- Layer 0: hot reload (#83), theme hover tokens (#70), Finder Service (#110), self-closing panes (#90)
+- Layer 1: 24 Python tests across 4 apps via `plexi_test.py` test harness
+- Layer 2: agent mode scaffolding + Anthropic LLM backend (panel UI for now)
+- Layer 4: `get_state`/`set_state` + undo/redo, `cost_report` events, full Python SDK
+- WASM Phase 1: native deps feature-gated, both `cargo build` and `cargo build --target wasm32-unknown-unknown` succeed
+- Drop events: `DropTarget` draw command, `Drop` event, `@app.on_drop` decorator
+- Notification system MVP: bell icon + Cmd+Shift+N palette + JSONL log
+- Media draw commands: `image`, `video_thumbnail` (with ffmpeg + cache), `file_grid` (with `paths=[]` array support)
+
+**Specs landed (no implementation yet):**
+- `docs/specs/wasm-pwa-deployment.md` — replaces native iOS companion app
+- `docs/specs/agent-replay-testing.md` — Layer 6 vision (record/replay/fork/diff/insights)
+- `docs/specs/chat-primitive.md` — pure rendering recommendation, deferred since terminal IS the chat
+- `docs/handoffs/test-harness-handoff.md` — built and shipped as #100/#101
+
+**Parallax repo (separate from PLEXI):**
+- Manifest-first refactor done — root cause was `_get_tools()` returning `["...", "ffmpeg"]`; both editors now always take the manifest path for footage_edit
+- Pydantic schema validator (`packs/video/manifest_schema.py`) wraps `write_manifest_scenes()` — invalid writes raise errors that flow back to the agent loop on next turn for self-correction
+- Senior-only routing — JuniorEditor is dead code, all footage_edit jobs go to SeniorEditor on `claude-sonnet-4-6`
+- Tests: 5 + 9 + 5 = 19 passing under `TEST_MODE=true`
+
+**Bugs found during alpha verification (filed for next session):**
+- #121 — hot reload doesn't apply changes to git-log app (P2)
+- #122 — Finder Service "Open in Plexi" doesn't appear in right-click menu — likely Services list refresh issue (P3, deferred)
+- #123 — agent mode message send doesn't trigger LLM response — P1 marquee bug, probably secret resolution path or missing UI poll
+- #124 — better process monitor app (enhancement, P3)
+
+**Architectural decisions captured (across the session):**
+1. **The terminal IS the chat primitive.** Agent mode is a soft mode within it, Warp-style. NO separate chat UI in apps. Parallax's chat moves to the terminal pane below the viewer. `chat-primitive.md` spec is preserved as reference for future apps that might still want in-app chat.
+2. **Parallax = viewer app + terminal pane below + agent mode + Parallax CLI.** Parallax app is now ~100 lines of Python (just the visualization), not ~300. Chat goes through agent mode in the linked terminal.
+3. **One Plexi window, ever.** N contexts inside it. `plexi <path>` creates a context (or focuses an existing one) — never opens a new window. `cd` in a terminal pane just moves the shell, doesn't create a context.
+4. **Test mode is a spectrum, not a boolean.** stub / cheapest / default / pedal. Components declare which fidelity they require. Captured in `agent-replay-testing.md`.
+5. **JuniorEditor is dead code for now.** Senior-only on Sonnet. Multi-agent topology iteration deferred until we have replay history to A/B against.
+6. **Claude Code as agent backend is the open question for Layer 2.** Research confirmed `claude -p --resume` works, tool use works, auth works — but prompt cache survival across `-p` invocations isn't documented. Needs a 30-minute experiment to verify. If yes, the entire LlmWorker in PR #108 gets scrapped in favor of a Claude Code subprocess wrapper.
+
+**Open follow-ups, prioritized for next session (from highest to lowest leverage):**
+1. **Fix #123** — agent mode message send. The whole reason Layer 2 isn't really verified.
+2. **Inline agent mode refactor** — kill the panel, render agent responses inline in the terminal scrollback like Warp. ~440 lines, 5 tasks: prompt-line mode toggle, markdown→ANSI converter, inline response writer, scrollback markers, agent_ui refactor. User explicitly wants this.
+3. **Build the Parallax viewer app + Parallax CLI** — issue #113. ~100 lines of Python in the viewer + ~50 lines CLI. After this, you can talk to the agent, see videos render live.
+4. **Run the Claude Code cache experiment** — 2 `claude -p` invocations with `--resume`, look for `cache_read_input_tokens`. If positive, redirect Layer 2 entirely to the Claude Code wrapper approach.
+5. **Fix #121** — hot reload bug.
+6. **Empty-prompt command system** — issue #114. The unified surface for `recent`, `files`, `panes`, `apps`, etc.
+7. **Fix #122** — Finder Service registration.
+8. **Bare `/` at empty prompt detection** — issue #104. Replaces `Ctrl+/`.
+
+**Next-session plan as stated by user:** "spin up all the sub-agents to create all of the apps spec'd out including the parallax app and we're really just gonna like go about the rest of the manifest as if this layer alpha install is perfect even though I haven't verified everything I want. I just keep cruising."
+
+So: don't block on the bugs. Spawn parallel sub-agents for the inline agent mode refactor + Parallax viewer + Parallax CLI + the Claude Code experiment + #123 fix, all at once. Treat alpha as the foundation, build on top.
+
+**Stale worktrees on disk** (~14 of them under `.claude/worktrees/agent-*`) — all stale from this session. Safe to clean up next session with `git worktree prune` after confirming none are needed. The agent-a7b44bef alpha worktree was already removed.
+
 ## 2026-04-11 — [DECISION] Notification system MVP — global singleton + Cmd+Shift+N palette
 
 Shipped the minimum viable notification system to unblock Parallax's "video finished" alerts without waiting on the full attention-queue vision (#74).
