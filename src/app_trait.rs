@@ -76,6 +76,13 @@ pub trait App: Send {
 
     /// Restore app state from a previously serialised value.
     fn restore_state(&mut self, _state: &serde_json::Value) {}
+
+    /// Trigger undo (pop previous state from undo stack and restore).
+    /// Only meaningful for ProcessApps that support the get_state/set_state protocol.
+    fn undo(&mut self) {}
+
+    /// Trigger redo (pop next state from redo stack and restore).
+    fn redo(&mut self) {}
 }
 
 /// Whether the app surface or the terminal command bar has keyboard focus.

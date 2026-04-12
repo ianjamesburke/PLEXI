@@ -18,6 +18,8 @@
 // Cmd+0                 — quick note
 // Cmd+1–9               — switch context
 // Ctrl+/                — toggle agent mode
+// Cmd+Z                 — undo (app active)
+// Cmd+Shift+Z           — redo (app active)
 // Escape (app active)   — close app
 // Tab (app active)      — navigate to linked terminal
 //
@@ -75,6 +77,10 @@ pub enum Action {
     OpenSecretsManager,
     /// Toggle agent mode on the focused pane.
     ToggleAgentMode,
+    /// Undo last action in the focused app.
+    AppUndo,
+    /// Redo last undone action in the focused app.
+    AppRedo,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -223,6 +229,16 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         };
         if input.consume_key(ctrl_only, egui::Key::Slash) {
             actions.push(Action::ToggleAgentMode);
+        }
+
+        // Undo / Redo in focused app (Cmd+Z / Cmd+Shift+Z)
+        // Only when an app is active — otherwise Cmd+Z goes to the terminal.
+        if app_active {
+            if input.consume_key(cmd_shift, egui::Key::Z) {
+                actions.push(Action::AppRedo);
+            } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+                actions.push(Action::AppUndo);
+            }
         }
 
         // Switch context (Cmd+1 through Cmd+9)

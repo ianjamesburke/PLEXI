@@ -777,4 +777,24 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Trigger undo on the focused app.
+    pub(crate) fn app_undo(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            if let Some(app) = &mut pane.active_app {
+                app.undo();
+            }
+        }
+    }
+
+    /// Trigger redo on the focused app.
+    pub(crate) fn app_redo(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            if let Some(app) = &mut pane.active_app {
+                app.redo();
+            }
+        }
+    }
 }
