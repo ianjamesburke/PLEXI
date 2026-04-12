@@ -1,0 +1,11 @@
+[app]
+id = "hacker-news"
+name = "Hacker News"
+entry = "hacker_news.py"
+version = "0.1.0"
+description = "Browse Hacker News top stories — list and detail views"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"

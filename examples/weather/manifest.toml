@@ -1,0 +1,11 @@
+[app]
+id = "weather"
+name = "Weather"
+entry = "weather.py"
+version = "0.1.0"
+description = "Current weather from wttr.in — auto-refreshes every 5 minutes"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"
