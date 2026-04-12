@@ -1,0 +1,11 @@
+[app]
+id = "stopwatch"
+name = "Stopwatch"
+entry = "stopwatch.py"
+version = "0.1.0"
+description = "Precise stopwatch with lap times — Space to start/stop, l for lap, r to reset"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"
