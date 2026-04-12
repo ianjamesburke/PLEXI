@@ -8,10 +8,10 @@ Reference document linking layers of work to specs and issues. This file tracks 
 
 | Task | Type | Reference | Status |
 |------|------|-----------|--------|
-| Self-closing panes via OSC title | Code (~35 LOC) | [#90](https://github.com/ianjamesburke/PLEXI/issues/90) | Ready |
+| Self-closing panes via OSC title | Code (~35 LOC) | [#90](https://github.com/ianjamesburke/PLEXI/issues/90) | **Done** (0e6cddc) |
 | Hot reload for app development | Code | [#83](https://github.com/ianjamesburke/PLEXI/issues/83) | Ready |
-| App protocol test harness (`plexi_test.py`) | Code (~200 LOC) | See handoff doc | Ready |
-| Issue triage cleanup (close 13, update 7) | Ops | Triage report in DEV_LOG 2026-04-11 | Ready |
+| App protocol test harness (`plexi_test.py`) | Code (~360 LOC) | [#100](https://github.com/ianjamesburke/PLEXI/issues/100) | **Done** (PR pending) |
+| Issue triage cleanup (close 13, update 9) | Ops | Triage report in DEV_LOG 2026-04-11 | **Done** (37 open, down from 50) |
 | Finder Service "Open in Plexi" | Code | North star ship order #6 | Ready |
 | Theme: surface-specific hover tokens | Code (small) | [#70](https://github.com/ianjamesburke/PLEXI/issues/70) | Ready |
 

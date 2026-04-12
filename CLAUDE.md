@@ -135,7 +135,3 @@ feature/* → alpha → beta → main
 - Before starting SSH/networking setup, always ask if machines are on the same local network or remote. Before starting any multi-step infrastructure task, clarify the physical/network topology first.
 - When user reports a bug or asks for a fix, focus on exactly what they asked for first. Don't pivot to QA, refactoring, or tangential improvements until the primary request is resolved.
 - When user provides multiple distinct ideas, always file them as separate entries. Never combine unrelated concepts into a single item unless explicitly asked.
-
-## Video Production
-
-For video production pipeline: always use manifest-first workflow, verify voice API uses IDs not names, use correct filename digit formats (check existing files), and map VO to scenes explicitly before assembly.
