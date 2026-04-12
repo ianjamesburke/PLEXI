@@ -65,7 +65,7 @@ class BlameEntry:
 # ---------------------------------------------------------------------------
 
 blame_lines: list[BlameEntry] = []
-filtered_lines: list[BlameEntry] = []   # view after filter applied
+filtered_lines: list[BlameEntry] = []
 current_file: str = ""
 branch_name: str = ""
 error_msg: str = ""
@@ -135,7 +135,7 @@ def parse_blame(raw: str) -> list[BlameEntry]:
         if not line:
             continue
 
-        # Hunk header: 40-char hex hash followed by a space
+        # Hunk header: 40-char hex hash followed by a space and line numbers
         if len(line) > 40 and line[40] == " " and all(c in "0123456789abcdef" for c in line[:40]):
             parts = line.split()
             if len(parts) >= 3:
@@ -276,7 +276,7 @@ def render(ctx):
     lines = filtered_lines
     visible_rows = max(1, int((ctx.height - HEADER_H) / ITEM_H))
 
-    # Clamp scroll
+    # Clamp scroll so cursor stays visible
     if cursor < scroll_offset:
         scroll_offset = cursor
     elif cursor >= scroll_offset + visible_rows:
@@ -284,7 +284,7 @@ def render(ctx):
 
     # Column layout
     hash_col_w = 8 * CHAR_W    # "abc1234 "
-    author_col_w = 11 * CHAR_W # "Author     "
+    author_col_w = 11 * CHAR_W # "FirstName  "
     content_x = hash_col_w + author_col_w + 8
     content_max_chars = max(10, int((ctx.width - content_x - 8) / CHAR_W))
 
@@ -302,13 +302,11 @@ def render(ctx):
                  color=age_color(entry.author_time), monospace=True)
 
         # Author first name (truncated to 10 chars)
-        first_name = entry.author.split()[0] if entry.author else "?"
-        if len(first_name) > 10:
-            first_name = first_name[:10]
+        first_name = (entry.author.split()[0] if entry.author else "?")[:10]
         ctx.text(hash_col_w + 8, y + 4, first_name, size=12,
                  color=C["text"] if is_cursor else C["subtext"])
 
-        # Line content (truncated)
+        # Line content (truncated to fit)
         content = entry.content
         if len(content) > content_max_chars:
             content = content[:content_max_chars - 1] + "…"
@@ -317,14 +315,13 @@ def render(ctx):
 
     _render_header(ctx)
 
-    # Filter bar (drawn over header area bottom)
+    # Filter bar at bottom
     if filter_mode:
         bar_y = ctx.height - 28
         ctx.rect(0, bar_y, ctx.width, 28, fill=C["surface"])
-        prompt = f"/ {filter_text}_"
-        ctx.text(12, bar_y + 6, prompt, size=12, color=C["accent"], monospace=True)
+        ctx.text(12, bar_y + 6, f"/ {filter_text}_", size=12,
+                 color=C["accent"], monospace=True)
 
-    # Diff popup overlay
     if show_diff:
         _render_diff(ctx)
 
@@ -335,7 +332,7 @@ def _render_header(ctx):
     if branch_name:
         title = f"{title}  [{branch_name}]"
     ctx.text(12, 11, title, size=13, color=C["accent"], bold=True)
-    hint = "j/k↑↓  Enter=diff  /=filter  r=reload"
+    hint = "j/k  Enter=diff  /=filter  r=reload"
     ctx.text(ctx.width - len(hint) * 6.5 - 8, 11, hint, size=11, color=C["subtext"])
 
 
@@ -378,7 +375,7 @@ def on_key(key, mods, emit):
         return
 
     if filter_mode:
-        if key == "Escape" or key == "Enter":
+        if key in ("Escape", "Enter"):
             filter_mode = False
         elif key == "Backspace":
             filter_text = filter_text[:-1]
@@ -394,8 +391,7 @@ def on_key(key, mods, emit):
     elif key in ("k", "ArrowUp"):
         cursor = max(cursor - 1, 0)
     elif key == "Enter" and lines:
-        entry = lines[cursor]
-        load_diff(entry.hash)
+        load_diff(lines[cursor].hash)
     elif key == "/":
         filter_mode = True
         filter_text = ""
@@ -416,7 +412,6 @@ def on_command(text, emit):
     if os.path.isfile(path):
         load_blame(path)
     else:
-        # Try relative to cwd
         abs_path = os.path.join(os.getcwd(), path)
         if os.path.isfile(abs_path):
             load_blame(abs_path)
