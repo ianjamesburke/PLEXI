@@ -142,7 +142,7 @@ class Game:
         # Grow crops
         for row in self.grid:
             for cell in row:
-                if cell.stage in (SEEDED, GROWING):
+                if cell.stage in (SEEDED, GROWING) and cell.crop is not None:
                     cell.days_planted += day_fraction
                     crop_days = CROPS[cell.crop]["days"]
                     if cell.stage == SEEDED and cell.days_planted >= 1.0:
@@ -204,7 +204,7 @@ class Game:
 
     def harvest(self):
         cell = self._cursor_cell()
-        if cell.stage != READY:
+        if cell.stage != READY or cell.crop is None:
             return
         self.coins += CROPS[cell.crop]["price"]
         cell.stage = EMPTY
@@ -290,7 +290,7 @@ def _cell_color(cell: Cell) -> str:
         return C["seeded"]
     if cell.stage == GROWING:
         return C["growing"]
-    if cell.stage == READY:
+    if cell.stage == READY and cell.crop is not None:
         return CROPS[cell.crop]["color"]
     return C["surface"]
 
@@ -309,7 +309,7 @@ def _render_game(ctx):
             ctx.rect(x, y, w, h, fill=fill, radius=4.0)
 
             # Growth progress bar for seeded/growing
-            if cell.stage in (SEEDED, GROWING):
+            if cell.stage in (SEEDED, GROWING) and cell.crop is not None:
                 crop_days = CROPS[cell.crop]["days"]
                 pct = min(1.0, cell.days_planted / crop_days)
                 bar_h = 3.0
@@ -331,7 +331,7 @@ def _render_game(ctx):
     fill = _cell_color(cursor_cell)
     ctx.rect(cx + 3, cy + 3, cw - 6, ch - 6, fill=fill, radius=2.0)
     # Redraw progress bar on cursor cell
-    if cursor_cell.stage in (SEEDED, GROWING):
+    if cursor_cell.stage in (SEEDED, GROWING) and cursor_cell.crop is not None:
         crop_days = CROPS[cursor_cell.crop]["days"]
         pct = min(1.0, cursor_cell.days_planted / crop_days)
         ctx.rect(cx + 3, cy + ch - 5, (cw - 6) * pct, 3.0, fill=C["green"])
