@@ -1,3 +1,4 @@
+use crate::agent_mode::AgentMode;
 use crate::app_permissions::AppPermissions;
 use crate::app_trait::{App, SurfaceLayer, SurfaceMode};
 use crate::tiling::PaneId;
@@ -23,6 +24,8 @@ pub struct TerminalPane {
     /// pane created below. Used to route AppCommands and to collapse the split
     /// on close.
     pub linked_terminal_pane: Option<PaneId>,
+    /// Agent mode state for this pane.
+    pub agent_mode: AgentMode,
 }
 
 impl TerminalPane {
@@ -33,6 +36,8 @@ impl TerminalPane {
         settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
+        let cwd = settings.working_directory.clone()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
             Ok(b) => b,
             Err(e) => {
@@ -51,6 +56,7 @@ impl TerminalPane {
             app_permissions: AppPermissions::default(),
             app_scope: None,
             linked_terminal_pane: None,
+            agent_mode: AgentMode::new(cwd),
         })
     }
 

@@ -128,6 +128,19 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
                     match pane.surface_mode {
                         SurfaceMode::FullTerminal => {
+                            // Agent mode: render agent UI instead of terminal
+                            if pane.agent_mode.is_active() {
+                                let deactivate = crate::agent_ui::render_agent_mode(
+                                    ui,
+                                    &mut pane.agent_mode,
+                                    &self.colors,
+                                );
+                                if deactivate {
+                                    pane.agent_mode.deactivate();
+                                }
+                                return;
+                            }
+
                             render_name_bar_and_dots(
                                 ui,
                                 tile_id,
