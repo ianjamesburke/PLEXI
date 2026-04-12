@@ -1,0 +1,11 @@
+[app]
+id = "json-viewer"
+name = "JSON Viewer"
+entry = "json_viewer.py"
+version = "0.1.0"
+description = "Collapsible tree viewer for JSON files"
+
+[app.capabilities]
+file_types = ["json"]
+terminal_write = false
+filesystem = "read"

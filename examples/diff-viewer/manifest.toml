@@ -1,0 +1,11 @@
+[app]
+id = "diff-viewer"
+name = "Diff Viewer"
+entry = "diff_viewer.py"
+version = "0.1.0"
+description = "Git diff viewer with syntax highlighting — j/k to scroll, r to refresh"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"
