@@ -20,6 +20,8 @@ mod text_editor_app;
 mod config;
 mod context;
 mod cost_tracker;
+mod notification_log;
+mod notification_palette;
 mod logging;
 mod features;
 mod keys;

@@ -6,6 +6,7 @@ Demonstrates:
   - Init / Render / Key / Command event handling
   - Drawing rects, text, and a list
   - Sending RunInTerminal commands back to the shell
+  - Emitting a test notification (press 'n')
 
 Drop this in ~/.plexi/apps/hello-app/bin/plexi-app (chmod +x) and add
 the manifest.toml alongside it.
@@ -41,7 +42,7 @@ def render():
     send({"type": "text", "x": 20, "y": 14, "text": "Hello App",
           "size": 14.0, "color": "#cdd6f4", "bold": True})
     send({"type": "text", "x": 20, "y": 30,
-          "text": "A minimal Plexi app — arrow keys to navigate, Enter to run",
+          "text": "Arrows/Enter to run commands — 'n' to emit a test notification",
           "size": 10.0, "color": "#585b70"})
 
     # Divider
@@ -101,6 +102,18 @@ for line in sys.stdin:
             cmd = COMMANDS[selected]
             last_command = cmd
             send({"type": "run_in_terminal", "command": cmd})
+        elif key == "n":
+            # Round-trip test: emit a notification. Plexi should record it to
+            # ~/.plexi-alpha/notifications.jsonl, increment the status-bar
+            # unread count, and surface it in the palette (Cmd+Shift+N).
+            send({
+                "type": "notification",
+                "priority": 1,
+                "title": "Hello from hello-app",
+                "body": "Test notification emitted via the draw channel.",
+                "source_app": "hello-app",
+            })
+            last_command = "notification"
 
     elif t == "command":
         # User typed something in the terminal command bar

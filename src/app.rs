@@ -33,6 +33,8 @@ pub struct PlexiApp {
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
+    pub(crate) show_notification_palette: bool,
+    pub(crate) notification_palette_selected: usize,
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
@@ -163,6 +165,8 @@ impl PlexiApp {
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
+                    show_notification_palette: false,
+                    notification_palette_selected: 0,
                     pane_visit_history: Vec::new(),
                     renaming_pane: None,
                     registry,
@@ -210,6 +214,8 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            show_notification_palette: false,
+            notification_palette_selected: 0,
             pane_visit_history: Vec::new(),
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
@@ -564,6 +570,12 @@ impl eframe::App for PlexiApp {
                 Action::AppRedo => {
                     self.app_redo();
                 }
+                Action::ToggleNotificationPalette => {
+                    self.show_notification_palette = !self.show_notification_palette;
+                    if self.show_notification_palette {
+                        self.notification_palette_selected = 0;
+                    }
+                }
             }
         }
 
@@ -819,6 +831,11 @@ impl eframe::App for PlexiApp {
         // Command palette overlay
         if self.show_command_palette {
             self.draw_command_palette(ctx);
+        }
+
+        // Notification palette overlay
+        if self.show_notification_palette {
+            self.draw_notification_palette(ctx);
         }
 
         // Rename pane overlay

@@ -170,6 +170,20 @@ pub enum DrawCommand {
         #[serde(default)]
         timestamp: Option<String>,
     },
+    /// Raise a notification. Plexi records it to the notification log,
+    /// increments the status-bar unread count, and surfaces it in the
+    /// notification palette (Cmd+Shift+N).
+    ///
+    /// Priorities: `0` = info, `1` = normal, `2` = high, `3` = urgent.
+    /// The MVP does not style by priority — the value is just logged.
+    Notification {
+        priority: u8,
+        title: String,
+        #[serde(default)]
+        body: Option<String>,
+        /// The `app_id` of the emitter (e.g. `"parallax"`).
+        source_app: String,
+    },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,
 }
