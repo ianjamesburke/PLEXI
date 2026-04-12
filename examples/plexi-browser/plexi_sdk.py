@@ -114,6 +114,30 @@ class Emitter:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }), flush=True)
 
+    def notification(
+        self,
+        title: str,
+        body: Optional[str] = None,
+        priority: int = 1,
+    ):
+        """
+        Raise a notification to Plexi's notification log.
+
+        Priority: 0 = info, 1 = normal, 2 = high, 3 = urgent.
+        The notification is recorded to ~/.plexi-alpha/notifications.jsonl,
+        increments the status-bar unread count, and appears in the
+        notification palette (Cmd+Shift+N).
+        """
+        cmd = {
+            "type": "notification",
+            "priority": priority,
+            "title": title,
+            "source_app": self._app_id,
+        }
+        if body:
+            cmd["body"] = body
+        print(json.dumps(cmd), flush=True)
+
 
 class RenderContext:
     """
@@ -122,9 +146,10 @@ class RenderContext:
     All coordinates are in logical pixels within the app surface.
     """
 
-    def __init__(self, width: float, height: float):
+    def __init__(self, width: float, height: float, app_id: str = ""):
         self.width = width
         self.height = height
+        self._app_id = app_id
         self._commands: list = []
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0):
@@ -149,6 +174,44 @@ class RenderContext:
             "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
             "color": color, "width": width,
         })
+
+    def drop_target(
+        self,
+        id: str,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        accept: Optional[list] = None,
+        label: Optional[str] = None,
+    ):
+        """
+        Declare a region that can accept dropped files from outside Plexi.
+
+        Drop targets are stateless — you must re-emit this on every render
+        frame for the region to remain active.
+
+        Args:
+            id:     App-local identifier for this drop zone. Echoed back in
+                    the on_drop handler so you can tell which zone received
+                    the drop when you declare multiple.
+            x, y, w, h: Region in the app's local coordinate space.
+            accept: List of file extensions (lowercase, no dot) to accept,
+                    e.g. ["png", "jpg", "mp4"]. Empty or None = accept
+                    anything. Paths that don't match are filtered out by
+                    Plexi before your on_drop handler is called.
+            label:  Optional hint text shown by Plexi over the target while
+                    the user is hovering with files from Finder.
+        """
+        cmd = {
+            "type": "drop_target",
+            "id": id,
+            "x": x, "y": y, "w": w, "h": h,
+            "accept": accept or [],
+        }
+        if label:
+            cmd["label"] = label
+        self._commands.append(cmd)
 
     def list(self, items: list, selected: int = 0, item_height: float = 40.0):
         """
@@ -192,6 +255,27 @@ class RenderContext:
         """Log at debug level."""
         self.log("debug", message)
 
+    def notification(
+        self,
+        title: str,
+        body: Optional[str] = None,
+        priority: int = 1,
+    ):
+        """
+        Raise a notification from inside a render frame.
+
+        Priority: 0 = info, 1 = normal, 2 = high, 3 = urgent.
+        """
+        cmd = {
+            "type": "notification",
+            "priority": priority,
+            "title": title,
+            "source_app": self._app_id,
+        }
+        if body:
+            cmd["body"] = body
+        self._commands.append(cmd)
+
     def _flush(self):
         for cmd in self._commands:
             print(json.dumps(cmd), flush=True)
@@ -211,6 +295,7 @@ class App:
         @app.on_resize      fn(width: float, height: float)
         @app.on_get_state   fn() -> dict with keys: user_state, derived, session, persistent
         @app.on_set_state   fn(state: dict) — restore app from state buckets
+        @app.on_drop        fn(target_id: str, paths: list[str], emit: Emitter)
     """
 
     def __init__(self, app_id: str = ""):
@@ -223,6 +308,7 @@ class App:
         self._on_resize: Optional[Callable] = None
         self._on_get_state: Optional[Callable] = None
         self._on_set_state: Optional[Callable] = None
+        self._on_drop: Optional[Callable] = None
         self._emitter = Emitter(app_id=app_id)
 
     def on_render(self, fn: Callable) -> Callable:
@@ -255,6 +341,17 @@ class App:
         """Register handler for set_state requests. Receives a dict with
         keys: user_state, derived, session, persistent."""
         self._on_set_state = fn
+        return fn
+
+    def on_drop(self, fn: Callable) -> Callable:
+        """Register a handler for file drops onto declared drop targets.
+
+        The handler receives (target_id: str, paths: list[str], emit: Emitter).
+        `target_id` matches the id you passed to ctx.drop_target(). `paths`
+        are absolute host filesystem paths already filtered by the target's
+        accept list.
+        """
+        self._on_drop = fn
         return fn
 
     def _handle_get_state(self):
@@ -308,7 +405,7 @@ class App:
             elif event_type == "render":
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
-                ctx = RenderContext(self.width, self.height)
+                ctx = RenderContext(self.width, self.height, app_id=self._emitter._app_id)
                 if self._on_render:
                     self._on_render(ctx)
                 ctx._flush()
@@ -339,6 +436,14 @@ class App:
 
             elif event_type == "set_state":
                 self._handle_set_state(event)
+
+            elif event_type == "drop":
+                if self._on_drop:
+                    self._on_drop(
+                        event.get("target_id", ""),
+                        event.get("paths", []),
+                        self._emitter,
+                    )
 
             elif event_type == "shutdown":
                 break

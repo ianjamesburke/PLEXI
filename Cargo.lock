@@ -727,6 +727,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -790,6 +791,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1507,8 +1518,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2940,12 +2953,14 @@ name = "plexi"
 version = "1.1.2"
 dependencies = [
  "chrono",
+ "console_error_panic_hook",
  "dirs",
  "eframe",
  "egui",
  "egui_term",
  "egui_tiles",
  "fern",
+ "getrandom 0.2.17",
  "image",
  "log",
  "notify",
@@ -2957,6 +2972,8 @@ dependencies = [
  "serde_json",
  "toml",
  "ureq",
+ "wasm-bindgen",
+ "web-sys",
  "zeroize",
 ]
 
