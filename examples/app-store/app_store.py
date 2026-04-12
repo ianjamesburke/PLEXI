@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kona — Plexi app store
+app-store — Plexi app store
 Browse and install Plexi apps from the community registry.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ C = {
 # ---------------------------------------------------------------------------
 
 REGISTRY_URL  = "https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json"
-CACHE_PATH    = pathlib.Path.home() / ".plexi-alpha" / "kona_cache.json"
+CACHE_PATH    = pathlib.Path.home() / ".plexi-alpha" / "app_store_cache.json"
 APPS_DIR      = pathlib.Path.home() / ".plexi-alpha" / "apps"
 CACHE_TTL_S   = 3600  # 1 hour
 
@@ -323,7 +323,7 @@ def render_browse(ctx, now: float):
     if tag_label != "all":
         subtitle_parts.append(tag_str)
     subtitle = "  ".join(subtitle_parts) if subtitle_parts else ""
-    render_header(ctx, "Kona — Plexi App Store", subtitle)
+    render_header(ctx, "App Store", subtitle)
 
     if state.loading:
         ctx.text(12, HEADER_H + 20, "Loading registry...", size=13, color=C["subtext"])
@@ -483,7 +483,7 @@ def render_install(ctx, now: float):
         ctx.text(cx - 100, cy + 20, state.install_status or "Working...", size=13, color=C["text"])
 
 
-app = App(app_id="kona")
+app = App(app_id="app-store")
 
 
 @app.on_render
