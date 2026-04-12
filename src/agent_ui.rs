@@ -21,6 +21,15 @@ pub fn render_agent_mode(
         return true;
     }
 
+    // Drain any LLM responses that arrived since the last frame. If something
+    // changed, make sure we render another frame promptly. Also keep polling
+    // while a request is in flight so we pick up the reply as soon as the
+    // worker thread produces it.
+    let changed = agent.poll_llm();
+    if changed || agent.state == crate::agent_mode::AgentModeState::Processing {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    }
+
     let available = ui.available_rect_before_wrap();
 
     // Background fill
@@ -139,15 +148,12 @@ fn draw_input(ui: &mut egui::Ui, agent: &mut AgentMode, colors: &Colors) {
             response.request_focus();
         }
 
-        // Submit on Enter
+        // Submit on Enter — agent.submit() now dispatches to the LLM worker
+        // thread. The response lands via agent.poll_llm() on a later frame.
         if response.lost_focus()
             && ui.input(|i| i.key_pressed(egui::Key::Enter))
         {
-            if let Some(text) = agent.submit() {
-                // Stub: echo the input back as a placeholder response
-                let stub = format!("[stub] Received: \"{text}\" — LLM backend not connected.");
-                agent.push_stub_response(stub);
-            }
+            let _ = agent.submit();
         }
     });
 }

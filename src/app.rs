@@ -35,6 +35,8 @@ pub struct PlexiApp {
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
+    pub(crate) show_notification_palette: bool,
+    pub(crate) notification_palette_selected: usize,
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
@@ -47,6 +49,8 @@ impl PlexiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         #[cfg(target_os = "macos")]
         crate::macos_menu::customize_app_menu();
+        #[cfg(target_os = "macos")]
+        crate::finder_service::register();
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -168,6 +172,8 @@ impl PlexiApp {
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
+                    show_notification_palette: false,
+                    notification_palette_selected: 0,
                     pane_visit_history: Vec::new(),
                     renaming_pane: None,
                     registry,
@@ -216,6 +222,8 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            show_notification_palette: false,
+            notification_palette_selected: 0,
             pane_visit_history: Vec::new(),
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
@@ -403,6 +411,17 @@ impl eframe::App for PlexiApp {
         // the cache authoritative once per frame before any app reads it.
         self.media_cache.borrow_mut().poll_completions();
 
+        // Consume any paths queued by the macOS Finder service
+        // ("Open in Plexi") or by `plexi <path>` on startup, and open each
+        // one as a new context.
+        #[cfg(target_os = "macos")]
+        {
+            for path in crate::finder_service::drain_pending_paths() {
+                self.open_path_as_context(path);
+                ctx.request_repaint();
+            }
+        }
+
         // Check if the focused app wants to close itself (e.g. after saving).
         {
             let ctx_ref = &self.contexts[self.active_context];
@@ -575,6 +594,12 @@ impl eframe::App for PlexiApp {
                 }
                 Action::AppRedo => {
                     self.app_redo();
+                }
+                Action::ToggleNotificationPalette => {
+                    self.show_notification_palette = !self.show_notification_palette;
+                    if self.show_notification_palette {
+                        self.notification_palette_selected = 0;
+                    }
                 }
             }
         }
@@ -833,6 +858,11 @@ impl eframe::App for PlexiApp {
         // Command palette overlay
         if self.show_command_palette {
             self.draw_command_palette(ctx);
+        }
+
+        // Notification palette overlay
+        if self.show_notification_palette {
+            self.draw_notification_palette(ctx);
         }
 
         // Rename pane overlay

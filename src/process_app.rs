@@ -704,13 +704,14 @@ impl ProcessApp {
                     }
                 }
 
-                // RunInTerminal / Cd / Log / State / CostReport / FrameDone handled at the
-                // App trait level, not here.
+                // RunInTerminal / Cd / Log / State / CostReport / Notification /
+                // FrameDone handled at the App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
                 | DrawCommand::State { .. }
                 | DrawCommand::CostReport { .. }
+                | DrawCommand::Notification { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1057,6 +1058,17 @@ impl App for ProcessApp {
                         input_tokens, output_tokens, cost_usd,
                         operation_id.as_deref(), timestamp.as_deref(),
                     );
+                }
+                DrawCommand::Notification { priority, title, body, source_app } => {
+                    // Trust the app's self-reported source_app if set, otherwise
+                    // fall back to the ProcessApp's own type_id. This guards
+                    // against apps that forget to populate the field.
+                    let src = if source_app.is_empty() {
+                        self.type_id.clone()
+                    } else {
+                        source_app
+                    };
+                    crate::notification_log::record(priority, title, body, src);
                 }
                 other => self.pending_frame.push(other),
             }

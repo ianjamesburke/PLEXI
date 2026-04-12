@@ -12,6 +12,7 @@
 // Cmd+P                 — command palette
 // Cmd+Shift+R           — rename pane
 // Cmd+N                 — new context
+// Cmd+Shift+N           — notification palette
 // Cmd+Up / Cmd+Down     — scroll
 // Cmd+= / Cmd+-         — font size
 // Cmd+E                 — file browser
@@ -81,6 +82,8 @@ pub enum Action {
     AppUndo,
     /// Redo last undone action in the focused app.
     AppRedo,
+    /// Open the notification palette (shows unread notifications).
+    ToggleNotificationPalette,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -160,6 +163,12 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Rename pane (Cmd+Shift+R)
         if input.consume_key(cmd_shift, egui::Key::R) {
             actions.push(Action::RenamePane);
+        }
+
+        // Notification palette (Cmd+Shift+N) — check before bare Cmd+N so the
+        // more-specific binding wins.
+        if input.consume_key(cmd_shift, egui::Key::N) {
+            actions.push(Action::ToggleNotificationPalette);
         }
 
         // New context (Cmd+N)

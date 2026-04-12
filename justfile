@@ -12,6 +12,9 @@ install:
     cp target/release/bundle/osx/Plexi.app/Contents/MacOS/plexi /usr/local/bin/plexi
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
+    # Register the bundle and refresh the Finder "Open in Plexi" service.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Plexi.app || true
+    /System/Library/CoreServices/pbs -update || true
 
 # Deprecated: use install-alpha or install-beta instead
 install-apps:
@@ -60,6 +63,10 @@ install-alpha:
     alpha_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
     cp "$alpha_bin" /usr/local/bin/plexi-alpha
 
+    # Register the bundle and refresh the Finder "Open in Plexi" service.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_dest" || true
+    /System/Library/CoreServices/pbs -update || true
+
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
@@ -104,6 +111,10 @@ install-beta:
 
     beta_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
     cp "$beta_bin" /usr/local/bin/plexi-beta
+
+    # Register the bundle and refresh the Finder "Open in Plexi" service.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_dest" || true
+    /System/Library/CoreServices/pbs -update || true
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-beta"
