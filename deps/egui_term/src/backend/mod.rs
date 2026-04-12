@@ -235,6 +235,26 @@ impl TerminalBackend {
         })
     }
 
+    /// Inject bytes directly into the terminal's VTE parser, bypassing the PTY.
+    /// Used by agent mode to render prompt indicators and LLM responses into
+    /// the same scrollback grid that shell output lives in — so agent turns
+    /// interleave naturally with shell history and are scrollable.
+    ///
+    /// IMPORTANT: this does not touch the PTY. The child process (shell) has
+    /// no idea these bytes ever appeared. They exist purely in Plexi's
+    /// terminal grid.
+    pub fn write_agent_bytes(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let term = self.term.clone();
+        let mut term = term.lock();
+        let mut parser: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *term, bytes);
+        term.scroll_display(Scroll::Bottom);
+    }
+
     pub fn process_command(&mut self, cmd: BackendCommand) {
         let term = self.term.clone();
         let mut term = term.lock();
