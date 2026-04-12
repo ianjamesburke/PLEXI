@@ -7,12 +7,18 @@
 
 use crate::app_protocol::{DrawCommand, ListItem, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
+use crate::cost_tracker::CostTracker;
 use egui::Color32;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
+use std::time::{Duration, Instant};
+
+/// Maximum number of undo states to keep in the stack.
+const MAX_UNDO_DEPTH: usize = 50;
 
 pub struct ProcessApp {
     type_id: String,
@@ -34,6 +40,37 @@ pub struct ProcessApp {
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
+    // Hot reload state
+    bin_path: PathBuf,
+    cwd: PathBuf,
+    args: Vec<String>,
+    /// Receives file-change notifications from the watcher thread.
+    reload_rx: Option<Receiver<()>>,
+    /// Kept alive so the watcher thread doesn't stop.
+    _watcher: Option<RecommendedWatcher>,
+    /// Debounce: ignore reload signals within 200ms of the last reload.
+    last_reload: Instant,
+    /// Last known app state (from State draw command response).
+    last_state: Option<AppState>,
+    /// Undo stack — previous states, oldest first.
+    undo_stack: Vec<AppState>,
+    /// Redo stack — states popped by undo, newest first.
+    redo_stack: Vec<AppState>,
+    /// Whether we're waiting for a state snapshot (to push onto undo before restoring).
+    pending_undo: bool,
+    /// Whether we're waiting for a state snapshot (to push onto redo before restoring).
+    pending_redo: bool,
+    /// Per-app cost tracker for LLM API usage.
+    cost_tracker: CostTracker,
+}
+
+/// Snapshot of an app's state buckets.
+#[derive(Clone, Debug)]
+pub struct AppState {
+    pub user_state: serde_json::Value,
+    pub derived: serde_json::Value,
+    pub session: serde_json::Value,
+    pub persistent: serde_json::Value,
 }
 
 impl ProcessApp {
@@ -104,6 +141,12 @@ impl ProcessApp {
             }
         });
 
+        // Set up file watcher on the app's parent directory for hot reload.
+        let (reload_tx, reload_rx) = mpsc::channel::<()>();
+        let watch_dir = bin_path.parent().unwrap_or(cwd).to_path_buf();
+        let watcher = Self::setup_watcher(watch_dir, reload_tx);
+
+        let cost_tracker = CostTracker::new(&type_id);
         Ok(Self {
             type_id,
             display_name,
@@ -116,7 +159,226 @@ impl ProcessApp {
             pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
+            bin_path: bin_path.clone(),
+            cwd: cwd.clone(),
+            args: args.to_vec(),
+            reload_rx: Some(reload_rx),
+            _watcher: watcher,
+            last_reload: Instant::now(),
+            last_state: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            pending_undo: false,
+            pending_redo: false,
+            cost_tracker,
         })
+    }
+
+    /// Create a file watcher that sends a signal on any .py file change in the directory.
+    fn setup_watcher(watch_dir: PathBuf, reload_tx: mpsc::Sender<()>) -> Option<RecommendedWatcher> {
+        let mut watcher = match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                // Only trigger on file modifications/creates for .py files.
+                let dominated_by_python = event.paths.iter().any(|p| {
+                    p.extension()
+                        .map(|e| e == "py")
+                        .unwrap_or(false)
+                });
+                if dominated_by_python {
+                    let _ = reload_tx.send(());
+                }
+            }
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("ProcessApp: failed to create file watcher: {e}");
+                return None;
+            }
+        };
+
+        if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::Recursive) {
+            log::warn!("ProcessApp: failed to watch {:?}: {e}", watch_dir);
+            return None;
+        }
+
+        log::info!("ProcessApp: watching {:?} for hot reload", watch_dir);
+        Some(watcher)
+    }
+
+    /// Check if a reload was requested and debounce.
+    fn check_reload(&mut self) -> bool {
+        let Some(rx) = self.reload_rx.as_ref() else {
+            return false;
+        };
+        let mut got_signal = false;
+        // Drain all pending signals.
+        while rx.try_recv().is_ok() {
+            got_signal = true;
+        }
+        if got_signal && self.last_reload.elapsed() > Duration::from_millis(200) {
+            self.last_reload = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Kill the current subprocess and respawn it, preserving the watcher.
+    fn restart(&mut self) {
+        log::info!("ProcessApp[{}]: hot-reloading app", self.type_id);
+
+        // Send shutdown and kill old process.
+        self.send_event(&PlexiEvent::Shutdown);
+        if let Some(mut child) = self.process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.stdin = None;
+        self.draw_rx = None;
+
+        // Respawn.
+        let mut child = match std::process::Command::new(&self.bin_path)
+            .args(&self.args)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("ProcessApp[{}]: failed to respawn: {e}", self.type_id);
+                return;
+            }
+        };
+
+        let stdin = child.stdin.take().expect("stdin piped");
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+
+        // Stderr forwarding thread.
+        let stderr_type_id = self.type_id.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) if !l.trim().is_empty() => {
+                        let target = format!("app::{stderr_type_id}");
+                        log::warn!(target: &target, "stderr: {l}");
+                    }
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        // Stdout draw-command reader thread.
+        let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) if !l.trim().is_empty() => {
+                        match serde_json::from_str::<DrawCommand>(&l) {
+                            Ok(cmd) => {
+                                if draw_tx.send(cmd).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("ProcessApp: malformed draw command: {e} — line: {l}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::debug!("ProcessApp stdout closed: {e}");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        self.process = Some(child);
+        self.stdin = Some(stdin);
+        self.draw_rx = Some(draw_rx);
+        self.frame.clear();
+        self.pending_frame.clear();
+        self.initialized = false; // will re-send Init on next ui() call
+    }
+
+    /// Request the app's current state snapshot.
+    pub fn request_state(&mut self) {
+        self.send_event(&PlexiEvent::GetState);
+    }
+
+    /// Restore a previously captured state to the app.
+    pub fn restore_state(&mut self, state: &AppState) {
+        self.send_event(&PlexiEvent::SetState {
+            user_state: state.user_state.clone(),
+            derived: state.derived.clone(),
+            session: state.session.clone(),
+            persistent: state.persistent.clone(),
+        });
+    }
+
+    /// Trigger undo: request current state (will be pushed to redo), then pop undo stack.
+    fn do_undo(&mut self) {
+        if self.undo_stack.is_empty() {
+            return;
+        }
+        self.pending_undo = true;
+        self.request_state();
+    }
+
+    /// Trigger redo: request current state (will be pushed to undo), then pop redo stack.
+    fn do_redo(&mut self) {
+        if self.redo_stack.is_empty() {
+            return;
+        }
+        self.pending_redo = true;
+        self.request_state();
+    }
+
+    /// Push the current state onto the undo stack (called before user actions).
+    fn push_undo(&mut self, state: AppState) {
+        if self.undo_stack.len() >= MAX_UNDO_DEPTH {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(state);
+        self.redo_stack.clear();
+    }
+
+    /// Handle a State response from the app — drives undo/redo state machine.
+    fn handle_state_response(&mut self, state: AppState) {
+        if self.pending_undo {
+            self.pending_undo = false;
+            // Push current state to redo, pop undo and restore.
+            self.redo_stack.push(state);
+            if let Some(prev) = self.undo_stack.pop() {
+                self.restore_state(&prev);
+                self.last_state = Some(prev);
+            }
+        } else if self.pending_redo {
+            self.pending_redo = false;
+            // Push current state to undo, pop redo and restore.
+            self.undo_stack.push(state);
+            if let Some(next) = self.redo_stack.pop() {
+                self.restore_state(&next);
+                self.last_state = Some(next);
+            }
+        } else {
+            // Normal state snapshot — push to undo stack for future undo.
+            if let Some(prev) = self.last_state.take() {
+                self.push_undo(prev);
+            }
+            self.last_state = Some(state);
+        }
+    }
+
+    /// Total cost accumulated by this app in the current session.
+    pub fn session_cost_usd(&self) -> f64 {
+        self.cost_tracker.session_total_usd()
     }
 
     fn send_event(&mut self, event: &PlexiEvent) {
@@ -232,10 +494,13 @@ impl ProcessApp {
                         });
                 }
 
-                // RunInTerminal / Cd / Log / FrameDone handled at the App trait level, not here.
+                // RunInTerminal / Cd / Log / State / CostReport / FrameDone handled at the
+                // App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
+                | DrawCommand::State { .. }
+                | DrawCommand::CostReport { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -259,6 +524,11 @@ impl App for ProcessApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+        // Check for hot-reload signal before rendering.
+        if self.check_reload() {
+            self.restart();
+        }
+
         let size = ui.available_size();
 
         // Send Init on first render.
@@ -311,6 +581,25 @@ impl App for ProcessApp {
                         "debug" => log::debug!(target: &target, "{message}"),
                         _       => log::info!(target: &target, "{message}"),
                     }
+                }
+                DrawCommand::State { user_state, derived, session, persistent } => {
+                    self.handle_state_response(AppState {
+                        user_state,
+                        derived,
+                        session,
+                        persistent,
+                    });
+                }
+                DrawCommand::CostReport {
+                    app_id: _, service, model,
+                    input_tokens, output_tokens, cost_usd,
+                    operation_id, timestamp,
+                } => {
+                    self.cost_tracker.record(
+                        &service, &model,
+                        input_tokens, output_tokens, cost_usd,
+                        operation_id.as_deref(), timestamp.as_deref(),
+                    );
                 }
                 other => self.pending_frame.push(other),
             }
@@ -398,6 +687,14 @@ impl App for ProcessApp {
         Some(serde_json::json!({
             "type_id": self.type_id,
         }))
+    }
+
+    fn undo(&mut self) {
+        self.do_undo();
+    }
+
+    fn redo(&mut self) {
+        self.do_redo();
     }
 }
 

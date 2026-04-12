@@ -757,4 +757,44 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Toggle agent mode on the focused pane.
+    pub(crate) fn toggle_agent_mode(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            // Don't activate agent mode if an app is already open
+            if pane.active_app.is_some() {
+                return;
+            }
+            if pane.agent_mode.is_active() {
+                pane.agent_mode.deactivate();
+            } else {
+                // Update directory scope from terminal CWD before activating
+                if let Some(cwd) = crate::shell::get_pid_cwd(pane.backend.child_pid()) {
+                    pane.agent_mode.directory_scope = cwd;
+                }
+                pane.agent_mode.activate();
+            }
+        }
+    }
+
+    /// Trigger undo on the focused app.
+    pub(crate) fn app_undo(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            if let Some(app) = &mut pane.active_app {
+                app.undo();
+            }
+        }
+    }
+
+    /// Trigger redo on the focused app.
+    pub(crate) fn app_redo(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            if let Some(app) = &mut pane.active_app {
+                app.redo();
+            }
+        }
+    }
 }

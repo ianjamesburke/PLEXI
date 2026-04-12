@@ -1,5 +1,32 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-11 — [CHANGED] Layer 0/1/2/4 implemented in parallel via worktree sub-agents
+
+Massive parallel build session. Created branches per roadmap layer, launched isolated worktree agents to implement each, then merged into `layer-merged` (PR #103 → alpha).
+
+**What landed:**
+- **Layer 0**: hot reload (#83) via `notify` watcher with 200ms debounce; theme `list_item_hover` token across all 6 presets
+- **Layer 1**: 24 Python tests across 4 apps (hello-app, git-log, plexi-browser, wikipedia), all passing
+- **Layer 2**: agent mode scaffolding (`agent_mode.rs`, `agent_context.rs`, `agent_ui.rs`), `Ctrl+/` toggle (bare `/` prompt detection deferred to #104)
+- **Layer 4**: `get_state`/`set_state` protocol with undo/redo stacks, `cost_report` events writing to `~/.plexi-alpha/costs.jsonl`, Python SDK updated with `@app.on_get_state`/`@app.on_set_state` decorators and `emit.cost_report()`
+- **Test harness**: `plexi_test.py` built and shipped (PR #101 merged), `sdk/python/` and `sdk/rust/` now canonical SDK locations
+- **WASM/PWA spec**: `docs/specs/wasm-pwa-deployment.md` — replaces native iOS companion app strategy; egui compiles to wasm32, native deps stay behind `cfg(not(target_arch = "wasm32"))`, WebSocket bridges existing JSON protocol
+- **Issue triage**: 13 closed (duplicates/superseded), 9 cross-referenced with new specs (50 → 37 open)
+- **Self-closing panes (#90)**: closed, merged
+
+**Key design decisions:**
+- Branching strategy documented: `feature/* → alpha → beta → main`. Sub-agents use worktree isolation, open PRs against alpha
+- Test mode is a SPECTRUM not a boolean (stub/cheapest/default/full), and agent components must declare which fidelity they require — see incoming `docs/specs/agent-replay-testing.md`
+- Parallax 25% failure rate root-caused: `_get_tools()` returns `["inspect_media", "suggest_clips", "ffmpeg"]` for non-indexed footage_edit jobs, editors fall through to a tool_calls prompt instead of the manifest path. Handoff doc written for Sonnet to execute (#106)
+
+**Open follow-ups (all persisted):**
+- PR #103 (layer-merged → alpha) — needs install + test, then merge
+- #104 — bare `/` at empty prompt detection (replaces `Ctrl+/`)
+- #105 — WASM Phase 1 feature gating
+- #106 — Parallax manifest-first refactor execution
+- #107 — TEST_MODE decorator refactor (Parallax follow-up + Plexi SDK primitive)
+- `wip/file-browser-async` branch — preserves stashed file_browser/audio_app/process_app/shell changes from prior session; needs review
+
 ## 2026-04-11 — [DECISION] Full app ecosystem architecture — specs for agent mode, companion app, orchestration, sync
 
 Major design session establishing the Plexi app ecosystem architecture. Core decisions: apps manage their own LLM calls (no Plexi intelligence proxy — deferred); state management via `get_state`/`set_state` with four buckets (user_state, derived, session, persistent); Plexi owns undo/redo/save; agent mode is the terminal itself (`/` at empty prompt, not a separate app); agents live in `.plexi/agents/` separate from apps; trust scores are continuous floats (0.0–1.0) with self-tuning thresholds; orchestrator has a prediction model that learns from user approval patterns.

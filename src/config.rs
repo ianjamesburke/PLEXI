@@ -45,6 +45,7 @@ pub struct ThemeConfig {
     pub terminal_bg: Option<String>,
     pub bg_hover: Option<String>,
     pub bg_active: Option<String>,
+    pub list_item_hover: Option<String>,
     pub text_primary: Option<String>,
     pub text_dim: Option<String>,
     pub text_section: Option<String>,
@@ -116,6 +117,7 @@ font_size = 14.0
 # terminal_bg = "#292a44"
 # bg_hover = "#2a2a3c"
 # bg_active = "#313144"
+# list_item_hover = "#2e2e42"
 # text_primary = "#cdd6f4"
 # text_dim = "#6c7086"
 # text_section = "#585b70"
