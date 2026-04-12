@@ -1,9 +1,11 @@
 use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPACITY};
+use crate::media_cache::MediaCache;
 use crate::pane::TerminalPane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Vec2};
 use egui_term::{BackendCommand, TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Default height in logical pixels for the terminal command bar when an app is active.
@@ -44,6 +46,8 @@ pub struct PlexiBehavior<'a> {
     pub colors: Colors,
     pub pane_names: HashMap<PaneId, String>,
     pub drag_cursor_pos: Option<egui::Pos2>,
+    /// Shared media cache borrowed from `PlexiApp`.
+    pub media_cache: &'a RefCell<MediaCache>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -203,6 +207,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     colors: &self.colors,
                                     is_focused,
                                     linked_terminal: *pane_id,
+                                    media_cache: self.media_cache,
                                 };
                                 app.ui(ui, &app_ctx);
                             } else {
