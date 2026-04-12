@@ -12,23 +12,36 @@ osx_minimum_system_version = "12.0"
 osx_info_plist_exts = ["assets/Info.plist.ext"]
 
 [dependencies]
+# Cross-platform UI + data dependencies — compile for native and wasm32.
 egui = "0.31"
 eframe = { version = "0.31", features = ["default_fonts", "wgpu"] }
 egui_tiles = { version = "0.12.0", features = ["serde"] }
-egui_term = { path = "deps/egui_term" }
-dirs = "6"
-fern = "0.7"
 log = "0.4"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["wasmbind"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
-rodio = { version = "0.19", default-features = false, features = ["mp3", "flac", "vorbis", "wav"] }
 zeroize = "1"
+
+# Native-only dependencies — anything that touches the OS (PTY, filesystem,
+# subprocess, audio devices, Keychain, file watching, on-disk logging).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+egui_term = { path = "deps/egui_term" }
+dirs = "6"
+fern = "0.7"
+rodio = { version = "0.19", default-features = false, features = ["mp3", "flac", "vorbis", "wav"] }
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
 
+# macOS-only — AppKit menu bar integration.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
 objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSString", "NSThread", "NSURL"] }
+
+# WASM-only dependencies — browser APIs and JS interop.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Document", "Location", "Storage"] }
+getrandom = { version = "0.2", features = ["js"] }
+console_error_panic_hook = "0.1"

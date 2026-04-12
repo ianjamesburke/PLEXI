@@ -1,6 +1,6 @@
 # Plexi WASM + PWA Mobile Deployment
 
-**Status:** Design  
+**Status:** Phase 1 complete (scaffolding)
 **Last updated:** 2026-04-11
 
 ---
@@ -443,3 +443,39 @@ The app protocol (`PlexiEvent` / `DrawCommand`) defined in `app-infrastructure.m
 ### Enables: `sync-architecture.md`
 
 The WebSocket server built for WASM deployment is also the foundation for multi-machine sync. Once Plexi has a WebSocket server that bridges the app protocol, extending it to peer-to-peer sync (machine A's Plexi connecting to machine B's Plexi) requires only adding routing and conflict resolution on top of the same transport.
+
+---
+
+## 11. Phase 1 Status (2026-04-11)
+
+Issue #105 / `feature/wasm-phase1-feature-gates`.
+
+### What works
+
+- **Both targets compile cleanly.** `cargo build` (native) and `cargo build --target wasm32-unknown-unknown` both succeed from a clean state.
+- **Cargo.toml dependency split.** Native-only crates (`egui_term`, `rodio`, `notify`, `dirs`, `fern`) moved into `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`. WASM-only crates (`wasm-bindgen`, `web-sys`, `getrandom` with `js` feature, `console_error_panic_hook`) added under `[target.'cfg(target_arch = "wasm32")'.dependencies]`. `chrono` now enables its `wasmbind` feature on all targets.
+- **Module-level gating in `main.rs`.** Every `mod` declaration for a native-only file is wrapped in `#[cfg(not(target_arch = "wasm32"))]`. The native `main()` function is also cfg-gated, and a no-op WASM `main()` stub exists so the binary crate has an entry symbol on `wasm32-unknown-unknown`.
+- **Wasm subset compiled.** Currently only two modules are universal: `app_protocol` (JSON protocol types) and `agent_mode` (pure state machine). These are the seed of the shared UI/domain layer the WASM client will be built on in Phase 3.
+
+### What's still blocked
+
+Phase 1 was scoped as "dependency + module gating, no behaviour changes." Splitting the actual rendering core to compile for WASM requires a refactor that's deliberately deferred.
+
+- **`app.rs`, `pane.rs`, `pane_ops.rs`, `tiling.rs`, `theme.rs`, `command_palette.rs`** all import from `egui_term` (alacritty_terminal wrapper) directly. The PTY terminal view type appears in struct fields and render methods. Decoupling them requires introducing a render-only terminal grid type that `egui_term::TerminalView` and a future WASM draw-command consumer can both satisfy. That's Phase 2/3 work.
+- **`app_trait.rs`** depends on `theme::Colors` and `tiling::PaneId`, so every app (text_editor, quick_note, file_browser, secrets, audio, process_app) transitively drags in the native render stack.
+- **`config.rs`, `logging.rs`, `context.rs`, `workspace.rs`** all use `dirs`, `fern`, or `std::process`. They need client/server splits — the client-side config arrives over WebSocket, logging goes to `console_log`.
+- **`app_permissions.rs` and `features.rs`** only touch `config` and `app_trait` — they're the lowest-hanging fruit for the next round of universal-izing, once `config` is split.
+- **No WASM UI yet.** The wasm binary currently has an empty `main()`. Wiring up `eframe::WebRunner` is Phase 3.
+
+### Follow-up work for Phase 2+
+
+1. Introduce a client/server split for `config.rs` — pure `PlexiConfig` struct on both sides, `load()` native-only.
+2. Introduce a render abstraction for terminal grids so `tiling.rs` and `app.rs` don't import `egui_term` directly.
+3. Start `ws_bridge.rs` — WebSocket transport module for WASM.
+4. Port `file_browser/mod.rs` rendering into a universal module, with `read_dir` calls behind a trait that has a native (`std::fs`) and a WASM (WS request) implementation.
+
+### Files touched in Phase 1
+
+- `Cargo.toml` — dependency reorganisation
+- `src/main.rs` — module gating, cfg-split entry point
+- `docs/specs/wasm-pwa-deployment.md` — this section
