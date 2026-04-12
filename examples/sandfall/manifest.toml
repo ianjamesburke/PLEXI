@@ -1,0 +1,10 @@
+[app]
+id = "sandfall"
+name = "Sandfall"
+entry = "sandfall.py"
+version = "0.1.0"
+description = "Falling-sand physics toy. Pour sand, water, fire, and ice."
+icon = "⏳"
+
+[app.capabilities]
+# No capabilities needed — pure rendering + input

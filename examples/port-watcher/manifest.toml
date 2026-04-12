@@ -1,0 +1,9 @@
+[app]
+id = "port-watcher"
+name = "Port Watcher"
+entry = "port_watcher.py"
+version = "0.1.0"
+description = "Live network port monitor. Watch connections swarm like bees."
+
+[app.capabilities]
+# Polls lsof for TCP connections — requires no special permissions beyond what lsof provides

@@ -1,0 +1,9 @@
+[app]
+id = "pulse"
+name = "Pulse"
+entry = "pulse.py"
+version = "0.1.0"
+description = "Visual beat sequencer. Build rhythms, watch them pulse."
+
+[app.capabilities]
+# No capabilities needed — pure rendering + input

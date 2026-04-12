@@ -1,0 +1,10 @@
+[app]
+id = "lichen"
+name = "Lichen"
+entry = "lichen.py"
+version = "0.1.0"
+description = "Cellular automaton art toy. Watch colonies bloom, branch, and crumble."
+icon = "🌿"
+
+[app.capabilities]
+# No capabilities needed — pure rendering + input
