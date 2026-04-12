@@ -61,6 +61,13 @@ Each app is a subdirectory with a `manifest.toml` and an executable entry point:
 
 `just install` uses `cargo bundle --release` to produce a proper macOS `.app` bundle (reads metadata from `Cargo.toml`), then copies it to `/Applications/Plexi.app` and extracts the binary to `/usr/local/bin/plexi`. The `install.sh` curl script does the same thing for fresh installs from GitHub.
 
+After copying the bundle, the install recipes also run:
+
+- `lsregister -f <bundle>` — tells Launch Services about the new bundle
+- `pbs -update` — refreshes the macOS Services cache so the Finder "Open in Plexi" service (declared in Info.plist via `assets/Info.plist.ext`) appears in the right-click Services submenu without a logout cycle
+
+If the service ever fails to show up, run those two commands manually against the installed `.app`. The `NSServices` entry is appended to the generated `Info.plist` by `cargo bundle`'s `osx_info_plist_exts` config (see `Cargo.toml` `[package.metadata.bundle]`). Validate any changes to `assets/Info.plist.ext` with `plutil -lint <bundle>/Contents/Info.plist` after running `cargo bundle`.
+
 **After every completed code change, run the install command for the active branch:**
 - `alpha` branch → `just install-alpha`
 - `main` branch → `just install`

@@ -1,5 +1,29 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [DECISION] Finder "Open in Plexi" service via in-process NSServicesProvider
+
+Added the Layer 0 macOS Finder Service. Right-clicking a folder in Finder → Services → "Open in Plexi" launches/focuses Plexi and opens the folder as a new context. Same machinery handles `plexi <path>` from the terminal on first launch.
+
+**Approach taken** — in-process service provider, no helper binary:
+- `assets/Info.plist.ext` declares `NSServices` entry (`NSMessage = openInPlexi`, `NSPortName = Plexi`, `NSSendTypes = NSFilenamesPboardType + public.file-url`). Injected into the generated Info.plist via `cargo bundle`'s `osx_info_plist_exts`.
+- `src/finder_service.rs` defines a `PlexiServiceHandler` NSObject subclass (using the same `objc2::declare::ClassBuilder` pattern already used by `macos_menu.rs`) with a single method `openInPlexi:userData:error:`.
+- `PlexiApp::new` calls `finder_service::register()` which allocs the handler, calls `NSApp.setServicesProvider(...)`, and invokes `NSUpdateDynamicServices()`.
+- The callback reads paths from the NSPasteboard (`propertyListForType:NSFilenamesPboardType`, falling back to `public.file-url`) and pushes them into a `Mutex<Vec<PathBuf>>`. `PlexiApp::update` drains the queue each frame and calls `open_path_as_context(path)` — a new sibling to `new_context()` that names the context after the folder's basename.
+- Activation: the callback calls `NSApp.activateIgnoringOtherApps(true)` so Plexi comes to the front when invoked from a background state.
+
+**Alternatives rejected:**
+- *Swift/Objective-C helper binary* — the task description suggested this as the "cleanest" option, but the existing `macos_menu.rs` already demonstrates that in-process objc2 class declaration works fine in eframe. Shipping a second binary duplicates the install footprint and the service provider has to be in the same process anyway to focus Plexi.
+- *AppleScript .app wrapper* — even more install complexity and an extra process.
+- *Apple Events `openFile:` via `CFBundleDocumentTypes`* — would put Plexi in Finder's "Open With…" submenu instead of Services, but eframe doesn't expose a hook for the `NSApplicationDelegate application:openFile:` method, so catching the event would require AppDelegate swizzling. Services provider is the straightforward supported path.
+
+**Install/refresh:** `just install`, `install-alpha`, `install-beta` now run `lsregister -f <bundle>` + `pbs -update` after copying the bundle, so the service appears without a logout cycle. Verified via `/System/Library/CoreServices/pbs -dump_pboard` — both `Plexi.app` and `Plexi Alpha.app` register with `NSMessage = openInPlexi`.
+
+**`plexi <path>` CLI:** added as a fall-through case in `main.rs` args dispatch. If the extra arg is a directory, canonicalizes and pushes it through the same `finder_service::queue_path` channel. If the arg isn't a known subcommand and isn't a directory, falls through to the GUI silently (unchanged behavior). This starts a fresh Plexi instance — it does NOT forward to an already-running instance. Forwarding to a running instance would require handling Apple Events, which is deferred; users who want that case should use the Finder service.
+
+**Gotcha — `cargo-bundle` osx_info_plist_exts:** the mechanism is "blindly append the file contents before closing `<dict>`". This means the fragment file must contain raw `<key>/<value>` pairs (no wrapping `<dict>`, no `<?xml>` header). Easy to get wrong — validate every time with `plutil -lint <bundle>/Contents/Info.plist` after bundling.
+
+**Gotcha — objc2 msg_send! with Retained<AnyObject>:** the `msg_send!` macro path fails with "OptionEncode not implemented for Retained<AnyObject>" when the dep graph contains multiple objc2 versions (we have 0.5 direct + 0.6 pulled in by arboard). Use the generated typed bindings (`NSPasteboard::propertyListForType`) instead — they go through the single version we directly depend on.
+
 ## 2026-04-11 — [CHANGED] Layer 0/1/2/4 implemented in parallel via worktree sub-agents
 
 Massive parallel build session. Created branches per roadmap layer, launched isolated worktree agents to implement each, then merged into `layer-merged` (PR #103 → alpha).

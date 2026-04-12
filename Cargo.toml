@@ -9,6 +9,7 @@ identifier = "com.ianjamesburke.plexi"
 icon = ["assets/app-icon.icns"]
 short_description = "Spatial terminal window manager"
 osx_minimum_system_version = "12.0"
+osx_info_plist_exts = ["assets/Info.plist.ext"]
 
 [dependencies]
 egui = "0.31"
@@ -29,5 +30,5 @@ notify = { version = "6", default-features = false, features = ["macos_kqueue"] 
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
-objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSRunningApplication", "NSWindow"] }
-objc2-foundation = { version = "0.2.2", features = ["NSThread", "NSString"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
+objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSString", "NSThread", "NSURL"] }

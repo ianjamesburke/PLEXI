@@ -334,6 +334,43 @@ impl PlexiApp {
         self.active_context = self.contexts.len() - 1;
     }
 
+    /// Open a folder as a new context — used by the macOS Finder service
+    /// ("Open in Plexi") and by `plexi <path>` on the CLI. The context is
+    /// named after the folder's last path component.
+    pub(crate) fn open_path_as_context(&mut self, path: PathBuf) {
+        if !path.is_dir() {
+            log::warn!(
+                "open_path_as_context: path is not a directory, ignoring: {}",
+                path.display()
+            );
+            return;
+        }
+
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()))
+        else {
+            log::error!(
+                "open_path_as_context: failed to create terminal for {}",
+                path.display()
+            );
+            return;
+        };
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+
+        self.contexts.push(Context {
+            name,
+            path,
+            tree,
+            panes,
+            focused_pane: Some(root_tile),
+            zoomed_pane: None,
+        });
+        self.active_context = self.contexts.len() - 1;
+    }
+
     pub(crate) fn reset_active_context(&mut self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))

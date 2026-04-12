@@ -22,6 +22,8 @@ mod context;
 mod cost_tracker;
 mod logging;
 mod features;
+#[cfg(target_os = "macos")]
+mod finder_service;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos_menu;
@@ -129,7 +131,25 @@ fn main() -> eframe::Result {
                     }
                 }
             }
-            _ => {} // Not a CLI subcommand — fall through to GUI
+            other => {
+                // `plexi <path>` — open the given directory as a new context
+                // on launch. Same code path as the macOS Finder service:
+                // queue the path, and PlexiApp::update will pick it up.
+                // Anything that is not a known subcommand and not a directory
+                // falls through to the GUI without error.
+                let path = std::path::PathBuf::from(other);
+                if path.is_dir() {
+                    let abs = path.canonicalize().unwrap_or(path);
+                    #[cfg(target_os = "macos")]
+                    {
+                        finder_service::queue_path(abs);
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = abs;
+                    }
+                }
+            }
         }
     }
 
