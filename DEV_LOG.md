@@ -24,6 +24,67 @@ Killed the full-pane agent panel. Agent turns now render directly into the same 
 - Streaming token-by-token responses — `LlmResponse::Token` is plumbed through but the worker only emits `Complete`.
 - Multi-line input editing with arrow keys and history — currently only supports linear typing + backspace + Shift+Enter. Future work can flesh out the buffer editor.
 
+## 2026-04-12 — [DECISION] Parallax viewer + linked companion pane (#113) — opt-in [app.launch] manifest section, reuse existing split machinery
+
+Shipped issue #113: the Parallax viewer app plus a new generic `[app.launch]` manifest section that lets any app declare a companion terminal pane on open.
+
+Key decisions (the non-obvious ones):
+
+- **No new tiling primitive.** Extended the existing `open_app_on_focused` into a `_with_launch(..)` variant. The legacy call site keeps its exact 75/25 vertical behavior by passing `None`. When a manifest declares `[app.launch]`, the same code path parameterizes direction (`bottom`/`right`), companion size (fraction), and companion cwd. Considered writing a dedicated "companion layout" module but it would have duplicated 90% of what `open_app_on_focused` already did. One path, one bug surface.
+- **`companion_cwd` template is literal `{launch_dir}` substitution, not a full template engine.** The spec only needs one variable for MVP; keeping it as substring-match means the schema can grow without breaking older apps.
+- **The viewer does NOT depend on a Parallax CLI.** It reads `.parallax/manifest.yaml` directly with a ~30-line stdlib-only YAML subset parser. PyYAML would have been cleaner but the Python SDK contract is zero-deps, and the manifest schema is intentionally tiny (project name + scenes list). When the real CLI lands, the viewer keeps working.
+- **mtime polling, not a watcher.** `os.stat` once per second on a single file is cheap and survives process restarts / missing files cleanly. A proper watcher would require inotify/FSEvents plumbing through the SDK, which is out of scope for #113.
+- **Empty-state is the default render.** If `.parallax/manifest.yaml` is missing, the viewer shows a friendly "run `parallax run \"your brief\"` in the terminal below" hint instead of a blank surface. Made this the first thing I wired so the app is useful before any CLI exists.
+- **`install-alpha` now also syncs `examples/*/` into `~/.plexi-alpha/apps/`.** Previously the justfile only built the bundle; apps had to be copied manually. This is a one-line loop but removes a whole class of "I installed the app but it doesn't show up" confusion.
+- **Pre-existing wasm breakage on alpha (unrelated):** `cargo build --target wasm32-unknown-unknown` fails at HEAD on alpha because `agent_mode` references `agent_llm` and `secrets` that are both `#[cfg(not(target_arch = "wasm32"))]`. My changes do not touch those modules. Filed mentally as a separate bug — do not roll this into #113.
+
+Files:
+- Rust: `src/app_registry.rs` (+`AppLaunchConfig`), `src/pane_ops.rs` (+`open_app_on_focused_with_launch`, updated `launch_app_by_id` + `open_file_with_app`)
+- Python: `examples/parallax/{manifest.toml, parallax.py, plexi_sdk.py, plexi_test.py, tests/test_parallax.py}`
+- Infra: `justfile` (install-alpha syncs example apps)
+- Sample: `~/Documents/parallax-projects/test-project/` with stub manifest, 3 JPG stills, 1 mp4 preview
+
+## 2026-04-12 — [DECISION] github-issues app — list/detail MVP shipped, mutation/authoring deferred
+
+Built `examples/github-issues/` as a sub-agent off `feature/github-issues-app`. ~440 lines of Python plus tests. Mirrors the wikipedia app's worker-thread + queue pattern (background `gh` calls push results onto `result_queue`, the render handler drains the queue at the top of every frame). No new Python deps, no Rust changes.
+
+**Non-obvious decisions:**
+
+- **Mocking `gh` via `PLEXI_GH_BIN` env var.** The test harness sets `PLEXI_GH_BIN=/tmp/.../gh` to point at a fake shell script. I considered monkey-patching subprocess from inside the test, but the app runs as a separate process under `plexi_test.AppTestHarness`, so env-var indirection was the only clean injection point. The production code falls back to `"gh"` when the env var is unset, so behavior is unchanged in real use. Same trick used for fake `git` (prepended to PATH) so `git remote get-url origin` returns a synthetic GitHub URL.
+- **Preflight runs once at startup, not on every render.** The spec describes re-running preflight on cwd change, but the cwd doesn't change inside a single app process — Plexi relaunches the app when the pane's cwd changes. So a one-shot preflight at startup, plus an `[r]` retry key in the error screen, covers the spec without polling.
+- **`gh issue view --json comments` works fine.** The spec hedged ("if it doesn't include comments by default, fall back to body-only"). It does — `comments` is a sibling field returned alongside `body` and contains an array of `{author.login, body, createdAt, ...}`. I left a fallback to `--json body` for safety (e.g. older `gh` versions), but the primary path uses both.
+- **Label colors: P1-P4 hard-coded, others use github color.** GitHub's label API returns hex colors per label (no `#` prefix). The app just adds `#` and uses the value directly as a chip background. P1-P4 are hard-coded to match Plexi's own palette (red/orange/blue/grey) regardless of what GitHub stores.
+- **No companion pane in manifest.** Standalone single-pane app. Pane label / Focus Manager integration is deferred to follow-up #130.
+- **Deferred to follow-ups (filed):** #127 (text-input flows: comment authoring, body editing, new issue — needs text editor primitive), #129 (state mutation keys: close/reopen/label/priority — needs trust gate decision), #130 (pane label + Focus Manager integration — needs pane metadata SDK surface).
+
+**Tests:** 4 passing — lifecycle, preflight error rendering, list view rendering with mock data, filter toggle. All mocked via the `PLEXI_GH_BIN` + PATH-prepended fake `git` trick.
+
+## 2026-04-12 — [CHANGED] Advanced UI SDK (Python side) — Canvas, HitTester, DragHandler, FocusManager, FrameTimer, Tween + easings
+
+Shipped `sdk/python/plexi_sdk_advanced.py` (~460 lines, stdlib-only) and `sdk/python/tests/test_plexi_sdk_advanced.py` (17 tests, all passing). Imports and extends the simple SDK without forking it. Unblocks future canvas/game/animation apps (snake, aquarium, pyflow) on the Python side.
+
+**Modules shipped:**
+- `Canvas(offset, scale, bounds)` — pan/zoom transform context. `with canvas.transform(ctx):` patches `ctx.rect/text/line/image` for the duration of the block to pre-apply offset+scale, then restores cleanly on exit (delete-instance-attr so descriptor lookup falls back to the class method). Also `screen_to_canvas` / `canvas_to_screen` / `zoom_to_fit(content_bounds, viewport, padding)`.
+- `HitTester` / `HitRegion` — O(n) registered-rect hit testing. `register/clear/test`. Topmost (last-registered) wins.
+- `DragHandler(threshold)` — `start`/`update`/`end`/`active`/`payload`. Threshold-gated: deltas are `(0,0)` until the user moves past the pixel threshold.
+- `FocusManager` — `set` / `current` / `register` / `dispatch`. Keyboard routing for named widgets.
+- `FrameTimer(interval)` — `ready()` / `elapsed()` / `set_interval(new)`. Uses `time.monotonic()` so it works WITHOUT protocol-level `delta_time`. Accepts an optional `dt_override` arg for forward compatibility.
+- `Tween(start, end, duration, easing)` — wall-clock interpolation. `value()` / `done` / `reset()`. Easings: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `ease_out_cubic`, `ease_out_bounce`.
+
+**Deliberately deferred to Rust-side follow-ups (issue #132):**
+- `mouse_down` / `mouse_up` / `mouse_move` / `scroll` events — `DragHandler` and `Canvas.handle_input` are stubs/partial until these land.
+- `delta_time` / `time` on render events — `FrameTimer`/`Tween` use `time.monotonic()` for now; the `dt_override` hook is in place for the upgrade.
+- New draw commands (`bezier`, `circle`, `arc`, `clip`/`clip_end`, `opacity`/`opacity_end`) — needed for node-graph edges and clipped scroll containers.
+- `mouse_tracking = true` capability flag in `manifest.toml`.
+
+**Also deferred:** `LayerStack` (spec calls it deferrable; the simple SDK already accumulates draw commands in append order, and a layer abstraction isn't free without either tagging commands by layer index on `_commands` or running user callbacks twice — skip until an app actually needs it). Documented as a TODO comment in the file.
+
+**Key decision: monkey-patch ctx draw methods inside `transform()`.** The simple SDK's `RenderContext` doesn't expose a transform stack or a hook to wrap draw calls. Editing the simple SDK to add one was out of scope (constraint: "do not modify plexi_sdk.py"). Monkey-patching the bound methods on a per-instance basis for the duration of a `with` block is the cleanest path that satisfies "transform applies to all draws inside" without forking the SDK or making apps thread a transform argument through every call. On `__enter__` we capture whether the instance had a pre-existing instance attribute for each method (it doesn't, by default), set the patched function as an instance attribute, and on `__exit__` either restore the original instance attribute or `delattr` so descriptor lookup resumes through the class method. Test confirms this restores correctly even on exception.
+
+**Why `time.monotonic()` for FrameTimer/Tween instead of protocol time:** the spec shows `ft.ready(ctx.delta_time)` but `delta_time` doesn't exist in the protocol yet. Wall-clock `time.monotonic()` is correct enough for MVP — frame timer accuracy is bounded by render frequency anyway, and a monotonic-clock-driven tween renders identically to a delta-driven tween at any given instant. The `dt_override` parameter on `FrameTimer.ready()` is the forward-compatibility hook: once Plexi sends `delta_time` on render events, apps pass it through and the API stays stable.
+
+**Out of scope and untouched:** all `src/*.rs` files, the simple `plexi_sdk.py`, all installed apps under `~/.plexi-alpha/apps/`, and `sdk/python/examples/`. `cargo check` passes (verified pre-commit). No new dependencies added.
+
 ## 2026-04-12 — [CHANGED] Massive parallel-agent build session — alpha now includes Layer 0/1/2/4 + WASM Phase 1 + media draw commands + Finder Service + notifications
 
 End-of-day state. Alpha is at `a9a181e`. Built and installed via `just install-alpha`. The session ran ~15 sub-agents in parallel worktrees and shipped 6 PRs (#108, #109, #110, #112, #117, #120) plus a follow-up roadmap rewrite.
