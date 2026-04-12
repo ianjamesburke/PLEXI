@@ -16,6 +16,7 @@ mod secrets_app;
 mod text_editor_app;
 mod config;
 mod context;
+mod cost_tracker;
 mod logging;
 mod features;
 mod keys;
