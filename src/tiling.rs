@@ -1,3 +1,4 @@
+use crate::agent_mode::AgentMode;
 use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPACITY};
 use crate::media_cache::MediaCache;
 use crate::pane::TerminalPane;
@@ -166,17 +167,38 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
                     match pane.surface_mode {
                         SurfaceMode::FullTerminal => {
-                            // Agent mode: render agent UI instead of terminal
-                            if pane.agent_mode.is_active() {
-                                let deactivate = crate::agent_ui::render_agent_mode(
-                                    ui,
-                                    &mut pane.agent_mode,
-                                    &self.colors,
+                            // Agent mode: inline (Warp-style) rendering.
+                            //
+                            // We keep the normal TerminalView so shell
+                            // scrollback stays visible and mouse selection /
+                            // scroll still work. Two extra steps:
+                            //   1. Drain key/text events into AgentMode
+                            //      BEFORE TerminalView sees them, so the PTY
+                            //      never hears agent-mode keystrokes.
+                            //   2. Drain AgentMode's pending ANSI bytes into
+                            //      the terminal backend via write_agent_bytes,
+                            //      so the `>>> ` indicator and LLM replies
+                            //      render into the same grid as shell output.
+                            if is_focused && pane.agent_mode.is_active() {
+                                intercept_agent_keys(ui, &mut pane.agent_mode);
+                            }
+                            if pane.agent_mode.poll_llm() {
+                                ui.ctx().request_repaint_after(
+                                    std::time::Duration::from_millis(50),
                                 );
-                                if deactivate {
-                                    pane.agent_mode.deactivate();
-                                }
-                                return;
+                            }
+                            for chunk in pane.agent_mode.drain_output() {
+                                pane.backend.write_agent_bytes(&chunk);
+                            }
+                            if matches!(
+                                pane.agent_mode.state,
+                                crate::agent_mode::AgentModeState::Processing
+                            ) {
+                                // Keep polling the LLM worker while a request
+                                // is in flight even without new key input.
+                                ui.ctx().request_repaint_after(
+                                    std::time::Duration::from_millis(50),
+                                );
                             }
 
                             render_name_bar_and_dots(
@@ -300,6 +322,43 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let rect = rect.shrink(0.75);
             painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
         }
+    }
+}
+
+/// Route every key / text event for a focused, agent-mode pane into
+/// `AgentMode::handle_key_event`, draining the matched events from the frame
+/// so the terminal widget rendered afterward never sees them and nothing
+/// reaches the PTY.
+///
+/// This runs BEFORE `TerminalView::new().add(...)` renders, which is the
+/// lesson from `~/.claude/CLAUDE.md`: TextEdit/terminal widgets consume key
+/// events during their own rendering pass, so any app-level interception has
+/// to happen first. Filtering `input.events` here is equivalent to calling
+/// `consume_key` for every relevant event.
+fn intercept_agent_keys(ui: &mut egui::Ui, agent: &mut AgentMode) {
+    // Take the current events out of egui's input state, hand each eligible
+    // one to AgentMode, and put the non-consumed events back. The terminal
+    // widget rendered afterward clones `i.events` in its process_input pass,
+    // so anything we drop here never reaches the PTY.
+    let mut changed = false;
+    ui.input_mut(|input| {
+        let old = std::mem::take(&mut input.events);
+        let mut kept = Vec::with_capacity(old.len());
+        for event in old {
+            let eligible = matches!(
+                event,
+                egui::Event::Text(_) | egui::Event::Key { pressed: true, .. }
+            );
+            if eligible && agent.handle_key_event(&event) {
+                changed = true;
+                continue;
+            }
+            kept.push(event);
+        }
+        input.events = kept;
+    });
+    if changed {
+        ui.ctx().request_repaint();
     }
 }
 

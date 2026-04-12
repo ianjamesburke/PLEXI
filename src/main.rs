@@ -20,6 +20,11 @@
 // These modules are pure data/protocol definitions with no OS dependencies.
 // They're the seed of what will eventually be the WASM-compilable UI layer.
 mod app_protocol;
+
+// `agent_mode` pulls in `agent_llm` (ureq) and `secrets` (Keychain) which are
+// native-only. Gated until a later phase isolates the state machine from the
+// I/O backends.
+#[cfg(not(target_arch = "wasm32"))]
 mod agent_mode;
 
 // `features` and `app_permissions` transitively reference `config` and
@@ -37,11 +42,11 @@ mod app_permissions;
 // `rodio`, `notify`, `dirs`, or macOS-specific crates. Gated until Phase 2
 // introduces a WebSocket transport that replaces direct OS access.
 #[cfg(not(target_arch = "wasm32"))]
+mod agent_ansi;
+#[cfg(not(target_arch = "wasm32"))]
 mod agent_context;
 #[cfg(not(target_arch = "wasm32"))]
 mod agent_llm;
-#[cfg(not(target_arch = "wasm32"))]
-mod agent_ui;
 #[cfg(not(target_arch = "wasm32"))]
 mod app;
 #[cfg(not(target_arch = "wasm32"))]

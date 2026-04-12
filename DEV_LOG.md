@@ -1,5 +1,29 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [CHANGED] Inline (Warp-style) agent mode + fix #123 — bytes injected into the alacritty grid via a borrowed VTE parser
+
+Killed the full-pane agent panel. Agent turns now render directly into the same scrollback grid as shell output: a `>>> ` prompt indicator appears, keystrokes echo into the grid, the LLM reply is converted from markdown to ANSI and written into the grid, then a fresh `>>> ` appears for the next turn. Escape exits and hands control back to the shell.
+
+**The two non-obvious decisions:**
+
+1. **Output path: borrow alacritty's VTE parser, not the PTY.** Three options were on the table — (A) feed bytes directly to `alacritty_terminal::vte::ansi::Processor::advance(&mut Term, bytes)`, (B) maintain a parallel agent buffer composited at render time, (C) write into the PTY itself with a marker. Picked (A): `egui_term::TerminalBackend::write_agent_bytes` locks the existing `Arc<FairMutex<Term>>` and runs an ephemeral Processor against it. The shell child has no idea the bytes existed (they never touch the PTY), but they live in the grid exactly like shell output and survive scrollback. Option B doubles the rendering surface and would have been a lot of code; option C is brittle (the shell would have to ignore them).
+
+2. **Input path: drain `i.events` BEFORE TerminalView renders, not `consume_key`.** TerminalView's `process_input` clones `i.events` during its rendering pass, so any agent-mode key intercept has to mutate the shared input state first. The new helper `intercept_agent_keys` in `tiling.rs` runs `input_mut(|input| std::mem::take(&mut input.events))`, hands each Text/Key event to `AgentMode::handle_key_event`, and writes back only the non-consumed events. This is the "TextEdit consumes Enter" lesson from `~/.claude/CLAUDE.md` applied at the event-list level instead of via `consume_key` (because we need to filter many keys, not match on one specific binding).
+
+**Bug #123 root cause and fix:** The old `agent_ui::draw_input` used `egui::TextEdit::singleline` and checked `response.lost_focus() && i.key_pressed(Enter)` to detect submit. TextEdit consumed Enter internally before that check ever ran, so submit was never called and the LLM was never called. The new code path has no TextEdit at all — Enter is captured directly from the event stream and routed to `AgentMode::submit()`, which dispatches to the LlmWorker. The bug is gone as a side effect of the architectural change.
+
+**Markdown→ANSI converter (`src/agent_ansi.rs`, ~110 lines):** Bold (`**`), italic (`*`), inline code (`` ` ``), fenced code blocks (`` ``` ``), and ATX headers (rendered as bold). No lists, no tables, no links — `pulldown-cmark` would be overkill at the size of replies the LLM produces in this context. The converter emits CRLF line endings because alacritty's parser needs both a CR and an LF to advance to column 0.
+
+**Conversation history:** Kept on `AgentMode` as `Vec<AgentMessage>` so future multi-turn context support has somewhere to live, but the terminal grid is the source of truth for what the user sees — we never re-render messages from the Vec. This was deliberate: the only way to keep "shell output and agent output interleave naturally" is if BOTH live in the same grid.
+
+**WASM gating:** `agent_mode` was incorrectly listed in the cross-platform module section in `main.rs` despite using `secrets` (Keychain) and `agent_llm` (ureq), so the `wasm32-unknown-unknown` build was already broken on alpha HEAD before this PR. Gated `mod agent_mode` behind `cfg(not(target_arch = "wasm32"))` to fix it. Pre-existing breakage.
+
+**Deferred to follow-ups:**
+- Bare `/` at empty prompt detection (#104) — the new architecture is cleanly compatible: detection just calls `agent_mode.activate()` from `intercept_agent_keys`. Out of scope for this PR.
+- Slash commands inside agent mode (`/status`, `/cost`, etc. from the spec) — not in MVP.
+- Streaming token-by-token responses — `LlmResponse::Token` is plumbed through but the worker only emits `Complete`.
+- Multi-line input editing with arrow keys and history — currently only supports linear typing + backspace + Shift+Enter. Future work can flesh out the buffer editor.
+
 ## 2026-04-12 — [DECISION] Parallax viewer + linked companion pane (#113) — opt-in [app.launch] manifest section, reuse existing split machinery
 
 Shipped issue #113: the Parallax viewer app plus a new generic `[app.launch]` manifest section that lets any app declare a companion terminal pane on open.
@@ -60,7 +84,6 @@ Shipped `sdk/python/plexi_sdk_advanced.py` (~460 lines, stdlib-only) and `sdk/py
 **Why `time.monotonic()` for FrameTimer/Tween instead of protocol time:** the spec shows `ft.ready(ctx.delta_time)` but `delta_time` doesn't exist in the protocol yet. Wall-clock `time.monotonic()` is correct enough for MVP — frame timer accuracy is bounded by render frequency anyway, and a monotonic-clock-driven tween renders identically to a delta-driven tween at any given instant. The `dt_override` parameter on `FrameTimer.ready()` is the forward-compatibility hook: once Plexi sends `delta_time` on render events, apps pass it through and the API stays stable.
 
 **Out of scope and untouched:** all `src/*.rs` files, the simple `plexi_sdk.py`, all installed apps under `~/.plexi-alpha/apps/`, and `sdk/python/examples/`. `cargo check` passes (verified pre-commit). No new dependencies added.
->>>>>>> origin/alpha
 
 ## 2026-04-12 — [CHANGED] Massive parallel-agent build session — alpha now includes Layer 0/1/2/4 + WASM Phase 1 + media draw commands + Finder Service + notifications
 
