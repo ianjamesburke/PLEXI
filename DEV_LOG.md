@@ -1,5 +1,31 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [CHANGED] Advanced UI SDK (Python side) — Canvas, HitTester, DragHandler, FocusManager, FrameTimer, Tween + easings
+
+Shipped `sdk/python/plexi_sdk_advanced.py` (~460 lines, stdlib-only) and `sdk/python/tests/test_plexi_sdk_advanced.py` (17 tests, all passing). Imports and extends the simple SDK without forking it. Unblocks future canvas/game/animation apps (snake, aquarium, pyflow) on the Python side.
+
+**Modules shipped:**
+- `Canvas(offset, scale, bounds)` — pan/zoom transform context. `with canvas.transform(ctx):` patches `ctx.rect/text/line/image` for the duration of the block to pre-apply offset+scale, then restores cleanly on exit (delete-instance-attr so descriptor lookup falls back to the class method). Also `screen_to_canvas` / `canvas_to_screen` / `zoom_to_fit(content_bounds, viewport, padding)`.
+- `HitTester` / `HitRegion` — O(n) registered-rect hit testing. `register/clear/test`. Topmost (last-registered) wins.
+- `DragHandler(threshold)` — `start`/`update`/`end`/`active`/`payload`. Threshold-gated: deltas are `(0,0)` until the user moves past the pixel threshold.
+- `FocusManager` — `set` / `current` / `register` / `dispatch`. Keyboard routing for named widgets.
+- `FrameTimer(interval)` — `ready()` / `elapsed()` / `set_interval(new)`. Uses `time.monotonic()` so it works WITHOUT protocol-level `delta_time`. Accepts an optional `dt_override` arg for forward compatibility.
+- `Tween(start, end, duration, easing)` — wall-clock interpolation. `value()` / `done` / `reset()`. Easings: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `ease_out_cubic`, `ease_out_bounce`.
+
+**Deliberately deferred to Rust-side follow-ups (issue #132):**
+- `mouse_down` / `mouse_up` / `mouse_move` / `scroll` events — `DragHandler` and `Canvas.handle_input` are stubs/partial until these land.
+- `delta_time` / `time` on render events — `FrameTimer`/`Tween` use `time.monotonic()` for now; the `dt_override` hook is in place for the upgrade.
+- New draw commands (`bezier`, `circle`, `arc`, `clip`/`clip_end`, `opacity`/`opacity_end`) — needed for node-graph edges and clipped scroll containers.
+- `mouse_tracking = true` capability flag in `manifest.toml`.
+
+**Also deferred:** `LayerStack` (spec calls it deferrable; the simple SDK already accumulates draw commands in append order, and a layer abstraction isn't free without either tagging commands by layer index on `_commands` or running user callbacks twice — skip until an app actually needs it). Documented as a TODO comment in the file.
+
+**Key decision: monkey-patch ctx draw methods inside `transform()`.** The simple SDK's `RenderContext` doesn't expose a transform stack or a hook to wrap draw calls. Editing the simple SDK to add one was out of scope (constraint: "do not modify plexi_sdk.py"). Monkey-patching the bound methods on a per-instance basis for the duration of a `with` block is the cleanest path that satisfies "transform applies to all draws inside" without forking the SDK or making apps thread a transform argument through every call. On `__enter__` we capture whether the instance had a pre-existing instance attribute for each method (it doesn't, by default), set the patched function as an instance attribute, and on `__exit__` either restore the original instance attribute or `delattr` so descriptor lookup resumes through the class method. Test confirms this restores correctly even on exception.
+
+**Why `time.monotonic()` for FrameTimer/Tween instead of protocol time:** the spec shows `ft.ready(ctx.delta_time)` but `delta_time` doesn't exist in the protocol yet. Wall-clock `time.monotonic()` is correct enough for MVP — frame timer accuracy is bounded by render frequency anyway, and a monotonic-clock-driven tween renders identically to a delta-driven tween at any given instant. The `dt_override` parameter on `FrameTimer.ready()` is the forward-compatibility hook: once Plexi sends `delta_time` on render events, apps pass it through and the API stays stable.
+
+**Out of scope and untouched:** all `src/*.rs` files, the simple `plexi_sdk.py`, all installed apps under `~/.plexi-alpha/apps/`, and `sdk/python/examples/`. `cargo check` passes (verified pre-commit). No new dependencies added.
+
 ## 2026-04-12 — [CHANGED] Massive parallel-agent build session — alpha now includes Layer 0/1/2/4 + WASM Phase 1 + media draw commands + Finder Service + notifications
 
 End-of-day state. Alpha is at `a9a181e`. Built and installed via `just install-alpha`. The session ran ~15 sub-agents in parallel worktrees and shipped 6 PRs (#108, #109, #110, #112, #117, #120) plus a follow-up roadmap rewrite.
