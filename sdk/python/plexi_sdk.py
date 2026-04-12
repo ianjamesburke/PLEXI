@@ -26,15 +26,43 @@ Key handlers can emit terminal commands via the Emitter passed as the second arg
     def on_key(key, mods, emit):
         if key == "Enter":
             emit.run_in_terminal("echo hello")
+
+State management (Plexi handles undo/redo/save):
+
+    @app.on_get_state
+    def get_state():
+        return {
+            "user_state": {"cursor": 0, "selected": None},
+            "derived": {},
+            "session": {"scroll_offset": 120},
+            "persistent": {"bookmarks": [1, 5, 9]},
+        }
+
+    @app.on_set_state
+    def set_state(state):
+        cursor = state["user_state"].get("cursor", 0)
+        # ... restore your app's internal state from the buckets
+
+Cost reporting (for apps that call LLM APIs):
+
+    emit.cost_report(
+        service="anthropic", model="claude-sonnet-4-20250514",
+        input_tokens=1500, output_tokens=500, cost_usd=0.01,
+    )
 """
 
 import json
 import sys
+import uuid
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 
 class Emitter:
     """Emit commands to Plexi immediately (outside a render frame)."""
+
+    def __init__(self, app_id: str = ""):
+        self._app_id = app_id
 
     def run_in_terminal(self, command: str):
         """Execute a shell command in the linked terminal."""
@@ -63,6 +91,28 @@ class Emitter:
     def debug(self, message: str):
         """Log at debug level."""
         self.log("debug", message)
+
+    def cost_report(
+        self,
+        service: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float,
+        operation_id: Optional[str] = None,
+    ):
+        """Report LLM API cost to Plexi for logging and tracking."""
+        print(json.dumps({
+            "type": "cost_report",
+            "app_id": self._app_id,
+            "service": service,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": cost_usd,
+            "operation_id": operation_id or str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }), flush=True)
 
 
 class RenderContext:
@@ -154,14 +204,16 @@ class App:
     Base class for Plexi apps. Register event handlers via decorators.
 
     Handlers:
-        @app.on_render   fn(ctx: RenderContext)
-        @app.on_key      fn(key: str, mods: dict, emit: Emitter)
-        @app.on_click    fn(x: float, y: float, button: str, emit: Emitter)
-        @app.on_command  fn(text: str, emit: Emitter)
-        @app.on_resize   fn(width: float, height: float)
+        @app.on_render      fn(ctx: RenderContext)
+        @app.on_key         fn(key: str, mods: dict, emit: Emitter)
+        @app.on_click       fn(x: float, y: float, button: str, emit: Emitter)
+        @app.on_command     fn(text: str, emit: Emitter)
+        @app.on_resize      fn(width: float, height: float)
+        @app.on_get_state   fn() -> dict with keys: user_state, derived, session, persistent
+        @app.on_set_state   fn(state: dict) — restore app from state buckets
     """
 
-    def __init__(self):
+    def __init__(self, app_id: str = ""):
         self.width: float = 800.0
         self.height: float = 600.0
         self._on_render: Optional[Callable] = None
@@ -169,7 +221,9 @@ class App:
         self._on_click: Optional[Callable] = None
         self._on_command: Optional[Callable] = None
         self._on_resize: Optional[Callable] = None
-        self._emitter = Emitter()
+        self._on_get_state: Optional[Callable] = None
+        self._on_set_state: Optional[Callable] = None
+        self._emitter = Emitter(app_id=app_id)
 
     def on_render(self, fn: Callable) -> Callable:
         self._on_render = fn
@@ -190,6 +244,44 @@ class App:
     def on_resize(self, fn: Callable) -> Callable:
         self._on_resize = fn
         return fn
+
+    def on_get_state(self, fn: Callable) -> Callable:
+        """Register handler for get_state requests. Should return a dict with
+        keys: user_state, derived, session, persistent."""
+        self._on_get_state = fn
+        return fn
+
+    def on_set_state(self, fn: Callable) -> Callable:
+        """Register handler for set_state requests. Receives a dict with
+        keys: user_state, derived, session, persistent."""
+        self._on_set_state = fn
+        return fn
+
+    def _handle_get_state(self):
+        """Respond to a get_state request from Plexi."""
+        if self._on_get_state:
+            state = self._on_get_state()
+        else:
+            state = {}
+        # Ensure all four buckets exist.
+        result = {
+            "type": "state",
+            "user_state": state.get("user_state", {}),
+            "derived": state.get("derived", {}),
+            "session": state.get("session", {}),
+            "persistent": state.get("persistent", {}),
+        }
+        print(json.dumps(result), flush=True)
+
+    def _handle_set_state(self, event: dict):
+        """Handle a set_state request from Plexi."""
+        if self._on_set_state:
+            self._on_set_state({
+                "user_state": event.get("user_state", {}),
+                "derived": event.get("derived", {}),
+                "session": event.get("session", {}),
+                "persistent": event.get("persistent", {}),
+            })
 
     def run(self):
         """Start the event loop. Blocks until Plexi sends Shutdown."""
@@ -241,6 +333,12 @@ class App:
             elif event_type == "command":
                 if self._on_command:
                     self._on_command(event.get("text", ""), self._emitter)
+
+            elif event_type == "get_state":
+                self._handle_get_state()
+
+            elif event_type == "set_state":
+                self._handle_set_state(event)
 
             elif event_type == "shutdown":
                 break
