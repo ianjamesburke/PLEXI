@@ -555,6 +555,9 @@ impl eframe::App for PlexiApp {
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
                 }
+                Action::ToggleAgentMode => {
+                    self.toggle_agent_mode();
+                }
             }
         }
 

@@ -17,6 +17,7 @@
 // Cmd+E                 — file browser
 // Cmd+0                 — quick note
 // Cmd+1–9               — switch context
+// Ctrl+/                — toggle agent mode
 // Escape (app active)   — close app
 // Tab (app active)      — navigate to linked terminal
 //
@@ -72,6 +73,8 @@ pub enum Action {
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
+    /// Toggle agent mode on the focused pane.
+    ToggleAgentMode,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -211,6 +214,15 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open secrets manager (Cmd+Shift+S)
         if input.consume_key(cmd_shift, egui::Key::S) {
             actions.push(Action::OpenSecretsManager);
+        }
+
+        // Toggle agent mode (Ctrl+/)
+        let ctrl_only = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        if input.consume_key(ctrl_only, egui::Key::Slash) {
+            actions.push(Action::ToggleAgentMode);
         }
 
         // Switch context (Cmd+1 through Cmd+9)
