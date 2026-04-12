@@ -1,0 +1,11 @@
+[app]
+id = "github-issues"
+name = "GitHub Issues"
+entry = "github_issues.py"
+version = "0.1.0"
+description = "Browse GitHub issues via the gh CLI — list, detail, filter open/closed"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "read_only"
