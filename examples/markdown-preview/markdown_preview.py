@@ -240,7 +240,7 @@ def render(ctx):
     y = HEADER_H + PADDING
     in_fence = False
     fence_x = PADDING
-    fence_rects: list[tuple[float, float]] = []   # (y_start, y_end) of each fence block
+    fence_rects: list[tuple[int, int]] = []   # (y_start, y_end) of each fence block
 
     # First pass: identify fence regions for background rects
     fi = 0
