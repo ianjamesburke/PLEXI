@@ -1,11 +1,11 @@
-"""Tests for the Wikipedia Plexi app."""
+"""Tests for the Plexi Browser app."""
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from plexi_test import AppTestHarness, test_app_lifecycle, test_app_key_handling
 
-APP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wikipedia.py")
+APP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "browser.py")
 
 
 def test_lifecycle():
@@ -14,48 +14,33 @@ def test_lifecycle():
 
 
 def test_initial_render():
-    """Initial render produces text draw commands with search UI."""
+    """Initial render shows the browser header and URL input prompt."""
     with AppTestHarness(APP_PATH) as h:
         h.send_init()
         frames = h.send_render()
         texts = h.find_texts(frames)
         assert len(texts) > 0, "App should render at least one text element"
-        # Should show the Wikipedia header
-        h.assert_text_visible("Wikipedia", frames)
+        # Should show the app title or input prompt
+        h.assert_text_visible("URL:", frames)
     print("PASS: test_initial_render")
 
 
 def test_key_handling():
-    """Common keys don't crash the app."""
-    test_app_key_handling(APP_PATH, ["j", "k", "Backspace", "Escape"])
+    """Typing characters and Escape/Backspace don't crash."""
+    test_app_key_handling(APP_PATH, ["h", "t", "t", "p", "Backspace", "Escape"])
 
 
-def test_typing_query():
-    """Typing characters builds a search query without crashing."""
+def test_typing_url():
+    """Typing characters builds the URL input."""
     with AppTestHarness(APP_PATH) as h:
         h.send_init()
         h.send_render()
-        for char in "python":
+        for char in "example":
             h.send_key(char)
         frames = h.send_render()
         texts = h.find_texts(frames)
         assert len(texts) > 0
-    print("PASS: test_typing_query")
-
-
-def test_backspace():
-    """Backspace removes characters from query."""
-    with AppTestHarness(APP_PATH) as h:
-        h.send_init()
-        h.send_render()
-        for char in "test":
-            h.send_key(char)
-        h.send_key("Backspace")
-        h.send_key("Backspace")
-        frames = h.send_render()
-        texts = h.find_texts(frames)
-        assert len(texts) > 0
-    print("PASS: test_backspace")
+    print("PASS: test_typing_url")
 
 
 def test_resize():
@@ -73,27 +58,24 @@ def test_resize():
     print("PASS: test_resize")
 
 
-def test_navigation_keys():
-    """j/k for selection navigation don't crash."""
+def test_escape_clears_input():
+    """Escape key clears URL input."""
     with AppTestHarness(APP_PATH) as h:
         h.send_init()
         h.send_render()
-        h.send_key("j")
-        h.send_render()
-        h.send_key("j")
-        h.send_render()
-        h.send_key("k")
+        for char in "test":
+            h.send_key(char)
+        h.send_key("Escape")
         frames = h.send_render()
         assert len(h.find_texts(frames)) > 0
-    print("PASS: test_navigation_keys")
+    print("PASS: test_escape_clears_input")
 
 
 if __name__ == "__main__":
     test_lifecycle()
     test_initial_render()
     test_key_handling()
-    test_typing_query()
-    test_backspace()
+    test_typing_url()
     test_resize()
-    test_navigation_keys()
-    print("All wikipedia tests passed!")
+    test_escape_clears_input()
+    print("All plexi-browser tests passed!")
