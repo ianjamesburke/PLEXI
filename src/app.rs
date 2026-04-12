@@ -555,6 +555,12 @@ impl eframe::App for PlexiApp {
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
                 }
+                Action::AppUndo => {
+                    self.app_undo();
+                }
+                Action::AppRedo => {
+                    self.app_redo();
+                }
             }
         }
 

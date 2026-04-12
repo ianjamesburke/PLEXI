@@ -60,6 +60,19 @@ pub enum PlexiEvent {
     Click { x: f32, y: f32, button: MouseButton },
     /// User submitted a command via the terminal command bar.
     Command { text: String },
+    /// Request the app's current state (for undo/redo/save).
+    GetState,
+    /// Restore app state from a previous snapshot.
+    SetState {
+        #[serde(default)]
+        user_state: serde_json::Value,
+        #[serde(default)]
+        derived: serde_json::Value,
+        #[serde(default)]
+        session: serde_json::Value,
+        #[serde(default)]
+        persistent: serde_json::Value,
+    },
     /// App is being closed. Process should exit.
     Shutdown,
 }
@@ -132,6 +145,30 @@ pub enum DrawCommand {
         /// One of: "error" | "warn" | "info" | "debug"
         level: String,
         message: String,
+    },
+    /// App's state snapshot (response to GetState).
+    State {
+        #[serde(default)]
+        user_state: serde_json::Value,
+        #[serde(default)]
+        derived: serde_json::Value,
+        #[serde(default)]
+        session: serde_json::Value,
+        #[serde(default)]
+        persistent: serde_json::Value,
+    },
+    /// Report LLM API costs for logging.
+    CostReport {
+        app_id: String,
+        service: String,
+        model: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: f64,
+        #[serde(default)]
+        operation_id: Option<String>,
+        #[serde(default)]
+        timestamp: Option<String>,
     },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,

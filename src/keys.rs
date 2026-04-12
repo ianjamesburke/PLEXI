@@ -17,6 +17,8 @@
 // Cmd+E                 — file browser
 // Cmd+0                 — quick note
 // Cmd+1–9               — switch context
+// Cmd+Z                 — undo (app active)
+// Cmd+Shift+Z           — redo (app active)
 // Escape (app active)   — close app
 // Tab (app active)      — navigate to linked terminal
 //
@@ -72,6 +74,10 @@ pub enum Action {
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
+    /// Undo last action in the focused app.
+    AppUndo,
+    /// Redo last undone action in the focused app.
+    AppRedo,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -211,6 +217,16 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open secrets manager (Cmd+Shift+S)
         if input.consume_key(cmd_shift, egui::Key::S) {
             actions.push(Action::OpenSecretsManager);
+        }
+
+        // Undo / Redo in focused app (Cmd+Z / Cmd+Shift+Z)
+        // Only when an app is active — otherwise Cmd+Z goes to the terminal.
+        if app_active {
+            if input.consume_key(cmd_shift, egui::Key::Z) {
+                actions.push(Action::AppRedo);
+            } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+                actions.push(Action::AppUndo);
+            }
         }
 
         // Switch context (Cmd+1 through Cmd+9)
