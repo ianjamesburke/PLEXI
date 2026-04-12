@@ -90,6 +90,10 @@ class State:
         self.install_done_time = 0.0
         self._install_thread: threading.Thread | None = None
 
+        # Update All
+        self.update_all_status: str = ""
+        self.update_all_running = False
+
         # Timing
         self._start = time.monotonic()
 
@@ -273,6 +277,45 @@ def start_install(entry: dict):
     t.start()
 
 
+def _do_update_all(entries_with_updates: list[dict]):
+    n = len(entries_with_updates)
+    state.update_all_status = f"Updating {n} app{'s' if n != 1 else ''}…"
+    state.update_all_running = True
+    for i, entry in enumerate(entries_with_updates):
+        name = entry.get("name", entry.get("id", "?"))
+        state.update_all_status = f"Updating {name} ({i + 1}/{n})…"
+        app_id = entry.get("id", "unknown")
+        app_dir = APPS_DIR / app_id
+        try:
+            repo = entry.get("repo", "")
+            result = subprocess.run(
+                ["plexi-alpha", "app", "install", f"{repo}/{app_id}"],
+                capture_output=True, timeout=30,
+            )
+            if result.returncode != 0:
+                _fallback_install(entry, app_dir)
+        except Exception:
+            try:
+                _fallback_install(entry, app_dir)
+            except Exception:
+                pass
+    state.update_all_status = f"Updated {n} app{'s' if n != 1 else ''}."
+    state.update_all_running = False
+    # Clear the status message after a short delay
+    def _clear():
+        time.sleep(3)
+        state.update_all_status = ""
+    threading.Thread(target=_clear, daemon=True).start()
+
+
+def start_update_all():
+    updatable = [e for e in state.registry if is_installed(e.get("id", "")) and _has_update(e)]
+    if not updatable:
+        return
+    t = threading.Thread(target=_do_update_all, args=(updatable,), daemon=True)
+    t.start()
+
+
 def uninstall_app(app_id: str):
     try:
         shutil.rmtree(APPS_DIR / app_id)
@@ -282,6 +325,29 @@ def uninstall_app(app_id: str):
 
 def is_installed(app_id: str) -> bool:
     return (APPS_DIR / app_id).exists()
+
+
+def _installed_version(app_id: str) -> str | None:
+    """Read version from installed manifest.toml, return None if not installed."""
+    manifest = pathlib.Path.home() / ".plexi-alpha" / "apps" / app_id / "manifest.toml"
+    try:
+        text = manifest.read_text()
+        for line in text.splitlines():
+            if line.strip().startswith("version"):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return None
+
+
+def _has_update(entry: dict) -> bool:
+    """Return True if registry version > installed version."""
+    app_id = entry.get("id", "")
+    registry_ver = entry.get("version", "")
+    installed_ver = _installed_version(app_id)
+    if not installed_ver or not registry_ver:
+        return False
+    return registry_ver != installed_ver
 
 
 def truncate(text: str, max_chars: int) -> str:
@@ -368,12 +434,17 @@ def render_browse(ctx, now: float):
             max_desc_chars = max(10, int((ctx.width - 24 - 90) / 7))
             ctx.text(12, ry + 28, truncate(desc, max_desc_chars), size=11, color=C["subtext"])
 
-            # Right-side installed badge
+            # Right-side installed / update badge
             if installed:
-                badge = "installed"
+                if _has_update(entry):
+                    badge = "update"
+                    badge_color = C["yellow"]
+                else:
+                    badge = "installed"
+                    badge_color = C["installed"]
                 bx = ctx.width - len(badge) * 7 - 16
                 ctx.rect(bx - 4, ry + 14, len(badge) * 7 + 8, 16, fill=C["surface"], radius=4.0)
-                ctx.text(bx, ry + 16, badge, size=10, color=C["installed"])
+                ctx.text(bx, ry + 16, badge, size=10, color=badge_color)
 
             # Tag pills (first tag only, to keep rows clean)
             if tags:
@@ -393,9 +464,14 @@ def render_browse(ctx, now: float):
             query_display += "|"
         ctx.text(12, fy + 8, f"{prompt} {query_display}", size=13, color=C["text"])
 
+    # Update All status message (shown in header area while running)
+    if state.update_all_status:
+        status_x = ctx.width // 2 - len(state.update_all_status) * 3
+        ctx.text(max(120, status_x), 9, state.update_all_status, size=11, color=C["yellow"])
+
     # Hint bar (only when filter not active)
     if not state.filter_active:
-        hints = "j/k navigate  /  filter  Tab  tag  Enter  open"
+        hints = "j/k navigate  /  filter  Tab  tag  Enter  open  U  update all"
         ctx.text(12, ctx.height - 18, hints, size=10, color=C["dimmed"])
 
 
@@ -447,12 +523,19 @@ def render_detail(ctx, _now: float):
 
     # Install status
     if installed:
-        ctx.text(DETAIL_PADDING, y, "Already installed", size=13, color=C["installed"])
+        has_upd = _has_update(entry)
+        registry_ver = entry.get("version", "")
+        if has_upd:
+            ctx.text(DETAIL_PADDING, y, f"Update available (v{registry_ver})", size=13, color=C["yellow"])
+        else:
+            ctx.text(DETAIL_PADDING, y, "Already installed", size=13, color=C["installed"])
         y += 24
         if state.confirm_uninstall:
             ctx.text(DETAIL_PADDING, y, f"Uninstall {name}? (y/n)", size=13, color=C["yellow"])
+        elif has_upd:
+            ctx.text(DETAIL_PADDING, y, "u  update    x  uninstall    q / Backspace  back", size=11, color=C["subtext"])
         else:
-            ctx.text(DETAIL_PADDING, y, "u  uninstall    q / Backspace  back", size=11, color=C["subtext"])
+            ctx.text(DETAIL_PADDING, y, "x  uninstall    q / Backspace  back", size=11, color=C["subtext"])
     else:
         ctx.text(DETAIL_PADDING, y, "Not installed", size=13, color=C["subtext"])
         y += 24
@@ -535,6 +618,9 @@ def on_key(key, _mods, _emit):
         elif key == "i" and not is_installed(app_id):
             start_install(entry)
         elif key == "u" and is_installed(app_id):
+            # u = update (re-installs over existing)
+            start_install(entry)
+        elif key == "x" and is_installed(app_id):
             state.confirm_uninstall = True
         return
 
@@ -582,6 +668,8 @@ def on_key(key, _mods, _emit):
         state.selected_entry = entries[state.cursor]
         state.view = VIEW_DETAIL
         state.confirm_uninstall = False
+    elif key == "U" and not state.update_all_running:
+        start_update_all()
 
 
 @app.on_scroll
