@@ -1,0 +1,10 @@
+[app]
+id = "apiary"
+name = "Apiary"
+entry = "apiary.py"
+version = "0.1.0"
+description = "Manage a beehive through summer. Harvest honey before the cold."
+icon = "🐝"
+
+[app.capabilities]
+# No capabilities needed — pure rendering + input
