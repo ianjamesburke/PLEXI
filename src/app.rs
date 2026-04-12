@@ -42,6 +42,8 @@ impl PlexiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         #[cfg(target_os = "macos")]
         crate::macos_menu::customize_app_menu();
+        #[cfg(target_os = "macos")]
+        crate::finder_service::register();
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -390,6 +392,17 @@ impl eframe::App for PlexiApp {
         self.drain_pty_events();
         self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
+
+        // Consume any paths queued by the macOS Finder service
+        // ("Open in Plexi") or by `plexi <path>` on startup, and open each
+        // one as a new context.
+        #[cfg(target_os = "macos")]
+        {
+            for path in crate::finder_service::drain_pending_paths() {
+                self.open_path_as_context(path);
+                ctx.request_repaint();
+            }
+        }
 
         // Check if the focused app wants to close itself (e.g. after saving).
         {
