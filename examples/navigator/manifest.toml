@@ -1,0 +1,11 @@
+[app]
+id = "navigator"
+name = "Navigator"
+entry = "navigator.py"
+version = "0.1.0"
+description = "Harpoon-style directory hotlist — pin directories and jump to them by slot number"
+
+[app.capabilities]
+file_types = []
+terminal_write = true
+filesystem = "read_only"
