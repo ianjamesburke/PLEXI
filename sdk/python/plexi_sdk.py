@@ -227,6 +227,96 @@ class RenderContext:
             "selected": selected, "item_height": item_height,
         })
 
+    def image(self, path: str, x: float, y: float, w: float, h: float,
+              fit: str = "contain", rounding: float = 0.0):
+        """
+        Draw an image from a file on disk.
+
+        Plexi decodes and caches the texture (keyed by absolute path + mtime).
+        `path` may be absolute or relative to the app's cwd.
+
+        `fit` controls how the image is placed in the rect:
+            "contain" — fit inside, preserve aspect, letterbox (default)
+            "cover"   — fill the rect, preserve aspect, crop overflow
+            "fill"    — stretch to the rect, ignoring aspect ratio
+
+        `rounding` is the corner radius in logical pixels.
+        """
+        cmd: dict = {
+            "type": "image",
+            "path": path,
+            "x": x, "y": y, "w": w, "h": h,
+        }
+        if fit != "contain":
+            cmd["fit"] = fit
+        if rounding > 0:
+            cmd["rounding"] = rounding
+        self._commands.append(cmd)
+
+    def video_thumbnail(self, path: str, x: float, y: float, w: float, h: float,
+                        show_play_button: bool = True,
+                        timestamp_seconds: float = 0.0):
+        """
+        Draw a thumbnail for a video file.
+
+        Plexi extracts a single frame at `timestamp_seconds` using ffmpeg and
+        caches the result under ~/.cache/plexi/thumbnails/. Extraction runs on
+        a background thread so the first render returns a loading placeholder
+        and the real thumbnail appears a frame later.
+
+        If `show_play_button` is True (default), a centered play triangle is
+        overlaid. Clicking the rect opens the original video with the system
+        default player (`open` on macOS).
+        """
+        self._commands.append({
+            "type": "video_thumbnail",
+            "path": path,
+            "x": x, "y": y, "w": w, "h": h,
+            "show_play_button": show_play_button,
+            "timestamp_seconds": timestamp_seconds,
+        })
+
+    def file_grid(self, x: float, y: float, w: float, h: float,
+                  path: Optional[str] = None,
+                  filter: Optional[list] = None,
+                  paths: Optional[list] = None,
+                  item_size: float = 96.0,
+                  columns: Optional[int] = None,
+                  show_labels: bool = True):
+        """
+        Draw a grid of files with auto-generated thumbnails.
+
+        Two modes — exactly one must be provided:
+            path  + optional filter  — walk a directory non-recursively
+            paths                    — explicit list of file paths to show
+
+        `filter` accepts glob patterns or bare extensions, e.g.
+        ["*.png", "*.jpg"] or ["png", "mp4"].
+
+        Image files render via the shared image texture cache; video files
+        (mp4/mov/webm/mkv/m4v/avi) render via the video thumbnail cache.
+        Other file types show a generic icon with the extension label.
+
+        Clicking an item opens it with the system default handler.
+        """
+        if path is None and paths is None:
+            raise ValueError("file_grid requires either 'path' or 'paths'")
+        cmd: dict = {
+            "type": "file_grid",
+            "x": x, "y": y, "w": w, "h": h,
+            "item_size": item_size,
+            "show_labels": show_labels,
+        }
+        if path is not None:
+            cmd["path"] = path
+            if filter:
+                cmd["filter"] = filter
+        if paths is not None:
+            cmd["paths"] = paths
+        if columns is not None:
+            cmd["columns"] = columns
+        self._commands.append(cmd)
+
     def run_in_terminal(self, command: str):
         """Queue a terminal command to run at end of this frame."""
         self._commands.append({"type": "run_in_terminal", "command": command})

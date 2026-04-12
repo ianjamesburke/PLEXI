@@ -80,6 +80,8 @@ mod notification_log;
 mod notification_palette;
 #[cfg(not(target_arch = "wasm32"))]
 mod keys;
+#[cfg(not(target_arch = "wasm32"))]
+mod media_cache;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos_menu;
 #[cfg(not(target_arch = "wasm32"))]

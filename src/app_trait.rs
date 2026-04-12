@@ -1,5 +1,7 @@
+use crate::media_cache::MediaCache;
 use crate::theme::Colors;
 use crate::tiling::PaneId;
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 /// Context passed to an app during rendering.
@@ -7,6 +9,9 @@ pub struct AppRenderContext<'a> {
     pub colors: &'a Colors,
     pub is_focused: bool,
     pub linked_terminal: PaneId,
+    /// Shared image/video thumbnail cache, owned by `PlexiApp` and reused
+    /// across every app on every frame. Borrowed mutably during rendering.
+    pub media_cache: &'a RefCell<MediaCache>,
 }
 
 /// Commands an app can issue back to the system.

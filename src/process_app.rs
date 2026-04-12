@@ -415,8 +415,14 @@ impl ProcessApp {
         cmds
     }
 
-    fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], colors: &crate::theme::Colors) {
+    fn render_draw_commands(
+        ui: &mut egui::Ui,
+        commands: &[DrawCommand],
+        ctx: &AppRenderContext<'_>,
+        app_cwd: &std::path::Path,
+    ) {
         let origin = ui.min_rect().min;
+        let colors = ctx.colors;
 
         for cmd in commands {
             match cmd {
@@ -530,6 +536,174 @@ impl ProcessApp {
                         });
                 }
 
+                DrawCommand::Image { path, x, y, w, h, fit, rounding } => {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let resolved = resolve_app_path(app_cwd, path);
+                    let status = ctx.media_cache.borrow_mut().get_image(ui.ctx(), &resolved);
+                    match status {
+                        crate::media_cache::ImageStatus::Ready(tex) => {
+                            paint_image(
+                                ui.painter(),
+                                &tex,
+                                rect,
+                                fit.as_deref().unwrap_or("contain"),
+                                rounding.unwrap_or(0.0),
+                                colors,
+                            );
+                        }
+                        crate::media_cache::ImageStatus::Error(msg) => {
+                            paint_error_placeholder(ui.painter(), rect, &msg, colors);
+                        }
+                    }
+                }
+
+                DrawCommand::VideoThumbnail {
+                    path, x, y, w, h, show_play_button, timestamp_seconds,
+                } => {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let resolved = resolve_app_path(app_cwd, path);
+                    let ts = timestamp_seconds.unwrap_or(0.0);
+                    let status = ctx
+                        .media_cache
+                        .borrow_mut()
+                        .get_video_thumbnail(ui.ctx(), &resolved, ts);
+                    match status {
+                        crate::media_cache::ThumbStatus::Ready(tex) => {
+                            paint_image(ui.painter(), &tex, rect, "cover", 0.0, colors);
+                        }
+                        crate::media_cache::ThumbStatus::Pending => {
+                            paint_loading_placeholder(ui.painter(), rect, colors);
+                        }
+                        crate::media_cache::ThumbStatus::Error(msg) => {
+                            paint_error_placeholder(ui.painter(), rect, &msg, colors);
+                        }
+                    }
+                    if show_play_button.unwrap_or(true) {
+                        paint_play_button(ui.painter(), rect);
+                    }
+                    // Click opens the original video in the system default player.
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new(("plexi-video-thumb", path.as_str())),
+                        egui::Sense::click(),
+                    );
+                    if response.clicked() {
+                        log::info!("ProcessApp: opening video {:?}", resolved);
+                        let _ = std::process::Command::new("open").arg(&resolved).spawn();
+                    }
+                }
+
+                DrawCommand::FileGrid {
+                    path, filter, paths, x, y, w, h,
+                    item_size, columns, show_labels,
+                } => {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let cell = item_size.unwrap_or(96.0).max(32.0);
+                    let labels = show_labels.unwrap_or(true);
+                    let label_h = if labels { 14.0 } else { 0.0 };
+                    let gap = 8.0;
+
+                    // Collect file paths from either explicit list or directory walk.
+                    let files: Vec<PathBuf> = if let Some(list) = paths {
+                        list.iter().map(|p| resolve_app_path(app_cwd, p)).collect()
+                    } else if let Some(dir) = path {
+                        list_dir_filtered(&resolve_app_path(app_cwd, dir), filter.as_deref())
+                    } else {
+                        Vec::new()
+                    };
+
+                    let cols = columns
+                        .map(|c| c.max(1) as usize)
+                        .unwrap_or_else(|| {
+                            ((rect.width() + gap) / (cell + gap)).floor().max(1.0) as usize
+                        });
+
+                    // Paint items.
+                    for (i, file) in files.iter().enumerate() {
+                        let col = i % cols;
+                        let row = i / cols;
+                        let cell_x = rect.min.x + col as f32 * (cell + gap);
+                        let cell_y = rect.min.y + row as f32 * (cell + label_h + gap);
+                        if cell_y + cell + label_h > rect.max.y {
+                            break; // clip anything past the grid rect
+                        }
+                        let thumb_rect = egui::Rect::from_min_size(
+                            egui::pos2(cell_x, cell_y),
+                            egui::vec2(cell, cell),
+                        );
+
+                        let kind = classify_file(file);
+                        match kind {
+                            FileKind::Image => {
+                                let status = ctx.media_cache.borrow_mut().get_image(ui.ctx(), file);
+                                match status {
+                                    crate::media_cache::ImageStatus::Ready(tex) => {
+                                        paint_image(ui.painter(), &tex, thumb_rect, "cover", 4.0, colors);
+                                    }
+                                    crate::media_cache::ImageStatus::Error(msg) => {
+                                        paint_error_placeholder(ui.painter(), thumb_rect, &msg, colors);
+                                    }
+                                }
+                            }
+                            FileKind::Video => {
+                                let status = ctx.media_cache.borrow_mut().get_video_thumbnail(
+                                    ui.ctx(), file, 0.0,
+                                );
+                                match status {
+                                    crate::media_cache::ThumbStatus::Ready(tex) => {
+                                        paint_image(ui.painter(), &tex, thumb_rect, "cover", 4.0, colors);
+                                    }
+                                    crate::media_cache::ThumbStatus::Pending => {
+                                        paint_loading_placeholder(ui.painter(), thumb_rect, colors);
+                                    }
+                                    crate::media_cache::ThumbStatus::Error(msg) => {
+                                        paint_error_placeholder(ui.painter(), thumb_rect, &msg, colors);
+                                    }
+                                }
+                                paint_play_button(ui.painter(), thumb_rect);
+                            }
+                            FileKind::Other => {
+                                paint_generic_file_icon(ui.painter(), thumb_rect, file, colors);
+                            }
+                        }
+
+                        if labels {
+                            let name = file
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("?");
+                            let truncated = truncate_for_width(name, cell);
+                            ui.painter().text(
+                                egui::pos2(thumb_rect.center().x, thumb_rect.max.y + 2.0),
+                                egui::Align2::CENTER_TOP,
+                                truncated,
+                                egui::FontId::proportional(10.0),
+                                colors.text_dim,
+                            );
+                        }
+
+                        // Click: open the file in the system default handler.
+                        let response = ui.interact(
+                            thumb_rect,
+                            egui::Id::new(("plexi-file-grid", file.as_path())),
+                            egui::Sense::click(),
+                        );
+                        if response.clicked() {
+                            log::info!("ProcessApp: opening file {:?}", file);
+                            let _ = std::process::Command::new("open").arg(file).spawn();
+                        }
+                    }
+                }
+
                 // RunInTerminal / Cd / Log / State / CostReport / Notification /
                 // FrameDone handled at the App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
@@ -541,6 +715,253 @@ impl ProcessApp {
                 | DrawCommand::FrameDone => {}
             }
         }
+    }
+}
+
+/// What type of thumbnail to show for a file in a FileGrid.
+enum FileKind {
+    Image,
+    Video,
+    Other,
+}
+
+fn classify_file(path: &std::path::Path) -> FileKind {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "tiff" | "tif" => FileKind::Image,
+        "mp4" | "mov" | "webm" | "mkv" | "m4v" | "avi" => FileKind::Video,
+        _ => FileKind::Other,
+    }
+}
+
+/// Resolve a (possibly relative) path emitted by an app against the app's cwd.
+/// Matches the subprocess's own view of the filesystem.
+fn resolve_app_path(app_cwd: &std::path::Path, raw: &str) -> PathBuf {
+    let p = PathBuf::from(raw);
+    if p.is_absolute() {
+        p
+    } else {
+        app_cwd.join(p)
+    }
+}
+
+/// List files in a directory (non-recursive), optionally filtered by a set of
+/// simple glob patterns or bare extensions. Returns paths sorted by filename.
+fn list_dir_filtered(dir: &std::path::Path, filter: Option<&[String]>) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("ProcessApp: file_grid read_dir {:?}: {e}", dir);
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| filter.map_or(true, |f| path_matches_filter(p, f)))
+        .collect();
+    out.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    out
+}
+
+/// Match a path against a user-supplied filter list. Supports three forms:
+///   - `"*.png"`    — extension wildcard
+///   - `"png"`      — bare extension
+///   - any other pattern is substring-matched against the filename
+fn path_matches_filter(path: &std::path::Path, patterns: &[String]) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    for p in patterns {
+        let p = p.trim();
+        if let Some(rest) = p.strip_prefix("*.") {
+            if ext == rest.to_lowercase() {
+                return true;
+            }
+        } else if !p.contains('*') && !p.contains('.') {
+            if ext == p.to_lowercase() {
+                return true;
+            }
+        } else if name.contains(p.trim_start_matches('*').trim_end_matches('*')) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Paint a texture into `rect` respecting the given fit mode.
+fn paint_image(
+    painter: &egui::Painter,
+    tex: &egui::TextureHandle,
+    rect: egui::Rect,
+    fit: &str,
+    rounding: f32,
+    colors: &crate::theme::Colors,
+) {
+    let tex_size = tex.size_vec2();
+    // Destination rect inside `rect`, computed per-fit.
+    let (dest, uv) = match fit {
+        "fill" => (rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))),
+        "cover" => {
+            let src_aspect = tex_size.x / tex_size.y;
+            let dst_aspect = rect.width() / rect.height();
+            // Crop the source UV to match the destination aspect.
+            let (u_min, u_max, v_min, v_max) = if src_aspect > dst_aspect {
+                // source wider — crop horizontally
+                let crop = dst_aspect / src_aspect;
+                let half = (1.0 - crop) * 0.5;
+                (half, 1.0 - half, 0.0, 1.0)
+            } else {
+                // source taller — crop vertically
+                let crop = src_aspect / dst_aspect;
+                let half = (1.0 - crop) * 0.5;
+                (0.0, 1.0, half, 1.0 - half)
+            };
+            (
+                rect,
+                egui::Rect::from_min_max(
+                    egui::pos2(u_min, v_min),
+                    egui::pos2(u_max, v_max),
+                ),
+            )
+        }
+        _ => {
+            // "contain" (default) — fit inside preserving aspect, letterbox.
+            let src_aspect = tex_size.x / tex_size.y;
+            let dst_aspect = rect.width() / rect.height();
+            let inner = if src_aspect > dst_aspect {
+                // fit to width
+                let h = rect.width() / src_aspect;
+                let y = rect.center().y - h * 0.5;
+                egui::Rect::from_min_size(egui::pos2(rect.min.x, y), egui::vec2(rect.width(), h))
+            } else {
+                let w = rect.height() * src_aspect;
+                let x = rect.center().x - w * 0.5;
+                egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(w, rect.height()))
+            };
+            // Fill the surrounding letterbox area with the terminal bg so the
+            // image doesn't show whatever was painted under it.
+            painter.rect_filled(rect, rounding, colors.terminal_bg);
+            (inner, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)))
+        }
+    };
+
+    let mut mesh = egui::Mesh::with_texture(tex.id());
+    mesh.add_rect_with_uv(dest, uv, egui::Color32::WHITE);
+    if rounding > 0.0 {
+        // egui's mesh doesn't round natively — clip via a rounded rect by
+        // drawing a rounded mask frame over the corners using the terminal bg.
+        // This is a pragmatic approximation; a real mask would need a shader.
+        painter.rect_filled(rect, rounding, egui::Color32::TRANSPARENT);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+fn paint_error_placeholder(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    msg: &str,
+    colors: &crate::theme::Colors,
+) {
+    painter.rect_filled(rect, 2.0, Color32::from_rgb(60, 30, 30));
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, Color32::from_rgb(180, 70, 70)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "×",
+        egui::FontId::proportional(rect.height().min(rect.width()) * 0.5),
+        Color32::from_rgb(240, 160, 160),
+    );
+    log::debug!("ProcessApp: placeholder for {msg}");
+    let _ = colors;
+}
+
+fn paint_loading_placeholder(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    colors: &crate::theme::Colors,
+) {
+    painter.rect_filled(rect, 2.0, colors.bg_active);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "…",
+        egui::FontId::proportional(rect.height().min(rect.width()) * 0.4),
+        colors.text_dim,
+    );
+}
+
+fn paint_play_button(painter: &egui::Painter, rect: egui::Rect) {
+    let center = rect.center();
+    let r = rect.width().min(rect.height()) * 0.22;
+    // Dark circle behind the triangle for contrast.
+    painter.circle_filled(center, r, Color32::from_black_alpha(170));
+    // Equilateral triangle pointing right, optically centered.
+    let tri_size = r * 0.9;
+    let optical_shift = tri_size * 0.15; // triangles look off-center without this
+    let p0 = egui::pos2(center.x - tri_size * 0.45 + optical_shift, center.y - tri_size * 0.55);
+    let p1 = egui::pos2(center.x - tri_size * 0.45 + optical_shift, center.y + tri_size * 0.55);
+    let p2 = egui::pos2(center.x + tri_size * 0.55 + optical_shift, center.y);
+    painter.add(egui::Shape::convex_polygon(
+        vec![p0, p1, p2],
+        Color32::WHITE,
+        egui::Stroke::NONE,
+    ));
+}
+
+fn paint_generic_file_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    path: &std::path::Path,
+    colors: &crate::theme::Colors,
+) {
+    painter.rect_filled(rect, 4.0, colors.bg_active);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, colors.text_dim),
+        egui::StrokeKind::Inside,
+    );
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_uppercase())
+        .unwrap_or_else(|| "FILE".to_string());
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        ext,
+        egui::FontId::monospace(rect.height().min(rect.width()) * 0.22),
+        colors.text_primary,
+    );
+}
+
+/// Rough truncation for a fixed pixel width. egui has no width-measurement API
+/// available without a font atlas lookup, so approximate with 6px/char.
+fn truncate_for_width(s: &str, width_px: f32) -> String {
+    let max_chars = (width_px / 6.0).max(4.0) as usize;
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 
@@ -655,10 +1076,11 @@ impl App for ProcessApp {
 
         // Render the current frame.
         let frame_clone = self.frame.clone();
+        let cwd = self.cwd.clone();
         egui::Frame::new()
             .fill(ctx.colors.terminal_bg)
             .show(ui, |ui| {
-                Self::render_draw_commands(ui, &frame_clone, ctx.colors);
+                Self::render_draw_commands(ui, &frame_clone, ctx, &cwd);
             });
 
         // Poll the subprocess at ~60 fps. Using request_repaint() with no delay

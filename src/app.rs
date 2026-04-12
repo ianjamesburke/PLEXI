@@ -2,6 +2,7 @@ use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
 use crate::keys::{self, Action};
+use crate::media_cache::MediaCache;
 use crate::pane::TerminalPane;
 use crate::shell;
 use crate::theme::{self, Colors};
@@ -10,6 +11,7 @@ use crate::workspace::WorkspaceFile;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme, TerminalView};
 use egui_tiles::{Tile, Tree};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -38,6 +40,9 @@ pub struct PlexiApp {
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
+    /// Shared image + video thumbnail cache. Owned here so all apps on all
+    /// panes share the same decoded textures and ffmpeg-generated thumbnails.
+    pub(crate) media_cache: RefCell<MediaCache>,
 }
 
 impl PlexiApp {
@@ -173,6 +178,7 @@ impl PlexiApp {
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
+                    media_cache: RefCell::new(MediaCache::new()),
                 };
             }
         }
@@ -222,6 +228,7 @@ impl PlexiApp {
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
+            media_cache: RefCell::new(MediaCache::new()),
         }
     }
 
@@ -398,6 +405,11 @@ impl eframe::App for PlexiApp {
         self.drain_pty_events();
         self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
+
+        // Drain completed ffmpeg thumbnail extractions from worker threads. The
+        // worker itself also calls `request_repaint`, but polling here keeps
+        // the cache authoritative once per frame before any app reads it.
+        self.media_cache.borrow_mut().poll_completions();
 
         // Consume any paths queued by the macOS Finder service
         // ("Open in Plexi") or by `plexi <path>` on startup, and open each
@@ -715,6 +727,7 @@ impl eframe::App for PlexiApp {
                     colors: self.colors,
                     pane_names,
                     drag_cursor_pos,
+                    media_cache: &self.media_cache,
                 };
                 ctx.tree.ui(&mut behavior, ui);
 
@@ -788,6 +801,7 @@ impl eframe::App for PlexiApp {
                                                 colors: &self.colors,
                                                 is_focused: true,
                                                 linked_terminal: pane_id,
+                                                media_cache: &self.media_cache,
                                             };
                                             app.ui(ui, &app_ctx);
                                         }

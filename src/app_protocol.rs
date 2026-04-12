@@ -146,6 +146,72 @@ pub enum DrawCommand {
         #[serde(default)]
         item_height: f32,
     },
+    /// Draw an image from a file on disk. Plexi decodes and caches the texture.
+    ///
+    /// `path` may be absolute or relative to the app's cwd. `fit` controls how
+    /// the source image is placed inside the `w`×`h` rect:
+    ///   - "contain" (default): fit inside the rect, preserve aspect, may letterbox.
+    ///   - "cover":             fill the rect, preserve aspect, crop overflow.
+    ///   - "fill":              stretch to the rect, ignoring aspect ratio.
+    ///
+    /// If decoding fails, Plexi draws a placeholder rect with an error marker.
+    Image {
+        path: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default)]
+        fit: Option<String>,
+        #[serde(default)]
+        rounding: Option<f32>,
+    },
+    /// Draw a thumbnail for a video file. Plexi extracts a single frame via
+    /// ffmpeg and caches the result under ~/.cache/plexi/thumbnails/.
+    ///
+    /// Extraction happens on a worker thread; the first render after a cache
+    /// miss shows a "loading" placeholder and triggers a repaint when ready.
+    ///
+    /// If `show_play_button` is true (default), a centered play triangle is
+    /// overlaid on the thumbnail. Clicking the rect opens the video in the
+    /// system default player (`open` on macOS).
+    VideoThumbnail {
+        path: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default)]
+        show_play_button: Option<bool>,
+        #[serde(default)]
+        timestamp_seconds: Option<f32>,
+    },
+    /// Draw a grid of files with thumbnails. Two modes:
+    ///   - `path` + optional `filter`: walk the directory (non-recursive),
+    ///     filter by glob patterns or extensions.
+    ///   - `paths`: explicit list of file paths, rendered in order.
+    ///
+    /// Image files render via the image texture cache; video files
+    /// (mp4/mov/webm/mkv) render via the video thumbnail cache. Other file
+    /// types show a generic icon with the extension label.
+    FileGrid {
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        filter: Option<Vec<String>>,
+        #[serde(default)]
+        paths: Option<Vec<String>>,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default)]
+        item_size: Option<f32>,
+        #[serde(default)]
+        columns: Option<u32>,
+        #[serde(default)]
+        show_labels: Option<bool>,
+    },
     /// Emit a command back to Plexi to run in the linked terminal.
     RunInTerminal { command: String },
     /// Tell Plexi to cd the linked terminal to this path.
