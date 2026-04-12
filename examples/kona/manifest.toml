@@ -1,0 +1,6 @@
+app_id = "kona"
+name = "Kona"
+description = "Plexi app store — browse and install apps."
+entry = "kona.py"
+icon = "🏪"
+version = "0.1.0"
