@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [CHANGED] Apps can declare a startup message via `[app.launch].startup_message` (issue #185)
+
+New optional manifest field: `[app.launch].startup_message = "Starting X…"`. When present, Plexi writes the string in dim italics into the companion terminal's scrollback grid at launch, via `TerminalBackend::write_agent_bytes` (same path agent-mode uses — bytes never touch the PTY, so the shell has no idea they exist).
+
+Both launch paths write the message: the fast in-pane `AppWithCompanion` path writes to the same pane's backend, and the legacy auto-split path writes to the newly-created companion `TerminalPane` before it's inserted into the context. Helper `format_startup_message` lives at the bottom of `src/pane_ops.rs`. No example manifest has opted in yet — this is plumbing only.
+
 ## 2026-04-12 — [CHANGED] Agent mode prints a scope header on activation (issue #118)
 
 When agent mode activates, it now emits a dim `agent ─ <project>  <~/path>` header into the terminal grid right before the first `>>> ` prompt, so the user can see which directory the agent is scoped to. Rendered inline via ANSI (bold magenta project name + dim gray full path, home collapsed to `~`) to match the existing Warp-style output path — no new UI surface. Helper `build_scope_header` lives in `agent_mode.rs`; uses the already-present `dirs` crate for home collapse.
