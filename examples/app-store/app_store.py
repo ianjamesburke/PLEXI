@@ -192,7 +192,7 @@ def _fallback_install(entry: dict, app_dir: pathlib.Path) -> None:
     repo = entry.get("repo", "")
     path = entry.get("path", "")
     branch = entry.get("branch", "alpha")
-    base_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
+    base_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}".rstrip("/")
     manifest_url = f"{base_url}/manifest.toml"
     try:
         with urllib.request.urlopen(manifest_url, timeout=10) as r:
