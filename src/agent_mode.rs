@@ -90,8 +90,9 @@ impl AgentMode {
     }
 
     /// Activate agent mode. Lazily spawns the LLM worker on first activation,
-    /// then enqueues the initial `>>> ` prompt indicator bytes so the render
-    /// layer will draw it into the terminal grid on the next frame.
+    /// then enqueues a scope header line followed by the initial `>>> ` prompt
+    /// indicator bytes so the render layer will draw both into the terminal
+    /// grid on the next frame.
     pub fn activate(&mut self) {
         if self.state != AgentModeState::Inactive {
             return;
@@ -105,6 +106,11 @@ impl AgentMode {
             self.llm = Some(LlmWorker::spawn());
         }
 
+        // Scope header: bold project name + dim full path, so the user sees
+        // which directory the agent is scoped to (issue #118). Only emitted
+        // on the first activation of a session, before the first prompt.
+        let header = build_scope_header(&self.directory_scope);
+        self.enqueue(header.into_bytes());
         self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
     }
 
@@ -378,4 +384,41 @@ fn build_system_prompt(cwd: &std::path::Path) -> String {
 The user is currently working in directory: {}. Respond concisely.",
         cwd.display()
     )
+}
+
+/// Build the scope header line shown when agent mode activates.
+///
+/// Renders as a bold magenta project name followed by a dim gray full path,
+/// with the home directory collapsed to `~`. Example:
+///
+/// ```text
+/// agent ─ PLEXI  ~/Documents/GitHub/PLEXI
+/// ```
+///
+/// Returns a ready-to-emit ANSI string (with leading CRLF) so callers can
+/// enqueue it directly into the terminal grid.
+fn build_scope_header(cwd: &std::path::Path) -> String {
+    let project = cwd
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.display().to_string());
+
+    let display_path = collapse_home(cwd);
+
+    format!(
+        "\r\n\x1b[2magent ─\x1b[0m \x1b[1;35m{project}\x1b[0m  \x1b[2;90m{display_path}\x1b[0m\r\n"
+    )
+}
+
+/// Replace the user's home directory prefix with `~` for display.
+fn collapse_home(path: &std::path::Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(stripped) = path.strip_prefix(&home) {
+            if stripped.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", stripped.display());
+        }
+    }
+    path.display().to_string()
 }
