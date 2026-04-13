@@ -396,8 +396,6 @@ fn find_claude_binary() -> Option<String> {
         "/opt/homebrew/bin/claude",
         // npm global installs
         "/usr/local/share/npm/bin/claude",
-        // nvm default
-        "/Users/ianburke/.nvm/versions/node/default/bin/claude",
     ];
 
     for candidate in &candidates {
