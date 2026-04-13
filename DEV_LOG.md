@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [FIX] Pomodoro break timers now auto-start (issue #171)
+
+`examples/pomodoro/pomodoro.py` — pressing `b` (short break) or `l` (long break) used to set `running = False` and require a second Shift+Space to start the timer, which broke the end-of-focus → break handoff. Now the `b` / `l` handlers set `running = True` and reset `last_tick` so the break counts down immediately. Updated the header hint accordingly.
+
 ## 2026-04-14 — [DECISION] mermaid-viewer: keyboard-driven diagram editor + --filter=mermaid file browser
 
 Added `EntryFilter::Mermaid` to `src/file_browser/mod.rs` (matches `.mmd` files and dirs). Added `examples/mermaid-viewer/` with four files: `mermaid_parser.py` (regex-based parser for flowchart/graph LR/TD syntax, 4 node shapes, solid/dashed/labeled edges), `graph_layout.py` (BFS layering → pixel coords, LR and TD), `mermaid_viewer.py` (full app: VIEW/EDIT_LABEL/ADD_NODE/CONNECTING modes, zoom/pan, hot-reload on mtime, spawns file-browser sidebar on direct launch), `manifest.toml`.
