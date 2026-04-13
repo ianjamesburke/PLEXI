@@ -77,6 +77,14 @@ install-alpha:
         name="$(basename "$dir")"
         rm -rf "$apps_dir/$name"
         cp -R "$dir" "$apps_dir/$name"
+        # Build Rust apps and place the binary where the manifest expects it.
+        if [[ -f "${dir}Cargo.toml" ]]; then
+          echo "Building Rust app: $name"
+          (cd "$dir" && cargo build --release 2>&1)
+          mkdir -p "$apps_dir/$name/bin"
+          cp "${dir}target/release/plexi-app" "$apps_dir/$name/bin/plexi-app"
+          chmod +x "$apps_dir/$name/bin/plexi-app"
+        fi
         # Ensure Python entry points are executable (macOS strips +x on cp -R).
         find "$apps_dir/$name" -maxdepth 1 -name "*.py" -exec chmod +x {} \;
         echo "Installed app: $name"
