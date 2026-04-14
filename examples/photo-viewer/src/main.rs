@@ -1,12 +1,19 @@
 //! photo-viewer — Plexi example (Rust)
 //!
-//! Standalone single-image viewer. Receives one file path as argv[1], decodes
-//! image metadata, and lets the user view/zoom/pan. Intentionally does NOT
-//! enumerate directories or provide next/prev — that's the file browser's job.
-//! Future composition via spawn_app will pair this viewer with a file browser.
+//! Composable single-image viewer. Receives one file path as argv[1].
+//!
+//! **Launch modes** (set by the host via PLEXI_LAUNCH_MODE):
+//!   - `direct`  — opened from the command palette. Self-spawns a
+//!                 file_browser with `--filter=images` in a 40/60 left split
+//!                 so the user gets a full image library experience.
+//!   - `spawned` — launched by the file browser (Enter on an image file).
+//!                 Shows only the viewer; the file browser is already visible.
+//!
+//! When opened directly with no file path, starts in an empty state until the
+//! file browser sidebar delivers a selection.
 //!
 //! Build:  cargo build --release
-//! Run:    target/release/photo-viewer /path/to/image.png
+//! Run:    target/release/plexi-app /path/to/image.png
 //!
 //! Keybindings:
 //!   h/j/k/l or arrows   pan
@@ -16,7 +23,8 @@
 //!   Cmd+Shift+S         save edited copy (v1 stub)
 
 use image::GenericImageView;
-use plexi_sdk::{App, Emitter, Modifiers, MouseButton, RenderContext, run};
+use plexi_sdk::{App, Emitter, Modifiers, MouseButton, RenderContext, SpawnLayout, SpawnLifecycle, SpawnParent, run};
+use std::env;
 use std::path::PathBuf;
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -41,7 +49,7 @@ const TRANSIENT_FRAMES: u32 = 180;
 // ── App state ────────────────────────────────────────────────────────────────
 
 struct PhotoViewer {
-    file_path: PathBuf,
+    file_path: Option<PathBuf>,
     img_w: u32,
     img_h: u32,
     /// User zoom multiplier on top of fit-to-window. 1.0 = fit.
@@ -59,10 +67,18 @@ struct PhotoViewer {
     /// Mouse drag state.
     dragging: bool,
     drag_last: Option<(f32, f32)>,
+    /// When true, the first render frame emits a spawn_app for the image-
+    /// filtered file browser sidebar. Consumed once then cleared.
+    needs_sidebar_spawn: bool,
 }
 
 impl PhotoViewer {
-    fn new(file_path: PathBuf) -> Self {
+    fn new(file_path: Option<PathBuf>) -> Self {
+        // Spawn the image-filtered file browser sidebar only when opened
+        // directly (not spawned by another app, e.g. the file browser itself).
+        let launch_mode = env::var("PLEXI_LAUNCH_MODE").unwrap_or_else(|_| "direct".to_string());
+        let needs_sidebar_spawn = launch_mode != "spawned";
+
         let mut viewer = Self {
             file_path,
             img_w: 0,
@@ -77,16 +93,18 @@ impl PhotoViewer {
             last_h: 0.0,
             dragging: false,
             drag_last: None,
+            needs_sidebar_spawn,
         };
         viewer.load_image_metadata();
         viewer
     }
 
     fn load_image_metadata(&mut self) {
+        let Some(ref path) = self.file_path else { return; };
         // image::open decodes enough to expose dimensions without forcing us to
         // keep raw pixels in memory. Plexi will render the actual texture via a
         // future Image draw command; this app owns the placement math only.
-        match image::open(&self.file_path) {
+        match image::open(path) {
             Ok(img) => {
                 let (w, h) = img.dimensions();
                 self.img_w = w;
@@ -94,7 +112,7 @@ impl PhotoViewer {
                 self.error = None;
                 stderr_log("info", &format!(
                     "photo-viewer: loaded {} ({}x{})",
-                    self.file_path.display(), w, h,
+                    path.display(), w, h,
                 ));
             }
             Err(e) => {
@@ -102,7 +120,7 @@ impl PhotoViewer {
                 self.error = Some(msg.clone());
                 stderr_log("error", &format!(
                     "photo-viewer: failed to load {}: {}",
-                    self.file_path.display(), msg,
+                    path.display(), msg,
                 ));
             }
         }
@@ -176,8 +194,30 @@ impl App for PhotoViewer {
         self.last_h = ctx.height;
         self.tick_transient();
 
+        // On the very first render, self-spawn the image-filtered file browser
+        // sidebar if we were opened directly (not by another app). The sidebar
+        // goes to the left (slot 0) at 40 % width, lifecycle-bonded so closing
+        // the viewer also closes the browser.
+        if self.needs_sidebar_spawn {
+            self.needs_sidebar_spawn = false;
+            ctx.spawn_app(
+                "file_browser",
+                &["--filter=images"],
+                SpawnParent::SelfPane,
+                SpawnLayout::Cols { slot: 0, ratio: 0.4 },
+                SpawnLifecycle::Cascade,
+                true,
+                &[],
+            );
+        }
+
         // Background
         ctx.rect(0.0, 0.0, ctx.width, ctx.height, BG);
+
+        if self.file_path.is_none() {
+            self.render_empty_state(ctx);
+            return;
+        }
 
         if let Some(err) = self.error.clone() {
             self.render_error(ctx, &err);
@@ -274,9 +314,18 @@ impl App for PhotoViewer {
 }
 
 impl PhotoViewer {
+    fn render_empty_state(&self, ctx: &mut RenderContext) {
+        let cx = ctx.width * 0.5;
+        let cy = ctx.height * 0.5;
+        ctx.text_bold(cx - 80.0, cy - 8.0, "No image selected", 14.0, MUTED);
+        ctx.text(cx - 100.0, cy + 12.0, "pick a file from the sidebar", 11.0, MUTED);
+    }
+
     fn render_error(&self, ctx: &mut RenderContext, err: &str) {
         let text = format!("failed to load: {}", err);
-        let path = self.file_path.display().to_string();
+        let path = self.file_path.as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         let cx = ctx.width * 0.5;
         let cy = ctx.height * 0.5;
         // Center-ish text (SDK has no measure API; approximate with char width)
@@ -316,7 +365,8 @@ impl PhotoViewer {
         // Filename + dimensions label, pinned to the top-left of the image rect
         let name = self
             .file_path
-            .file_name()
+            .as_ref()
+            .and_then(|p| p.file_name())
             .and_then(|s| s.to_str())
             .unwrap_or("image");
         let label = format!("{}  {}x{}", name, self.img_w, self.img_h);
@@ -358,13 +408,8 @@ fn stderr_log(level: &str, message: &str) {
 // ── Entry ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let Some(arg) = args.next() else {
-        eprintln!("usage: photo-viewer <image-path>");
-        std::process::exit(2);
-    };
-    let path = PathBuf::from(arg);
-    run(&mut PhotoViewer::new(path));
+    let file_path = std::env::args().nth(1).map(PathBuf::from);
+    run(&mut PhotoViewer::new(file_path));
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
@@ -375,7 +420,7 @@ mod tests {
 
     fn mk_viewer(img_w: u32, img_h: u32) -> PhotoViewer {
         PhotoViewer {
-            file_path: PathBuf::from("/nonexistent.png"),
+            file_path: Some(PathBuf::from("/nonexistent.png")),
             img_w,
             img_h,
             zoom: 1.0,
@@ -388,6 +433,7 @@ mod tests {
             last_h: 600.0,
             dragging: false,
             drag_last: None,
+            needs_sidebar_spawn: false,
         }
     }
 
@@ -452,7 +498,7 @@ mod tests {
 
     #[test]
     fn image_decode_failure_sets_error_state() {
-        let mut v = PhotoViewer::new(PathBuf::from("/definitely/not/a/real/path.png"));
+        let mut v = PhotoViewer::new(Some(PathBuf::from("/definitely/not/a/real/path.png")));
         assert!(v.error.is_some(), "expected error for missing file");
         // Subsequent reset_view must not panic.
         v.reset_view();
