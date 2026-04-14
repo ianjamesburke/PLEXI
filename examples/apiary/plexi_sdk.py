@@ -210,6 +210,18 @@ class Emitter:
         }
         print(json.dumps(cmd), flush=True)
 
+    def pipe_write(self, channel: str, value) -> None:
+        """Write a value to a named output pipe channel.
+
+        The host routes this to all connected apps (parent or children).
+        Call from any event handler or from on_render via ctx.pipe_write().
+
+        Args:
+            channel: Channel name (e.g. "selection", "result", "data")
+            value: Any JSON-serializable value (str, int, float, dict, list, etc.)
+        """
+        print(json.dumps({"type": "pipe_write", "channel": channel, "value": value}), flush=True)
+
     def submit_feedback(
         self,
         text: str,
@@ -596,6 +608,18 @@ class RenderContext:
             "wire_channels": wire_channels or [],
         })
 
+    def pipe_write(self, channel: str, value) -> None:
+        """Write to a named output pipe channel (same as Emitter.pipe_write).
+
+        The host routes this to all connected apps (parent or children).
+        Queued with the frame's draw commands and flushed at frame end.
+
+        Args:
+            channel: Channel name (e.g. "selection", "result", "data")
+            value: Any JSON-serializable value (str, int, float, dict, list, etc.)
+        """
+        self._commands.append({"type": "pipe_write", "channel": channel, "value": value})
+
     def _flush(self):
         for cmd in self._commands:
             print(json.dumps(cmd), flush=True)
@@ -638,6 +662,7 @@ class App:
         self._on_mouse_up: Optional[Callable] = None
         self._on_mouse_move: Optional[Callable] = None
         self._on_scroll: Optional[Callable] = None
+        self._on_pipe_data: Optional[Callable] = None
         self._emitter = Emitter(app_id=app_id)
         # Breakpoints: list of (min_width, min_height, render_fn).
         # Walked in descending area order on each render to pick the
@@ -929,6 +954,23 @@ class App:
         self._on_scroll = fn
         return fn
 
+    def on_pipe_data(self, fn: Callable) -> Callable:
+        """Register a handler for pipe data received from connected apps.
+
+        Called when another app (parent or child) writes to a channel that this
+        app is connected to via a spawn relationship.
+
+        Handler signature: fn(from_app: str, channel: str, value, emit: Emitter)
+
+        Args:
+            from_app: The app_id of the app that wrote the value.
+            channel:  The channel name the value was written to.
+            value:    The JSON value (str, int, float, dict, list, or None).
+            emit:     An Emitter to respond or trigger further actions.
+        """
+        self._on_pipe_data = fn
+        return fn
+
     def _handle_get_state(self):
         """Respond to a get_state request from Plexi."""
         if self._on_get_state:
@@ -1083,6 +1125,15 @@ class App:
                         event.get("y", 0.0),
                         event.get("delta_x", 0.0),
                         event.get("delta_y", 0.0),
+                        self._emitter,
+                    )
+
+            elif event_type == "pipe_data":
+                if self._on_pipe_data:
+                    self._on_pipe_data(
+                        event.get("from_app", ""),
+                        event.get("channel", ""),
+                        event.get("value"),
                         self._emitter,
                     )
 

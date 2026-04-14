@@ -42,6 +42,9 @@ pub struct ProcessApp {
     /// separate queue from `pending_commands` so the existing `AppCommand`
     /// enum stays source-compatible while the spawn dispatcher is wired in.
     pending_spawns: Vec<PendingSpawn>,
+    /// Pending PipeWrite commands collected from the subprocess, to be drained
+    /// by the host's pipe dispatcher via take_pipe_writes() each frame.
+    pending_pipe_writes: Vec<(String, serde_json::Value)>,
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
@@ -250,6 +253,7 @@ impl ProcessApp {
             pending_frame: Vec::new(),
             pending_commands: Vec::new(),
             pending_spawns: Vec::new(),
+            pending_pipe_writes: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
             bin_path: bin_path.clone(),
@@ -513,6 +517,22 @@ impl ProcessApp {
             }
             Err(e) => log::error!("ProcessApp: failed to serialize event: {e}"),
         }
+    }
+
+    /// Drain all pending PipeWrite commands queued from the subprocess since
+    /// the last call. Returns (channel, value) pairs for the host to route.
+    pub fn take_pipe_writes(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.pending_pipe_writes)
+    }
+
+    /// Send a PipeData event to this app's subprocess, delivering a value that
+    /// arrived from a connected app on the named channel.
+    pub fn send_pipe_data(&mut self, from_app: &str, channel: &str, value: &serde_json::Value) {
+        self.send_event(&PlexiEvent::PipeData {
+            from_app: from_app.to_string(),
+            channel: channel.to_string(),
+            value: value.clone(),
+        });
     }
 
     fn drain_draw_commands(&mut self) -> Vec<DrawCommand> {
@@ -823,8 +843,8 @@ impl ProcessApp {
                 }
 
                 // RunInTerminal / Cd / Log / State / CostReport / Notification /
-                // SetCursor / MouseTracking / SpawnApp / FrameDone handled at the App
-                // trait level, not here.
+                // SetCursor / MouseTracking / SpawnApp / PipeWrite / PipeSubscribe /
+                // FrameDone handled at the App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
@@ -834,6 +854,8 @@ impl ProcessApp {
                 | DrawCommand::SetCursor { .. }
                 | DrawCommand::MouseTracking { .. }
                 | DrawCommand::SpawnApp { .. }
+                | DrawCommand::PipeWrite { .. }
+                | DrawCommand::PipeSubscribe { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1238,6 +1260,19 @@ impl App for ProcessApp {
                         wire_channels,
                     });
                 }
+                DrawCommand::PipeWrite { channel, value } => {
+                    // Queue for the host pipe dispatcher to route to connected
+                    // apps (parent or children) via take_pipe_writes().
+                    let target = format!("app::{}", self.type_id);
+                    log::debug!(
+                        target: &target,
+                        "pipe_write: channel={channel:?}"
+                    );
+                    self.pending_pipe_writes.push((channel, value));
+                }
+                DrawCommand::PipeSubscribe { channel: _ } => {
+                    // Phase 0 no-op: silently consume. Forward-compat only.
+                }
                 other => self.pending_frame.push(other),
             }
         }
@@ -1321,6 +1356,14 @@ impl App for ProcessApp {
 
     fn take_pending_spawns(&mut self) -> Vec<PendingSpawn> {
         std::mem::take(&mut self.pending_spawns)
+    }
+
+    fn take_pipe_writes(&mut self) -> Vec<(String, serde_json::Value)> {
+        ProcessApp::take_pipe_writes(self)
+    }
+
+    fn send_pipe_data(&mut self, from_app: &str, channel: &str, value: &serde_json::Value) {
+        ProcessApp::send_pipe_data(self, from_app, channel, value);
     }
 
     fn handle_drop(&mut self, local_pos: egui::Pos2, paths: &[PathBuf]) -> bool {

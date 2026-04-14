@@ -94,6 +94,18 @@ pub enum PlexiEvent {
     },
     /// App is being closed. Process should exit.
     Shutdown,
+    /// A value arrived on a named pipe channel from another app.
+    ///
+    /// Sent by the host when a connected app (parent or child via spawn
+    /// relationship) emits a `DrawCommand::PipeWrite` on the named channel.
+    PipeData {
+        /// The `app_id` (type_id) of the sending app.
+        from_app: String,
+        /// The channel name the value was written to.
+        channel: String,
+        /// The JSON value written by the sender.
+        value: serde_json::Value,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -339,6 +351,26 @@ pub enum DrawCommand {
         linked: bool,
         #[serde(default)]
         wire_channels: Vec<String>,
+    },
+    /// Write a value to a named output pipe channel.
+    ///
+    /// The host routes this to all connected apps: if the emitter is a child
+    /// pane, its parent app receives a `PlexiEvent::PipeData`; if the emitter
+    /// is a parent pane, all its child apps receive `PlexiEvent::PipeData`.
+    /// Routing is bidirectional — parent→children and child→parent.
+    PipeWrite {
+        /// Channel name (e.g. "selection", "result", "data").
+        channel: String,
+        /// Any JSON-representable value.
+        value: serde_json::Value,
+    },
+    /// Subscribe to a named input channel.
+    ///
+    /// **Phase 0 no-op:** this command is accepted for forward compatibility
+    /// with Phase 1 manifest wiring but performs no action in Phase 0. Apps
+    /// may re-emit it each frame; the host silently discards it.
+    PipeSubscribe {
+        channel: String,
     },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,

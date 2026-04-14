@@ -67,6 +67,21 @@ pub trait App: Send {
         vec![]
     }
 
+    /// Drain any `pipe_write` commands the app has queued since the last call.
+    ///
+    /// Returns (channel, value) pairs for the host pipe dispatcher to route
+    /// to connected apps (parent and/or children via spawn relationships).
+    /// Default returns empty — only `ProcessApp` overrides this.
+    fn take_pipe_writes(&mut self) -> Vec<(String, serde_json::Value)> {
+        vec![]
+    }
+
+    /// Deliver a `PipeData` event from a connected app to this app.
+    ///
+    /// Called by the host pipe dispatcher after routing a `PipeWrite` from a
+    /// connected peer. Default no-ops — only `ProcessApp` overrides this.
+    fn send_pipe_data(&mut self, _from_app: &str, _channel: &str, _value: &serde_json::Value) {}
+
     /// Called when the user submits a command via the terminal command bar.
     /// The app may interpret it and return a command to execute, or return `None`
     /// to let it pass through to the terminal as a normal shell command.
