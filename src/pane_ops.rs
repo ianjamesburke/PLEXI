@@ -998,6 +998,62 @@ impl PlexiApp {
         }
     }
 
+    // ─── Pipe dispatcher ─────────────────────────────────────────────────────
+
+    /// Route pending PipeWrite commands from all active apps to their connected
+    /// peers (parent and/or children via spawn_relationships).
+    ///
+    /// Called once per frame from `update()`, after `dispatch_pending_spawns()`.
+    /// Uses the standard two-phase collect-then-route pattern to avoid holding
+    /// a mutable borrow on `panes` across the routing pass.
+    pub(crate) fn dispatch_pipe_writes(&mut self) {
+        let active = self.active_context;
+
+        // Phase 1: collect all pending pipe writes with sender context.
+        // Each entry: (sender_pane_id, sender_app_id, channel, value)
+        let mut pipe_writes: Vec<(PaneId, String, String, serde_json::Value)> = Vec::new();
+        for (&pane_id, pane) in self.contexts[active].panes.iter_mut() {
+            if let Some(app) = pane.active_app.as_mut() {
+                for (channel, value) in app.take_pipe_writes() {
+                    let app_id = app.type_id().to_string();
+                    pipe_writes.push((pane_id, app_id, channel, value));
+                }
+            }
+        }
+
+        if pipe_writes.is_empty() {
+            return;
+        }
+
+        // Phase 2: for each write, route to connected peers.
+        for (sender_pane_id, sender_app_id, channel, value) in pipe_writes {
+            // Route to parent (if this pane is a child).
+            let parent_pane_id = self.spawn_relationships.parent_of(sender_pane_id);
+            if let Some(parent_id) = parent_pane_id {
+                if let Some(pane) = self.contexts[active].panes.get_mut(&parent_id) {
+                    if let Some(app) = pane.active_app.as_mut() {
+                        app.send_pipe_data(&sender_app_id, &channel, &value);
+                    }
+                }
+            }
+
+            // Route to all children (if this pane is a parent).
+            let child_pane_ids: Vec<PaneId> = self
+                .spawn_relationships
+                .children_of(sender_pane_id)
+                .iter()
+                .map(|r| r.child_pane)
+                .collect();
+            for child_id in child_pane_ids {
+                if let Some(pane) = self.contexts[active].panes.get_mut(&child_id) {
+                    if let Some(app) = pane.active_app.as_mut() {
+                        app.send_pipe_data(&sender_app_id, &channel, &value);
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolve and execute one `PendingSpawn`, creating a new pane in the tree.
     fn execute_spawn(
         &mut self,

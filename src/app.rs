@@ -447,6 +447,7 @@ impl eframe::App for PlexiApp {
         self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
         self.dispatch_pending_spawns();
+        self.dispatch_pipe_writes();
 
         // Drain completed ffmpeg thumbnail extractions from worker threads. The
         // worker itself also calls `request_repaint`, but polling here keeps

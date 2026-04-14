@@ -16,6 +16,30 @@ This spec covers Phase 1 only: small structured messages over the existing trans
 
 ---
 
+## Phase 0 — Shipped (alpha, 2026-04-14)
+
+**Scope:** Parent/child pipe routing only. No manifest wiring, no type checking, no linking matrix UI.
+
+**Protocol additions:**
+- `DrawCommand::PipeWrite { channel: str, value: JSON }` — app writes to a named channel
+- `PlexiEvent::PipeData { from_app: str, channel: str, value: JSON }` — app receives from connected peers
+- `DrawCommand::PipeSubscribe { channel: str }` — no-op in Phase 0, accepted for forward compat
+
+**Routing rules (Phase 0):**
+- A PipeWrite from a child pane is routed to its parent app (if any)
+- A PipeWrite from a parent pane is routed to all its child apps
+- No cross-group routing; no channel filtering; no type validation
+
+**SDK (Python 0.3.0+):**
+- `emit.pipe_write(channel, value)` / `ctx.pipe_write(channel, value)`
+- `@app.on_pipe_data` → handler(from_app, channel, value, emit)
+
+**Intended use:** File browser → parent selection event, mermaid viewer ↔ sidebar, any two spawned apps that need to exchange lightweight JSON messages.
+
+**What Phase 0 does NOT do:** Manifest channel declaration, type validation, linking matrix UI, cross-group wiring, high-throughput binary streams, named buses.
+
+---
+
 ## Motivation
 
 Plexi's v1 app protocol (see `app-infrastructure.md`) lets apps render UI, receive events, and call host APIs. It does not let apps talk to each other. The upcoming `spawn_app` draw command will let one app launch another, but a spawned child still has no typed channel back to its parent, nor to any sibling sharing its pane group. The only escape hatch today is emitting bytes into a shared terminal via `run_in_terminal` — untyped, unstructured, and unusable for composition.
