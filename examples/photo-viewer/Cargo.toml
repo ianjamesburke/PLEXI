@@ -1,0 +1,16 @@
+[package]
+name = "plexi-example-photo-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Plexi example: external single-image viewer in Rust"
+license = "MIT"
+
+[[bin]]
+name = "photo-viewer"
+path = "src/main.rs"
+
+[dependencies]
+plexi-sdk  = { path = "../../sdk/rust" }
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+image      = { version = "0.24", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }

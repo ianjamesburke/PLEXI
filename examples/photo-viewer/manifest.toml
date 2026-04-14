@@ -1,0 +1,18 @@
+[app]
+id          = "photo-viewer"
+name        = "Photo Viewer"
+entry       = "target/release/photo-viewer"
+version     = "0.1.0"
+description = "View images. Standalone fullscreen, or embedded in a split when called by another app."
+authors     = ["Ian Burke"]
+
+[app.capabilities]
+file_types     = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff"]
+filesystem     = "read_write"   # for "save edited copy" later, currently read-only
+network        = false
+terminal_write = false
+mouse_tracking = true            # for hover-to-show-controls
+
+[app.layout]
+min_width  = 240
+min_height = 160
