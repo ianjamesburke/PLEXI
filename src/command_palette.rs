@@ -283,7 +283,12 @@ impl PlexiApp {
                                                     ui.label(RichText::new(name).size(12.0).color(self.colors.text_primary));
                                                 });
                                                 if !description.is_empty() {
-                                                    ui.label(RichText::new(description).size(9.0).color(self.colors.text_dim));
+                                                    let desc = if description.len() > 58 {
+                                                        format!("{}…", &description[..58])
+                                                    } else {
+                                                        description.clone()
+                                                    };
+                                                    ui.label(RichText::new(desc).size(9.0).color(self.colors.text_dim));
                                                 }
                                             });
                                         },
