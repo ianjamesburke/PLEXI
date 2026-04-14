@@ -5,7 +5,7 @@
 /// ProcessApp implements the `App` trait so it drops in wherever a built-in app
 /// would — the rest of Plexi doesn't know or care that it's an external process.
 
-use crate::app_protocol::{DrawCommand, ListItem, Modifiers, PlexiEvent};
+use crate::app_protocol::{DrawCommand, ListItem, Modifiers, PendingSpawn, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::cost_tracker::CostTracker;
 use egui::Color32;
@@ -37,6 +37,11 @@ pub struct ProcessApp {
     /// Pending RunInTerminal / Cd commands collected from the subprocess, to be
     /// drained by the host via take_pending_commands().
     pending_commands: Vec<crate::app_trait::AppCommand>,
+    /// Pending `spawn_app` requests collected from the subprocess, to be
+    /// drained by the host via take_pending_spawns() each frame. Held in a
+    /// separate queue from `pending_commands` so the existing `AppCommand`
+    /// enum stays source-compatible while the spawn dispatcher is wired in.
+    pending_spawns: Vec<PendingSpawn>,
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
@@ -68,6 +73,10 @@ pub struct ProcessApp {
     mouse_tracking: bool,
     /// Pending cursor icon override requested by the app this frame.
     pending_cursor: Option<egui::CursorIcon>,
+    /// If this app was spawned by another app, the spawning app's type_id.
+    /// Re-injected as PLEXI_PARENT_APP_ID on hot-reload so the app always
+    /// knows it was spawned, not opened directly.
+    parent_app_id: Option<String>,
 }
 
 /// Snapshot of an app's state buckets.
@@ -129,6 +138,12 @@ fn find_python() -> std::ffi::OsString {
 
 impl ProcessApp {
     /// Spawn an app binary at `bin_path`.
+    ///
+    /// `parent_app_id` — when `Some`, the app was spawned by another app rather
+    /// than opened directly. Two extra env vars are injected:
+    /// - `PLEXI_LAUNCH_MODE=spawned`
+    /// - `PLEXI_PARENT_APP_ID=<parent_app_id>`
+    /// Apps read these to branch on standalone-vs-embedded behaviour.
     pub fn launch(
         type_id: impl Into<String>,
         display_name: impl Into<String>,
@@ -137,6 +152,7 @@ impl ProcessApp {
         cwd: &PathBuf,
         args: &[String],
         mouse_tracking: bool,
+        parent_app_id: Option<&str>,
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
@@ -150,10 +166,21 @@ impl ProcessApp {
                 (bin_path.as_os_str().to_owned(), vec![])
             };
 
-        let mut child = std::process::Command::new(&cmd)
+        let mut cmd_builder = std::process::Command::new(&cmd);
+        cmd_builder
             .args(&extra_args)
             .args(args)
             .current_dir(cwd)
+            .env("PLEXI_APP_ID", &type_id)
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+        if let Some(parent_id) = parent_app_id {
+            cmd_builder
+                .env("PLEXI_LAUNCH_MODE", "spawned")
+                .env("PLEXI_PARENT_APP_ID", parent_id);
+        } else {
+            cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
+        }
+        let mut child = cmd_builder
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()) // captured and forwarded to Plexi's logger
@@ -222,6 +249,7 @@ impl ProcessApp {
             frame: Vec::new(),
             pending_frame: Vec::new(),
             pending_commands: Vec::new(),
+            pending_spawns: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
             bin_path: bin_path.clone(),
@@ -239,6 +267,7 @@ impl ProcessApp {
             last_render_time: Instant::now(),
             mouse_tracking,
             pending_cursor: None,
+            parent_app_id: parent_app_id.map(|s| s.to_string()),
         })
     }
 
@@ -311,10 +340,21 @@ impl ProcessApp {
             } else {
                 (self.bin_path.as_os_str().to_owned(), vec![])
             };
-        let mut child = match std::process::Command::new(&cmd)
+        let mut cmd_builder = std::process::Command::new(&cmd);
+        cmd_builder
             .args(&extra_args)
             .args(&self.args)
             .current_dir(&self.cwd)
+            .env("PLEXI_APP_ID", &self.type_id)
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+        if let Some(parent_id) = &self.parent_app_id {
+            cmd_builder
+                .env("PLEXI_LAUNCH_MODE", "spawned")
+                .env("PLEXI_PARENT_APP_ID", parent_id);
+        } else {
+            cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
+        }
+        let mut child = match cmd_builder
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -783,7 +823,8 @@ impl ProcessApp {
                 }
 
                 // RunInTerminal / Cd / Log / State / CostReport / Notification /
-                // SetCursor / MouseTracking / FrameDone handled at the App trait level, not here.
+                // SetCursor / MouseTracking / SpawnApp / FrameDone handled at the App
+                // trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
@@ -792,6 +833,7 @@ impl ProcessApp {
                 | DrawCommand::Notification { .. }
                 | DrawCommand::SetCursor { .. }
                 | DrawCommand::MouseTracking { .. }
+                | DrawCommand::SpawnApp { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1166,6 +1208,36 @@ impl App for ProcessApp {
                 DrawCommand::MouseTracking { enabled } => {
                     self.mouse_tracking = enabled;
                 }
+                DrawCommand::SpawnApp {
+                    app_id,
+                    args,
+                    parent,
+                    layout,
+                    lifecycle,
+                    linked,
+                    wire_channels,
+                } => {
+                    // Route to the pending-spawns queue. The actual pane
+                    // creation, registry lookup, manifest permission check,
+                    // and parent/child relationship bookkeeping happen in the
+                    // host's spawn dispatcher (which drains this queue via
+                    // `take_pending_spawns()` between frames).
+                    let target = format!("app::{}", self.type_id);
+                    log::debug!(
+                        target: &target,
+                        "spawn_app requested: target={app_id} parent={parent:?} layout={layout:?} \
+                         lifecycle={lifecycle:?} linked={linked} channels={wire_channels:?}"
+                    );
+                    self.pending_spawns.push(PendingSpawn {
+                        app_id,
+                        args,
+                        parent,
+                        layout,
+                        lifecycle,
+                        linked,
+                        wire_channels,
+                    });
+                }
                 other => self.pending_frame.push(other),
             }
         }
@@ -1245,6 +1317,10 @@ impl App for ProcessApp {
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_commands)
+    }
+
+    fn take_pending_spawns(&mut self) -> Vec<PendingSpawn> {
+        std::mem::take(&mut self.pending_spawns)
     }
 
     fn handle_drop(&mut self, local_pos: egui::Pos2, paths: &[PathBuf]) -> bool {

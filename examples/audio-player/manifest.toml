@@ -1,6 +1,7 @@
 [app]
 id = "audio-player"
 name = "Audio Player"
+entry = "bin/plexi-app"
 version = "0.1.0"
 description = "Keyboard-driven audio player — play/pause any audio file"
 

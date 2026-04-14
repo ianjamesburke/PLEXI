@@ -38,11 +38,15 @@ pub struct PlexiApp {
     pub(crate) show_notification_palette: bool,
     pub(crate) notification_palette_selected: usize,
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
+    pub(crate) app_visit_history: Vec<String>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
     /// Shared image + video thumbnail cache. Owned here so all apps on all
     /// panes share the same decoded textures and ffmpeg-generated thumbnails.
     pub(crate) media_cache: RefCell<MediaCache>,
+    /// In-memory registry of every active parent → child pane spawn relationship.
+    /// Drives cascade/orphan semantics when a pane closes.
+    pub(crate) spawn_relationships: crate::app_protocol::SpawnRelationships,
 }
 
 impl PlexiApp {
@@ -186,10 +190,12 @@ impl PlexiApp {
                     show_notification_palette: false,
                     notification_palette_selected: 0,
                     pane_visit_history: Vec::new(),
+                    app_visit_history: config::load_app_mru(),
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
                     media_cache: RefCell::new(MediaCache::new()),
+                    spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
                 };
             }
         }
@@ -236,10 +242,12 @@ impl PlexiApp {
             show_notification_palette: false,
             notification_palette_selected: 0,
             pane_visit_history: Vec::new(),
+            app_visit_history: config::load_app_mru(),
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
             media_cache: RefCell::new(MediaCache::new()),
+            spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
         }
     }
 
@@ -438,6 +446,7 @@ impl eframe::App for PlexiApp {
         self.drain_pty_events();
         self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
+        self.dispatch_pending_spawns();
 
         // Drain completed ffmpeg thumbnail extractions from worker threads. The
         // worker itself also calls `request_repaint`, but polling here keeps
@@ -692,6 +701,8 @@ impl eframe::App for PlexiApp {
         // Handle window close request (X button / system shutdown) — always quit
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             self.save_workspace();
+            let size = ctx.input(|i| i.screen_rect().size());
+            config::save_window_size(size.x, size.y);
         }
 
         // All panes across all contexts exited
@@ -1025,6 +1036,13 @@ impl PlexiApp {
         self.pane_visit_history.retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
         self.pane_visit_history.insert(0, (ctx_idx, tile_id));
         self.pane_visit_history.truncate(100);
+    }
+
+    pub(crate) fn record_app_visit(&mut self, id: &str) {
+        self.app_visit_history.retain(|s| s != id);
+        self.app_visit_history.insert(0, id.to_string());
+        self.app_visit_history.truncate(100);
+        config::save_app_mru(&self.app_visit_history);
     }
 
     fn draw_feature_effects(&self, ctx: &egui::Context) {

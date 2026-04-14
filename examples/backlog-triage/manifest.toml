@@ -1,0 +1,11 @@
+[app]
+id = "backlog-triage"
+name = "Backlog Triage"
+entry = "backlog_triage.py"
+version = "0.1.0"
+description = "Keyboard-driven review of ~/.plexi/backlog/ notes — archive, dismiss, or act"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "write"

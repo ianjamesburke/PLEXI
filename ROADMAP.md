@@ -2,7 +2,7 @@
 
 Reference document linking layers of work to specs and issues. This file tracks sequencing, dependencies, and **how to verify each layer works**. The specs have the details.
 
-**Last updated:** 2026-04-12 end-of-day
+**Last updated:** 2026-04-14
 
 ---
 
@@ -14,7 +14,9 @@ Reference document linking layers of work to specs and issues. This file tracks 
 | Layer 1 — App Protocol Testing | **Done** (24 tests, 4 apps) | — |
 | Layer 2 — Agent Mode in Terminal | **Shipped (Warp-style). LLM backend: `claude -p --resume` swap in flight** | Finish backend swap, streaming, slash commands |
 | Layer 3 — Parallax Refactor | **Done** (manifest-first, validator, Senior-only routing, Parallax viewer app) | — |
-| Layer 4 — Apps That Prove the Protocol | **Done** (mouse events + delta_time, 32 apps on alpha) | App Store update management; test coverage for new apps |
+| Layer 4 — Apps That Prove the Protocol | **Done** (~36 apps on alpha) | App Store update management (in flight); test coverage gap (~22 apps) |
+| Layer 4.5 — SDK Packaging & Protocol Stability | **Done** (Python + Rust SDK 0.3.0, protocol spec v1) | — |
+| Layer 4.6 — App Composition Primitive | **In flight** (spawn_app protocol + SDK done; host dispatcher pending WIP app.rs) | Host dispatcher to drain `pending_spawns` queue |
 | Layer 5 — WASM/PWA | **Back-burner** | Revisit when multiplayer is needed |
 
 ---
@@ -103,8 +105,8 @@ The Warp-style inline agent UI is live — bytes injected into the alacritty gri
 | Manifest schema (Pydantic) + validator with feedback loop | **Done** | `packs/video/manifest_schema.py`, `manifest_validator.py`, 9 tests |
 | Senior-only routing (drop Junior, simplify) | **Done** | HoP routes footage_edit directly to SeniorEditor on Sonnet |
 | Parallax viewer app (companion pane in Plexi) | **Done** | Launched from command palette, companion pane |
-| Cost reporting via cost_report events | Not started | Parallax doesn't emit yet |
-| SecretGet integration for API keys | Not started | Currently uses env vars |
+| Cost reporting via cost_report events | **Done** | 11+ `cost_report` calls across `head_of_production.py`, `cost_tracker.py`, `improvement_officer.py` |
+| SecretGet integration for API keys | Not started | Currently uses env vars — only Layer 3 item still pending |
 
 ### Verification steps for Layer 3
 ```bash
@@ -119,7 +121,7 @@ All 19 should pass.
 
 ## Layer 4: Apps That Prove the Protocol
 
-**Status: DONE — 32 APPS ON ALPHA**
+**Status: DONE — ~36 APPS ON ALPHA**
 
 Mouse events and `delta_time` are in the protocol. The app ecosystem is live.
 
@@ -131,14 +133,64 @@ Mouse events and `delta_time` are in the protocol. The app ecosystem is live.
 | `cost_report` protocol | **Done** | `src/cost_tracker.rs`, `~/.plexi-alpha/costs.jsonl` |
 | Python SDK decorators (`@app.on_get_state`, etc.) | **Done** | `emit.cost_report()` |
 | App Store (built-in) | **Shipped** | [#99](https://github.com/ianjamesburke/PLEXI/issues/99) |
-| App Store: update management (version compare + badges) | **Not started** | Next milestone |
-| Test coverage for new apps (10 apps need `plexi_test.py` suites) | **Not started** | — |
+| App Store: update management (version compare + badges) | **Done** | Version compare + UPDATE badges + 'u' keybinding. Verify after `just install-alpha`. |
+| Test coverage for example apps (~22 of 36 apps lack `plexi_test.py` suites) | **In flight** | Partial coverage sprint merged — verify final count |
 
 ### Verification steps for Layer 4
 1. Launch App Store from command palette → 32 apps listed
 2. Install an app from the store → appears in `~/.plexi-alpha/apps/`
 3. Open snake or aquarium → mouse events work, animation is smooth
 4. Trigger a cost_report from a test app → check `~/.plexi-alpha/costs.jsonl`
+
+---
+
+## Layer 4.5: SDK Packaging & Protocol Stability
+
+**Status: DONE (2026-04-14)**
+
+Python + Rust SDK at 0.3.0 parity. Protocol spec stamped v1.
+
+| Task | Status | Reference |
+|------|--------|-----------|
+| Python SDK packaged as `plexi-sdk` 0.2.0 | **Done** | `sdk/python/pyproject.toml`, `README.md`, `LICENSE`, `MANIFEST.in` |
+| Vendored SDK sync script | **Done** | `scripts/sync-sdk.py` — 33 examples byte-identical to canonical |
+| App infrastructure spec v1 | **Done** | `docs/specs/app-infrastructure.md` (705 lines) |
+| Rust SDK Cargo manifest publication-ready | **Done** | `sdk/rust/Cargo.toml` full publish metadata |
+| **Rust SDK 0.2.0 protocol parity** | **Done** | `sdk/rust/src/lib.rs` — scroll, mouse, drop, state, cost_report, notification, feedback, log |
+| **Python + Rust SDK 0.3.0** | **Done** | `spawn_app`, `BreakpointSet`/`pick_breakpoint`, `App::min_size`, `load_manifest_layout()` |
+| Shell-config app v1 spec | **Done (spec only)** | `docs/specs/app-shell-config.md`. P3, idea-tier, not implemented |
+
+### Verification steps for Layer 4.5
+
+```bash
+pip install -e sdk/python                           # Editable install of plexi-sdk 0.3.0
+python3 scripts/sync-sdk.py --check                 # All vendored copies byte-identical
+cd sdk/rust && cargo test                           # 5 breakpoint tests pass
+```
+
+---
+
+## Layer 4.6: App Composition Primitive
+
+**Status: IN FLIGHT (2026-04-14)**
+
+One app can now request that Plexi launch and place another app. The protocol + SDK + manifest surface are done; the host-side pane creation is queued pending the WIP `src/app.rs`.
+
+| Task | Status | Reference |
+|------|--------|-----------|
+| `DrawCommand::SpawnApp` + `SpawnParent`/`SpawnLayout`/`SpawnLifecycle` | **Done** | `src/app_protocol.rs` |
+| `AppSpawnable` manifest table + `[app.spawnable]` | **Done** | `src/app_registry.rs`, `docs/specs/app-infrastructure.md` |
+| `pending_spawns` queue in `process_app.rs` | **Done** | `src/process_app.rs::take_pending_spawns()` |
+| SDK: `Emitter.spawn_app` + `RenderContext.spawn_app` (Python + Rust) | **Done** | `sdk/python/plexi_sdk.py`, `sdk/rust/src/lib.rs` |
+| Host dispatcher: pane creation, registry lookup, cascade/orphan walk | **Pending** | Blocked on WIP `src/app.rs` — drain `take_pending_spawns()` there |
+| File browser `→ text-editor` / `→ photo-viewer` wiring | **In flight** | Demo of end-to-end spawn; unblocked after host dispatcher |
+| Typed-pipes spec | **Done (spec only)** | `docs/specs/typed-pipes.md` — Phase 1 design |
+
+### Verification steps for Layer 4.6
+
+1. File browser: navigate to a `.txt` file, press Enter → Plexi spawns text-editor app in adjacent pane
+2. File browser: navigate to an image file, press Enter → Plexi spawns photo-viewer in adjacent pane
+3. Close file browser → text-editor and photo-viewer both close (cascade lifecycle)
 
 ---
 
@@ -157,7 +209,7 @@ Mouse events and `delta_time` are in the protocol. The app ecosystem is live.
 
 ---
 
-## App Ecosystem (32 apps on alpha)
+## App Ecosystem (~36 apps on alpha)
 
 ### Games
 snake, aquarium, sandfall, lichen, apiary, seedclock
@@ -169,7 +221,13 @@ clipboard-stack, port-watcher, pulse, process-monitor, calc, stopwatch, color-pa
 pomodoro, markdown-preview, audio-player, weather, hacker-news
 
 ### Development
-git-log, git-blame, navigator, pyflow, plexi-browser
+git-log, git-blame, navigator, pyflow, plexi-browser, text-editor (external Python), photo-viewer (external Rust)
+
+### System
+backlog-triage, permissions-viewer
+
+### Dev Tools
+spiral-viewer (render any app at 8 sizes on Fibonacci spiral)
 
 ### Plexi-native
 parallax, learn-plexi, app-store, wikipedia, hello-app
@@ -178,25 +236,29 @@ parallax, learn-plexi, app-store, wikipedia, hello-app
 
 ## What's Next (Recommended Order)
 
-### Immediate
+### Immediate (this week)
 
-1. **Finish `claude -p --resume` backend swap** — streaming responses, session continuity
-2. **Bare `/` at empty prompt** (#104) — low-effort UX win
-3. **App Store: update management** — version compare + update badges for installed apps
-4. **Test coverage** — write `plexi_test.py` suites for the 10 newest apps (snake, aquarium, sandfall, etc.)
+1. **Host dispatcher for `spawn_app`** — drain `take_pending_spawns()` in `src/app.rs` (registry lookup, pane creation, cascade/orphan walk). This unblocks Layer 4.6 end-to-end.
+2. **File browser wiring** — update `src/file_browser/mod.rs` to emit `spawn_app` on Enter for text/image files; demo the full file-browser → text-editor → photo-viewer composition flow.
+3. **`sdk/python/SKILL.md`** — top-level agent guide: "how to build a Plexi app" self-documenting SDK reference for AI coding agents.
+4. **Finish `claude -p --resume` backend swap** — streaming responses, session continuity (Layer 2)
+5. **Bare `/` at empty prompt** ([#104](https://github.com/ianjamesburke/PLEXI/issues/104)) — low-effort UX win
 
-### Near-term
+### Near-term (next week)
 
-- SDK: publish to PyPI with type stubs ([#169](https://github.com/ianjamesburke/PLEXI/issues/169))
+- `docs/types/core/` — seed 6 core type TOML files to bootstrap the typed-pipes type registry
+- SDK: publish `plexi-sdk` 0.3.0 to PyPI
+- Parallax: SecretGet integration for API keys (only Layer 3 item still pending)
 - Slash commands in agent mode (/status, /cost, /jobs)
-- Parallax: cost_report events + SecretGet for API keys
+- Cut a beta build (`just install-beta`) once the immediate list is green
 
 ### Long game (back burner)
 
 - Layer 5 WASM Phases 1-5 (mobile/remote access)
-- Directory-scoped workspace persistence (`.plexi/workspace.json` per project)
+- Directory-scoped workspace persistence (`.plexi/workspace.json` per project) — see `docs/specs/spatial-canvas.md`
 - Agent orchestration trust system
 - Agent replay & testing infrastructure
+- **Shell-config app v1 implementation** — P3, spec at `docs/specs/app-shell-config.md` (filed 2026-04-14, not blocking)
 
 ---
 
@@ -204,7 +266,8 @@ parallax, learn-plexi, app-store, wikipedia, hello-app
 
 | Spec | Location | Status |
 |------|----------|--------|
-| App Infrastructure | `docs/specs/app-infrastructure.md` | Active |
+| App Infrastructure | `docs/specs/app-infrastructure.md` | Active — v1 stamped 2026-04-14, source-of-truth for shipping protocol |
+| Shell Config App | `docs/specs/app-shell-config.md` | Active — spec only, not implemented |
 | Agent Mode | `docs/specs/agent-mode.md` | Active — backend swap in flight |
 | Agent Orchestration | `docs/specs/agent-orchestration.md` | Draft — core logic ready |
 | Companion App | `docs/specs/companion-app.md` | Reference only — replaced by WASM/PWA |
@@ -214,3 +277,4 @@ parallax, learn-plexi, app-store, wikipedia, hello-app
 | Agent Replay & Testing | `docs/specs/agent-replay-testing.md` | Draft — future |
 | Parallax App | `parallax/docs/parallax-plexi-app-spec.md` | Active — app shipped |
 | North Star | `~/.agents/skills/plexi-north-star/SKILL.md` | Active |
+| Typed Pipes | `docs/specs/typed-pipes.md` | Draft — Phase 1 design, not implemented |

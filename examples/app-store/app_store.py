@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
 """
 app-store — Plexi app store
-Browse and install Plexi apps from the community registry.
+Browse, install, and update Plexi apps from the community registry.
+
+Each row shows the available version (and the installed version when an
+update is available) plus a status badge:
+
+    NEW        — not installed
+    INSTALLED  — installed and up to date
+    UPDATE     — installed, newer version available
+
+Keys (browse view):
+    j / k        navigate
+    /            filter
+    Tab          cycle tag filter
+    Enter        open detail
+    i            install (in detail view, when not installed)
+    u            update the selected app in place (preserves user data files
+                 like feedback.jsonl)
+    U            update every app that has an UPDATE badge
+    x            uninstall (in detail view)
 """
 from __future__ import annotations
 
@@ -17,7 +35,7 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App  # type: ignore[import]
+from plexi_sdk import App, load_manifest  # type: ignore[import]
 
 # ---------------------------------------------------------------------------
 # Colors — Catppuccin Mocha
@@ -93,6 +111,10 @@ class State:
         # Update All
         self.update_all_status: str = ""
         self.update_all_running = False
+
+        # Transient inline error message (shown for ~3s)
+        self.transient_error: str = ""
+        self.transient_error_time: float = 0.0
 
         # Timing
         self._start = time.monotonic()
@@ -192,7 +214,7 @@ def _fallback_install(entry: dict, app_dir: pathlib.Path) -> None:
     repo = entry.get("repo", "")
     path = entry.get("path", "")
     branch = entry.get("branch", "alpha")
-    base_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
+    base_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}".rstrip("/")
     manifest_url = f"{base_url}/manifest.toml"
     try:
         with urllib.request.urlopen(manifest_url, timeout=10) as r:
@@ -277,6 +299,51 @@ def start_install(entry: dict):
     t.start()
 
 
+def _do_update(entry: dict, emit):
+    """In-place update: re-fetch source files into the app dir, preserving
+    any files (like feedback.jsonl) that exist locally but not in the source."""
+    app_id = entry.get("id", "unknown")
+    name = entry.get("name", app_id)
+    app_dir = APPS_DIR / app_id
+    old_ver = _installed_version(app_id) or "?"
+    new_ver = entry.get("version", "?")
+    try:
+        # _fallback_install only writes the known source files (manifest.toml,
+        # entry .py, plexi_sdk.py) — it does NOT rmtree the app dir, so any
+        # user data files in app_dir are preserved automatically.
+        _fallback_install(entry, app_dir)
+        try:
+            emit.info(f"updated {app_id} {old_ver} → {new_ver}")
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            emit.error(f"update failed for {app_id}: {e}")
+        except Exception:
+            pass
+        _set_transient_error(f"Update failed: {e}")
+
+
+def start_update(entry: dict, emit):
+    """Trigger an in-place update for an installed app on a background thread."""
+    if not entry:
+        return
+    app_id = entry.get("id", "")
+    if not is_installed(app_id):
+        try:
+            emit.info(f"update skipped: {app_id} is not installed")
+        except Exception:
+            pass
+        return
+    if not _has_update(entry):
+        try:
+            emit.info(f"update skipped: {app_id} is already at latest version")
+        except Exception:
+            pass
+        return
+    threading.Thread(target=_do_update, args=(entry, emit), daemon=True).start()
+
+
 def _do_update_all(entries_with_updates: list[dict]):
     n = len(entries_with_updates)
     state.update_all_status = f"Updating {n} app{'s' if n != 1 else ''}…"
@@ -327,27 +394,65 @@ def is_installed(app_id: str) -> bool:
     return (APPS_DIR / app_id).exists()
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    # Strip any pre-release / build suffix ("1.2.3-alpha", "1.2.3+meta") then
+    # split on dots and coerce to ints. Non-numeric components become 0.
+    # Limitation: this is a stdlib-only fallback, not a real semver — pre-release
+    # ordering ("1.0.0-rc1" vs "1.0.0") is intentionally ignored; ranks suffixes
+    # equal to the base version. Good enough for the patch-bump update flow.
+    if not v:
+        return (0,)
+    base = v.split("-", 1)[0].split("+", 1)[0]
+    parts: list[int] = []
+    for p in base.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) if parts else (0,)
+
+
+def compare_versions(a: str, b: str) -> int:
+    """Compare two version strings. Returns -1 if a<b, 0 if equal, 1 if a>b."""
+    ta, tb = _version_tuple(a), _version_tuple(b)
+    # Pad to equal length so (1,2) compares as (1,2,0) against (1,2,0).
+    n = max(len(ta), len(tb))
+    ta = ta + (0,) * (n - len(ta))
+    tb = tb + (0,) * (n - len(tb))
+    if ta < tb:
+        return -1
+    if ta > tb:
+        return 1
+    return 0
+
+
 def _installed_version(app_id: str) -> str | None:
     """Read version from installed manifest.toml, return None if not installed."""
-    manifest = pathlib.Path.home() / ".plexi-alpha" / "apps" / app_id / "manifest.toml"
+    manifest_path = APPS_DIR / app_id / "manifest.toml"
+    if not manifest_path.exists():
+        return None
     try:
-        text = manifest.read_text()
-        for line in text.splitlines():
-            if line.strip().startswith("version"):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+        # load_manifest() takes any file in the app dir; pass manifest itself.
+        manifest = load_manifest(str(manifest_path))
+        ver = manifest.get("app", {}).get("version", "")
+        return ver or None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _has_update(entry: dict) -> bool:
-    """Return True if registry version > installed version."""
+    """Return True if registry version is strictly greater than installed version."""
     app_id = entry.get("id", "")
-    registry_ver = entry.get("version", "")
+    registry_ver = entry.get("version", "") or "0.0.0"
     installed_ver = _installed_version(app_id)
-    if not installed_ver or not registry_ver:
+    if not installed_ver:
         return False
-    return registry_ver != installed_ver
+    return compare_versions(registry_ver, installed_ver) > 0
+
+
+def _set_transient_error(msg: str):
+    state.transient_error = msg
+    state.transient_error_time = time.monotonic()
 
 
 def truncate(text: str, max_chars: int) -> str:
@@ -421,6 +526,8 @@ def render_browse(ctx, now: float):
             desc = entry.get("description", "")
             tags = entry.get("tags", [])
             installed = is_installed(app_id)
+            installed_ver = _installed_version(app_id) if installed else None
+            available_ver = entry.get("version", "") or ""
 
             ry = HEADER_H + i * ROW_H
 
@@ -431,26 +538,43 @@ def render_browse(ctx, now: float):
             name_color = C["dimmed"] if installed else C["accent"]
             ctx.text(12, ry + 9, name, size=13, color=name_color, bold=True)
 
-            max_desc_chars = max(10, int((ctx.width - 24 - 90) / 7))
-            ctx.text(12, ry + 28, truncate(desc, max_desc_chars), size=11, color=C["subtext"])
+            # Version line: "v0.1.0 → v0.2.0" when update, else "v0.1.0"
+            if installed and installed_ver and available_ver and compare_versions(available_ver, installed_ver) > 0:
+                ver_line = f"v{installed_ver} → v{available_ver}"
+                ver_color = C["yellow"]
+            elif installed and installed_ver:
+                ver_line = f"v{installed_ver}"
+                ver_color = C["subtext"]
+            elif available_ver:
+                ver_line = f"v{available_ver}"
+                ver_color = C["subtext"]
+            else:
+                ver_line = ""
+                ver_color = C["subtext"]
 
-            # Right-side installed / update badge
+            desc_max_chars = max(10, int((ctx.width - 24 - 100) / 7))
+            ctx.text(12, ry + 28, truncate(desc, desc_max_chars), size=11, color=C["subtext"])
+
+            # Right-side badge
             if installed:
                 if _has_update(entry):
-                    badge = "update"
+                    badge = "UPDATE"
                     badge_color = C["yellow"]
                 else:
-                    badge = "installed"
+                    badge = "INSTALLED"
                     badge_color = C["installed"]
-                bx = ctx.width - len(badge) * 7 - 16
-                ctx.rect(bx - 4, ry + 14, len(badge) * 7 + 8, 16, fill=C["surface"], radius=4.0)
-                ctx.text(bx, ry + 16, badge, size=10, color=badge_color)
+            else:
+                badge = "NEW"
+                badge_color = C["accent"]
 
-            # Tag pills (first tag only, to keep rows clean)
-            if tags:
-                tx = ctx.width - len(tags[0]) * 7 - 20
-                if not installed:
-                    render_tag_pill(ctx, tags[0], tx, ry + 14)
+            bx = ctx.width - len(badge) * 7 - 16
+            ctx.rect(bx - 4, ry + 8, len(badge) * 7 + 8, 16, fill=C["surface"], radius=4.0)
+            ctx.text(bx, ry + 10, badge, size=10, color=badge_color)
+
+            # Version line under badge (right-aligned)
+            if ver_line:
+                vx = ctx.width - len(ver_line) * 6 - 16
+                ctx.text(vx, ry + 28, ver_line, size=10, color=ver_color)
 
     # Filter bar at bottom
     if state.filter_active:
@@ -469,9 +593,13 @@ def render_browse(ctx, now: float):
         status_x = ctx.width // 2 - len(state.update_all_status) * 3
         ctx.text(max(120, status_x), 9, state.update_all_status, size=11, color=C["yellow"])
 
+    # Transient error (3s)
+    if state.transient_error and (time.monotonic() - state.transient_error_time) < 3.0:
+        ctx.text(12, ctx.height - 36, state.transient_error, size=11, color=C["red"])
+
     # Hint bar (only when filter not active)
     if not state.filter_active:
-        hints = "j/k navigate  /  filter  Tab  tag  Enter  open  U  update all"
+        hints = "j/k nav  /  filter  Tab  tag  Enter  open  u  update  U  update all"
         ctx.text(12, ctx.height - 18, hints, size=10, color=C["dimmed"])
 
 
@@ -588,7 +716,7 @@ def render(ctx):
 
 
 @app.on_key
-def on_key(key, _mods, _emit):
+def on_key(key, _mods, emit):
     # ------------------------------------------------------------------ install
     if state.view == VIEW_INSTALL:
         if key in ("Backspace", "q", "Escape") and (state.install_done or state.install_error):
@@ -617,9 +745,9 @@ def on_key(key, _mods, _emit):
             state.confirm_uninstall = False
         elif key == "i" and not is_installed(app_id):
             start_install(entry)
-        elif key == "u" and is_installed(app_id):
-            # u = update (re-installs over existing)
-            start_install(entry)
+        elif key == "u" and is_installed(app_id) and _has_update(entry):
+            # u = update (preserves user data files)
+            start_update(entry, emit)
         elif key == "x" and is_installed(app_id):
             state.confirm_uninstall = True
         return
@@ -668,6 +796,16 @@ def on_key(key, _mods, _emit):
         state.selected_entry = entries[state.cursor]
         state.view = VIEW_DETAIL
         state.confirm_uninstall = False
+    elif key == "u" and entries:
+        # Update the selected app in place, if it has an UPDATE badge
+        sel = entries[state.cursor]
+        if is_installed(sel.get("id", "")) and _has_update(sel):
+            start_update(sel, emit)
+        else:
+            try:
+                emit.info("u: selected app has no update available")
+            except Exception:
+                pass
     elif key == "U" and not state.update_all_running:
         start_update_all()
 

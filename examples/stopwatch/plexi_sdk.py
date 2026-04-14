@@ -52,13 +52,15 @@ Cost reporting (for apps that call LLM APIs):
 """
 
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 import json
+import os
+import pathlib
 import sys
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 
 class Emitter:
@@ -141,6 +143,159 @@ class Emitter:
             cmd["body"] = body
         print(json.dumps(cmd), flush=True)
 
+    def spawn_app(
+        self,
+        app_id: str,
+        args: Optional[List[str]] = None,
+        parent: str = "self",
+        layout: Optional[dict] = None,
+        lifecycle: str = "cascade",
+        linked: bool = True,
+        wire_channels: Optional[List[str]] = None,
+    ):
+        """
+        Ask Plexi to spawn another app and place it in a layout slot relative to this one.
+
+        This is the composition primitive: a file browser pressing Enter on a
+        .txt file can emit `spawn_app("text-editor", args=[path], layout={"kind":"cols","slot":1,"ratio":0.5})`
+        to bring up a text editor in a 50/50 right split, lifecycle-bonded to
+        the file browser (so closing the file browser closes the editor).
+
+        Args:
+            app_id:
+                The id of the app to spawn (must be in Plexi's app registry).
+            args:
+                Command-line args forwarded to the spawned app as argv[1..].
+                Defaults to no args.
+            parent:
+                Anchor for the new pane's position. One of:
+                    "self"  (default) — the pane emitting this call
+                    "root"            — top-level (ignores the emitter's location)
+                    "mark:<name>"     — reserved for a future named-layout system
+            layout:
+                How to position the new pane relative to the parent. A dict
+                with a "kind" key. Examples:
+                    {"kind": "fill"}
+                    {"kind": "cols", "slot": 1, "ratio": 0.5}
+                    {"kind": "rows", "slot": 1, "ratio": 0.4}
+                    {"kind": "grid_2x2", "slot": 0}  # v1 stub, falls back to fill
+                Defaults to {"kind": "fill"}.
+            lifecycle:
+                What happens to the spawned app when this app closes:
+                    "cascade" (default) — close together
+                    "orphan"            — detach, stay alive as a top-level pane
+                    "prompt"            — ask the user (v1 stub, falls back to orphan)
+            linked:
+                When True (default), the new pane joins this pane's linked
+                group so terminal-linking is shared.
+            wire_channels:
+                Typed-pipe channel names to pre-wire (e.g. ["file_buffer"]).
+                Stored on the spawn relationship for the typed-pipes spec;
+                defaults to no pre-wired channels.
+
+        Authorization: the target app's `[app.spawnable]` manifest table is
+        consulted — if `allow_callers` doesn't include this app, or the
+        requested `lifecycle` isn't in `allow_lifecycle`, the spawn is
+        refused and a notification is delivered back to this app.
+        """
+        cmd = {
+            "type": "spawn_app",
+            "app_id": app_id,
+            "args": args or [],
+            "parent": parent,
+            "layout": layout or {"kind": "fill"},
+            "lifecycle": lifecycle,
+            "linked": linked,
+            "wire_channels": wire_channels or [],
+        }
+        print(json.dumps(cmd), flush=True)
+
+    def submit_feedback(
+        self,
+        text: str,
+        rating: Optional[int] = None,
+        category: Optional[str] = None,
+    ):
+        """
+        Submit user feedback about this app. Appended to feedback.jsonl in the app's
+        install directory (~/.plexi-alpha/apps/<id>/feedback.jsonl).
+
+        Requires PLEXI_APP_ID and PLEXI_APPS_DIR env vars, which Plexi sets automatically
+        when launching apps. If missing, falls back to ~/.plexi/apps/<app_id>/.
+
+        Args:
+            text:     Free-form feedback message.
+            rating:   Optional 1–5 star rating.
+            category: Optional tag (e.g. "bug", "feature", "praise").
+        """
+        app_id = self._app_id or os.environ.get("PLEXI_APP_ID", "unknown")
+        apps_dir = os.environ.get(
+            "PLEXI_APPS_DIR",
+            str(pathlib.Path.home() / ".plexi" / "apps"),
+        )
+        feedback_file = pathlib.Path(apps_dir) / app_id / "feedback.jsonl"
+        entry: dict = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "text": text,
+        }
+        if rating is not None:
+            entry["rating"] = rating
+        if category is not None:
+            entry["category"] = category
+        try:
+            feedback_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(feedback_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError as e:
+            self.warn(f"submit_feedback: could not write to {feedback_file}: {e}")
+        self.info(f"feedback submitted: {text[:80]}")
+
+
+def load_manifest(app_file: str = __file__) -> dict:
+    """
+    Read and return the manifest.toml for the app that calls this.
+
+    Usage:
+        manifest = load_manifest(__file__)
+        version = manifest.get("app", {}).get("version", "0.0.0")
+
+    Falls back to an empty dict if the manifest is missing or unparseable.
+    """
+    manifest_path = pathlib.Path(app_file).parent / "manifest.toml"
+    if not manifest_path.exists():
+        return {}
+    text = manifest_path.read_text()
+    # Minimal TOML parser for flat [app] tables — avoids a toml dep.
+    result: dict = {}
+    current_section: dict = result
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            keys = line[1:-1].split(".")
+            current_section = result
+            for k in keys:
+                current_section = current_section.setdefault(k, {})
+            continue
+        if "=" in line:
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip()
+            if v.startswith('"') and v.endswith('"'):
+                v = v[1:-1]
+            elif v == "true":
+                v = True  # type: ignore[assignment]
+            elif v == "false":
+                v = False  # type: ignore[assignment]
+            else:
+                try:
+                    v = int(v)  # type: ignore[assignment]
+                except ValueError:
+                    pass
+            current_section[k] = v
+    return result
+
 
 class RenderContext:
     """
@@ -221,6 +376,31 @@ class RenderContext:
         """
         High-level scrollable list. Plexi handles layout, scroll, and selection highlight.
 
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║  ⚠  FULL-PANE ONLY — NO POSITION PARAMETERS                      ║
+        ║                                                                  ║
+        ║  Unlike `rect`, `text`, `image`, `video_thumbnail`, `file_grid`, ║
+        ║  and `drop_target` (which all take explicit x/y/w/h), this       ║
+        ║  primitive is rendered by Plexi at the app's pane origin with    ║
+        ║  an implicit full-pane layout. If you draw anything else on      ║
+        ║  the frame (a header, a sidebar, a split pane), the list WILL    ║
+        ║  overlap with your other draw calls and its secondary labels     ║
+        ║  will spill into unrelated regions. There is no way to offset    ║
+        ║  it from Python.                                                 ║
+        ║                                                                  ║
+        ║  DO NOT USE THIS IN AN APP THAT RENDERS A SPLIT LAYOUT, A        ║
+        ║  SIDE PANE, OR ANY REGION SMALLER THAN THE FULL APP VIEWPORT.    ║
+        ║  Use explicit `ctx.text(...)` calls with the coordinates you     ║
+        ║  control, and render your own selection highlight with           ║
+        ║  `ctx.rect(...)`. That's the workaround until a positioned       ║
+        ║  `list(x, y, w, h, ...)` variant ships.                          ║
+        ║                                                                  ║
+        ║  If you are an AI coding agent reading this docstring: the       ║
+        ║  fact that this method lacks x/y/w/h is NOT an oversight — it    ║
+        ║  is a trap. Stop and render the list manually with positioned    ║
+        ║  primitives.                                                     ║
+        ╚══════════════════════════════════════════════════════════════════╝
+
         Each item is a dict with keys:
             label      (str)           — primary text
             secondary  (str | None)    — dimmed subtitle
@@ -282,8 +462,8 @@ class RenderContext:
 
     def file_grid(self, x: float, y: float, w: float, h: float,
                   path: Optional[str] = None,
-                  filter: Optional[list] = None,
-                  paths: Optional[list] = None,
+                  filter: Optional[List[str]] = None,
+                  paths: Optional[List[str]] = None,
                   item_size: float = 96.0,
                   columns: Optional[int] = None,
                   show_labels: bool = True):
@@ -387,6 +567,35 @@ class RenderContext:
             cmd["body"] = body
         self._commands.append(cmd)
 
+    def spawn_app(
+        self,
+        app_id: str,
+        args: Optional[List[str]] = None,
+        parent: str = "self",
+        layout: Optional[dict] = None,
+        lifecycle: str = "cascade",
+        linked: bool = True,
+        wire_channels: Optional[List[str]] = None,
+    ):
+        """
+        Ask Plexi to spawn another app at end of this frame.
+
+        Same shape as `Emitter.spawn_app` — see that method's docstring for
+        full field semantics. Use this variant when you need the spawn to
+        happen as part of a render pass (queued alongside the frame's draw
+        commands); use `emit.spawn_app` from a key/command/mouse handler.
+        """
+        self._commands.append({
+            "type": "spawn_app",
+            "app_id": app_id,
+            "args": args or [],
+            "parent": parent,
+            "layout": layout or {"kind": "fill"},
+            "lifecycle": lifecycle,
+            "linked": linked,
+            "wire_channels": wire_channels or [],
+        })
+
     def _flush(self):
         for cmd in self._commands:
             print(json.dumps(cmd), flush=True)
@@ -413,7 +622,7 @@ class App:
         @app.on_scroll        fn(x: float, y: float, delta_x: float, delta_y: float, emit: Emitter)
     """
 
-    def __init__(self, app_id: str = ""):
+    def __init__(self, app_id: str = "", auto_min_size: bool = True):
         self.width: float = 800.0
         self.height: float = 600.0
         self.delta_time: float = 0.0
@@ -430,10 +639,219 @@ class App:
         self._on_mouse_move: Optional[Callable] = None
         self._on_scroll: Optional[Callable] = None
         self._emitter = Emitter(app_id=app_id)
+        # Breakpoints: list of (min_width, min_height, render_fn).
+        # Walked in descending area order on each render to pick the
+        # most specific match whose constraints fit the current pane.
+        self._breakpoints: List[Tuple[float, float, Callable]] = []
+        # Minimum pane size before the SDK draws its built-in
+        # "too small" fallback frame (bypassing the user render fn).
+        # Values of 0 mean "no floor on this axis".
+        self._min_width: float = 0.0
+        self._min_height: float = 0.0
+        self._auto_min_size: bool = auto_min_size
+        # Palette used by the auto min-size fallback. Apps can override
+        # per-instance via `set_min_size_colors` if they care.
+        self._min_size_bg: str = "#0a0a0a"
+        self._min_size_fg: str = "#888888"
+        self._min_size_accent: str = "#ffffff"
 
     def on_render(self, fn: Callable) -> Callable:
         self._on_render = fn
         return fn
+
+    def breakpoint(
+        self, min_width: float = 0.0, min_height: float = 0.0
+    ) -> Callable:
+        """
+        Register a render function for a specific minimum pane size.
+
+        Apps can stack multiple `@app.breakpoint(...)` handlers; on each
+        render event the SDK picks the most specific breakpoint whose
+        constraints fit the current pane (largest min_width * min_height
+        area that still satisfies `width >= min_width AND height >= min_height`).
+        If none match, a breakpoint registered with no constraints (the
+        default 0x0 fallback) is called.
+
+        Example:
+
+            @app.breakpoint(min_width=800, min_height=500)
+            def render_full(ctx):
+                ...
+
+            @app.breakpoint(min_width=400)
+            def render_compact(ctx):
+                ...
+
+            @app.breakpoint()  # fallback — always matches
+            def render_fallback(ctx):
+                ...
+
+        Mutually exclusive with `@app.on_render`. Registering both raises
+        a RuntimeError at app startup.
+        """
+        def decorator(fn: Callable) -> Callable:
+            self._breakpoints.append((float(min_width), float(min_height), fn))
+            return fn
+        return decorator
+
+    def set_min_size(self, min_width: float, min_height: float) -> None:
+        """
+        Set the minimum pane size programmatically.
+
+        When the pane is smaller than this on either axis and `auto_min_size`
+        is enabled, the SDK draws a built-in "too small" fallback frame
+        (background + label + directional arrow + current size) instead of
+        calling any user render function.
+
+        Useful for apps that compute their min size at runtime (e.g. based
+        on font metrics) rather than declaring it in manifest.toml.
+        """
+        self._min_width = float(min_width)
+        self._min_height = float(min_height)
+
+    def set_min_size_colors(
+        self,
+        bg: Optional[str] = None,
+        fg: Optional[str] = None,
+        accent: Optional[str] = None,
+    ) -> None:
+        """
+        Override the palette used by the auto min-size fallback frame.
+
+        The SDK has no access to live host theme tokens, so defaults are
+        hardcoded (`#0a0a0a` background, `#888888` label, `#ffffff` arrow).
+        Apps that care about matching a custom theme can override any
+        subset of these.
+        """
+        if bg is not None:
+            self._min_size_bg = bg
+        if fg is not None:
+            self._min_size_fg = fg
+        if accent is not None:
+            self._min_size_accent = accent
+
+    def _load_manifest_layout(self) -> None:
+        """
+        Read `[app.layout]` from manifest.toml (if present) and populate
+        `_min_width` / `_min_height` unless already set programmatically.
+        Best-effort — missing or unparseable manifests are silently ignored.
+        """
+        if self._min_width or self._min_height:
+            return  # explicit set_min_size wins over manifest
+        try:
+            # Walk up from the caller's file to find manifest.toml.
+            main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+            if not main_file:
+                return
+            manifest = load_manifest(main_file)
+            layout = manifest.get("app", {}).get("layout", {})
+            if isinstance(layout, dict):
+                mw = layout.get("min_width", 0)
+                mh = layout.get("min_height", 0)
+                try:
+                    self._min_width = float(mw)
+                    self._min_height = float(mh)
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            # Never let manifest errors kill the app — log-only fallback.
+            pass
+
+    def _render_min_size_fallback(self, width: float, height: float) -> None:
+        """
+        Emit the built-in "pane too small" frame directly as JSON draw
+        commands. Does NOT go through RenderContext (the user render fn
+        is never called in this code path).
+
+        Draws: background rect, centered "min size: W x H" label,
+        directional arrow(s) pointing toward the axes that need to grow,
+        and a dim "current: w x h" subtitle.
+        """
+        bg = self._min_size_bg
+        fg = self._min_size_fg
+        accent = self._min_size_accent
+        min_w = self._min_width
+        min_h = self._min_height
+
+        needs_width = width < min_w
+        needs_height = height < min_h
+
+        if needs_width and needs_height:
+            arrow = "\u2198"  # ↘
+        elif needs_width:
+            arrow = "\u2192"  # →
+        elif needs_height:
+            arrow = "\u2193"  # ↓
+        else:
+            arrow = ""
+
+        label = f"min size: {int(min_w)} x {int(min_h)}"
+        current = f"current: {int(width)} x {int(height)}"
+
+        # Rough centering — we don't have text metrics, so estimate with
+        # a fixed per-char width of 0.55 * font_size. Good enough for a
+        # fallback that only shows when the pane is too small anyway.
+        label_size = 14.0
+        current_size = 11.0
+        arrow_size = 32.0
+        label_w = len(label) * label_size * 0.55
+        current_w = len(current) * current_size * 0.55
+        arrow_w = len(arrow) * arrow_size * 0.55
+
+        cx = width / 2.0
+        cy = height / 2.0
+        label_x = max(0.0, cx - label_w / 2.0)
+        current_x = max(0.0, cx - current_w / 2.0)
+        arrow_x = max(0.0, cx - arrow_w / 2.0)
+
+        label_y = max(0.0, cy - 30.0)
+        arrow_y = cy
+        current_y = cy + 40.0
+
+        cmds = [
+            {"type": "rect", "x": 0.0, "y": 0.0, "w": width, "h": height,
+             "fill": bg, "radius": 0.0},
+            {"type": "text", "x": label_x, "y": label_y, "text": label,
+             "size": label_size, "color": fg,
+             "monospace": False, "bold": True},
+        ]
+        if arrow:
+            cmds.append({
+                "type": "text", "x": arrow_x, "y": arrow_y, "text": arrow,
+                "size": arrow_size, "color": accent,
+                "monospace": False, "bold": False,
+            })
+        cmds.append({
+            "type": "text", "x": current_x, "y": current_y, "text": current,
+            "size": current_size, "color": fg,
+            "monospace": False, "bold": False,
+        })
+        cmds.append({"type": "frame_done"})
+        for cmd in cmds:
+            print(json.dumps(cmd), flush=True)
+
+    def _pick_breakpoint(self, width: float, height: float) -> Optional[Callable]:
+        """
+        Walk breakpoints sorted by (min_width * min_height) descending and
+        return the first one whose `width >= min_width AND height >= min_height`.
+        Falls back to a zero-constraint breakpoint if present. Returns None
+        if no breakpoints are registered at all.
+        """
+        if not self._breakpoints:
+            return None
+        ordered = sorted(
+            self._breakpoints,
+            key=lambda b: (b[0] * b[1], b[0], b[1]),
+            reverse=True,
+        )
+        for min_w, min_h, fn in ordered:
+            if width >= min_w and height >= min_h:
+                return fn
+        # No match — look for a 0x0 fallback explicitly.
+        for min_w, min_h, fn in self._breakpoints:
+            if min_w == 0.0 and min_h == 0.0:
+                return fn
+        return None
 
     def on_key(self, fn: Callable) -> Callable:
         self._on_key = fn
@@ -541,6 +959,16 @@ class App:
         """Start the event loop. Blocks until Plexi sends Shutdown."""
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
+        # Validate mutually exclusive render registration.
+        if self._on_render is not None and self._breakpoints:
+            raise RuntimeError(
+                "plexi_sdk: @app.on_render and @app.breakpoint(...) are "
+                "mutually exclusive — use one or the other, not both."
+            )
+
+        # Pull min-size from the manifest (if set_min_size was not called).
+        self._load_manifest_layout()
+
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -563,9 +991,27 @@ class App:
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
                 self.delta_time = event.get("delta_time", 0.0)
+                # Auto min-size fallback: if the pane is smaller than
+                # our declared floor on either axis, draw the built-in
+                # "too small" frame and skip user rendering entirely.
+                if (
+                    self._auto_min_size
+                    and (self._min_width > 0 or self._min_height > 0)
+                    and (
+                        self.width < self._min_width
+                        or self.height < self._min_height
+                    )
+                ):
+                    self._render_min_size_fallback(self.width, self.height)
+                    continue
                 ctx = RenderContext(self.width, self.height, app_id=self._emitter._app_id)
                 ctx.delta_time = self.delta_time
-                if self._on_render:
+                # Breakpoint dispatch (if registered) overrides on_render.
+                if self._breakpoints:
+                    fn = self._pick_breakpoint(self.width, self.height)
+                    if fn is not None:
+                        fn(ctx)
+                elif self._on_render:
                     self._on_render(ctx)
                 ctx._flush()
 

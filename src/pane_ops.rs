@@ -220,6 +220,10 @@ impl PlexiApp {
     /// Close a specific pane by its PaneId (the u64 backend ID, not the TileId).
     /// Searches all contexts to find the tile containing this pane.
     pub(crate) fn close_pane_by_id(&mut self, pane_id: PaneId) {
+        // Handle cascade/orphan before removing the tile so children are still
+        // findable in the tree.
+        self.handle_spawn_pane_close(pane_id);
+
         // Find which context and tile owns this pane_id.
         for ctx_idx in 0..self.contexts.len() {
             if let Some(tile_id) = self.contexts[ctx_idx].tree.tiles.find_pane(&pane_id) {
@@ -863,6 +867,7 @@ impl PlexiApp {
         if let Some(app) = self.registry.launch(id, &cwd, &[]) {
             let perms = crate::app_permissions::AppPermissions::default();
             self.open_app_on_focused_with_launch(app, perms, cwd, launch_cfg);
+            self.record_app_visit(id);
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
         }
@@ -966,6 +971,275 @@ impl PlexiApp {
         if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
             if let Some(app) = &mut pane.active_app {
                 app.redo();
+            }
+        }
+    }
+
+    // ─── Spawn dispatcher ────────────────────────────────────────────────────
+
+    /// Drain pending spawn requests from every active app and execute them.
+    /// Called once per frame from `update()`, after key dispatch and cwd sync.
+    pub(crate) fn dispatch_pending_spawns(&mut self) {
+        let active = self.active_context;
+
+        // Two-pass: collect first so we don't hold a mutable borrow while
+        // calling execute_spawn (which also borrows self mutably).
+        let mut to_spawn: Vec<(PaneId, crate::app_protocol::PendingSpawn)> = Vec::new();
+        for (&pane_id, pane) in self.contexts[active].panes.iter_mut() {
+            if let Some(app) = pane.active_app.as_mut() {
+                for spawn in app.take_pending_spawns() {
+                    to_spawn.push((pane_id, spawn));
+                }
+            }
+        }
+
+        for (requester_pane_id, spawn) in to_spawn {
+            self.execute_spawn(requester_pane_id, spawn);
+        }
+    }
+
+    /// Resolve and execute one `PendingSpawn`, creating a new pane in the tree.
+    fn execute_spawn(
+        &mut self,
+        requester_pane_id: PaneId,
+        spawn: crate::app_protocol::PendingSpawn,
+    ) {
+        use crate::app_protocol::{SpawnLayout, SpawnLifecycle};
+
+        // 1. Gather context from the requester pane.
+        let (requester_app_id, scope) = {
+            let ctx = &self.contexts[self.active_context];
+            let pane = match ctx.panes.get(&requester_pane_id) {
+                Some(p) => p,
+                None => {
+                    log::warn!("execute_spawn: requester pane {} not found", requester_pane_id);
+                    return;
+                }
+            };
+            let app_id = pane
+                .active_app
+                .as_ref()
+                .map(|a| a.type_id().to_string())
+                .unwrap_or_default();
+            let scope = pane
+                .app_scope
+                .clone()
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            (app_id, scope)
+        };
+
+        // 2. Launch the child app subprocess.
+        // For built-in apps not in the registry (file_browser), fall back to
+        // the in-process implementation so spawning always works.
+        let child_app: Box<dyn crate::app_trait::App> = if let Some(a) = self.registry.launch_as_child(
+            &spawn.app_id,
+            &scope,
+            &spawn.args,
+            &requester_app_id,
+        ) {
+            a
+        } else if spawn.app_id == "file_browser" || spawn.app_id == "file-browser" {
+            Box::new(crate::file_browser::FileBrowserApp::from_args(
+                scope.clone(),
+                &spawn.args,
+            ))
+        } else {
+            log::warn!(
+                "execute_spawn: app '{}' not found in registry",
+                spawn.app_id
+            );
+            return;
+        };
+
+        // 3. Create a new TerminalPane for the child and open the app in it.
+        let child_pane_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let settings = Self::make_backend_settings(Some(scope.clone()), &self.colors);
+        let mut child_pane = match TerminalPane::new(
+            child_pane_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "execute_spawn: failed to create terminal pane for '{}'",
+                    spawn.app_id
+                );
+                return;
+            }
+        };
+        let perms = crate::app_permissions::AppPermissions::default();
+        child_pane.open_app_with_companion(child_app, perms, scope);
+
+        // 4. Find the anchor tile in the tree (the tile containing the requester pane).
+        let anchor_tile = {
+            let ctx = &self.contexts[self.active_context];
+            // SpawnParent::SelfPane and NamedMark (v1: falls back to SelfPane) anchor
+            // to the requester's own tile. SpawnParent::Root anchors to the tree root.
+            match &spawn.parent {
+                crate::app_protocol::SpawnParent::Root => ctx.tree.root,
+                _ => ctx.tree.tiles.find_pane(&requester_pane_id),
+            }
+        };
+        let anchor_tile = match anchor_tile {
+            Some(t) => t,
+            None => {
+                log::warn!(
+                    "execute_spawn: could not find anchor tile for pane {}",
+                    requester_pane_id
+                );
+                return;
+            }
+        };
+
+        // 5. Insert pane into the panes map and create a tile.
+        self.contexts[self.active_context]
+            .panes
+            .insert(child_pane_id, child_pane);
+        let new_tile = self.contexts[self.active_context]
+            .tree
+            .tiles
+            .insert_pane(child_pane_id);
+
+        // 6. Determine split direction, new-pane position, and size ratio.
+        let (split_dir, new_before_anchor, ratio) = match &spawn.layout {
+            SpawnLayout::Cols { slot, ratio } => (
+                egui_tiles::LinearDir::Horizontal,
+                *slot == 0,
+                *ratio,
+            ),
+            SpawnLayout::Rows { slot, ratio } => (
+                egui_tiles::LinearDir::Vertical,
+                *slot == 0,
+                *ratio,
+            ),
+            // Fill and unsupported variants: default to right column at 50 %.
+            _ => (egui_tiles::LinearDir::Horizontal, false, 0.5),
+        };
+
+        // Share fractions: anchor keeps `anchor_share`, new pane gets `new_share`.
+        let (anchor_share, new_share) = if new_before_anchor {
+            (1.0 - ratio, ratio)
+        } else {
+            (ratio, 1.0 - ratio)
+        };
+
+        // 7. Insert the new tile next to the anchor in the tile tree.
+        let ctx = &mut self.contexts[self.active_context];
+        let parent = ctx.tree.tiles.parent_of(anchor_tile);
+
+        let inserted_as_sibling = if let Some(parent_id) = parent {
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                ctx.tree.tiles.get_mut(parent_id)
+            {
+                if linear.dir == split_dir {
+                    if let Some(pos) = linear.children.iter().position(|&c| c == anchor_tile) {
+                        if new_before_anchor {
+                            linear.children.insert(pos, new_tile);
+                        } else {
+                            linear.children.insert(pos + 1, new_tile);
+                        }
+                        // Update share ratios.
+                        linear.shares.set_share(anchor_tile, anchor_share);
+                        linear.shares.set_share(new_tile, new_share);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !inserted_as_sibling {
+            // Wrap anchor + new pane in a fresh linear container.
+            let children = if new_before_anchor {
+                vec![new_tile, anchor_tile]
+            } else {
+                vec![anchor_tile, new_tile]
+            };
+            let container_tile = if split_dir == egui_tiles::LinearDir::Vertical {
+                ctx.tree.tiles.insert_vertical_tile(children)
+            } else {
+                ctx.tree.tiles.insert_horizontal_tile(children)
+            };
+            // Set ratios on the new container.
+            if let Some(Tile::Container(Container::Linear(lin))) =
+                ctx.tree.tiles.get_mut(container_tile)
+            {
+                lin.shares.set_share(anchor_tile, anchor_share);
+                lin.shares.set_share(new_tile, new_share);
+            }
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent_container)) =
+                    ctx.tree.tiles.get_mut(parent_id)
+                {
+                    replace_child(parent_container, anchor_tile, container_tile);
+                }
+            } else {
+                ctx.tree.root = Some(container_tile);
+            }
+        }
+
+        // 8. Record the relationship so cascade/orphan close works.
+        let lifecycle = spawn.lifecycle;
+        let wire_channels = spawn.wire_channels.clone();
+        self.spawn_relationships.add(
+            requester_pane_id,
+            child_pane_id,
+            lifecycle,
+            wire_channels,
+        );
+
+        log::info!(
+            "execute_spawn: spawned '{}' (pane {}) from '{}' (pane {}) lifecycle={:?}",
+            spawn.app_id,
+            child_pane_id,
+            requester_app_id,
+            requester_pane_id,
+            lifecycle,
+        );
+    }
+
+    /// Wire cascade/orphan semantics into a pane close. Call this BEFORE the
+    /// tile is actually removed from the tree so children can still be found.
+    ///
+    /// - `Cascade`: close all transitive children alongside the closing pane.
+    /// - `Orphan`/`Prompt`: drop the relationship; children survive as top-level panes.
+    pub(crate) fn handle_spawn_pane_close(&mut self, closing_pane_id: PaneId) {
+        use crate::app_protocol::SpawnLifecycle;
+
+        // Collect direct children and their lifecycles.
+        let children: Vec<(PaneId, SpawnLifecycle)> = self
+            .spawn_relationships
+            .children_of(closing_pane_id)
+            .iter()
+            .map(|r| (r.child_pane, r.lifecycle))
+            .collect();
+
+        // Remove all relationships involving this pane.
+        self.spawn_relationships.remove_pane(closing_pane_id);
+
+        for (child_pane_id, lifecycle) in children {
+            match lifecycle {
+                SpawnLifecycle::Cascade => {
+                    // Recurse: close children of children first.
+                    self.handle_spawn_pane_close(child_pane_id);
+                    self.close_pane_by_id(child_pane_id);
+                }
+                SpawnLifecycle::Orphan | SpawnLifecycle::Prompt => {
+                    // Drop the relationship — child survives.
+                    // (Prompt is stubbed as Orphan in v1.)
+                }
             }
         }
     }

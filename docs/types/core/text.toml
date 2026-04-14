@@ -1,0 +1,34 @@
+name        = "text"
+namespace   = "core"
+version     = "1.0.0"
+status      = "stable"
+maintainer  = "plexi-core"
+
+description = """
+Plain UTF-8 text. The lingua franca of the control plane. Any app that
+produces or consumes a string — a prompt, a cell's contents, a rendered
+response, a captured terminal output — should use this kind. There is
+deliberately no length limit at the type level; the Phase 1 transport caps
+individual messages at ~64 KB. For larger bodies, emit a core.file_path
+pointing to a temp file instead of trying to push the body inline.
+
+core.text is intentionally not core.markdown, core.prompt, or core.code.
+Specialization belongs in vendor kinds. This type's strength is that every
+app that deals with strings can speak it without coordinating on a schema.
+"""
+
+[payload_schema]
+fields = [
+  { name = "text", type = "string", required = true },
+]
+
+[compatibility]
+# core.text is acceptable anywhere core.json is consumed, since any string
+# is a valid JSON value. The inverse is not true: a core.json consumer
+# expects arbitrary structure, not a guaranteed string.
+coerces_to = ["core.json"]
+
+[examples]
+plain      = '{ "text": "Hello, world!" }'
+prompt     = '{ "text": "Summarise the following file in three bullet points:" }'
+multiline  = '{ "text": "line one\nline two\nline three" }'

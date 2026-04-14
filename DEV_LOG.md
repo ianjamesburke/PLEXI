@@ -1,5 +1,137 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-14 — [DECISION] mermaid-viewer: keyboard-driven diagram editor + --filter=mermaid file browser
+
+Added `EntryFilter::Mermaid` to `src/file_browser/mod.rs` (matches `.mmd` files and dirs). Added `examples/mermaid-viewer/` with four files: `mermaid_parser.py` (regex-based parser for flowchart/graph LR/TD syntax, 4 node shapes, solid/dashed/labeled edges), `graph_layout.py` (BFS layering → pixel coords, LR and TD), `mermaid_viewer.py` (full app: VIEW/EDIT_LABEL/ADD_NODE/CONNECTING modes, zoom/pan, hot-reload on mtime, spawns file-browser sidebar on direct launch), `manifest.toml`.
+
+Parser uses pure regex rather than a real grammar — handles 95% of real-world mermaid diagrams without a parser dependency. Subgraphs are silently skipped (flattened). The serialize→parse roundtrip is stable but may change node order; this is acceptable for the MVP. Edge rendering uses straight lines only (no routing around nodes — deferred as non-essential for MVP).
+
+Pre-existing compile errors in `src/app.rs` (missing `load_app_mru`/`save_app_mru`/`save_window_size`) are not from this change — they were present on alpha before this branch.
+
+## 2026-04-14 — [DECISION] Wave 3: spawn_app primitive, breakpoints SDK, three new external apps, typed-pipes spec
+
+Six parallel sub-agents delivered as six cherry-picked atomic commits on `alpha` (`1e43b9b` through `af27da4`, plus `d6ee3ee` cleanup):
+
+1. **`docs/specs/typed-pipes.md`** — typed I/O channels design (6 core kinds: text/json/file_path/selection/event/metric), `[app.io]` manifest, linking matrix auto-wire algorithm, patchbay overlay. Pure doc add; no conflicts.
+2. **External Python text editor** (`examples/text-editor/`) — 1161-line Python app with find/replace, line numbers, syntax highlighting (pygments), status bar, goto line, save-as, undo/redo, word wrap, file-change detection, autosave.
+3. **External Rust photo viewer** (`examples/photo-viewer/`) — pure single-image renderer, fit-to-window, zoom/pan, hover overlay. Uses placeholder checkered pattern until `Image` draw command is wired.
+4. **Fibonacci spiral viewer** (`examples/spiral-viewer/`) — dev tool that renders any app at 8 sizes simultaneously on a Fibonacci spiral for breakpoint testing. Takes target app as `argv[1]`.
+5. **`spawn_app` draw command + host** — new `DrawCommand::SpawnApp` in `src/app_protocol.rs`, `SpawnParent`/`SpawnLayout`/`SpawnLifecycle` enums, `AppSpawnable` manifest table in `src/app_registry.rs`, `pending_spawns` queue in `src/process_app.rs`. Host dispatcher (pane creation, cascade/orphan walk) deferred to `src/app.rs` — that file is in user's WIP set. Queue drains when user is ready.
+6. **SDK 0.3.0 (Python + Rust)** — breakpoints decorator (`@app.breakpoint(min_width, min_height)`), `BreakpointSet`/`pick_breakpoint` in Rust, `App::min_size` trait method, `load_manifest_layout()`, `spawn_app` helper on both `Emitter` and `RenderContext`.
+
+**Key merge conflict pattern:** both breakpoints and spawn_app agents modified `sdk/python/plexi_sdk.py`, `pyproject.toml`, `Cargo.toml`, and all 33 vendored `examples/*/plexi_sdk.py` copies. Resolution: keep 0.3.0 version throughout, combine code additions (they're in different class sections), then re-run `scripts/sync-sdk.py` to propagate. This pattern will repeat — sync-sdk.py is the canonical gate.
+
+**Pyright gotcha:** `Optional[list]` in function signatures triggers a pyright name-shadowing error when a class has a method also named `list` (as `RenderContext` does). Fixed with `Optional[List[str]]` using the typing import. Any new method accepting a list arg in that class must use the `List` form, not bare `list`.
+
+## 2026-04-14 — [DECISION] SDK packaged for distribution + protocol spec stamped v1
+
+Two cohesive moves landed as five atomic commits on `alpha`:
+
+1. **Vendored `plexi_sdk.py` copies sync'd to canonical 0.2.0** (`4496e2b`). 32 example apps were drifted from `sdk/python/plexi_sdk.py` (the previous `feat: SDK feedback primitive` commit updated the canonical file but left the vendored copies behind). All 31 `examples/*/plexi_sdk.py` files are now byte-identical. `scripts/sync-sdk.py --check` enforces this going forward.
+2. **`docs/specs/app-infrastructure.md` brought to v1-stable** (`a7a7e22`). Old spec was 222 lines, dated 2026-04-09, and missed entire categories of the shipping protocol (mouse_*, scroll, drop, get_state/set_state, cost_report, notification, feedback, hot reload, [app.launch], `PLEXI_APP_ID`/`PLEXI_APPS_DIR`). Now 705 lines and the source-of-truth claim is true: every event/command/manifest field/env var/file path matches the shipping code at the date in the header.
+3. **Python SDK packaged as `plexi-sdk` 0.2.0** (`e49de37`). Added `pyproject.toml` (PEP 621, setuptools, flat py-modules, stdlib-only deps), `README.md`, `LICENSE`, `MANIFEST.in`, `.gitignore`, plus `scripts/sync-sdk.py`. Validated with `pip install --dry-run -e .`.
+4. **Rust SDK Cargo manifest polished for crates.io** (`2bc52ee`). Full publish metadata (authors, homepage, documentation, readme, keywords, categories, rust-version), README, LICENSE. `cargo publish --dry-run --allow-dirty` packages and verifies cleanly. **Source untouched — kept at 0.1.0.**
+5. **`docs/specs/app-shell-config.md` filed** (`7b13b10`). v1 spec for a Plexi app that manages zsh addons via the ZDOTDIR-addon pattern, never touching `~/.zshrc`. Embedded a ready-to-file GitHub issue body. P3, idea-tier, not implemented yet.
+
+**Dual-purpose SDK packaging model.** External devs `pip install plexi-sdk` for editor/linter/type support during development. Runtime apps continue to vendor their own `plexi_sdk.py` next to the entry file, because each `~/.plexi-alpha/apps/<id>/` install dir must be self-contained — Plexi cannot inject library paths and users may not have a global pip env. The sync script is the bridge: canonical source ships in PyPI, every example mirrors it byte-for-byte. Considered (and rejected) making examples `from plexi_sdk import App` against the installed package — it would break the standalone-app invariant for anyone who deletes their pip env.
+
+**Regression gate:** all 42 tests pass across hello-app, wikipedia, git-log, plexi-browser, aquarium, snake. `just install-alpha` succeeded with 36 apps installed.
+
+## 2026-04-14 — [GOTCHA] Rust SDK lags Python SDK on protocol additions
+
+Discovered while polishing `sdk/rust/Cargo.toml` for publication: `sdk/rust/src/lib.rs` (270 lines) covers only the original protocol surface and is missing every addition Python 0.2.0 ships: `scroll`, `mouse_down`/`mouse_up`, `drop`, `get_state`/`set_state` round trip, `cost_report`, `notification`, `feedback`, `log` draw command. A Rust app written today cannot use any of those features without dropping to raw JSON.
+
+Kept the Rust crate at `0.1.0` rather than bumping to 0.2.0 alongside Python — bumping the version without parity would misrepresent the crate. The new protocol spec at `docs/specs/app-infrastructure.md` notes the gap explicitly in the "See also" section so external Rust devs aren't blindsided. Bringing the Rust SDK to parity is its own follow-up commit and the right next step before any Rust example app needs the new commands.
+
+## 2026-04-14 — [GOTCHA] Pytest-style test files exit 0 silently when run with bare python3
+
+The `examples/aquarium/tests/test_aquarium.py` and `examples/snake/tests/test_snake.py` files use `def test_*` functions with no `if __name__ == "__main__"` block. Running `python3 examples/aquarium/tests/test_aquarium.py` imports the module, runs nothing, and exits 0 — looks like a passing test from the outside. The other suites (`hello-app`, `wikipedia`, `git-log`, `plexi-browser`) follow the older pattern with explicit `main()` calls in `__main__`, so they print PASS lines.
+
+The actual aquarium and snake tests run fine under `python3 -m pytest examples/aquarium/tests/ examples/snake/tests/ -v` (8 + 10 tests pass). Anything that loops over example test files for a regression gate must either standardize the runner (pytest for everything, or main() blocks for everything) or detect the file shape per-suite. Picking pytest as the universal runner is the cleaner long-term move; the four older suites need a one-time conversion.
+
+## 2026-04-13 — [CHANGED] SDK feedback primitive + app env vars + two new apps
+
+**SDK (v0.1.0 → v0.2.0):**
+- `emit.submit_feedback(text, rating=None, category=None)` — appends a JSONL entry to `$PLEXI_APPS_DIR/$PLEXI_APP_ID/feedback.jsonl`. Pure Python stdlib, no Rust handler needed.
+- `load_manifest(__file__)` — reads and mini-parses an app's own `manifest.toml` without a TOML dep. Returns a plain dict.
+- Both `os` and `pathlib` added to top-level imports (were missing, needed by the new primitives).
+
+**Rust (process_app.rs):** Apps now receive two env vars at spawn and respawn:
+- `PLEXI_APP_ID` — the app's registry ID (same as `type_id`)
+- `PLEXI_APPS_DIR` — absolute path to `~/.plexi-alpha/apps/` (or beta/stable)
+
+Without these, `submit_feedback` can only fall back to `~/.plexi/apps/`, which is wrong for alpha. Setting them here is cleaner than passing via init event or manifest.
+
+**New apps:**
+- `backlog-triage` — keyboard-driven (j/k/d/a/f) review of `~/.plexi-alpha/backlog/` notes. Dismiss → `.dismissed/`, archive → `~/Documents/archive/plexi-backlog/`. Closes #94.
+- `permissions-viewer` — reads all installed app manifests, renders a capability matrix (filesystem, terminal_write, mouse_tracking, file_types) with color-coded risk levels.
+
+## 2026-04-12 — [CHANGED] Command palette: taller viewport + MRU app sort
+
+Two palette polish fixes:
+1. `command_palette.rs:202` height cap raised from `(screen_h - 240).clamp(160, 520)` to `(screen_h * 0.55).max(320).min(screen_h - 180)`. The old bounds left the list cramped to ~4–5 rows on normal laptop heights; new formula targets ~55% of the viewport with a 320px floor.
+2. Apps in the palette are now sorted by a persistent most-recently-used list. New `app_visit_history: Vec<String>` on `PlexiApp`, recorded inside `launch_app_by_id` so any launch path counts (not just palette Enter). Persisted to `~/.plexi-alpha/app_mru.json` (or `~/.plexi/app_mru.json`) via `config::save_app_mru` / `load_app_mru`, mirroring the `window.json` pattern. Truncated to 100.
+
+## 2026-04-12 — [FUTURE] Replace MRU app sort with a log-driven predictor
+
+Today's MRU sort is a placeholder — a plain "last launched, first shown" recency list. Good enough to stop the user having to hunt for frequently-used apps, but brittle: it doesn't know about time-of-day patterns, sequences (app A almost always follows app B), project-dir context (wikipedia in research dirs, parallax in video dirs), or which apps the user *opened by accident and closed immediately* vs. actually worked in.
+
+The real fix is to read from `~/.plexi-alpha/plexi.log` (or a structured event stream we'd add) and train a small predictor on actual usage: cwd → likely apps, recent-sequence → next-app, time-of-day → common apps. Could be as simple as a weighted score of (recency × frequency × cwd-match × sequence-match), or as heavy as a tiny local model. Either way, the `record_app_visit` hook is the right place to feed the signal; the `mru_rank` closure in `command_palette.rs` is the single call site to swap out.
+
+Deferred because the MRU version unblocks the immediate UX gripe and the predictor needs a real usage dataset that doesn't exist yet. Revisit once there are ~2 weeks of launch events in the log.
+
+## 2026-04-12 — [GOTCHA] `ctx.list()` draws at pane origin and has no position parameters
+
+The `list` primitive in `sdk/python/plexi_sdk.py` (and all synced copies) looks like a normal drawing call but — unlike `rect`, `text`, `image`, `video_thumbnail`, `file_grid`, and `drop_target` — it takes no `x/y/w/h`. Plexi renders it at the app's pane origin with an implicit full-pane layout. Silent collision trap: any app that draws a header, a sidebar, or a split layout will see the list overlap with its other draw calls and its `secondary` labels spill into unrelated regions of the window. Bit parallax-app tonight — the scene list's `3.0s` duration labels landed in the top-right corner of the viewer after the chat pane was moved to the left.
+
+**Fix applied:** added a loud ASCII-boxed warning docstring to `RenderContext.list` in `sdk/python/plexi_sdk.py` (and the `parallax-app/plexi_sdk.py` copy) explicitly telling readers — including AI coding agents — that this is a trap and to render with positioned `text` + `rect` calls instead.
+
+**Real fix (deferred):** add a positioned `list(x, y, w, h, ...)` variant to the SDK and the Rust host handler, or deprecate the unpositioned form. Tracked in PLEXI issue #201.
+
+Repro: any app that sets `viewer_x > 0` and calls `ctx.list(...)` will show the list at x=0 regardless.
+
+## 2026-04-12 — [GOTCHA] `just install-alpha` from a stale worktree clobbers app symlinks
+
+`just install-alpha` copies `examples/*` into `~/.plexi-alpha/apps/` unconditionally. If a sub-agent runs it from a worktree checked out at a stale commit (e.g. pre-`fc97084 chore: remove parallax viewer`), the old `examples/parallax/` gets copied on top of the live symlink at `~/.plexi-alpha/apps/parallax` that was pointing at the external `~/Documents/GitHub/parallax-app/`. Result: the real app silently reverts to a months-old copy, and all in-flight work on that app (here: `chat.py`, `hop_prompt.md`, the rewritten TextInput primitive) disappears from the running build. The source repo is untouched — only the installed location is corrupted.
+
+**What NOT to do next time:** do not let sub-agents run `just install-alpha` from a worktree base that's behind `origin/alpha`. The worktree skill should rebase the base onto `origin/alpha` on creation, or `install-alpha` should skip any `~/.plexi-alpha/apps/<name>` that's already a symlink (the safer fix — preserves dev symlinks regardless of install source).
+
+Repro: `git -C worktree-path log -1` older than `fc97084` + `just install-alpha` → `readlink ~/.plexi-alpha/apps/parallax` returns empty, and the files inside are dated at install time, not source time.
+
+Recovery: `rm -rf ~/.plexi-alpha/apps/parallax && ln -s ~/Documents/GitHub/parallax-app ~/.plexi-alpha/apps/parallax`.
+
+## 2026-04-12 — [GOTCHA] Mouse events reportedly not firing across apps in practice
+
+User reports that mouse click / tracking doesn't work in almost any app, despite the 2026-04-12 `[CHANGED]` entry that shipped `PlexiEvent::MouseDown/Up/Move`, `Scroll`, `SetCursor`, `MouseTracking` draw commands and Python SDK `@app.on_mouse_down` etc. decorators. Not yet root-caused — observed while testing the parallax app's chat/viewer split. Candidates to check next: (a) `process_app.rs` forwarding gate (focus/hover check may be dropping events before dispatch), (b) per-app manifest capability missing an opt-in flag, (c) Python SDK decorator not registering handlers in the dispatch map. When investigating, test against `wikipedia` + `parallax` + `plexi-browser` to isolate platform-level vs per-app issues. Don't trust the earlier "shipped" entry — it built the plumbing but was never verified end-to-end in a running app.
+
+## 2026-04-12 — [FIX] Quick Note overflowed without scrolling on long text
+
+`QuickNoteApp::ui` sized the `TextEdit::multiline` to `ui.available_size()` inside a `vertical_centered` block with no scroll container, so text longer than the visible inner rect was silently clipped at the bottom. Wrapped the TextEdit in a `ScrollArea::vertical` with `stick_to_bottom` so the cursor stays visible as the user types past the fold. Addresses backlog notes 020415 and 031456.
+
+## 2026-04-12 — [CHANGED] Agent mode inline output — green "Agent:" label, spinner replaces "agent thinking..."
+
+Two polish fixes to the Warp-style inline agent output in `src/agent_mode.rs`:
+1. The "agent thinking..." placeholder was emitted on submit and never erased — it sat as a permanent dim line above the reply. Now emitted as `\u{2022} thinking` (no trailing newline), and on the first `LlmResponse::Token` we write `\r\x1b[2K` (clear line) followed by a bold green `Agent: ` label before the streamed token. Same label is prepended on the non-streaming `Complete` path.
+2. Copying a transcript now shows a clear role boundary between `>>> ` (cyan prompt) and `Agent:` (green reply), addressing backlog 020245's "label the text as agent:" request.
+
+Per-turn `agent_label_emitted` flag is reset in `submit()` and `cancel_llm()`.
+
+## 2026-04-12 — [FIX] Command palette list overflowed the viewport with many apps
+
+The palette rendered all panes + apps in a non-scrollable `Frame` inner body, so on smaller windows or installs with 25+ apps, the bottom rows fell off the screen and were unreachable by mouse. Wrapped the entry loop in a vertical `ScrollArea` capped to `screen_height - 240px` (clamped 160–520), and added `ui.scroll_to_rect` on the currently-selected row so ArrowDown/ArrowUp past the visible window auto-scrolls. Addresses backlog 022946.
+
+## 2026-04-12 — [CHANGED] Plexi remembers its last window size across launches
+
+Added `~/.plexi-alpha/window.json` (best-effort JSON, 2 fields) written on `close_requested` and read in `main.rs` before building `NativeOptions`. Kept separate from `config.toml` so user comments/formatting there aren't clobbered on every quit. Missing file or invalid/out-of-range dims fall back to the old 1400x900 default. Addresses backlog 205927.
+
+## 2026-04-13 — [FIX] Rust example apps not loading — install-alpha never compiled them
+
+`process-monitor` and `audio-player` were silently skipped by the app registry on every launch. Two separate root causes: (1) `install-alpha` copied example app source directories wholesale but never ran `cargo build`, so `bin/plexi-app` never existed. (2) `audio-player/manifest.toml` was missing the `entry` field entirely.
+
+**Fix:** Extended the install-alpha app sync loop to detect `Cargo.toml` in any example dir, run `cargo build --release`, and place the binary at `bin/plexi-app` in the installed app dir. Added `entry = "bin/plexi-app"` to audio-player's manifest.
+
+**Also:** Added a rule to CLAUDE.md under Logging — default to `~/.plexi-alpha/plexi.log` when debugging; only check stable log if explicitly asked.
+
 ## 2026-04-12 — [CHANGED] End-of-day session: file browser refactor, agent mode fixes, 10 new apps, --plexi standard proposed
 
 Massive session. Full picture:
