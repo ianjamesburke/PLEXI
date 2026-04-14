@@ -154,6 +154,8 @@ impl ProcessApp {
             .args(&extra_args)
             .args(args)
             .current_dir(cwd)
+            .env("PLEXI_APP_ID", &type_id)
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()) // captured and forwarded to Plexi's logger
@@ -315,6 +317,8 @@ impl ProcessApp {
             .args(&extra_args)
             .args(&self.args)
             .current_dir(&self.cwd)
+            .env("PLEXI_APP_ID", &self.type_id)
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
