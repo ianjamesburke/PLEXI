@@ -1,0 +1,54 @@
+name        = "selection"
+namespace   = "core"
+version     = "1.0.0"
+status      = "stable"
+maintainer  = "plexi-core"
+
+description = """
+A user-selected region. Emitted by editors, file browsers, and list UIs to tell
+downstream consumers what the user is currently looking at or pointing at.
+
+A discriminated union over three variants: text_range (a line/column region in a
+file), file_list (a set of selected paths), and list_item (a highlighted row in
+a list or command palette). Further variants may be added as a minor version bump
+provided existing variants are left unchanged.
+
+Consumers must switch on the 'kind' discriminator and handle unknown variants
+gracefully — ignore, never error. This forward-compatibility discipline is what
+allows new variants to be added in a minor bump without breaking existing
+consumers pinned to v1.0.
+
+Line numbers are 1-indexed. Column offsets, when present, are 0-indexed (matching
+LSP convention). An absent start_col / end_col means the full line is selected.
+"""
+
+[payload_schema]
+discriminator = "kind"
+
+[[payload_schema.variants]]
+kind = "text_range"
+fields = [
+  { name = "path",       type = "string",  required = true  },
+  { name = "start_line", type = "integer", required = true  },
+  { name = "end_line",   type = "integer", required = true  },
+  { name = "start_col",  type = "integer", required = false },
+  { name = "end_col",    type = "integer", required = false },
+]
+
+[[payload_schema.variants]]
+kind = "file_list"
+fields = [
+  { name = "paths", type = "string[]", required = true },
+]
+
+[[payload_schema.variants]]
+kind = "list_item"
+fields = [
+  { name = "index", type = "integer", required = true  },
+  { name = "label", type = "string",  required = false },
+]
+
+[examples]
+text_range = '{ "kind": "text_range", "path": "src/main.rs", "start_line": 12, "end_line": 20 }'
+file_list  = '{ "kind": "file_list", "paths": ["src/main.rs", "src/app.rs"] }'
+list_item  = '{ "kind": "list_item", "index": 3, "label": "Commit 9f2a1bc" }'
