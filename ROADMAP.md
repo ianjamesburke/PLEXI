@@ -14,8 +14,9 @@ Reference document linking layers of work to specs and issues. This file tracks 
 | Layer 1 — App Protocol Testing | **Done** (24 tests, 4 apps) | — |
 | Layer 2 — Agent Mode in Terminal | **Shipped (Warp-style). LLM backend: `claude -p --resume` swap in flight** | Finish backend swap, streaming, slash commands |
 | Layer 3 — Parallax Refactor | **Done** (manifest-first, validator, Senior-only routing, Parallax viewer app) | — |
-| Layer 4 — Apps That Prove the Protocol | **Done** (mouse events + delta_time, 32 apps on alpha) | App Store update management (in flight); test coverage gap (~22 apps); Rust SDK protocol parity |
-| Layer 4.5 — SDK Packaging & Protocol Stability | **Done** (Python SDK packaged 0.2.0, protocol spec v1, Rust SDK polished) | Rust SDK protocol parity with Python 0.2.0 |
+| Layer 4 — Apps That Prove the Protocol | **Done** (~36 apps on alpha) | App Store update management (in flight); test coverage gap (~22 apps) |
+| Layer 4.5 — SDK Packaging & Protocol Stability | **Done** (Python + Rust SDK 0.3.0, protocol spec v1) | — |
+| Layer 4.6 — App Composition Primitive | **In flight** (spawn_app protocol + SDK done; host dispatcher pending WIP app.rs) | Host dispatcher to drain `pending_spawns` queue |
 | Layer 5 — WASM/PWA | **Back-burner** | Revisit when multiplayer is needed |
 
 ---
@@ -120,7 +121,7 @@ All 19 should pass.
 
 ## Layer 4: Apps That Prove the Protocol
 
-**Status: DONE — 32 APPS ON ALPHA**
+**Status: DONE — ~36 APPS ON ALPHA**
 
 Mouse events and `delta_time` are in the protocol. The app ecosystem is live.
 
@@ -132,9 +133,8 @@ Mouse events and `delta_time` are in the protocol. The app ecosystem is live.
 | `cost_report` protocol | **Done** | `src/cost_tracker.rs`, `~/.plexi-alpha/costs.jsonl` |
 | Python SDK decorators (`@app.on_get_state`, etc.) | **Done** | `emit.cost_report()` |
 | App Store (built-in) | **Shipped** | [#99](https://github.com/ianjamesburke/PLEXI/issues/99) |
-| App Store: update management (version compare + badges) | **In flight (this session)** | Parallel agent implementing — verify after merge |
-| Test coverage for example apps (~22 of 32 apps lack `plexi_test.py` suites) | **In flight (this session)** | Coverage sprint running in parallel — verify final count after merge |
-| Rust SDK protocol parity with Python 0.2.0 | **P1 — not started** | Missing: `scroll`, `mouse_down`/`mouse_up`, `drop`, `get_state`/`set_state`, `cost_report`, `notification`, `feedback`, `log`. See DEV_LOG 2026-04-14 |
+| App Store: update management (version compare + badges) | **Done** | Version compare + UPDATE badges + 'u' keybinding. Verify after `just install-alpha`. |
+| Test coverage for example apps (~22 of 36 apps lack `plexi_test.py` suites) | **In flight** | Partial coverage sprint merged — verify final count |
 
 ### Verification steps for Layer 4
 1. Launch App Store from command palette → 32 apps listed
@@ -148,24 +148,49 @@ Mouse events and `delta_time` are in the protocol. The app ecosystem is live.
 
 **Status: DONE (2026-04-14)**
 
-The Python SDK is now a real PyPI-shaped package and the app protocol is stamped at v1. External devs can `pip install plexi-sdk` for editor/linter support; runtime apps continue to vendor `plexi_sdk.py` next to their entry file. A sync script enforces byte-equality between the canonical SDK and every vendored copy.
+Python + Rust SDK at 0.3.0 parity. Protocol spec stamped v1.
 
 | Task | Status | Reference |
 |------|--------|-----------|
-| Python SDK packaged as `plexi-sdk` 0.2.0 | **Done** | `sdk/python/pyproject.toml`, `README.md`, `LICENSE`, `MANIFEST.in` (commit `e49de37`) |
-| Vendored SDK sync script | **Done** | `scripts/sync-sdk.py` — 31 examples byte-identical to canonical (commit `4496e2b`) |
-| App infrastructure spec v1 | **Done** | `docs/specs/app-infrastructure.md` (705 lines, every shipping event/command documented, commit `a7a7e22`) |
-| Rust SDK Cargo manifest publication-ready | **Done** | `sdk/rust/Cargo.toml` full publish metadata; `cargo publish --dry-run --allow-dirty` clean (commit `2bc52ee`). **Source kept at 0.1.0 — not bumped.** |
-| Rust SDK protocol parity with Python 0.2.0 | **Not started** | Listed under Layer 4 — blocks any Rust example app needing new commands |
-| Shell-config app v1 spec | **Done (spec only)** | `docs/specs/app-shell-config.md` (commit `7b13b10`). P3, idea-tier, not implemented |
+| Python SDK packaged as `plexi-sdk` 0.2.0 | **Done** | `sdk/python/pyproject.toml`, `README.md`, `LICENSE`, `MANIFEST.in` |
+| Vendored SDK sync script | **Done** | `scripts/sync-sdk.py` — 33 examples byte-identical to canonical |
+| App infrastructure spec v1 | **Done** | `docs/specs/app-infrastructure.md` (705 lines) |
+| Rust SDK Cargo manifest publication-ready | **Done** | `sdk/rust/Cargo.toml` full publish metadata |
+| **Rust SDK 0.2.0 protocol parity** | **Done** | `sdk/rust/src/lib.rs` — scroll, mouse, drop, state, cost_report, notification, feedback, log |
+| **Python + Rust SDK 0.3.0** | **Done** | `spawn_app`, `BreakpointSet`/`pick_breakpoint`, `App::min_size`, `load_manifest_layout()` |
+| Shell-config app v1 spec | **Done (spec only)** | `docs/specs/app-shell-config.md`. P3, idea-tier, not implemented |
 
 ### Verification steps for Layer 4.5
 
 ```bash
-pip install -e sdk/python                    # Editable install of plexi-sdk 0.2.0
-python3 scripts/sync-sdk.py --check          # All vendored copies byte-identical
-cd sdk/rust && cargo publish --dry-run --allow-dirty   # Packages cleanly
+pip install -e sdk/python                           # Editable install of plexi-sdk 0.3.0
+python3 scripts/sync-sdk.py --check                 # All vendored copies byte-identical
+cd sdk/rust && cargo test                           # 5 breakpoint tests pass
 ```
+
+---
+
+## Layer 4.6: App Composition Primitive
+
+**Status: IN FLIGHT (2026-04-14)**
+
+One app can now request that Plexi launch and place another app. The protocol + SDK + manifest surface are done; the host-side pane creation is queued pending the WIP `src/app.rs`.
+
+| Task | Status | Reference |
+|------|--------|-----------|
+| `DrawCommand::SpawnApp` + `SpawnParent`/`SpawnLayout`/`SpawnLifecycle` | **Done** | `src/app_protocol.rs` |
+| `AppSpawnable` manifest table + `[app.spawnable]` | **Done** | `src/app_registry.rs`, `docs/specs/app-infrastructure.md` |
+| `pending_spawns` queue in `process_app.rs` | **Done** | `src/process_app.rs::take_pending_spawns()` |
+| SDK: `Emitter.spawn_app` + `RenderContext.spawn_app` (Python + Rust) | **Done** | `sdk/python/plexi_sdk.py`, `sdk/rust/src/lib.rs` |
+| Host dispatcher: pane creation, registry lookup, cascade/orphan walk | **Pending** | Blocked on WIP `src/app.rs` — drain `take_pending_spawns()` there |
+| File browser `→ text-editor` / `→ photo-viewer` wiring | **In flight** | Demo of end-to-end spawn; unblocked after host dispatcher |
+| Typed-pipes spec | **Done (spec only)** | `docs/specs/typed-pipes.md` — Phase 1 design |
+
+### Verification steps for Layer 4.6
+
+1. File browser: navigate to a `.txt` file, press Enter → Plexi spawns text-editor app in adjacent pane
+2. File browser: navigate to an image file, press Enter → Plexi spawns photo-viewer in adjacent pane
+3. Close file browser → text-editor and photo-viewer both close (cascade lifecycle)
 
 ---
 
@@ -184,7 +209,7 @@ cd sdk/rust && cargo publish --dry-run --allow-dirty   # Packages cleanly
 
 ---
 
-## App Ecosystem (32 apps on alpha)
+## App Ecosystem (~36 apps on alpha)
 
 ### Games
 snake, aquarium, sandfall, lichen, apiary, seedclock
@@ -196,7 +221,13 @@ clipboard-stack, port-watcher, pulse, process-monitor, calc, stopwatch, color-pa
 pomodoro, markdown-preview, audio-player, weather, hacker-news
 
 ### Development
-git-log, git-blame, navigator, pyflow, plexi-browser
+git-log, git-blame, navigator, pyflow, plexi-browser, text-editor (external Python), photo-viewer (external Rust)
+
+### System
+backlog-triage, permissions-viewer
+
+### Dev Tools
+spiral-viewer (render any app at 8 sizes on Fibonacci spiral)
 
 ### Plexi-native
 parallax, learn-plexi, app-store, wikipedia, hello-app
@@ -207,16 +238,16 @@ parallax, learn-plexi, app-store, wikipedia, hello-app
 
 ### Immediate (this week)
 
-1. **Finish `claude -p --resume` backend swap** — streaming responses, session continuity (Layer 2)
-2. **Rust SDK protocol parity with Python 0.2.0** — add `scroll`, `mouse_down`/`mouse_up`, `drop`, `get_state`/`set_state`, `cost_report`, `notification`, `feedback`, `log` to `sdk/rust/src/lib.rs` before bumping the crate
-3. **Bare `/` at empty prompt** ([#104](https://github.com/ianjamesburke/PLEXI/issues/104)) — low-effort UX win
-4. **v2 new-tab rendering bug** — file as a P1 GitHub issue first, then fix (surfaced this session, not yet tracked)
-5. **App Store: update management** — version compare + update badges (in flight via parallel agent — verify after merge)
-6. **Test coverage sprint** — close the ~22-app gap with `plexi_test.py` suites (in flight via parallel agent — verify after merge)
+1. **Host dispatcher for `spawn_app`** — drain `take_pending_spawns()` in `src/app.rs` (registry lookup, pane creation, cascade/orphan walk). This unblocks Layer 4.6 end-to-end.
+2. **File browser wiring** — update `src/file_browser/mod.rs` to emit `spawn_app` on Enter for text/image files; demo the full file-browser → text-editor → photo-viewer composition flow.
+3. **`sdk/python/SKILL.md`** — top-level agent guide: "how to build a Plexi app" self-documenting SDK reference for AI coding agents.
+4. **Finish `claude -p --resume` backend swap** — streaming responses, session continuity (Layer 2)
+5. **Bare `/` at empty prompt** ([#104](https://github.com/ianjamesburke/PLEXI/issues/104)) — low-effort UX win
 
 ### Near-term (next week)
 
-- SDK: publish `plexi-sdk` 0.2.0 to PyPI ([#169](https://github.com/ianjamesburke/PLEXI/issues/169))
+- `docs/types/core/` — seed 6 core type TOML files to bootstrap the typed-pipes type registry
+- SDK: publish `plexi-sdk` 0.3.0 to PyPI
 - Parallax: SecretGet integration for API keys (only Layer 3 item still pending)
 - Slash commands in agent mode (/status, /cost, /jobs)
 - Cut a beta build (`just install-beta`) once the immediate list is green
@@ -246,3 +277,4 @@ parallax, learn-plexi, app-store, wikipedia, hello-app
 | Agent Replay & Testing | `docs/specs/agent-replay-testing.md` | Draft — future |
 | Parallax App | `parallax/docs/parallax-plexi-app-spec.md` | Active — app shipped |
 | North Star | `~/.agents/skills/plexi-north-star/SKILL.md` | Active |
+| Typed Pipes | `docs/specs/typed-pipes.md` | Draft — Phase 1 design, not implemented |

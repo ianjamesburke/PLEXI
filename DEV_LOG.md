@@ -1,5 +1,20 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-14 — [DECISION] Wave 3: spawn_app primitive, breakpoints SDK, three new external apps, typed-pipes spec
+
+Six parallel sub-agents delivered as six cherry-picked atomic commits on `alpha` (`1e43b9b` through `af27da4`, plus `d6ee3ee` cleanup):
+
+1. **`docs/specs/typed-pipes.md`** — typed I/O channels design (6 core kinds: text/json/file_path/selection/event/metric), `[app.io]` manifest, linking matrix auto-wire algorithm, patchbay overlay. Pure doc add; no conflicts.
+2. **External Python text editor** (`examples/text-editor/`) — 1161-line Python app with find/replace, line numbers, syntax highlighting (pygments), status bar, goto line, save-as, undo/redo, word wrap, file-change detection, autosave.
+3. **External Rust photo viewer** (`examples/photo-viewer/`) — pure single-image renderer, fit-to-window, zoom/pan, hover overlay. Uses placeholder checkered pattern until `Image` draw command is wired.
+4. **Fibonacci spiral viewer** (`examples/spiral-viewer/`) — dev tool that renders any app at 8 sizes simultaneously on a Fibonacci spiral for breakpoint testing. Takes target app as `argv[1]`.
+5. **`spawn_app` draw command + host** — new `DrawCommand::SpawnApp` in `src/app_protocol.rs`, `SpawnParent`/`SpawnLayout`/`SpawnLifecycle` enums, `AppSpawnable` manifest table in `src/app_registry.rs`, `pending_spawns` queue in `src/process_app.rs`. Host dispatcher (pane creation, cascade/orphan walk) deferred to `src/app.rs` — that file is in user's WIP set. Queue drains when user is ready.
+6. **SDK 0.3.0 (Python + Rust)** — breakpoints decorator (`@app.breakpoint(min_width, min_height)`), `BreakpointSet`/`pick_breakpoint` in Rust, `App::min_size` trait method, `load_manifest_layout()`, `spawn_app` helper on both `Emitter` and `RenderContext`.
+
+**Key merge conflict pattern:** both breakpoints and spawn_app agents modified `sdk/python/plexi_sdk.py`, `pyproject.toml`, `Cargo.toml`, and all 33 vendored `examples/*/plexi_sdk.py` copies. Resolution: keep 0.3.0 version throughout, combine code additions (they're in different class sections), then re-run `scripts/sync-sdk.py` to propagate. This pattern will repeat — sync-sdk.py is the canonical gate.
+
+**Pyright gotcha:** `Optional[list]` in function signatures triggers a pyright name-shadowing error when a class has a method also named `list` (as `RenderContext` does). Fixed with `Optional[List[str]]` using the typing import. Any new method accepting a list arg in that class must use the `List` form, not bare `list`.
+
 ## 2026-04-14 — [DECISION] SDK packaged for distribution + protocol spec stamped v1
 
 Two cohesive moves landed as five atomic commits on `alpha`:
