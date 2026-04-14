@@ -24,6 +24,9 @@ pub struct ProcessApp {
     type_id: String,
     display_name: String,
     accepted_exts: Vec<String>,
+    /// Directory the app was launched in — used as the scope root for secret
+    /// resolution (walk-up search from this directory to $HOME).
+    scope_root: PathBuf,
     process: Option<Child>,
     stdin: Option<ChildStdin>,
     /// Receives draw commands from the subprocess on a background thread.
@@ -246,6 +249,7 @@ impl ProcessApp {
             type_id,
             display_name,
             accepted_exts,
+            scope_root: cwd.clone(),
             process: Some(child),
             stdin: Some(stdin),
             draw_rx: Some(draw_rx),
@@ -844,7 +848,7 @@ impl ProcessApp {
 
                 // RunInTerminal / Cd / Log / State / CostReport / Notification /
                 // SetCursor / MouseTracking / SpawnApp / PipeWrite / PipeSubscribe /
-                // FrameDone handled at the App trait level, not here.
+                // SecretGet / FrameDone handled at the App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
@@ -856,6 +860,7 @@ impl ProcessApp {
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::PipeWrite { .. }
                 | DrawCommand::PipeSubscribe { .. }
+                | DrawCommand::SecretGet { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1292,6 +1297,18 @@ impl App for ProcessApp {
                 }
                 DrawCommand::PipeSubscribe { channel: _ } => {
                     // Phase 0 no-op: silently consume. Forward-compat only.
+                }
+                DrawCommand::SecretGet { name } => {
+                    // Resolve against the Keychain, walking up from the app's launch
+                    // directory. Missing secrets and any failure return None — the
+                    // SDK's get_secret() turns that into Python None / Rust Option::None.
+                    let dir_str = self.scope_root.display().to_string();
+                    let value = crate::secrets::resolve_secret(&name, &self.type_id, &dir_str)
+                        .map(|z| z.to_string());
+                    self.send_event(&PlexiEvent::SecretResponse {
+                        name: name.clone(),
+                        value,
+                    });
                 }
                 other => self.pending_frame.push(other),
             }

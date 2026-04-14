@@ -102,6 +102,13 @@ pub enum PlexiEvent {
         #[serde(default)]
         persistent: serde_json::Value,
     },
+    /// Response to a prior `DrawCommand::SecretGet` request. The SDK's
+    /// `get_secret` helper reads stdin until it sees this event with a
+    /// matching `name`, stashing any other events that arrive in the
+    /// meantime so the main loop processes them on its next pass.
+    ///
+    /// `value` is `None` if the secret is missing or resolution failed.
+    SecretResponse { name: String, value: Option<String> },
     /// App is being closed. Process should exit.
     Shutdown,
     /// A value arrived on a named pipe channel from another app.
@@ -395,6 +402,13 @@ pub enum DrawCommand {
     PipeSubscribe {
         channel: String,
     },
+    /// Request a secret by name. Plexi resolves against the Keychain, walking
+    /// up from the app's launch directory to home, and sends the result back
+    /// as a `PlexiEvent::SecretResponse` with the same `name`.
+    ///
+    /// Missing secrets and resolution failures both return `value: None` — the
+    /// SDK should not crash the app on a failed lookup.
+    SecretGet { name: String },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,
 }
