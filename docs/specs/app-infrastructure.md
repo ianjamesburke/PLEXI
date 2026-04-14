@@ -172,6 +172,56 @@ Declares this app's composition policy — who may spawn it as a child via `Draw
 | `default_layout` | layout object | `{ kind = "fill" }` | Layout applied if the caller omits `layout` on the spawn request. Same shape as the `layout` field on `spawn_app` (see below). |
 | `allow_lifecycle` | string array | `["cascade", "orphan", "prompt"]` | Lifecycles this app accepts. Values: `"cascade"`, `"orphan"`, `"prompt"`. If the caller asks for a lifecycle not listed here, the spawn is refused. |
 
+### `[app.layout]` fields (optional)
+
+Declares pane-size hints that the SDK reads at app startup. Unlike the
+other manifest tables, `[app.layout]` is consumed on the **app side** (via
+`load_manifest` in the Python SDK and `load_manifest_layout()` in the Rust
+SDK) rather than by `AppRegistry`. The host treats the table as opaque and
+passes it through to the spawned app.
+
+```toml
+[app.layout]
+min_width  = 400   # logical pixels, default 0 (no floor)
+min_height = 200   # logical pixels, default 0 (no floor)
+```
+
+| Field | Type | Default | Semantics |
+|---|---|---|---|
+| `min_width` | int / float | `0` | Minimum pane width in logical pixels. When the pane is narrower than this on the current frame, the SDK draws a built-in "too small" fallback (background rect + centered `min size: W x H` label + directional arrow + dim `current: w x h` subtitle) and skips the app's render handler entirely. |
+| `min_height` | int / float | `0` | Minimum pane height. Same semantics as `min_width` on the vertical axis. Either axis can be zero to mean "no floor on that axis". |
+
+When a pane is below the floor on one axis only, the fallback arrow points
+in that direction (`→` for width, `↓` for height). When below on both,
+the arrow is `↘`.
+
+Apps that need to compute their minimum size at runtime (for example, from
+font metrics) can set it programmatically instead of in the manifest — see
+[`sdk/python/README.md`](../../sdk/python/README.md) for `App.set_min_size`
+and [`sdk/rust/README.md`](../../sdk/rust/README.md) for the
+`App::min_size` trait method. Both SDK READMEs are the source of truth for
+the breakpoint-dispatcher and fallback-rendering behavior; the host does
+not currently do any structured parsing of this table.
+
+### Breakpoint dispatchers (SDK feature)
+
+Breakpoints are a declarative alternative to hand-rolling an
+`if width < 400` branch inside a single render handler. Both SDKs expose a
+way to register multiple render functions keyed on a `(min_width,
+min_height)` pair; on every render event the SDK picks the most specific
+match whose constraints fit the current pane (largest `min_width *
+min_height` product where both axes still fit).
+
+- **Python:** `@app.breakpoint(min_width=..., min_height=...)` stacks
+  handlers; `@app.breakpoint()` is the `(0, 0)` fallback. Mutually
+  exclusive with `@app.on_render`.
+- **Rust:** `BreakpointSet::new().breakpoint(w, h, |ctx| ...)` for the
+  stateless-closure form, or the `pick_breakpoint(width, height, &[...])`
+  free function when the render methods need `&mut self`.
+
+Both implementations live **on the SDK side** — the host does not know
+about breakpoints. See the SDK READMEs for full code examples.
+
 ---
 
 ## Protocol overview

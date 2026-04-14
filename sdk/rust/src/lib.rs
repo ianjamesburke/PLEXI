@@ -30,7 +30,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::{create_dir_all, read_to_string, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -927,6 +927,171 @@ impl RenderContext {
     }
 }
 
+// ── Breakpoints ───────────────────────────────────────────────────────────────
+
+/// A render function selected based on a minimum pane size.
+///
+/// Breakpoints are a declarative alternative to a hand-rolled
+/// `if width < 400 { render_compact() } else { render_full() }` branch
+/// inside `on_render`. Collect a set of them in a [`BreakpointSet`] and
+/// call [`BreakpointSet::dispatch`] from `on_render`, or use the free
+/// helper [`pick_breakpoint`] to pick the winning index against an array
+/// of `(min_width, min_height)` tuples and then branch to your own
+/// `&mut self` methods.
+///
+/// The render closure receives only a `&mut RenderContext`, so the
+/// stateless-closure form is best for pure-drawing helpers. Apps that
+/// need to touch `&mut self` should use [`pick_breakpoint`] instead and
+/// dispatch manually — see the README for an example.
+pub struct Breakpoint {
+    pub min_width: f32,
+    pub min_height: f32,
+    render: Box<dyn FnMut(&mut RenderContext)>,
+}
+
+impl Breakpoint {
+    /// Build a new breakpoint with a minimum pane size in logical pixels.
+    pub fn new<F>(min_width: f32, min_height: f32, render: F) -> Self
+    where
+        F: FnMut(&mut RenderContext) + 'static,
+    {
+        Self { min_width, min_height, render: Box::new(render) }
+    }
+
+    /// Convenience for a `(0, 0)` breakpoint that always matches. Use
+    /// this as the last entry in a [`BreakpointSet`] to guarantee
+    /// something always renders when no larger breakpoint fits.
+    pub fn default_fallback<F>(render: F) -> Self
+    where
+        F: FnMut(&mut RenderContext) + 'static,
+    {
+        Self::new(0.0, 0.0, render)
+    }
+}
+
+/// A stack of [`Breakpoint`]s that picks the most-specific match per frame.
+///
+/// On each call to [`dispatch`](Self::dispatch), the set walks its
+/// entries sorted by `min_width * min_height` descending and invokes the
+/// first one whose bounds fit the current pane. If none match, a
+/// `(0, 0)` fallback entry is invoked if present; otherwise nothing is
+/// drawn for that frame.
+pub struct BreakpointSet {
+    entries: Vec<Breakpoint>,
+}
+
+impl Default for BreakpointSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BreakpointSet {
+    pub fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    /// Add a breakpoint. Builder-style.
+    pub fn add(mut self, bp: Breakpoint) -> Self {
+        self.entries.push(bp);
+        self
+    }
+
+    /// Add a breakpoint via the tuple-of-mins + closure form. Builder-style.
+    pub fn breakpoint<F>(mut self, min_width: f32, min_height: f32, render: F) -> Self
+    where
+        F: FnMut(&mut RenderContext) + 'static,
+    {
+        self.entries.push(Breakpoint::new(min_width, min_height, render));
+        self
+    }
+
+    /// Add the `(0, 0)` fallback breakpoint. Builder-style.
+    pub fn fallback<F>(mut self, render: F) -> Self
+    where
+        F: FnMut(&mut RenderContext) + 'static,
+    {
+        self.entries.push(Breakpoint::default_fallback(render));
+        self
+    }
+
+    /// Pick and run the best-matching breakpoint for the given pane size.
+    /// Returns `true` if a breakpoint fired, `false` if none matched and
+    /// no `(0, 0)` fallback was registered.
+    pub fn dispatch(&mut self, ctx: &mut RenderContext) -> bool {
+        let (w, h) = (ctx.width, ctx.height);
+        let mut best: Option<usize> = None;
+        let mut best_area: f32 = -1.0;
+        for (i, bp) in self.entries.iter().enumerate() {
+            if w >= bp.min_width && h >= bp.min_height {
+                let area = bp.min_width * bp.min_height;
+                // Strict `>` so later equal-area entries don't override earlier ones.
+                if area > best_area {
+                    best_area = area;
+                    best = Some(i);
+                }
+            }
+        }
+        if let Some(i) = best {
+            (self.entries[i].render)(ctx);
+            return true;
+        }
+        // Fall back to an explicit (0, 0) entry if one exists.
+        for bp in self.entries.iter_mut() {
+            if bp.min_width == 0.0 && bp.min_height == 0.0 {
+                (bp.render)(ctx);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Pick the most specific breakpoint index from an array of
+/// `(min_width, min_height)` tuples for a given pane size.
+///
+/// Returns the index of the largest-area entry whose bounds fit the
+/// pane, or `None` if nothing matches (in which case the caller should
+/// fall back to whichever entry they treat as the floor — usually the
+/// last one).
+///
+/// This is the stateless form: it lets you dispatch to your own
+/// `&mut self` methods from inside `on_render` without the closures
+/// having to capture `self`.
+///
+/// ```ignore
+/// fn on_render(&mut self, ctx: &mut RenderContext) {
+///     const BPS: &[(f32, f32)] = &[(800.0, 500.0), (400.0, 0.0), (0.0, 0.0)];
+///     match pick_breakpoint(ctx.width, ctx.height, BPS).unwrap_or(BPS.len() - 1) {
+///         0 => self.render_full(ctx),
+///         1 => self.render_compact(ctx),
+///         _ => self.render_fallback(ctx),
+///     }
+/// }
+/// ```
+pub fn pick_breakpoint(width: f32, height: f32, breakpoints: &[(f32, f32)]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut best_area: f32 = -1.0;
+    for (i, (mw, mh)) in breakpoints.iter().enumerate() {
+        if width >= *mw && height >= *mh {
+            let area = mw * mh;
+            if area > best_area {
+                best_area = area;
+                best = Some(i);
+            }
+        }
+    }
+    best
+}
+
 // ── App trait ─────────────────────────────────────────────────────────────────
 
 /// Implement this trait to build a Plexi app. All methods have default
@@ -960,6 +1125,194 @@ pub trait App {
         _persistent: &Value,
     ) {
     }
+
+    /// Minimum pane size (logical pixels) below which the SDK auto-fallback
+    /// frame is rendered instead of calling [`on_render`].
+    ///
+    /// Defaults to `(0.0, 0.0)` (no floor). When either dimension is
+    /// non-zero, the SDK draws a built-in "pane too small" frame — a
+    /// background rect, centered `"min size: W x H"` label, directional
+    /// arrow indicating which axes need to grow, and a dim `"current: w x h"`
+    /// subtitle — bypassing `on_render` entirely.
+    ///
+    /// If this method returns `(0.0, 0.0)` and the app's `manifest.toml`
+    /// declares `[app.layout]`, the manifest values are used instead.
+    /// Return a non-zero tuple to override the manifest at runtime.
+    fn min_size(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+}
+
+// ── Manifest layout reader ────────────────────────────────────────────────────
+
+/// Read `min_width` / `min_height` from the app's `manifest.toml`
+/// `[app.layout]` table, if present.
+///
+/// Lookup order:
+///  1. `$PLEXI_APPS_DIR/$PLEXI_APP_ID/manifest.toml` (set by the host)
+///  2. A `manifest.toml` sitting next to the running executable
+///  3. `./manifest.toml` (cwd)
+///
+/// Returns `(0.0, 0.0)` if no manifest is found or the table is absent.
+/// Parsing is best-effort and hand-rolled (no extra deps) — only a flat
+/// `[app.layout]` table with scalar `min_width` / `min_height` is
+/// recognized.
+pub fn load_manifest_layout() -> (f32, f32) {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let (Ok(dir), Ok(id)) = (env::var("PLEXI_APPS_DIR"), env::var("PLEXI_APP_ID")) {
+        candidates.push(PathBuf::from(dir).join(id).join("manifest.toml"));
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("manifest.toml"));
+        }
+    }
+    candidates.push(PathBuf::from("manifest.toml"));
+
+    for path in candidates {
+        if let Ok(text) = read_to_string(&path) {
+            if let Some(layout) = parse_app_layout_table(&text) {
+                return layout;
+            }
+        }
+    }
+    (0.0, 0.0)
+}
+
+/// Minimal TOML scanner for the `[app.layout]` table. Recognizes
+/// `min_width` and `min_height` as scalar numbers (int or float). All
+/// other lines and tables are ignored. Returns `None` if the table is
+/// not present.
+fn parse_app_layout_table(text: &str) -> Option<(f32, f32)> {
+    let mut in_layout = false;
+    let mut found = false;
+    let mut mw: f32 = 0.0;
+    let mut mh: f32 = 0.0;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let name = line[1..line.len() - 1].trim();
+            in_layout = name == "app.layout";
+            if in_layout {
+                found = true;
+            }
+            continue;
+        }
+        if !in_layout {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let key = k.trim();
+            // Strip inline comments and quotes; keep only the numeric prefix.
+            let mut val = v.trim().to_string();
+            if let Some(idx) = val.find('#') {
+                val.truncate(idx);
+            }
+            let val = val.trim().trim_matches('"').trim();
+            if let Ok(n) = val.parse::<f32>() {
+                match key {
+                    "min_width" => mw = n,
+                    "min_height" => mh = n,
+                    _ => {}
+                }
+            }
+        }
+    }
+    if found { Some((mw, mh)) } else { None }
+}
+
+/// Emit a built-in "pane too small" fallback frame directly to stdout.
+/// Skips [`App::on_render`] entirely so user code never sees an
+/// undersized pane.
+fn render_min_size_fallback(width: f32, height: f32, min_w: f32, min_h: f32) {
+    let bg = "#0a0a0a";
+    let fg = "#888888";
+    let accent = "#ffffff";
+
+    let needs_w = width < min_w;
+    let needs_h = height < min_h;
+    let arrow = if needs_w && needs_h {
+        "\u{2198}" // ↘
+    } else if needs_w {
+        "\u{2192}" // →
+    } else if needs_h {
+        "\u{2193}" // ↓
+    } else {
+        ""
+    };
+
+    let label = format!("min size: {} x {}", min_w as i32, min_h as i32);
+    let current = format!("current: {} x {}", width as i32, height as i32);
+
+    // Rough centering — no text metrics available in the SDK, so estimate
+    // a per-glyph advance of 0.55 * font_size.
+    let label_size: f32 = 14.0;
+    let current_size: f32 = 11.0;
+    let arrow_size: f32 = 32.0;
+    let label_w = label.chars().count() as f32 * label_size * 0.55;
+    let current_w = current.chars().count() as f32 * current_size * 0.55;
+    let arrow_w = arrow.chars().count() as f32 * arrow_size * 0.55;
+
+    let cx = width / 2.0;
+    let cy = height / 2.0;
+    let label_x = (cx - label_w / 2.0).max(0.0);
+    let current_x = (cx - current_w / 2.0).max(0.0);
+    let arrow_x = (cx - arrow_w / 2.0).max(0.0);
+    let label_y = (cy - 30.0).max(0.0);
+    let arrow_y = cy;
+    let current_y = cy + 40.0;
+
+    let mut cmds: Vec<DrawCommand> = Vec::with_capacity(5);
+    cmds.push(DrawCommand::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: width,
+        h: height,
+        fill: bg.to_string(),
+        radius: 0.0,
+    });
+    cmds.push(DrawCommand::Text {
+        x: label_x,
+        y: label_y,
+        text: label,
+        size: label_size,
+        color: fg.to_string(),
+        monospace: false,
+        bold: true,
+    });
+    if !arrow.is_empty() {
+        cmds.push(DrawCommand::Text {
+            x: arrow_x,
+            y: arrow_y,
+            text: arrow.to_string(),
+            size: arrow_size,
+            color: accent.to_string(),
+            monospace: false,
+            bold: false,
+        });
+    }
+    cmds.push(DrawCommand::Text {
+        x: current_x,
+        y: current_y,
+        text: current,
+        size: current_size,
+        color: fg.to_string(),
+        monospace: false,
+        bold: false,
+    });
+    cmds.push(DrawCommand::FrameDone);
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    for cmd in &cmds {
+        if let Ok(s) = serde_json::to_string(cmd) {
+            let _ = writeln!(out, "{}", s);
+        }
+    }
+    let _ = out.flush();
 }
 
 // ── Event loop ────────────────────────────────────────────────────────────────
@@ -969,6 +1322,16 @@ pub fn run(app: &mut dyn App) {
     let stdin = io::stdin();
     let mut emitter = Emitter::new();
     let app_id = emitter.app_id().to_string();
+
+    // Resolve effective min-size: programmatic override wins over manifest.
+    let (min_w, min_h) = {
+        let (tw, th) = app.min_size();
+        if tw > 0.0 || th > 0.0 {
+            (tw, th)
+        } else {
+            load_manifest_layout()
+        }
+    };
 
     for line in stdin.lock().lines() {
         let line = match line {
@@ -991,6 +1354,13 @@ pub fn run(app: &mut dyn App) {
                 app.on_resize(width, height);
             }
             PlexiEvent::Render { width, height, delta_time } => {
+                // Auto min-size fallback: if the pane is smaller than the
+                // declared floor on either axis, draw the built-in "too
+                // small" frame and skip user rendering entirely.
+                if (min_w > 0.0 || min_h > 0.0) && (width < min_w || height < min_h) {
+                    render_min_size_fallback(width, height, min_w, min_h);
+                    continue;
+                }
                 let mut ctx = RenderContext::new(width, height, delta_time, app_id.clone());
                 app.on_render(&mut ctx);
                 ctx.flush();
@@ -1306,5 +1676,117 @@ mod tests {
         assert_eq!(v["type"], "log");
         assert_eq!(v["level"], "warn");
         assert_eq!(v["message"], "uh oh");
+    }
+
+    // ── Breakpoint dispatcher ────────────────────────────────────────────
+
+    fn make_ctx(width: f32, height: f32) -> RenderContext {
+        RenderContext::new(width, height, 0.0, String::new())
+    }
+
+    #[test]
+    fn pick_breakpoint_picks_largest_match() {
+        let bps: &[(f32, f32)] = &[(800.0, 500.0), (400.0, 0.0), (0.0, 0.0)];
+        assert_eq!(pick_breakpoint(1200.0, 800.0, bps), Some(0));
+        assert_eq!(pick_breakpoint(600.0, 600.0, bps), Some(1));
+        assert_eq!(pick_breakpoint(200.0, 200.0, bps), Some(2));
+    }
+
+    #[test]
+    fn pick_breakpoint_returns_none_when_nothing_fits() {
+        let bps: &[(f32, f32)] = &[(1000.0, 1000.0), (800.0, 600.0)];
+        assert_eq!(pick_breakpoint(400.0, 300.0, bps), None);
+    }
+
+    #[test]
+    fn breakpoint_set_dispatch_picks_largest_match() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let fired: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let tag = |s: &'static str| {
+            let fired = Rc::clone(&fired);
+            move |_ctx: &mut RenderContext| fired.borrow_mut().push(s)
+        };
+
+        let mut set = BreakpointSet::new()
+            .breakpoint(800.0, 500.0, tag("full"))
+            .breakpoint(400.0, 0.0, tag("compact"))
+            .fallback(tag("fallback"));
+
+        let mut ctx = make_ctx(1200.0, 800.0);
+        assert!(set.dispatch(&mut ctx));
+        assert_eq!(&*fired.borrow(), &["full"]);
+        fired.borrow_mut().clear();
+
+        let mut ctx = make_ctx(600.0, 600.0);
+        assert!(set.dispatch(&mut ctx));
+        assert_eq!(&*fired.borrow(), &["compact"]);
+        fired.borrow_mut().clear();
+
+        let mut ctx = make_ctx(200.0, 200.0);
+        assert!(set.dispatch(&mut ctx));
+        assert_eq!(&*fired.borrow(), &["fallback"]);
+    }
+
+    #[test]
+    fn breakpoint_set_uses_zero_fallback_when_no_match() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let fired: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+        let fired_clone = Rc::clone(&fired);
+
+        let mut set = BreakpointSet::new()
+            .breakpoint(1000.0, 800.0, |_| {})
+            .fallback(move |_| *fired_clone.borrow_mut() = true);
+
+        let mut ctx = make_ctx(500.0, 400.0);
+        assert!(set.dispatch(&mut ctx));
+        assert!(*fired.borrow());
+    }
+
+    #[test]
+    fn breakpoint_set_returns_false_when_nothing_fits_and_no_fallback() {
+        let mut set = BreakpointSet::new().breakpoint(1000.0, 800.0, |_| {});
+        let mut ctx = make_ctx(500.0, 400.0);
+        assert!(!set.dispatch(&mut ctx));
+    }
+
+    // ── Manifest layout parser ───────────────────────────────────────────
+
+    #[test]
+    fn parses_app_layout_table() {
+        let toml = r#"
+[app]
+id = "demo"
+
+[app.layout]
+min_width = 400
+min_height = 200
+"#;
+        assert_eq!(parse_app_layout_table(toml), Some((400.0, 200.0)));
+    }
+
+    #[test]
+    fn parses_app_layout_with_comments_and_floats() {
+        let toml = r#"
+[app.layout]
+min_width  = 640.5  # wider than the sidebar
+min_height = 360    # golden ratio of something
+"#;
+        assert_eq!(parse_app_layout_table(toml), Some((640.5, 360.0)));
+    }
+
+    #[test]
+    fn parse_app_layout_returns_none_when_absent() {
+        let toml = r#"
+[app]
+id = "demo"
+
+[app.capabilities]
+network = false
+"#;
+        assert_eq!(parse_app_layout_table(toml), None);
     }
 }

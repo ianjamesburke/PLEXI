@@ -84,6 +84,95 @@ Install it into your local Plexi apps directory (`~/.plexi-alpha/apps/hello-app/
 
 See the [app protocol spec](../../docs/specs/app-infrastructure.md) for the full message reference.
 
+## Breakpoints and minimum size
+
+Most Plexi apps need to handle pane resizing gracefully. The SDK provides two
+first-class primitives for this: **breakpoints** (pick a render function by
+pane size) and **auto min-size fallback** (draw a built-in "too small" frame
+when the pane is below a declared floor).
+
+### Declaring a minimum size
+
+Add an `[app.layout]` table to your `manifest.toml`:
+
+```toml
+[app]
+id    = "my-app"
+name  = "My App"
+entry = "my_app.py"
+
+[app.layout]
+min_width  = 400   # logical pixels, default 0 (no floor)
+min_height = 200   # logical pixels, default 0 (no floor)
+```
+
+When either dimension is non-zero and the pane is smaller than the declared
+floor on that axis, the SDK draws a built-in "pane too small" frame and
+bypasses your `on_render` handler entirely. The frame includes:
+
+- A dark background rect
+- A centered `min size: 400 x 200` label
+- A directional arrow (`→`, `↓`, or `↘`) pointing at the axes that need to
+  grow
+- A dim `current: w x h` subtitle
+
+No manual code required — the SDK owns the fallback.
+
+You can also set the floor programmatically at app startup:
+
+```python
+app = App(app_id="my-app")
+app.set_min_size(400, 200)
+```
+
+Opt out of the auto-fallback with `App(auto_min_size=False)` if you want to
+handle the small-pane case yourself. Override the palette with
+`app.set_min_size_colors(bg=..., fg=..., accent=...)`.
+
+### Breakpoint dispatchers
+
+Instead of hand-rolling an `if width < 400` branch inside a single
+`on_render`, stack multiple `@app.breakpoint(...)` handlers:
+
+```python
+from plexi_sdk import App
+
+app = App(app_id="dashboard")
+app.set_min_size(320, 180)  # anything smaller gets the SDK fallback
+
+
+@app.breakpoint(min_width=800, min_height=500)
+def render_full(ctx):
+    # Full sidebar + main + status bar
+    ctx.rect(0, 0, ctx.width, ctx.height, fill="#1e1e2e")
+    ctx.text(20, 20, "Dashboard (full)", size=18, color="#cdd6f4", bold=True)
+
+
+@app.breakpoint(min_width=400)
+def render_compact(ctx):
+    # Narrow single-column view
+    ctx.rect(0, 0, ctx.width, ctx.height, fill="#1e1e2e")
+    ctx.text(20, 20, "Dashboard (compact)", size=14, color="#cdd6f4")
+
+
+@app.breakpoint()  # fallback — (0, 0) always matches
+def render_minimal(ctx):
+    ctx.rect(0, 0, ctx.width, ctx.height, fill="#1e1e2e")
+    ctx.text(10, 10, "·", size=12, color="#6c7086")
+
+
+if __name__ == "__main__":
+    app.run()
+```
+
+On each render event the SDK walks the registered breakpoints sorted by
+`min_width × min_height` descending and calls the first one whose constraints
+fit the current pane (`width >= min_width AND height >= min_height`). If none
+match, the no-argument `@app.breakpoint()` fallback is used.
+
+`@app.breakpoint(...)` and `@app.on_render` are **mutually exclusive** —
+registering both raises a `RuntimeError` at `app.run()` startup.
+
 ## `plexi_sdk_advanced`
 
 Higher-level helpers for canvas/game/interactive apps: pan-zoom `Canvas`, `HitTester`, `FrameTimer`, `Tween`, easing functions. Zero extra dependencies.

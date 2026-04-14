@@ -60,7 +60,7 @@ import pathlib
 import sys
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 
 class Emitter:
@@ -622,7 +622,7 @@ class App:
         @app.on_scroll        fn(x: float, y: float, delta_x: float, delta_y: float, emit: Emitter)
     """
 
-    def __init__(self, app_id: str = ""):
+    def __init__(self, app_id: str = "", auto_min_size: bool = True):
         self.width: float = 800.0
         self.height: float = 600.0
         self.delta_time: float = 0.0
@@ -639,10 +639,219 @@ class App:
         self._on_mouse_move: Optional[Callable] = None
         self._on_scroll: Optional[Callable] = None
         self._emitter = Emitter(app_id=app_id)
+        # Breakpoints: list of (min_width, min_height, render_fn).
+        # Walked in descending area order on each render to pick the
+        # most specific match whose constraints fit the current pane.
+        self._breakpoints: List[Tuple[float, float, Callable]] = []
+        # Minimum pane size before the SDK draws its built-in
+        # "too small" fallback frame (bypassing the user render fn).
+        # Values of 0 mean "no floor on this axis".
+        self._min_width: float = 0.0
+        self._min_height: float = 0.0
+        self._auto_min_size: bool = auto_min_size
+        # Palette used by the auto min-size fallback. Apps can override
+        # per-instance via `set_min_size_colors` if they care.
+        self._min_size_bg: str = "#0a0a0a"
+        self._min_size_fg: str = "#888888"
+        self._min_size_accent: str = "#ffffff"
 
     def on_render(self, fn: Callable) -> Callable:
         self._on_render = fn
         return fn
+
+    def breakpoint(
+        self, min_width: float = 0.0, min_height: float = 0.0
+    ) -> Callable:
+        """
+        Register a render function for a specific minimum pane size.
+
+        Apps can stack multiple `@app.breakpoint(...)` handlers; on each
+        render event the SDK picks the most specific breakpoint whose
+        constraints fit the current pane (largest min_width * min_height
+        area that still satisfies `width >= min_width AND height >= min_height`).
+        If none match, a breakpoint registered with no constraints (the
+        default 0x0 fallback) is called.
+
+        Example:
+
+            @app.breakpoint(min_width=800, min_height=500)
+            def render_full(ctx):
+                ...
+
+            @app.breakpoint(min_width=400)
+            def render_compact(ctx):
+                ...
+
+            @app.breakpoint()  # fallback — always matches
+            def render_fallback(ctx):
+                ...
+
+        Mutually exclusive with `@app.on_render`. Registering both raises
+        a RuntimeError at app startup.
+        """
+        def decorator(fn: Callable) -> Callable:
+            self._breakpoints.append((float(min_width), float(min_height), fn))
+            return fn
+        return decorator
+
+    def set_min_size(self, min_width: float, min_height: float) -> None:
+        """
+        Set the minimum pane size programmatically.
+
+        When the pane is smaller than this on either axis and `auto_min_size`
+        is enabled, the SDK draws a built-in "too small" fallback frame
+        (background + label + directional arrow + current size) instead of
+        calling any user render function.
+
+        Useful for apps that compute their min size at runtime (e.g. based
+        on font metrics) rather than declaring it in manifest.toml.
+        """
+        self._min_width = float(min_width)
+        self._min_height = float(min_height)
+
+    def set_min_size_colors(
+        self,
+        bg: Optional[str] = None,
+        fg: Optional[str] = None,
+        accent: Optional[str] = None,
+    ) -> None:
+        """
+        Override the palette used by the auto min-size fallback frame.
+
+        The SDK has no access to live host theme tokens, so defaults are
+        hardcoded (`#0a0a0a` background, `#888888` label, `#ffffff` arrow).
+        Apps that care about matching a custom theme can override any
+        subset of these.
+        """
+        if bg is not None:
+            self._min_size_bg = bg
+        if fg is not None:
+            self._min_size_fg = fg
+        if accent is not None:
+            self._min_size_accent = accent
+
+    def _load_manifest_layout(self) -> None:
+        """
+        Read `[app.layout]` from manifest.toml (if present) and populate
+        `_min_width` / `_min_height` unless already set programmatically.
+        Best-effort — missing or unparseable manifests are silently ignored.
+        """
+        if self._min_width or self._min_height:
+            return  # explicit set_min_size wins over manifest
+        try:
+            # Walk up from the caller's file to find manifest.toml.
+            main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+            if not main_file:
+                return
+            manifest = load_manifest(main_file)
+            layout = manifest.get("app", {}).get("layout", {})
+            if isinstance(layout, dict):
+                mw = layout.get("min_width", 0)
+                mh = layout.get("min_height", 0)
+                try:
+                    self._min_width = float(mw)
+                    self._min_height = float(mh)
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            # Never let manifest errors kill the app — log-only fallback.
+            pass
+
+    def _render_min_size_fallback(self, width: float, height: float) -> None:
+        """
+        Emit the built-in "pane too small" frame directly as JSON draw
+        commands. Does NOT go through RenderContext (the user render fn
+        is never called in this code path).
+
+        Draws: background rect, centered "min size: W x H" label,
+        directional arrow(s) pointing toward the axes that need to grow,
+        and a dim "current: w x h" subtitle.
+        """
+        bg = self._min_size_bg
+        fg = self._min_size_fg
+        accent = self._min_size_accent
+        min_w = self._min_width
+        min_h = self._min_height
+
+        needs_width = width < min_w
+        needs_height = height < min_h
+
+        if needs_width and needs_height:
+            arrow = "\u2198"  # ↘
+        elif needs_width:
+            arrow = "\u2192"  # →
+        elif needs_height:
+            arrow = "\u2193"  # ↓
+        else:
+            arrow = ""
+
+        label = f"min size: {int(min_w)} x {int(min_h)}"
+        current = f"current: {int(width)} x {int(height)}"
+
+        # Rough centering — we don't have text metrics, so estimate with
+        # a fixed per-char width of 0.55 * font_size. Good enough for a
+        # fallback that only shows when the pane is too small anyway.
+        label_size = 14.0
+        current_size = 11.0
+        arrow_size = 32.0
+        label_w = len(label) * label_size * 0.55
+        current_w = len(current) * current_size * 0.55
+        arrow_w = len(arrow) * arrow_size * 0.55
+
+        cx = width / 2.0
+        cy = height / 2.0
+        label_x = max(0.0, cx - label_w / 2.0)
+        current_x = max(0.0, cx - current_w / 2.0)
+        arrow_x = max(0.0, cx - arrow_w / 2.0)
+
+        label_y = max(0.0, cy - 30.0)
+        arrow_y = cy
+        current_y = cy + 40.0
+
+        cmds = [
+            {"type": "rect", "x": 0.0, "y": 0.0, "w": width, "h": height,
+             "fill": bg, "radius": 0.0},
+            {"type": "text", "x": label_x, "y": label_y, "text": label,
+             "size": label_size, "color": fg,
+             "monospace": False, "bold": True},
+        ]
+        if arrow:
+            cmds.append({
+                "type": "text", "x": arrow_x, "y": arrow_y, "text": arrow,
+                "size": arrow_size, "color": accent,
+                "monospace": False, "bold": False,
+            })
+        cmds.append({
+            "type": "text", "x": current_x, "y": current_y, "text": current,
+            "size": current_size, "color": fg,
+            "monospace": False, "bold": False,
+        })
+        cmds.append({"type": "frame_done"})
+        for cmd in cmds:
+            print(json.dumps(cmd), flush=True)
+
+    def _pick_breakpoint(self, width: float, height: float) -> Optional[Callable]:
+        """
+        Walk breakpoints sorted by (min_width * min_height) descending and
+        return the first one whose `width >= min_width AND height >= min_height`.
+        Falls back to a zero-constraint breakpoint if present. Returns None
+        if no breakpoints are registered at all.
+        """
+        if not self._breakpoints:
+            return None
+        ordered = sorted(
+            self._breakpoints,
+            key=lambda b: (b[0] * b[1], b[0], b[1]),
+            reverse=True,
+        )
+        for min_w, min_h, fn in ordered:
+            if width >= min_w and height >= min_h:
+                return fn
+        # No match — look for a 0x0 fallback explicitly.
+        for min_w, min_h, fn in self._breakpoints:
+            if min_w == 0.0 and min_h == 0.0:
+                return fn
+        return None
 
     def on_key(self, fn: Callable) -> Callable:
         self._on_key = fn
@@ -750,6 +959,16 @@ class App:
         """Start the event loop. Blocks until Plexi sends Shutdown."""
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
+        # Validate mutually exclusive render registration.
+        if self._on_render is not None and self._breakpoints:
+            raise RuntimeError(
+                "plexi_sdk: @app.on_render and @app.breakpoint(...) are "
+                "mutually exclusive — use one or the other, not both."
+            )
+
+        # Pull min-size from the manifest (if set_min_size was not called).
+        self._load_manifest_layout()
+
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -772,9 +991,27 @@ class App:
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
                 self.delta_time = event.get("delta_time", 0.0)
+                # Auto min-size fallback: if the pane is smaller than
+                # our declared floor on either axis, draw the built-in
+                # "too small" frame and skip user rendering entirely.
+                if (
+                    self._auto_min_size
+                    and (self._min_width > 0 or self._min_height > 0)
+                    and (
+                        self.width < self._min_width
+                        or self.height < self._min_height
+                    )
+                ):
+                    self._render_min_size_fallback(self.width, self.height)
+                    continue
                 ctx = RenderContext(self.width, self.height, app_id=self._emitter._app_id)
                 ctx.delta_time = self.delta_time
-                if self._on_render:
+                # Breakpoint dispatch (if registered) overrides on_render.
+                if self._breakpoints:
+                    fn = self._pick_breakpoint(self.width, self.height)
+                    if fn is not None:
+                        fn(ctx)
+                elif self._on_render:
                     self._on_render(ctx)
                 ctx._flush()
 

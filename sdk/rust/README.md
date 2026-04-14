@@ -16,18 +16,31 @@ plexi-sdk = "0.3"
 
 ### 0.3.0
 
-App composition primitive: `DrawCommand::SpawnApp` and matching `Emitter` /
+Two parallel additions in one release:
+
+**App composition primitive** — `DrawCommand::SpawnApp` and matching `Emitter` /
 `RenderContext` helpers. One app can now ask Plexi to launch another app
 and place it in a layout slot relative to itself, with lifecycle bonding
 (`cascade` / `orphan` / `prompt`) and optional pre-wired typed-pipe
-channels. See `docs/specs/app-infrastructure.md#app-spawning` in the repo
-for the full contract.
+channels. See `docs/specs/app-infrastructure.md#app-spawning` for the full contract.
 
 - New outbound `DrawCommand::SpawnApp` variant and mirror types
   `SpawnParent`, `SpawnLayout`, `SpawnLifecycle`.
 - New `Emitter::spawn_app` + `RenderContext::spawn_app` helpers.
-- `PlexiEvent` and manifest surface unchanged; the new command is purely
-  additive.
+
+**Breakpoint dispatcher + min-size primitive** — declare `[app.layout]` with
+`min_width` / `min_height` in your manifest. When the pane is smaller than
+the floor, the SDK draws a built-in "too small" frame (background + label +
+directional arrow + current size) and skips `on_render`. Apps with multiple
+size strategies can use the new `BreakpointSet` builder to pick a render
+path by pane size.
+
+- New `BreakpointSet` builder + `pick_breakpoint` free function.
+- New `App::min_size` trait method.
+- New `load_manifest_layout()` helper that reads `[app.layout]` without
+  pulling in a TOML dep (hand-rolled mini-parser).
+- `PlexiEvent` and the existing manifest surface are unchanged; both
+  additions are purely additive.
 
 ### 0.2.0
 
@@ -91,6 +104,109 @@ fn main() {
     run(&mut Counter { count: 0 });
 }
 ```
+
+## Breakpoints and minimum size
+
+The SDK provides two first-class primitives for handling pane resizing:
+**breakpoints** (pick a render function by pane size) and **auto min-size
+fallback** (draw a built-in "too small" frame when the pane is below a
+declared floor).
+
+### Declaring a minimum size
+
+Add an `[app.layout]` table to your `manifest.toml`:
+
+```toml
+[app]
+id    = "my-app"
+name  = "My App"
+entry = "my-app"
+
+[app.layout]
+min_width  = 400   # logical pixels, default 0 (no floor)
+min_height = 200   # logical pixels, default 0 (no floor)
+```
+
+When the pane is smaller than the declared floor on either axis, the SDK
+draws a built-in frame (dark background + centered `min size: 400 x 200`
+label + directional arrow + dim `current: w x h` subtitle) and bypasses
+`on_render` entirely.
+
+You can also override the floor programmatically from the trait:
+
+```rust
+impl App for MyApp {
+    fn min_size(&self) -> (f32, f32) { (400.0, 200.0) }
+    // ...
+}
+```
+
+A non-zero `min_size()` return wins over the manifest; `(0.0, 0.0)` (the
+default) defers to the manifest.
+
+### Breakpoint dispatchers
+
+Two patterns are supported. Pick whichever suits your app's state model.
+
+**Stateless closures via `BreakpointSet`** (simple drawing-only branches):
+
+```rust
+use plexi_sdk::{BreakpointSet, RenderContext};
+
+let mut breakpoints = BreakpointSet::new()
+    .breakpoint(800.0, 500.0, |ctx: &mut RenderContext| {
+        ctx.rect(0.0, 0.0, ctx.width, ctx.height, "#1e1e2e");
+        ctx.text_bold(20.0, 20.0, "Dashboard (full)", 18.0, "#cdd6f4");
+    })
+    .breakpoint(400.0, 0.0, |ctx: &mut RenderContext| {
+        ctx.rect(0.0, 0.0, ctx.width, ctx.height, "#1e1e2e");
+        ctx.text(20.0, 20.0, "Dashboard (compact)", 14.0, "#cdd6f4");
+    })
+    .fallback(|ctx: &mut RenderContext| {
+        ctx.rect(0.0, 0.0, ctx.width, ctx.height, "#1e1e2e");
+        ctx.text(10.0, 10.0, "·", 12.0, "#6c7086");
+    });
+
+// Inside on_render:
+breakpoints.dispatch(ctx);
+```
+
+`BreakpointSet::dispatch` walks entries sorted by `min_width * min_height`
+descending and fires the first one whose bounds fit the pane. If none match,
+a `(0, 0)` fallback entry is used if present; otherwise `dispatch` returns
+`false`.
+
+**Stateful dispatch via `pick_breakpoint`** (when breakpoints need `&mut
+self`):
+
+```rust
+use plexi_sdk::{pick_breakpoint, App, RenderContext};
+
+struct Dashboard { /* ... */ }
+
+impl Dashboard {
+    fn render_full(&mut self, ctx: &mut RenderContext) { /* ... */ }
+    fn render_compact(&mut self, ctx: &mut RenderContext) { /* ... */ }
+    fn render_minimal(&mut self, ctx: &mut RenderContext) { /* ... */ }
+}
+
+impl App for Dashboard {
+    fn on_render(&mut self, ctx: &mut RenderContext) {
+        const BPS: &[(f32, f32)] = &[(800.0, 500.0), (400.0, 0.0), (0.0, 0.0)];
+        match pick_breakpoint(ctx.width, ctx.height, BPS).unwrap_or(BPS.len() - 1) {
+            0 => self.render_full(ctx),
+            1 => self.render_compact(ctx),
+            _ => self.render_minimal(ctx),
+        }
+    }
+
+    fn min_size(&self) -> (f32, f32) { (320.0, 180.0) }
+}
+```
+
+`pick_breakpoint` takes raw scalars and returns the winning index, so the
+caller dispatches to their own `&mut self` methods without borrow-check
+friction.
 
 ## Core concepts
 
