@@ -34,11 +34,16 @@ from plexi_sdk import App, Emitter, RenderContext  # noqa: E402
 # ---------------------------------------------------------------------------
 
 _HAS_PYGMENTS = False
+lex = None  # type: ignore[assignment]
+get_lexer_by_name = None  # type: ignore[assignment]
+guess_lexer_for_filename = None  # type: ignore[assignment]
+Token = None  # type: ignore[assignment]
+ClassNotFound = Exception  # type: ignore[assignment,misc]
 try:
-    from pygments import lex
-    from pygments.lexers import get_lexer_by_name, guess_lexer_for_filename
-    from pygments.token import Token
-    from pygments.util import ClassNotFound
+    from pygments import lex  # type: ignore[no-redef]
+    from pygments.lexers import get_lexer_by_name, guess_lexer_for_filename  # type: ignore[no-redef]
+    from pygments.token import Token  # type: ignore[no-redef]
+    from pygments.util import ClassNotFound  # type: ignore[no-redef]
 
     _HAS_PYGMENTS = True
 except Exception:
@@ -642,6 +647,7 @@ def highlight_line(line: str, lang: str) -> list[tuple[str, str]]:
         return [(line, C["text"])]
     if len(state.content) > MAX_HIGHLIGHT_BYTES:
         return [(line, C["text"])]
+    assert get_lexer_by_name is not None and guess_lexer_for_filename is not None and lex is not None
     try:
         try:
             lexer = get_lexer_by_name(lang)
@@ -651,7 +657,7 @@ def highlight_line(line: str, lang: str) -> list[tuple[str, str]]:
             except ClassNotFound:
                 return [(line, C["text"])]
         spans: list[tuple[str, str]] = []
-        for tok, text in lex(line, lexer):
+        for tok, text in lex(line, lexer):  # type: ignore[arg-type]
             if not text:
                 continue
             color = _pygments_color(tok)

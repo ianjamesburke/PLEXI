@@ -146,12 +146,12 @@ class Emitter:
     def spawn_app(
         self,
         app_id: str,
-        args: Optional[list] = None,
+        args: Optional[List[str]] = None,
         parent: str = "self",
         layout: Optional[dict] = None,
         lifecycle: str = "cascade",
         linked: bool = True,
-        wire_channels: Optional[list] = None,
+        wire_channels: Optional[List[str]] = None,
     ):
         """
         Ask Plexi to spawn another app and place it in a layout slot relative to this one.
@@ -462,8 +462,8 @@ class RenderContext:
 
     def file_grid(self, x: float, y: float, w: float, h: float,
                   path: Optional[str] = None,
-                  filter: Optional[list] = None,
-                  paths: Optional[list] = None,
+                  filter: Optional[List[str]] = None,
+                  paths: Optional[List[str]] = None,
                   item_size: float = 96.0,
                   columns: Optional[int] = None,
                   show_labels: bool = True):
@@ -570,12 +570,12 @@ class RenderContext:
     def spawn_app(
         self,
         app_id: str,
-        args: Optional[list] = None,
+        args: Optional[List[str]] = None,
         parent: str = "self",
         layout: Optional[dict] = None,
         lifecycle: str = "cascade",
         linked: bool = True,
-        wire_channels: Optional[list] = None,
+        wire_channels: Optional[List[str]] = None,
     ):
         """
         Ask Plexi to spawn another app at end of this frame.
