@@ -1,0 +1,22 @@
+[app]
+id          = "text-editor"
+name        = "Text Editor"
+entry       = "text_editor.py"
+version     = "0.1.0"
+description = "A composable Python text editor with find/replace, syntax highlighting, undo/redo, and autosave."
+authors     = ["Ian Burke"]
+
+# NOTE: [app.launch] and [app.spawnable] tables will be added by the spawn_app
+# protocol PR. Intentionally omitted here so this manifest stays compatible
+# with plexi-sdk 0.2.0.
+
+[app.capabilities]
+file_types     = ["txt", "md", "py", "rs", "js", "ts", "json", "toml", "yaml", "html", "css", "sh"]
+filesystem     = "read_write"
+network        = false
+terminal_write = false
+mouse_tracking = true
+
+[app.layout]
+min_width  = 320
+min_height = 200
