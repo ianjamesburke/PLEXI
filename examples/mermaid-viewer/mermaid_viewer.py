@@ -30,11 +30,11 @@ import math
 import os
 import sys
 import time
-from typing import List, Optional
+from typing import List
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from plexi_sdk import App  # noqa: E402
-from mermaid_parser import MermaidGraph, parse, serialize  # noqa: E402
+from mermaid_parser import parse, serialize  # noqa: E402
 from graph_layout import NodeLayout, layout as compute_layout  # noqa: E402
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ def _world_to_screen(x: float, y: float) -> tuple:
     return (x * zoom + sx, y * zoom + sy + HEADER_H)
 
 
-def _screen_to_world(sx: float, sy: float) -> tuple:
+def _screen_to_world(sx: float, sy: float) -> tuple:  # noqa: F841
     """Convert screen coords to world coords."""
     zoom = state["zoom"]
     ox = state["scroll_x"]
@@ -691,13 +691,13 @@ def on_key(key: str, mods: dict, emit) -> None:
 
 
 @app.on_scroll
-def on_scroll(x: float, y: float, delta_x: float, delta_y: float, emit) -> None:
+def on_scroll(_x: float, _y: float, delta_x: float, delta_y: float, _emit) -> None:
     state["scroll_x"] += delta_x * 2.0
     state["scroll_y"] += delta_y * 2.0
 
 
 @app.on_command
-def on_command(text: str, emit) -> None:
+def on_command(text: str, _emit) -> None:
     """Handle command palette entries (e.g. file paths from file browser)."""
     text = text.strip()
     if text.endswith(".mmd") and os.path.isfile(text):

@@ -8,7 +8,7 @@ edge types (solid/dashed), edge labels, comments, and subgraph headers (ignored)
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
 
