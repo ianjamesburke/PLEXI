@@ -52,6 +52,21 @@ pub trait App: Send {
         vec![]
     }
 
+    /// Drain any `spawn_app` requests the app has queued since the last call.
+    ///
+    /// This is a separate channel from `take_pending_commands` so the existing
+    /// `AppCommand` enum stays source-compatible with callers that only know
+    /// about RunInTerminal / Cd / Notify. The host's spawn dispatcher walks
+    /// this queue, validates each request against the registry and target
+    /// app's `[app.spawnable]` manifest table, and turns allowed entries into
+    /// real panes plus `SpawnRelationships` records.
+    ///
+    /// Default returns empty — only `ProcessApp` and apps that model
+    /// `spawn_app` natively need to override this.
+    fn take_pending_spawns(&mut self) -> Vec<crate::app_protocol::PendingSpawn> {
+        vec![]
+    }
+
     /// Called when the user submits a command via the terminal command bar.
     /// The app may interpret it and return a command to execute, or return `None`
     /// to let it pass through to the terminal as a normal shell command.

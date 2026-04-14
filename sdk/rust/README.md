@@ -9,10 +9,25 @@ host over stdin/stdout.
 
 ```toml
 [dependencies]
-plexi-sdk = "0.2"
+plexi-sdk = "0.3"
 ```
 
 ## Changelog
+
+### 0.3.0
+
+App composition primitive: `DrawCommand::SpawnApp` and matching `Emitter` /
+`RenderContext` helpers. One app can now ask Plexi to launch another app
+and place it in a layout slot relative to itself, with lifecycle bonding
+(`cascade` / `orphan` / `prompt`) and optional pre-wired typed-pipe
+channels. See `docs/specs/app-infrastructure.md#app-spawning` in the repo
+for the full contract.
+
+- New outbound `DrawCommand::SpawnApp` variant and mirror types
+  `SpawnParent`, `SpawnLayout`, `SpawnLifecycle`.
+- New `Emitter::spawn_app` + `RenderContext::spawn_app` helpers.
+- `PlexiEvent` and manifest surface unchanged; the new command is purely
+  additive.
 
 ### 0.2.0
 

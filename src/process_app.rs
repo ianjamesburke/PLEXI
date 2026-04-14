@@ -5,7 +5,7 @@
 /// ProcessApp implements the `App` trait so it drops in wherever a built-in app
 /// would — the rest of Plexi doesn't know or care that it's an external process.
 
-use crate::app_protocol::{DrawCommand, ListItem, Modifiers, PlexiEvent};
+use crate::app_protocol::{DrawCommand, ListItem, Modifiers, PendingSpawn, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::cost_tracker::CostTracker;
 use egui::Color32;
@@ -37,6 +37,11 @@ pub struct ProcessApp {
     /// Pending RunInTerminal / Cd commands collected from the subprocess, to be
     /// drained by the host via take_pending_commands().
     pending_commands: Vec<crate::app_trait::AppCommand>,
+    /// Pending `spawn_app` requests collected from the subprocess, to be
+    /// drained by the host via take_pending_spawns() each frame. Held in a
+    /// separate queue from `pending_commands` so the existing `AppCommand`
+    /// enum stays source-compatible while the spawn dispatcher is wired in.
+    pending_spawns: Vec<PendingSpawn>,
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
@@ -224,6 +229,7 @@ impl ProcessApp {
             frame: Vec::new(),
             pending_frame: Vec::new(),
             pending_commands: Vec::new(),
+            pending_spawns: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
             bin_path: bin_path.clone(),
@@ -787,7 +793,8 @@ impl ProcessApp {
                 }
 
                 // RunInTerminal / Cd / Log / State / CostReport / Notification /
-                // SetCursor / MouseTracking / FrameDone handled at the App trait level, not here.
+                // SetCursor / MouseTracking / SpawnApp / FrameDone handled at the App
+                // trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
@@ -796,6 +803,7 @@ impl ProcessApp {
                 | DrawCommand::Notification { .. }
                 | DrawCommand::SetCursor { .. }
                 | DrawCommand::MouseTracking { .. }
+                | DrawCommand::SpawnApp { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1170,6 +1178,36 @@ impl App for ProcessApp {
                 DrawCommand::MouseTracking { enabled } => {
                     self.mouse_tracking = enabled;
                 }
+                DrawCommand::SpawnApp {
+                    app_id,
+                    args,
+                    parent,
+                    layout,
+                    lifecycle,
+                    linked,
+                    wire_channels,
+                } => {
+                    // Route to the pending-spawns queue. The actual pane
+                    // creation, registry lookup, manifest permission check,
+                    // and parent/child relationship bookkeeping happen in the
+                    // host's spawn dispatcher (which drains this queue via
+                    // `take_pending_spawns()` between frames).
+                    let target = format!("app::{}", self.type_id);
+                    log::debug!(
+                        target: &target,
+                        "spawn_app requested: target={app_id} parent={parent:?} layout={layout:?} \
+                         lifecycle={lifecycle:?} linked={linked} channels={wire_channels:?}"
+                    );
+                    self.pending_spawns.push(PendingSpawn {
+                        app_id,
+                        args,
+                        parent,
+                        layout,
+                        lifecycle,
+                        linked,
+                        wire_channels,
+                    });
+                }
                 other => self.pending_frame.push(other),
             }
         }
@@ -1249,6 +1287,10 @@ impl App for ProcessApp {
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_commands)
+    }
+
+    fn take_pending_spawns(&mut self) -> Vec<PendingSpawn> {
+        std::mem::take(&mut self.pending_spawns)
     }
 
     fn handle_drop(&mut self, local_pos: egui::Pos2, paths: &[PathBuf]) -> bool {

@@ -301,8 +301,160 @@ pub enum DrawCommand {
     /// Plexi does not send `MouseMove` events to avoid flooding the pipe.
     /// This command is stateful — the setting persists until changed.
     MouseTracking { enabled: bool },
+    /// Ask Plexi to spawn another app and place it in a layout slot relative
+    /// to the emitting pane. This is the composition primitive: a file
+    /// browser pressing Enter on a .txt file emits `spawn_app` to bring up
+    /// a text editor in a 50/50 right split, lifecycle-bonded to itself.
+    ///
+    /// Field semantics:
+    /// - `app_id`       — id of the app to spawn (must exist in the registry).
+    /// - `args`         — command-line args forwarded to the child as argv[1..].
+    /// - `parent`       — anchor for the new pane: the spawner (`self`), the
+    ///                    top-level root, or a named layout mark (reserved).
+    /// - `layout`       — how to position the new pane relative to the parent.
+    /// - `lifecycle`    — what happens to the child when the parent closes
+    ///                    (`cascade` closes together, `orphan` detaches,
+    ///                    `prompt` asks the user — stubbed to `orphan` in v1).
+    /// - `linked`       — join the parent's linked-pane group. When true the
+    ///                    child shares terminal-linking with the parent.
+    /// - `wire_channels`— pre-wire typed-pipe channel names. Stored on the
+    ///                    spawn relationship for the typed-pipes spec to
+    ///                    consume; not emitted over the wire in v1.
+    ///
+    /// Authorization: the host checks the target app's `[app.spawnable]`
+    /// manifest table. If `allow_callers` doesn't match the spawner's id, or
+    /// `allow_lifecycle` doesn't include the requested lifecycle, the spawn
+    /// is refused and a notification is delivered to the caller.
+    SpawnApp {
+        app_id: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        parent: SpawnParent,
+        #[serde(default)]
+        layout: SpawnLayout,
+        #[serde(default)]
+        lifecycle: SpawnLifecycle,
+        #[serde(default = "default_spawn_linked")]
+        linked: bool,
+        #[serde(default)]
+        wire_channels: Vec<String>,
+    },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,
+}
+
+/// Anchor for a `SpawnApp` layout — where the new pane is positioned relative
+/// to. Serializes as a bare string on the wire for ergonomics:
+///
+/// - `"self"` (default) — the pane that emitted the spawn.
+/// - `"root"`           — top-level (ignore the emitter's location).
+/// - `"mark:<name>"`    — reserved for a future named-layout system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnParent {
+    SelfPane,
+    Root,
+    NamedMark(String),
+}
+
+impl Default for SpawnParent {
+    fn default() -> Self {
+        SpawnParent::SelfPane
+    }
+}
+
+impl Serialize for SpawnParent {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        match self {
+            SpawnParent::SelfPane => ser.serialize_str("self"),
+            SpawnParent::Root => ser.serialize_str("root"),
+            SpawnParent::NamedMark(name) => ser.serialize_str(&format!("mark:{name}")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SpawnParent {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(de)?;
+        match raw.as_str() {
+            "self" | "self_pane" => Ok(SpawnParent::SelfPane),
+            "root" => Ok(SpawnParent::Root),
+            other if other.starts_with("mark:") => {
+                Ok(SpawnParent::NamedMark(other[5..].to_string()))
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "invalid spawn parent: {other:?} (expected \"self\", \"root\", or \"mark:<name>\")"
+            ))),
+        }
+    }
+}
+
+/// How a `SpawnApp` call positions the new pane relative to its parent.
+///
+/// - `Fill`        — replace or cover the parent slot (default).
+/// - `Cols`        — split horizontally; `slot=0` is left, `slot=1` is right;
+///                   `ratio` is the fraction allocated to `slot`.
+/// - `Rows`        — split vertically; `slot=0` is top, `slot=1` is bottom.
+/// - `Grid2x2`     — 2×2 grid; `slot` in 0..4 (row-major). Reserved — the v1
+///                   host falls back to Fill and logs a warning.
+/// - `Custom`      — arbitrary layout spec forwarded through as JSON. Stored
+///                   for forward-compat; v1 treats it as Fill.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SpawnLayout {
+    Fill,
+    Cols {
+        slot: u8,
+        #[serde(default = "default_layout_ratio")]
+        ratio: f32,
+    },
+    Rows {
+        slot: u8,
+        #[serde(default = "default_layout_ratio")]
+        ratio: f32,
+    },
+    Grid2x2 {
+        slot: u8,
+    },
+    Custom {
+        spec: serde_json::Value,
+    },
+}
+
+impl Default for SpawnLayout {
+    fn default() -> Self {
+        SpawnLayout::Fill
+    }
+}
+
+/// What happens to a spawned child when its parent closes.
+///
+/// - `Cascade` — the child is closed together with the parent (default).
+///               Cascades recursively: a child that owns its own grandchildren
+///               closes them too.
+/// - `Orphan`  — the relationship is dropped and the child stays alive as a
+///               top-level pane.
+/// - `Prompt`  — v1 stub: falls back to `Orphan` with a warning. Reserved
+///               for a future interactive confirmation.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnLifecycle {
+    Cascade,
+    Orphan,
+    Prompt,
+}
+
+impl Default for SpawnLifecycle {
+    fn default() -> Self {
+        SpawnLifecycle::Cascade
+    }
+}
+
+fn default_spawn_linked() -> bool {
+    true
+}
+fn default_layout_ratio() -> f32 {
+    0.5
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -318,4 +470,232 @@ pub struct ListItem {
 
 fn default_stroke_width() -> f32 {
     1.0
+}
+
+// ── Spawn-relationship host bookkeeping ──────────────────────────────────────
+
+/// Record of one parent → child pane spawn, produced when the host honors a
+/// `DrawCommand::SpawnApp`. Used to drive cascade/orphan/prompt semantics when
+/// a pane closes. Not serialized — purely an in-memory registry.
+///
+/// Consumed by the spawn dispatcher (to be added on `PlexiApp`) — `#[allow
+/// (dead_code)]` is kept until that wiring lands in a follow-up commit so the
+/// types live in the crate without polluting the warning baseline.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct SpawnRelationship {
+    pub parent_pane: crate::tiling::PaneId,
+    pub child_pane: crate::tiling::PaneId,
+    pub lifecycle: SpawnLifecycle,
+    /// Typed-pipe channel names the caller asked to pre-wire. The linking
+    /// matrix is a future spec; v1 just stores the list.
+    pub wire_channels: Vec<String>,
+}
+
+/// In-memory registry of every active spawn relationship. Owned by the host
+/// (added to `PlexiApp` when the spawn dispatcher lands).
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub struct SpawnRelationships {
+    relations: Vec<SpawnRelationship>,
+}
+
+#[allow(dead_code)]
+impl SpawnRelationships {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a new parent → child relationship.
+    pub fn add(
+        &mut self,
+        parent_pane: crate::tiling::PaneId,
+        child_pane: crate::tiling::PaneId,
+        lifecycle: SpawnLifecycle,
+        wire_channels: Vec<String>,
+    ) {
+        self.relations.push(SpawnRelationship {
+            parent_pane,
+            child_pane,
+            lifecycle,
+            wire_channels,
+        });
+    }
+
+    /// All direct children of `parent`.
+    pub fn children_of(&self, parent: crate::tiling::PaneId) -> Vec<&SpawnRelationship> {
+        self.relations
+            .iter()
+            .filter(|r| r.parent_pane == parent)
+            .collect()
+    }
+
+    /// Look up the parent pane (if any) of a child.
+    pub fn parent_of(&self, child: crate::tiling::PaneId) -> Option<crate::tiling::PaneId> {
+        self.relations
+            .iter()
+            .find(|r| r.child_pane == child)
+            .map(|r| r.parent_pane)
+    }
+
+    /// Remove all relationships mentioning `pane` (as parent OR child). Called
+    /// when a pane is actually closed so the table stays tight.
+    pub fn remove_pane(&mut self, pane: crate::tiling::PaneId) {
+        self.relations
+            .retain(|r| r.parent_pane != pane && r.child_pane != pane);
+    }
+
+    /// Total number of active relationships (for tests / telemetry).
+    pub fn len(&self) -> usize {
+        self.relations.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.relations.is_empty()
+    }
+}
+
+/// A spawn request drained from a `ProcessApp` between frames. The host
+/// dispatcher walks this list, validates each request against the registry
+/// and target app's manifest, and turns it into a real pane + child process.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct PendingSpawn {
+    pub app_id: String,
+    pub args: Vec<String>,
+    pub parent: SpawnParent,
+    pub layout: SpawnLayout,
+    pub lifecycle: SpawnLifecycle,
+    pub linked: bool,
+    pub wire_channels: Vec<String>,
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+
+    #[test]
+    fn spawn_app_roundtrip_minimal() {
+        let json = r#"{"type":"spawn_app","app_id":"text-editor"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        match cmd {
+            DrawCommand::SpawnApp {
+                app_id,
+                args,
+                parent,
+                layout,
+                lifecycle,
+                linked,
+                wire_channels,
+            } => {
+                assert_eq!(app_id, "text-editor");
+                assert!(args.is_empty());
+                assert_eq!(parent, SpawnParent::SelfPane);
+                assert_eq!(layout, SpawnLayout::Fill);
+                assert_eq!(lifecycle, SpawnLifecycle::Cascade);
+                assert!(linked);
+                assert!(wire_channels.is_empty());
+            }
+            _ => panic!("expected SpawnApp"),
+        }
+    }
+
+    #[test]
+    fn spawn_app_roundtrip_cols_split() {
+        let json = r#"{
+            "type": "spawn_app",
+            "app_id": "text-editor",
+            "args": ["/tmp/notes.txt"],
+            "parent": "self",
+            "layout": { "kind": "cols", "slot": 1, "ratio": 0.5 },
+            "lifecycle": "cascade",
+            "linked": true,
+            "wire_channels": ["file_buffer"]
+        }"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        let re = serde_json::to_value(&cmd).unwrap();
+        assert_eq!(re["type"], "spawn_app");
+        assert_eq!(re["app_id"], "text-editor");
+        assert_eq!(re["args"][0], "/tmp/notes.txt");
+        assert_eq!(re["parent"], "self");
+        assert_eq!(re["layout"]["kind"], "cols");
+        assert_eq!(re["layout"]["slot"], 1);
+        assert_eq!(re["layout"]["ratio"], 0.5);
+        assert_eq!(re["lifecycle"], "cascade");
+        assert_eq!(re["linked"], true);
+        assert_eq!(re["wire_channels"][0], "file_buffer");
+    }
+
+    #[test]
+    fn spawn_app_roundtrip_root_fill() {
+        let json = r#"{
+            "type": "spawn_app",
+            "app_id": "permissions",
+            "parent": "root",
+            "layout": { "kind": "fill" },
+            "lifecycle": "orphan",
+            "linked": false
+        }"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        match cmd {
+            DrawCommand::SpawnApp {
+                parent,
+                layout,
+                lifecycle,
+                linked,
+                ..
+            } => {
+                assert_eq!(parent, SpawnParent::Root);
+                assert!(matches!(layout, SpawnLayout::Fill));
+                assert_eq!(lifecycle, SpawnLifecycle::Orphan);
+                assert!(!linked);
+            }
+            _ => panic!("expected SpawnApp"),
+        }
+    }
+
+    #[test]
+    fn spawn_app_rows_with_ratio_default() {
+        let json = r#"{
+            "type": "spawn_app",
+            "app_id": "log-viewer",
+            "layout": { "kind": "rows", "slot": 1 }
+        }"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        match cmd {
+            DrawCommand::SpawnApp { layout, .. } => match layout {
+                SpawnLayout::Rows { slot, ratio } => {
+                    assert_eq!(slot, 1);
+                    assert_eq!(ratio, 0.5);
+                }
+                _ => panic!("expected Rows"),
+            },
+            _ => panic!("expected SpawnApp"),
+        }
+    }
+
+    #[test]
+    fn spawn_parent_named_mark_roundtrip() {
+        let v: SpawnParent = serde_json::from_str(r#""mark:file-tree""#).unwrap();
+        assert_eq!(v, SpawnParent::NamedMark("file-tree".to_string()));
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(s, r#""mark:file-tree""#);
+    }
+
+    #[test]
+    fn spawn_relationships_cascade_children_lookup() {
+        let mut rels = SpawnRelationships::new();
+        rels.add(1, 2, SpawnLifecycle::Cascade, vec![]);
+        rels.add(1, 3, SpawnLifecycle::Orphan, vec![]);
+        rels.add(2, 4, SpawnLifecycle::Cascade, vec![]);
+        assert_eq!(rels.children_of(1).len(), 2);
+        assert_eq!(rels.children_of(2).len(), 1);
+        assert_eq!(rels.parent_of(4), Some(2));
+        rels.remove_pane(2);
+        // pane 2 gone → its children lose their parent edge, and pane 2 as a
+        // child of pane 1 is also gone.
+        assert_eq!(rels.children_of(1).len(), 1);
+        assert_eq!(rels.children_of(2).len(), 0);
+        assert_eq!(rels.parent_of(4), None);
+    }
 }

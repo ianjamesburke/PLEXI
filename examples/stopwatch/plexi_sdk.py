@@ -52,7 +52,7 @@ Cost reporting (for apps that call LLM APIs):
 """
 
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import json
 import os
@@ -141,6 +141,73 @@ class Emitter:
         }
         if body:
             cmd["body"] = body
+        print(json.dumps(cmd), flush=True)
+
+    def spawn_app(
+        self,
+        app_id: str,
+        args: Optional[list] = None,
+        parent: str = "self",
+        layout: Optional[dict] = None,
+        lifecycle: str = "cascade",
+        linked: bool = True,
+        wire_channels: Optional[list] = None,
+    ):
+        """
+        Ask Plexi to spawn another app and place it in a layout slot relative to this one.
+
+        This is the composition primitive: a file browser pressing Enter on a
+        .txt file can emit `spawn_app("text-editor", args=[path], layout={"kind":"cols","slot":1,"ratio":0.5})`
+        to bring up a text editor in a 50/50 right split, lifecycle-bonded to
+        the file browser (so closing the file browser closes the editor).
+
+        Args:
+            app_id:
+                The id of the app to spawn (must be in Plexi's app registry).
+            args:
+                Command-line args forwarded to the spawned app as argv[1..].
+                Defaults to no args.
+            parent:
+                Anchor for the new pane's position. One of:
+                    "self"  (default) — the pane emitting this call
+                    "root"            — top-level (ignores the emitter's location)
+                    "mark:<name>"     — reserved for a future named-layout system
+            layout:
+                How to position the new pane relative to the parent. A dict
+                with a "kind" key. Examples:
+                    {"kind": "fill"}
+                    {"kind": "cols", "slot": 1, "ratio": 0.5}
+                    {"kind": "rows", "slot": 1, "ratio": 0.4}
+                    {"kind": "grid_2x2", "slot": 0}  # v1 stub, falls back to fill
+                Defaults to {"kind": "fill"}.
+            lifecycle:
+                What happens to the spawned app when this app closes:
+                    "cascade" (default) — close together
+                    "orphan"            — detach, stay alive as a top-level pane
+                    "prompt"            — ask the user (v1 stub, falls back to orphan)
+            linked:
+                When True (default), the new pane joins this pane's linked
+                group so terminal-linking is shared.
+            wire_channels:
+                Typed-pipe channel names to pre-wire (e.g. ["file_buffer"]).
+                Stored on the spawn relationship for the typed-pipes spec;
+                defaults to no pre-wired channels.
+
+        Authorization: the target app's `[app.spawnable]` manifest table is
+        consulted — if `allow_callers` doesn't include this app, or the
+        requested `lifecycle` isn't in `allow_lifecycle`, the spawn is
+        refused and a notification is delivered back to this app.
+        """
+        cmd = {
+            "type": "spawn_app",
+            "app_id": app_id,
+            "args": args or [],
+            "parent": parent,
+            "layout": layout or {"kind": "fill"},
+            "lifecycle": lifecycle,
+            "linked": linked,
+            "wire_channels": wire_channels or [],
+        }
         print(json.dumps(cmd), flush=True)
 
     def submit_feedback(
@@ -499,6 +566,35 @@ class RenderContext:
         if body:
             cmd["body"] = body
         self._commands.append(cmd)
+
+    def spawn_app(
+        self,
+        app_id: str,
+        args: Optional[list] = None,
+        parent: str = "self",
+        layout: Optional[dict] = None,
+        lifecycle: str = "cascade",
+        linked: bool = True,
+        wire_channels: Optional[list] = None,
+    ):
+        """
+        Ask Plexi to spawn another app at end of this frame.
+
+        Same shape as `Emitter.spawn_app` — see that method's docstring for
+        full field semantics. Use this variant when you need the spawn to
+        happen as part of a render pass (queued alongside the frame's draw
+        commands); use `emit.spawn_app` from a key/command/mouse handler.
+        """
+        self._commands.append({
+            "type": "spawn_app",
+            "app_id": app_id,
+            "args": args or [],
+            "parent": parent,
+            "layout": layout or {"kind": "fill"},
+            "lifecycle": lifecycle,
+            "linked": linked,
+            "wire_channels": wire_channels or [],
+        })
 
     def _flush(self):
         for cmd in self._commands:

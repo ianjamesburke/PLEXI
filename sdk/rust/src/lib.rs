@@ -263,7 +263,123 @@ pub enum DrawCommand {
     MouseTracking {
         enabled: bool,
     },
+    /// Ask Plexi to spawn another app and place it in a layout slot relative
+    /// to the emitting pane. See [`Emitter::spawn_app`] and [`SpawnLayout`]
+    /// for the full field reference.
+    SpawnApp {
+        app_id: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        parent: SpawnParent,
+        #[serde(default)]
+        layout: SpawnLayout,
+        #[serde(default)]
+        lifecycle: SpawnLifecycle,
+        #[serde(default = "default_spawn_linked")]
+        linked: bool,
+        #[serde(default)]
+        wire_channels: Vec<String>,
+    },
     FrameDone,
+}
+
+/// Anchor for a `SpawnApp` layout — where the new pane sits relative to.
+/// Serializes as a bare string: `"self"`, `"root"`, or `"mark:<name>"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnParent {
+    SelfPane,
+    Root,
+    NamedMark(String),
+}
+
+impl Default for SpawnParent {
+    fn default() -> Self {
+        SpawnParent::SelfPane
+    }
+}
+
+impl Serialize for SpawnParent {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        match self {
+            SpawnParent::SelfPane => ser.serialize_str("self"),
+            SpawnParent::Root => ser.serialize_str("root"),
+            SpawnParent::NamedMark(name) => ser.serialize_str(&format!("mark:{name}")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SpawnParent {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(de)?;
+        match raw.as_str() {
+            "self" | "self_pane" => Ok(SpawnParent::SelfPane),
+            "root" => Ok(SpawnParent::Root),
+            other if other.starts_with("mark:") => {
+                Ok(SpawnParent::NamedMark(other[5..].to_string()))
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "invalid spawn parent: {other:?}"
+            ))),
+        }
+    }
+}
+
+/// How a `SpawnApp` call positions the new pane relative to the parent.
+///
+/// Serialized as an internally tagged object with `kind` as the discriminator:
+///     {"kind":"fill"}
+///     {"kind":"cols","slot":1,"ratio":0.5}
+///     {"kind":"rows","slot":1,"ratio":0.4}
+///     {"kind":"grid_2x2","slot":0}
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SpawnLayout {
+    Fill,
+    Cols {
+        slot: u8,
+        #[serde(default = "default_layout_ratio")]
+        ratio: f32,
+    },
+    Rows {
+        slot: u8,
+        #[serde(default = "default_layout_ratio")]
+        ratio: f32,
+    },
+    Grid2x2 {
+        slot: u8,
+    },
+    Custom {
+        spec: Value,
+    },
+}
+
+impl Default for SpawnLayout {
+    fn default() -> Self {
+        SpawnLayout::Fill
+    }
+}
+
+/// What happens to a spawned child when its parent closes.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnLifecycle {
+    Cascade,
+    Orphan,
+    Prompt,
+}
+
+impl Default for SpawnLifecycle {
+    fn default() -> Self {
+        SpawnLifecycle::Cascade
+    }
+}
+
+fn default_spawn_linked() -> bool {
+    true
+}
+fn default_layout_ratio() -> f32 {
+    0.5
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -447,6 +563,40 @@ impl Emitter {
             title: title.to_string(),
             body: body.map(|s| s.to_string()),
             source_app: self.app_id.clone(),
+        });
+    }
+
+    /// Ask Plexi to spawn another app and place it in a layout slot relative
+    /// to this pane. This is the composition primitive: a file browser
+    /// pressing Enter on a `.txt` file can emit
+    /// `spawn_app("text-editor", &["/tmp/notes.txt"], SpawnParent::SelfPane,
+    /// SpawnLayout::Cols { slot: 1, ratio: 0.5 }, SpawnLifecycle::Cascade,
+    /// true, &[])` to bring up a text editor in a 50/50 right split,
+    /// lifecycle-bonded to itself.
+    ///
+    /// Authorization: the target app's `[app.spawnable]` manifest table is
+    /// consulted. If `allow_callers` doesn't include this app, or the
+    /// requested lifecycle isn't in `allow_lifecycle`, the spawn is refused
+    /// and a notification is delivered back to this app.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_app(
+        &self,
+        app_id: &str,
+        args: &[&str],
+        parent: SpawnParent,
+        layout: SpawnLayout,
+        lifecycle: SpawnLifecycle,
+        linked: bool,
+        wire_channels: &[&str],
+    ) {
+        self.write(&DrawCommand::SpawnApp {
+            app_id: app_id.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            parent,
+            layout,
+            lifecycle,
+            linked,
+            wire_channels: wire_channels.iter().map(|s| s.to_string()).collect(),
         });
     }
 
@@ -737,6 +887,31 @@ impl RenderContext {
             title: title.to_string(),
             body: body.map(|s| s.to_string()),
             source_app: self.app_id.clone(),
+        });
+        self
+    }
+
+    /// Queue a `spawn_app` request at end of this frame. Mirrors
+    /// [`Emitter::spawn_app`] — see that method's docs for full semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_app(
+        &mut self,
+        app_id: &str,
+        args: &[&str],
+        parent: SpawnParent,
+        layout: SpawnLayout,
+        lifecycle: SpawnLifecycle,
+        linked: bool,
+        wire_channels: &[&str],
+    ) -> &mut Self {
+        self.commands.push(DrawCommand::SpawnApp {
+            app_id: app_id.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            parent,
+            layout,
+            lifecycle,
+            linked,
+            wire_channels: wire_channels.iter().map(|s| s.to_string()).collect(),
         });
         self
     }
@@ -1064,6 +1239,61 @@ mod tests {
         assert_eq!(v["id"], "zone");
         assert_eq!(v["accept"][0], "png");
         assert_eq!(v["label"], "drop here");
+    }
+
+    #[test]
+    fn serializes_spawn_app_cols_split() {
+        let cmd = DrawCommand::SpawnApp {
+            app_id: "text-editor".to_string(),
+            args: vec!["/tmp/notes.txt".to_string()],
+            parent: SpawnParent::SelfPane,
+            layout: SpawnLayout::Cols { slot: 1, ratio: 0.5 },
+            lifecycle: SpawnLifecycle::Cascade,
+            linked: true,
+            wire_channels: vec!["file_buffer".to_string()],
+        };
+        let v = serde_json::to_value(&cmd).unwrap();
+        assert_eq!(v["type"], "spawn_app");
+        assert_eq!(v["app_id"], "text-editor");
+        assert_eq!(v["args"][0], "/tmp/notes.txt");
+        assert_eq!(v["parent"], "self");
+        assert_eq!(v["layout"]["kind"], "cols");
+        assert_eq!(v["layout"]["slot"], 1);
+        assert_eq!(v["layout"]["ratio"], 0.5);
+        assert_eq!(v["lifecycle"], "cascade");
+        assert_eq!(v["linked"], true);
+        assert_eq!(v["wire_channels"][0], "file_buffer");
+    }
+
+    #[test]
+    fn deserializes_spawn_app_minimal() {
+        let json = r#"{"type":"spawn_app","app_id":"permissions"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        match cmd {
+            DrawCommand::SpawnApp {
+                app_id,
+                parent,
+                layout,
+                lifecycle,
+                linked,
+                ..
+            } => {
+                assert_eq!(app_id, "permissions");
+                assert_eq!(parent, SpawnParent::SelfPane);
+                assert!(matches!(layout, SpawnLayout::Fill));
+                assert_eq!(lifecycle, SpawnLifecycle::Cascade);
+                assert!(linked);
+            }
+            _ => panic!("expected SpawnApp"),
+        }
+    }
+
+    #[test]
+    fn spawn_parent_mark_roundtrip() {
+        let v: SpawnParent = serde_json::from_str(r#""mark:tree""#).unwrap();
+        assert_eq!(v, SpawnParent::NamedMark("tree".to_string()));
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(s, r#""mark:tree""#);
     }
 
     #[test]

@@ -79,6 +79,8 @@ Every spawned app receives the following environment variables (set at spawn tim
 |---|---|---|
 | `PLEXI_APP_ID` | The `app.id` from `manifest.toml`. | Lets an app identify itself to Plexi (notification source, feedback file, logs). |
 | `PLEXI_APPS_DIR` | Absolute path to `<config_dir>/apps/`. | Lets an app locate its own install dir (`$PLEXI_APPS_DIR/$PLEXI_APP_ID/…`) without guessing the build flavor. |
+| `PLEXI_LAUNCH_MODE` | `"standalone"` (user launched it from the palette / CLI) or `"spawned"` (another app spawned it via `DrawCommand::SpawnApp`). | Lets an app change its UI based on whether it was launched directly or as a child of another app. |
+| `PLEXI_PARENT_PANE` | Numeric pane id of the parent that spawned this app. Only set when `PLEXI_LAUNCH_MODE=spawned`. | Lets a spawned child address typed-pipe channels back to its parent. |
 
 All other environment variables are inherited from the Plexi process. Apps MUST NOT assume any additional variables.
 
@@ -110,11 +112,17 @@ network         = false         # optional, default false
 secrets_write   = false         # optional, default false
 mouse_tracking  = false         # optional, default false
 
-[app.launch]                     # optional — companion-pane configuration
-companion          = "terminal"  # optional, default "terminal" (only value currently supported)
-companion_position = "bottom"    # optional, default "bottom" ("bottom" | "right")
-companion_size     = 0.25        # optional, default 0.25 (0.0..1.0)
+[app.launch]                     # optional — launch & companion configuration
+mode               = "fullscreen"   # optional, default "fullscreen" ("fullscreen" | "windowed" | "companion")
+companion          = "none"         # optional, default "none" ("none" | "terminal")
+companion_position = "bottom"       # optional, default "bottom" ("bottom" | "right")
+companion_size     = 0.25           # optional, default 0.25 (0.0..1.0)
 companion_cwd      = "{launch_dir}" # optional, default "{launch_dir}" — supports {launch_dir} template
+
+[app.spawnable]                  # optional — composition policy for spawn_app
+allow_callers   = ["*"]                          # optional, default ["*"] (any caller); otherwise list of app ids
+default_layout  = { kind = "fill" }              # optional, default { kind = "fill" }
+allow_lifecycle = ["cascade", "orphan", "prompt"] # optional, default all three
 ```
 
 ### `[app]` fields
@@ -144,14 +152,25 @@ Capabilities are declared at install time in the manifest and converted to runti
 
 ### `[app.launch]` fields (optional)
 
-When present, Plexi splits the launching pane and places a companion in the secondary slot when the app is started.
+When present, Plexi uses this table to decide how to place the app's pane on launch. In v1 this controls two things: the app's `mode` (how its pane occupies the slot it's dropped into) and, when `companion` is set to a non-`"none"` value, a companion split declared statically at launch time.
 
 | Field | Type | Default | Semantics |
 |---|---|---|---|
-| `companion` | string | `"terminal"` | What runs in the companion slot. Only `"terminal"` is supported in v1. |
-| `companion_position` | `"bottom"` / `"right"` | `"bottom"` | Split orientation. |
+| `mode` | `"fullscreen"` / `"windowed"` / `"companion"` | `"fullscreen"` | How the app occupies its pane. `"fullscreen"` fills the slot; `"windowed"` is reserved for a future floating-window mode; `"companion"` triggers the companion-split below. The v1 host treats anything other than `"companion"` as fullscreen. |
+| `companion` | `"none"` / `"terminal"` | `"none"` | What runs in the companion slot. `"none"` disables the auto-split; `"terminal"` keeps the v1 companion-terminal behavior. |
+| `companion_position` | `"bottom"` / `"right"` | `"bottom"` | Split orientation when `companion != "none"`. |
 | `companion_size` | float `0.0..1.0` | `0.25` | Fraction of the split the companion takes. |
 | `companion_cwd` | string | `"{launch_dir}"` | Working directory for the companion. The literal `{launch_dir}` template expands to the pane's launch directory. |
+
+### `[app.spawnable]` fields (optional)
+
+Declares this app's composition policy — who may spawn it as a child via `DrawCommand::spawn_app`, what layout it defaults to when the caller doesn't specify one, and which lifecycles it accepts. A missing `[app.spawnable]` table means permissive defaults: any caller, any lifecycle, `fill` layout.
+
+| Field | Type | Default | Semantics |
+|---|---|---|---|
+| `allow_callers` | string array | `["*"]` | List of `app.id`s permitted to spawn this app. `"*"` means any caller. If the spawning app's id is not in this list (and the list does not contain `"*"`), the spawn is refused and an error notification is sent back to the caller. |
+| `default_layout` | layout object | `{ kind = "fill" }` | Layout applied if the caller omits `layout` on the spawn request. Same shape as the `layout` field on `spawn_app` (see below). |
+| `allow_lifecycle` | string array | `["cascade", "orphan", "prompt"]` | Lifecycles this app accepts. Values: `"cascade"`, `"orphan"`, `"prompt"`. If the caller asks for a lifecycle not listed here, the spawn is refused. |
 
 ---
 
@@ -336,11 +355,97 @@ These commands mutate the linked terminal rather than the draw buffer. They are 
 |---|---|---|
 | `state` | `user_state: any`, `derived: any`, `session: any`, `persistent: any` | Response to a `get_state` event. MUST be emitted exactly once per `get_state`. All four buckets are required (use `{}` for empty). Plexi feeds this into the undo/redo state machine (see "State persistence"). |
 
+### App composition
+
+| Type | Fields | Notes |
+|---|---|---|
+| `spawn_app` | `app_id: string`, `args: string[] = []`, `parent: string = "self"`, `layout: object = { kind: "fill" }`, `lifecycle: "cascade" \| "orphan" \| "prompt" = "cascade"`, `linked: bool = true`, `wire_channels: string[] = []` | Ask Plexi to launch another app and place it in a layout slot relative to this pane. The foundation primitive for app composition — e.g. a file browser pressing Enter on a `.txt` emits `spawn_app("text-editor", args=[path], layout={kind:"cols",slot:1,ratio:0.5})` to open the editor in a 50/50 right split lifecycle-bonded to itself. See the **App Spawning** section below for the full contract. |
+
 ### Frame control
 
 | Type | Fields | Notes |
 |---|---|---|
 | `frame_done` | (none) | Commits the pending frame. After receipt, Plexi atomically swaps `pending_frame` into `frame` and clears `pending_frame`. Everything between two `frame_done`s is one atomic frame. |
+
+---
+
+## App Spawning
+
+`spawn_app` is the composition primitive: one app asks Plexi to launch another app and place it in a layout slot relative to the caller's pane. This is how cross-app flows are built in v1 — e.g. a Rust file browser pressing Enter on a `.txt` file emits `spawn_app` and a Python text editor opens in a 50/50 right split, lifecycle-bonded so closing the file browser closes the editor too.
+
+### Request shape
+
+```json
+{
+  "type": "spawn_app",
+  "app_id": "text-editor",
+  "args": ["/tmp/notes.txt"],
+  "parent": "self",
+  "layout": { "kind": "cols", "slot": 1, "ratio": 0.5 },
+  "lifecycle": "cascade",
+  "linked": true,
+  "wire_channels": ["file_buffer"]
+}
+```
+
+### Fields
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `app_id` | string | **required** | The id of the app to spawn. Must exist in Plexi's app registry at spawn time; unknown ids are refused with a warning notification to the caller. |
+| `args` | string array | `[]` | Command-line args forwarded to the spawned app as `argv[1..]`. Identical to how the palette / CLI pass file arguments. |
+| `parent` | string | `"self"` | Anchor for the new pane's position. `"self"` = the emitting pane; `"root"` = top-level (ignores the emitter's location entirely); `"mark:<name>"` = reserved for a future named-layout system. |
+| `layout` | object | `{ "kind": "fill" }` | How to position the new pane relative to `parent`. See the layout enum below. Falls back to the target's `[app.spawnable].default_layout` when omitted by the caller. |
+| `lifecycle` | string | `"cascade"` | `cascade` closes the child when the parent closes, `orphan` detaches it, `prompt` asks the user (see the v1 stub below). |
+| `linked` | bool | `true` | When true, the new pane joins the parent's linked-pane group so terminal-linking is shared. |
+| `wire_channels` | string array | `[]` | Typed-pipe channel names to pre-wire between parent and child. Stored on the resulting spawn relationship for the typed-pipes spec to consume; the linking matrix is a separate spec and is not executed in v1. |
+
+### Layout enum
+
+`layout` is an object with a `kind` discriminator:
+
+| `kind` | Additional fields | Meaning |
+|---|---|---|
+| `fill` | — | Fill the parent slot. If the parent is fullscreen, the new pane replaces it; otherwise it is placed into the same slot as the parent. |
+| `cols` | `slot: 0 \| 1`, `ratio: 0.0..1.0 = 0.5` | Horizontal split. `slot = 0` = left, `slot = 1` = right. `ratio` is the fraction allocated to `slot`. |
+| `rows` | `slot: 0 \| 1`, `ratio: 0.0..1.0 = 0.5` | Vertical split. `slot = 0` = top, `slot = 1` = bottom. |
+| `grid_2x2` | `slot: 0..3` | 2×2 grid, row-major. **v1 stub:** the host accepts it but falls back to `fill` and logs a warning. |
+| `custom` | `spec: any` | Forward-compat escape hatch. Any caller-supplied shape; v1 treats it as `fill` and logs. |
+
+### Parent / child lifecycle
+
+Every honored `spawn_app` call records a `SpawnRelationship { parent_pane, child_pane, lifecycle, wire_channels }` in an in-memory registry on `PlexiApp` (`SpawnRelationships` in `src/app_protocol.rs`). When a pane closes, Plexi consults this table and walks every relationship whose `parent_pane` matches:
+
+- **`cascade`** — close each child too. The walk is recursive: a child that owns its own grandchildren closes them first. This is how the file-browser → editor flow collapses back to the original pane in one keystroke.
+- **`orphan`** — drop the relationship and leave the child alive as a normal top-level pane.
+- **`prompt`** — **v1 stub.** The host logs a warning and falls back to `orphan`. A future version will raise an interactive confirmation. Callers are free to request `prompt` today — they will just get orphan semantics until the prompt UI ships.
+
+When a relationship is removed (child closed, or pane removed for any other reason), the relationship row is dropped via `SpawnRelationships::remove_pane`. Callers can look up children with `children_of(parent_id)` and walk up with `parent_of(child_id)`.
+
+### Interaction with linked-pane groups
+
+When `linked = true` (the default), the new pane joins the parent's linked-pane group so commands like `cd`, `run_in_terminal`, and future shared-terminal events flow between them. When `linked = false`, the child is a strict sibling in the tile tree with its own independent terminal affinity. The host reads the existing linked-pane mechanism (whatever the file browser already uses for its own split-on-open) and adds the child to it.
+
+### Authorization (`[app.spawnable]`)
+
+Before Plexi creates the child pane, it looks up the target `app_id` in the registry and consults the target's `[app.spawnable]` manifest table:
+
+1. `allow_callers` — if the list does not contain `"*"` and does not contain the spawner's `app_id`, the spawn is refused. Plexi emits an error-level notification back to the caller via the standard notification channel (source = the caller's app id).
+2. `allow_lifecycle` — must contain the requested lifecycle string (`"cascade"`, `"orphan"`, or `"prompt"`). If not, the spawn is refused with the same notification path.
+3. If the caller omitted `layout`, the target's `default_layout` is applied.
+
+Apps that do not declare `[app.spawnable]` at all inherit permissive defaults: any caller, any lifecycle, `fill` layout. Unknown `app_id`s are a warning, not a crash — the caller keeps running and sees a refusal notification.
+
+### Canonical flow (file browser → text editor)
+
+The canonical example — and the reason this primitive exists — is the file browser opening a file in a text editor:
+
+1. User presses Enter on `notes.txt` in the Rust file browser.
+2. File browser emits `spawn_app("text-editor", args=["notes.txt"], parent="self", layout={"kind":"cols","slot":1,"ratio":0.5}, lifecycle="cascade", linked=true)`.
+3. Plexi looks up `text-editor` in the registry, checks `[app.spawnable]`, splits the file browser's pane horizontally at 50%, and launches the Python text editor in the right slot with `PLEXI_LAUNCH_MODE=spawned` and `PLEXI_PARENT_PANE=<browser pane id>` set.
+4. The spawn relationship is recorded with `lifecycle = cascade`. When the user later closes the file browser, Plexi's pane-close path walks `children_of(browser_pane)` and closes the text editor too.
+
+The file browser itself is not wired to emit `spawn_app` in v1 — that is a follow-up commit. This section documents the contract the protocol provides so the next change can plug in without renegotiating the shape.
 
 ---
 
