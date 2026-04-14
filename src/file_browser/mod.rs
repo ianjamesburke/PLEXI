@@ -2,6 +2,7 @@ mod audio;
 mod helpers;
 mod icons;
 
+use crate::app_protocol::{PendingSpawn, SpawnLayout, SpawnLifecycle, SpawnParent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
@@ -54,6 +55,7 @@ pub struct FileBrowserApp {
     dir_preview_path: Option<PathBuf>,
     dir_preview_stats: Option<DirStats>,
     pending_cmds: Vec<AppCommand>,
+    pending_spawns: Vec<PendingSpawn>,
     /// When true, the next draw_list pass will scroll the selected row into view.
     pending_scroll: bool,
     /// Remembers which entry was selected when leaving a directory,
@@ -96,6 +98,7 @@ impl FileBrowserApp {
             dir_preview_path: None,
             dir_preview_stats: None,
             pending_cmds: Vec::new(),
+            pending_spawns: Vec::new(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
             audio_tx: tx,
@@ -839,6 +842,47 @@ impl FileBrowserApp {
             .unwrap_or(0.0);
         self.audio_elapsed_before_pause + current
     }
+
+    /// Queue a spawn request or fall back to macOS `open` for unknown types.
+    fn open_file(&mut self, path: PathBuf) {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+
+        let is_image = ext.as_deref().map(|e| matches!(
+            e,
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "svg"
+        )).unwrap_or(false);
+
+        let is_text = is_text_file(&path);
+
+        let path_str = path.to_string_lossy().into_owned();
+
+        if is_text {
+            self.pending_spawns.push(PendingSpawn {
+                app_id: "text-editor".to_string(),
+                args: vec![path_str],
+                parent: SpawnParent::SelfPane,
+                layout: SpawnLayout::Cols { slot: 1, ratio: 0.5 },
+                lifecycle: SpawnLifecycle::Cascade,
+                linked: true,
+                wire_channels: vec![],
+            });
+        } else if is_image {
+            self.pending_spawns.push(PendingSpawn {
+                app_id: "photo-viewer".to_string(),
+                args: vec![path_str],
+                parent: SpawnParent::SelfPane,
+                layout: SpawnLayout::Cols { slot: 1, ratio: 0.5 },
+                lifecycle: SpawnLifecycle::Cascade,
+                linked: true,
+                wire_channels: vec![],
+            });
+        } else {
+            let _ = std::process::Command::new("open").arg(&path).spawn();
+        }
+    }
 }
 
 impl App for FileBrowserApp {
@@ -851,6 +895,10 @@ impl App for FileBrowserApp {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "/".to_string())
+    }
+
+    fn take_pending_spawns(&mut self) -> Vec<crate::app_protocol::PendingSpawn> {
+        std::mem::take(&mut self.pending_spawns)
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
@@ -927,7 +975,7 @@ impl App for FileBrowserApp {
                     if is_dir {
                         self.navigate_into(path);
                     } else {
-                        let _ = std::process::Command::new("open").arg(&path).spawn();
+                        self.open_file(path);
                     }
                 }
             });
@@ -997,7 +1045,7 @@ impl App for FileBrowserApp {
                 if entry.is_dir {
                     self.navigate_into(entry.path);
                 } else {
-                    let _ = std::process::Command::new("open").arg(&entry.path).spawn();
+                    self.open_file(entry.path);
                 }
             }
             consumed = true;
