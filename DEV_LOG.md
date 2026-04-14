@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-14 — [DECISION] mermaid-viewer: keyboard-driven diagram editor + --filter=mermaid file browser
+
+Added `EntryFilter::Mermaid` to `src/file_browser/mod.rs` (matches `.mmd` files and dirs). Added `examples/mermaid-viewer/` with four files: `mermaid_parser.py` (regex-based parser for flowchart/graph LR/TD syntax, 4 node shapes, solid/dashed/labeled edges), `graph_layout.py` (BFS layering → pixel coords, LR and TD), `mermaid_viewer.py` (full app: VIEW/EDIT_LABEL/ADD_NODE/CONNECTING modes, zoom/pan, hot-reload on mtime, spawns file-browser sidebar on direct launch), `manifest.toml`.
+
+Parser uses pure regex rather than a real grammar — handles 95% of real-world mermaid diagrams without a parser dependency. Subgraphs are silently skipped (flattened). The serialize→parse roundtrip is stable but may change node order; this is acceptable for the MVP. Edge rendering uses straight lines only (no routing around nodes — deferred as non-essential for MVP).
+
+Pre-existing compile errors in `src/app.rs` (missing `load_app_mru`/`save_app_mru`/`save_window_size`) are not from this change — they were present on alpha before this branch.
+
 ## 2026-04-14 — [DECISION] Wave 3: spawn_app primitive, breakpoints SDK, three new external apps, typed-pipes spec
 
 Six parallel sub-agents delivered as six cherry-picked atomic commits on `alpha` (`1e43b9b` through `af27da4`, plus `d6ee3ee` cleanup):

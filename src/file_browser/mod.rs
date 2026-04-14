@@ -41,12 +41,15 @@ pub enum FileBrowserActionKind {
 pub enum EntryFilter {
     /// Show only image files.
     Images,
+    /// Show only mermaid diagram files (.mmd) and directories.
+    Mermaid,
 }
 
 impl EntryFilter {
     fn parse(s: &str) -> Option<Self> {
         match s {
             "images" | "image" => Some(EntryFilter::Images),
+            "mermaid" => Some(EntryFilter::Mermaid),
             _ => None,
         }
     }
@@ -54,6 +57,15 @@ impl EntryFilter {
     fn matches(&self, entry: &Entry) -> bool {
         match self {
             EntryFilter::Images => entry.is_image || entry.is_dir,
+            EntryFilter::Mermaid => {
+                entry.is_dir
+                    || entry
+                        .path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("mmd"))
+                        .unwrap_or(false)
+            }
         }
     }
 }
