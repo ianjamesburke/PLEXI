@@ -1,5 +1,31 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-14 — [DECISION] SDK packaged for distribution + protocol spec stamped v1
+
+Two cohesive moves landed as five atomic commits on `alpha`:
+
+1. **Vendored `plexi_sdk.py` copies sync'd to canonical 0.2.0** (`4496e2b`). 32 example apps were drifted from `sdk/python/plexi_sdk.py` (the previous `feat: SDK feedback primitive` commit updated the canonical file but left the vendored copies behind). All 31 `examples/*/plexi_sdk.py` files are now byte-identical. `scripts/sync-sdk.py --check` enforces this going forward.
+2. **`docs/specs/app-infrastructure.md` brought to v1-stable** (`a7a7e22`). Old spec was 222 lines, dated 2026-04-09, and missed entire categories of the shipping protocol (mouse_*, scroll, drop, get_state/set_state, cost_report, notification, feedback, hot reload, [app.launch], `PLEXI_APP_ID`/`PLEXI_APPS_DIR`). Now 705 lines and the source-of-truth claim is true: every event/command/manifest field/env var/file path matches the shipping code at the date in the header.
+3. **Python SDK packaged as `plexi-sdk` 0.2.0** (`e49de37`). Added `pyproject.toml` (PEP 621, setuptools, flat py-modules, stdlib-only deps), `README.md`, `LICENSE`, `MANIFEST.in`, `.gitignore`, plus `scripts/sync-sdk.py`. Validated with `pip install --dry-run -e .`.
+4. **Rust SDK Cargo manifest polished for crates.io** (`2bc52ee`). Full publish metadata (authors, homepage, documentation, readme, keywords, categories, rust-version), README, LICENSE. `cargo publish --dry-run --allow-dirty` packages and verifies cleanly. **Source untouched — kept at 0.1.0.**
+5. **`docs/specs/app-shell-config.md` filed** (`7b13b10`). v1 spec for a Plexi app that manages zsh addons via the ZDOTDIR-addon pattern, never touching `~/.zshrc`. Embedded a ready-to-file GitHub issue body. P3, idea-tier, not implemented yet.
+
+**Dual-purpose SDK packaging model.** External devs `pip install plexi-sdk` for editor/linter/type support during development. Runtime apps continue to vendor their own `plexi_sdk.py` next to the entry file, because each `~/.plexi-alpha/apps/<id>/` install dir must be self-contained — Plexi cannot inject library paths and users may not have a global pip env. The sync script is the bridge: canonical source ships in PyPI, every example mirrors it byte-for-byte. Considered (and rejected) making examples `from plexi_sdk import App` against the installed package — it would break the standalone-app invariant for anyone who deletes their pip env.
+
+**Regression gate:** all 42 tests pass across hello-app, wikipedia, git-log, plexi-browser, aquarium, snake. `just install-alpha` succeeded with 36 apps installed.
+
+## 2026-04-14 — [GOTCHA] Rust SDK lags Python SDK on protocol additions
+
+Discovered while polishing `sdk/rust/Cargo.toml` for publication: `sdk/rust/src/lib.rs` (270 lines) covers only the original protocol surface and is missing every addition Python 0.2.0 ships: `scroll`, `mouse_down`/`mouse_up`, `drop`, `get_state`/`set_state` round trip, `cost_report`, `notification`, `feedback`, `log` draw command. A Rust app written today cannot use any of those features without dropping to raw JSON.
+
+Kept the Rust crate at `0.1.0` rather than bumping to 0.2.0 alongside Python — bumping the version without parity would misrepresent the crate. The new protocol spec at `docs/specs/app-infrastructure.md` notes the gap explicitly in the "See also" section so external Rust devs aren't blindsided. Bringing the Rust SDK to parity is its own follow-up commit and the right next step before any Rust example app needs the new commands.
+
+## 2026-04-14 — [GOTCHA] Pytest-style test files exit 0 silently when run with bare python3
+
+The `examples/aquarium/tests/test_aquarium.py` and `examples/snake/tests/test_snake.py` files use `def test_*` functions with no `if __name__ == "__main__"` block. Running `python3 examples/aquarium/tests/test_aquarium.py` imports the module, runs nothing, and exits 0 — looks like a passing test from the outside. The other suites (`hello-app`, `wikipedia`, `git-log`, `plexi-browser`) follow the older pattern with explicit `main()` calls in `__main__`, so they print PASS lines.
+
+The actual aquarium and snake tests run fine under `python3 -m pytest examples/aquarium/tests/ examples/snake/tests/ -v` (8 + 10 tests pass). Anything that loops over example test files for a regression gate must either standardize the runner (pytest for everything, or main() blocks for everything) or detect the file shape per-suite. Picking pytest as the universal runner is the cleaner long-term move; the four older suites need a one-time conversion.
+
 ## 2026-04-13 — [CHANGED] SDK feedback primitive + app env vars + two new apps
 
 **SDK (v0.1.0 → v0.2.0):**
