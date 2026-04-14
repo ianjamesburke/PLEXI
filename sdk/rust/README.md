@@ -9,8 +9,33 @@ host over stdin/stdout.
 
 ```toml
 [dependencies]
-plexi-sdk = "0.1"
+plexi-sdk = "0.2"
 ```
+
+## Changelog
+
+### 0.2.0
+
+Feature parity with the Python SDK 0.2.0:
+
+- New inbound events on `PlexiEvent`: `Scroll`, `MouseDown`, `MouseUp`,
+  `MouseMove`, `Drop`, `GetState`, `SetState`. `Render` now carries
+  `delta_time`.
+- New outbound `DrawCommand` variants: `Image`, `VideoThumbnail`, `FileGrid`,
+  `DropTarget`, `Log`, `State`, `CostReport`, `Notification`, `SetCursor`,
+  `MouseTracking`.
+- New `App` trait hooks (all default no-op): `on_scroll`, `on_mouse_down`,
+  `on_mouse_up`, `on_mouse_move`, `on_drop`, `on_get_state`, `on_set_state`.
+- New `Emitter` helpers: `log` / `info` / `warn` / `error` / `debug`,
+  `cost_report`, `notification`, and the **client-side**
+  `submit_feedback` (writes `feedback.jsonl` directly into the app's
+  install directory — not a draw command).
+- New `RenderContext` helpers mirroring the Python surface: `image`,
+  `video_thumbnail`, `file_grid`, `drop_target`, `set_cursor`,
+  `mouse_tracking`, `log`/`info`/`warn`/`error`/`debug`, `notification`.
+- `Emitter` and `RenderContext` now read `PLEXI_APP_ID` from the
+  environment so `cost_report` and `notification` are attributed correctly
+  without ceremony.
 
 ## Quick start
 
