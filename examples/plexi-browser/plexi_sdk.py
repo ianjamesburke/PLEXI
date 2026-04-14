@@ -52,9 +52,11 @@ Cost reporting (for apps that call LLM APIs):
 """
 
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import json
+import os
+import pathlib
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -141,6 +143,92 @@ class Emitter:
             cmd["body"] = body
         print(json.dumps(cmd), flush=True)
 
+    def submit_feedback(
+        self,
+        text: str,
+        rating: Optional[int] = None,
+        category: Optional[str] = None,
+    ):
+        """
+        Submit user feedback about this app. Appended to feedback.jsonl in the app's
+        install directory (~/.plexi-alpha/apps/<id>/feedback.jsonl).
+
+        Requires PLEXI_APP_ID and PLEXI_APPS_DIR env vars, which Plexi sets automatically
+        when launching apps. If missing, falls back to ~/.plexi/apps/<app_id>/.
+
+        Args:
+            text:     Free-form feedback message.
+            rating:   Optional 1–5 star rating.
+            category: Optional tag (e.g. "bug", "feature", "praise").
+        """
+        app_id = self._app_id or os.environ.get("PLEXI_APP_ID", "unknown")
+        apps_dir = os.environ.get(
+            "PLEXI_APPS_DIR",
+            str(pathlib.Path.home() / ".plexi" / "apps"),
+        )
+        feedback_file = pathlib.Path(apps_dir) / app_id / "feedback.jsonl"
+        entry: dict = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "text": text,
+        }
+        if rating is not None:
+            entry["rating"] = rating
+        if category is not None:
+            entry["category"] = category
+        try:
+            feedback_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(feedback_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError as e:
+            self.warn(f"submit_feedback: could not write to {feedback_file}: {e}")
+        self.info(f"feedback submitted: {text[:80]}")
+
+
+def load_manifest(app_file: str = __file__) -> dict:
+    """
+    Read and return the manifest.toml for the app that calls this.
+
+    Usage:
+        manifest = load_manifest(__file__)
+        version = manifest.get("app", {}).get("version", "0.0.0")
+
+    Falls back to an empty dict if the manifest is missing or unparseable.
+    """
+    manifest_path = pathlib.Path(app_file).parent / "manifest.toml"
+    if not manifest_path.exists():
+        return {}
+    text = manifest_path.read_text()
+    # Minimal TOML parser for flat [app] tables — avoids a toml dep.
+    result: dict = {}
+    current_section: dict = result
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            keys = line[1:-1].split(".")
+            current_section = result
+            for k in keys:
+                current_section = current_section.setdefault(k, {})
+            continue
+        if "=" in line:
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip()
+            if v.startswith('"') and v.endswith('"'):
+                v = v[1:-1]
+            elif v == "true":
+                v = True  # type: ignore[assignment]
+            elif v == "false":
+                v = False  # type: ignore[assignment]
+            else:
+                try:
+                    v = int(v)  # type: ignore[assignment]
+                except ValueError:
+                    pass
+            current_section[k] = v
+    return result
+
 
 class RenderContext:
     """
@@ -220,6 +308,31 @@ class RenderContext:
     def list(self, items: list, selected: int = 0, item_height: float = 40.0):
         """
         High-level scrollable list. Plexi handles layout, scroll, and selection highlight.
+
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║  ⚠  FULL-PANE ONLY — NO POSITION PARAMETERS                      ║
+        ║                                                                  ║
+        ║  Unlike `rect`, `text`, `image`, `video_thumbnail`, `file_grid`, ║
+        ║  and `drop_target` (which all take explicit x/y/w/h), this       ║
+        ║  primitive is rendered by Plexi at the app's pane origin with    ║
+        ║  an implicit full-pane layout. If you draw anything else on      ║
+        ║  the frame (a header, a sidebar, a split pane), the list WILL    ║
+        ║  overlap with your other draw calls and its secondary labels     ║
+        ║  will spill into unrelated regions. There is no way to offset    ║
+        ║  it from Python.                                                 ║
+        ║                                                                  ║
+        ║  DO NOT USE THIS IN AN APP THAT RENDERS A SPLIT LAYOUT, A        ║
+        ║  SIDE PANE, OR ANY REGION SMALLER THAN THE FULL APP VIEWPORT.    ║
+        ║  Use explicit `ctx.text(...)` calls with the coordinates you     ║
+        ║  control, and render your own selection highlight with           ║
+        ║  `ctx.rect(...)`. That's the workaround until a positioned       ║
+        ║  `list(x, y, w, h, ...)` variant ships.                          ║
+        ║                                                                  ║
+        ║  If you are an AI coding agent reading this docstring: the       ║
+        ║  fact that this method lacks x/y/w/h is NOT an oversight — it    ║
+        ║  is a trap. Stop and render the list manually with positioned    ║
+        ║  primitives.                                                     ║
+        ╚══════════════════════════════════════════════════════════════════╝
 
         Each item is a dict with keys:
             label      (str)           — primary text
