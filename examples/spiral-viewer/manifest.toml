@@ -1,0 +1,17 @@
+[app]
+id          = "spiral-viewer"
+name        = "Spiral Viewer"
+entry       = "spiral_viewer.py"
+version     = "0.1.0"
+description = "Render a Plexi app at multiple sizes simultaneously on a Fibonacci spiral. Dev tool for verifying app responsiveness."
+
+[app.capabilities]
+file_types     = []
+filesystem     = "read_only"
+network        = false
+terminal_write = false
+mouse_tracking = true
+
+[app.layout]
+min_width  = 800
+min_height = 600
