@@ -340,6 +340,28 @@ impl AppRegistry {
 
     /// Launch an app and return a boxed `App` trait object.
     pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
+        self.launch_inner(id, cwd, args, None)
+    }
+
+    /// Launch an app that was spawned by another app. Sets PLEXI_LAUNCH_MODE=spawned
+    /// and PLEXI_PARENT_APP_ID=<parent_app_id> in the child's environment.
+    pub fn launch_as_child(
+        &self,
+        id: &str,
+        cwd: &PathBuf,
+        args: &[String],
+        parent_app_id: &str,
+    ) -> Option<Box<dyn App>> {
+        self.launch_inner(id, cwd, args, Some(parent_app_id))
+    }
+
+    fn launch_inner(
+        &self,
+        id: &str,
+        cwd: &PathBuf,
+        args: &[String],
+        parent_app_id: Option<&str>,
+    ) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
         match ProcessApp::launch(
             installed.manifest.id.clone(),
@@ -349,6 +371,7 @@ impl AppRegistry {
             cwd,
             args,
             installed.manifest.capabilities.mouse_tracking,
+            parent_app_id,
         ) {
             Ok(app) => {
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);

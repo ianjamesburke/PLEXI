@@ -35,9 +35,35 @@ pub enum FileBrowserActionKind {
     },
 }
 
+/// Optional entry filter applied when the file browser is opened in a specific mode.
+/// Set via `--filter=<kind>` argv when spawned by another app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryFilter {
+    /// Show only image files.
+    Images,
+}
+
+impl EntryFilter {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "images" | "image" => Some(EntryFilter::Images),
+            _ => None,
+        }
+    }
+
+    fn matches(&self, entry: &Entry) -> bool {
+        match self {
+            EntryFilter::Images => entry.is_image || entry.is_dir,
+        }
+    }
+}
+
 pub struct FileBrowserApp {
     pub cwd: PathBuf,
     entries: Vec<Entry>,
+    /// When set (via `--filter=images` etc.), only entries matching the filter
+    /// are shown. Directories always pass so the user can navigate.
+    filter: Option<EntryFilter>,
     selected: usize,
     sort_mode: SortMode,
     error: Option<String>,
@@ -78,12 +104,25 @@ pub struct FileBrowserApp {
 
 impl FileBrowserApp {
     pub fn new(cwd: PathBuf) -> Self {
+        Self::new_with_filter(cwd, None)
+    }
+
+    /// Construct from spawn args. Parses `--filter=<kind>` if present.
+    pub fn from_args(cwd: PathBuf, args: &[String]) -> Self {
+        let filter = args.iter().find_map(|a| {
+            a.strip_prefix("--filter=").and_then(EntryFilter::parse)
+        });
+        Self::new_with_filter(cwd, filter)
+    }
+
+    fn new_with_filter(cwd: PathBuf, filter: Option<EntryFilter>) -> Self {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || audio::audio_thread(rx));
 
         let mut app = Self {
             cwd,
             entries: Vec::new(),
+            filter,
             selected: 0,
             sort_mode: SortMode::RecentlyTouched,
             error: None,
@@ -285,6 +324,10 @@ impl FileBrowserApp {
                             )
                         });
                     }
+                }
+                // Apply entry filter (e.g. images-only mode when spawned by photo-viewer).
+                if let Some(filter) = &self.filter {
+                    entries.retain(|e| filter.matches(e));
                 }
                 self.entries = entries;
                 self.selected = self.selected.min(self.entries.len().saturating_sub(1));
@@ -982,6 +1025,15 @@ impl App for FileBrowserApp {
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
+        // When the text preview panel is active, it owns all key input.
+        // Navigation shortcuts (j/k, backspace, arrow keys) must not fire
+        // while the user is typing in the inline editor.
+        if self.text_preview_path.is_some() {
+            // Only allow Cmd+Z undo (for text edits) to pass through.
+            // Everything else is consumed by the TextEdit widget during draw.
+            return false;
+        }
+
         // Cmd+Z — undo. Works even with an empty entry list (to restore a
         // file that was just trashed).
         if input.modifiers.command

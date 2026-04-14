@@ -73,6 +73,10 @@ pub struct ProcessApp {
     mouse_tracking: bool,
     /// Pending cursor icon override requested by the app this frame.
     pending_cursor: Option<egui::CursorIcon>,
+    /// If this app was spawned by another app, the spawning app's type_id.
+    /// Re-injected as PLEXI_PARENT_APP_ID on hot-reload so the app always
+    /// knows it was spawned, not opened directly.
+    parent_app_id: Option<String>,
 }
 
 /// Snapshot of an app's state buckets.
@@ -134,6 +138,12 @@ fn find_python() -> std::ffi::OsString {
 
 impl ProcessApp {
     /// Spawn an app binary at `bin_path`.
+    ///
+    /// `parent_app_id` — when `Some`, the app was spawned by another app rather
+    /// than opened directly. Two extra env vars are injected:
+    /// - `PLEXI_LAUNCH_MODE=spawned`
+    /// - `PLEXI_PARENT_APP_ID=<parent_app_id>`
+    /// Apps read these to branch on standalone-vs-embedded behaviour.
     pub fn launch(
         type_id: impl Into<String>,
         display_name: impl Into<String>,
@@ -142,6 +152,7 @@ impl ProcessApp {
         cwd: &PathBuf,
         args: &[String],
         mouse_tracking: bool,
+        parent_app_id: Option<&str>,
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
@@ -155,12 +166,21 @@ impl ProcessApp {
                 (bin_path.as_os_str().to_owned(), vec![])
             };
 
-        let mut child = std::process::Command::new(&cmd)
+        let mut cmd_builder = std::process::Command::new(&cmd);
+        cmd_builder
             .args(&extra_args)
             .args(args)
             .current_dir(cwd)
             .env("PLEXI_APP_ID", &type_id)
-            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str())
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+        if let Some(parent_id) = parent_app_id {
+            cmd_builder
+                .env("PLEXI_LAUNCH_MODE", "spawned")
+                .env("PLEXI_PARENT_APP_ID", parent_id);
+        } else {
+            cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
+        }
+        let mut child = cmd_builder
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()) // captured and forwarded to Plexi's logger
@@ -247,6 +267,7 @@ impl ProcessApp {
             last_render_time: Instant::now(),
             mouse_tracking,
             pending_cursor: None,
+            parent_app_id: parent_app_id.map(|s| s.to_string()),
         })
     }
 
@@ -319,12 +340,21 @@ impl ProcessApp {
             } else {
                 (self.bin_path.as_os_str().to_owned(), vec![])
             };
-        let mut child = match std::process::Command::new(&cmd)
+        let mut cmd_builder = std::process::Command::new(&cmd);
+        cmd_builder
             .args(&extra_args)
             .args(&self.args)
             .current_dir(&self.cwd)
             .env("PLEXI_APP_ID", &self.type_id)
-            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str())
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+        if let Some(parent_id) = &self.parent_app_id {
+            cmd_builder
+                .env("PLEXI_LAUNCH_MODE", "spawned")
+                .env("PLEXI_PARENT_APP_ID", parent_id);
+        } else {
+            cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
+        }
+        let mut child = match cmd_builder
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
