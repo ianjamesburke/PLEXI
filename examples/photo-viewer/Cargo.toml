@@ -6,7 +6,7 @@ description = "Plexi example: external single-image viewer in Rust"
 license = "MIT"
 
 [[bin]]
-name = "photo-viewer"
+name = "plexi-app"
 path = "src/main.rs"
 
 [dependencies]
