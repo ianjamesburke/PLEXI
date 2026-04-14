@@ -1,7 +1,29 @@
 # Plexi WASM + PWA Mobile Deployment
 
 **Status:** Phase 1 complete (scaffolding)
-**Last updated:** 2026-04-11
+**Last updated:** 2026-04-14
+
+---
+
+## Alternate fast path — PWA over WebSocket bridge (~4 weeks)
+
+Captured 2026-04-14. The full WASM-Plexi vision below is the multi-month endgame. There's a much faster path that gives you "interact with my desktop Plexi from my phone" in 4 focused weeks without compiling Plexi itself to WASM:
+
+1. **Week 1 — WebSocket transport in Plexi.** Add a WebSocket server to the Plexi binary, gated behind `[network] enabled = true` in config.toml. The server mirrors the existing per-pane DrawCommand stream over WebSocket — Plexi already has the internal stream, this just exposes it on a new transport. Auth is a shared secret in the config file plus Tailscale for NAT traversal.
+2. **Week 2 — PWA renderer.** A small HTML/JS/Canvas PWA that connects to `wss://your-tailnet.ts.net:port`, receives DrawCommands and renders them into a canvas (the same draw protocol you write on screen, just on a phone canvas), captures touches as mouse events and on-screen keyboard as key events, sends them back. "Add to Home Screen" installs it like a native app on iOS/Android with no app store.
+3. **Week 3 — Terminal pane mirroring.** Forward the cell grid (rows × cols × {char, fg, bg, attrs}) over the same WebSocket as a typed channel. The PWA renders the grid with a monospace canvas font. Keystrokes flow back into the PTY. This is the "type into my terminal from my phone" experience.
+4. **Week 4 — Multi-pane swipe UI + on-screen modifier toolbar (Tab/Esc/Ctrl/Cmd/Alt buttons, since iOS keyboards lack them).**
+
+**Honest blockers** for this path:
+- Auth — the easy answer is Tailscale; the harder answer is a real token-based system. v1 should just say "use Tailscale" and document it.
+- iOS keyboard UX — no Tab/Esc/modifiers without a third-party keyboard. The PWA needs an on-screen toolbar. Real UX work.
+- Performance — delta-encode the cell grid changes, otherwise mobile data eats the connection.
+
+**What this path does NOT need:** a full WASM Plexi build, native iOS/Android apps, real-time audio/video panes on mobile, multi-user collab. All of those are the WASM endgame below.
+
+**Trade-off vs. the WASM path:** the PWA path requires the desktop Plexi to be running — the phone is a thin client. The WASM path eventually runs Plexi-the-app entirely in the phone browser. The PWA is faster to build and validate; the WASM path is the sovereign endgame. Both end at the same place; the PWA path gets you to "I can SSH from my phone via Plexi" 3-6 months sooner.
+
+**Status:** deferred. Not blocking any other work. Pull off the back burner when (a) someone actually wants mobile access, or (b) the desktop ecosystem is mature enough that mobile becomes a force multiplier.
 
 ---
 
