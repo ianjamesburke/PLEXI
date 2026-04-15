@@ -1,4 +1,5 @@
 [app]
+protocol_version = 2
 id = "hello-app"
 name = "Hello App"
 version = "0.1.0"

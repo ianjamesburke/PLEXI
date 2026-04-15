@@ -26,27 +26,77 @@ Key handlers can emit terminal commands via the Emitter passed as the second arg
     def on_key(key, mods, emit):
         if key == "Enter":
             emit.run_in_terminal("echo hello")
+
+SDK version: 0.4.0
+Protocol version: 2
 """
+from __future__ import annotations
 
 import json
 import sys
 from typing import Callable, Optional
 
 
+class OpenIntent:
+    """Structured spawn intent passed at app startup via the Init event."""
+
+    def __init__(self, kind_type: str, **kwargs):
+        self.kind_type = kind_type
+        self.kwargs = kwargs
+
+    @classmethod
+    def file(cls, path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> "OpenIntent":
+        """Open a file, optionally at a specific line range."""
+        r: dict = {"kind": "file", "path": path}
+        if start_line is not None:
+            r["range"] = {"start_line": start_line, "end_line": end_line or start_line}
+        return cls("file", **r)
+
+    @classmethod
+    def prompt(cls, text: str, model_hint: Optional[str] = None) -> "OpenIntent":
+        """Open with a text prompt."""
+        d: dict = {"kind": "prompt", "text": text}
+        if model_hint:
+            d["model_hint"] = model_hint
+        return cls("prompt", **d)
+
+    @classmethod
+    def bare(cls) -> "OpenIntent":
+        """Open with no structured intent."""
+        return cls("bare", kind="bare")
+
+    @classmethod
+    def resume(cls, snapshot_key: str) -> "OpenIntent":
+        """Resume from a snapshot key."""
+        return cls("resume", kind="resume", snapshot_key=snapshot_key)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "OpenIntent":
+        """Deserialize from the Init event payload."""
+        kind_type = d.get("kind", "bare")
+        return cls(kind_type, **d)
+
+    def to_dict(self) -> dict:
+        return self.kwargs
+
+
 class Emitter:
     """Emit commands to Plexi immediately (outside a render frame)."""
 
+    def _write(self, cmd: dict):
+        print(json.dumps(cmd), flush=True)
+
     def run_in_terminal(self, command: str):
         """Execute a shell command in the linked terminal."""
-        print(json.dumps({"type": "run_in_terminal", "command": command}), flush=True)
+        self._write({"type": "run_in_terminal", "command": command})
 
     def cd(self, path: str):
         """Change the linked terminal's working directory."""
-        print(json.dumps({"type": "cd", "path": path}), flush=True)
+        self._write({"type": "cd", "path": path})
 
     def log(self, level: str, message: str):
         """Forward a log message to Plexi's logger (level: error|warn|info|debug)."""
-        print(json.dumps({"type": "log", "level": level, "message": message}), flush=True)
+        self._write({"type": "log", "level": level, "message": message})
 
     def info(self, message: str):
         """Log at info level."""
@@ -63,6 +113,57 @@ class Emitter:
     def debug(self, message: str):
         """Log at debug level."""
         self.log("debug", message)
+
+    def run_create(self, head_task: str, payload: Optional[dict] = None,
+                   parent_run_id: Optional[str] = None,
+                   notification_title: Optional[str] = None):
+        """Create a Run. Plexi will respond with a RunCreated event containing the run_id."""
+        cmd: dict = {"type": "run_create", "head_task": head_task, "payload": payload or {}}
+        if parent_run_id:
+            cmd["parent_run_id"] = parent_run_id
+        if notification_title:
+            cmd["notification_title"] = notification_title
+        self._write(cmd)
+
+    def run_update(self, run_id: str, status: dict, head_task: Optional[str] = None,
+                   payload: Optional[dict] = None):
+        """Update a Run's status. status is a dict with a 'status' key matching RunStatus."""
+        cmd: dict = {"type": "run_update", "run_id": run_id, "status": status}
+        if head_task:
+            cmd["head_task"] = head_task
+        if payload:
+            cmd["payload"] = payload
+        self._write(cmd)
+
+    def run_complete(self, run_id: str, outcome: str = "success", error: Optional[str] = None):
+        """Complete a Run. outcome: 'success' | 'failed' | 'cancelled'."""
+        o: dict = {"outcome": outcome}
+        if error:
+            o["error"] = error
+        self._write({"type": "run_complete", "run_id": run_id, "outcome": o})
+
+    def event_subscribe(self, kinds: Optional[list] = None, scope: str = "workspace"):
+        """Subscribe to bus events. Handler registered via @app.on_event."""
+        self._write({"type": "event_subscribe", "kinds": kinds or [], "scope": scope})
+
+    def notify(self, id: str, title: str, body: Optional[str] = None,
+               urgency: Optional[str] = None, run_id: Optional[str] = None,
+               action: Optional[dict] = None):
+        """Emit a notification."""
+        cmd: dict = {"type": "notification", "id": id, "title": title}
+        if body:
+            cmd["body"] = body
+        if urgency:
+            cmd["urgency"] = urgency
+        if run_id:
+            cmd["run_id"] = run_id
+        if action:
+            cmd["action"] = action
+        self._write(cmd)
+
+    def pipe_write(self, channel: str, value):
+        """Write data to a named pipe channel."""
+        self._write({"type": "pipe_write", "channel": channel, "value": value})
 
 
 class RenderContext:
@@ -154,22 +255,34 @@ class App:
     Base class for Plexi apps. Register event handlers via decorators.
 
     Handlers:
+        @app.on_init     fn(init_data: dict, emit: Emitter)   — v2: receives open_intent
         @app.on_render   fn(ctx: RenderContext)
         @app.on_key      fn(key: str, mods: dict, emit: Emitter)
         @app.on_click    fn(x: float, y: float, button: str, emit: Emitter)
         @app.on_command  fn(text: str, emit: Emitter)
         @app.on_resize   fn(width: float, height: float)
+        @app.on_event    fn(event: dict, emit: Emitter)       — v2: bus events
+        @app.on_run_created fn(run_id: str, emit: Emitter)    — v2: run lifecycle
     """
 
     def __init__(self):
         self.width: float = 800.0
         self.height: float = 600.0
+        self.protocol_version: int = 1
+        self.open_intent: Optional[OpenIntent] = None
+        self._on_init: Optional[Callable] = None
         self._on_render: Optional[Callable] = None
         self._on_key: Optional[Callable] = None
         self._on_click: Optional[Callable] = None
         self._on_command: Optional[Callable] = None
         self._on_resize: Optional[Callable] = None
+        self._on_event: Optional[Callable] = None
+        self._on_run_created: Optional[Callable] = None
         self._emitter = Emitter()
+
+    def on_init(self, fn: Callable) -> Callable:
+        self._on_init = fn
+        return fn
 
     def on_render(self, fn: Callable) -> Callable:
         self._on_render = fn
@@ -191,6 +304,23 @@ class App:
         self._on_resize = fn
         return fn
 
+    def on_event(self, fn: Callable) -> Callable:
+        """Register a handler for bus events (EventData). fn(event: dict, emit: Emitter)."""
+        self._on_event = fn
+        return fn
+
+    def on_run_created(self, fn: Callable) -> Callable:
+        """Register a handler for RunCreated responses. fn(run_id: str, emit: Emitter)."""
+        self._on_run_created = fn
+        return fn
+
+    def spawn_app(self, app_id: str, open_intent: Optional[OpenIntent] = None):
+        """Spawn another Plexi app. Emits a spawn_app draw command."""
+        cmd: dict = {"type": "spawn_app", "app_id": app_id}
+        if open_intent is not None:
+            cmd["open_intent"] = open_intent.to_dict()
+        self._emitter._write(cmd)
+
     def run(self):
         """Start the event loop. Blocks until Plexi sends Shutdown."""
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
@@ -207,10 +337,20 @@ class App:
 
             event_type = event.get("type", "")
 
-            if event_type in ("init", "resize"):
+            if event_type == "init":
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
-                if event_type == "resize" and self._on_resize:
+                self.protocol_version = event.get("protocol_version", 1)
+                raw_intent = event.get("open_intent")
+                if raw_intent:
+                    self.open_intent = OpenIntent.from_dict(raw_intent)
+                if self._on_init:
+                    self._on_init(event, self._emitter)
+
+            elif event_type == "resize":
+                self.width = event.get("width", self.width)
+                self.height = event.get("height", self.height)
+                if self._on_resize:
                     self._on_resize(self.width, self.height)
 
             elif event_type == "render":
@@ -241,6 +381,14 @@ class App:
             elif event_type == "command":
                 if self._on_command:
                     self._on_command(event.get("text", ""), self._emitter)
+
+            elif event_type == "run_created":
+                if self._on_run_created:
+                    self._on_run_created(event.get("run_id", ""), self._emitter)
+
+            elif event_type == "event_data":
+                if self._on_event:
+                    self._on_event(event.get("event", {}), self._emitter)
 
             elif event_type == "shutdown":
                 break

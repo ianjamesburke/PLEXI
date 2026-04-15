@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [DECISION] v2.0 RC: full protocol implementation — OpenIntent, event bus, Run primitive, typed pipes Phase 1, Plexi IQ Stage 1
+
+Implemented all v2.0 scope items in a single RC branch. Key choices: event bus uses std::sync::mpsc with 4096-bound sync_channel and fan-out via a subscriber Vec (no tokio dep needed — matches existing sync threading model in ProcessApp); RunStore is in-memory with JSONL append log (no SQLite, mirrors notification log pattern); Plexi IQ Stage 1 uses `claude -p --resume` subprocess backend per spec §9 (native API mode is config option, not default); typed pipes auto-wiring on spawn rather than at runtime for simplicity. EventSubscribe uses broadcast via a shared subscriber list rather than tokio::broadcast to stay on std threads. ProcessApp now holds optional Arc refs to EventLog and RunStore — wired at launch time via wire() method rather than passing through the App trait (which is object-safe and couldn't hold generics).
+
 ## 2026-04-11 — [CHANGED] Secrets manager write UI, index-file listing, logging infrastructure
 
 Secrets manager upgraded from read-only viewer to full add/delete UI. Listing fixed by replacing `security dump-keychain` (triggers invisible macOS permission prompt) with a local `secrets-index.json`. Centralized file logging added via `fern` with config-driven log levels and `DrawCommand::Log` forwarding from external apps.
