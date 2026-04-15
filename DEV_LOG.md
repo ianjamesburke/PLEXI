@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-12 — [CHANGED] Agent mode prints a scope header on activation (issue #118)
+
+When agent mode activates, it now emits a dim `agent ─ <project>  <~/path>` header into the terminal grid right before the first `>>> ` prompt, so the user can see which directory the agent is scoped to. Rendered inline via ANSI (bold magenta project name + dim gray full path, home collapsed to `~`) to match the existing Warp-style output path — no new UI surface. Helper `build_scope_header` lives in `agent_mode.rs`; uses the already-present `dirs` crate for home collapse.
+
 ## 2026-04-12 — [FIX] Pomodoro break timers now auto-start (issue #171)
 
 `examples/pomodoro/pomodoro.py` — pressing `b` (short break) or `l` (long break) used to set `running = False` and require a second Shift+Space to start the timer, which broke the end-of-focus → break handoff. Now the `b` / `l` handlers set `running = True` and reset `last_tick` so the break counts down immediately. Updated the header hint accordingly.
