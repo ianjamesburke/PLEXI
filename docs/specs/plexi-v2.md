@@ -14,9 +14,13 @@
 > 5. Checklist status updates (pending → in-progress → done) are the ONLY edits that don't need all four steps above. They still need a DEV_LOG entry when an item flips to "done."
 
 **Status:** Draft
-**Last updated:** 2026-04-14
+**Last updated:** 2026-04-15
 **Owner:** plexi-core (ianjamesburke)
 **Release target:** Plexi 2.0 — 3 months from `protocol-v2.md` date
+
+**Revision history:**
+- 2026-04-15 — Added M2.4 Input Layering Contract to scope after alpha-bug review. See `protocol-v2.md` §7.5 and `DEV_LOG.md` 2026-04-15 `[DECISION]` entry. #240 re-labeled v2.2 → v2.
+- 2026-04-14 — Initial draft.
 
 ---
 
@@ -61,11 +65,12 @@ The full list with rationale lives in `protocol-v2.md` §1. Mirrored here for vi
 4. **`Run` primitive** — `protocol-v2.md` §5 (dumb store, draw commands, JSONL log)
 5. **Rich notification actions** — `protocol-v2.md` §6 (typed action enum, `run_id` binding)
 6. **Capability enforcement pass** — `protocol-v2.md` §7 (runtime prompts, `permissions.json`, `observes`)
-7. **Typed pipes Phase 1** — `typed-pipes.md` §2.3+ (manifest wiring, auto-wire, linking matrix UI)
-8. **Plexi IQ Stage 1** — `protocol-v2.md` §9 (in-host orchestrator, `claude -p --resume` backend)
-9. **`[app.skill]` + `[app.agent]` manifest sections** — installable skills and agents
-10. **SDK 0.4.0** — `OpenIntent` + `Run` convenience methods, all examples migrated
-11. **Migration pass** — all bundled example apps bumped to `protocol_version = 2`
+7. **Input layering contract** — `protocol-v2.md` §7.5 (host-owned priority stack for keyboard routing; closes alpha-bugs #240 and #236 and prevents the same bug class in every future overlay)
+8. **Typed pipes Phase 1** — `typed-pipes.md` §2.3+ (manifest wiring, auto-wire, linking matrix UI)
+9. **Plexi IQ Stage 1** — `protocol-v2.md` §9 (in-host orchestrator, `claude -p --resume` backend)
+10. **`[app.skill]` + `[app.agent]` manifest sections** — installable skills and agents
+11. **SDK 0.4.0** — `OpenIntent` + `Run` convenience methods, all examples migrated
+12. **Migration pass** — all bundled example apps bumped to `protocol_version = 2`
 
 ### V2 Product (ships with or after the protocol work)
 
@@ -125,6 +130,7 @@ This is the thing that tracks 2.0 completion. Each line is a discrete, verifiabl
 - [ ] **M2.1 — Rich notification actions** — closed enum (`Focus`, `Confirm`, `TextInput`, `Dismiss`, `ResumeRun`, `OpenIntent`, `RunCommand`, `ExternalUrl`), `run_id` on `Notification`, palette integration. **Done when:** a notification with `ResumeRun` action resumes a blocked run in one click. Spec: `protocol-v2.md` §6.
 - [ ] **M2.2 — Capability enforcement pass** — runtime Yes once / Yes always / No prompt flow, `~/.plexi-alpha/permissions.json` persistence, `observes` capability gates event bus subscriptions, `OpenIntent` path validated against directory scope at the host boundary. **Done when:** an app trying to read a file outside its workspace scope is refused with a visible prompt and the decision persists across restarts. Spec: `protocol-v2.md` §7.
 - [ ] **M2.3 — Typed pipes Phase 1** — `[app.io]` manifest parsing, auto-wiring of matching kind+name pairs, linking matrix overlay UI. **Done when:** two unrelated example apps compose via matching kind+name with no code changes. Spec: `typed-pipes.md` §2.3+.
+- [ ] **M2.4 — Input layering contract** — new `src/input_layer.rs` owning a priority-ordered `InputLayerStack`. Migrate `src/command_palette.rs`, `src/quick_note_app.rs`, `src/notification_palette.rs`, `src/agent_mode.rs`, `src/keys.rs` off ad-hoc `consume_key` calls onto `InputLayer` implementations. Emit `EventKind::InputLayerChanged` on activation/deactivation. **Done when:** (a) command palette fully captures input when open with zero `Key` events reaching the focused pane's subprocess (closes #240); (b) quick-note cursor activates on Cmd+H/J/K/L pane navigation (closes #236); (c) every `ui.input_mut(|i| i.consume_key(...))` call in overlay code paths has been removed or migrated; (d) a host integration test asserts the stack ordering via injected synthetic input events. Spec: `protocol-v2.md` §7.5.
 
 ### Month 3 — Intelligence
 

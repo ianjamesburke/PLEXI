@@ -56,6 +56,7 @@ Everything on `main` plus:
 |---|---|
 | Rich notification actions (extends #219) | Notifications can wrap and resume a Run |
 | Capability enforcement + `permissions.json` | Runtime Yes once / Yes always / No; persistent grants |
+| **Input layering contract** (`protocol-v2.md` §7.5) | Host-owned priority stack for keyboard routing. Closes #240/#236 and prevents the same bug class in every future overlay. |
 | Typed pipes Phase 1 — manifest `[app.io]`, auto-wire | Apps compose without code changes |
 
 ### Month 3 — Intelligence

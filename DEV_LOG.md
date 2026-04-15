@@ -1,5 +1,22 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [DECISION] v2 scope expanded: input layering contract added as M2.4 (protocol-v2.md §7.5)
+
+Every alpha-bug about keyboard routing (#240 command palette input leak, #236 quick-note cursor not activating on pane nav, and the class of "TextEdit eats my shortcut" bugs recorded as CLAUDE.md lessons) is a symptom of the same missing primitive: a centralized input routing layer. v1 has no such thing — every overlay and pane calls `ui.input_mut(|i| i.consume_key(...))` independently, and the outcome of any keypress is determined by widget rendering order plus ad-hoc guards. New overlays keep re-discovering the same bug class.
+
+**Decision:** ship a host-owned priority stack (`InputLayerStack`) as a first-class v2 primitive. `protocol-v2.md` gains new §7.5 "Input Layering Contract" defining the stack, the `InputLayer` trait, the default priority order (`CommandPalette` / `QuickNote` / `NotificationPalette` / `AgentMode` / `Pane::Focused` / `Pane::Unfocused`), the rules (all input routing goes through the stack; no widget-level `consume_key` in overlays; layer changes emit on the event bus), and the testing story (inject synthetic input events, assert stack ordering, verify pane subprocess received zero keys). Implementation lives in new `src/input_layer.rs`; `src/keys.rs`, `src/command_palette.rs`, `src/quick_note_app.rs`, `src/notification_palette.rs`, `src/agent_mode.rs` all migrate onto the layer API as part of M2.4.
+
+**Trade-off:** adds ~1 week to Month 2. The alternative (narrow palette-only `consume_key` patch for #240) was considered and rejected by the user: "we need to fix how keyboard focus and keymap priority works at a systemic level because we keep running into this issue. So it's not an elegant enough solution." A narrow patch would need to be re-solved for every new overlay v2 adds (notification palette §6, run palette cards §5, agent mode UI §9). The structural fix is load-bearing.
+
+**Cross-cutting edits landing in the same PR:**
+- `docs/specs/protocol-v2.md` §7.5 added, §1 scope list updated, §2 surface table updated, §12 ship order updated to insert input layering as Month 2 item 7, §12 validation list updated.
+- `docs/specs/plexi-v2.md` bumped `Last updated` to 2026-04-15, revision history added, item 7 added to in-scope list, M2.4 added to release checklist, validation criteria added.
+- `ROADMAP.md` Month 2 table row added.
+- **Protocol spec files brought to alpha.** `docs/specs/protocol-v2.md` and `docs/specs/protocol-v2.1.md` existed only on `feature/notifications-urgency-socket-actions` (commits `cf933bb` and `4443892`). They were never merged to alpha, leaving the `plexi-v2.md` scope file (which referenced them extensively) with dead links after PR #235. This PR extracts both files from their feature-branch commits and lands them on alpha so the scope index resolves correctly.
+- Issue #240 re-labeled `v2.2` → `v2`. #240 carried both `alpha-bug` (= fix before v2 RC) and `v2.2` (= post-v2), which was a contradiction; this decision resolves it in favor of `v2`.
+
+**What this closes:** #240 (command palette input leak), #236 (quick-note cursor activation), and preemptively the same bug class for any new v2 overlay.
+
 ## 2026-04-12 — [CHANGED] Apps can declare a startup message via `[app.launch].startup_message` (issue #185)
 
 New optional manifest field: `[app.launch].startup_message = "Starting X…"`. When present, Plexi writes the string in dim italics into the companion terminal's scrollback grid at launch, via `TerminalBackend::write_agent_bytes` (same path agent-mode uses — bytes never touch the PTY, so the shell has no idea they exist).
