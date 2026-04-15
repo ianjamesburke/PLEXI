@@ -1,5 +1,22 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-14 — [CHANGED] Vision doc split, Homebrew tap, notification system base layer merged
+
+Session was mostly architecture + roadmap alignment rather than feature building, with one significant PR landed.
+
+**What moved:**
+- `docs/VISION.md` created as single source of truth for Plexi's foundational claim (agent-native, internet-native analogy). `~/.agents/skills/plexi-north-star/SKILL.md` now references it instead of duplicating.
+- `ianjamesburke/homebrew-plexi` tap created; Cask format (not Formula — release produces a .app zip). `release.yml` extended with SHA256 computation + auto-update step (requires `HOMEBREW_TAP_TOKEN` PAT in repo secrets).
+- PR #222 merged: notification system urgency model (`priority: u8` → `urgency: String`), `expires_at`/`visible_after`/`action_type`/`action_payload`/`source` fields, Unix socket listener at `~/.plexi-alpha/notify.sock`, Enter-dispatch in palette with `focus_pane_by_id()`.
+- Issues filed: #218 (DrawCommand::Notify base), #219 (socket + action types), #220 (business card scanner POC), #221 (focus pane + poll-focus, downgraded to idea/P4), #223 (undo, idea/P4).
+
+**Decisions:**
+- `plexi install` = copy folder to `~/.plexi-alpha/apps/` (no PTY interception, existing binary handles it). `--local` flag for `.plexi/apps/` project-scoped installs. FSEvents watcher for hot-reload (event-driven, zero CPU idle).
+- Business model: Plexi IQ subscription ($25-35/mo or BYOK); open source core + apps; billing membrane is PGAP. Prompt caching non-optional — it's what makes unit economics work.
+- `@agent` syntax in agent mode: invokes installed `[app.agent]` apps by name; finds existing open instance before spawning new one. Not yet filed as issues — gap.
+
+**Open:** V2 product spec (app store, registry, billing) not captured in a doc. `@agent` syntax issues not filed.
+
 ## 2026-04-14 — [DECISION] mermaid-viewer: keyboard-driven diagram editor + --filter=mermaid file browser
 
 Added `EntryFilter::Mermaid` to `src/file_browser/mod.rs` (matches `.mmd` files and dirs). Added `examples/mermaid-viewer/` with four files: `mermaid_parser.py` (regex-based parser for flowchart/graph LR/TD syntax, 4 node shapes, solid/dashed/labeled edges), `graph_layout.py` (BFS layering → pixel coords, LR and TD), `mermaid_viewer.py` (full app: VIEW/EDIT_LABEL/ADD_NODE/CONNECTING modes, zoom/pan, hot-reload on mtime, spawns file-browser sidebar on direct launch), `manifest.toml`.
