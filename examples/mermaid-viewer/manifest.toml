@@ -1,25 +1,13 @@
 [app]
-id          = "mermaid-viewer"
-name        = "Mermaid Viewer"
-entry       = "mermaid_viewer.py"
-version     = "0.1.0"
-description = "Keyboard-driven mermaid diagram viewer and editor"
+id = "mermaid-viewer"
+name = "Mermaid Viewer"
+entry = "main.py"
+version = "0.1.0"
+description = "View and explore Mermaid diagrams with pan+zoom (v2.1 reference app)"
 
 [app.capabilities]
-filesystem     = "read_write"
-network        = false
-terminal_write = false
-mouse_tracking = false
+file_types = ["mmd", "mermaid"]
+filesystem = "read_only"
 
-[app.layout]
-min_width  = 400
-min_height = 300
-
-[app.launch]
-args = []
-
-[app.spawnable]
-spawnable = true
-accept_args = true
-allow_callers   = ["*"]
-allow_lifecycle = ["cascade", "orphan"]
+[app.protocol]
+requires = ["ui_primitives_v1"]

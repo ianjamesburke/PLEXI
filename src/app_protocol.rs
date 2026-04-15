@@ -133,6 +133,13 @@ pub enum PlexiEvent {
         /// The JSON value written by the sender.
         value: serde_json::Value,
     },
+    /// Response to a MeasureText request.
+    TextMetrics {
+        request_id: u32,
+        width: f32,
+        height: f32,
+        ascent: f32,
+    },
 }
 
 fn default_protocol_version() -> u32 {
@@ -706,6 +713,35 @@ pub enum DrawCommand {
     },
     /// List active pipe wires.
     PipeListWires,
+    /// Push a transform onto the transform stack.
+    PushTransform {
+        #[serde(default = "default_one_f32")]
+        scale_x: f32,
+        #[serde(default = "default_one_f32")]
+        scale_y: f32,
+        #[serde(default)]
+        translate_x: f32,
+        #[serde(default)]
+        translate_y: f32,
+        #[serde(default)]
+        rotate: f32,
+        #[serde(default)]
+        origin_x: f32,
+        #[serde(default)]
+        origin_y: f32,
+    },
+    /// Pop the top transform off the stack.
+    PopTransform,
+    /// Request exact text measurement. Plexi responds with a TextMetrics event.
+    MeasureText {
+        request_id: u32,
+        text: String,
+        size: f32,
+        #[serde(default)]
+        monospace: bool,
+        #[serde(default)]
+        bold: bool,
+    },
 }
 
 /// Anchor for a `SpawnApp` layout — where the new pane is positioned relative
@@ -833,6 +869,10 @@ pub struct ListItem {
 }
 
 fn default_stroke_width() -> f32 {
+    1.0
+}
+
+fn default_one_f32() -> f32 {
     1.0
 }
 

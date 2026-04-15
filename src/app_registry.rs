@@ -33,9 +33,25 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Features supported by this build of the Plexi host.
+pub const HOST_FEATURES: &[&str] = &[
+    "core_v1",
+    "open_intent_v1",
+    "event_bus_v1",
+    "runs_v1",
+    "typed_pipes_v1",
+    "ui_primitives_v1",
+];
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct AppManifest {
     pub app: AppManifestApp,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppProtocolSection {
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -74,6 +90,8 @@ pub struct AppManifestApp {
     #[serde(default)]
     #[allow(dead_code)]
     pub spawnable: AppSpawnable,
+    #[serde(default)]
+    pub protocol: Option<AppProtocolSection>,
 }
 
 fn default_protocol_version_manifest() -> u32 {
@@ -439,6 +457,20 @@ impl AppRegistry {
         parent_app_id: Option<&str>,
     ) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
+
+        // Feature negotiation: check that all required features are supported by this host.
+        if let Some(protocol) = &installed.manifest.protocol {
+            for required in &protocol.requires {
+                if !HOST_FEATURES.contains(&required.as_str()) {
+                    log::error!(
+                        "AppRegistry: cannot launch '{}': host does not support '{}' (required by this app). Update Plexi to support this feature.",
+                        id, required
+                    );
+                    return None;
+                }
+            }
+        }
+
         let protocol_version = installed.manifest.protocol_version;
         let mouse_tracking = installed.manifest.capabilities.mouse_tracking;
         match ProcessApp::launch_with_intent(
