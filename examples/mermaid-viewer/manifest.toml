@@ -1,0 +1,13 @@
+[app]
+id = "mermaid-viewer"
+name = "Mermaid Viewer"
+entry = "main.py"
+version = "0.1.0"
+description = "View and explore Mermaid diagrams with pan+zoom (v2.1 reference app)"
+
+[app.capabilities]
+file_types = ["mmd", "mermaid"]
+filesystem = "read_only"
+
+[app.protocol]
+requires = ["ui_primitives_v1"]
