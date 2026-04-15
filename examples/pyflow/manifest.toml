@@ -1,0 +1,9 @@
+[app]
+id = "pyflow"
+name = "PyFlow"
+entry = "pyflow.py"
+version = "0.2.0"
+description = "Visual Python node graph editor — write code in each node, run the graph"
+
+[app.capabilities]
+mouse_tracking = true

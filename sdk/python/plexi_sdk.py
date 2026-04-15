@@ -190,6 +190,7 @@ class RenderContext:
         self._measure_cache: dict = {}
         self._measure_req_id: int = 0
         self._time: float = 0.0
+        self._app: Optional["App"] = None  # set by App.run() before on_render
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0):
         """Fill a rectangle."""
@@ -427,6 +428,179 @@ class RenderContext:
 
         content_fn(self, mx, my, width, height)
 
+    def code_editor(self, editor_id: str, lines: list, cursor_line: int,
+                    cursor_col: int, on_change, x: float, y: float,
+                    w: float, h: float, focused: bool = True) -> dict:
+        """
+        Draw a multi-line Python code editor with syntax highlighting.
+
+        lines: list[str] — code content, one string per line (app owns state)
+        cursor_line, cursor_col — cursor position (app owns)
+        on_change(new_lines, new_cursor_line, new_cursor_col) — called on edits
+        focused — whether this editor captures key events
+
+        Keyboard handling is routed through App._editor_states when focused=True.
+        Requires ctx._app to be set (done automatically by App.run()).
+        """
+        _app = self._app
+
+        # Register with App for key routing
+        if _app is not None and focused:
+            _app._editor_states[editor_id] = {
+                "lines": lines,
+                "cursor_line": cursor_line,
+                "cursor_col": cursor_col,
+                "on_change": on_change,
+            }
+            _app._focused_editor_id = editor_id
+
+        font_size = 13.0
+        line_h = font_size + 4.0
+        line_num_w = 40.0
+        visible_lines = max(1, int(h / line_h))
+        scroll_line = _app._editor_scroll.get(editor_id, 0) if _app else 0
+
+        # Clamp scroll
+        max_scroll = max(0, len(lines) - visible_lines)
+        scroll_line = min(scroll_line, max_scroll)
+        if _app:
+            _app._editor_scroll[editor_id] = scroll_line
+
+        # Background
+        self.rect(x, y, w, h, fill="#1e1e2e", radius=4.0)
+        # Clip visually (no clip primitive — just let overdraw happen off-panel)
+
+        # Line number column bg
+        self.rect(x, y, line_num_w, h, fill="#181825", radius=0.0)
+
+        # Render visible lines
+        for rel_idx in range(visible_lines):
+            line_idx = scroll_line + rel_idx
+            if line_idx >= len(lines):
+                break
+            ly = y + rel_idx * line_h
+
+            # Current line highlight
+            if focused and line_idx == cursor_line:
+                self.rect(x, ly, w, line_h, fill="#2a2a3e", radius=0.0)
+
+            # Line number
+            line_num_str = str(line_idx + 1)
+            lnx = x + line_num_w - len(line_num_str) * 7 - 4
+            self.text(lnx, ly + 2, line_num_str, size=font_size,
+                      color="#45475a", monospace=True)
+
+            # Syntax-highlighted code
+            line_text = lines[line_idx]
+            self._draw_syntax_line(x + line_num_w + 4, ly + 2, line_text,
+                                   font_size)
+
+        # Cursor (blink)
+        if focused and self._time % 1.0 < 0.5:
+            rel = cursor_line - scroll_line
+            if 0 <= rel < visible_lines:
+                # Approximate char width for monospace
+                char_w = font_size * 0.6
+                cur_x = x + line_num_w + 4 + cursor_col * char_w
+                cur_y = y + rel * line_h
+                self.rect(cur_x, cur_y + 1, 2.0, line_h - 2, fill="#cdd6f4")
+
+        return {"x": x, "y": y, "w": w, "h": h}
+
+    # Syntax color constants
+    _KW = frozenset({
+        'def', 'class', 'return', 'import', 'from', 'if', 'else', 'elif',
+        'for', 'while', 'in', 'not', 'and', 'or', 'True', 'False', 'None',
+        'try', 'except', 'finally', 'with', 'as', 'pass', 'raise', 'yield',
+        'lambda', 'global', 'nonlocal', 'break', 'continue', 'is', 'del',
+    })
+    _COL_KW    = "#569cd6"
+    _COL_STR   = "#ce9178"
+    _COL_CMT   = "#6a9955"
+    _COL_NUM   = "#b5cea8"
+    _COL_PLAIN = "#d4d4d4"
+
+    def _draw_syntax_line(self, x: float, y: float, line: str, size: float):
+        """Draw a single code line with basic syntax highlighting."""
+        char_w = size * 0.6
+        col = 0  # character offset
+
+        # Detect full-line comment
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            self.text(x, y, line, size=size, color=self._COL_CMT, monospace=True)
+            return
+
+        # Split into (token, color) segments
+        segments: list = []
+        i = 0
+        in_str = False
+        str_char = ""
+        tok_start = 0
+
+        def flush_plain(end: int):
+            nonlocal tok_start
+            chunk = line[tok_start:end]
+            if chunk:
+                buf = ""
+                for ch in chunk:
+                    if ch.isalnum() or ch in ("_", "."):
+                        buf += ch
+                    else:
+                        if buf:
+                            if buf in self._KW:
+                                color = self._COL_KW
+                            elif buf.replace(".", "", 1).isdigit():
+                                color = self._COL_NUM
+                            else:
+                                color = self._COL_PLAIN
+                            segments.append((buf, color))
+                            buf = ""
+                        segments.append((ch, self._COL_PLAIN))
+                if buf:
+                    if buf in self._KW:
+                        color = self._COL_KW
+                    elif buf.replace(".", "", 1).isdigit():
+                        color = self._COL_NUM
+                    else:
+                        color = self._COL_PLAIN
+                    segments.append((buf, color))
+            tok_start = end
+
+        while i < len(line):
+            ch = line[i]
+            if in_str:
+                if ch == str_char and (i == 0 or line[i - 1] != "\\"):
+                    # End of string — emit the whole string token as COL_STR
+                    str_token = line[tok_start:i + 1]
+                    segments.append((str_token, self._COL_STR))
+                    in_str = False
+                    tok_start = i + 1
+                i += 1
+                continue
+            if ch in ('"', "'"):
+                flush_plain(i)   # flush everything before the quote
+                in_str = True
+                str_char = ch
+                tok_start = i    # string token starts at opening quote
+                i += 1
+                continue
+            if ch == "#":
+                flush_plain(i)
+                segments.append((line[i:], self._COL_CMT))
+                i = len(line)
+                tok_start = i
+                continue
+            i += 1
+
+        flush_plain(len(line))
+
+        # Render segments
+        cx = x
+        for tok, color in segments:
+            self.text(cx, y, tok, size=size, color=color, monospace=True)
+            cx += len(tok) * char_w
+
     def _flush(self):
         for cmd in self._commands:
             print(json.dumps(cmd), flush=True)
@@ -443,11 +617,15 @@ class App:
         @app.on_init     fn(init_data: dict, emit: Emitter)   — v2: receives open_intent
         @app.on_render   fn(ctx: RenderContext)
         @app.on_key      fn(key: str, mods: dict, emit: Emitter)
-        @app.on_click    fn(x: float, y: float, button: str, emit: Emitter)
-        @app.on_command  fn(text: str, emit: Emitter)
-        @app.on_resize   fn(width: float, height: float)
-        @app.on_event    fn(event: dict, emit: Emitter)       — v2: bus events
-        @app.on_run_created fn(run_id: str, emit: Emitter)    — v2: run lifecycle
+        @app.on_click         fn(x: float, y: float, button: str, emit: Emitter)
+        @app.on_mouse_down    fn(x: float, y: float, button: str, emit: Emitter)
+        @app.on_mouse_up      fn(x: float, y: float, button: str, emit: Emitter)
+        @app.on_mouse_move    fn(x: float, y: float, emit: Emitter)
+        @app.on_scroll        fn(x: float, y: float, delta_x: float, delta_y: float, emit: Emitter)
+        @app.on_command       fn(text: str, emit: Emitter)
+        @app.on_resize        fn(width: float, height: float)
+        @app.on_event         fn(event: dict, emit: Emitter)       — v2: bus events
+        @app.on_run_created   fn(run_id: str, emit: Emitter)       — v2: run lifecycle
     """
 
     def __init__(self):
@@ -461,11 +639,19 @@ class App:
         self._on_render: Optional[Callable] = None
         self._on_key: Optional[Callable] = None
         self._on_click: Optional[Callable] = None
+        self._on_mouse_down: Optional[Callable] = None
+        self._on_mouse_up: Optional[Callable] = None
+        self._on_mouse_move: Optional[Callable] = None
+        self._on_scroll: Optional[Callable] = None
         self._on_command: Optional[Callable] = None
         self._on_resize: Optional[Callable] = None
         self._on_event: Optional[Callable] = None
         self._on_run_created: Optional[Callable] = None
         self._emitter = Emitter()
+        # Code editor state — keyed by editor_id
+        self._editor_states: dict = {}
+        self._editor_scroll: dict = {}   # editor_id -> scroll_line (int)
+        self._focused_editor_id: Optional[str] = None
 
     def on_init(self, fn: Callable) -> Callable:
         self._on_init = fn
@@ -481,6 +667,22 @@ class App:
 
     def on_click(self, fn: Callable) -> Callable:
         self._on_click = fn
+        return fn
+
+    def on_mouse_down(self, fn: Callable) -> Callable:
+        self._on_mouse_down = fn
+        return fn
+
+    def on_mouse_up(self, fn: Callable) -> Callable:
+        self._on_mouse_up = fn
+        return fn
+
+    def on_mouse_move(self, fn: Callable) -> Callable:
+        self._on_mouse_move = fn
+        return fn
+
+    def on_scroll(self, fn: Callable) -> Callable:
+        self._on_scroll = fn
         return fn
 
     def on_command(self, fn: Callable) -> Callable:
@@ -500,6 +702,96 @@ class App:
         """Register a handler for RunCreated responses. fn(run_id: str, emit: Emitter)."""
         self._on_run_created = fn
         return fn
+
+    def _route_key_to_editor(self, editor_id: str, es: dict, key: str, mods: dict) -> bool:
+        """Handle a key event for a focused code editor. Returns True if consumed."""
+        lines = [l for l in es["lines"]]  # shallow copy to mutate
+        cl = es["cursor_line"]
+        cc = es["cursor_col"]
+        on_change = es["on_change"]
+        scroll = self._editor_scroll.get(editor_id, 0)
+
+        def clamp_col():
+            nonlocal cc
+            if cl < len(lines):
+                cc = min(cc, len(lines[cl]))
+
+        consumed = True
+        shift = mods.get("shift", False)
+
+        if key == "Enter":
+            current = lines[cl]
+            lines[cl] = current[:cc]
+            lines.insert(cl + 1, current[cc:])
+            cl += 1
+            cc = 0
+        elif key == "Backspace":
+            if cc > 0:
+                lines[cl] = lines[cl][:cc - 1] + lines[cl][cc:]
+                cc -= 1
+            elif cl > 0:
+                prev_len = len(lines[cl - 1])
+                lines[cl - 1] = lines[cl - 1] + lines[cl]
+                del lines[cl]
+                cl -= 1
+                cc = prev_len
+        elif key == "Delete":
+            if cc < len(lines[cl]):
+                lines[cl] = lines[cl][:cc] + lines[cl][cc + 1:]
+            elif cl < len(lines) - 1:
+                lines[cl] = lines[cl] + lines[cl + 1]
+                del lines[cl + 1]
+        elif key == "ArrowLeft":
+            if cc > 0:
+                cc -= 1
+            elif cl > 0:
+                cl -= 1
+                cc = len(lines[cl])
+        elif key == "ArrowRight":
+            if cl < len(lines) and cc < len(lines[cl]):
+                cc += 1
+            elif cl < len(lines) - 1:
+                cl += 1
+                cc = 0
+        elif key == "ArrowUp":
+            if cl > 0:
+                cl -= 1
+                clamp_col()
+                if cl < scroll:
+                    scroll = cl
+                    self._editor_scroll[editor_id] = scroll
+        elif key == "ArrowDown":
+            if cl < len(lines) - 1:
+                cl += 1
+                clamp_col()
+        elif key == "Home":
+            cc = 0
+        elif key == "End":
+            if cl < len(lines):
+                cc = len(lines[cl])
+        elif key == "Tab":
+            lines[cl] = lines[cl][:cc] + "    " + lines[cl][cc:]
+            cc += 4
+        elif key == "a" and mods.get("command", False):
+            cl = 0
+            cc = 0
+        elif len(key) == 1:
+            lines[cl] = lines[cl][:cc] + key + lines[cl][cc:]
+            cc += 1
+        else:
+            consumed = False
+
+        if consumed:
+            clamp_col()
+            # Auto-scroll to keep cursor visible
+            # (visible_lines unknown here; use a default 20 — app will re-clamp)
+            if cl < scroll:
+                self._editor_scroll[editor_id] = cl
+            elif cl >= scroll + 20:
+                self._editor_scroll[editor_id] = cl - 19
+            on_change(lines, cl, cc)
+
+        return consumed
 
     def spawn_app(self, app_id: str, open_intent: Optional[OpenIntent] = None):
         """Spawn another Plexi app. Emits a spawn_app draw command."""
@@ -545,22 +837,32 @@ class App:
                 self.height = event.get("height", self.height)
                 delta_time = event.get("delta_time", 0.016)
                 self._render_time += delta_time
+                # Clear focused editor each frame — re-registered by code_editor() calls
+                self._focused_editor_id = None
+                self._editor_states.clear()
                 ctx = RenderContext(self.width, self.height)
                 ctx._time = self._render_time
                 ctx._measure_cache = {}  # clear per-frame
                 ctx._measure_req_id = self._measure_req_id
+                ctx._app = self  # allow code_editor to register state
                 if self._on_render:
                     self._on_render(ctx)
                 self._measure_req_id = ctx._measure_req_id
                 ctx._flush()
 
             elif event_type == "key":
-                if self._on_key:
-                    self._on_key(
-                        event.get("key", ""),
-                        event.get("modifiers", {}),
-                        self._emitter,
-                    )
+                key = event.get("key", "")
+                mods = event.get("modifiers", {})
+                # Route to focused editor first, unless a Cmd-key combo
+                cmd_held = mods.get("command", False) or mods.get("ctrl", False)
+                editor_consumed = False
+                if self._focused_editor_id and not cmd_held:
+                    eid = self._focused_editor_id
+                    es = self._editor_states.get(eid)
+                    if es:
+                        editor_consumed = self._route_key_to_editor(eid, es, key, mods)
+                if not editor_consumed and self._on_key:
+                    self._on_key(key, mods, self._emitter)
 
             elif event_type == "click":
                 if self._on_click:
@@ -568,6 +870,42 @@ class App:
                         event.get("x", 0.0),
                         event.get("y", 0.0),
                         event.get("button", "primary"),
+                        self._emitter,
+                    )
+
+            elif event_type == "mouse_down":
+                if self._on_mouse_down:
+                    self._on_mouse_down(
+                        event.get("x", 0.0),
+                        event.get("y", 0.0),
+                        event.get("button", "primary"),
+                        self._emitter,
+                    )
+
+            elif event_type == "mouse_up":
+                if self._on_mouse_up:
+                    self._on_mouse_up(
+                        event.get("x", 0.0),
+                        event.get("y", 0.0),
+                        event.get("button", "primary"),
+                        self._emitter,
+                    )
+
+            elif event_type == "mouse_move":
+                if self._on_mouse_move:
+                    self._on_mouse_move(
+                        event.get("x", 0.0),
+                        event.get("y", 0.0),
+                        self._emitter,
+                    )
+
+            elif event_type == "scroll":
+                if self._on_scroll:
+                    self._on_scroll(
+                        event.get("x", 0.0),
+                        event.get("y", 0.0),
+                        event.get("delta_x", 0.0),
+                        event.get("delta_y", 0.0),
                         self._emitter,
                     )
 
