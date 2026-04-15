@@ -781,6 +781,15 @@ impl PlexiApp {
         // Built-in file browser gets full permissions.
         let perms = crate::app_permissions::AppPermissions::builtin();
         self.open_app_on_focused(app, perms, cwd);
+
+        // Pin file browser to a 75% upper split (companion = 25%). See #237.
+        if let Some((_id, pane)) = self.contexts[self.active_context].focused_pane_mut() {
+            if let crate::app_trait::SurfaceMode::AppWithCompanion { ref mut companion_fraction } =
+                pane.surface_mode
+            {
+                *companion_fraction = 0.25;
+            }
+        }
     }
 
     /// Open an app on the focused pane WITHOUT creating a linked terminal split.
