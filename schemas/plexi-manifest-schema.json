@@ -64,6 +64,12 @@
         ]
       }
     },
+    "protocol_version": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "Plexi protocol version the app targets. Omitting or setting < 2 triggers a deprecation warning. Set to 2 for all new apps."
+    },
     "min_width": {
       "type": "number",
       "minimum": 0,

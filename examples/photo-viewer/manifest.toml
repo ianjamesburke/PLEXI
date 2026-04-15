@@ -1,5 +1,5 @@
 [app]
-id          = "photo-viewer"
+protocol_version = 2id          = "photo-viewer"
 name        = "Photo Viewer"
 entry       = "target/release/photo-viewer"
 version     = "0.1.0"

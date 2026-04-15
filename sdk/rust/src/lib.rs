@@ -49,6 +49,10 @@ pub enum PlexiEvent {
         width: f32,
         height: f32,
         pixels_per_point: f32,
+        /// Protocol version sent by the host. Missing field (v1 host) defaults
+        /// to 0, which the SDK treats as protocol version 1.
+        #[serde(default)]
+        protocol_version: u32,
     },
     Render {
         width: f32,
@@ -1219,6 +1223,17 @@ pub trait App {
     fn min_size(&self) -> (f32, f32) {
         (0.0, 0.0)
     }
+
+    /// Minimum host protocol version this app requires.
+    ///
+    /// If the host sends a `protocol_version` lower than this value (or sends
+    /// no version at all, indicating a v1 host), the SDK prints a clear error
+    /// to stderr and exits with a non-zero code.
+    ///
+    /// Return `0` (default) to accept any host version.
+    fn min_protocol_version(&self) -> u32 {
+        0
+    }
 }
 
 // ── Manifest layout reader ────────────────────────────────────────────────────
@@ -1413,6 +1428,8 @@ pub fn run(app: &mut dyn App) {
         }
     };
 
+    let min_proto = app.min_protocol_version();
+
     loop {
         // Drain any events that were queued by a blocking helper (e.g.
         // `Emitter::get_secret`) during the previous handler. These were read
@@ -1438,7 +1455,16 @@ pub fn run(app: &mut dyn App) {
         };
 
         match event {
-            PlexiEvent::Init { .. } => {}
+            PlexiEvent::Init { protocol_version, .. } => {
+                if min_proto > 0 && protocol_version < min_proto {
+                    eprintln!(
+                        "plexi_sdk: host protocol version {} is below this app's minimum \
+                         required version {}. Please update your Plexi host.",
+                        protocol_version, min_proto
+                    );
+                    std::process::exit(1);
+                }
+            }
             PlexiEvent::Resize { width, height } => {
                 app.on_resize(width, height);
             }
