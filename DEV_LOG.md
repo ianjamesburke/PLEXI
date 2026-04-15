@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [DECISION] Secrets CLI added to v2.0 scope as BYOK infrastructure for Plexi IQ
+
+Added `P.6 — Secrets CLI` to `plexi-v2.0-scope.md`. The secrets manager proposal (`proposals/secrets-manager.md`, issue #247) was already designed with Plexi IQ in mind — its "Plexi IQ Pro Integration" section describes exactly how BYOK (user sets `ANTHROPIC_KEY` via `plexi secrets set --global`) and managed Pro keys (Plexi sets the global key on activation) use identical injection infrastructure.
+
+**Why now:** Plexi IQ Stage 1 (M3.3) needs a key to call the Anthropic API in native mode. Without the secrets CLI, BYOK has no user-facing surface. The proxied backend (`claude -p --resume`) doesn't need a key, but native mode does. Secrets CLI is the prerequisite for native mode to ship with a real BYOK story.
+
+**Pro subscription:** Not tracked as a separate issue — it's a product-level decision, not an engineering deliverable. The Plexi side is a one-liner (inject managed key at global scope). The hard part is a billing backend outside this repo.
+
+**Deferred:** Pre-launch broker injection via pipe (the more secure model where apps can only receive secrets they declared in manifest) stays deferred to v2.1 — requires sandbox enforcement.
+
 ## 2026-04-15 — [CHANGED] Session work consolidated onto alpha + spec docs index established as single source of truth
 
 Follow-up to the local-only branch cleanup from earlier today. The session work was sitting on `feature/v2-session-cleanup-2026-04-15` (PR #246) but the rebase-onto-origin/alpha attempt failed because 7 upstream PRs (#197/#198/#199/#207/#208/#222/#235) had landed during the session and conflicted on most files. Aborted the rebase, switched strategy to `git merge --squash` with manual conflict resolution.

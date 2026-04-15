@@ -1,6 +1,6 @@
 # Plexi IQ — Design Exploration
 
-> Research + design doc. **Not a ship proposal.** Scopes the in-process agent harness that evolves the current `claude -p` shell-out in `agent_mode.rs` into a dual-backend engine behind every agent instance in Plexi — **native mode** (direct Anthropic API, full in-process tool dispatch) and **proxied mode** (`claude -p --resume`, for users on a Claude Code subscription). Both are first-class; neither is a fallback.
+> Research + design doc. **Stage 1 is in v2.0 scope** (`plexi-v2.0-scope.md` M3.3). BYOK key management is handled by the secrets infrastructure (#247) — users set `ANTHROPIC_KEY` via `plexi secrets set --global`; the proxied backend (`claude -p --resume`) requires no key. Scopes the in-process agent harness that evolves the current `claude -p` shell-out in `agent_mode.rs` into a dual-backend engine behind every agent instance in Plexi — **native mode** (direct Anthropic API, full in-process tool dispatch) and **proxied mode** (`claude -p --resume`, for users on a Claude Code subscription). Both are first-class; neither is a fallback.
 
 ## Related existing plans & context
 

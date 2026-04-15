@@ -14,7 +14,7 @@
 > 5. Checklist status updates (pending → in-progress → done) are the ONLY edits that don't need all four steps above. They still need a DEV_LOG entry when an item flips to "done."
 
 **Status:** Draft
-**Last updated:** 2026-04-14
+**Last updated:** 2026-04-15
 **Owner:** plexi-core (ianjamesburke)
 **Release target:** Plexi 2.0 — 3 months from `protocol-v2.md` date
 
@@ -138,9 +138,10 @@ This is the thing that tracks 2.0 completion. Each line is a discrete, verifiabl
 
 - [ ] **P.1 — App registry + `plexi install`** — remote registry, `plexi install <id>`, `plexi install --local` (#233).
 - [ ] **P.2 — App Store app** — discoverable catalog, developer publishing flow, one-click install integration.
-- [ ] **P.3 — Plexi Intelligence product surface** — user-facing credits + BYOK, billing page, model selector. (Protocol-level PGAP routing deferred to v2.1.)
+- [ ] **P.3 — Plexi Intelligence product surface** — user-facing BYOK + (eventually) managed Pro keys, model selector. (Protocol-level PGAP routing deferred to v2.1.) BYOK is implemented via the secrets CLI (P.6). Pro managed keys use the same injection path — Plexi sets the global key on subscription activation; no new infrastructure needed.
 - [ ] **P.4 — `@agent` syntax in agent mode** — resolves to running instance first, falls back to new spawn (#232).
 - [ ] **P.5 — Agent flow visualizer app** — validation app that subscribes to `AppSpawned` + `AgentTurn` + `PipeWrite` events and renders the graph. Not must-ship; must-exist-during-testing. Proves the event bus is sufficient.
+- [ ] **P.6 — Secrets CLI (BYOK infrastructure)** — `plexi secrets` CLI, macOS Keychain backend, global/directory scoped resolution, `index.toml` metadata, manifest `[secrets]` declaration. This is the infrastructure P.3 builds on. Spec: `docs/specs/proposals/secrets-manager.md`. Issue: #247.
 
 ### Hardening / Ops
 
