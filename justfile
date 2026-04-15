@@ -76,7 +76,11 @@ install-alpha:
       if [[ -f "${dir}manifest.toml" ]]; then
         name="$(basename "$dir")"
         rm -rf "$apps_dir/$name"
-        cp -R "$dir" "$apps_dir/$name"
+        # -L dereferences symlinks (e.g. the plexi_sdk.py symlink in each
+        # example dir that points to sdk/python/plexi_sdk.py). Installed apps
+        # get a real bundled copy alongside their entry file — symlinks are a
+        # dev-tree cleanliness convenience, not a deployment mechanism.
+        cp -RL "$dir" "$apps_dir/$name"
         # Build Rust apps and place the binary where the manifest expects it.
         if [[ -f "${dir}Cargo.toml" ]]; then
           echo "Building Rust app: $name"

@@ -43,6 +43,7 @@ Protocol version stays at `2` — new commands are JSON-forward-compatible and a
 
 ### Explicitly deferred to v2.2+
 
+- **Proper `plexi-sdk` Python package on PyPI.** Today the SDK is one file at `sdk/python/plexi_sdk.py`, symlinked into each example dir for dev-tree cleanliness and dereferenced at install time by `just install-alpha`. Plexi 2.0 will add a `PYTHONPATH` resolution path in `ProcessApp::launch()` so installed apps share one SDK copy at `~/.plexi-alpha/sdk/plexi_sdk.py` instead of bundling (see v2 tracking issue). Post-2.0, when third-party app authors start shipping apps and want semver + pinned versions, the canonical file becomes a real packaged module: `pip install plexi-sdk`, manifest declares `plexi_sdk>=0.4.0`, version mismatches fail cleanly on install. Not valuable today — no external contributors yet — but the three-phase progression (vendored → shared → packaged) is the long-term path.
 - **Rich text runs** — multiple fonts/colors in one text block (needed for syntax highlighting). Can be composed from multiple `Text` commands today at minor cost.
 - **Clip regions** — clipping to a rect is useful for scrollable subregions. Parked until a concrete app needs it.
 - **SVG primitives** — path, curve, polygon. Parked. Apps that need vector output rasterize to an image.
