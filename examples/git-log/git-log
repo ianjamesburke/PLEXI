@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 git-log — Plexi app
 Browse recent git commits for the linked terminal's working directory.
@@ -8,36 +9,32 @@ Controls:
   k / ArrowUp     Previous commit
   Enter           Run `git show <hash>` in linked terminal
   r               Refresh log
+  ⌘W              Close app (host-handled)
+
+Phase 1 SDK components layer: uses ctx.header, ctx.status_bar,
+ctx.scrollable_list, ctx.empty_state, THEME. No hand-rolled scroll math,
+no local palette, no pixel-guess right-alignment.
 """
 
+import os
 import subprocess
 import sys
-import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App
+from plexi_sdk import (
+    App,
+    THEME,
+    BODY, CAPTION, MONO_SMALL,
+    PAD,
+)
 
 app = App()
 
-commits = []   # list of (short_hash, subject)
+commits: list[tuple[str, str]] = []  # list of (short_hash, subject)
 selected = 0
-scroll_offset = 0  # index of first visible row
-
-HEADER_H = 44
-ITEM_H = 44
-
-COLORS = {
-    "bg":      "#1e1e2e",
-    "header":  "#181825",
-    "text":    "#cdd6f4",
-    "muted":   "#6c7086",
-    "accent":  "#89b4fa",
-    "surface": "#313244",
-    "sel_bg":  "#313244",
-}
 
 
-def load_commits():
+def load_commits() -> None:
     global commits
     try:
         result = subprocess.run(
@@ -56,51 +53,59 @@ def load_commits():
 load_commits()
 
 
+ROW_H = 44.0
+
+
+def _render_row(ctx, item, i, x, y, w, is_sel):
+    hash_str, subject = item
+    if is_sel:
+        ctx.rect(x, y, w, ROW_H, fill=THEME.highlight)
+
+    text_color = THEME.fg if is_sel else THEME.muted
+    text_y = y + (ROW_H - BODY) / 2
+
+    ctx.text(
+        x + PAD, text_y, subject,
+        size=BODY, color=text_color, bold=is_sel,
+    )
+    # Hash on the right (monospace, dimmed), host measures exact width.
+    ctx.text_right(
+        x + w - PAD, text_y + (BODY - MONO_SMALL) / 2, hash_str,
+        size=MONO_SMALL, color=THEME.muted, monospace=True,
+    )
+
+
 @app.on_render
 def render(ctx):
-    global scroll_offset
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
-    # Background
-    ctx.rect(0, 0, ctx.width, ctx.height, fill=COLORS["bg"])
-
-    # Clamp scroll so selected row is always visible
-    visible_rows = max(1, int((ctx.height - HEADER_H) / ITEM_H))
-    if selected < scroll_offset:
-        scroll_offset = selected
-    elif selected >= scroll_offset + visible_rows:
-        scroll_offset = selected - visible_rows + 1
-
-    # Render commit rows BEFORE the header so the header paints on top
     if not commits:
-        ctx.text(16, HEADER_H + 14, "No commits found — not a git repo?",
-                 size=13, color=COLORS["muted"])
-    else:
-        for i, (hash_str, subject) in enumerate(commits):
-            if i < scroll_offset:
-                continue
-            row_index = i - scroll_offset
-            if row_index >= visible_rows:
-                break
+        ctx.header("git log  ·  0 commits")
+        ctx.empty_state(
+            "No commits found",
+            "Not a git repository?",
+        )
+        ctx.status_bar([("r", "refresh"), ("⌘W", "close")])
+        return
 
-            y = HEADER_H + row_index * ITEM_H
-            is_sel = (i == selected)
+    ctx.header(f"git log  ·  {len(commits)} commit{'s' if len(commits) != 1 else ''}")
 
-            if is_sel:
-                ctx.rect(0, y, ctx.width, ITEM_H, fill=COLORS["sel_bg"])
+    ctx.scrollable_list(
+        list_id="commits",
+        items=commits,
+        selected=selected,
+        row_height=ROW_H,
+        render_row=_render_row,
+    )
 
-            text_color = COLORS["text"] if is_sel else COLORS["muted"]
-            # Subject on the left
-            ctx.text(16, y + 14, subject, size=12,
-                     color=text_color, monospace=False)
-            # Hash on the right, dimmed
-            ctx.text(ctx.width - len(hash_str) * 7.5 - 12, y + 14,
-                     hash_str, size=11, color=COLORS["muted"], monospace=True)
-
-    # Header bar — rendered AFTER rows so it always paints on top
-    ctx.rect(0, 0, ctx.width, HEADER_H, fill=COLORS["header"])
-    ctx.text(16, 13, "git log", size=14, color=COLORS["accent"], bold=True)
-    hint = "j/k navigate  Enter=show  r=refresh"
-    ctx.text(ctx.width - len(hint) * 7.5, 13, hint, size=11, color=COLORS["muted"])
+    ctx.status_bar(
+        [
+            ("j/k", "navigate"),
+            ("Enter", "show"),
+            ("r", "refresh"),
+            ("⌘W", "close"),
+        ],
+    )
 
 
 @app.on_key
@@ -109,7 +114,8 @@ def on_key(key, mods, emit):
     # Plexi sends printable characters via Event::Text as lowercase (e.g. "j", "r").
     # Control/navigation keys come via Event::Key as PascalCase (e.g. "ArrowDown", "Enter").
     if key in ("j", "ArrowDown"):
-        selected = min(selected + 1, len(commits) - 1)
+        if commits:
+            selected = min(selected + 1, len(commits) - 1)
     elif key in ("k", "ArrowUp"):
         selected = max(selected - 1, 0)
     elif key == "Enter" and commits:

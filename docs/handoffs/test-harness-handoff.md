@@ -157,7 +157,7 @@ def test_wikipedia_search():
 
 - **SDK (the thing apps import):** `~/.plexi-alpha/apps/wikipedia/plexi_sdk.py`
 - **Example app:** `~/.plexi-alpha/apps/wikipedia/wikipedia.py`
-- **App protocol spec:** `~/Documents/GitHub/PLEXI/docs/specs/app-infrastructure.md`
+- **App protocol spec:** `~/Documents/GitHub/PLEXI/docs/specs/subsystems/app-infrastructure.md`
 - **Parallax app spec (state protocol):** `~/Documents/GitHub/parallax/docs/parallax-plexi-app-spec.md` §9-11
 
 ---

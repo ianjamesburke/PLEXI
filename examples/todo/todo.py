@@ -1,56 +1,35 @@
-#!/usr/bin/env python3
+from __future__ import annotations
 """
 todo — Plexi app
 Persistent todo list saved to ~/.plexi-alpha/todo.txt.
 
 Controls:
-  j / ↓    Move down
-  k / ↑    Move up
+  j / ↓            Move down
+  k / ↑            Move up
   Space / Enter    Toggle done
-  a        Add item (type at inline prompt, Enter to confirm, Esc to cancel)
-  d        Delete selected item
-  q        Quit
+  a                Add item (type at inline prompt, Enter to confirm, Esc to cancel)
+  d                Delete selected item
+  ⌘W               Close (host-handled)
 """
-from __future__ import annotations
 
 import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App
+from plexi_sdk import (
+    App,
+    THEME,
+    BODY, CAPTION, HINT,
+    PAD,
+)
 
-# ---------------------------------------------------------------------------
-# Catppuccin Mocha
-# ---------------------------------------------------------------------------
 
-C = {
-    "bg":      "#1e1e2e",
-    "surface": "#313244",
-    "text":    "#cdd6f4",
-    "subtext": "#6c7086",
-    "accent":  "#89b4fa",
-    "green":   "#a6e3a1",
-    "red":     "#f38ba8",
-    "yellow":  "#f9e2af",
-    "header":  "#181825",
-    "sel":     "#313244",
-    "done":    "#585b70",
-}
+TODO_PATH = os.path.expanduser("~/.plexi-alpha/todo.txt")
+ITEM_H = 28.0
 
-PADDING    = 16
-HEADER_H   = 48
-ITEM_H     = 28
-FOOTER_H   = 36
 
-TODO_PATH  = os.path.expanduser("~/.plexi-alpha/todo.txt")
-
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
-
+# ── persistence ───────────────────────────────────────────────────────────────
 def load_todos() -> list[dict]:
     """Load todos from file. Each line: `[x] text` or `[ ] text`."""
-    todos = []
+    todos: list[dict] = []
     try:
         os.makedirs(os.path.dirname(TODO_PATH), exist_ok=True)
         if not os.path.exists(TODO_PATH):
@@ -63,112 +42,98 @@ def load_todos() -> list[dict]:
                 done = line.startswith("[x] ")
                 text = line[4:] if line.startswith(("[x] ", "[ ] ")) else line
                 todos.append({"text": text, "done": done})
-    except OSError as exc:
+    except OSError:
         pass  # return empty list; error will surface on next save
     return todos
 
 
-def save_todos(todos: list[dict]):
+def save_todos(todos: list[dict]) -> None:
     try:
         os.makedirs(os.path.dirname(TODO_PATH), exist_ok=True)
         with open(TODO_PATH, "w", encoding="utf-8") as f:
             for t in todos:
                 prefix = "[x] " if t["done"] else "[ ] "
                 f.write(prefix + t["text"] + "\n")
-    except OSError as exc:
+    except OSError:
         pass  # non-fatal; data lives in memory
 
 
-# ---------------------------------------------------------------------------
-# State
-# ---------------------------------------------------------------------------
-
+# ── state ─────────────────────────────────────────────────────────────────────
 todos: list[dict] = load_todos()
 cursor: int = 0
-scroll: int = 0
 
-MODE_LIST  = "list"
-MODE_ADD   = "add"
-mode: str  = MODE_LIST
+MODE_LIST = "list"
+MODE_ADD = "add"
+mode: str = MODE_LIST
 add_buf: str = ""
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
 
 app = App(app_id="todo")
 
 
+# ── rendering ─────────────────────────────────────────────────────────────────
+def _render_row(ctx, todo, i, x, y, w, is_sel):
+    if is_sel and mode == MODE_LIST:
+        ctx.rect(x + PAD / 2, y, w - PAD, ITEM_H, fill=THEME.highlight, radius=4.0)
+
+    check = "✓" if todo["done"] else "○"
+    check_color = THEME.green if todo["done"] else THEME.muted
+    ctx.text(x + PAD, y + 6, check, size=CAPTION, color=check_color)
+
+    text = todo["text"]
+    if todo["done"]:
+        text = "~~" + text + "~~"
+        text_color = THEME.muted
+    else:
+        text_color = THEME.fg
+    ctx.text(x + PAD + 24, y + 6, text, size=CAPTION, color=text_color)
+
+
 @app.on_render
 def render(ctx):
-    global scroll, cursor
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
-    w = ctx.width
-    h = ctx.height
-
-    ctx.rect(0, 0, w, h, fill=C["bg"])
-
-    # Header
-    ctx.rect(0, 0, w, HEADER_H, fill=C["header"])
     count_done = sum(1 for t in todos if t["done"])
-    ctx.text(PADDING, 14, f"Todo  ({count_done}/{len(todos)} done)", size=14, color=C["accent"], bold=True)
-    hint = "a=add  d=delete  Space=toggle"
-    ctx.text(w - len(hint) * 7.2 - PADDING, 16, hint, size=10, color=C["subtext"])
-    ctx.line(0, HEADER_H, w, HEADER_H, color=C["surface"], width=1.0)
-
-    body_y = HEADER_H + PADDING
-    body_h = h - body_y - FOOTER_H
-
-    # Visible rows
-    visible = max(1, int(body_h / ITEM_H))
-
-    # Clamp scroll to keep cursor visible
-    if cursor < scroll:
-        scroll = cursor
-    elif cursor >= scroll + visible:
-        scroll = cursor - visible + 1
-    scroll = max(0, min(scroll, max(0, len(todos) - visible)))
+    ctx.header(f"Todo  ({count_done}/{len(todos)} done)")
 
     if not todos:
-        ctx.text(PADDING, body_y + 10, "No todos yet. Press a to add one.", size=13, color=C["subtext"])
+        ctx.empty_state("No todos yet", "Press a to add one.")
     else:
-        for i, todo in enumerate(todos[scroll:scroll + visible]):
-            row_idx = scroll + i
-            ry = body_y + i * ITEM_H
-
-            # Selection highlight
-            if row_idx == cursor and mode == MODE_LIST:
-                ctx.rect(0, ry, w, ITEM_H, fill=C["sel"], radius=4.0)
-
-            # Checkbox
-            check = "✓" if todo["done"] else "○"
-            check_color = C["green"] if todo["done"] else C["subtext"]
-            ctx.text(PADDING, ry + 6, check, size=13, color=check_color)
-
-            # Item text
-            text = todo["text"]
-            text_color = C["done"] if todo["done"] else C["text"]
-            # Strikethrough visual: prepend ~~ prefix for done items
-            if todo["done"]:
-                text = "~~" + text + "~~"
-            ctx.text(PADDING + 24, ry + 6, text, size=13, color=text_color)
-
-    # Footer: add prompt or status bar
-    footer_y = h - FOOTER_H
-    ctx.rect(0, footer_y, w, FOOTER_H, fill=C["header"])
-    ctx.line(0, footer_y, w, footer_y, color=C["surface"], width=1.0)
+        ctx.scrollable_list(
+            list_id="todos",
+            items=todos,
+            selected=cursor,
+            row_height=ITEM_H,
+            render_row=_render_row,
+        )
 
     if mode == MODE_ADD:
-        prompt = f"New item: {add_buf}_"
-        ctx.text(PADDING, footer_y + 10, prompt, size=13, color=C["yellow"])
-        ctx.text(w - 120, footer_y + 10, "Enter=save  Esc=cancel", size=10, color=C["subtext"])
+        # Replace the status bar with an inline add prompt.
+        bar_h = 30.0
+        bar_y = ctx.height - bar_h
+        ctx.rect(0, bar_y, ctx.width, bar_h, fill=THEME.surface)
+        text_y = bar_y + (bar_h - HINT) / 2
+        ctx.text(PAD, text_y, f"New item: {add_buf}_", size=HINT, color=THEME.yellow)
+        ctx.text_right(
+            ctx.width - PAD, text_y,
+            "Enter  save    Esc  cancel",
+            size=HINT, color=THEME.muted,
+        )
     else:
-        ctx.text(PADDING, footer_y + 10, TODO_PATH, size=10, color=C["subtext"])
+        ctx.status_bar(
+            [
+                ("j/k", "navigate"),
+                ("Space/Enter", "toggle"),
+                ("a", "add"),
+                ("d", "delete"),
+                ("⌘W", "close"),
+            ],
+        )
 
 
+# ── input ─────────────────────────────────────────────────────────────────────
 @app.on_key
 def on_key(key: str, _mods: dict, _emit):
-    global cursor, scroll, mode, add_buf, todos
+    global cursor, mode, add_buf, todos
 
     if mode == MODE_ADD:
         if key == "Escape":
@@ -203,10 +168,8 @@ def on_key(key: str, _mods: dict, _emit):
     elif key == "d":
         if todos and 0 <= cursor < len(todos):
             todos.pop(cursor)
-            cursor = min(cursor, len(todos) - 1)
+            cursor = min(cursor, len(todos) - 1) if todos else 0
             save_todos(todos)
-    elif key == "q":
-        pass  # Plexi handles pane close
 
 
 app.run()

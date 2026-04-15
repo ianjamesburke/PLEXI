@@ -59,28 +59,103 @@ __version__ = "0.3.0"
 import json
 import os
 import pathlib
+import shutil
 import sys
 import uuid
-from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Deque, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
+
+
+# ─── Text size constants ──────────────────────────────────────────────────────
+# Use these instead of arbitrary numbers. They give consistent legibility
+# across apps and survive future scale tuning.
+#
+#   TITLE      — page/app title, one per screen
+#   HEADING    — section headings
+#   BODY       — default body text; what you should pick 90% of the time
+#   CAPTION    — secondary labels, timestamps, file metadata
+#   HINT       — keyboard shortcut bars, status lines; smallest legible tier
+#   MONO_BODY  — default monospace body (code, paths, JSON)
+#   MONO_SMALL — smallest monospace tier (inline diff markers, tight tables)
+#
+# Pixel sizes were chosen so that at typical macOS Retina scale (2.0x),
+# the smallest tier (HINT) still has ≥12 logical pixels of cap height.
+
+TITLE      = 22.0
+HEADING    = 18.0
+BODY       = 15.0
+CAPTION    = 13.0
+HINT       = 12.0
+MONO_BODY  = 14.0
+MONO_SMALL = 12.0
+
+# ─── Safe-area constants ──────────────────────────────────────────────────────
+# Recommended padding + chrome heights so app layouts compose uniformly.
+#
+#   PAD         — default outer padding (use for all edge insets)
+#   PAD_TIGHT   — use only inside dense lists/grids
+#   HEADER_H    — recommended header bar height (fits TITLE + vertical breathing)
+#   STATUS_H    — recommended status/hint bar height at the bottom
+
+PAD         = 16.0
+PAD_TIGHT   = 8.0
+HEADER_H    = 48.0
+STATUS_H    = 44.0
+
+
+# ─── Theme ────────────────────────────────────────────────────────────────────
+# Default Catppuccin palette. Apps can `from plexi_sdk import THEME` and
+# reference `THEME.accent`, etc., or construct their own `Theme(...)` and
+# pass it into component calls (`ctx.header(..., theme=my_theme)`).
+
+@dataclass
+class Theme:
+    bg:        str = "#1e1e2e"
+    surface:   str = "#313244"
+    highlight: str = "#45475a"
+    accent:    str = "#89b4fa"
+    muted:     str = "#6c7086"
+    fg:        str = "#cdd6f4"
+    red:       str = "#f38ba8"
+    green:     str = "#a6e3a1"
+    yellow:    str = "#f9e2af"
+
+
+THEME = Theme()
+
+
+# ─── Filesystem utilities ─────────────────────────────────────────────────────
+def safe_move(src: pathlib.Path, dest_dir: pathlib.Path) -> str:
+    """
+    Move `src` into `dest_dir`, creating the directory if needed.
+
+    Returns a short status string suitable for display in a status bar:
+      - "Moved <name>"      on success
+      - "Error: <message>"  on failure
+
+    If `dest_dir/src.name` already exists, appends a timestamp suffix to the
+    destination filename so nothing is clobbered.
+    """
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        if dest.exists():
+            stem = src.stem
+            suffix = src.suffix
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            dest = dest_dir / f"{stem}.{ts}{suffix}"
+        shutil.move(str(src), str(dest))
+        return f"Moved {src.name}"
+    except OSError as e:
+        return f"Error: {e}"
 
 
 class Emitter:
-    """Emit commands to Plexi immediately (outside a render frame).
+    """Emit commands to Plexi immediately (outside a render frame)."""
 
-    The emitter also owns the synchronous request/response path used by
-    `get_secret()`. It shares a pending-event deque with the parent `App`
-    so that any events read from stdin while waiting for a response (and
-    which are unrelated to that response) get processed by the main loop
-    on its next iteration instead of being dropped.
-    """
-
-    def __init__(self, app_id: str = "", pending_events: Optional[Deque[dict]] = None):
+    def __init__(self, app_id: str = ""):
         self._app_id = app_id
-        # Shared with App.run(); None only in cases where the emitter is
-        # constructed standalone (e.g. legacy tests).
-        self._pending_events: Deque[dict] = pending_events if pending_events is not None else deque()
 
     def run_in_terminal(self, command: str):
         """Execute a shell command in the linked terminal."""
@@ -109,44 +184,6 @@ class Emitter:
     def debug(self, message: str):
         """Log at debug level."""
         self.log("debug", message)
-
-    def get_secret(self, name: str) -> Optional[str]:
-        """
-        Fetch a secret by name from Plexi's Keychain-backed store.
-
-        Resolution walks up from the app's launch directory to the user's
-        home, returning the first matching value. Returns None if the
-        secret is missing, Keychain is unavailable, or any other
-        resolution error occurred (the host logs the failure; the app
-        should not crash on a missing secret).
-
-        Blocks until Plexi responds. Safe to call from `on_render`,
-        `on_key`, `on_click`, or `on_command` handlers. Any unrelated
-        events that arrive while waiting for the response are queued and
-        processed by the main loop on its next iteration.
-        """
-        # Fire the request.
-        print(json.dumps({"type": "secret_get", "name": name}), flush=True)
-
-        # Block until we see the matching secret_response. Other events
-        # get stashed for the main loop so nothing is lost.
-        while True:
-            line = sys.stdin.readline()
-            if not line:
-                # stdin closed — treat as host death; no secret available.
-                return None
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "secret_response" and event.get("name") == name:
-                value = event.get("value")
-                return value if isinstance(value, str) else None
-            # Unrelated event — stash for the main loop.
-            self._pending_events.append(event)
 
     def cost_report(
         self,
@@ -393,24 +430,17 @@ class RenderContext:
     All coordinates are in logical pixels within the app surface.
     """
 
-    def __init__(
-        self,
-        width: float,
-        height: float,
-        app_id: str = "",
-        emitter: Optional[Emitter] = None,
-    ):
+    def __init__(self, width: float, height: float, app_id: str = "",
+                 app_state: Optional[dict] = None):
         self.width = width
         self.height = height
         self.delta_time: float = 0.0
         self._app_id = app_id
-        # Carried so helpers like get_secret() can piggyback on the
-        # existing Emitter (and its shared pending-events deque).
-        self._emitter: Emitter = emitter if emitter is not None else Emitter(app_id)
         self._commands: list = []
-        # Carried so helpers like get_secret() can piggyback on the
-        # existing Emitter (and its shared pending-events deque).
-        self._emitter: Emitter = emitter if emitter is not None else Emitter()
+        # Shared mutable state owned by the App instance (survives across
+        # render frames, unlike the RenderContext itself which is recreated
+        # per frame). Used by scrollable_list() and other stateful components.
+        self._app_state: dict = app_state if app_state is not None else {}
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0):
         """Fill a rectangle."""
@@ -420,12 +450,359 @@ class RenderContext:
         })
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
-             monospace: bool = False, bold: bool = False):
-        """Draw text at a position."""
-        self._commands.append({
+             monospace: bool = False, bold: bool = False,
+             align: str = "left"):
+        """
+        Draw text at a position.
+
+        `align` controls horizontal anchoring of the text relative to `x`:
+          - "left"   (default) — `x` is the left edge of the text
+          - "center"           — `x` is the horizontal center
+          - "right"            — `x` is the right edge of the text
+
+        Vertical anchoring is always top (`y` = top of the text cell).
+
+        Use the named size constants (TITLE, BODY, CAPTION, HINT, MONO_BODY,
+        MONO_SMALL) instead of arbitrary numbers — they give consistent
+        legibility across apps and survive future scale tuning.
+        """
+        cmd = {
             "type": "text", "x": x, "y": y, "text": text, "size": size,
             "color": color, "monospace": monospace, "bold": bold,
-        })
+        }
+        if align and align != "left":
+            cmd["align"] = align
+        self._commands.append(cmd)
+
+    def text_right(self, x: float, y: float, text: str, size: float, color: str,
+                   monospace: bool = False, bold: bool = False):
+        """Draw right-aligned text: `x` is the right edge.
+
+        Use for status-bar right columns, header shortcuts, version labels —
+        anything anchored to the right side of the pane. Internally sets
+        `align="right"` so the host measures exact text width; never do
+        `ctx.width - guessed_pixels` yourself.
+        """
+        self.text(x, y, text, size, color, monospace=monospace, bold=bold, align="right")
+
+    def text_center(self, x: float, y: float, text: str, size: float, color: str,
+                    monospace: bool = False, bold: bool = False):
+        """Draw center-aligned text: `x` is the horizontal center."""
+        self.text(x, y, text, size, color, monospace=monospace, bold=bold, align="center")
+
+    def measure_text(self, text: str, size: float, monospace: bool = False) -> float:
+        """
+        Approximate the pixel width of `text` at `size`.
+
+        This is an *approximation* — the host (egui) has exact font metrics,
+        but the Python SDK can't reach them. For perfect alignment, prefer
+        `text_right` / `text_center` (which let the host measure exactly).
+        Use `measure_text` only when you need to *reserve* horizontal space
+        for padding or wrap a block into a width budget.
+
+        Accuracy target: within ~10% of actual for ASCII text.
+        """
+        if monospace:
+            return len(text) * size * 0.60
+        # Proportional: rough average char width ≈ 0.52 * size for mixed ASCII.
+        return len(text) * size * 0.52
+
+    # ── Phase 1 components ────────────────────────────────────────────────
+    # Composable layout primitives that produce only standard draw commands
+    # (rect, text, text_right, text_center). Apps can use these directly or
+    # ignore them and draw everything manually.
+
+    def header(
+        self,
+        title: str,
+        subtitle: Optional[str] = None,
+        height: float = HEADER_H,
+        theme: Optional[Theme] = None,
+    ) -> None:
+        """
+        Draw a surface-filled header bar across the top of the pane.
+
+        Renders `title` at TITLE size in accent bold, left-padded by PAD,
+        vertically centered in the bar. If `subtitle` is given, it's drawn
+        below the title at HINT size in muted. Returns nothing — call your
+        list/body rendering after this.
+        """
+        t = theme or THEME
+        self.rect(0, 0, self.width, height, fill=t.surface)
+        if subtitle:
+            # Stack title + subtitle, centered as a group.
+            block_h = TITLE + 2 + HINT
+            title_y = (height - block_h) / 2
+            sub_y = title_y + TITLE + 2
+            self.text(PAD, title_y, title, size=TITLE, color=t.accent, bold=True)
+            self.text(PAD, sub_y, subtitle, size=HINT, color=t.muted)
+        else:
+            title_y = (height - TITLE) / 2
+            self.text(PAD, title_y, title, size=TITLE, color=t.accent, bold=True)
+
+    def status_bar(
+        self,
+        shortcuts: List[Tuple[str, str]],
+        status_msg: Optional[str] = None,
+        status_color: Optional[str] = None,
+        height: float = 30.0,
+        theme: Optional[Theme] = None,
+    ) -> None:
+        """
+        Draw a surface-filled status bar across the bottom of the pane.
+
+        `shortcuts` is a list of (keys, label) tuples. When `status_msg` is
+        set, the shortcut row is replaced by the message in `status_color`
+        (defaults to theme.green). Default `height` is 30 — STATUS_H=44 is
+        too tall for a keyboard-shortcut-only bar.
+        """
+        t = theme or THEME
+        self.rect(0, self.height - height, self.width, height, fill=t.surface)
+        text_y = self.height - height + (height - HINT) / 2
+        if status_msg:
+            color = status_color or t.green
+            self.text_center(self.width / 2, text_y, status_msg,
+                             size=HINT, color=color)
+            return
+        if not shortcuts:
+            return
+        hint = "   ".join(f"{keys}  {label}" for keys, label in shortcuts)
+        self.text_center(self.width / 2, text_y, hint, size=HINT, color=t.muted)
+
+    def scrollable_list(
+        self,
+        list_id: str,
+        items: list,
+        selected: int,
+        row_height: float,
+        render_row: Callable,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        w: Optional[float] = None,
+        h: Optional[float] = None,
+        theme: Optional[Theme] = None,
+    ) -> None:
+        """
+        Render a scrollable list with persistent scroll state and a scrollbar.
+
+        Persistent scroll offset is stored on the owning App instance, keyed
+        by `list_id`. Symmetric clamping keeps `selected` visible with
+        minimal scroll movement (file-explorer behavior).
+
+        `render_row` is called for each visible row with:
+            render_row(ctx, item, absolute_index, x, y_row, w, is_selected)
+        The callback draws whatever it wants within the row rect.
+
+        Bounding rect defaults (when x/y/w/h are None) assume a standard
+        header + status_bar layout: fills the area between the header and
+        the status bar with a small top gap.
+        """
+        t = theme or THEME
+        # Defaults: below header, above 30px status bar, full width.
+        if x is None:
+            x = 0.0
+        if w is None:
+            w = self.width
+        if y is None:
+            y = HEADER_H + PAD / 2
+        if h is None:
+            h = self.height - HEADER_H - 30.0 - PAD
+
+        if h <= 0 or row_height <= 0:
+            return
+
+        visible = max(1, int(h / row_height))
+        state = self._app_state.setdefault("scroll", {})
+        scroll_off = state.get(list_id, 0)
+
+        # Symmetric clamp — scroll in the direction `selected` is pushing.
+        if selected < scroll_off:
+            scroll_off = selected
+        elif selected >= scroll_off + visible:
+            scroll_off = selected - visible + 1
+        scroll_off = max(0, min(scroll_off, max(0, len(items) - visible)))
+        state[list_id] = scroll_off
+
+        # Reserve a small gutter on the right for the scrollbar.
+        scroll_gutter = 8.0
+        row_w = w - scroll_gutter if len(items) > visible else w
+
+        for i in range(visible):
+            idx = scroll_off + i
+            if idx >= len(items):
+                break
+            y_row = y + i * row_height
+            is_sel = idx == selected
+            render_row(self, items[idx], idx, x, y_row, row_w, is_sel)
+
+        # Scrollbar.
+        if len(items) > visible:
+            track_x = x + w - scroll_gutter / 2 - 1.5
+            track_h = row_height * visible
+            thumb_h = max(24.0, track_h * visible / len(items))
+            denom = max(1, len(items) - visible)
+            thumb_y = y + (track_h - thumb_h) * (scroll_off / denom)
+            self.rect(track_x, y, 3, track_h, fill=t.surface, radius=2)
+            self.rect(track_x, thumb_y, 3, thumb_h, fill=t.muted, radius=2)
+
+    def scrollable_text(
+        self,
+        text_id: str,
+        lines: List[str],
+        scroll_offset: Optional[int] = None,
+        line_height: float = MONO_BODY + 4,
+        size: Optional[float] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        w: Optional[float] = None,
+        h: Optional[float] = None,
+        monospace: bool = False,
+        theme: Optional[Theme] = None,
+        color: Optional[str] = None,
+    ) -> int:
+        """
+        Render a scrollable block of pre-wrapped text lines with a right-edge
+        scrollbar. Returns the clamped scroll offset considered "current"
+        after this render pass.
+
+        Persistent scroll offset is stored on the owning App instance, keyed
+        by `text_id`. This shares the same dict namespace as
+        `scrollable_list` — a `list_id="notes"` and `text_id="notes"` would
+        collide. Choose unique keys per scrollable thing in the app.
+
+        `lines` must be pre-wrapped by the caller (use `ctx.wrap_text()`
+        first if you have an unwrapped string). If `scroll_offset` is None
+        the persisted value is used; if passed explicitly the persisted
+        value is updated to match (so callers can reset it on mode change).
+
+        Bounding rect defaults (when x/y/w/h are None) assume a standard
+        header + status_bar layout.
+        """
+        t = theme or THEME
+        txt_color = color or t.fg
+        font_size = size if size is not None else max(1.0, line_height - 4)
+
+        if x is None:
+            x = PAD
+        if w is None:
+            w = self.width - PAD * 2
+        if y is None:
+            y = HEADER_H + PAD
+        if h is None:
+            h = self.height - 30.0 - PAD - y
+
+        if h <= 0 or line_height <= 0:
+            return 0
+
+        state = self._app_state.setdefault("scroll", {})
+        if scroll_offset is None:
+            offset = state.get(text_id, 0)
+        else:
+            offset = scroll_offset
+
+        visible_lines = max(1, int(h / line_height))
+        max_offset = max(0, len(lines) - visible_lines)
+        offset = max(0, min(offset, max_offset))
+        state[text_id] = offset
+
+        for i in range(visible_lines):
+            idx = offset + i
+            if idx >= len(lines):
+                break
+            self.text(
+                x, y + i * line_height, lines[idx],
+                size=font_size,
+                color=txt_color, monospace=monospace,
+            )
+
+        # Scrollbar — matches scrollable_list styling.
+        if len(lines) > visible_lines:
+            track_x = x + w - PAD / 2 - 3
+            track_h = line_height * visible_lines
+            thumb_h = max(24.0, track_h * visible_lines / len(lines))
+            denom = max(1, len(lines) - visible_lines)
+            thumb_y = y + (track_h - thumb_h) * (offset / denom)
+            self.rect(track_x, y, 3, track_h, fill=t.surface, radius=2)
+            self.rect(track_x, thumb_y, 3, thumb_h, fill=t.muted, radius=2)
+
+        return offset
+
+    def empty_state(
+        self,
+        title: str,
+        subtitle: Optional[str] = None,
+        icon_color: Optional[str] = None,
+        theme: Optional[Theme] = None,
+    ) -> None:
+        """
+        Draw a centered two-line empty-state message near the pane center.
+
+        `title` renders at BODY size in `icon_color` (defaults to theme.green).
+        `subtitle` (optional) renders below at CAPTION size in muted, with
+        a 6px gap. The combined block's midpoint is exactly `self.height / 2`.
+        """
+        t = theme or THEME
+        color = icon_color or t.green
+        cx = self.width / 2
+        if subtitle:
+            block_h = BODY + 6 + CAPTION
+            block_top = (self.height - block_h) / 2
+            title_y = block_top
+            sub_y = block_top + BODY + 6
+            self.text_center(cx, title_y, title, size=BODY, color=color)
+            self.text_center(cx, sub_y, subtitle, size=CAPTION, color=t.muted)
+        else:
+            title_y = (self.height - BODY) / 2
+            self.text_center(cx, title_y, title, size=BODY, color=color)
+
+    def wrap_text(
+        self,
+        text: str,
+        max_width_px: float,
+        size: float,
+        monospace: bool = False,
+    ) -> List[str]:
+        """
+        Greedy word-wrap `text` into a list of lines that fit within
+        `max_width_px` at the given font `size`.
+
+        Uses `measure_text` to decide when to break. Preserves explicit
+        newlines as hard breaks. A single word longer than `max_width_px`
+        is hard-truncated at the character level (computed against the
+        same width factor used by `measure_text`: 0.60 for monospace,
+        0.52 for proportional).
+        """
+        if max_width_px <= 0 or size <= 0:
+            return [text]
+
+        factor = 0.60 if monospace else 0.52
+        max_chars = max(1, int(max_width_px / (size * factor)))
+
+        out: List[str] = []
+        # Preserve explicit newlines as hard breaks.
+        for src_line in text.splitlines() or [""]:
+            if not src_line:
+                out.append("")
+                continue
+            words = src_line.split(" ")
+            current = ""
+            for word in words:
+                # Hard-truncate any single word that's wider than the budget.
+                while self.measure_text(word, size, monospace=monospace) > max_width_px:
+                    out.append(word[:max_chars])
+                    word = word[max_chars:]
+                if not word:
+                    continue
+                candidate = word if not current else current + " " + word
+                if self.measure_text(candidate, size, monospace=monospace) <= max_width_px:
+                    current = candidate
+                else:
+                    if current:
+                        out.append(current)
+                    current = word
+            if current:
+                out.append(current)
+        return out
 
     def line(self, x1: float, y1: float, x2: float, y2: float,
              color: str, width: float = 1.0):
@@ -647,17 +1024,6 @@ class RenderContext:
         """Log at debug level."""
         self.log("debug", message)
 
-    def get_secret(self, name: str) -> Optional[str]:
-        """
-        Fetch a secret by name from Plexi's Keychain-backed store.
-
-        Blocking request/response. See `Emitter.get_secret()` for full
-        semantics. Safe to call from inside `on_render` — the request is
-        sent immediately (not queued with the frame) so the response
-        arrives before the handler returns.
-        """
-        return self._emitter.get_secret(name)
-
     def notify(
         self,
         title: str,
@@ -788,11 +1154,7 @@ class App:
         self._on_mouse_move: Optional[Callable] = None
         self._on_scroll: Optional[Callable] = None
         self._on_pipe_data: Optional[Callable] = None
-        # Events that arrived on stdin while a blocking request (e.g.
-        # get_secret) was waiting for its response. Drained at the top of
-        # each run-loop iteration before reading a fresh line from stdin.
-        self._pending_events: Deque[dict] = deque()
-        self._emitter = Emitter(app_id=app_id, pending_events=self._pending_events)
+        self._emitter = Emitter(app_id=app_id)
         # Breakpoints: list of (min_width, min_height, render_fn).
         # Walked in descending area order on each render to pick the
         # most specific match whose constraints fit the current pane.
@@ -808,6 +1170,10 @@ class App:
         self._min_size_bg: str = "#0a0a0a"
         self._min_size_fg: str = "#888888"
         self._min_size_accent: str = "#ffffff"
+        # Persistent scroll state for SDK-level components (e.g.
+        # ctx.scrollable_list). Keyed by the app-supplied list_id. Lives on
+        # the App because RenderContext is recreated per frame.
+        self._scroll_state: dict[str, int] = {}
 
     def on_render(self, fn: Callable) -> Callable:
         self._on_render = fn
@@ -1140,24 +1506,15 @@ class App:
         # Pull min-size from the manifest (if set_min_size was not called).
         self._load_manifest_layout()
 
-        while True:
-            # Drain any events that were queued by a blocking helper (e.g.
-            # get_secret) during a prior handler. These were read off stdin
-            # while waiting for a specific response, so they need to be
-            # replayed here before pulling more.
-            if self._pending_events:
-                event = self._pending_events.popleft()
-            else:
-                line = sys.stdin.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
             event_type = event.get("type", "")
 
@@ -1185,10 +1542,9 @@ class App:
                     self._render_min_size_fallback(self.width, self.height)
                     continue
                 ctx = RenderContext(
-                    self.width,
-                    self.height,
+                    self.width, self.height,
                     app_id=self._emitter._app_id,
-                    emitter=self._emitter,
+                    app_state={"scroll": self._scroll_state},
                 )
                 ctx.delta_time = self.delta_time
                 # Breakpoint dispatch (if registered) overrides on_render.
@@ -1279,12 +1635,6 @@ class App:
                         event.get("value"),
                         self._emitter,
                     )
-
-            elif event_type == "secret_response":
-                # Should normally be consumed by the blocking get_secret()
-                # helper. If one arrives at top level (e.g. a late response
-                # after timeout), there's nothing sensible to do — drop it.
-                pass
 
             elif event_type == "shutdown":
                 break

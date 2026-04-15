@@ -292,7 +292,7 @@ network = false
 
 Capability notes:
 
-- The app's filesystem reach is advisory in v1 (see `docs/specs/app-infrastructure.md` Capability system). The app itself must enforce the `~/.plexi-shell/` boundary in code and refuse to resolve any path outside its root. This is belt-and-suspenders: the invariant is safety-critical.
+- The app's filesystem reach is advisory in v1 (see `docs/specs/subsystems/app-infrastructure.md` Capability system). The app itself must enforce the `~/.plexi-shell/` boundary in code and refuse to resolve any path outside its root. This is belt-and-suspenders: the invariant is safety-critical.
 - No `network`. Ever. An app that manages shell init with network access is a supply-chain footgun.
 - No `terminal_write`. The app does not paste into running shells; its effect is on future shells only.
 
@@ -434,4 +434,4 @@ Users accumulate shell tweaks and have no safe way to toggle them. Editing `~/.z
 - [ ] App refuses to enable on non-zsh shells or when the user already has a `$ZDOTDIR` set to a path the app doesn't own.
 - [ ] `manifest.toml` declares `filesystem = "read_write"`, no `network`, no `terminal_write`.
 
-Full v1 spec in `docs/specs/app-shell-config.md`. Implement as an external Python app in `examples/shell-config/` following the app-infrastructure protocol in `docs/specs/app-infrastructure.md`.
+Full v1 spec in `docs/specs/proposals/app-shell-config.md`. Implement as an external Python app in `examples/shell-config/` following the app-infrastructure protocol in `docs/specs/subsystems/app-infrastructure.md`.

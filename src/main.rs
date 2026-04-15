@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 1 of the WASM/PWA split (see docs/specs/wasm-pwa-deployment.md).
+// Phase 1 of the WASM/PWA split (see docs/specs/proposals/wasm-pwa-deployment.md).
 //
 // Every module that touches the OS — PTY, filesystem, subprocess, Keychain,
 // audio devices, file watching — is gated behind `cfg(not(target_arch = "wasm32"))`.

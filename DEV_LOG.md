@@ -1,18 +1,145 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
-## 2026-04-12 — [CHANGED] Apps can declare a startup message via `[app.launch].startup_message` (issue #185)
+## 2026-04-15 — [CHANGED] Parked feature branches renamed to `experiments/v2-*`; WIP committed; worktrees fully purged
 
-New optional manifest field: `[app.launch].startup_message = "Starting X…"`. When present, Plexi writes the string in dim italics into the companion terminal's scrollback grid at launch, via `TerminalBackend::write_agent_bytes` (same path agent-mode uses — bytes never touch the PTY, so the shell has no idea they exist).
+Follow-up to the branch/worktree cleanup earlier today. The 6 "preserved for later review" feature branches had an ambiguous status — sitting in the `feature/*` namespace implied they were active, but they were actually parked. Two also had real uncommitted work sitting in worktrees that would be lost on the next `git worktree remove`.
 
-Both launch paths write the message: the fast in-pane `AppWithCompanion` path writes to the same pane's backend, and the legacy auto-split path writes to the newly-created companion `TerminalPane` before it's inserted into the context. Helper `format_startup_message` lives at the bottom of `src/pane_ops.rs`. No example manifest has opted in yet — this is plumbing only.
+**Committed WIP on `feature/104-slash-trigger-and-commands`**: the worktree at `.claude/worktrees/agent-ae3ad3ec` had 5 dirty files including 344 new lines in `src/agent_mode.rs` and 98 new lines in `src/tiling.rs` — genuine slash-command / tiling work from the 2026-04-12 session. Committed as `c7d9cc3 wip: checkpoint before experiments/v2-slash-commands-spawn rename` so the work is safe before rename. No claim it compiles against current alpha.
 
-## 2026-04-12 — [CHANGED] Agent mode prints a scope header on activation (issue #118)
+**Two other dirty worktrees were build noise** and force-removed without commits:
+- `agent-a364e07d`: 19 files all in `sdk/rust/target/` (build output, should be gitignored but tracked historically — irrelevant)
+- `feature+mermaid-viewer`: only `Cargo.lock` — noise
 
-When agent mode activates, it now emits a dim `agent ─ <project>  <~/path>` header into the terminal grid right before the first `>>> ` prompt, so the user can see which directory the agent is scoped to. Rendered inline via ANSI (bold magenta project name + dim gray full path, home collapsed to `~`) to match the existing Warp-style output path — no new UI surface. Helper `build_scope_header` lives in `agent_mode.rs`; uses the already-present `dirs` crate for home collapse.
+**Renamed 7 preserved branches to `experiments/v2-*`**:
+- `feature/104-slash-trigger-and-commands` → `experiments/v2-slash-commands-spawn`
+- `feature/external-text-editor-app` → `experiments/v2-external-text-editor`
+- `feature/v2-input-layering-contract` → `experiments/v2-input-layering`
+- `feature/237-file-explorer-75-split` → `experiments/v2-plexi-iq-stage0` (real value is the `src/plexi_iq/` stub, not the file explorer split fix)
+- `feature/plexi-v2-scope-spec` → `experiments/v2-scope-spec`
+- `feature/spawn-app-protocol` → `experiments/v2-spawn-app`
+- `feature/sdk-breakpoints-min-size` → `experiments/v2-sdk-breakpoints`
+- `worktree-agent-a364e07d` → `experiments/v2-secrets-get-api`
 
-## 2026-04-12 — [FIX] Pomodoro break timers now auto-start (issue #171)
+The `experiments/v2-*` namespace makes it unambiguous that these are parked. Cherry-pick source, not active development target. `feature/*` stays reserved for NEW work off current alpha.
 
-`examples/pomodoro/pomodoro.py` — pressing `b` (short break) or `l` (long break) used to set `running = False` and require a second Shift+Space to start the timer, which broke the end-of-focus → break handoff. Now the `b` / `l` handlers set `running = True` and reset `last_tick` so the break counts down immediately. Updated the header hint accordingly.
+**Dropped redundant session branch.** `feature/notifications-urgency-socket-actions` was fully merged into alpha (they point at the same commit). Deleted with `-D` to get it out of the local namespace.
+
+**Final branch count: 12.** 4 long-lived (`main`, `beta`, `alpha`, `dev`) + 8 `experiments/v2-*`.
+
+**Final worktree count: 2.** Main (on alpha) + external `beta/v2`.
+
+**Updated `NEXT_SESSION.md`** with the new branch names, a per-branch cherry-pick value inventory, and a recommended extraction order. **Updated `CLAUDE.md` `## Branches` section** to document the `experiments/v2-*` convention so future sessions know these branches are parked and understood.
+
+**Alpha is stable and ready for v2 PRs** — clean branch namespace, no dangling worktrees, all parked work preserved and documented, labels versioned.
+
+## 2026-04-15 — [CHANGED] Branch + worktree cleanup; alpha fast-forwarded to own all v2 work
+
+Started the session with **~80 local branches and 36 worktrees**, most from sub-agent isolation runs that never progressed past the initial `324b534 chore: bump 1.1.2` commit. Git diffs and branch listings were archaeology. The goal: three long-lived branches (`main`, `beta`, `alpha`), alpha holds all v2 progress, issues labeled by target version.
+
+**Worktree purge:** 31 worktrees removed via `git worktree remove --force`. Preserved 5: the main worktree, `agent-a364e07d` (has `sdk/rust/target/` build artifacts), `agent-ae3ad3ec` (has real uncommitted `src/agent_mode.rs` changes on `feature/104-slash-trigger-and-commands`), `feature+mermaid-viewer` (detached HEAD with uncommitted work), and the external `beta/v2` worktree. All 31 removed worktrees were either on branches already merged into alpha OR dirty only with `Cargo.lock` (build noise).
+
+**Branch purge:** 69 branches deleted across three waves. First wave: 56 branches fully merged into alpha via `git branch -d` (auto-verifies merge). Second wave: 3 branches merged into local HEAD but not their remote tracking branch (`git branch -D` for `feature/132-mouse-events`, `feature/rename-kona-to-app-store`, `layer-merged`). Third wave: 26 SUPERSEDED/ABANDONED branches after an audit sub-agent classified each of the ~38 ahead-only branches by commit-message-and-file-touched heuristics. Fourth wave: 10 remaining `worktree-agent-*` scratch branches with duplicate content. **Final branch count: 13.**
+
+**Alpha fast-forwarded.** The session branch `feature/notifications-urgency-socket-actions` was a pure ancestor extension of alpha (6 commits ahead, 0 behind). Fast-forward merge of alpha to `409fb37` — zero conflicts possible. Alpha now has: notifications urgency model (#222), Protocol v2.0 spec, Protocol v2.1 spec, Phase 1 components layer, Tier 1 app fan-out (10 apps), launch-mode fix, Escape → Cmd+W keybinding flip, SDK symlink cleanup, docs three-bucket reorg.
+
+**6 v2-relevant branches preserved, NOT merged.** The audit identified 7 branches as "MERGE-TO-ALPHA" but mechanical merge would conflict hard with the new SDK symlinks (their branches have old 1640-line vendored `plexi_sdk.py` copies) and the new `docs/specs/` three-bucket layout (their branches have old flat-layout spec edits). Preserved as-is: `feature/104-slash-trigger-and-commands` (+35), `feature/external-text-editor-app` (+19), `feature/v2-input-layering-contract` (+8), `feature/237-file-explorer-75-split` (+7 — has `src/plexi_iq/` scaffolding worth cherry-picking), `feature/plexi-v2-scope-spec` (+5), `feature/spawn-app-protocol` (+19), `feature/sdk-breakpoints-min-size` (+19). **Wrote `NEXT_SESSION.md` at repo root listing what's in each preserved branch so future-me can cherry-pick valuable pieces (core type registry TOMLs, plexi-iq stub, per-app test suites) onto alpha without the conflict surface.** Delete the doc + the branches once resolved.
+
+**Issue labeling.** Created/reused labels `v2.0`, `v2.1`, `v2.2` — renamed the existing `v2` label to `v2.0` to match spec filenames (`docs/specs/releases/plexi-v2.0.md`), which preserved all existing issue associations via `gh label edit --name`. Added `v2.0` to #244 (the one session issue missing a version label). Every open issue now has exactly one version label.
+
+**CLAUDE.md updates.** Removed the stale PLEXI-dev sibling worktree reference (verified gone). Consolidated the duplicated branching strategy section — was in two places, now once under `## Branches`. Added a `Version` label family to the `GitHub Issue Labels` section so future issues get versioned.
+
+**Not pushed.** Alpha is fast-forwarded locally. The user pushes when ready so the remote source-of-truth moves under their control. No force push anywhere, no remote branch deletions.
+
+## 2026-04-15 — [CHANGED] `docs/specs/` reorg — three-bucket taxonomy (releases / subsystems / proposals)
+
+`docs/specs/` had 24 files in a flat directory mixing purposes: release contracts, deep subsystem designs, proposal-stage ideas, individual app design docs for apps that already exist, and one iOS-companion-app spec that wasn't even a Plexi protocol thing. Reading the folder was archaeology.
+
+**Reorg into three buckets by purpose, not by version:**
+
+- `docs/specs/releases/` — authoritative contracts, one per shipped or in-progress version. Short index docs that reference subsystem specs rather than restating. Currently: `plexi-v2.0.md` (renamed from `protocol-v2.md`), `plexi-v2.1.md` (renamed from `protocol-v2.1.md`).
+- `docs/specs/subsystems/` — deep design docs for load-bearing mechanisms that span versions. Each has a status header. Currently: `app-infrastructure.md` (v1 protocol), `typed-pipes.md`, `agent-orchestration.md`, `agent-mode.md`, `intelligence-protocol.md`.
+- `docs/specs/proposals/` — ideas being explored, not yet committed. No promise of shipping. Currently: `spatial-canvas.md`, `chat-primitive.md`, all `core-*-primitive.md` specs, `wasm-pwa-deployment.md`, `sync-architecture.md`, `agent-replay-testing.md`, unbuilt app proposals (`app-focus-manager.md`, `app-shell-config.md`, `telegram-integration.md`).
+
+**Moved out of `docs/specs/` entirely:** `companion-app.md` → `docs/mobile/ios-companion.md` — it's the iOS mobile product, not a Plexi protocol spec.
+
+**Deleted** (5 files, historical individual app design docs — apps already exist, git history preserves): `app-aquarium.md`, `app-github-issues.md`, `app-pyflow.md`, `app-snake.md`, `app-text-editor.md`.
+
+**Why not the "pure version-numbered files" alternative.** The original user-floated idea was to flatten everything into `plexi-v2.0.md`, `plexi-v2.1.md`, etc., with all subsystems inlined. Rejected because `typed-pipes.md` alone is 824 lines — folding typed pipes + agent-orchestration + app-infrastructure into one v2.0 file gives you an unreadable 3000-line mega-doc. Cross-version subsystems (typed pipes ships Phase 0 in v1, Phase 1 in v2.0, Phase 2 in v2.2+) would be duplicated or split awkwardly. Proposals that haven't committed to a version would have nowhere to live. Taxonomy by purpose solves all three.
+
+**Cross-reference pass.** Every `docs/specs/<name>.md` absolute path reference was rewritten via sed across DEV_LOG, ROADMAP, `src/main.rs`, `sdk/*/README.md`, `docs/types/README.md`, `docs/handoffs/`, and the moved spec files themselves. Release docs use `subsystems/<name>.md` / `proposals/<name>.md` relative paths for inline backtick references; spec-to-spec markdown links inside `proposals/` use `../subsystems/<name>.md` relative paths. Added `docs/specs/README.md` as the index for the new layout.
+
+**Promotion path.** When a proposal graduates to "shipping in release X," move it from `proposals/` to `subsystems/` and add a status header (`Shipped in:` or `Draft for:`). Release docs link to the subsystem doc from then on.
+
+## 2026-04-15 — [CHANGED] Vendored SDK copies → symlinks (Phase 1 of SDK deploy story)
+
+Every `examples/<app>/plexi_sdk.py` was a full 1640-line copy of `sdk/python/plexi_sdk.py`, kept in sync by `scripts/sync-sdk.py`. Every SDK edit multiplied by 34 in git diffs (the Phase 1 components commit added ~18k insertions for this reason, most of it pure duplication). Unsustainable as the SDK grows.
+
+**Change:** replaced all 34 example `plexi_sdk.py` files with relative symlinks to `../../sdk/python/plexi_sdk.py`. Git tracks them as mode 120000 objects — one canonical file, 34 symlinks, SDK edits now touch exactly one line in diffs. `scripts/sync-sdk.py` deleted — no more sync dance. Python's import machinery follows symlinks transparently, so inline tests (`cd examples/<app> && python3 <entry>.py`) still work unchanged.
+
+**Install flow fix:** `just install-alpha` was using `cp -R` which on macOS preserves symlinks — would have shipped dangling symlinks to `~/.plexi-alpha/apps/<app>/plexi_sdk.py` pointing at paths that don't exist on the target machine. Changed to `cp -RL` (dereference) so installed apps get a real bundled copy alongside their entry file. Verified: `file ~/.plexi-alpha/apps/backlog-triage/plexi_sdk.py` reports `Python script text executable` (real file, not symlink). Deploy story is unchanged from before — users still get bundled SDK per app.
+
+**Why this is Phase 1, not the final answer.** Users still have 34 copies of the SDK on disk after install. Disk space is irrelevant (~1.9MB). The real problem is **SDK update propagation**: if Plexi v2.1 ships new components, every previously-installed app keeps its old SDK copy until reinstalled. Phase 2 (filed as a v2.0 tracking issue) teaches `ProcessApp::launch()` to set `PYTHONPATH=~/.plexi-alpha/sdk:$PYTHONPATH` and ships one shared SDK at `~/.plexi-alpha/sdk/plexi_sdk.py`, so updates propagate to all apps automatically on next launch. Phase 3 (deferred to v2.2+ per `docs/specs/releases/plexi-v2.1.md` §1) is a proper `pip install plexi-sdk` package, relevant only when external contributors start writing apps and want semver. The three-phase progression is vendored → shared → packaged.
+
+**Rejected alternative:** a `sys.path.insert(0, '../../sdk/python')` bootstrap snippet in every app. That's code-level vendoring — worse than the file-level vendoring we had. The whole appeal is that apps write `import plexi_sdk` with nothing else.
+
+## 2026-04-14 — [CHANGED] Protocol v2 + v2.1 specs drafted, GitHub issues filed
+
+`docs/specs/releases/plexi-v2.0.md` (~523 lines) is the contract for Plexi 2.0 — orchestration layer only. Covers: OpenIntent Init payload, host event bus (`.plexi/events.jsonl`), Run primitive for stateful multi-step tasks, rich notification actions with `run_id` binding, capability enforcement runtime prompts, typed pipes Phase 1, Plexi IQ Stage 1 (claude -p subprocess backend, not PGAP yet), protocol version negotiation. Resolves four contradictions between existing specs: agent-mode `/approve` ownership (IQ owns workflow, agent mode renders UI), trust float wiring (deferred to v2.1+, v2 uses binary prompts), directory scope enforcement (structural at ApiRequest + SpawnApp layer, not declarative), `.plexi/agents/` namespace collision (orchestrator configs vs. installed `[app.agent]` apps live in different dirs). 3-month ship order: plumbing (version negotiation, event bus, OpenIntent, Runs) → surface (rich notifications, capability prompts, typed pipes) → intelligence (IQ Stage 1 + validation visualizer).
+
+`docs/specs/releases/plexi-v2.1.md` (~520 lines) is the incremental UI primitives spec. Two protocol additions: `PushTransform`/`PopTransform` (2D affine transform stack, matches canvas/egui convention) and `MeasureText`/`TextMetrics` round-trip (replaces the SDK's 0.52/0.60 factor approximation with exact egui measurements). Six SDK components: `ctx.viewport` (zoom/pan), `ctx.text_input` (single-line with cursor, multi-line deferred to v2.2), `ctx.tabs`, `ctx.grid`, `ctx.modal`, `ctx.measure_text_exact`. New `[app.protocol] requires = ["ui_primitives_v1"]` manifest section for feature negotiation — protocol_version stays at 2, everything is additive JSON-forward-compatible. §8 is a ~100-line `mermaid-viewer` rewrite as the proof-of-concept showing every new primitive end-to-end. §9 lists the apps still blocked after v2.1 (multi-line editor, diff rich text, node graphs, maps, video) with the specific primitive each one needs.
+
+Filed 8 tracking issues (#224 umbrella + #225-231 sub-issues for must-ship items). Closed as subsumed: #91, #218, #219, #221, #85. Relabeled: #74 P1→P2, #87 P2→P3, #86 P3→P4, #132 P2→P3.
+
+**Why two specs not one:** v2 is about *when things happen* (spawn, notify, delegate, track a run). v2.1 is about *how things look* (zoom, pan, edit, tab). Bundling them would delay the v2 ship date unnecessarily; all v2.1 additions are purely additive over v2 so they can ship independently on a different cadence.
+
+## 2026-04-14 — [CHANGED] Python SDK components layer (Phase 1) + Tier 1 app migration
+
+Added to `sdk/python/plexi_sdk.py`: `Theme` dataclass + `THEME` singleton (Catppuccin), named size constants (`TITLE=22, HEADING=18, BODY=15, CAPTION=13, HINT=12, MONO_BODY=14, MONO_SMALL=12`), layout constants (`PAD=16, PAD_TIGHT=8, HEADER_H=48, STATUS_H=44`), and seven `RenderContext` methods: `header()`, `status_bar()`, `scrollable_list()`, `scrollable_text()`, `empty_state()`, `wrap_text()`, plus `text_right()`/`text_center()`/`measure_text()` helpers. Module utility `safe_move()`. All additions compose existing draw commands — no new `DrawCommand` variants, no protocol changes.
+
+**Scroll state ownership:** `RenderContext` is recreated per frame (new instance each render loop iteration), so scroll offsets can't live there. Moved to `App._scroll_state: dict[str, int]` on the `App` instance, passed into each new `RenderContext` constructor via an `app_state` dict. `scrollable_list` and `scrollable_text` share the same dict namespace keyed by `list_id`/`text_id` — caller owns uniqueness. Symmetric clamp pattern (`if selected < scroll_off: scroll_off = selected; elif selected >= scroll_off + visible: scroll_off = selected - visible + 1`) matches how egui's `ScrollArea::scroll_to_rect` behaves for the native file browser — the old asymmetric `max(0, selected - visible + 1)` was the bug that made lists "stick" on upward navigation.
+
+**Single-file constraint is load-bearing.** The SDK is vendored per app via `scripts/sync-sdk.py` — each example dir has its own `plexi_sdk.py` copy. Splitting into modules would mean N files per vendor, doubling the sync script and breaking the "copy one file, done" ergonomic. All Phase 1 components added inline; the file grew from ~1200 lines to ~1640 lines and remains importable as `from plexi_sdk import ...`. Still zero dependencies, still stdlib-only.
+
+**Reference app + Tier 1 fan-out.** `examples/backlog-triage/backlog_triage.py` rewritten end-to-end as the reference app showing every component. Then 10 list-shaped apps migrated in parallel via sub-agents (one per app): `todo`, `hacker-news`, `git-log`, `git-blame`, `github-issues`, `app-store`, `apiary`, `permissions-viewer`, `json-viewer`, `port-watcher`. Line delta was modest net (-21 across 10 apps) — raw count isn't the win, uniformity is. Every app now shares scroll behavior, font tiers, status-bar layout, Cmd+W close semantics, and theme palette.
+
+**Why tier 1 only.** Tier 2 (animation/game apps: `snake`, `aquarium`, `sandfall`, `seedclock`, `spiral-viewer`, `pomodoro`, `stopwatch`, `pulse`, `lichen`) deliberately NOT migrated — they're per-frame canvas apps where components would get in the way. Not outdated, just a different shape. Tier 3 (`text-editor`, `mermaid-viewer`, `weather`, `calc`, `markdown-preview`, `pyflow`, `diff-viewer`) parked until v2.1 primitives ship — they need `ctx.viewport`, `ctx.text_input`, `ctx.grid` which don't exist yet. Migrating them now would mean building blind.
+
+**Gaps surfaced by the fan-out that need follow-up:** (1) `scrollable_text` takes a single global color — git-blame's diff popup, github-issues' colored body/comments, hacker-news' separators all fell back to hand-rolling. Needs a per-line `color_fn` callback. (2) No `ctx.text_input` — git-blame filter, app-store filter, todo add-mode prompt all hand-rolled. Both are in the v2.1 docket.
+
+## 2026-04-14 — [FIX] Host was ignoring `[app.launch]` mode field — every app opened 75/25 regardless of manifest
+
+**Root cause:** `open_app_on_focused_with_launch()` in `src/pane_ops.rs` never read the `mode` field. The fast-embed path unconditionally called `pane.open_app_with_companion()`, forcing `SurfaceMode::AppWithCompanion` and a 75/25 vertical split for every app. The spec at `docs/specs/subsystems/app-infrastructure.md` §[app.launch] said `default mode = "fullscreen"`, `default companion = "none"` — the code had silently diverged from the spec for months. Even `backlog-triage` with an explicit `[app.launch] mode = "fullscreen"` declaration was ignored.
+
+**Fix:** the fast-embed path now reads `launch.mode` and `launch.companion` from the manifest. If `mode == "fullscreen"` OR `companion == "none"`, calls `pane.open_app()` (`SurfaceMode::AppActive`, full pane). Otherwise calls `pane.open_app_with_companion()`. Added a second branch for the non-embed fallback so fullscreen apps replace the current app in-place instead of forcing a new split. `backlog-triage/manifest.toml` also updated with an explicit `[app.launch]` block as belt-and-suspenders.
+
+**Lesson for future manifest fields:** any field that controls host behavior needs an end-to-end test that actually verifies two apps with different values produce different observable surface modes. Spec/code drift can survive a long time when no test catches it.
+
+## 2026-04-14 — [DECISION] Escape belongs to the focused app; Cmd+W closes
+
+**The bug:** `src/keys.rs` had `if input.consume_key(Modifiers::NONE, Key::Escape) { Action::CloseApp }`. `consume_key()` removes the event from egui's input queue *before* `ProcessApp::handle_key()` iterates, so Python apps literally never received Escape — the host ate it. This made modal dismissal, detail-view exit, form cancel, and any "Escape means go back" UX impossible in external apps. Verified inline by piping an `Escape` event to `backlog_triage.py` via stdin and watching its `expanded` state correctly toggle back to false — the Python code was correct all along.
+
+**Change:** Escape is no longer consumed at the host level. Cmd+W (`Modifiers::COMMAND + Key::W`) now maps to `Action::CloseApp` instead. Apps own Escape completely.
+
+**Why Cmd+W over a manifest `consumes_escape` flag or a runtime modal-state protocol command:** (a) matches native macOS convention — every Mac user knows Cmd+W closes a window, zero learning curve; (b) host owns all modifier-keyed shortcuts, apps own bare keys — simple convention, no declaration overhead; (c) buggy or hung apps are still always killable because Cmd+W is host-handled and not consumable by apps; (d) no new protocol primitive, no new manifest field, no cross-frame host state. Rejected alternatives: a `consumes_escape` manifest field adds declaration overhead for something conventions can solve; a two-press Escape model (app handles first, host closes on second) needs cross-frame host state tracking.
+
+**Migration cost:** example apps that had `"Esc close"` hint strings got updated to `"⌘W close"`. Apps still checking `if key in ("q", "Escape"): quit` still work for `q` but Escape no longer triggers quit — it falls through silently. Harmless, but the Tier 1 migration pass updated the user-facing hint strings so users don't see lying hints.
+
+## 2026-04-14 — [CHANGED] Vision doc split, Homebrew tap, notification system base layer merged
+
+Session was mostly architecture + roadmap alignment rather than feature building, with one significant PR landed.
+
+**What moved:**
+- `docs/VISION.md` created as single source of truth for Plexi's foundational claim (agent-native, internet-native analogy). `~/.agents/skills/plexi-north-star/SKILL.md` now references it instead of duplicating.
+- `ianjamesburke/homebrew-plexi` tap created; Cask format (not Formula — release produces a .app zip). `release.yml` extended with SHA256 computation + auto-update step (requires `HOMEBREW_TAP_TOKEN` PAT in repo secrets).
+- PR #222 merged: notification system urgency model (`priority: u8` → `urgency: String`), `expires_at`/`visible_after`/`action_type`/`action_payload`/`source` fields, Unix socket listener at `~/.plexi-alpha/notify.sock`, Enter-dispatch in palette with `focus_pane_by_id()`.
+- Issues filed: #218 (DrawCommand::Notify base), #219 (socket + action types), #220 (business card scanner POC), #221 (focus pane + poll-focus, downgraded to idea/P4), #223 (undo, idea/P4).
+
+**Decisions:**
+- `plexi install` = copy folder to `~/.plexi-alpha/apps/` (no PTY interception, existing binary handles it). `--local` flag for `.plexi/apps/` project-scoped installs. FSEvents watcher for hot-reload (event-driven, zero CPU idle).
+- Business model: Plexi IQ subscription ($25-35/mo or BYOK); open source core + apps; billing membrane is PGAP. Prompt caching non-optional — it's what makes unit economics work.
+- `@agent` syntax in agent mode: invokes installed `[app.agent]` apps by name; finds existing open instance before spawning new one. Not yet filed as issues — gap.
+
+**Open:** V2 product spec (app store, registry, billing) not captured in a doc. `@agent` syntax issues not filed.
 
 ## 2026-04-14 — [DECISION] mermaid-viewer: keyboard-driven diagram editor + --filter=mermaid file browser
 
@@ -26,7 +153,7 @@ Pre-existing compile errors in `src/app.rs` (missing `load_app_mru`/`save_app_mr
 
 Six parallel sub-agents delivered as six cherry-picked atomic commits on `alpha` (`1e43b9b` through `af27da4`, plus `d6ee3ee` cleanup):
 
-1. **`docs/specs/typed-pipes.md`** — typed I/O channels design (6 core kinds: text/json/file_path/selection/event/metric), `[app.io]` manifest, linking matrix auto-wire algorithm, patchbay overlay. Pure doc add; no conflicts.
+1. **`docs/specs/subsystems/typed-pipes.md`** — typed I/O channels design (6 core kinds: text/json/file_path/selection/event/metric), `[app.io]` manifest, linking matrix auto-wire algorithm, patchbay overlay. Pure doc add; no conflicts.
 2. **External Python text editor** (`examples/text-editor/`) — 1161-line Python app with find/replace, line numbers, syntax highlighting (pygments), status bar, goto line, save-as, undo/redo, word wrap, file-change detection, autosave.
 3. **External Rust photo viewer** (`examples/photo-viewer/`) — pure single-image renderer, fit-to-window, zoom/pan, hover overlay. Uses placeholder checkered pattern until `Image` draw command is wired.
 4. **Fibonacci spiral viewer** (`examples/spiral-viewer/`) — dev tool that renders any app at 8 sizes simultaneously on a Fibonacci spiral for breakpoint testing. Takes target app as `argv[1]`.
@@ -42,10 +169,10 @@ Six parallel sub-agents delivered as six cherry-picked atomic commits on `alpha`
 Two cohesive moves landed as five atomic commits on `alpha`:
 
 1. **Vendored `plexi_sdk.py` copies sync'd to canonical 0.2.0** (`4496e2b`). 32 example apps were drifted from `sdk/python/plexi_sdk.py` (the previous `feat: SDK feedback primitive` commit updated the canonical file but left the vendored copies behind). All 31 `examples/*/plexi_sdk.py` files are now byte-identical. `scripts/sync-sdk.py --check` enforces this going forward.
-2. **`docs/specs/app-infrastructure.md` brought to v1-stable** (`a7a7e22`). Old spec was 222 lines, dated 2026-04-09, and missed entire categories of the shipping protocol (mouse_*, scroll, drop, get_state/set_state, cost_report, notification, feedback, hot reload, [app.launch], `PLEXI_APP_ID`/`PLEXI_APPS_DIR`). Now 705 lines and the source-of-truth claim is true: every event/command/manifest field/env var/file path matches the shipping code at the date in the header.
+2. **`docs/specs/subsystems/app-infrastructure.md` brought to v1-stable** (`a7a7e22`). Old spec was 222 lines, dated 2026-04-09, and missed entire categories of the shipping protocol (mouse_*, scroll, drop, get_state/set_state, cost_report, notification, feedback, hot reload, [app.launch], `PLEXI_APP_ID`/`PLEXI_APPS_DIR`). Now 705 lines and the source-of-truth claim is true: every event/command/manifest field/env var/file path matches the shipping code at the date in the header.
 3. **Python SDK packaged as `plexi-sdk` 0.2.0** (`e49de37`). Added `pyproject.toml` (PEP 621, setuptools, flat py-modules, stdlib-only deps), `README.md`, `LICENSE`, `MANIFEST.in`, `.gitignore`, plus `scripts/sync-sdk.py`. Validated with `pip install --dry-run -e .`.
 4. **Rust SDK Cargo manifest polished for crates.io** (`2bc52ee`). Full publish metadata (authors, homepage, documentation, readme, keywords, categories, rust-version), README, LICENSE. `cargo publish --dry-run --allow-dirty` packages and verifies cleanly. **Source untouched — kept at 0.1.0.**
-5. **`docs/specs/app-shell-config.md` filed** (`7b13b10`). v1 spec for a Plexi app that manages zsh addons via the ZDOTDIR-addon pattern, never touching `~/.zshrc`. Embedded a ready-to-file GitHub issue body. P3, idea-tier, not implemented yet.
+5. **`docs/specs/proposals/app-shell-config.md` filed** (`7b13b10`). v1 spec for a Plexi app that manages zsh addons via the ZDOTDIR-addon pattern, never touching `~/.zshrc`. Embedded a ready-to-file GitHub issue body. P3, idea-tier, not implemented yet.
 
 **Dual-purpose SDK packaging model.** External devs `pip install plexi-sdk` for editor/linter/type support during development. Runtime apps continue to vendor their own `plexi_sdk.py` next to the entry file, because each `~/.plexi-alpha/apps/<id>/` install dir must be self-contained — Plexi cannot inject library paths and users may not have a global pip env. The sync script is the bridge: canonical source ships in PyPI, every example mirrors it byte-for-byte. Considered (and rejected) making examples `from plexi_sdk import App` against the installed package — it would break the standalone-app invariant for anyone who deletes their pip env.
 
@@ -55,7 +182,7 @@ Two cohesive moves landed as five atomic commits on `alpha`:
 
 Discovered while polishing `sdk/rust/Cargo.toml` for publication: `sdk/rust/src/lib.rs` (270 lines) covers only the original protocol surface and is missing every addition Python 0.2.0 ships: `scroll`, `mouse_down`/`mouse_up`, `drop`, `get_state`/`set_state` round trip, `cost_report`, `notification`, `feedback`, `log` draw command. A Rust app written today cannot use any of those features without dropping to raw JSON.
 
-Kept the Rust crate at `0.1.0` rather than bumping to 0.2.0 alongside Python — bumping the version without parity would misrepresent the crate. The new protocol spec at `docs/specs/app-infrastructure.md` notes the gap explicitly in the "See also" section so external Rust devs aren't blindsided. Bringing the Rust SDK to parity is its own follow-up commit and the right next step before any Rust example app needs the new commands.
+Kept the Rust crate at `0.1.0` rather than bumping to 0.2.0 alongside Python — bumping the version without parity would misrepresent the crate. The new protocol spec at `docs/specs/subsystems/app-infrastructure.md` notes the gap explicitly in the "See also" section so external Rust devs aren't blindsided. Bringing the Rust SDK to parity is its own follow-up commit and the right next step before any Rust example app needs the new commands.
 
 ## 2026-04-14 — [GOTCHA] Pytest-style test files exit 0 silently when run with bare python3
 
@@ -79,6 +206,20 @@ Without these, `submit_feedback` can only fall back to `~/.plexi/apps/`, which i
 **New apps:**
 - `backlog-triage` — keyboard-driven (j/k/d/a/f) review of `~/.plexi-alpha/backlog/` notes. Dismiss → `.dismissed/`, archive → `~/Documents/archive/plexi-backlog/`. Closes #94.
 - `permissions-viewer` — reads all installed app manifests, renders a capability matrix (filesystem, terminal_write, mouse_tracking, file_types) with color-coded risk levels.
+
+## 2026-04-12 — [CHANGED] Apps can declare a startup message via `[app.launch].startup_message` (issue #185)
+
+New optional manifest field: `[app.launch].startup_message = "Starting X…"`. When present, Plexi writes the string in dim italics into the companion terminal's scrollback grid at launch, via `TerminalBackend::write_agent_bytes` (same path agent-mode uses — bytes never touch the PTY, so the shell has no idea they exist).
+
+Both launch paths write the message: the fast in-pane `AppWithCompanion` path writes to the same pane's backend, and the legacy auto-split path writes to the newly-created companion `TerminalPane` before it's inserted into the context. Helper `format_startup_message` lives at the bottom of `src/pane_ops.rs`. No example manifest has opted in yet — this is plumbing only.
+
+## 2026-04-12 — [CHANGED] Agent mode prints a scope header on activation (issue #118)
+
+When agent mode activates, it now emits a dim `agent ─ <project>  <~/path>` header into the terminal grid right before the first `>>> ` prompt, so the user can see which directory the agent is scoped to. Rendered inline via ANSI (bold magenta project name + dim gray full path, home collapsed to `~`) to match the existing Warp-style output path — no new UI surface. Helper `build_scope_header` lives in `agent_mode.rs`; uses the already-present `dirs` crate for home collapse.
+
+## 2026-04-12 — [FIX] Pomodoro break timers now auto-start (issue #171)
+
+`examples/pomodoro/pomodoro.py` — pressing `b` (short break) or `l` (long break) used to set `running = False` and require a second Shift+Space to start the timer, which broke the end-of-focus → break handoff. Now the `b` / `l` handlers set `running = True` and reset `last_tick` so the break counts down immediately. Updated the header hint accordingly.
 
 ## 2026-04-12 — [CHANGED] Command palette: taller viewport + MRU app sort
 
@@ -321,9 +462,9 @@ End-of-day state. Alpha is at `a9a181e`. Built and installed via `just install-a
 - Media draw commands: `image`, `video_thumbnail` (with ffmpeg + cache), `file_grid` (with `paths=[]` array support)
 
 **Specs landed (no implementation yet):**
-- `docs/specs/wasm-pwa-deployment.md` — replaces native iOS companion app
-- `docs/specs/agent-replay-testing.md` — Layer 6 vision (record/replay/fork/diff/insights)
-- `docs/specs/chat-primitive.md` — pure rendering recommendation, deferred since terminal IS the chat
+- `docs/specs/proposals/wasm-pwa-deployment.md` — replaces native iOS companion app
+- `docs/specs/proposals/agent-replay-testing.md` — Layer 6 vision (record/replay/fork/diff/insights)
+- `docs/specs/proposals/chat-primitive.md` — pure rendering recommendation, deferred since terminal IS the chat
 - `docs/handoffs/test-harness-handoff.md` — built and shipped as #100/#101
 
 **Parallax repo (separate from PLEXI):**
@@ -417,13 +558,13 @@ Massive parallel build session. Created branches per roadmap layer, launched iso
 - **Layer 2**: agent mode scaffolding (`agent_mode.rs`, `agent_context.rs`, `agent_ui.rs`), `Ctrl+/` toggle (bare `/` prompt detection deferred to #104)
 - **Layer 4**: `get_state`/`set_state` protocol with undo/redo stacks, `cost_report` events writing to `~/.plexi-alpha/costs.jsonl`, Python SDK updated with `@app.on_get_state`/`@app.on_set_state` decorators and `emit.cost_report()`
 - **Test harness**: `plexi_test.py` built and shipped (PR #101 merged), `sdk/python/` and `sdk/rust/` now canonical SDK locations
-- **WASM/PWA spec**: `docs/specs/wasm-pwa-deployment.md` — replaces native iOS companion app strategy; egui compiles to wasm32, native deps stay behind `cfg(not(target_arch = "wasm32"))`, WebSocket bridges existing JSON protocol
+- **WASM/PWA spec**: `docs/specs/proposals/wasm-pwa-deployment.md` — replaces native iOS companion app strategy; egui compiles to wasm32, native deps stay behind `cfg(not(target_arch = "wasm32"))`, WebSocket bridges existing JSON protocol
 - **Issue triage**: 13 closed (duplicates/superseded), 9 cross-referenced with new specs (50 → 37 open)
 - **Self-closing panes (#90)**: closed, merged
 
 **Key design decisions:**
 - Branching strategy documented: `feature/* → alpha → beta → main`. Sub-agents use worktree isolation, open PRs against alpha
-- Test mode is a SPECTRUM not a boolean (stub/cheapest/default/full), and agent components must declare which fidelity they require — see incoming `docs/specs/agent-replay-testing.md`
+- Test mode is a SPECTRUM not a boolean (stub/cheapest/default/full), and agent components must declare which fidelity they require — see incoming `docs/specs/proposals/agent-replay-testing.md`
 - Parallax 25% failure rate root-caused: `_get_tools()` returns `["inspect_media", "suggest_clips", "ffmpeg"]` for non-indexed footage_edit jobs, editors fall through to a tool_calls prompt instead of the manifest path. Handoff doc written for Sonnet to execute (#106)
 
 **Open follow-ups (all persisted):**
@@ -517,7 +658,7 @@ The sidebar layout initially used `ui.allocate_new_ui()` with manual rect geomet
 
 ## 2026-04-10 — [ADDED] Capability-gated permission system and secrets management
 
-Built in one session with 4 parallel agents: `secrets.rs` (macOS Keychain via `security` CLI, directory walk-up resolution), `app_api.rs` (structured ListDir/ReadFile/WriteFile/SecretGet/SecretStore with path-scope enforcement), `cli.rs` (`plexi run` reads `.plexi/commands.toml`, injects secrets as env vars), `app_registry.rs` extended with capability declarations. `app_permissions.rs` gates every `AppCommand` through `check_command()` — sandboxed apps can't escape their launch directory or write to the terminal without explicit permission. Built-in apps are pre-approved. The protocol spec is at `docs/specs/app-infrastructure.md`.
+Built in one session with 4 parallel agents: `secrets.rs` (macOS Keychain via `security` CLI, directory walk-up resolution), `app_api.rs` (structured ListDir/ReadFile/WriteFile/SecretGet/SecretStore with path-scope enforcement), `cli.rs` (`plexi run` reads `.plexi/commands.toml`, injects secrets as env vars), `app_registry.rs` extended with capability declarations. `app_permissions.rs` gates every `AppCommand` through `check_command()` — sandboxed apps can't escape their launch directory or write to the terminal without explicit permission. Built-in apps are pre-approved. The protocol spec is at `docs/specs/subsystems/app-infrastructure.md`.
 
 ## 2026-04-10 — [GOTCHA] handle_key must check modifiers to avoid swallowing Plexi shortcuts
 

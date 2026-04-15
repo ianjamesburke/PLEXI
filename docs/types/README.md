@@ -5,7 +5,7 @@ declared as a single TOML file. The host reads every `*.toml` under this tree at
 startup and builds an in-memory registry keyed by `<namespace>.<name>`.
 
 For the full spec — auto-wire algorithm, patchbay overlay, versioning rules,
-wire messages — see [`docs/specs/typed-pipes.md`](../specs/typed-pipes.md).
+wire messages — see [`docs/specs/subsystems/typed-pipes.md`](../specs/typed-pipes.md).
 
 ---
 

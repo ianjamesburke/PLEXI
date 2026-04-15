@@ -577,7 +577,7 @@ impl ProcessApp {
                     ui.painter().rect_filled(rect, *radius, color);
                 }
 
-                DrawCommand::Text { x, y, text, size, color, monospace, bold } => {
+                DrawCommand::Text { x, y, text, size, color, monospace, bold, align } => {
                     let color = parse_color(color).unwrap_or(colors.text_primary);
                     let font_id = if *monospace {
                         egui::FontId::monospace(*size)
@@ -586,9 +586,14 @@ impl ProcessApp {
                     } else {
                         egui::FontId::proportional(*size)
                     };
+                    let anchor = match align.as_deref() {
+                        Some("center") => egui::Align2::CENTER_TOP,
+                        Some("right") => egui::Align2::RIGHT_TOP,
+                        _ => egui::Align2::LEFT_TOP,
+                    };
                     ui.painter().text(
                         egui::pos2(origin.x + x, origin.y + y),
-                        egui::Align2::LEFT_TOP,
+                        anchor,
                         text,
                         font_id,
                         color,

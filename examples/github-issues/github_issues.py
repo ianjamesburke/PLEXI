@@ -1,10 +1,14 @@
-#!/usr/bin/env python3
+from __future__ import annotations
 """
 github-issues — Plexi app
 
 Keyboard-driven GitHub Issues browser. Shells out to the `gh` CLI for all
 data, so the app needs `gh` installed, authenticated, and a GitHub remote
 in its launch directory.
+
+Phase 1 SDK components layer: uses ctx.header, ctx.status_bar,
+ctx.scrollable_list, ctx.scrollable_text, ctx.empty_state, ctx.wrap_text,
+THEME, and named size constants.
 
 Controls (List view):
   j / ArrowDown   Next issue
@@ -21,11 +25,6 @@ Controls (Detail view):
 
 Controls (Error / preflight failure):
   r               Re-run preflight checks
-
-MVP scope. Deferred (need text editor primitive or follow-up issues):
-  - Comment authoring, body editing, label/state mutation
-  - Search, assignee/milestone filters
-  - Pane label integration, priority Focus Manager hand-off
 """
 
 import json
@@ -34,20 +33,24 @@ import queue
 import shutil
 import subprocess
 import sys
-import textwrap
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App  # noqa: E402
+from plexi_sdk import (  # noqa: E402
+    App,
+    THEME,
+    BODY, CAPTION, HINT, MONO_BODY,
+    PAD, HEADER_H,
+)
 
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
 
-VIEW_LOADING  = "loading"
-VIEW_ERROR    = "error"
-VIEW_LIST     = "list"
-VIEW_DETAIL   = "detail"
+VIEW_LOADING = "loading"
+VIEW_ERROR   = "error"
+VIEW_LIST    = "list"
+VIEW_DETAIL  = "detail"
 
 view: str = VIEW_LOADING
 loading_msg: str = "Loading\u2026"
@@ -61,9 +64,8 @@ repo_name: str | None = None
 
 # List view state
 issue_state_filter: str = "open"   # "open" | "closed"
-issues: list[dict] = []            # list of {number,title,state,labels,author}
+issues: list[dict] = []
 selected: int = 0
-list_scroll: int = 0
 
 # Detail view state
 detail_issue_number: int | None = None
@@ -73,39 +75,13 @@ detail_scroll: int = 0
 # Cross-thread message queue (worker -> render).
 result_queue: "queue.Queue[dict]" = queue.Queue()
 
-# ---------------------------------------------------------------------------
-# Theme — Catppuccin Mocha (matches wikipedia/git-log apps)
-# ---------------------------------------------------------------------------
-
-C = {
-    "bg":       "#1e1e2e",
-    "header":   "#181825",
-    "surface":  "#313244",
-    "sel_bg":   "#45475a",
-    "text":     "#cdd6f4",
-    "subtext":  "#a6adc8",
-    "muted":    "#6c7086",
-    "accent":   "#89b4fa",
-    "green":    "#a6e3a1",
-    "red":      "#f38ba8",
-    "orange":   "#fab387",
-    "blue":     "#89b4fa",
-    "grey":     "#7f849c",
-    "yellow":   "#f9e2af",
-}
-
+# Priority label accent colors (app-specific; not in the shared Theme).
 PRIORITY_COLORS = {
-    "P1": C["red"],
-    "P2": C["orange"],
-    "P3": C["blue"],
-    "P4": C["grey"],
+    "P1": THEME.red,
+    "P2": THEME.yellow,
+    "P3": THEME.accent,
+    "P4": THEME.muted,
 }
-
-HEADER_H = 52
-FOOTER_H = 28
-PADDING  = 16
-ITEM_H   = 44
-LINE_H   = 18
 
 # ---------------------------------------------------------------------------
 # gh CLI helpers — all run on a worker thread
@@ -136,7 +112,6 @@ def _parse_owner_repo(url: str) -> tuple[str, str] | None:
     url = url.strip()
     if url.endswith(".git"):
         url = url[:-4]
-    # git@github.com:owner/repo
     if url.startswith("git@github.com:"):
         path = url.split(":", 1)[1]
     elif "github.com/" in url:
@@ -152,7 +127,6 @@ def _parse_owner_repo(url: str) -> tuple[str, str] | None:
 def run_preflight():
     """Three-step preflight: gh installed, gh authed, cwd is GitHub repo."""
     gh = _gh_bin()
-    # 1. gh installed?
     if not (os.path.isabs(gh) and os.path.exists(gh)) and shutil.which(gh) is None:
         result_queue.put({"action": "preflight_fail", "error": {
             "title": "GitHub CLI not found",
@@ -161,7 +135,6 @@ def run_preflight():
         }})
         return
 
-    # 2. gh authenticated?
     rc, _, err = _run([gh, "auth", "status"], timeout=5.0)
     if rc != 0:
         result_queue.put({"action": "preflight_fail", "error": {
@@ -171,7 +144,6 @@ def run_preflight():
         }})
         return
 
-    # 3. inside a GitHub repo?
     rc, out, err = _run(["git", "remote", "get-url", "origin"], timeout=5.0)
     if rc != 0:
         result_queue.put({"action": "preflight_fail", "error": {
@@ -222,13 +194,11 @@ def fetch_issues(state: str):
 def fetch_issue_detail(number: int):
     """Fetch single issue body+comments."""
     gh = _gh_bin()
-    # Try with comments first; fall back to body-only if comments unsupported.
     rc, out, err = _run(
         [gh, "issue", "view", str(number), "--json", "body,comments"],
         timeout=15.0,
     )
     if rc != 0:
-        # Fall back: body-only.
         rc2, out2, err2 = _run(
             [gh, "issue", "view", str(number), "--json", "body"],
             timeout=15.0,
@@ -290,11 +260,8 @@ def begin_fetch_detail(number: int):
 app = App()
 
 
-@app.on_render
-def render(ctx):
-    global view, error, repo_owner, repo_name, issues, selected, detail_data, list_scroll
-
-    # Drain worker messages.
+def _drain_queue():
+    global view, error, repo_owner, repo_name, issues, selected, detail_data
     try:
         while True:
             msg = result_queue.get_nowait()
@@ -310,7 +277,6 @@ def render(ctx):
             elif action == "issues_done":
                 issues = msg["items"]
                 selected = 0
-                list_scroll = 0
                 view = VIEW_LIST
             elif action == "detail_done":
                 detail_data = {"body": msg["body"], "comments": msg["comments"]}
@@ -325,8 +291,12 @@ def render(ctx):
     except queue.Empty:
         pass
 
-    # Background.
-    ctx.rect(0, 0, ctx.width, ctx.height, fill=C["bg"])
+
+@app.on_render
+def render(ctx):
+    _drain_queue()
+
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
     if view == VIEW_LOADING:
         _render_loading(ctx)
@@ -338,136 +308,53 @@ def render(ctx):
         _render_list(ctx)
 
 
-def _draw_header(ctx, title: str, hint: str):
-    w = ctx.width
-    ctx.rect(0, 0, w, HEADER_H, fill=C["header"])
-    ctx.text(PADDING, 14, title, size=14, color=C["accent"], bold=True)
-    if hint:
-        hint_x = w - len(hint) * 7.0 - PADDING
-        if hint_x > PADDING + len(title) * 8:
-            ctx.text(hint_x, 16, hint, size=11, color=C["muted"])
-    ctx.line(0, HEADER_H, w, HEADER_H, color=C["surface"], width=1.0)
-
-
-def _draw_footer(ctx, hint: str):
-    w = ctx.width
-    h = ctx.height
-    ctx.rect(0, h - FOOTER_H, w, FOOTER_H, fill=C["header"])
-    ctx.line(0, h - FOOTER_H, w, h - FOOTER_H, color=C["surface"], width=1.0)
-    ctx.text(PADDING, h - FOOTER_H + 8, hint, size=11, color=C["muted"])
-
-
+# ── loading ─────────────────────────────────────────────────────────────────
 def _render_loading(ctx):
-    _draw_header(ctx, "GitHub Issues", "")
-    ctx.text(PADDING, HEADER_H + 20, loading_msg, size=13, color=C["subtext"])
+    ctx.header("GitHub Issues")
+    ctx.empty_state(loading_msg, icon_color=THEME.accent)
+    ctx.status_bar([("⌘W", "close")])
 
 
+# ── error ───────────────────────────────────────────────────────────────────
 def _render_error(ctx):
-    _draw_header(ctx, "GitHub Issues", "")
+    ctx.header("GitHub Issues")
     if not error:
+        ctx.status_bar([("r", "retry"), ("⌘W", "close")])
         return
-    y = HEADER_H + 24
-    ctx.text(PADDING, y, error.get("title", "Error"),
-             size=15, color=C["red"], bold=True)
-    y += 28
 
-    # Word-wrap the message.
+    y = HEADER_H + PAD
+    ctx.text(PAD, y, error.get("title", "Error"),
+             size=BODY, color=THEME.red, bold=True)
+    y += BODY + 12
+
     msg = error.get("message", "")
-    char_width = max(20, int((ctx.width - 2 * PADDING) / 7.5))
-    for line in wrap_text(msg, char_width):
-        ctx.text(PADDING, y, line, size=13, color=C["text"])
-        y += LINE_H
+    for line in ctx.wrap_text(msg, max_width_px=ctx.width - PAD * 2, size=CAPTION):
+        ctx.text(PAD, y, line, size=CAPTION, color=THEME.fg)
+        y += CAPTION + 4
 
     fix = error.get("fix_command", "")
     if fix:
         y += 12
-        ctx.text(PADDING, y, "Fix:", size=12, color=C["muted"])
-        y += LINE_H
-        # Fix command in a subtle box.
-        box_w = min(len(fix) * 9 + 24, ctx.width - 2 * PADDING)
-        ctx.rect(PADDING, y - 4, box_w, LINE_H + 8, fill=C["surface"], radius=4.0)
-        ctx.text(PADDING + 12, y, fix, size=13, color=C["green"], monospace=True)
+        ctx.text(PAD, y, "Fix:", size=HINT, color=THEME.muted)
+        y += HINT + 6
+        fix_w = ctx.measure_text(fix, size=MONO_BODY, monospace=True)
+        box_w = min(fix_w + 24, ctx.width - PAD * 2)
+        ctx.rect(PAD, y - 4, box_w, MONO_BODY + 12, fill=THEME.surface, radius=4.0)
+        ctx.text(PAD + 12, y, fix, size=MONO_BODY, color=THEME.green, monospace=True)
 
-    _draw_footer(ctx, "[r] retry preflight")
+    ctx.status_bar([("r", "retry preflight"), ("⌘W", "close")])
 
 
-def _render_list(ctx):
-    global list_scroll
-    w = ctx.width
-    h = ctx.height
-
-    # Header
-    repo_str = f"{repo_owner}/{repo_name}" if repo_owner else "GitHub Issues"
-    count = len(issues)
-    title = f"ISSUES — {repo_str}    {count} {issue_state_filter}"
-    hint = "j/k navigate  Enter open  o open  c closed  r refresh"
-    _draw_header(ctx, title, hint)
-
-    if not issues:
-        ctx.text(PADDING, HEADER_H + 20,
-                 f"No {issue_state_filter} issues.", size=13, color=C["muted"])
-        _draw_footer(ctx, hint)
-        return
-
-    # Scrolling math.
-    list_y = HEADER_H + 6
-    list_h = h - HEADER_H - FOOTER_H - 6
-    visible_rows = max(1, int(list_h / ITEM_H))
-    if selected < list_scroll:
-        list_scroll = selected
-    elif selected >= list_scroll + visible_rows:
-        list_scroll = selected - visible_rows + 1
-
-    for i in range(list_scroll, min(len(issues), list_scroll + visible_rows)):
-        row_index = i - list_scroll
-        y = list_y + row_index * ITEM_H
-        is_sel = (i == selected)
-        if is_sel:
-            ctx.rect(0, y, w, ITEM_H, fill=C["sel_bg"])
-
-        issue = issues[i]
-        number = issue.get("number", 0)
-        title_text = issue.get("title", "(no title)")
-        state = issue.get("state", "OPEN")
-        author = (issue.get("author") or {}).get("login", "")
-        labels = issue.get("labels") or []
-
-        # State dot.
-        dot_color = C["green"] if state == "OPEN" else C["muted"]
-        ctx.text(PADDING, y + 12, "\u25cf", size=14, color=dot_color)
-
-        # #number
-        num_text = f"#{number}"
-        ctx.text(PADDING + 22, y + 14, num_text, size=12,
-                 color=C["muted"], monospace=True)
-
-        # Title — truncate to fit.
-        title_x = PADDING + 22 + len(num_text) * 8 + 12
-        # Reserve space for labels + author on the right.
-        right_reserve = _label_strip_width(labels) + len(author) * 7 + 24
-        max_title_w = max(40, w - title_x - right_reserve - PADDING)
-        max_chars = max(8, int(max_title_w / 7.5))
-        if len(title_text) > max_chars:
-            title_text = title_text[: max_chars - 1] + "\u2026"
-        title_color = C["text"] if is_sel else C["subtext"]
-        ctx.text(title_x, y + 14, title_text, size=13, color=title_color)
-
-        # Labels — right side, priority labels colored, others use github color
-        label_x = w - PADDING - len(author) * 7 - 16
-        # Render labels right-to-left.
-        for lbl in reversed(labels[:4]):
-            chip_text, chip_color = _label_chip(lbl)
-            chip_w = len(chip_text) * 7 + 10
-            label_x -= chip_w + 6
-            ctx.rect(label_x, y + 8, chip_w, 20, fill=chip_color, radius=4.0)
-            ctx.text(label_x + 5, y + 12, chip_text, size=11, color=C["bg"])
-
-        # Author — far right.
-        if author:
-            author_x = w - PADDING - len(author) * 7 - 4
-            ctx.text(author_x, y + 14, author, size=11, color=C["muted"])
-
-    _draw_footer(ctx, hint)
+# ── list ────────────────────────────────────────────────────────────────────
+def _list_shortcuts() -> list[tuple[str, str]]:
+    return [
+        ("j/k", "navigate"),
+        ("Enter", "open"),
+        ("o", "open"),
+        ("c", "closed"),
+        ("r", "refresh"),
+        ("⌘W", "close"),
+    ]
 
 
 def _label_chip(label: dict) -> tuple[str, str]:
@@ -479,90 +366,146 @@ def _label_chip(label: dict) -> tuple[str, str]:
     if color_hex and not color_hex.startswith("#"):
         color_hex = "#" + color_hex
     if not color_hex:
-        color_hex = C["surface"]
+        color_hex = THEME.surface
     return name, color_hex
 
 
-def _label_strip_width(labels: list) -> int:
-    """Approximate width in px for the rendered label strip on the right."""
-    if not labels:
-        return 0
-    total = 0
-    for lbl in labels[:4]:
-        name = lbl.get("name", "")
-        total += len(name) * 7 + 16
-    return total
+def _render_issue_row(ctx, issue, _idx, x, y, w, is_sel):
+    row_h = 52.0
+    bg = THEME.highlight if is_sel else THEME.bg
+    ctx.rect(x + PAD / 2, y, w - PAD, row_h, fill=bg, radius=6)
+
+    number = issue.get("number", 0)
+    title_text = issue.get("title", "(no title)")
+    state = issue.get("state", "OPEN")
+    author = (issue.get("author") or {}).get("login", "")
+    labels = issue.get("labels") or []
+
+    # State dot.
+    dot_color = THEME.green if state == "OPEN" else THEME.muted
+    ctx.rect(x + PAD, y + (row_h - 8) / 2, 8, 8, fill=dot_color, radius=4)
+
+    # #number
+    num_text = f"#{number}"
+    num_x = x + PAD + 20
+    ctx.text(num_x, y + 8, num_text, size=CAPTION,
+             color=THEME.muted, monospace=True)
+    num_w = ctx.measure_text(num_text, size=CAPTION, monospace=True)
+
+    # Right-side author + labels reservation.
+    right_edge = x + w - PAD
+    author_w = ctx.measure_text(author, size=HINT) if author else 0.0
+    author_x = right_edge - author_w
+    if author:
+        ctx.text(author_x, y + 8, author, size=HINT, color=THEME.muted)
+
+    # Labels — right-to-left, starting left of the author name.
+    label_cursor = author_x - (12 if author else 0)
+    for lbl in reversed(labels[:4]):
+        chip_text, chip_color = _label_chip(lbl)
+        chip_w = ctx.measure_text(chip_text, size=HINT) + 12
+        label_cursor -= chip_w + 6
+        ctx.rect(label_cursor, y + 6, chip_w, HINT + 8, fill=chip_color, radius=4.0)
+        ctx.text(label_cursor + 6, y + 8, chip_text, size=HINT, color=THEME.bg)
+
+    # Title — truncate to fit remaining space.
+    title_x = num_x + num_w + 12
+    max_title_w = max(40, label_cursor - title_x - 8)
+    wrapped = ctx.wrap_text(title_text, max_width_px=max_title_w, size=BODY)
+    line = wrapped[0] if wrapped else title_text
+    if len(wrapped) > 1:
+        line = line.rstrip() + "\u2026"
+    title_color = THEME.fg if is_sel else THEME.fg
+    ctx.text(title_x, y + 8, line, size=BODY,
+             color=title_color, bold=is_sel)
+
+    # Second row: subtitle (state + author summary or labels list).
+    sub_parts = [state.lower()]
+    if labels:
+        sub_parts.append(", ".join(l.get("name", "") for l in labels[:3]))
+    sub = "  ·  ".join(p for p in sub_parts if p)
+    ctx.text(title_x, y + 8 + BODY + 4, sub[:200],
+             size=CAPTION, color=THEME.muted)
 
 
-def _render_detail(ctx):
-    global detail_scroll
-    w = ctx.width
-    h = ctx.height
+def _render_list(ctx):
+    repo_str = f"{repo_owner}/{repo_name}" if repo_owner else "GitHub Issues"
+    count = len(issues)
+    title = f"Issues  ·  {repo_str}"
+    subtitle = f"{count} {issue_state_filter}"
+    ctx.header(title, subtitle=subtitle)
 
-    # Find the issue header info from the cached list.
-    cached = next((i for i in issues if i.get("number") == detail_issue_number), None)
-    title_text = cached.get("title", f"#{detail_issue_number}") if cached else f"#{detail_issue_number}"
-
-    title = f"#{detail_issue_number}  {title_text}"
-    hint = "j/k scroll  Backspace back"
-    _draw_header(ctx, title, hint)
-
-    if not detail_data:
-        ctx.text(PADDING, HEADER_H + 20, "Loading\u2026", size=13, color=C["muted"])
+    if not issues:
+        ctx.empty_state(
+            f"No {issue_state_filter} issues",
+            subtitle="Press r to refresh",
+        )
+        ctx.status_bar(_list_shortcuts())
         return
 
-    # Build a flat list of (color, text) lines for body + comments.
-    char_width = max(30, int((ctx.width - 2 * PADDING) / 7.5))
-    lines: list[tuple[str, str]] = []
+    ctx.scrollable_list(
+        list_id="issues",
+        items=issues,
+        selected=selected,
+        row_height=56.0,
+        render_row=_render_issue_row,
+    )
 
+    ctx.status_bar(_list_shortcuts())
+
+
+# ── detail ──────────────────────────────────────────────────────────────────
+def _render_detail(ctx):
+    global detail_scroll
+
+    cached = next((i for i in issues if i.get("number") == detail_issue_number), None)
+    title_text = cached.get("title", f"#{detail_issue_number}") if cached else f"#{detail_issue_number}"
+    header_title = f"#{detail_issue_number}  {title_text}"
+    ctx.header(header_title)
+
+    if not detail_data:
+        ctx.empty_state("Loading\u2026", icon_color=THEME.accent)
+        ctx.status_bar([
+            ("j/k", "scroll"),
+            ("Backspace", "back"),
+            ("⌘W", "close"),
+        ])
+        return
+
+    max_w = ctx.width - PAD * 2
     body = detail_data.get("body") or ""
-    for line in wrap_text(body, char_width):
-        lines.append((C["text"], line))
+    lines: list[str] = list(ctx.wrap_text(body, max_width_px=max_w,
+                                          size=MONO_BODY, monospace=True))
 
     comments = detail_data.get("comments") or []
     if comments:
-        lines.append((C["text"], ""))
-        lines.append((C["accent"], f"COMMENTS ({len(comments)})"))
-        lines.append((C["surface"], "\u2500" * char_width))
+        lines.append("")
+        lines.append(f"COMMENTS ({len(comments)})")
+        lines.append("\u2500" * 60)
         for c in comments:
             author = (c.get("author") or {}).get("login", "")
             created = (c.get("createdAt") or "")[:10]
-            header = f"{author} \u00b7 {created}".strip(" \u00b7")
-            lines.append((C["muted"], header))
-            for line in wrap_text(c.get("body") or "", char_width):
-                lines.append((C["text"], line))
-            lines.append((C["text"], ""))
+            head = f"{author} \u00b7 {created}".strip(" \u00b7")
+            lines.append(head)
+            for line in ctx.wrap_text(c.get("body") or "", max_width_px=max_w,
+                                       size=MONO_BODY, monospace=True):
+                lines.append(line)
+            lines.append("")
 
-    body_top = HEADER_H + 12
-    body_bottom = h - FOOTER_H - 4
-    visible_lines = max(1, int((body_bottom - body_top) / LINE_H))
-    max_scroll = max(0, len(lines) - visible_lines)
-    detail_scroll = max(0, min(detail_scroll, max_scroll))
+    detail_scroll = ctx.scrollable_text(
+        text_id="issue_detail",
+        lines=lines,
+        scroll_offset=detail_scroll,
+        line_height=MONO_BODY + 4,
+        size=MONO_BODY,
+        monospace=True,
+    )
 
-    for i, (color, text) in enumerate(lines[detail_scroll:detail_scroll + visible_lines]):
-        y = body_top + i * LINE_H
-        ctx.text(PADDING, y, text, size=13, color=color)
-
-    # Scroll indicator.
-    if len(lines) > visible_lines:
-        pct = detail_scroll / max(1, max_scroll)
-        indicator = f"{int(pct * 100)}%"
-        ctx.text(w - PADDING - len(indicator) * 7, body_bottom - 4,
-                 indicator, size=11, color=C["muted"])
-
-    _draw_footer(ctx, hint)
-
-
-def wrap_text(text: str, width: int) -> list[str]:
-    """Wrap text to width characters, preserving paragraph breaks."""
-    out: list[str] = []
-    for para in text.split("\n"):
-        if para.strip() == "":
-            out.append("")
-        else:
-            wrapped = textwrap.wrap(para, width)
-            out.extend(wrapped or [""])
-    return out
+    ctx.status_bar([
+        ("j/k", "scroll"),
+        ("Backspace", "back"),
+        ("⌘W", "close"),
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +559,5 @@ def on_key(key, _mods, _emit):
 # Main
 # ---------------------------------------------------------------------------
 
-# Kick off the preflight check immediately so the first render shows status.
 begin_preflight()
 app.run()

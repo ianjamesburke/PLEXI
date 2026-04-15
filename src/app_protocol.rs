@@ -156,6 +156,12 @@ pub enum DrawCommand {
         radius: f32,
     },
     /// Draw text at a position.
+    ///
+    /// `align` controls horizontal anchoring of the text relative to `x`:
+    /// - `"left"` (default) — `x` is the left edge of the text
+    /// - `"center"` — `x` is the horizontal center
+    /// - `"right"` — `x` is the right edge of the text
+    /// Vertical anchoring is always top (`y` = top of text cell).
     Text {
         x: f32,
         y: f32,
@@ -166,6 +172,8 @@ pub enum DrawCommand {
         monospace: bool,
         #[serde(default)]
         bold: bool,
+        #[serde(default)]
+        align: Option<String>,
     },
     /// Draw a horizontal line.
     Line {

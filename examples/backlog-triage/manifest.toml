@@ -2,8 +2,11 @@
 id = "backlog-triage"
 name = "Backlog Triage"
 entry = "backlog_triage.py"
-version = "0.1.0"
-description = "Keyboard-driven review of ~/.plexi/backlog/ notes — archive, dismiss, or act"
+version = "0.2.0"
+description = "Keyboard-driven review of backlog notes — archive, trash, or read"
+
+[app.launch]
+mode = "fullscreen"
 
 [app.capabilities]
 file_types = []

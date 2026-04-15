@@ -2,7 +2,7 @@ Always confirm best practices by researching the docs.
 
 ## GitHub Issue Labels
 
-Every issue gets exactly one **type** and one **priority**. Optionally add a **status** label.
+Every issue gets exactly one **type**, one **priority**, and one **version**. Optionally add a **status** label.
 
 **Type** (mutually exclusive):
 - **bug** — something broken
@@ -15,18 +15,28 @@ Every issue gets exactly one **type** and one **priority**. Optionally add a **s
 - **P3** — nice to have. Do when there's breathing room.
 - **P4** — backlog / someday. Revisit when users ask for it.
 
+**Version** (mutually exclusive, tracks which release the issue targets — match the spec file at `docs/specs/releases/plexi-vX.Y.md`):
+- **v2.0** — ships in the Plexi 2.0 release (orchestration layer: OpenIntent, Runs, event bus, rich notifications, capability enforcement, typed pipes Phase 1, Plexi IQ Stage 1)
+- **v2.1** — ships in 2.1 (UI primitives: viewport/transform, text_input, tabs, grid, modal, exact text measurement)
+- **v2.2** — ships in 2.2 or later; systemic architectural changes that don't fit v2.0 or v2.1 cleanly
+
 **Status** (optional):
 - **in progress** — currently being worked on
 - **ready** — fully researched, can be picked up immediately
 - **blocked** — waiting on an external dependency or upstream fix
 
-## Worktrees
+## Branches
 
-Two worktrees are set up:
-- `/Users/ianburke/Documents/GitHub/PLEXI` — `main` (stable)
-- `/Users/ianburke/Documents/GitHub/PLEXI-dev` — `dev` (active development)
+Three long-lived branches plus a parked experiments family:
 
-Iterate on `dev`, merge to `main` when stable.
+- `main` — stable releases. Beta → main when ready to tag a version and ship.
+- `beta` — staging. Alpha → beta when a set of features is tested together.
+- `alpha` — active development. **All v2 progress lands here first.** Feature branches are cut from alpha, worked in `.claude/worktrees/` subdirectories, merged back via PR.
+- `experiments/v2-*` — **parked, not under active development.** A frozen set of pre-reorg feature branches preserved after the 2026-04-15 cleanup. Each contains unique v2-adjacent work (core type registry TOMLs, plexi-iq stub, per-app tests, input layering spec, cross-language editor example, SecretGet API, etc.) that was too tangled with the old SDK/spec layout to mechanically merge. **Cherry-pick from them; do not merge wholesale.** See `NEXT_SESSION.md` at the repo root for a per-branch inventory of what's worth extracting. Delete each branch once its valuable pieces have been cherry-picked onto a fresh feature branch off current alpha.
+
+Feature branch naming for NEW work: `feature/<issue-number>-short-description` (e.g., `feature/228-run-primitive`).
+
+Sub-agent workflow: agents use `isolation: "worktree"` to create feature branches off alpha, do their work, and open PRs targeting alpha. Never push directly to alpha, beta, or main.
 
 ## Releases
 
@@ -124,20 +134,6 @@ Sub-agents working in any worktree can read the same log file at the fixed path 
 - **Install-alpha doesn't chmod:** `just install-alpha` syncs app files but does NOT set executable bits on entry points. After any install, run `chmod +x ~/.plexi-alpha/apps/*/*.py` or add this to the justfile recipe.
 - **Coupled state:** When adding new state that derives from or shadows existing state (e.g., `zoomed_pane` tracking `focused_pane`), grep for all mutation sites of the original state and update each one to handle the new state.
 - **Pane focus guards:** The focus condition in `pane_ui` (tiling.rs) combines a spatial guard (`rect_contains_pointer` / `max_rect().contains(pos)`) with an intent check (click or drag). Any refactor of this condition must keep the spatial guard on every branch independently.
-
-## Branching Strategy
-
-```
-feature/* → alpha → beta → main
-```
-
-- **`alpha`** — active development. Feature branches are created off alpha, worked in worktrees, and merged via PR. All Layer 0–1 work lands here first.
-- **`beta`** — staging. When a set of alpha features is stable and tested together, merge alpha → beta. Beta is what gets `just install-beta` for real-world testing.
-- **`main`** — stable releases. Beta → main when ready to tag a version and ship.
-
-**Sub-agent workflow:** Agents use `isolation: "worktree"` to create feature branches off alpha, do their work, and open PRs targeting alpha. Never push directly to alpha, beta, or main.
-
-**Branch naming:** `feature/<issue-number>-short-description` (e.g., `feature/83-hot-reload`).
 
 ## General Rules
 
