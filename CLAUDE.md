@@ -1,5 +1,13 @@
 Always confirm best practices by researching the docs.
 
+## ROADMAP Hygiene
+
+**When landing a PR or closing an issue, always check ROADMAP.md for stale status.** Run:
+```bash
+grep -n "<issue-number>\|<feature-keyword>" ROADMAP.md
+```
+If any layer row or task row references the work you just landed and still shows "In flight" or "Pending", flip it to "Done" in the same commit. The ROADMAP is not automatically updated — it rots silently unless every agent treats this as a required close step, not optional cleanup.
+
 ## Specs
 
 **Single source of truth for where every spec lives:** [`docs/specs/README.md`](docs/specs/README.md). Start there for any spec question — it's the index with scope, contract, subsystems, and proposals for every release. Don't deep-link into specific spec files from other docs; always link through the index.
