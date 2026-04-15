@@ -1,0 +1,17 @@
+# Plexi — CODEOWNERS
+#
+# Protected files require review from the repo owner before merge.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+#
+# Enabled by setting branch protection on `alpha`, `beta`, and `main` with
+# "Require review from Code Owners" turned on.
+
+# ── Protected spec files ──────────────────────────────────────────────
+# These docs define what Plexi 2.0 is. Scope changes require owner review.
+docs/specs/releases/plexi-v2.0-scope.md      @ianjamesburke
+docs/specs/protocol-v2.md   @ianjamesburke
+
+# ── Vision ────────────────────────────────────────────────────────────
+# The north star. Edits require owner review.
+docs/VISION.md              @ianjamesburke
+VISION.md                   @ianjamesburke

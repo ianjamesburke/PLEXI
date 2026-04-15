@@ -1,0 +1,33 @@
+name        = "json"
+namespace   = "core"
+version     = "1.0.0"
+status      = "stable"
+maintainer  = "plexi-core"
+
+description = """
+Arbitrary JSON value. The escape hatch: when no specific core or standard kind
+exists yet for a use case, two apps can agree on a JSON shape by convention and
+pipe it through core.json. The host validates only that the payload is a valid
+JSON value — no structural check beyond that.
+
+App authors are encouraged to upgrade to a more specific kind as soon as one
+exists. core.json is the nursery where use cases incubate before they graduate
+to a proper kind (vendor → standard → possibly core). Using core.json in
+production is fine; it just means payload mismatches become runtime bugs rather
+than load-time errors.
+
+core.json accepts any JSON-representable value: object, array, string, number,
+boolean, or null. The host does not impose a schema; the consumer owns
+interpretation entirely.
+"""
+
+[payload_schema]
+fields = [
+  { name = "value", type = "any", required = true },
+]
+
+[examples]
+object  = '{ "value": { "rows": 42, "cols": ["id", "name"] } }'
+array   = '{ "value": [1, 2, 3] }'
+scalar  = '{ "value": true }'
+null_v  = '{ "value": null }'

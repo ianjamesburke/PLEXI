@@ -1,5 +1,4 @@
 [app]
-protocol_version = 2
 id = "git-log"
 name = "Git Log"
 entry = "git-log"

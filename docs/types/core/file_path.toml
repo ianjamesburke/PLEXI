@@ -1,0 +1,29 @@
+name        = "file_path"
+namespace   = "core"
+version     = "1.0.0"
+status      = "stable"
+maintainer  = "plexi-core"
+
+description = """
+An absolute or repo-relative filesystem path. The spine of the file-kind-routing
+composition pattern: a file browser emits the selected path and trusts every
+consumer in the group to decide whether it can handle the extension or magic
+bytes. Consumers that can't render the file silently ignore the message.
+
+Paths are not validated at emit time. The consumer may find the file missing,
+unreadable, or outside its capability scope; it must handle those cases itself.
+The host does not check existence, permissions, or MIME type.
+
+Relative paths are resolved against the consumer's launch directory, not the
+producer's. Prefer absolute paths when possible to avoid ambiguity.
+"""
+
+[payload_schema]
+fields = [
+  { name = "path", type = "string", required = true },
+]
+
+[examples]
+absolute = '{ "path": "/Users/ian/code/plexi/src/main.rs" }'
+relative = '{ "path": "src/main.rs" }'
+image    = '{ "path": "/Users/ian/pics/cat.jpg" }'

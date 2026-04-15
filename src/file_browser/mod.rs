@@ -2,6 +2,7 @@ mod audio;
 mod helpers;
 mod icons;
 
+use crate::app_protocol::{PendingSpawn, SpawnLayout, SpawnLifecycle, SpawnParent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
@@ -18,10 +19,63 @@ use icons::paint_entry_icon;
 const ROW_HEIGHT: f32 = 58.0;
 const MIN_SIDEBAR_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
+const UNDO_STACK_CAP: usize = 50;
+
+/// A reversible action performed in the file browser.
+pub struct FileBrowserAction {
+    pub kind: FileBrowserActionKind,
+}
+
+pub enum FileBrowserActionKind {
+    /// A file was moved to the Trash. `trashed_path` is where it lives now;
+    /// `original_path` is where to move it back to on undo.
+    Trashed {
+        original_path: PathBuf,
+        trashed_path: PathBuf,
+    },
+}
+
+/// Optional entry filter applied when the file browser is opened in a specific mode.
+/// Set via `--filter=<kind>` argv when spawned by another app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryFilter {
+    /// Show only image files.
+    Images,
+    /// Show only mermaid diagram files (.mmd) and directories.
+    Mermaid,
+}
+
+impl EntryFilter {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "images" | "image" => Some(EntryFilter::Images),
+            "mermaid" => Some(EntryFilter::Mermaid),
+            _ => None,
+        }
+    }
+
+    fn matches(&self, entry: &Entry) -> bool {
+        match self {
+            EntryFilter::Images => entry.is_image || entry.is_dir,
+            EntryFilter::Mermaid => {
+                entry.is_dir
+                    || entry
+                        .path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("mmd"))
+                        .unwrap_or(false)
+            }
+        }
+    }
+}
 
 pub struct FileBrowserApp {
     pub cwd: PathBuf,
     entries: Vec<Entry>,
+    /// When set (via `--filter=images` etc.), only entries matching the filter
+    /// are shown. Directories always pass so the user can navigate.
+    filter: Option<EntryFilter>,
     selected: usize,
     sort_mode: SortMode,
     error: Option<String>,
@@ -39,6 +93,7 @@ pub struct FileBrowserApp {
     dir_preview_path: Option<PathBuf>,
     dir_preview_stats: Option<DirStats>,
     pending_cmds: Vec<AppCommand>,
+    pending_spawns: Vec<PendingSpawn>,
     /// When true, the next draw_list pass will scroll the selected row into view.
     pending_scroll: bool,
     /// Remembers which entry was selected when leaving a directory,
@@ -51,16 +106,35 @@ pub struct FileBrowserApp {
     audio_play_started: Option<std::time::Instant>,
     audio_elapsed_before_pause: f32,
     audio_paused: bool,
+    /// Stack of reversible actions (trash, rename, etc.). Newest at the end.
+    /// Capped at `UNDO_STACK_CAP` entries.
+    undo_stack: Vec<FileBrowserAction>,
+    /// Transient status message shown in the header (e.g. "Moved foo.txt to Trash").
+    /// Cleared on next navigation or explicit dismissal.
+    status_message: Option<String>,
 }
 
 impl FileBrowserApp {
     pub fn new(cwd: PathBuf) -> Self {
+        Self::new_with_filter(cwd, None)
+    }
+
+    /// Construct from spawn args. Parses `--filter=<kind>` if present.
+    pub fn from_args(cwd: PathBuf, args: &[String]) -> Self {
+        let filter = args.iter().find_map(|a| {
+            a.strip_prefix("--filter=").and_then(EntryFilter::parse)
+        });
+        Self::new_with_filter(cwd, filter)
+    }
+
+    fn new_with_filter(cwd: PathBuf, filter: Option<EntryFilter>) -> Self {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || audio::audio_thread(rx));
 
         let mut app = Self {
             cwd,
             entries: Vec::new(),
+            filter,
             selected: 0,
             sort_mode: SortMode::RecentlyTouched,
             error: None,
@@ -75,6 +149,7 @@ impl FileBrowserApp {
             dir_preview_path: None,
             dir_preview_stats: None,
             pending_cmds: Vec::new(),
+            pending_spawns: Vec::new(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
             audio_tx: tx,
@@ -83,9 +158,134 @@ impl FileBrowserApp {
             audio_play_started: None,
             audio_elapsed_before_pause: 0.0,
             audio_paused: false,
+            undo_stack: Vec::new(),
+            status_message: None,
         };
         app.refresh();
         app
+    }
+
+    // ─── Trash / undo ────────────────────────────────────────────────────────
+
+    /// Delete the currently selected entry by moving it to the Trash.
+    /// Non-macOS builds just log and return.
+    fn trash_selected(&mut self) {
+        let Some(entry) = self.selected_entry().cloned() else {
+            return;
+        };
+        let original_path = entry.path.clone();
+        let name = entry.name.clone();
+
+        #[cfg(target_os = "macos")]
+        {
+            match crate::trash::trash_file(&original_path) {
+                Ok(trashed_path) => {
+                    crate::trash::play_trash_sound();
+                    self.push_undo(FileBrowserAction {
+                        kind: FileBrowserActionKind::Trashed {
+                            original_path: original_path.clone(),
+                            trashed_path,
+                        },
+                    });
+                    log::info!("FileBrowser: trashed {}", original_path.display());
+                    self.status_message = Some(format!("Moved \u{201C}{name}\u{201D} to Trash"));
+                    // Preserve the selection index so the user lands on the
+                    // next file in the list (or the last one if they deleted
+                    // the tail).
+                    let old_selected = self.selected;
+                    self.refresh();
+                    if !self.entries.is_empty() {
+                        self.selected = old_selected.min(self.entries.len() - 1);
+                    }
+                    self.pending_scroll = true;
+                }
+                Err(e) => {
+                    log::error!(
+                        "FileBrowser: failed to trash {}: {e}",
+                        original_path.display()
+                    );
+                    self.status_message = Some(format!("Trash failed: {e}"));
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            log::warn!("FileBrowser: trash not implemented on this platform");
+            self.status_message = Some("Trash not supported on this platform".to_string());
+            let _ = original_path;
+            let _ = name;
+        }
+    }
+
+    fn push_undo(&mut self, action: FileBrowserAction) {
+        self.undo_stack.push(action);
+        if self.undo_stack.len() > UNDO_STACK_CAP {
+            let drop_count = self.undo_stack.len() - UNDO_STACK_CAP;
+            self.undo_stack.drain(0..drop_count);
+        }
+    }
+
+    /// Pop the last action off the undo stack and reverse it.
+    fn undo_last(&mut self) {
+        let Some(action) = self.undo_stack.pop() else {
+            self.status_message = Some("Nothing to undo".to_string());
+            return;
+        };
+        match action.kind {
+            FileBrowserActionKind::Trashed {
+                original_path,
+                trashed_path,
+            } => {
+                #[cfg(target_os = "macos")]
+                {
+                    match crate::trash::restore_file(&trashed_path, &original_path) {
+                        Ok(()) => {
+                            log::info!(
+                                "FileBrowser: restored {} from {}",
+                                original_path.display(),
+                                trashed_path.display()
+                            );
+                            let name = original_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            self.status_message = Some(format!("Restored \u{201C}{name}\u{201D}"));
+                            self.refresh();
+                            // Try to re-select the restored file.
+                            if let Some(idx) = self
+                                .entries
+                                .iter()
+                                .position(|e| e.path == original_path)
+                            {
+                                self.selected = idx;
+                                self.pending_scroll = true;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "FileBrowser: failed to restore {} from {}: {e}",
+                                original_path.display(),
+                                trashed_path.display()
+                            );
+                            self.status_message = Some(format!("Undo failed: {e}"));
+                            // Re-push so the user can retry.
+                            self.undo_stack.push(FileBrowserAction {
+                                kind: FileBrowserActionKind::Trashed {
+                                    original_path,
+                                    trashed_path,
+                                },
+                            });
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = (original_path, trashed_path);
+                    self.status_message = Some("Undo not supported on this platform".to_string());
+                }
+            }
+        }
     }
 
     fn refresh(&mut self) {
@@ -137,6 +337,10 @@ impl FileBrowserApp {
                         });
                     }
                 }
+                // Apply entry filter (e.g. images-only mode when spawned by photo-viewer).
+                if let Some(filter) = &self.filter {
+                    entries.retain(|e| filter.matches(e));
+                }
                 self.entries = entries;
                 self.selected = self.selected.min(self.entries.len().saturating_sub(1));
             }
@@ -153,6 +357,7 @@ impl FileBrowserApp {
         }
         self.cwd = path.clone();
         self.selected = 0;
+        self.status_message = None;
         self.refresh();
         self.pending_scroll = true;
         self.pending_cmds.push(AppCommand::Cd(path));
@@ -165,6 +370,7 @@ impl FileBrowserApp {
                 .map(|n| n.to_string_lossy().to_string());
             self.cwd = parent.clone();
             self.selected = 0;
+            self.status_message = None;
             self.refresh();
             let restore_name = self
                 .directory_selection_memory
@@ -323,7 +529,7 @@ impl FileBrowserApp {
             let fill = if is_selected {
                 colors.bg_active
             } else if resp.hovered() {
-                colors.bg_hover
+                colors.list_item_hover
             } else {
                 colors.bg_sidebar
             };
@@ -691,6 +897,47 @@ impl FileBrowserApp {
             .unwrap_or(0.0);
         self.audio_elapsed_before_pause + current
     }
+
+    /// Queue a spawn request or fall back to macOS `open` for unknown types.
+    fn open_file(&mut self, path: PathBuf) {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+
+        let is_image = ext.as_deref().map(|e| matches!(
+            e,
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "svg"
+        )).unwrap_or(false);
+
+        let is_text = is_text_file(&path);
+
+        let path_str = path.to_string_lossy().into_owned();
+
+        if is_text {
+            self.pending_spawns.push(PendingSpawn {
+                app_id: "text-editor".to_string(),
+                args: vec![path_str],
+                parent: SpawnParent::SelfPane,
+                layout: SpawnLayout::Cols { slot: 1, ratio: 0.5 },
+                lifecycle: SpawnLifecycle::Cascade,
+                linked: true,
+                wire_channels: vec![],
+            });
+        } else if is_image {
+            self.pending_spawns.push(PendingSpawn {
+                app_id: "photo-viewer".to_string(),
+                args: vec![path_str],
+                parent: SpawnParent::SelfPane,
+                layout: SpawnLayout::Cols { slot: 1, ratio: 0.5 },
+                lifecycle: SpawnLifecycle::Cascade,
+                linked: true,
+                wire_channels: vec![],
+            });
+        } else {
+            let _ = std::process::Command::new("open").arg(&path).spawn();
+        }
+    }
 }
 
 impl App for FileBrowserApp {
@@ -703,6 +950,10 @@ impl App for FileBrowserApp {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "/".to_string())
+    }
+
+    fn take_pending_spawns(&mut self) -> Vec<crate::app_protocol::PendingSpawn> {
+        std::mem::take(&mut self.pending_spawns)
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
@@ -732,6 +983,14 @@ impl App for FileBrowserApp {
                         }
                     });
                 });
+
+                if let Some(status) = self.status_message.clone() {
+                    ui.add_space(2.0);
+                    ui.colored_label(
+                        colors.text_dim,
+                        egui::RichText::new(status).size(10.5),
+                    );
+                }
 
                 ui.add_space(4.0);
                 ui.separator();
@@ -771,19 +1030,44 @@ impl App for FileBrowserApp {
                     if is_dir {
                         self.navigate_into(path);
                     } else {
-                        let _ = std::process::Command::new("open").arg(&path).spawn();
+                        self.open_file(path);
                     }
                 }
             });
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
+        // When the text preview panel is active, it owns all key input.
+        // Navigation shortcuts (j/k, backspace, arrow keys) must not fire
+        // while the user is typing in the inline editor.
+        if self.text_preview_path.is_some() {
+            // Only allow Cmd+Z undo (for text edits) to pass through.
+            // Everything else is consumed by the TextEdit widget during draw.
+            return false;
+        }
+
+        // Cmd+Z — undo. Works even with an empty entry list (to restore a
+        // file that was just trashed).
+        if input.modifiers.command
+            && !input.modifiers.shift
+            && input.key_pressed(egui::Key::Z)
+        {
+            self.undo_last();
+            return true;
+        }
+
         if self.entries.is_empty() {
-            if input.key_pressed(egui::Key::Backspace) {
+            if !input.modifiers.command && input.key_pressed(egui::Key::Backspace) {
                 self.navigate_up();
                 return true;
             }
             return false;
+        }
+
+        // Cmd+Backspace — move the selected file to the Trash.
+        if input.modifiers.command && input.key_pressed(egui::Key::Backspace) {
+            self.trash_selected();
+            return true;
         }
 
         let last = self.entries.len().saturating_sub(1);
@@ -825,7 +1109,7 @@ impl App for FileBrowserApp {
                 if entry.is_dir {
                     self.navigate_into(entry.path);
                 } else {
-                    let _ = std::process::Command::new("open").arg(&entry.path).spawn();
+                    self.open_file(entry.path);
                 }
             }
             consumed = true;
@@ -891,6 +1175,10 @@ impl App for FileBrowserApp {
 
     fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
         self.sync_cwd(new_cwd.to_path_buf());
+    }
+
+    fn current_dir(&self) -> Option<&std::path::Path> {
+        Some(&self.cwd)
     }
 
     fn accepted_extensions(&self) -> &[&str] {

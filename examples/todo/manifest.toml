@@ -1,0 +1,11 @@
+[app]
+id = "todo"
+name = "Todo"
+entry = "todo.py"
+version = "0.1.0"
+description = "Persistent todo list saved to ~/.plexi-alpha/todo.txt"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "write"

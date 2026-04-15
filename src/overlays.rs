@@ -58,7 +58,7 @@ impl PlexiApp {
                 .color(self.colors.text_section),
             );
 
-            // Right side — help button
+            // Right side — help button + notification indicator
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(
@@ -72,6 +72,35 @@ impl PlexiApp {
                     .clicked()
                 {
                     self.show_shortcuts = !self.show_shortcuts;
+                }
+
+                // Notification unread indicator. Shown whenever the log has
+                // loaded at least once — click to open the palette (Cmd+Shift+N).
+                let unread = crate::notification_log::unread_count();
+                let label = if unread > 0 {
+                    format!("\u{1F514} {unread}")
+                } else {
+                    "\u{1F514}".to_string()
+                };
+                let color = if unread > 0 {
+                    self.colors.accent
+                } else {
+                    self.colors.text_dim
+                };
+                ui.add_space(6.0);
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(label).size(12.0).color(color))
+                            .frame(false),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Notifications (\u{2318}\u{21E7}N)")
+                    .clicked()
+                {
+                    self.show_notification_palette = !self.show_notification_palette;
+                    if self.show_notification_palette {
+                        self.notification_palette_selected = 0;
+                    }
                 }
             });
         });

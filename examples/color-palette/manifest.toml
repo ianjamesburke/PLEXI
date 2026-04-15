@@ -1,0 +1,11 @@
+[app]
+id = "color-palette"
+name = "Color Palette"
+entry = "color_palette.py"
+version = "0.1.0"
+description = "Catppuccin Mocha color reference — browse swatches, Enter to copy hex"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"

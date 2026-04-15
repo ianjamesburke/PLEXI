@@ -2,9 +2,11 @@
 protocol_version = 2
 id = "hello-app"
 name = "Hello App"
-version = "0.1.0"
-description = "Example Plexi app — demonstrates the draw protocol"
+entry = "hello_app.py"
+version = "0.2.0"
+description = "Example Plexi app — demos rect/text/list plus image, video_thumbnail, and file_grid"
 
 [app.capabilities]
 file_types = ["hello"]
+filesystem = "read_only"
 # keybinding = "cmd+shift+h"  # optional

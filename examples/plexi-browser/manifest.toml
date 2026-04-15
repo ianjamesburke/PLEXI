@@ -1,0 +1,11 @@
+[app]
+id = "plexi-browser"
+name = "Plexi Browser"
+entry = "browser.py"
+version = "0.1.0"
+description = "Navigate to URLs and discover Plexi manifest support"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"

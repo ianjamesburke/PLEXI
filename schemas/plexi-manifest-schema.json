@@ -1,0 +1,190 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plexi.app/schemas/plexi-manifest-schema.json",
+  "title": "PleximManifest",
+  "description": "Declarative app manifest for Plexi terminal multiplexer. Used as a local app definition or served at /.well-known/plexi.json for website discovery.",
+  "type": "object",
+  "required": ["name", "version"],
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Display name shown in the Plexi title bar and app launcher."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Manifest version in semver format (e.g. \"1.0.0\")."
+    },
+    "description": {
+      "type": "string",
+      "description": "Short description shown in the app launcher."
+    },
+    "icon": {
+      "type": "string",
+      "description": "Path or URL to a PNG/SVG icon. Relative paths resolve from the manifest's location."
+    },
+    "display": {
+      "type": "string",
+      "enum": ["standalone", "panel", "overlay"],
+      "default": "standalone",
+      "description": "How the app window is presented. 'standalone' = full pane, 'panel' = fixed-width side column, 'overlay' = floating above current pane."
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "filesystem.read",
+          "filesystem.write",
+          "network",
+          "terminal",
+          "secrets"
+        ]
+      },
+      "uniqueItems": true,
+      "description": "Capabilities the app requests. Each permission must be approved by the user before Plexi grants it."
+    },
+    "endpoint": {
+      "type": "string",
+      "pattern": "^wss?://",
+      "description": "WebSocket URL for dynamic apps (must begin with ws:// or wss://). If absent, the app renders the 'draw' array as a static frame."
+    },
+    "draw": {
+      "type": "array",
+      "description": "Static frame draw commands. Rendered once for static apps (no endpoint), or as a loading screen while the WebSocket connects.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/RectCommand" },
+          { "$ref": "#/definitions/TextCommand" },
+          { "$ref": "#/definitions/LineCommand" },
+          { "$ref": "#/definitions/ListCommand" },
+          { "$ref": "#/definitions/FrameDoneCommand" }
+        ]
+      }
+    },
+    "min_width": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Minimum pane width in logical pixels."
+    },
+    "min_height": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Minimum pane height in logical pixels."
+    },
+    "theme": {
+      "type": "object",
+      "description": "Color overrides for this app's surface.",
+      "properties": {
+        "background": {
+          "type": "string",
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "description": "Background color as a CSS hex string."
+        },
+        "foreground": {
+          "type": "string",
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "description": "Primary text color."
+        },
+        "accent": {
+          "type": "string",
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "description": "Accent/highlight color for selected items and links."
+        }
+      },
+      "additionalProperties": false
+    },
+    "author": {
+      "type": "string",
+      "description": "Author name or organization."
+    },
+    "homepage": {
+      "type": "string",
+      "pattern": "^https?://",
+      "description": "URL to the app's homepage or documentation."
+    }
+  },
+  "definitions": {
+    "RectCommand": {
+      "type": "object",
+      "description": "Fill a rectangle. Coordinates are in logical pixels relative to the top-left of the app surface.",
+      "required": ["type", "x", "y", "w", "h", "fill"],
+      "additionalProperties": false,
+      "properties": {
+        "type":   { "type": "string", "const": "rect" },
+        "x":      { "type": "number" },
+        "y":      { "type": "number" },
+        "w":      { "type": "number", "minimum": 0 },
+        "h":      { "type": "number", "minimum": 0 },
+        "fill":   { "type": "string", "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" },
+        "radius": { "type": "number", "minimum": 0, "default": 0 }
+      }
+    },
+    "TextCommand": {
+      "type": "object",
+      "description": "Draw text at a position. Coordinates are top-left of the text baseline.",
+      "required": ["type", "x", "y", "text", "size", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "type":      { "type": "string", "const": "text" },
+        "x":         { "type": "number" },
+        "y":         { "type": "number" },
+        "text":      { "type": "string" },
+        "size":      { "type": "number", "minimum": 1 },
+        "color":     { "type": "string", "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" },
+        "bold":      { "type": "boolean", "default": false },
+        "monospace": { "type": "boolean", "default": false }
+      }
+    },
+    "LineCommand": {
+      "type": "object",
+      "description": "Draw a line between two points.",
+      "required": ["type", "x1", "y1", "x2", "y2", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "type":  { "type": "string", "const": "line" },
+        "x1":    { "type": "number" },
+        "y1":    { "type": "number" },
+        "x2":    { "type": "number" },
+        "y2":    { "type": "number" },
+        "color": { "type": "string", "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" },
+        "width": { "type": "number", "minimum": 0, "default": 1 }
+      }
+    },
+    "ListCommand": {
+      "type": "object",
+      "description": "High-level scrollable list. Plexi handles layout, scroll, and selection highlight.",
+      "required": ["type", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "list" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label"],
+            "additionalProperties": false,
+            "properties": {
+              "label":     { "type": "string" },
+              "secondary": { "type": "string" },
+              "is_dir":    { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "selected":    { "type": "integer", "minimum": 0, "default": 0 },
+        "item_height": { "type": "number", "minimum": 1, "default": 40 }
+      }
+    },
+    "FrameDoneCommand": {
+      "type": "object",
+      "description": "Signals the end of a frame. Optional in static mode.",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "frame_done" }
+      }
+    }
+  }
+}

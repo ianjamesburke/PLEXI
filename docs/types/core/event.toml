@@ -1,0 +1,36 @@
+name        = "event"
+namespace   = "core"
+version     = "1.0.0"
+status      = "stable"
+maintainer  = "plexi-core"
+
+description = """
+A discrete named event. Lighter than core.json: the consumer can switch on the
+event name without parsing a payload. Use for lifecycle signals, user actions,
+and completion notifications that don't warrant their own channel kind.
+
+The 'name' field is free-form but should follow snake_case verb-or-noun-phrase
+convention (run_complete, click, focus_gained, app_ready). Names are not
+validated by the host; convention is enforced by documentation and review.
+
+The 'data' field is optional. Omit it for trivial events (click, saved,
+focus_gained). Add it only when a real consumer explicitly needs structured
+context (run_complete with exit_code, selection_changed with a new index).
+Start with just a name, add data when asked — that's the right default for
+this kind.
+
+core.event is not a replacement for properly typed domain channels. It covers
+the long tail of discrete notifications that don't deserve a kind of their own.
+"""
+
+[payload_schema]
+fields = [
+  { name = "name", type = "string", required = true  },
+  { name = "data", type = "any",    required = false },
+]
+
+[examples]
+bare         = '{ "name": "click" }'
+run_complete = '{ "name": "run_complete", "data": { "exit_code": 0, "duration_ms": 842 } }'
+lifecycle    = '{ "name": "app_ready" }'
+with_index   = '{ "name": "selection_changed", "data": { "index": 4 } }'

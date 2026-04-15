@@ -1,5 +1,4 @@
 [app]
-protocol_version = 2
 id = "process-monitor"
 name = "Process Monitor"
 entry = "bin/plexi-app"

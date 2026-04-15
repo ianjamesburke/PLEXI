@@ -1,0 +1,41 @@
+name        = "metric"
+namespace   = "core"
+version     = "1.0.0"
+status      = "stable"
+maintainer  = "plexi-core"
+
+description = """
+A single numeric data point. The backbone of the observability-dashboard
+composition pattern: producer apps emit named metric points, and a consumer
+(graph app, dashboard tile, logging sink) subscribes to the channel and routes
+on payload.name to display or store each metric appropriately.
+
+A single channel can carry multiple metric names. A process-stats app declares
+one output channel 'stats: core.metric' and emits cpu.load, mem.rss, and
+disk.io alternately — consumers switch on payload.name internally. This avoids
+an explosion of channels for variadic metric streams.
+
+Metrics are single-sample by design. A producer emitting 100 data points sends
+100 pipe_emit messages. This is appropriate for dashboards sampling at a few Hz;
+anything approaching audio-frame rates belongs on the Phase 2 binary plane.
+
+Metric names should follow dot.separated.lowercase convention (e.g. cpu.load,
+build.duration_ms). Units are free-form hints (ms, bytes, ratio, count) — not
+validated by the host.
+
+If 'ts' is omitted, the host stamps it with the current Unix time on receipt.
+"""
+
+[payload_schema]
+fields = [
+  { name = "name",  type = "string",  required = true  },
+  { name = "value", type = "number",  required = true  },
+  { name = "unit",  type = "string",  required = false },
+  { name = "ts",    type = "number",  required = false },
+  { name = "tags",  type = "object",  required = false },
+]
+
+[examples]
+cpu_load     = '{ "name": "cpu.load", "value": 0.72, "unit": "ratio", "ts": 1744668400 }'
+build_time   = '{ "name": "build.duration_ms", "value": 4821, "unit": "ms" }'
+mem_rss      = '{ "name": "mem.rss", "value": 142606336, "unit": "bytes", "tags": { "app": "plexi" } }'

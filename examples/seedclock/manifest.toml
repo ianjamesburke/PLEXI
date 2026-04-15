@@ -1,0 +1,10 @@
+[app]
+id = "seedclock"
+name = "Seedclock"
+entry = "seedclock.py"
+version = "0.1.0"
+description = "One-season farming game. Race to 50 coins before the frost."
+icon = "🌾"
+
+[app.capabilities]
+# No capabilities needed — pure rendering + input

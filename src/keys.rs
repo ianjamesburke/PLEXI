@@ -13,11 +13,15 @@
 // Cmd+P                 — command palette
 // Cmd+Shift+R           — rename pane
 // Cmd+N                 — new context
+// Cmd+Shift+N           — notification palette
 // Cmd+Up / Cmd+Down     — scroll
 // Cmd+= / Cmd+-         — font size
 // Cmd+E                 — file browser
 // Cmd+0                 — quick note
 // Cmd+1–9               — switch context
+// Ctrl+/                — toggle agent mode
+// Cmd+Z                 — undo (app active)
+// Cmd+Shift+Z           — redo (app active)
 // Escape (app active)   — close app
 // Tab (app active)      — navigate to linked terminal
 //
@@ -73,10 +77,14 @@ pub enum Action {
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
-    /// Open the notification palette (Cmd+Shift+N).
-    ToggleNotificationPalette,
-    /// Toggle agent mode overlay (Ctrl+/).
+    /// Toggle agent mode on the focused pane.
     ToggleAgentMode,
+    /// Undo last action in the focused app.
+    AppUndo,
+    /// Redo last undone action in the focused app.
+    AppRedo,
+    /// Open the notification palette (shows unread notifications).
+    ToggleNotificationPalette,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -163,11 +171,14 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::RenamePane);
         }
 
-        // Notification palette (Cmd+Shift+N) — must come before Cmd+N.
+        // Notification palette (Cmd+Shift+N) — check before bare Cmd+N so the
+        // more-specific binding wins.
         if input.consume_key(cmd_shift, egui::Key::N) {
             actions.push(Action::ToggleNotificationPalette);
-        // New context (Cmd+N) — only when Shift is not held.
-        } else if !input.modifiers.shift && input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+        }
+
+        // New context (Cmd+N)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
             actions.push(Action::NewContext);
         }
 
@@ -189,11 +200,13 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::DecreasePaneFontSize);
         }
 
-        // App surface: Escape closes app, Tab toggles terminal split.
-        // These are only intercepted at the global level when an app is active,
-        // so that Escape and Tab work normally in a plain terminal.
+        // App surface: Cmd+W closes app, Tab toggles terminal split.
+        // Escape is NOT consumed here — it belongs to the focused app so apps
+        // can use it for modal dismissal, form cancel, detail-view exit, etc.
+        // Cmd+W is the native macOS "close window" shortcut and is not
+        // consumable by apps, so hung/buggy apps are still always killable.
         if app_active {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
                 actions.push(Action::CloseApp);
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
@@ -225,6 +238,17 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         if input.consume_key(cmd_shift, egui::Key::S) {
             actions.push(Action::OpenSecretsManager);
         }
+
+        // Undo / Redo in focused app (Cmd+Z / Cmd+Shift+Z)
+        // Only when an app is active — otherwise Cmd+Z goes to the terminal.
+        if app_active {
+            if input.consume_key(cmd_shift, egui::Key::Z) {
+                actions.push(Action::AppRedo);
+            } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+                actions.push(Action::AppUndo);
+            }
+        }
+
 
         // Switch context (Cmd+1 through Cmd+9)
         let num_keys = [
