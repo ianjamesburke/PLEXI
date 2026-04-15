@@ -6,8 +6,8 @@ Focus timer using the Pomodoro Technique.
 Controls:
   Space    Start / Pause
   r        Reset current timer
-  b        Short break (5 min)
-  l        Long break (15 min)
+  b        Start short break (5 min)
+  l        Start long break (15 min)
 """
 from __future__ import annotations
 
@@ -206,16 +206,16 @@ def on_key(key: str, _mods: dict, _emit):
         remaining = float(DURATIONS.get(timer_state, DURATIONS[STATE_FOCUS]))
 
     elif key == "b":
-        running = False
-        last_tick = 0.0
         timer_state = STATE_SHORT
         remaining = float(DURATIONS[STATE_SHORT])
+        running = True
+        last_tick = time.monotonic()
 
     elif key == "l":
-        running = False
-        last_tick = 0.0
         timer_state = STATE_LONG
         remaining = float(DURATIONS[STATE_LONG])
+        running = True
+        last_tick = time.monotonic()
 
 
 app.run()
