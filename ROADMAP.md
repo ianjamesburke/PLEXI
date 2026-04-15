@@ -1,12 +1,86 @@
 # Plexi Roadmap
 
-Reference document linking layers of work to specs and issues. This file tracks sequencing, dependencies, and **how to verify each layer works**. The specs have the details.
+> **V2 is the only active target.** Everything after this moment is v2 work.
+>
+> - **Vision (compass):** [docs/VISION.md](docs/VISION.md) — read first, always.
+> - **Release scope (protected):** [docs/specs/plexi-v2.md](docs/specs/plexi-v2.md) — what ships in 2.0, what doesn't, checklist.
+> - **Protocol contract:** [docs/specs/protocol-v2.md](docs/specs/protocol-v2.md) — the wire format + ship order.
+>
+> This roadmap is the **weekly operational view**. `plexi-v2.md` is the contract. When they disagree, the spec wins.
 
 **Last updated:** 2026-04-14
 
 ---
 
-## Status Snapshot
+## Where We Are
+
+### On `main` (v1.1.2) — Stable
+
+A polished spatial terminal multiplexer. Installable via `brew install --cask ianjamesburke/plexi/plexi`.
+
+Working: multi-context tiling workspace, 36+ apps, external app protocol (JSON/stdio), Python + Rust SDK, file browser, audio player, secrets manager, agent mode (Ctrl+/), notification log + palette, Homebrew tap with auto-update on release.
+
+### On `alpha` — In Flight
+
+Everything on `main` plus:
+
+| Feature | Status |
+|---|---|
+| Typed pipes Phase 0 — `PipeWrite`/`PipeData` bidirectional IPC | ✅ merged |
+| `spawn_app` draw command — parent/child lifecycle | ✅ merged (host dispatcher pending) |
+| SDK 0.3.0 — breakpoints decorator, `spawn_app` helper | ✅ merged |
+| Mermaid diagram viewer + `--filter=mermaid` file browser | ✅ merged |
+| Notification system — urgency, Unix socket ingestion, action types, focus-pane | ✅ merged |
+| `docs/VISION.md` — foundational vision as source of truth | ✅ merged |
+| `docs/specs/protocol-v2.md` — full V2 technical spec + ship order | ✅ merged |
+| Homebrew release automation (SHA256 + cask update on tag) | ✅ merged |
+
+---
+
+## V2 — The Agent-Native Release
+
+**Scope spec (protected):** [docs/specs/plexi-v2.md](docs/specs/plexi-v2.md) — in-scope, deferred, checklist.
+**Protocol contract:** [docs/specs/protocol-v2.md](docs/specs/protocol-v2.md) — wire format + full rationale.
+**Goal:** Apps can be skills. Agents can be apps. The host orchestrates. One install, three interfaces.
+
+### Month 1 — Plumbing
+| Item | Unlocks |
+|---|---|
+| Protocol version negotiation | Every subsequent change is additive |
+| Host event bus (`events.jsonl`) | Cross-app observation; required by everything downstream |
+| `OpenIntent` payload on `Init` | Apps know *why* they were opened (file, prompt, caller) |
+| `Run` primitive — dumb store, draw commands | Stateful multi-step tasks with blocked/running/done lifecycle |
+
+### Month 2 — Surface
+| Item | Unlocks |
+|---|---|
+| Rich notification actions (extends #219) | Notifications can wrap and resume a Run |
+| Capability enforcement + `permissions.json` | Runtime Yes once / Yes always / No; persistent grants |
+| Typed pipes Phase 1 — manifest `[app.io]`, auto-wire | Apps compose without code changes |
+
+### Month 3 — Intelligence
+| Item | Unlocks |
+|---|---|
+| `[app.skill]` manifest section | Plexi IQ skill registry — apps are invokable capabilities |
+| `[app.agent]` manifest section | Installable agent apps: system prompt + tool allowlist |
+| Plexi IQ Stage 1 — in-host orchestrator | Agent delegation, Run lifecycle, `/approve` workflow, `@agent` syntax |
+| SDK 0.4.0 | `OpenIntent` + `Run` convenience methods; all examples migrated |
+
+### V2 Product (ships with or after v2)
+| Feature | Description |
+|---|---|
+| App registry + `plexi install` | Remote registry, user-global + `--local` project-scoped installs (#233) |
+| App store | Discoverable catalog, developer publishing, one-click install |
+| Plexi Intelligence (PGAP) | Hosted LLM gateway: audit, budget, model routing — all LLM calls route through here |
+| Billing — Plexi Credits or BYOK | Users buy credits (Anthropic wrapper) or bring their own API key |
+| `@agent` syntax | In agent mode, `@agentname` invokes installed `[app.agent]` apps; finds open instance first (#232) |
+
+### Deferred to V2.1+
+PGAP as protocol-level gateway, trust/risk float learning, agent replay testing, WASM/PWA, SpacetimeDB collaborative workspaces, notification undo (#223), spatial canvas Option B/C.
+
+---
+
+## Layer Status Snapshot
 
 | Layer | Status | What's blocking |
 |---|---|---|
