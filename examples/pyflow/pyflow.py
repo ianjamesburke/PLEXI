@@ -638,15 +638,17 @@ def on_mouse_down(x, y, button, emit):
     # Input port — complete wiring
     if rid[0] == "in_port" and state.wiring:
         _, node_id, port_idx = rid
-        if (node_id != state.wire_src_node_id
-                and state.wire_src_node_id is not None
-                and state.wire_src_port_index is not None):
+        src_node_id = state.wire_src_node_id
+        src_port_index = state.wire_src_port_index
+        if (node_id != src_node_id
+                and src_node_id is not None
+                and src_port_index is not None):
             state.edges = [
                 e for e in state.edges
                 if not (e.dst_node_id == node_id and e.dst_port_index == port_idx)
             ]
             state.edges.append(Edge(
-                state.wire_src_node_id, state.wire_src_port_index,
+                src_node_id, src_port_index,
                 node_id, port_idx,
             ))
         state.wiring = False
