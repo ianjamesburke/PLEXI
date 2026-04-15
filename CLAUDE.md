@@ -1,5 +1,9 @@
 Always confirm best practices by researching the docs.
 
+## Specs
+
+**Single source of truth for where every spec lives:** [`docs/specs/README.md`](docs/specs/README.md). Start there for any spec question — it's the index with scope, contract, subsystems, and proposals for every release. Don't deep-link into specific spec files from other docs; always link through the index.
+
 ## GitHub Issue Labels
 
 Every issue gets exactly one **type**, one **priority**, and one **version**. Optionally add a **status** label.
