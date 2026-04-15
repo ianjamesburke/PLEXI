@@ -2,31 +2,36 @@
 
 After the 2026-04-15 cleanup, `alpha` is the single source of v2 truth and is stable for incoming PRs.
 
-**Eight `experiments/v2-*` branches are parked locally** — they contain pre-reorg work too tangled with the old SDK layout (1640-line vendored `plexi_sdk.py` copies) and the old flat `docs/specs/` layout to mass-merge into current alpha. Cherry-pick valuable pieces onto fresh feature branches off alpha. Delete each experiment branch once its unique value is extracted.
+**Resolved so far (2026-04-15 session 2):**
+- `experiments/v2-spawn-app` — subsumed, deleted from origin ✓
+- `experiments/v2-sdk-breakpoints` — subsumed, deleted from origin ✓
+- `experiments/v2-secrets-get-api` — subsumed (SecretGet on alpha), deleted from origin ✓
+- `experiments/v2-scope-spec` — never pushed, gone; CODEOWNERS at `.github/CODEOWNERS` ✓
+- `experiments/v2-plexi-iq-stage0` — never pushed, gone; `src/plexi_iq/` already on alpha ✓
+- `docs/types/core/*.toml` — already on alpha ✓
+- Secrets manager proposal — filed as issue #247, spec at `docs/specs/proposals/secrets-manager.md` ✓
+
+**Remaining on origin (2 branches):**
 
 **Do NOT `git merge` these wholesale.** Conflict surface is massive and most commits are already shipped on alpha via different paths.
 
 ## Branch inventory
 
-### `experiments/v2-slash-commands-spawn` (+36, was `feature/104-slash-trigger-and-commands`)
-The tangled heavyweight — 36 commits including one WIP checkpoint committed during the cleanup (`c7d9cc3`). Mixes work already shipped on alpha (spawn_app Phase 0, typed-pipes Phase 0, breakpoints) with genuinely new material.
+### `experiments/v2-slash-commands-spawn` (still active — WIP source code not yet extracted)
 
-**Unique value worth cherry-picking:**
-- `docs/types/core/*.toml` — seed core type registry for typed pipes (text / json / file_path / selection / event / metric). Required for typed pipes Phase 1 (v2.0, issue #226-equivalent).
-- `docs/specs/plexi-iq.md` — Plexi IQ spec draft. Reconcile with current `docs/specs/subsystems/agent-orchestration.md` and `docs/specs/releases/plexi-v2.0.md` §9.
-- `examples/{app-store,calc,clipboard-stack,color-palette,json-viewer}/tests/test_*.py` — per-app test suites using `plexi_test.py` harness.
-- `examples/parallax/manifest.toml`, `examples/audio-player/manifest.toml` — additional example app manifests.
-- **WIP checkpoint `c7d9cc3`** — uncommitted slash-command/tiling changes: `src/agent_mode.rs` (+344), `src/pane.rs` (+7), `src/pane_ops.rs` (+2), `src/tiling.rs` (+98). No claim these compile against current alpha; review before extracting.
+Most doc/example content already extracted or confirmed on alpha. **One remaining item needs hands-on review:**
 
-**Skip:**
-- Old vendored `plexi_sdk.py` copies (alpha uses symlinks now; SDK deploy Phase 2 is #244).
-- Old `docs/specs/*.md` flat-layout edits (alpha has the three-bucket reorg).
-- Already-shipped spawn_app / breakpoints / text-editor work.
+**WIP checkpoint `c7d9cc3`** — `src/agent_mode.rs` (+344), `src/pane.rs` (+7), `src/pane_ops.rs` (+2), `src/tiling.rs` (+98). This is the slash-command trigger (`/` at empty prompt → agent mode) + tiling layout changes. Alpha's `agent_mode.rs` is 424 lines; this WIP adds 344 more. Do NOT blind cherry-pick — diff against current alpha first, extract only the slash-command/intent-trigger logic onto a fresh `feature/104-slash-trigger` branch. File as issue before starting.
 
-### `experiments/v2-external-text-editor` (+19, was `feature/external-text-editor-app`)
-Cross-language SDK composition + real editor improvements (find/replace, syntax, undo, autosave, status bar). May be partially subsumed by `experiments/v2-slash-commands-spawn`.
+**Already extracted/confirmed:**
+- `docs/types/core/*.toml` — on alpha ✓
+- `docs/specs/plexi-iq.md` — extracted to `proposals/plexi-iq.md` ✓
+- `docs/specs/SKILL.md`, per-app tests, photo-viewer, spiral-viewer — on alpha ✓
+- spawn_app, breakpoints — subsumed ✓
 
-**Unique value:** Cross-language Python + Rust example pair proving SDK composition. Useful as a Tier 3 reference app once v2.1 `ctx.text_input` primitive lands.
+### `experiments/v2-external-text-editor` (defer until v2.1)
+
+Cross-language Python + Rust text editor example. Only unique commit: `e6f5220`. Useful as Tier 3 reference app once v2.1 `ctx.text_input` primitive lands. **Do not touch until v2.1 is scoped.**
 
 ### `experiments/v2-input-layering` (+8, was `feature/v2-input-layering-contract`)
 Input layering spec (which layer gets a keystroke first) + SecretGet API + an earlier `protocol-v2.md` scope doc.
