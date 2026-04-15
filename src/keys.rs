@@ -233,12 +233,19 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::OpenSecretsManager);
         }
 
-        // Toggle agent mode (Ctrl+/)
+        // Toggle agent mode (Ctrl+/ or Ctrl+Tab)
+        // Ctrl+Tab is the ergonomic alias — bare Tab conflicts with ZSH completion.
         let ctrl_only = egui::Modifiers {
             ctrl: true,
             ..Default::default()
         };
-        if input.consume_key(ctrl_only, egui::Key::Slash) {
+        if input.consume_key(ctrl_only, egui::Key::Slash)
+            || (!input.modifiers.shift
+                && !input.modifiers.alt
+                && !input.modifiers.command
+                && input.modifiers.ctrl
+                && input.consume_key(ctrl_only, egui::Key::Tab))
+        {
             actions.push(Action::ToggleAgentMode);
         }
 

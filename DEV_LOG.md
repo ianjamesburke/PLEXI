@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [FIX] agent mode exit: cursor displaced, ZSH prompt not redrawn
+
+`deactivate()` only emitted `\r\n` into the terminal grid. The PTY received nothing, so ZSH never redraws its prompt — cursor lands visually displaced and the shell appears unresponsive until the user types. Fix: write `\r` to the PTY via `BackendCommand::Write` after `deactivate()` in `toggle_agent_mode()`. ZSH interprets `\r` on an empty readline buffer as Enter → redraws prompt at correct position. Also added `Ctrl+Tab` as an alias for the existing `Ctrl+/` toggle — bare Tab conflicts with ZSH completion so the full Tab ergonomic requires shell integration (deferred).
+**Breaks if:** exiting agent mode leaves cursor stranded with no ZSH prompt — means the `BackendCommand::Write(b"\r")` call isn't reaching the PTY notifier.
+
 ## 2026-04-15 — [FIX] agent_llm: system prompt re-injected on resumed sessions
 
 `call_claude()` was passing `--system-prompt` on every turn including `--resume` turns. On a resumed session the system prompt in Claude Code is carried in the session history; re-injecting a different one on turn 2+ causes context confusion (the model sees conflicting instructions). Fixed by gating on `session_id.is_none()` — system prompt only on the first turn. Also removed the `--tools ""` blanket disable (it prevented bash/file ops that are expected in a terminal assistant). No observable behavior change for existing single-turn usage; multi-turn sessions now get clean context.

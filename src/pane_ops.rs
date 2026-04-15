@@ -988,6 +988,11 @@ impl PlexiApp {
             }
             if pane.agent_mode.is_active() {
                 pane.agent_mode.deactivate();
+                // Write \r to the PTY so ZSH redraws its prompt cleanly at
+                // the current cursor position. Without this, ZSH doesn't know
+                // agent mode ended and the cursor lands visually displaced.
+                pane.backend
+                    .process_command(BackendCommand::Write(b"\r".to_vec()));
             } else {
                 // Update directory scope from terminal CWD before activating
                 if let Some(cwd) = crate::shell::get_pid_cwd(pane.backend.child_pid()) {
