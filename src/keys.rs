@@ -72,6 +72,10 @@ pub enum Action {
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
+    /// Open the notification palette (Cmd+Shift+N).
+    ToggleNotificationPalette,
+    /// Toggle agent mode overlay (Ctrl+/).
+    ToggleAgentMode,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -143,6 +147,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::ToggleShortcuts);
         }
 
+        // Toggle agent mode overlay (Ctrl+/)
+        if input.consume_key(egui::Modifiers::CTRL, egui::Key::Slash) {
+            actions.push(Action::ToggleAgentMode);
+        }
+
         // Command palette (Cmd+P)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
             actions.push(Action::ToggleCommandPalette);
@@ -153,8 +162,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::RenamePane);
         }
 
-        // New context (Cmd+N)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+        // Notification palette (Cmd+Shift+N) — must come before Cmd+N.
+        if input.consume_key(cmd_shift, egui::Key::N) {
+            actions.push(Action::ToggleNotificationPalette);
+        // New context (Cmd+N) — only when Shift is not held.
+        } else if !input.modifiers.shift && input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
             actions.push(Action::NewContext);
         }
 

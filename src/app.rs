@@ -585,6 +585,14 @@ impl eframe::App for PlexiApp {
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
                 }
+                Action::ToggleNotificationPalette => {
+                    // Notification palette not yet implemented — no-op stub.
+                    log::debug!("ToggleNotificationPalette triggered (not yet implemented)");
+                }
+                Action::ToggleAgentMode => {
+                    // Agent mode overlay not yet implemented — no-op stub.
+                    log::debug!("ToggleAgentMode triggered (not yet implemented)");
+                }
             }
         }
 
