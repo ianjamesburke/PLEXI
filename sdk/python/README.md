@@ -82,7 +82,7 @@ Install it into your local Plexi apps directory (`~/.plexi-alpha/apps/hello-app/
 - **State buckets** — `user_state` (undoable), `derived` (recomputable), `session` (per-window), `persistent` (across restarts). Plexi handles undo/redo and serialization; you return dicts.
 - **Capabilities** — declared in `manifest.toml`. The app sandbox grants filesystem, network, subprocess, and terminal-write access only when the manifest requests it.
 
-See the [app protocol spec](../../docs/specs/app-infrastructure.md) for the full message reference.
+See the [app protocol spec](../../docs/specs/subsystems/app-infrastructure.md) for the full message reference.
 
 ## Breakpoints and minimum size
 

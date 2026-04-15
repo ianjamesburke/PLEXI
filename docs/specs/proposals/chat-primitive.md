@@ -2,7 +2,7 @@
 
 **Status:** Draft (vision spec)
 **Last updated:** 2026-04-11
-**Related specs:** [intelligence-protocol.md](intelligence-protocol.md) (deferred), [agent-mode.md](agent-mode.md), [agent-replay-testing.md](agent-replay-testing.md), [core-advanced-ui-sdk.md](core-advanced-ui-sdk.md)
+**Related specs:** [intelligence-protocol.md](../subsystems/intelligence-protocol.md) (deferred), [agent-mode.md](../subsystems/agent-mode.md), [agent-replay-testing.md](agent-replay-testing.md), [core-advanced-ui-sdk.md](core-advanced-ui-sdk.md)
 **Related issues/PRs:** #93 (closed, intelligence proxy), #108 (agent-mode LLM backend), #85 (agent-controlled app UI)
 
 ---
@@ -83,7 +83,7 @@ The single biggest design question: **does `ctx.chat(...)` include LLM routing, 
 
 ### Prior architectural context
 
-Plexi deliberately **rejected** a centralized intelligence proxy ([intelligence-protocol.md](intelligence-protocol.md), issue #93). Apps currently manage their own LLM calls: declare required secrets in `manifest.toml`, resolve them via `SecretGet`, call providers themselves, and report costs back via `cost_report`. The architectural reason was sound — keeping Plexi out of the LLM business means no async-handler refactor, no provider-API maintenance burden, no inline cost-enforcement code in the render path.
+Plexi deliberately **rejected** a centralized intelligence proxy ([intelligence-protocol.md](../subsystems/intelligence-protocol.md), issue #93). Apps currently manage their own LLM calls: declare required secrets in `manifest.toml`, resolve them via `SecretGet`, call providers themselves, and report costs back via `cost_report`. The architectural reason was sound — keeping Plexi out of the LLM business means no async-handler refactor, no provider-API maintenance burden, no inline cost-enforcement code in the render path.
 
 PR #108 (agent-mode LLM backend) partially contradicts this: for *agent mode specifically*, Plexi does make the Anthropic API call directly, through an `LlmWorker` thread with ureq. That was justified because agent mode is Plexi's own feature, not a third-party app. The worker pattern is a proof point that Plexi *can* host LLM calls cleanly when it wants to.
 

@@ -2,7 +2,7 @@
 
 **Status:** Draft (vision spec)
 **Last updated:** 2026-04-11
-**Related specs:** [agent-orchestration.md](agent-orchestration.md), [app-infrastructure.md](app-infrastructure.md), [intelligence-protocol.md](intelligence-protocol.md) (deferred)
+**Related specs:** [agent-orchestration.md](../subsystems/agent-orchestration.md), [app-infrastructure.md](../subsystems/app-infrastructure.md), [intelligence-protocol.md](../subsystems/intelligence-protocol.md) (deferred)
 
 ---
 
@@ -924,4 +924,4 @@ If the only problem was observability, we would use Langfuse. The load-bearing p
 - [Promptfoo](https://github.com/promptfoo/promptfoo)
 - [OpenLLMetry / Traceloop semantic conventions](https://www.traceloop.com/docs/openllmetry/contributing/semantic-conventions)
 - [VCR.py](https://vcrpy.readthedocs.io/) / [pytest-recording](https://github.com/kiwicom/pytest-recording)
-- Plexi specs: [agent-orchestration.md](agent-orchestration.md), [app-infrastructure.md](app-infrastructure.md), [intelligence-protocol.md](intelligence-protocol.md)
+- Plexi specs: [agent-orchestration.md](../subsystems/agent-orchestration.md), [app-infrastructure.md](../subsystems/app-infrastructure.md), [intelligence-protocol.md](../subsystems/intelligence-protocol.md)

@@ -500,4 +500,4 @@ Phase 1 was scoped as "dependency + module gating, no behaviour changes." Splitt
 
 - `Cargo.toml` — dependency reorganisation
 - `src/main.rs` — module gating, cfg-split entry point
-- `docs/specs/wasm-pwa-deployment.md` — this section
+- `docs/specs/proposals/wasm-pwa-deployment.md` — this section

@@ -570,9 +570,9 @@ These are filed in backlog with the specific primitive each one needs. Don't bui
 ## 11. Cross-references
 
 - **`protocol-v2.md`** — v2.0 orchestration layer; this doc depends on version negotiation (§10) and OpenIntent (§3).
-- **`core-advanced-ui-sdk.md`** — original draft of tabs/carousels/grid; this doc formalizes and scopes what's actually in v2.1.
-- **`core-text-editor-primitive.md`** — original draft of text input; multi-line editor is still deferred but single-line ships here.
-- **`core-layout-presets.md`** — layout presets; grid component here supersedes the static preset model for static grids.
+- **`proposals/core-advanced-ui-sdk.md`** — original draft of tabs/carousels/grid; this doc formalizes and scopes what's actually in v2.1.
+- **`proposals/core-text-editor-primitive.md`** — original draft of text input; multi-line editor is still deferred but single-line ships here.
+- **`proposals/core-layout-presets.md`** — layout presets; grid component here supersedes the static preset model for static grids.
 - **`sdk/python/plexi_sdk.py`** — target file for all SDK additions.
 - **`src/app_protocol.rs`** — target file for all draw command additions.
 - **`src/process_app.rs`** — target for transform stack + measure_text round-trip.

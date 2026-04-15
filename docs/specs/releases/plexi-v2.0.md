@@ -9,7 +9,7 @@
 
 ## TL;DR
 
-Plexi v1's protocol is solid for single-app rendering and parent↔child composition (see `app-infrastructure.md`, `typed-pipes.md` Phase 0). It is not sufficient for the agent-native vision in `VISION.md` because it lacks four load-bearing primitives:
+Plexi v1's protocol is solid for single-app rendering and parent↔child composition (see `subsystems/app-infrastructure.md`, `subsystems/typed-pipes.md` Phase 0). It is not sufficient for the agent-native vision in `VISION.md` because it lacks four load-bearing primitives:
 
 1. **Structured spawn intent** — no in-protocol way to say *why* an app was opened (which file, which prompt, which caller).
 2. **A host-side event bus** — no way for any app to observe what other apps are doing, which blocks every cross-cutting feature: agent flow visualizer, trust learning, replay testing, attention queue.
@@ -31,21 +31,21 @@ The explicit design constraint: **the SDK barely changes.** The host gets smarte
 - `Run` primitive (new, this doc)
 - Rich notification action payloads (#218/#219/#221, this doc closes spec gap)
 - Plexi IQ Stage 1 in-host orchestrator (#210/#212)
-- Typed pipes Phase 1 (`typed-pipes.md`)
+- Typed pipes Phase 1 (`subsystems/typed-pipes.md`)
 - Capability enforcement pass (`app_permissions.rs` → runtime prompt)
 - Protocol version negotiation (new, trivial)
 
 ### Explicitly deferred to v2.1+
 
-- PGAP intelligence gateway (#213, `intelligence-protocol.md`) — v2 keeps `claude -p --resume` subprocess
-- Trust/risk float learning (`agent-orchestration.md` §4) — v2 uses binary Yes once/Yes always/No prompts
-- Agent replay testing (`agent-replay-testing.md`)
-- WASM/PWA deployment (`wasm-pwa-deployment.md`)
-- SpacetimeDB sync (`sync-architecture.md`)
-- Chat primitive (`chat-primitive.md`)
-- Core text editor primitive (`core-text-editor-primitive.md`)
-- Advanced UI SDK egui widgets (`core-advanced-ui-sdk.md`, #132)
-- Spatial canvas Option B/C (`spatial-canvas.md`) — v2 stays on Option A as background
+- PGAP intelligence gateway (#213, `subsystems/intelligence-protocol.md`) — v2 keeps `claude -p --resume` subprocess
+- Trust/risk float learning (`subsystems/agent-orchestration.md` §4) — v2 uses binary Yes once/Yes always/No prompts
+- Agent replay testing (`proposals/agent-replay-testing.md`)
+- WASM/PWA deployment (`proposals/wasm-pwa-deployment.md`)
+- SpacetimeDB sync (`proposals/sync-architecture.md`)
+- Chat primitive (`proposals/chat-primitive.md`)
+- Core text editor primitive (`proposals/core-text-editor-primitive.md`)
+- Advanced UI SDK egui widgets (`proposals/core-advanced-ui-sdk.md`, #132)
+- Spatial canvas Option B/C (`proposals/spatial-canvas.md`) — v2 stays on Option A as background
 - Spawn `SpawnLifecycle::Prompt` — stays stubbed as `Orphan`
 
 ### Non-goals — will never be in protocol v2
@@ -216,7 +216,7 @@ PlexiEvent::EventData { event: Event }
 - Agent flow visualizer app (subscribe to `AppSpawned` + `AgentTurn` + `PipeWrite`)
 - Attention queue (#74) — filter `NotificationEmitted` by unread
 - Trust learning (deferred to v2.1 but the data is now logged)
-- Replay testing (`agent-replay-testing.md`) — events are the replay log
+- Replay testing (`proposals/agent-replay-testing.md`) — events are the replay log
 - Cost dashboard — aggregate `CostReport` and `AgentTurn`
 - Plexi IQ workspace awareness — IQ subscribes to everything in its scope
 
@@ -339,13 +339,13 @@ pub enum NotificationAction {
    - `open_intent_kinds = ["file", "prompt", ...]` — gates which `OpenKind` variants an app can emit on spawn. Default: file, url.
 3. **Directory scope is structural, not declarative.** An app running inside a workspace cannot construct an `OpenIntent::File` with a path outside that workspace. The host validates paths against scope at the ApiRequest layer and at SpawnApp time. This is how `VISION.md:44` becomes "by construction, not by convention" — the host refuses the call, the app never gets to try.
 
-Trust scores and the float-based trust system (`agent-orchestration.md` §4) stay deferred. v2 uses binary prompts. The data (`PermissionPrompted` events) is logged, so v2.1 can train trust scores from it without a migration.
+Trust scores and the float-based trust system (`subsystems/agent-orchestration.md` §4) stay deferred. v2 uses binary prompts. The data (`PermissionPrompted` events) is logged, so v2.1 can train trust scores from it without a migration.
 
 ---
 
 ## 8. Typed Pipes Phase 1
 
-Everything in `docs/specs/typed-pipes.md` §2.3 and onward. This section confirms Phase 1 ships with v2 and clarifies two interactions.
+Everything in `docs/specs/subsystems/typed-pipes.md` §2.3 and onward. This section confirms Phase 1 ships with v2 and clarifies two interactions.
 
 ### Relationship to `OpenIntent`
 
@@ -357,7 +357,7 @@ Pipe writes emit `PipeWrite` events on the event bus with size and channel name 
 
 ### "Linked pane group" definition (resolving contradiction #4 from the earlier review)
 
-A linked pane group is defined as **all panes sharing a common parent that has `[app.links_children] = true` in its manifest, or all panes spawned with `SpawnLayout::Cols` or `SpawnLayout::Rows` from the same parent.** The spatial canvas multi-screen grouping (`spatial-canvas.md` Option B/C) is deferred; v2 uses the simple parent-based rule.
+A linked pane group is defined as **all panes sharing a common parent that has `[app.links_children] = true` in its manifest, or all panes spawned with `SpawnLayout::Cols` or `SpawnLayout::Rows` from the same parent.** The spatial canvas multi-screen grouping (`proposals/spatial-canvas.md` Option B/C) is deferred; v2 uses the simple parent-based rule.
 
 ---
 
@@ -373,7 +373,7 @@ Implementation is tracked in issues #210, #212. This doc constrains the protocol
 
 ### What IQ is **not** in v2
 
-- Not the intelligence gateway (`intelligence-protocol.md` / #213 — deferred). Individual apps still make their own LLM calls when needed, using their own API keys. PGAP is v2.1+.
+- Not the intelligence gateway (`subsystems/intelligence-protocol.md` / #213 — deferred). Individual apps still make their own LLM calls when needed, using their own API keys. PGAP is v2.1+.
 - Not the trust float system. IQ uses binary capability prompts.
 - Not a separate from agent mode. Agent mode is IQ's UI; IQ is agent mode's backend. They are the same subsystem viewed from different angles.
 
@@ -442,7 +442,7 @@ The order is derived from dependencies, not ambition. Each item unblocks the nex
 
 5. **Rich notifications** (§6) — action enum, run_id binding, palette integration. ~4 days.
 6. **Capability enforcement pass** (§7) — runtime prompt flow, permissions.json, `observes` capability, OpenIntent path validation. ~1 week.
-7. **Typed pipes Phase 1** (`typed-pipes.md`) — manifest parsing, auto-wiring, linking matrix UI. ~2 weeks. (Largest item; parallelizable with #5-6.)
+7. **Typed pipes Phase 1** (`subsystems/typed-pipes.md`) — manifest parsing, auto-wiring, linking matrix UI. ~2 weeks. (Largest item; parallelizable with #5-6.)
 
 ### Month 3 — Intelligence
 
@@ -500,11 +500,11 @@ Risks ordered by likelihood:
 
 **Supersedes:** nothing. All existing specs remain valid; v2 is additive.
 
-**Resolves:** contradictions in `agent-mode.md`, `agent-orchestration.md`, `typed-pipes.md`, `VISION.md` (see §11).
+**Resolves:** contradictions in `subsystems/agent-mode.md`, `subsystems/agent-orchestration.md`, `subsystems/typed-pipes.md`, `VISION.md` (see §11).
 
-**Defers:** `intelligence-protocol.md`, `agent-replay-testing.md`, `wasm-pwa-deployment.md`, `sync-architecture.md`, `chat-primitive.md`, `core-text-editor-primitive.md`, `core-advanced-ui-sdk.md`, `core-layout-presets.md`, `app-focus-manager.md`, `app-shell-config.md`. None of these are deleted; none are required for v2.0.
+**Defers:** `subsystems/intelligence-protocol.md`, `proposals/agent-replay-testing.md`, `proposals/wasm-pwa-deployment.md`, `proposals/sync-architecture.md`, `proposals/chat-primitive.md`, `proposals/core-text-editor-primitive.md`, `proposals/core-advanced-ui-sdk.md`, `proposals/core-layout-presets.md`, `proposals/app-focus-manager.md`, `proposals/app-shell-config.md`. None of these are deleted; none are required for v2.0.
 
-**Depends on:** `app-infrastructure.md` (v1 contract), `typed-pipes.md` (Phase 1), `agent-orchestration.md` (IQ design), `agent-mode.md` (UI surface), manifest schema at `schemas/plexi-manifest-schema.json`.
+**Depends on:** `subsystems/app-infrastructure.md` (v1 contract), `subsystems/typed-pipes.md` (Phase 1), `subsystems/agent-orchestration.md` (IQ design), `subsystems/agent-mode.md` (UI surface), manifest schema at `schemas/plexi-manifest-schema.json`.
 
 **Implemented across:** `src/app_protocol.rs` (types), `src/process_app.rs` (subprocess handling), `src/pane_ops.rs` (dispatch), `src/app_registry.rs` (manifest), `src/app_permissions.rs` (enforcement), `src/notification_log.rs` (notifications), `src/notify_socket.rs` (external ingestion), new `src/event_log.rs` (bus), new `src/run_store.rs` (runs), new `src/plexi_iq/` (orchestrator).
 

@@ -22,7 +22,7 @@ Two parallel additions in one release:
 `RenderContext` helpers. One app can now ask Plexi to launch another app
 and place it in a layout slot relative to itself, with lifecycle bonding
 (`cascade` / `orphan` / `prompt`) and optional pre-wired typed-pipe
-channels. See `docs/specs/app-infrastructure.md#app-spawning` for the full contract.
+channels. See `docs/specs/subsystems/app-infrastructure.md#app-spawning` for the full contract.
 
 - New outbound `DrawCommand::SpawnApp` variant and mirror types
   `SpawnParent`, `SpawnLayout`, `SpawnLifecycle`.
@@ -225,7 +225,7 @@ friction.
   schema.
 
 The full wire protocol and manifest format are documented in
-[`docs/specs/app-infrastructure.md`](https://github.com/ianjamesburke/PLEXI/blob/main/docs/specs/app-infrastructure.md).
+[`docs/specs/subsystems/app-infrastructure.md`](https://github.com/ianjamesburke/PLEXI/blob/main/docs/specs/subsystems/app-infrastructure.md).
 
 ## Runtime model
 

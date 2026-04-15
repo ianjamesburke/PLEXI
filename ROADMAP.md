@@ -1,7 +1,7 @@
 # Plexi Roadmap
 
 > Vision: [docs/VISION.md](docs/VISION.md) — read this first.  
-> V2 technical spec: [docs/specs/protocol-v2.md](docs/specs/protocol-v2.md)
+> V2 technical spec: [docs/specs/releases/plexi-v2.0.md](docs/specs/releases/plexi-v2.0.md)
 
 **Last updated:** 2026-04-14
 
@@ -27,14 +27,14 @@ Everything on `main` plus:
 | Mermaid diagram viewer + `--filter=mermaid` file browser | ✅ merged |
 | Notification system — urgency, Unix socket ingestion, action types, focus-pane | ✅ merged |
 | `docs/VISION.md` — foundational vision as source of truth | ✅ merged |
-| `docs/specs/protocol-v2.md` — full V2 technical spec + ship order | ✅ merged |
+| `docs/specs/releases/plexi-v2.0.md` — full V2 technical spec + ship order | ✅ merged |
 | Homebrew release automation (SHA256 + cask update on tag) | ✅ merged |
 
 ---
 
 ## V2 — The Agent-Native Release
 
-**Full technical spec:** [docs/specs/protocol-v2.md](docs/specs/protocol-v2.md)  
+**Full technical spec:** [docs/specs/releases/plexi-v2.0.md](docs/specs/releases/plexi-v2.0.md)  
 **Goal:** Apps can be skills. Agents can be apps. The host orchestrates. One install, three interfaces.
 
 ### Month 1 — Plumbing
@@ -222,11 +222,11 @@ Python + Rust SDK at 0.3.0 parity. Protocol spec stamped v1.
 |------|--------|-----------|
 | Python SDK packaged as `plexi-sdk` 0.2.0 | **Done** | `sdk/python/pyproject.toml`, `README.md`, `LICENSE`, `MANIFEST.in` |
 | Vendored SDK sync script | **Done** | `scripts/sync-sdk.py` — 33 examples byte-identical to canonical |
-| App infrastructure spec v1 | **Done** | `docs/specs/app-infrastructure.md` (705 lines) |
+| App infrastructure spec v1 | **Done** | `docs/specs/subsystems/app-infrastructure.md` (705 lines) |
 | Rust SDK Cargo manifest publication-ready | **Done** | `sdk/rust/Cargo.toml` full publish metadata |
 | **Rust SDK 0.2.0 protocol parity** | **Done** | `sdk/rust/src/lib.rs` — scroll, mouse, drop, state, cost_report, notification, feedback, log |
 | **Python + Rust SDK 0.3.0** | **Done** | `spawn_app`, `BreakpointSet`/`pick_breakpoint`, `App::min_size`, `load_manifest_layout()` |
-| Shell-config app v1 spec | **Done (spec only)** | `docs/specs/app-shell-config.md`. P3, idea-tier, not implemented |
+| Shell-config app v1 spec | **Done (spec only)** | `docs/specs/proposals/app-shell-config.md`. P3, idea-tier, not implemented |
 
 ### Verification steps for Layer 4.5
 
@@ -247,12 +247,12 @@ One app can now request that Plexi launch and place another app. The protocol + 
 | Task | Status | Reference |
 |------|--------|-----------|
 | `DrawCommand::SpawnApp` + `SpawnParent`/`SpawnLayout`/`SpawnLifecycle` | **Done** | `src/app_protocol.rs` |
-| `AppSpawnable` manifest table + `[app.spawnable]` | **Done** | `src/app_registry.rs`, `docs/specs/app-infrastructure.md` |
+| `AppSpawnable` manifest table + `[app.spawnable]` | **Done** | `src/app_registry.rs`, `docs/specs/subsystems/app-infrastructure.md` |
 | `pending_spawns` queue in `process_app.rs` | **Done** | `src/process_app.rs::take_pending_spawns()` |
 | SDK: `Emitter.spawn_app` + `RenderContext.spawn_app` (Python + Rust) | **Done** | `sdk/python/plexi_sdk.py`, `sdk/rust/src/lib.rs` |
 | Host dispatcher: pane creation, registry lookup, cascade/orphan walk | **Pending** | Blocked on WIP `src/app.rs` — drain `take_pending_spawns()` there |
 | File browser `→ text-editor` / `→ photo-viewer` wiring | **In flight** | Demo of end-to-end spawn; unblocked after host dispatcher |
-| Typed-pipes spec | **Done (spec only)** | `docs/specs/typed-pipes.md` — Phase 1 design |
+| Typed-pipes spec | **Done (spec only)** | `docs/specs/subsystems/typed-pipes.md` — Phase 1 design |
 
 ### Verification steps for Layer 4.6
 
@@ -268,7 +268,7 @@ One app can now request that Plexi launch and place another app. The protocol + 
 
 | Task | Status | Reference |
 |------|--------|-----------|
-| WASM Phase 1: feature-gate native deps | Deferred | [#105](https://github.com/ianjamesburke/PLEXI/issues/105), `docs/specs/wasm-pwa-deployment.md` |
+| WASM Phase 1: feature-gate native deps | Deferred | [#105](https://github.com/ianjamesburke/PLEXI/issues/105), `docs/specs/proposals/wasm-pwa-deployment.md` |
 | WASM Phase 2: WebSocket server mode | Not started | — |
 | WASM Phase 3: WASM client with WS transport | Not started | — |
 | WASM Phase 4: PWA manifest, service worker, touch | Not started | — |
@@ -323,10 +323,10 @@ parallax, learn-plexi, app-store, wikipedia, hello-app
 ### Long game (back burner)
 
 - Layer 5 WASM Phases 1-5 (mobile/remote access)
-- Directory-scoped workspace persistence (`.plexi/workspace.json` per project) — see `docs/specs/spatial-canvas.md`
+- Directory-scoped workspace persistence (`.plexi/workspace.json` per project) — see `docs/specs/proposals/spatial-canvas.md`
 - Agent orchestration trust system
 - Agent replay & testing infrastructure
-- **Shell-config app v1 implementation** — P3, spec at `docs/specs/app-shell-config.md` (filed 2026-04-14, not blocking)
+- **Shell-config app v1 implementation** — P3, spec at `docs/specs/proposals/app-shell-config.md` (filed 2026-04-14, not blocking)
 
 ---
 
@@ -334,15 +334,15 @@ parallax, learn-plexi, app-store, wikipedia, hello-app
 
 | Spec | Location | Status |
 |------|----------|--------|
-| App Infrastructure | `docs/specs/app-infrastructure.md` | Active — v1 stamped 2026-04-14, source-of-truth for shipping protocol |
-| Shell Config App | `docs/specs/app-shell-config.md` | Active — spec only, not implemented |
-| Agent Mode | `docs/specs/agent-mode.md` | Active — backend swap in flight |
-| Agent Orchestration | `docs/specs/agent-orchestration.md` | Draft — core logic ready |
-| Companion App | `docs/specs/companion-app.md` | Reference only — replaced by WASM/PWA |
-| WASM/PWA Deployment | `docs/specs/wasm-pwa-deployment.md` | Deferred — Phase 1 not started |
-| Intelligence Protocol | `docs/specs/intelligence-protocol.md` | Deferred — apps manage own LLM calls |
-| Sync Architecture | `docs/specs/sync-architecture.md` | Draft — Phase 2+ |
-| Agent Replay & Testing | `docs/specs/agent-replay-testing.md` | Draft — future |
+| App Infrastructure | `docs/specs/subsystems/app-infrastructure.md` | Active — v1 stamped 2026-04-14, source-of-truth for shipping protocol |
+| Shell Config App | `docs/specs/proposals/app-shell-config.md` | Active — spec only, not implemented |
+| Agent Mode | `docs/specs/subsystems/agent-mode.md` | Active — backend swap in flight |
+| Agent Orchestration | `docs/specs/subsystems/agent-orchestration.md` | Draft — core logic ready |
+| Companion App | `docs/mobile/ios-companion.md` | Reference only — replaced by WASM/PWA |
+| WASM/PWA Deployment | `docs/specs/proposals/wasm-pwa-deployment.md` | Deferred — Phase 1 not started |
+| Intelligence Protocol | `docs/specs/subsystems/intelligence-protocol.md` | Deferred — apps manage own LLM calls |
+| Sync Architecture | `docs/specs/proposals/sync-architecture.md` | Draft — Phase 2+ |
+| Agent Replay & Testing | `docs/specs/proposals/agent-replay-testing.md` | Draft — future |
 | Parallax App | `parallax/docs/parallax-plexi-app-spec.md` | Active — app shipped |
 | North Star | `~/.agents/skills/plexi-north-star/SKILL.md` | Active |
-| Typed Pipes | `docs/specs/typed-pipes.md` | Draft — Phase 1 design, not implemented |
+| Typed Pipes | `docs/specs/subsystems/typed-pipes.md` | Draft — Phase 1 design, not implemented |

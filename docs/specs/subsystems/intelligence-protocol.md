@@ -573,7 +573,7 @@ Option A is the right call for now — it's additive and doesn't touch working s
 | `src/process_app.rs` | Parse new JSON request types, route intelligence requests to async handler |
 | `src/app_registry.rs` | Parse `[limits]` section from manifest, validate intelligence + limits co-requirement |
 | `Cargo.toml` | Add `reqwest` (with `json` + `rustls-tls` features) if not already present |
-| `docs/specs/app-infrastructure.md` | Add intelligence to the capability list, add Phase 10 to the phase plan |
+| `docs/specs/subsystems/app-infrastructure.md` | Add intelligence to the capability list, add Phase 10 to the phase plan |
 
 ### New Files
 

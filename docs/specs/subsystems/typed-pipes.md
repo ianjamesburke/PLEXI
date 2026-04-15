@@ -801,11 +801,11 @@ Each of those has a known follow-up home — most in Phase 2, a few in Phase 3+.
 
 ## See also
 
-- `docs/specs/app-infrastructure.md` — the v1 app protocol. Typed pipes extend this without modifying it: new manifest table, two new draw commands, no breaking changes.
-- `docs/specs/typed-pipes-binary-plane.md` — Phase 2, deferred. Audio, video, and high-throughput streams. Shares the channel declaration surface but adds a separate transport and backpressure model.
-- `docs/specs/wasm-pwa-deployment.md` — mobile and web deployment path. Typed pipes are transport-agnostic at the declaration layer, so the WASM path inherits them with a WASM-local message bus replacing stdin/stdout.
+- `docs/specs/subsystems/app-infrastructure.md` — the v1 app protocol. Typed pipes extend this without modifying it: new manifest table, two new draw commands, no breaking changes.
+- `docs/specs/proposals/typed-pipes-binary-plane.md` — Phase 2, deferred. Audio, video, and high-throughput streams. Shares the channel declaration surface but adds a separate transport and backpressure model.
+- `docs/specs/proposals/wasm-pwa-deployment.md` — mobile and web deployment path. Typed pipes are transport-agnostic at the declaration layer, so the WASM path inherits them with a WASM-local message bus replacing stdin/stdout.
 - `DEV_LOG.md` entry "typed pipes vision brainstorm" — original riff on the 13 use cases and the rationale for the three-tier type registry.
-- Future: `docs/specs/named-buses.md` — Phase 2. Cross-group wiring via named global channels. The v2 successor to the auto-wire-within-group model.
+- Future: `docs/specs/proposals/named-buses.md` — Phase 2. Cross-group wiring via named global channels. The v2 successor to the auto-wire-within-group model.
 - Future: `docs/types/` — the in-repo type registry. To be populated with the 6 core kind TOML files as a follow-up to this spec.
 
 ### Implementation calls to make explicit

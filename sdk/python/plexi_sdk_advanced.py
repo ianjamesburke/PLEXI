@@ -10,7 +10,7 @@ Apps copy this file next to plexi_sdk.py:
     from plexi_sdk import App
     from plexi_sdk_advanced import Canvas, HitTester, FrameTimer, Tween, ease_out_cubic
 
-Spec: docs/specs/core-advanced-ui-sdk.md
+Spec: docs/specs/proposals/core-advanced-ui-sdk.md
 
 NOTE: Several modules here depend on Rust-side protocol extensions that have
 not landed yet (mouse_down/up/move events, scroll, delta_time on render). The

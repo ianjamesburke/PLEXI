@@ -718,10 +718,10 @@ The following are explicitly **not** part of v1 and should not be implemented ag
   - `sdk/python/plexi_sdk_advanced.py` — Canvas transform, HitTester, FrameTimer, Tween helpers. Does not add protocol surface — pure client-side convenience on top of the base SDK.
   - `sdk/rust/src/lib.rs` — Rust SDK. Implements the App trait and a blocking `run()` event loop. Covers the stable subset of the protocol; lags the Python SDK on newer additions (no `scroll`, `mouse_down`/`up`, `drop`, `get_state`, `cost_report`, `notification`, `feedback`, `log` yet).
 - **Sibling specs (non-duplicative):**
-  - `docs/specs/core-advanced-ui-sdk.md` — Canvas transform, hit testing, tween helpers, frame timing. Everything client-side.
-  - `docs/specs/core-text-editor-primitive.md` — proposed text-editor primitive (not part of v1 protocol).
-  - `docs/specs/chat-primitive.md` — proposed chat primitive (not part of v1 protocol).
-  - `docs/specs/core-layout-presets.md` — the companion-pane model underlying `[app.launch]`.
-  - `docs/specs/intelligence-protocol.md` — deferred intelligence/LLM routing layer. Apps currently call providers directly and use `cost_report`.
-  - `docs/specs/agent-replay-testing.md` — consumes `costs.jsonl` for run attribution.
+  - `docs/specs/proposals/core-advanced-ui-sdk.md` — Canvas transform, hit testing, tween helpers, frame timing. Everything client-side.
+  - `docs/specs/proposals/core-text-editor-primitive.md` — proposed text-editor primitive (not part of v1 protocol).
+  - `docs/specs/proposals/chat-primitive.md` — proposed chat primitive (not part of v1 protocol).
+  - `docs/specs/proposals/core-layout-presets.md` — the companion-pane model underlying `[app.launch]`.
+  - `docs/specs/subsystems/intelligence-protocol.md` — deferred intelligence/LLM routing layer. Apps currently call providers directly and use `cost_report`.
+  - `docs/specs/proposals/agent-replay-testing.md` — consumes `costs.jsonl` for run attribution.
 - **GitHub issues referenced:** #83 (hot reload), #90 (OSC 0 self-close).
