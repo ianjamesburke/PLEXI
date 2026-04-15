@@ -601,6 +601,12 @@ impl PlexiApp {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
                     pane.open_app_with_companion(app, permissions, scope);
+                    // Write manifest-declared startup message into this same
+                    // pane's terminal grid — it IS the companion.
+                    if let Some(msg) = launch.as_ref().and_then(|l| l.startup_message.as_deref()) {
+                        let bytes = format_startup_message(msg);
+                        pane.backend.write_agent_bytes(&bytes);
+                    }
                 }
             }
             ctx.focused_pane = Some(focused);
@@ -641,7 +647,7 @@ impl PlexiApp {
         self.next_pane_id += 1;
 
         let settings = Self::make_backend_settings(Some(companion_cwd), &self.colors);
-        let Some(new_pane) = TerminalPane::new(
+        let Some(mut new_pane) = TerminalPane::new(
             new_term_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
@@ -651,6 +657,12 @@ impl PlexiApp {
             log::error!("Failed to create linked terminal pane for app");
             return;
         };
+        // Write manifest-declared startup message into the new companion
+        // terminal's grid before inserting it into the context.
+        if let Some(msg) = launch.as_ref().and_then(|l| l.startup_message.as_deref()) {
+            let bytes = format_startup_message(msg);
+            new_pane.backend.write_agent_bytes(&bytes);
+        }
         self.contexts[self.active_context]
             .panes
             .insert(new_term_id, new_pane);
@@ -1317,4 +1329,12 @@ impl PlexiApp {
         }
         log::debug!("focus_pane_by_id: pane {pane_id} not found");
     }
+}
+
+/// Format a manifest-declared `[app.launch].startup_message` into dim italic
+/// ANSI bytes suitable for `TerminalBackend::write_agent_bytes`. Wrapped in
+/// leading/trailing CRLF so the message always lands on its own line
+/// regardless of where the cursor was.
+fn format_startup_message(msg: &str) -> Vec<u8> {
+    format!("\r\n\x1b[2;3m{msg}\x1b[0m\r\n").into_bytes()
 }

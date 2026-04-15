@@ -95,6 +95,13 @@ pub struct AppLaunchConfig {
     /// `{launch_dir}` — resolves to the app's launch directory.
     #[serde(default = "default_companion_cwd")]
     pub companion_cwd: String,
+    /// Optional message written into the linked terminal's scrollback grid
+    /// when the app launches. Rendered in dim italics so it reads as a
+    /// system-emitted notice rather than real shell output. Not echoed to
+    /// the shell's PTY — the shell has no idea these bytes exist, same as
+    /// agent-mode output.
+    #[serde(default)]
+    pub startup_message: Option<String>,
 }
 
 impl Default for AppLaunchConfig {
@@ -105,6 +112,7 @@ impl Default for AppLaunchConfig {
             companion_position: default_companion_position(),
             companion_size: default_companion_size(),
             companion_cwd: default_companion_cwd(),
+            startup_message: None,
         }
     }
 }
