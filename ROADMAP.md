@@ -88,7 +88,7 @@ PGAP as protocol-level gateway, trust/risk float learning, agent replay testing,
 | Layer 3 — Parallax Refactor | **Done** (manifest-first, validator, Senior-only routing, Parallax viewer app) | — |
 | Layer 4 — Apps That Prove the Protocol | **Done** (~36 apps on alpha) | App Store update management (in flight); test coverage gap (~22 apps) |
 | Layer 4.5 — SDK Packaging & Protocol Stability | **Done** (Python + Rust SDK 0.3.0, protocol spec v1) | — |
-| Layer 4.6 — App Composition Primitive | **In flight** (spawn_app protocol + SDK done; host dispatcher pending WIP app.rs) | Host dispatcher to drain `pending_spawns` queue |
+| Layer 4.6 — App Composition Primitive | **Done** (host dispatcher, file browser wiring, photo-viewer + text-editor composition) | — |
 | Layer 5 — WASM/PWA | **Back-burner** | Revisit when multiplayer is needed |
 
 ---
@@ -244,9 +244,9 @@ cd sdk/rust && cargo test                           # 5 breakpoint tests pass
 
 ## Layer 4.6: App Composition Primitive
 
-**Status: IN FLIGHT (2026-04-14)**
+**Status: DONE (2026-04-15)**
 
-One app can now request that Plexi launch and place another app. The protocol + SDK + manifest surface are done; the host-side pane creation is queued pending the WIP `src/app.rs`.
+All spawn_app pieces landed in the `f8da18e` squash merge (PR #246). One app can now request that Plexi launch and place another app — fully end-to-end.
 
 | Task | Status | Reference |
 |------|--------|-----------|
@@ -254,8 +254,8 @@ One app can now request that Plexi launch and place another app. The protocol + 
 | `AppSpawnable` manifest table + `[app.spawnable]` | **Done** | `src/app_registry.rs`, `docs/specs/subsystems/app-infrastructure.md` |
 | `pending_spawns` queue in `process_app.rs` | **Done** | `src/process_app.rs::take_pending_spawns()` |
 | SDK: `Emitter.spawn_app` + `RenderContext.spawn_app` (Python + Rust) | **Done** | `sdk/python/plexi_sdk.py`, `sdk/rust/src/lib.rs` |
-| Host dispatcher: pane creation, registry lookup, cascade/orphan walk | **Pending** | Blocked on WIP `src/app.rs` — drain `take_pending_spawns()` there |
-| File browser `→ text-editor` / `→ photo-viewer` wiring | **In flight** | Demo of end-to-end spawn; unblocked after host dispatcher |
+| Host dispatcher: pane creation, registry lookup, cascade/orphan walk | **Done** | `src/pane_ops.rs::dispatch_pending_spawns()` + `execute_spawn()` |
+| File browser `→ text-editor` / `→ photo-viewer` wiring | **Done** | `src/file_browser/mod.rs` — emits `SpawnApp` on Enter for txt and image files |
 | Typed-pipes spec | **Done (spec only)** | `docs/specs/subsystems/typed-pipes.md` — Phase 1 design |
 
 ### Verification steps for Layer 4.6

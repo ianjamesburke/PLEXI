@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [DECISION] Layer 4.6 closed — ROADMAP was stale, implementation already on alpha
+
+The ROADMAP marked Layer 4.6 (spawn_app host dispatcher) as "in flight / pending WIP app.rs" but the implementation had already landed in the `f8da18e` squash merge (PR #246). `dispatch_pending_spawns()` and `execute_spawn()` are fully implemented in `src/pane_ops.rs`, called each frame from `app.rs`. File browser is wired to emit `SpawnApp` for `.txt` → text-editor and images → photo-viewer. Both apps are installed at `~/.plexi-alpha/apps/`. Build is clean (0 errors). Updated ROADMAP Layer 4.6 status to Done and corrected the task table. No code changes needed — this was a documentation sync.
+
 ## 2026-04-15 — [FIX] ProcessApp Drop and restart() left child processes orphaned
 
 `Drop` was calling `child.wait()` before `child.kill()`, and without closing `stdin` or `draw_rx` first. Since the child blocks on its stdin read loop waiting for events, `wait()` would block indefinitely — `kill()` was never reached. On Plexi exit or pane close, subprocess shells were reparented to PID 1 and continued burning CPU (confirmed: two zsh processes at 100% CPU, ~1400 min runtime). Same bug in `restart()`: `self.stdin = None` / `self.draw_rx = None` happened after kill/wait, leaving the pipe open during the wait.
