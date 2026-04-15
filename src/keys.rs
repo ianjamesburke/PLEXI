@@ -9,6 +9,7 @@
 // Cmd+B                 — toggle sidebar
 // Cmd+Enter             — toggle zoom
 // Cmd+/                 — toggle shortcuts overlay
+// Ctrl+/                — toggle agent mode overlay
 // Cmd+P                 — command palette
 // Cmd+Shift+R           — rename pane
 // Cmd+N                 — new context
