@@ -332,14 +332,15 @@ impl ProcessApp {
     fn restart(&mut self) {
         log::info!("ProcessApp[{}]: hot-reloading app", self.type_id);
 
-        // Send shutdown and kill old process.
+        // Send shutdown and kill old process. Close stdin/draw_rx first so
+        // the child sees EOF and the reader threads exit cleanly before we reap.
         self.send_event(&PlexiEvent::Shutdown);
+        self.stdin = None;
+        self.draw_rx = None;
         if let Some(mut child) = self.process.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        self.stdin = None;
-        self.draw_rx = None;
 
         // Respawn — same Python interpreter logic as initial launch.
         let (cmd, extra_args): (std::ffi::OsString, Vec<std::ffi::OsString>) =
@@ -1514,10 +1515,16 @@ impl App for ProcessApp {
 impl Drop for ProcessApp {
     fn drop(&mut self) {
         self.send_event(&PlexiEvent::Shutdown);
+        // Close stdin first so the child sees EOF and can exit cleanly rather
+        // than blocking on its read loop. Close draw_rx so the stdout reader
+        // thread sees send() fail and exits without spinning.
+        self.stdin = None;
+        self.draw_rx = None;
         if let Some(mut child) = self.process.take() {
-            // Give the process 200ms to exit cleanly, then kill it.
-            let _ = child.wait(); // non-blocking on the second call after shutdown
+            // Kill then wait — kill() is safe if the child already exited,
+            // and wait() reaps the zombie so the process doesn't linger.
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

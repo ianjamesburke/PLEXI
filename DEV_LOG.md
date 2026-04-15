@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [FIX] ProcessApp Drop and restart() left child processes orphaned
+
+`Drop` was calling `child.wait()` before `child.kill()`, and without closing `stdin` or `draw_rx` first. Since the child blocks on its stdin read loop waiting for events, `wait()` would block indefinitely — `kill()` was never reached. On Plexi exit or pane close, subprocess shells were reparented to PID 1 and continued burning CPU (confirmed: two zsh processes at 100% CPU, ~1400 min runtime). Same bug in `restart()`: `self.stdin = None` / `self.draw_rx = None` happened after kill/wait, leaving the pipe open during the wait.
+
+Fix: close `stdin` (gives child EOF so it can exit cleanly), then close `draw_rx` (so stdout reader thread exits on its next `send()`), then `kill()`, then `wait()`. Applied to both `Drop` and `restart()`.
+
 ## 2026-04-15 — [DECISION] Secrets CLI added to v2.0 scope as BYOK infrastructure for Plexi IQ
 
 Added `P.6 — Secrets CLI` to `plexi-v2.0-scope.md`. The secrets manager proposal (`proposals/secrets-manager.md`, issue #247) was already designed with Plexi IQ in mind — its "Plexi IQ Pro Integration" section describes exactly how BYOK (user sets `ANTHROPIC_KEY` via `plexi secrets set --global`) and managed Pro keys (Plexi sets the global key on activation) use identical injection infrastructure.
