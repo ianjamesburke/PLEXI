@@ -1299,4 +1299,22 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Focus a pane by its `PaneId` (u64). Searches all contexts.
+    /// Optionally enters fullscreen (zoomed) mode on the target pane.
+    /// No-op if no pane with that id is found.
+    pub(crate) fn focus_pane_by_id(&mut self, pane_id: u64, fullscreen: bool) {
+        for ci in 0..self.contexts.len() {
+            if let Some(tile_id) = self.contexts[ci].tree.tiles.find_pane(&pane_id) {
+                self.active_context = ci;
+                self.contexts[ci].focused_pane = Some(tile_id);
+                if fullscreen {
+                    self.contexts[ci].zoomed_pane = Some(tile_id);
+                }
+                self.contexts[ci].activate_tab_for(tile_id);
+                return;
+            }
+        }
+        log::debug!("focus_pane_by_id: pane {pane_id} not found");
+    }
 }

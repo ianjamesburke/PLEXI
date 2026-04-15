@@ -84,6 +84,8 @@ mod notification_log;
 #[cfg(not(target_arch = "wasm32"))]
 mod notification_palette;
 #[cfg(not(target_arch = "wasm32"))]
+mod notify_socket;
+#[cfg(not(target_arch = "wasm32"))]
 mod keys;
 #[cfg(not(target_arch = "wasm32"))]
 mod media_cache;

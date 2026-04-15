@@ -47,6 +47,8 @@ pub struct PlexiApp {
     /// In-memory registry of every active parent → child pane spawn relationship.
     /// Drives cascade/orphan semantics when a pane closes.
     pub(crate) spawn_relationships: crate::app_protocol::SpawnRelationships,
+    /// Receives notifications from the Unix socket listener thread.
+    pub(crate) notify_rx: Option<mpsc::Receiver<crate::notification_log::Notification>>,
 }
 
 impl PlexiApp {
@@ -68,6 +70,10 @@ impl PlexiApp {
         theme::setup_style(&cc.egui_ctx, &colors);
 
         let (tx, rx) = mpsc::channel();
+
+        // Start the Unix socket listener for external notification ingestion.
+        let (notify_tx, notify_rx_channel) = mpsc::channel::<crate::notification_log::Notification>();
+        crate::notify_socket::start(notify_tx);
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let registry = AppRegistry::load(&cwd);
@@ -196,6 +202,7 @@ impl PlexiApp {
                     features: features.clone(),
                     media_cache: RefCell::new(MediaCache::new()),
                     spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
+                    notify_rx: Some(notify_rx_channel),
                 };
             }
         }
@@ -248,6 +255,7 @@ impl PlexiApp {
             features,
             media_cache: RefCell::new(MediaCache::new()),
             spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
+            notify_rx: Some(notify_rx_channel),
         }
     }
 
@@ -443,6 +451,15 @@ pub(crate) fn shell_escape(s: &str) -> String {
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Drain notifications from the Unix socket listener.
+        if let Some(rx) = &self.notify_rx {
+            while let Ok(n) = rx.try_recv() {
+                if let Ok(mut log) = crate::notification_log::global().lock() {
+                    log.push_from_socket(n);
+                }
+            }
+        }
+
         self.drain_pty_events();
         self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();

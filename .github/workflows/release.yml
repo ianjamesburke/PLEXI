@@ -40,7 +40,34 @@ jobs:
           zip -r Plexi-${{ github.ref_name }}.zip Plexi.app
 
       - name: Create GitHub Release
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           files: target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip
           generate_release_notes: true
+
+      - name: Compute SHA256
+        id: sha256
+        run: |
+          sha=$(shasum -a 256 target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip | awk '{print $1}')
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          version="${{ github.ref_name }}"
+          version="${version#v}"   # strip leading 'v'
+          sha="${{ steps.sha256.outputs.sha256 }}"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ianjamesburke/homebrew-plexi.git" tap
+          cd tap
+
+          sed -i '' "s/version \".*\"/version \"${version}\"/" Casks/plexi.rb
+          sed -i '' "s/sha256 \".*\"/sha256 \"${sha}\"/" Casks/plexi.rb
+
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add Casks/plexi.rb
+          git commit -m "chore: update cask to v${version}"
+          git push

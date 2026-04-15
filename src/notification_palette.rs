@@ -42,6 +42,9 @@ impl PlexiApp {
             Close,
             MarkReadAt(usize),
             MarkAllRead,
+            /// Enter pressed: dispatch based on the selected notification's
+            /// `action_type`, then mark it read and close.
+            ActivateSelected,
         }
         let mut action: Option<Action> = None;
 
@@ -60,11 +63,13 @@ impl PlexiApp {
             {
                 self.notification_palette_selected -= 1;
             }
-            // Enter / Delete / Backspace — mark the selected row read. The MVP
-            // collapses open/dismiss into one action (mark read); Enter also
-            // focuses the source pane if the emitting app happens to be open.
-            let want_mark = input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                || input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+            // Enter → dispatch action_type; Delete/Backspace → mark read only.
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                && self.notification_palette_selected < total
+            {
+                action = Some(Action::ActivateSelected);
+            }
+            let want_mark = input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
                 || input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace);
             if want_mark && self.notification_palette_selected < total {
                 let (log_idx, _) = ordered[self.notification_palette_selected];
@@ -151,15 +156,14 @@ impl PlexiApp {
                                     );
                                     ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
 
-                                    // Priority / read dot — small circle left-side.
+                                    // Urgency / read dot — small circle left-side.
                                     let dot_color = if n.read {
                                         self.colors.text_section
                                     } else {
-                                        match n.priority {
-                                            0 => self.colors.text_dim,
-                                            1 => self.colors.accent,
-                                            2 => Color32::from_rgb(0xf9, 0xc8, 0x6a),
-                                            _ => Color32::from_rgb(0xdd, 0x77, 0x55),
+                                        match n.urgency.as_str() {
+                                            "high" => Color32::from_rgb(0xdd, 0x77, 0x55),
+                                            "medium" => Color32::from_rgb(0xf9, 0xc8, 0x6a),
+                                            _ => self.colors.text_dim, // "low" or unknown
                                         }
                                     };
                                     ui.painter().circle_filled(
@@ -245,6 +249,37 @@ impl PlexiApp {
             Some(Action::MarkAllRead) => {
                 if let Ok(mut log) = notification_log::global().lock() {
                     log.mark_all_read();
+                }
+            }
+            Some(Action::ActivateSelected) => {
+                if self.notification_palette_selected < total {
+                    let (log_idx, ref n) = ordered[self.notification_palette_selected];
+                    match n.action_type.as_str() {
+                        "focus" => {
+                            // Payload: {"pane_id": u64, "fullscreen": bool}
+                            let pane_id = n
+                                .action_payload
+                                .as_ref()
+                                .and_then(|p| p.get("pane_id"))
+                                .and_then(|v| v.as_u64());
+                            let fullscreen = n
+                                .action_payload
+                                .as_ref()
+                                .and_then(|p| p.get("fullscreen"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            if let Some(pid) = pane_id {
+                                self.focus_pane_by_id(pid, fullscreen);
+                            }
+                        }
+                        // "confirm" and "text_input" degrade to mark-read + close
+                        // until inline sub-prompt UI is implemented.
+                        _ => {}
+                    }
+                    if let Ok(mut log) = notification_log::global().lock() {
+                        log.mark_read(log_idx);
+                    }
+                    self.show_notification_palette = false;
                 }
             }
             None => {}

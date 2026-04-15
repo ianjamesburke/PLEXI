@@ -35,6 +35,16 @@
 
 use serde::{Deserialize, Serialize};
 
+// ── Serde default helpers ─────────────────────────────────────────────────────
+
+fn notification_default_urgency() -> String {
+    "low".to_string()
+}
+
+fn notification_default_action_type() -> String {
+    "dismiss".to_string()
+}
+
 // ── Events sent FROM Plexi TO the app ────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -270,16 +280,29 @@ pub enum DrawCommand {
     /// Raise a notification. Plexi records it to the notification log,
     /// increments the status-bar unread count, and surfaces it in the
     /// notification palette (Cmd+Shift+N).
-    ///
-    /// Priorities: `0` = info, `1` = normal, `2` = high, `3` = urgent.
-    /// The MVP does not style by priority — the value is just logged.
     Notification {
-        priority: u8,
         title: String,
         #[serde(default)]
         body: Option<String>,
         /// The `app_id` of the emitter (e.g. `"parallax"`).
         source_app: String,
+        /// Urgency level: "low" | "medium" | "high". Defaults to "low".
+        #[serde(default = "notification_default_urgency")]
+        urgency: String,
+        /// Unix timestamp (seconds). Host drops the notification if this is
+        /// already past at ingestion time.
+        #[serde(default)]
+        expires_at: Option<i64>,
+        /// Unix timestamp (seconds). Defer rendering in the palette until then.
+        #[serde(default)]
+        visible_after: Option<i64>,
+        /// Action triggered when the user presses Enter on this notification.
+        /// "focus" | "confirm" | "text_input" | "dismiss" (default).
+        #[serde(default = "notification_default_action_type")]
+        action_type: String,
+        /// Type-dependent payload. For "focus": `{"pane_id": u64, "fullscreen": bool}`.
+        #[serde(default)]
+        action_payload: Option<serde_json::Value>,
     },
     /// Declare a drop target region. Stateless per frame: apps must re-emit
     /// this on every render frame for the drop zone to remain active.

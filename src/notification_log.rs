@@ -19,6 +19,14 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+fn default_urgency() -> String {
+    "low".to_string()
+}
+
+fn default_action_type() -> String {
+    "dismiss".to_string()
+}
+
 /// A notification record.
 ///
 /// `timestamp` is UTC; `read` defaults to false and flips when the user clicks
@@ -28,13 +36,33 @@ use std::sync::{Mutex, OnceLock};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Notification {
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub priority: u8,
     pub title: String,
     #[serde(default)]
     pub body: Option<String>,
     pub source_app: String,
     #[serde(default)]
     pub read: bool,
+    /// Urgency level: "low" | "medium" | "high". Replaces the old `priority: u8`.
+    #[serde(default = "default_urgency")]
+    pub urgency: String,
+    /// Unix timestamp (seconds). If set and already past, the notification is
+    /// dropped on ingestion.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    /// Unix timestamp (seconds). Defer rendering until this time has passed.
+    #[serde(default)]
+    pub visible_after: Option<i64>,
+    /// Action triggered when the user presses Enter on this notification.
+    /// Values: "focus" | "confirm" | "text_input" | "dismiss".
+    #[serde(default = "default_action_type")]
+    pub action_type: String,
+    /// Type-dependent payload for `action_type`.
+    /// For "focus": `{"pane_id": u64, "fullscreen": bool}`.
+    #[serde(default)]
+    pub action_payload: Option<serde_json::Value>,
+    /// Who emitted this notification: "app:<id>", "claude-code", "socket", etc.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// In-memory + on-disk notification log.
@@ -74,15 +102,30 @@ impl NotificationLog {
     }
 
     /// Append a new notification to memory and to the JSONL log on disk.
+    /// Drops the notification silently if `expires_at` is set and already past.
     pub fn append(&mut self, n: Notification) {
+        if let Some(exp) = n.expires_at {
+            if exp < chrono::Utc::now().timestamp() {
+                log::debug!(
+                    "NotificationLog: dropping expired notification \"{}\" (expires_at={exp})",
+                    n.title
+                );
+                return;
+            }
+        }
         if let Err(e) = self.append_to_disk(&n) {
             log::warn!("NotificationLog: failed to write notifications.jsonl: {e}");
         }
         log::info!(
             "notification from {}: [{}] {}",
-            n.source_app, n.priority, n.title
+            n.source_app, n.urgency, n.title
         );
         self.notifications.push(n);
+    }
+
+    /// Append a notification received from the Unix socket listener.
+    pub fn push_from_socket(&mut self, n: Notification) {
+        self.append(n);
     }
 
     /// Number of unread notifications currently in the log.
@@ -139,14 +182,29 @@ pub fn global() -> &'static Mutex<NotificationLog> {
 
 /// Record a notification into the global log. Convenience wrapper that
 /// acquires the mutex and builds the `Notification` struct.
-pub fn record(priority: u8, title: String, body: Option<String>, source_app: String) {
+pub fn record(
+    title: String,
+    body: Option<String>,
+    source_app: String,
+    urgency: String,
+    expires_at: Option<i64>,
+    visible_after: Option<i64>,
+    action_type: String,
+    action_payload: Option<serde_json::Value>,
+    source: Option<String>,
+) {
     let n = Notification {
         timestamp: chrono::Utc::now(),
-        priority,
         title,
         body,
         source_app,
         read: false,
+        urgency,
+        expires_at,
+        visible_after,
+        action_type,
+        action_payload,
+        source,
     };
     match global().lock() {
         Ok(mut log) => log.append(n),
