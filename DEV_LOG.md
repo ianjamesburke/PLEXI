@@ -1,5 +1,14 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [FIX] agent mode: silent response + static thinking indicator
+
+Two bugs fixed together:
+
+1. **Silent response (no reply to "hi")**: `--tools ""` in the original code was an invalid flag (not in claude CLI help) — silently ignored. After removing it, claude ran with full tool access. In a GUI subprocess with no TTY, tool permission prompts hang; tool calls produce empty `assistant` events → `full_response` empty → nothing displayed. Fix: `--allowedTools ""` (the correct flag name) disables all tools, forcing conversational-only mode. Tool use can be re-enabled deliberately once permission handling is wired (Plexi IQ Stage 1).
+
+2. **"agent thinking..." static text**: replaced with an animated `·` / `··` / `···` dot spinner that overwrites in place using `\r\x1b[K`. `THINKING_ANSI` no longer emits a trailing `\r\n` — cursor stays on the spinner line. First token (or non-streamed Complete) clears the spinner line with `\r\x1b[K` before writing response text. `advance_spinner()` is called each `poll_llm` frame, throttled to every 20 frames (~3 advances/sec at 60fps).
+**Breaks if:** agent mode shows no spinner or spinner persists after response appears — check `advance_spinner()` being called in `poll_llm`, and `\r\x1b[K` clear on first token.
+
 ## 2026-04-15 — [FIX] agent mode exit: cursor displaced, ZSH prompt not redrawn
 
 `deactivate()` only emitted `\r\n` into the terminal grid. The PTY received nothing, so ZSH never redraws its prompt — cursor lands visually displaced and the shell appears unresponsive until the user types. Fix: write `\r` to the PTY via `BackendCommand::Write` after `deactivate()` in `toggle_agent_mode()`. ZSH interprets `\r` on an empty readline buffer as Enter → redraws prompt at correct position. Also added `Ctrl+Tab` as an alias for the existing `Ctrl+/` toggle — bare Tab conflicts with ZSH completion so the full Tab ergonomic requires shell integration (deferred).

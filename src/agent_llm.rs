@@ -183,6 +183,11 @@ fn call_claude(
     cmd.arg("-p");
     cmd.args(["--output-format", "stream-json"]);
     cmd.arg("--verbose");
+    // Disable all tools — without this, claude tries to use Bash/Read/Write in
+    // a GUI subprocess context where there is no TTY for permission prompts.
+    // Tool calls produce empty assistant events → silent response. Tools can be
+    // re-enabled later via --allowedTools once permission handling is wired up.
+    cmd.args(["--allowedTools", ""]);
 
     // System prompt only on the first turn — resumed sessions carry the original
     // system prompt in their history; re-injecting it causes context confusion.
