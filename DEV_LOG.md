@@ -1,5 +1,23 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [CHANGED] Branch + worktree cleanup; alpha fast-forwarded to own all v2 work
+
+Started the session with **~80 local branches and 36 worktrees**, most from sub-agent isolation runs that never progressed past the initial `324b534 chore: bump 1.1.2` commit. Git diffs and branch listings were archaeology. The goal: three long-lived branches (`main`, `beta`, `alpha`), alpha holds all v2 progress, issues labeled by target version.
+
+**Worktree purge:** 31 worktrees removed via `git worktree remove --force`. Preserved 5: the main worktree, `agent-a364e07d` (has `sdk/rust/target/` build artifacts), `agent-ae3ad3ec` (has real uncommitted `src/agent_mode.rs` changes on `feature/104-slash-trigger-and-commands`), `feature+mermaid-viewer` (detached HEAD with uncommitted work), and the external `beta/v2` worktree. All 31 removed worktrees were either on branches already merged into alpha OR dirty only with `Cargo.lock` (build noise).
+
+**Branch purge:** 69 branches deleted across three waves. First wave: 56 branches fully merged into alpha via `git branch -d` (auto-verifies merge). Second wave: 3 branches merged into local HEAD but not their remote tracking branch (`git branch -D` for `feature/132-mouse-events`, `feature/rename-kona-to-app-store`, `layer-merged`). Third wave: 26 SUPERSEDED/ABANDONED branches after an audit sub-agent classified each of the ~38 ahead-only branches by commit-message-and-file-touched heuristics. Fourth wave: 10 remaining `worktree-agent-*` scratch branches with duplicate content. **Final branch count: 13.**
+
+**Alpha fast-forwarded.** The session branch `feature/notifications-urgency-socket-actions` was a pure ancestor extension of alpha (6 commits ahead, 0 behind). Fast-forward merge of alpha to `409fb37` — zero conflicts possible. Alpha now has: notifications urgency model (#222), Protocol v2.0 spec, Protocol v2.1 spec, Phase 1 components layer, Tier 1 app fan-out (10 apps), launch-mode fix, Escape → Cmd+W keybinding flip, SDK symlink cleanup, docs three-bucket reorg.
+
+**6 v2-relevant branches preserved, NOT merged.** The audit identified 7 branches as "MERGE-TO-ALPHA" but mechanical merge would conflict hard with the new SDK symlinks (their branches have old 1640-line vendored `plexi_sdk.py` copies) and the new `docs/specs/` three-bucket layout (their branches have old flat-layout spec edits). Preserved as-is: `feature/104-slash-trigger-and-commands` (+35), `feature/external-text-editor-app` (+19), `feature/v2-input-layering-contract` (+8), `feature/237-file-explorer-75-split` (+7 — has `src/plexi_iq/` scaffolding worth cherry-picking), `feature/plexi-v2-scope-spec` (+5), `feature/spawn-app-protocol` (+19), `feature/sdk-breakpoints-min-size` (+19). **Wrote `NEXT_SESSION.md` at repo root listing what's in each preserved branch so future-me can cherry-pick valuable pieces (core type registry TOMLs, plexi-iq stub, per-app test suites) onto alpha without the conflict surface.** Delete the doc + the branches once resolved.
+
+**Issue labeling.** Created/reused labels `v2.0`, `v2.1`, `v2.2` — renamed the existing `v2` label to `v2.0` to match spec filenames (`docs/specs/releases/plexi-v2.0.md`), which preserved all existing issue associations via `gh label edit --name`. Added `v2.0` to #244 (the one session issue missing a version label). Every open issue now has exactly one version label.
+
+**CLAUDE.md updates.** Removed the stale PLEXI-dev sibling worktree reference (verified gone). Consolidated the duplicated branching strategy section — was in two places, now once under `## Branches`. Added a `Version` label family to the `GitHub Issue Labels` section so future issues get versioned.
+
+**Not pushed.** Alpha is fast-forwarded locally. The user pushes when ready so the remote source-of-truth moves under their control. No force push anywhere, no remote branch deletions.
+
 ## 2026-04-15 — [CHANGED] `docs/specs/` reorg — three-bucket taxonomy (releases / subsystems / proposals)
 
 `docs/specs/` had 24 files in a flat directory mixing purposes: release contracts, deep subsystem designs, proposal-stage ideas, individual app design docs for apps that already exist, and one iOS-companion-app spec that wasn't even a Plexi protocol thing. Reading the folder was archaeology.
