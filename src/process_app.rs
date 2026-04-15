@@ -49,6 +49,8 @@ pub struct ProcessApp {
     event_back_tx: Option<mpsc::SyncSender<PlexiEvent>>,
     /// Pending events to send back to the app (RunCreated, EventData, etc.)
     pending_back_events: Vec<PlexiEvent>,
+    /// Transform stack for PushTransform/PopTransform. Each entry: (scale_x, scale_y, tx, ty, rotate, ox, oy).
+    transform_stack: Vec<(f32, f32, f32, f32, f32, f32, f32)>,
 }
 
 impl ProcessApp {
@@ -153,6 +155,7 @@ impl ProcessApp {
             run_store: None,
             event_back_tx: None,
             pending_back_events: Vec::new(),
+            transform_stack: Vec::new(),
         })
     }
 
@@ -200,15 +203,69 @@ impl ProcessApp {
         cmds
     }
 
+    /// Apply the current transform stack to a point.
+    /// Supports translate and scale. Rotation is logged as a warning and skipped.
+    fn apply_transforms(&self, x: f32, y: f32) -> (f32, f32) {
+        let mut px = x;
+        let mut py = y;
+        for &(sx, sy, tx, ty, rotate, _ox, _oy) in &self.transform_stack {
+            if rotate != 0.0 {
+                log::warn!("ProcessApp: rotation transforms not supported in v2.1 (rotate={rotate}), skipping");
+            }
+            px = px * sx + tx;
+            py = py * sy + ty;
+        }
+        (px, py)
+    }
+
     fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], colors: &crate::theme::Colors) {
         let origin = ui.min_rect().min;
+        // Transform stack: (scale_x, scale_y, tx, ty). Rotate not supported in v2.1.
+        let mut transform_stack: Vec<(f32, f32, f32, f32)> = Vec::new();
+
+        // Apply transform stack to a point.
+        let apply_tx = |stack: &Vec<(f32, f32, f32, f32)>, x: f32, y: f32| -> (f32, f32) {
+            let mut px = x;
+            let mut py = y;
+            for &(sx, sy, tx, ty) in stack {
+                px = px * sx + tx;
+                py = py * sy + ty;
+            }
+            (px, py)
+        };
 
         for cmd in commands {
             match cmd {
+                DrawCommand::PushTransform { scale_x, scale_y, translate_x, translate_y, rotate, .. } => {
+                    if *rotate != 0.0 {
+                        log::warn!("ProcessApp: rotation transforms not supported in v2.1 (rotate={rotate}), skipping");
+                    }
+                    transform_stack.push((*scale_x, *scale_y, *translate_x, *translate_y));
+                    continue;
+                }
+                DrawCommand::PopTransform => {
+                    if transform_stack.pop().is_none() {
+                        log::warn!("ProcessApp: PopTransform called on empty transform stack");
+                    }
+                    continue;
+                }
+                // MeasureText is resolved before rendering — skip here.
+                DrawCommand::MeasureText { .. } => continue,
+                _ => {}
+            }
+
+            match cmd {
                 DrawCommand::Rect { x, y, w, h, fill, radius } => {
+                    let (tx, ty) = apply_tx(&transform_stack, *x, *y);
+                    // Scale w/h by the topmost scale if stack is non-empty.
+                    let (sw, sh) = if let Some(&(sx, sy, _, _)) = transform_stack.last() {
+                        (*w * sx, *h * sy)
+                    } else {
+                        (*w, *h)
+                    };
                     let rect = egui::Rect::from_min_size(
-                        egui::pos2(origin.x + x, origin.y + y),
-                        egui::vec2(*w, *h),
+                        egui::pos2(origin.x + tx, origin.y + ty),
+                        egui::vec2(sw, sh),
                     );
                     let color = parse_color(fill).unwrap_or(colors.bg_active);
                     ui.painter().rect_filled(rect, *radius, color);
@@ -223,8 +280,9 @@ impl ProcessApp {
                     } else {
                         egui::FontId::proportional(*size)
                     };
+                    let (tx, ty) = apply_tx(&transform_stack, *x, *y);
                     ui.painter().text(
-                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::pos2(origin.x + tx, origin.y + ty),
                         egui::Align2::LEFT_TOP,
                         text,
                         font_id,
@@ -234,10 +292,12 @@ impl ProcessApp {
 
                 DrawCommand::Line { x1, y1, x2, y2, color, width } => {
                     let color = parse_color(color).unwrap_or(colors.bg_active);
+                    let (tx1, ty1) = apply_tx(&transform_stack, *x1, *y1);
+                    let (tx2, ty2) = apply_tx(&transform_stack, *x2, *y2);
                     ui.painter().line_segment(
                         [
-                            egui::pos2(origin.x + x1, origin.y + y1),
-                            egui::pos2(origin.x + x2, origin.y + y2),
+                            egui::pos2(origin.x + tx1, origin.y + ty1),
+                            egui::pos2(origin.x + tx2, origin.y + ty2),
                         ],
                         egui::Stroke::new(*width, color),
                     );
@@ -290,7 +350,10 @@ impl ProcessApp {
                 | DrawCommand::RunUpdate { .. }
                 | DrawCommand::RunComplete { .. }
                 | DrawCommand::EventSubscribe { .. }
-                | DrawCommand::PipeListWires => {}
+                | DrawCommand::PipeListWires
+                | DrawCommand::PushTransform { .. }
+                | DrawCommand::PopTransform
+                | DrawCommand::MeasureText { .. } => {}
             }
         }
     }
@@ -352,6 +415,8 @@ impl App for ProcessApp {
                     // Commit: swap pending into frame, reset pending for next frame.
                     std::mem::swap(&mut self.frame, &mut self.pending_frame);
                     self.pending_frame.clear();
+                    // Reset transform stack at frame boundary.
+                    self.transform_stack.clear();
                 }
                 DrawCommand::RunInTerminal { command } => {
                     self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
@@ -475,7 +540,45 @@ impl App for ProcessApp {
                 DrawCommand::PipeListWires => {
                     // Response handled at app.rs level; no-op in ProcessApp.
                 }
+                DrawCommand::PushTransform { .. } => {
+                    // Keep in pending_frame so the renderer can apply transforms inline.
+                    self.pending_frame.push(cmd);
+                }
+                DrawCommand::PopTransform => {
+                    self.pending_frame.push(DrawCommand::PopTransform);
+                }
+                DrawCommand::MeasureText { request_id, text, size, monospace, bold } => {
+                    // Store in pending_frame; resolved to a TextMetrics event in ui() where we have egui context.
+                    self.pending_frame.push(DrawCommand::MeasureText { request_id, text, size, monospace, bold });
+                }
                 other => self.pending_frame.push(other),
+            }
+        }
+
+        // Handle MeasureText commands — requires egui context.
+        // Scan pending_frame for MeasureText, respond immediately, then remove them.
+        let measure_cmds: Vec<DrawCommand> = self.pending_frame
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::MeasureText { .. }))
+            .cloned()
+            .collect();
+        self.pending_frame.retain(|c| !matches!(c, DrawCommand::MeasureText { .. }));
+        for cmd in measure_cmds {
+            if let DrawCommand::MeasureText { request_id, text, size, monospace, .. } = cmd {
+                let font_id = if monospace {
+                    egui::FontId::monospace(size)
+                } else {
+                    egui::FontId::proportional(size)
+                };
+                let text_size = ui.ctx().fonts(|f| {
+                    f.layout_no_wrap(text.clone(), font_id, egui::Color32::WHITE).rect.size()
+                });
+                self.pending_back_events.push(PlexiEvent::TextMetrics {
+                    request_id,
+                    width: text_size.x,
+                    height: text_size.y,
+                    ascent: text_size.y * 0.8,
+                });
             }
         }
 
