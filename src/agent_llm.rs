@@ -183,11 +183,10 @@ fn call_claude(
     cmd.arg("-p");
     cmd.args(["--output-format", "stream-json"]);
     cmd.arg("--verbose");
-    // Disable all tools — we want a plain conversational response, not an
-    // autonomous agent session that might execute shell commands.
-    cmd.args(["--tools", ""]);
 
-    if !system.is_empty() {
+    // System prompt only on the first turn — resumed sessions carry the original
+    // system prompt in their history; re-injecting it causes context confusion.
+    if session_id.is_none() && !system.is_empty() {
         cmd.args(["--system-prompt", system]);
     }
 

@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [FIX] agent_llm: system prompt re-injected on resumed sessions
+
+`call_claude()` was passing `--system-prompt` on every turn including `--resume` turns. On a resumed session the system prompt in Claude Code is carried in the session history; re-injecting a different one on turn 2+ causes context confusion (the model sees conflicting instructions). Fixed by gating on `session_id.is_none()` — system prompt only on the first turn. Also removed the `--tools ""` blanket disable (it prevented bash/file ops that are expected in a terminal assistant). No observable behavior change for existing single-turn usage; multi-turn sessions now get clean context.
+**Breaks if:** agent mode gives inconsistent responses across turns, or the second turn response ignores the conversation history — means `--resume` isn't being passed or session_id isn't being captured from the `result` JSON line.
+
 ## 2026-04-15 — [DECISION] Layer 4.6 closed — ROADMAP was stale, implementation already on alpha
 
 The ROADMAP marked Layer 4.6 (spawn_app host dispatcher) as "in flight / pending WIP app.rs" but the implementation had already landed in the `f8da18e` squash merge (PR #246). `dispatch_pending_spawns()` and `execute_spawn()` are fully implemented in `src/pane_ops.rs`, called each frame from `app.rs`. File browser is wired to emit `SpawnApp` for `.txt` → text-editor and images → photo-viewer. Both apps are installed at `~/.plexi-alpha/apps/`. Build is clean (0 errors). Updated ROADMAP Layer 4.6 status to Done and corrected the task table. No code changes needed — this was a documentation sync.

@@ -84,7 +84,7 @@ PGAP as protocol-level gateway, trust/risk float learning, agent replay testing,
 |---|---|---|
 | Layer 0 — Unblocked Now | **6/6 done** | — |
 | Layer 1 — App Protocol Testing | **Done** (24 tests, 4 apps) | — |
-| Layer 2 — Agent Mode in Terminal | **Shipped (Warp-style). LLM backend: `claude -p --resume` swap in flight** | Finish backend swap, streaming, slash commands |
+| Layer 2 — Agent Mode in Terminal | **Shipped** (`claude -p --resume` backend + streaming done; slash commands + context loading remain) | — |
 | Layer 3 — Parallax Refactor | **Done** (manifest-first, validator, Senior-only routing, Parallax viewer app) | — |
 | Layer 4 — Apps That Prove the Protocol | **Done** (~36 apps on alpha) | App Store update management (in flight); test coverage gap (~22 apps) |
 | Layer 4.5 — SDK Packaging & Protocol Stability | **Done** (Python + Rust SDK 0.3.0, protocol spec v1) | — |
@@ -142,15 +142,15 @@ All 24 should pass. Apps must be installed at `~/.plexi-alpha/apps/` first.
 
 ## Layer 2: Agent Mode in Terminal
 
-**Status: SHIPPED (WARP-STYLE). LLM BACKEND SWAP IN FLIGHT.**
+**Status: SHIPPED. LLM backend + streaming done. Slash commands + context loading remain.**
 
-The Warp-style inline agent UI is live — bytes injected into the alacritty grid. The LLM backend is being swapped from the custom Anthropic client to `claude -p --resume` (session-resuming subprocess wrapper).
+The Warp-style inline agent UI is live. `claude -p --resume` backend is wired with per-pane session IDs, streaming tokens, and system-prompt-on-first-turn-only fix.
 
 | Task | Status | Reference |
 |------|--------|-----------|
 | `Ctrl+/` mode switching, agent UI shell | **Done** | `src/agent_mode.rs`, `agent_ui.rs`, `agent_context.rs` |
-| LLM backend: `claude -p --resume` subprocess wrapper | **In flight this session** | Replaces custom Anthropic client |
-| Streaming responses | Not started | Depends on backend swap |
+| LLM backend: `claude -p --resume` subprocess wrapper | **Done** | `src/agent_llm.rs` — per-pane session ID, cancel, kill |
+| Streaming responses | **Done** | `LlmResponse::Token` emitted per delta, rendered inline (#214) |
 | Bare `/` at empty prompt | Open | [#104](https://github.com/ianjamesburke/PLEXI/issues/104) |
 | Slash commands (/status, /cost, /jobs) | Not started | Agent Mode spec §4 |
 | Agent context loading (lazy index) | Not started | Agent Mode spec §5 |
