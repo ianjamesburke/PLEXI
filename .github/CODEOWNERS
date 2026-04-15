@@ -8,7 +8,7 @@
 
 # ── Protected spec files ──────────────────────────────────────────────
 # These docs define what Plexi 2.0 is. Scope changes require owner review.
-docs/specs/plexi-v2.md      @ianjamesburke
+docs/specs/releases/plexi-v2.0-scope.md      @ianjamesburke
 docs/specs/protocol-v2.md   @ianjamesburke
 
 # ── Vision ────────────────────────────────────────────────────────────

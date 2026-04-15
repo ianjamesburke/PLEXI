@@ -182,7 +182,7 @@ Repeated here because this section governs this file's lifecycle:
 Every file that a v2 reader may need to open, in read order:
 
 1. `docs/VISION.md` — **read first, always**
-2. `docs/specs/plexi-v2.md` — this file (scope)
+2. `docs/specs/releases/plexi-v2.0-scope.md` — this file (scope)
 3. `docs/specs/protocol-v2.md` — the protocol contract
 4. `docs/specs/typed-pipes.md` — Phase 1 details
 5. `docs/specs/agent-orchestration.md` — IQ rationale (note: §4 floats are deferred)

@@ -3,11 +3,11 @@
 > **V2 is the only active target.** Everything after this moment is v2 work.
 >
 > - **Vision (compass):** [docs/VISION.md](docs/VISION.md) — read first, always.
-> - **Release scope (protected):** [docs/specs/plexi-v2.md](docs/specs/plexi-v2.md) — what ships in 2.0, what doesn't, checklist.
+> - **Release scope (protected):** [docs/specs/releases/plexi-v2.0-scope.md](docs/specs/releases/plexi-v2.0-scope.md) — what ships in 2.0, what doesn't, checklist.
 > - **Protocol contract:** [docs/specs/releases/plexi-v2.0.md](docs/specs/releases/plexi-v2.0.md) — the wire format + ship order.
 > - **v2.1 UI primitives:** [docs/specs/releases/plexi-v2.1.md](docs/specs/releases/plexi-v2.1.md) — additive UI primitives layer (ships after v2.0).
 >
-> This roadmap is the **weekly operational view**. `plexi-v2.md` is the contract. When they disagree, the spec wins.
+> This roadmap is the **weekly operational view**. `plexi-v2.0-scope.md` is the contract. When they disagree, the spec wins.
 
 **Last updated:** 2026-04-14
 
@@ -40,7 +40,7 @@ Everything on `main` plus:
 
 ## V2 — The Agent-Native Release
 
-**Scope spec (protected):** [docs/specs/plexi-v2.md](docs/specs/plexi-v2.md) — in-scope, deferred, checklist.
+**Scope spec (protected):** [docs/specs/releases/plexi-v2.0-scope.md](docs/specs/releases/plexi-v2.0-scope.md) — in-scope, deferred, checklist.
 **Protocol contract:** [docs/specs/releases/plexi-v2.0.md](docs/specs/releases/plexi-v2.0.md) — wire format + full rationale.
 **Goal:** Apps can be skills. Agents can be apps. The host orchestrates. One install, three interfaces.
 
