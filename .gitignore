@@ -34,3 +34,7 @@ assets/Info.plist
 here.md
 examples/*/target/
 sdk/*/target/
+<<<<<<< HEAD
+=======
+__pycache__/
+>>>>>>> origin/alpha

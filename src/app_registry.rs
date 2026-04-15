@@ -63,6 +63,17 @@ pub struct AppManifestApp {
     pub open_intent_kinds: Vec<String>,
     #[serde(default)]
     pub io: Option<AppIoSection>,
+    /// Optional companion-pane launch configuration. When present, Plexi splits
+    /// the launching pane and starts the companion in the secondary slot.
+    #[serde(default)]
+    pub launch: Option<AppLaunchConfig>,
+    /// Declares how (and by whom) this app may be spawned as a child of
+    /// another app via `DrawCommand::SpawnApp`. Missing = permissive defaults
+    /// (any caller, any lifecycle, fill layout). Consumed by the spawn
+    /// dispatcher once it lands in a follow-up commit.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub spawnable: AppSpawnable,
 }
 
 fn default_protocol_version_manifest() -> u32 {
@@ -105,6 +116,126 @@ pub struct PipeChannel {
     pub name: String,
 }
 
+/// Launch configuration declared under `[app.launch]` in `manifest.toml`.
+/// All fields optional; see defaults on each.
+///
+/// In v1 this controls both the companion-pane model (the original use case)
+/// and the top-level launch mode the spawn dispatcher uses when an app is
+/// opened as a child via `DrawCommand::SpawnApp` with no explicit layout:
+/// `fullscreen` fills the slot, `windowed` reserved for future floating
+/// windows, `companion` triggers the companion-pane split below.
+#[derive(Deserialize, Debug, Clone)]
+pub struct AppLaunchConfig {
+    /// How the app occupies its pane when launched:
+    /// `"fullscreen"` (default) | `"windowed"` (reserved) | `"companion"`.
+    /// The v1 host treats any value other than `"companion"` as fullscreen;
+    /// `"companion"` keeps the existing companion-split behavior.
+    #[serde(default = "default_launch_mode")]
+    #[allow(dead_code)]
+    pub mode: String,
+    /// What to run in the companion pane. `"none"` (default) disables the
+    /// auto-split; `"terminal"` keeps the v1 behavior.
+    #[serde(default = "default_companion")]
+    #[allow(dead_code)]
+    pub companion: String,
+    /// Where the companion sits relative to the app pane:
+    /// `"bottom"` (vertical split, default) or `"right"` (horizontal split).
+    #[serde(default = "default_companion_position")]
+    pub companion_position: String,
+    /// Fraction of the split allocated to the companion (0.0..1.0).
+    #[serde(default = "default_companion_size")]
+    pub companion_size: f32,
+    /// Working directory for the companion. Supported template:
+    /// `{launch_dir}` — resolves to the app's launch directory.
+    #[serde(default = "default_companion_cwd")]
+    pub companion_cwd: String,
+    /// Optional message written into the linked terminal's scrollback grid
+    /// when the app launches. Rendered in dim italics so it reads as a
+    /// system-emitted notice rather than real shell output. Not echoed to
+    /// the shell's PTY — the shell has no idea these bytes exist, same as
+    /// agent-mode output.
+    #[serde(default)]
+    pub startup_message: Option<String>,
+}
+
+impl Default for AppLaunchConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_launch_mode(),
+            companion: default_companion(),
+            companion_position: default_companion_position(),
+            companion_size: default_companion_size(),
+            companion_cwd: default_companion_cwd(),
+            startup_message: None,
+        }
+    }
+}
+
+fn default_launch_mode() -> String { "fullscreen".to_string() }
+fn default_companion() -> String { "none".to_string() }
+fn default_companion_position() -> String { "bottom".to_string() }
+fn default_companion_size() -> f32 { 0.25 }
+fn default_companion_cwd() -> String { "{launch_dir}".to_string() }
+
+/// `[app.spawnable]` — controls which other apps are allowed to spawn this
+/// one and the layout/lifecycle defaults the dispatcher applies when the
+/// caller omits them. Missing table = permissive defaults.
+#[allow(dead_code)]
+#[derive(Deserialize, Debug, Clone)]
+pub struct AppSpawnable {
+    /// Who is allowed to spawn this app via `DrawCommand::SpawnApp`.
+    /// `["*"]` (default) accepts any caller; otherwise must contain the
+    /// spawner's `app_id` exactly.
+    #[serde(default = "default_allow_callers")]
+    pub allow_callers: Vec<String>,
+    /// Layout used when the caller does not specify one. Serialized the same
+    /// way `SpawnLayout` is on the wire (`{ kind = "fill" }` etc).
+    #[serde(default = "default_default_layout")]
+    pub default_layout: crate::app_protocol::SpawnLayout,
+    /// Lifecycles this app accepts. The spawn is refused if the caller asks
+    /// for a lifecycle not listed here. Default: all three allowed.
+    #[serde(default = "default_allow_lifecycle")]
+    pub allow_lifecycle: Vec<String>,
+}
+
+impl Default for AppSpawnable {
+    fn default() -> Self {
+        Self {
+            allow_callers: default_allow_callers(),
+            default_layout: default_default_layout(),
+            allow_lifecycle: default_allow_lifecycle(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl AppSpawnable {
+    /// Returns true if `caller_app_id` is allowed to spawn this app.
+    pub fn caller_allowed(&self, caller_app_id: &str) -> bool {
+        self.allow_callers.iter().any(|c| c == "*" || c == caller_app_id)
+    }
+
+    /// Returns true if this app permits the requested lifecycle.
+    pub fn lifecycle_allowed(&self, lifecycle: crate::app_protocol::SpawnLifecycle) -> bool {
+        let name = match lifecycle {
+            crate::app_protocol::SpawnLifecycle::Cascade => "cascade",
+            crate::app_protocol::SpawnLifecycle::Orphan => "orphan",
+            crate::app_protocol::SpawnLifecycle::Prompt => "prompt",
+        };
+        self.allow_lifecycle.iter().any(|l| l == name)
+    }
+}
+
+fn default_allow_callers() -> Vec<String> {
+    vec!["*".to_string()]
+}
+fn default_default_layout() -> crate::app_protocol::SpawnLayout {
+    crate::app_protocol::SpawnLayout::Fill
+}
+fn default_allow_lifecycle() -> Vec<String> {
+    vec!["cascade".to_string(), "orphan".to_string(), "prompt".to_string()]
+}
+
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct AppCapabilities {
     #[serde(default)]
@@ -126,6 +257,9 @@ pub struct AppCapabilities {
     /// Can write secrets to Keychain via the API.
     #[serde(default)]
     pub secrets_write: bool,
+    /// Opt-in to receiving `MouseMove` events. Off by default to avoid pipe flooding.
+    #[serde(default)]
+    pub mouse_tracking: bool,
 }
 
 fn default_fs_permission() -> String {
@@ -280,8 +414,33 @@ impl AppRegistry {
         open_intent: Option<crate::app_protocol::OpenIntent>,
         pane_id: u64,
     ) -> Option<Box<dyn App>> {
+        self.launch_inner(id, cwd, args, open_intent, pane_id, None)
+    }
+
+    /// Launch an app that was spawned by another app. Sets PLEXI_LAUNCH_MODE=spawned
+    /// and PLEXI_PARENT_APP_ID=<parent_app_id> in the child's environment.
+    pub fn launch_as_child(
+        &self,
+        id: &str,
+        cwd: &PathBuf,
+        args: &[String],
+        parent_app_id: &str,
+    ) -> Option<Box<dyn App>> {
+        self.launch_inner(id, cwd, args, None, 0, Some(parent_app_id))
+    }
+
+    fn launch_inner(
+        &self,
+        id: &str,
+        cwd: &PathBuf,
+        args: &[String],
+        open_intent: Option<crate::app_protocol::OpenIntent>,
+        pane_id: u64,
+        parent_app_id: Option<&str>,
+    ) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
         let protocol_version = installed.manifest.protocol_version;
+        let mouse_tracking = installed.manifest.capabilities.mouse_tracking;
         match ProcessApp::launch_with_intent(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -292,6 +451,8 @@ impl AppRegistry {
             open_intent,
             protocol_version,
             pane_id,
+            mouse_tracking,
+            parent_app_id,
         ) {
             Ok(app) => {
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);

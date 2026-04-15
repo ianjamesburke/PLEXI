@@ -5,20 +5,29 @@
 /// ProcessApp implements the `App` trait so it drops in wherever a built-in app
 /// would — the rest of Plexi doesn't know or care that it's an external process.
 
-use crate::app_protocol::{BusEventKind, DrawCommand, ListItem, Modifiers, PlexiEvent};
+use crate::app_protocol::{BusEventKind, DrawCommand, ListItem, Modifiers, PendingSpawn, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
+use crate::cost_tracker::CostTracker;
 use egui::Color32;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
+
+/// Maximum number of undo states to keep in the stack.
+const MAX_UNDO_DEPTH: usize = 50;
 
 pub struct ProcessApp {
     type_id: String,
     display_name: String,
     accepted_exts: Vec<String>,
+    /// Directory the app was launched in — used as the scope root for secret
+    /// resolution (walk-up search from this directory to $HOME).
+    scope_root: PathBuf,
     process: Option<Child>,
     stdin: Option<ChildStdin>,
     /// Receives draw commands from the subprocess on a background thread.
@@ -32,6 +41,12 @@ pub struct ProcessApp {
     /// Pending RunInTerminal / Cd commands collected from the subprocess, to be
     /// drained by the host via take_pending_commands().
     pending_commands: Vec<crate::app_trait::AppCommand>,
+    /// Pending `spawn_app` requests collected from the subprocess, to be
+    /// drained by the host via take_pending_spawns() each frame.
+    pending_spawns: Vec<PendingSpawn>,
+    /// Pending PipeWrite commands collected from the subprocess, to be drained
+    /// by the host's pipe dispatcher via take_pipe_writes() each frame.
+    pending_pipe_writes: Vec<(String, serde_json::Value)>,
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
@@ -49,10 +64,105 @@ pub struct ProcessApp {
     event_back_tx: Option<mpsc::SyncSender<PlexiEvent>>,
     /// Pending events to send back to the app (RunCreated, EventData, etc.)
     pending_back_events: Vec<PlexiEvent>,
+    // Hot reload state
+    bin_path: PathBuf,
+    cwd: PathBuf,
+    args: Vec<String>,
+    /// Receives file-change notifications from the watcher thread.
+    reload_rx: Option<Receiver<()>>,
+    /// Kept alive so the watcher thread doesn't stop.
+    _watcher: Option<RecommendedWatcher>,
+    /// Debounce: ignore reload signals within 200ms of the last reload.
+    last_reload: Instant,
+    /// Last known app state (from State draw command response).
+    last_state: Option<AppState>,
+    /// Undo stack — previous states, oldest first.
+    undo_stack: Vec<AppState>,
+    /// Redo stack — states popped by undo, newest first.
+    redo_stack: Vec<AppState>,
+    /// Whether we're waiting for a state snapshot (to push onto undo before restoring).
+    pending_undo: bool,
+    /// Whether we're waiting for a state snapshot (to push onto redo before restoring).
+    pending_redo: bool,
+    /// Per-app cost tracker for LLM API usage.
+    cost_tracker: CostTracker,
+    /// Timestamp of the last Render event sent, used to compute delta_time.
+    last_render_time: Instant,
+    /// Whether this app should receive MouseMove events (opt-in via manifest or DrawCommand).
+    mouse_tracking: bool,
+    /// Pending cursor icon override requested by the app this frame.
+    pending_cursor: Option<egui::CursorIcon>,
+    /// If this app was spawned by another app, the spawning app's type_id.
+    /// Re-injected as PLEXI_PARENT_APP_ID on hot-reload so the app always
+    /// knows it was spawned, not opened directly.
+    parent_app_id: Option<String>,
+}
+
+/// Snapshot of an app's state buckets.
+#[derive(Clone, Debug)]
+pub struct AppState {
+    pub user_state: serde_json::Value,
+    pub derived: serde_json::Value,
+    pub session: serde_json::Value,
+    pub persistent: serde_json::Value,
+}
+
+/// Probe well-known locations for a Python interpreter that is >= 3.10.
+///
+/// macOS GUI app bundles do not inherit the user's shell PATH, so
+/// `/usr/bin/env python3` resolves to Apple's frozen system Python (3.9).
+/// We probe explicit paths — first match that reports version >= 3.10 wins.
+/// Falls back to `python3` (shebang-resolved) if none of the known paths work,
+/// so the old behaviour is preserved rather than failing silently.
+fn find_python() -> std::ffi::OsString {
+    let candidates = [
+        "/opt/homebrew/bin/python3",   // Apple Silicon Homebrew
+        "/usr/local/bin/python3",      // Intel Homebrew
+        "/opt/homebrew/bin/python3.13",
+        "/opt/homebrew/bin/python3.12",
+        "/opt/homebrew/bin/python3.11",
+        "/opt/homebrew/bin/python3.10",
+        "/usr/local/bin/python3.13",
+        "/usr/local/bin/python3.12",
+        "/usr/local/bin/python3.11",
+        "/usr/local/bin/python3.10",
+    ];
+
+    for candidate in &candidates {
+        let path = std::path::Path::new(candidate);
+        if !path.exists() {
+            continue;
+        }
+        // Ask the interpreter for its version string ("3.11.6\n").
+        let ok = std::process::Command::new(candidate)
+            .args(["-c", "import sys; v=sys.version_info; exit(0 if v>=(3,10) else 1)"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            log::debug!("process_app: using Python interpreter: {candidate}");
+            return std::ffi::OsString::from(candidate);
+        }
+    }
+
+    log::warn!(
+        "process_app: no Python >= 3.10 found at known paths; \
+         falling back to `python3` (may be system 3.9 in GUI context). \
+         Install Python 3.10+ via: brew install python@3.13"
+    );
+    std::ffi::OsString::from("python3")
 }
 
 impl ProcessApp {
     /// Spawn an app binary at `bin_path`.
+    ///
+    /// `parent_app_id` — when `Some`, the app was spawned by another app rather
+    /// than opened directly. Two extra env vars are injected:
+    /// - `PLEXI_LAUNCH_MODE=spawned`
+    /// - `PLEXI_PARENT_APP_ID=<parent_app_id>`
+    /// Apps read these to branch on standalone-vs-embedded behaviour.
     pub fn launch(
         type_id: impl Into<String>,
         display_name: impl Into<String>,
@@ -60,11 +170,13 @@ impl ProcessApp {
         bin_path: &PathBuf,
         cwd: &PathBuf,
         args: &[String],
+        mouse_tracking: bool,
+        parent_app_id: Option<&str>,
     ) -> Result<Self, std::io::Error> {
-        Self::launch_with_intent(type_id, display_name, accepted_exts, bin_path, cwd, args, None, 1, 0)
+        Self::launch_with_intent(type_id, display_name, accepted_exts, bin_path, cwd, args, None, 1, 0, mouse_tracking, parent_app_id)
     }
 
-    /// Spawn with an OpenIntent and protocol version.
+    /// Spawn with an OpenIntent, protocol version, pane_id, mouse_tracking, and optional parent.
     pub fn launch_with_intent(
         type_id: impl Into<String>,
         display_name: impl Into<String>,
@@ -75,13 +187,36 @@ impl ProcessApp {
         open_intent: Option<crate::app_protocol::OpenIntent>,
         protocol_version: u32,
         pane_id: u64,
+        mouse_tracking: bool,
+        parent_app_id: Option<&str>,
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
 
-        let mut child = std::process::Command::new(bin_path)
+        // For Python scripts, bypass the shebang and use an explicit interpreter
+        // so macOS GUI bundles (which don't inherit shell PATH) always get >= 3.10.
+        let (cmd, extra_args): (std::ffi::OsString, Vec<std::ffi::OsString>) =
+            if bin_path.extension().and_then(|e| e.to_str()) == Some("py") {
+                (find_python(), vec![bin_path.as_os_str().to_owned()])
+            } else {
+                (bin_path.as_os_str().to_owned(), vec![])
+            };
+
+        let mut cmd_builder = std::process::Command::new(&cmd);
+        cmd_builder
+            .args(&extra_args)
             .args(args)
             .current_dir(cwd)
+            .env("PLEXI_APP_ID", &type_id)
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+        if let Some(parent_id) = parent_app_id {
+            cmd_builder
+                .env("PLEXI_LAUNCH_MODE", "spawned")
+                .env("PLEXI_PARENT_APP_ID", parent_id);
+        } else {
+            cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
+        }
+        let mut child = cmd_builder
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()) // captured and forwarded to Plexi's logger
@@ -134,16 +269,25 @@ impl ProcessApp {
             }
         });
 
+        // Set up file watcher on the app's parent directory for hot reload.
+        let (reload_tx, reload_rx) = mpsc::channel::<()>();
+        let watch_dir = bin_path.parent().unwrap_or(cwd).to_path_buf();
+        let watcher = Self::setup_watcher(watch_dir, reload_tx);
+
+        let cost_tracker = CostTracker::new(&type_id);
         Ok(Self {
             type_id,
             display_name,
             accepted_exts,
+            scope_root: cwd.clone(),
             process: Some(child),
             stdin: Some(stdin),
             draw_rx: Some(draw_rx),
             frame: Vec::new(),
             pending_frame: Vec::new(),
             pending_commands: Vec::new(),
+            pending_spawns: Vec::new(),
+            pending_pipe_writes: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
             protocol_version,
@@ -153,6 +297,22 @@ impl ProcessApp {
             run_store: None,
             event_back_tx: None,
             pending_back_events: Vec::new(),
+            bin_path: bin_path.clone(),
+            cwd: cwd.clone(),
+            args: args.to_vec(),
+            reload_rx: Some(reload_rx),
+            _watcher: watcher,
+            last_reload: Instant::now(),
+            last_state: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            pending_undo: false,
+            pending_redo: false,
+            cost_tracker,
+            last_render_time: Instant::now(),
+            mouse_tracking,
+            pending_cursor: None,
+            parent_app_id: parent_app_id.map(|s| s.to_string()),
         })
     }
 
@@ -164,6 +324,234 @@ impl ProcessApp {
     ) {
         self.event_log = Some(event_log);
         self.run_store = Some(run_store);
+    }
+
+    /// Create a file watcher that sends a signal on any .py file change in the directory.
+    fn setup_watcher(watch_dir: PathBuf, reload_tx: mpsc::Sender<()>) -> Option<RecommendedWatcher> {
+        let mut watcher = match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                // Only trigger on file modifications/creates for .py files.
+                let dominated_by_python = event.paths.iter().any(|p| {
+                    p.extension()
+                        .map(|e| e == "py")
+                        .unwrap_or(false)
+                });
+                if dominated_by_python {
+                    let _ = reload_tx.send(());
+                }
+            }
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("ProcessApp: failed to create file watcher: {e}");
+                return None;
+            }
+        };
+
+        if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::Recursive) {
+            log::warn!("ProcessApp: failed to watch {:?}: {e}", watch_dir);
+            return None;
+        }
+
+        log::info!("ProcessApp: watching {:?} for hot reload", watch_dir);
+        Some(watcher)
+    }
+
+    /// Check if a reload was requested and debounce.
+    fn check_reload(&mut self) -> bool {
+        let Some(rx) = self.reload_rx.as_ref() else {
+            return false;
+        };
+        let mut got_signal = false;
+        // Drain all pending signals.
+        while rx.try_recv().is_ok() {
+            got_signal = true;
+        }
+        if got_signal && self.last_reload.elapsed() > Duration::from_millis(200) {
+            self.last_reload = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Kill the current subprocess and respawn it, preserving the watcher.
+    fn restart(&mut self) {
+        log::info!("ProcessApp[{}]: hot-reloading app", self.type_id);
+
+        // Send shutdown and kill old process.
+        self.send_event(&PlexiEvent::Shutdown);
+        if let Some(mut child) = self.process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.stdin = None;
+        self.draw_rx = None;
+
+        // Respawn — same Python interpreter logic as initial launch.
+        let (cmd, extra_args): (std::ffi::OsString, Vec<std::ffi::OsString>) =
+            if self.bin_path.extension().and_then(|e| e.to_str()) == Some("py") {
+                (find_python(), vec![self.bin_path.as_os_str().to_owned()])
+            } else {
+                (self.bin_path.as_os_str().to_owned(), vec![])
+            };
+        let mut cmd_builder = std::process::Command::new(&cmd);
+        cmd_builder
+            .args(&extra_args)
+            .args(&self.args)
+            .current_dir(&self.cwd)
+            .env("PLEXI_APP_ID", &self.type_id)
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+        if let Some(parent_id) = &self.parent_app_id {
+            cmd_builder
+                .env("PLEXI_LAUNCH_MODE", "spawned")
+                .env("PLEXI_PARENT_APP_ID", parent_id);
+        } else {
+            cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
+        }
+        let mut child = match cmd_builder
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("ProcessApp[{}]: failed to respawn: {e}", self.type_id);
+                return;
+            }
+        };
+
+        let stdin = child.stdin.take().expect("stdin piped");
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+
+        // Stderr forwarding thread.
+        let stderr_type_id = self.type_id.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) if !l.trim().is_empty() => {
+                        let target = format!("app::{stderr_type_id}");
+                        log::warn!(target: &target, "stderr: {l}");
+                    }
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        // Stdout draw-command reader thread.
+        let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) if !l.trim().is_empty() => {
+                        match serde_json::from_str::<DrawCommand>(&l) {
+                            Ok(cmd) => {
+                                if draw_tx.send(cmd).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("ProcessApp: malformed draw command: {e} — line: {l}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::debug!("ProcessApp stdout closed: {e}");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        self.process = Some(child);
+        self.stdin = Some(stdin);
+        self.draw_rx = Some(draw_rx);
+        self.frame.clear();
+        self.pending_frame.clear();
+        self.initialized = false; // will re-send Init on next ui() call
+        self.last_render_time = Instant::now();
+        self.mouse_tracking = false; // new process must opt in again
+        self.pending_cursor = None;
+    }
+
+    /// Request the app's current state snapshot.
+    pub fn request_state(&mut self) {
+        self.send_event(&PlexiEvent::GetState);
+    }
+
+    /// Restore a previously captured state to the app.
+    pub fn restore_state(&mut self, state: &AppState) {
+        self.send_event(&PlexiEvent::SetState {
+            user_state: state.user_state.clone(),
+            derived: state.derived.clone(),
+            session: state.session.clone(),
+            persistent: state.persistent.clone(),
+        });
+    }
+
+    /// Trigger undo: request current state (will be pushed to redo), then pop undo stack.
+    fn do_undo(&mut self) {
+        if self.undo_stack.is_empty() {
+            return;
+        }
+        self.pending_undo = true;
+        self.request_state();
+    }
+
+    /// Trigger redo: request current state (will be pushed to undo), then pop redo stack.
+    fn do_redo(&mut self) {
+        if self.redo_stack.is_empty() {
+            return;
+        }
+        self.pending_redo = true;
+        self.request_state();
+    }
+
+    /// Push the current state onto the undo stack (called before user actions).
+    fn push_undo(&mut self, state: AppState) {
+        if self.undo_stack.len() >= MAX_UNDO_DEPTH {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(state);
+        self.redo_stack.clear();
+    }
+
+    /// Handle a State response from the app — drives undo/redo state machine.
+    fn handle_state_response(&mut self, state: AppState) {
+        if self.pending_undo {
+            self.pending_undo = false;
+            // Push current state to redo, pop undo and restore.
+            self.redo_stack.push(state);
+            if let Some(prev) = self.undo_stack.pop() {
+                self.restore_state(&prev);
+                self.last_state = Some(prev);
+            }
+        } else if self.pending_redo {
+            self.pending_redo = false;
+            // Push current state to undo, pop redo and restore.
+            self.undo_stack.push(state);
+            if let Some(next) = self.redo_stack.pop() {
+                self.restore_state(&next);
+                self.last_state = Some(next);
+            }
+        } else {
+            // Normal state snapshot — push to undo stack for future undo.
+            if let Some(prev) = self.last_state.take() {
+                self.push_undo(prev);
+            }
+            self.last_state = Some(state);
+        }
+    }
+
+    /// Total cost accumulated by this app in the current session.
+    pub fn session_cost_usd(&self) -> f64 {
+        self.cost_tracker.session_total_usd()
     }
 
     fn send_event(&mut self, event: &PlexiEvent) {
@@ -180,6 +568,22 @@ impl ProcessApp {
             }
             Err(e) => log::error!("ProcessApp: failed to serialize event: {e}"),
         }
+    }
+
+    /// Drain all pending PipeWrite commands queued from the subprocess since
+    /// the last call. Returns (channel, value) pairs for the host to route.
+    pub fn take_pipe_writes(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.pending_pipe_writes)
+    }
+
+    /// Send a PipeData event to this app's subprocess, delivering a value that
+    /// arrived from a connected app on the named channel.
+    pub fn send_pipe_data(&mut self, from_app: &str, channel: &str, value: &serde_json::Value) {
+        self.send_event(&PlexiEvent::PipeData {
+            from_app: from_app.to_string(),
+            channel: channel.to_string(),
+            value: value.clone(),
+        });
     }
 
     fn drain_draw_commands(&mut self) -> Vec<DrawCommand> {
@@ -200,8 +604,14 @@ impl ProcessApp {
         cmds
     }
 
-    fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], colors: &crate::theme::Colors) {
+    fn render_draw_commands(
+        ui: &mut egui::Ui,
+        commands: &[DrawCommand],
+        ctx: &AppRenderContext<'_>,
+        app_cwd: &std::path::Path,
+    ) {
         let origin = ui.min_rect().min;
+        let colors = ctx.colors;
 
         for cmd in commands {
             match cmd {
@@ -214,7 +624,7 @@ impl ProcessApp {
                     ui.painter().rect_filled(rect, *radius, color);
                 }
 
-                DrawCommand::Text { x, y, text, size, color, monospace, bold } => {
+                DrawCommand::Text { x, y, text, size, color, monospace, bold, align } => {
                     let color = parse_color(color).unwrap_or(colors.text_primary);
                     let font_id = if *monospace {
                         egui::FontId::monospace(*size)
@@ -223,9 +633,14 @@ impl ProcessApp {
                     } else {
                         egui::FontId::proportional(*size)
                     };
+                    let anchor = match align.as_deref() {
+                        Some("center") => egui::Align2::CENTER_TOP,
+                        Some("right") => egui::Align2::RIGHT_TOP,
+                        _ => egui::Align2::LEFT_TOP,
+                    };
                     ui.painter().text(
                         egui::pos2(origin.x + x, origin.y + y),
-                        egui::Align2::LEFT_TOP,
+                        anchor,
                         text,
                         font_id,
                         color,
@@ -241,6 +656,42 @@ impl ProcessApp {
                         ],
                         egui::Stroke::new(*width, color),
                     );
+                }
+
+                DrawCommand::DropTarget { x, y, w, h, label, .. } => {
+                    // Drop targets are invisible by default. When files are being
+                    // dragged from outside Plexi, draw a subtle highlight + label so
+                    // the user can see where they can drop.
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let hovering_with_files = ui.input(|i| !i.raw.hovered_files.is_empty());
+                    if hovering_with_files {
+                        // Subtle fill + outline to signal "droppable here".
+                        let fill = Color32::from_rgba_unmultiplied(
+                            colors.accent.r(),
+                            colors.accent.g(),
+                            colors.accent.b(),
+                            28,
+                        );
+                        ui.painter().rect_filled(rect, 4.0, fill);
+                        ui.painter().rect_stroke(
+                            rect,
+                            4.0,
+                            egui::Stroke::new(1.5, colors.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                        if let Some(label_text) = label {
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                label_text,
+                                egui::FontId::proportional(12.0),
+                                colors.text_primary,
+                            );
+                        }
+                    }
                 }
 
                 DrawCommand::List { items, selected, item_height } => {
@@ -279,20 +730,445 @@ impl ProcessApp {
                         });
                 }
 
-                // RunInTerminal / Cd / Log / FrameDone / protocol commands handled at the App trait level.
+                DrawCommand::Image { path, x, y, w, h, fit, rounding } => {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let resolved = resolve_app_path(app_cwd, path);
+                    let status = ctx.media_cache.borrow_mut().get_image(ui.ctx(), &resolved);
+                    match status {
+                        crate::media_cache::ImageStatus::Ready(tex) => {
+                            paint_image(
+                                ui.painter(),
+                                &tex,
+                                rect,
+                                fit.as_deref().unwrap_or("contain"),
+                                rounding.unwrap_or(0.0),
+                                colors,
+                            );
+                        }
+                        crate::media_cache::ImageStatus::Error(msg) => {
+                            paint_error_placeholder(ui.painter(), rect, &msg, colors);
+                        }
+                    }
+                }
+
+                DrawCommand::VideoThumbnail {
+                    path, x, y, w, h, show_play_button, timestamp_seconds,
+                } => {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let resolved = resolve_app_path(app_cwd, path);
+                    let ts = timestamp_seconds.unwrap_or(0.0);
+                    let status = ctx
+                        .media_cache
+                        .borrow_mut()
+                        .get_video_thumbnail(ui.ctx(), &resolved, ts);
+                    match status {
+                        crate::media_cache::ThumbStatus::Ready(tex) => {
+                            paint_image(ui.painter(), &tex, rect, "cover", 0.0, colors);
+                        }
+                        crate::media_cache::ThumbStatus::Pending => {
+                            paint_loading_placeholder(ui.painter(), rect, colors);
+                        }
+                        crate::media_cache::ThumbStatus::Error(msg) => {
+                            paint_error_placeholder(ui.painter(), rect, &msg, colors);
+                        }
+                    }
+                    if show_play_button.unwrap_or(true) {
+                        paint_play_button(ui.painter(), rect);
+                    }
+                    // Click opens the original video in the system default player.
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new(("plexi-video-thumb", path.as_str())),
+                        egui::Sense::click(),
+                    );
+                    if response.clicked() {
+                        log::info!("ProcessApp: opening video {:?}", resolved);
+                        let _ = std::process::Command::new("open").arg(&resolved).spawn();
+                    }
+                }
+
+                DrawCommand::FileGrid {
+                    path, filter, paths, x, y, w, h,
+                    item_size, columns, show_labels,
+                } => {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    let cell = item_size.unwrap_or(96.0).max(32.0);
+                    let labels = show_labels.unwrap_or(true);
+                    let label_h = if labels { 14.0 } else { 0.0 };
+                    let gap = 8.0;
+
+                    // Collect file paths from either explicit list or directory walk.
+                    let files: Vec<PathBuf> = if let Some(list) = paths {
+                        list.iter().map(|p| resolve_app_path(app_cwd, p)).collect()
+                    } else if let Some(dir) = path {
+                        list_dir_filtered(&resolve_app_path(app_cwd, dir), filter.as_deref())
+                    } else {
+                        Vec::new()
+                    };
+
+                    let cols = columns
+                        .map(|c| c.max(1) as usize)
+                        .unwrap_or_else(|| {
+                            ((rect.width() + gap) / (cell + gap)).floor().max(1.0) as usize
+                        });
+
+                    // Paint items.
+                    for (i, file) in files.iter().enumerate() {
+                        let col = i % cols;
+                        let row = i / cols;
+                        let cell_x = rect.min.x + col as f32 * (cell + gap);
+                        let cell_y = rect.min.y + row as f32 * (cell + label_h + gap);
+                        if cell_y + cell + label_h > rect.max.y {
+                            break; // clip anything past the grid rect
+                        }
+                        let thumb_rect = egui::Rect::from_min_size(
+                            egui::pos2(cell_x, cell_y),
+                            egui::vec2(cell, cell),
+                        );
+
+                        let kind = classify_file(file);
+                        match kind {
+                            FileKind::Image => {
+                                let status = ctx.media_cache.borrow_mut().get_image(ui.ctx(), file);
+                                match status {
+                                    crate::media_cache::ImageStatus::Ready(tex) => {
+                                        paint_image(ui.painter(), &tex, thumb_rect, "cover", 4.0, colors);
+                                    }
+                                    crate::media_cache::ImageStatus::Error(msg) => {
+                                        paint_error_placeholder(ui.painter(), thumb_rect, &msg, colors);
+                                    }
+                                }
+                            }
+                            FileKind::Video => {
+                                let status = ctx.media_cache.borrow_mut().get_video_thumbnail(
+                                    ui.ctx(), file, 0.0,
+                                );
+                                match status {
+                                    crate::media_cache::ThumbStatus::Ready(tex) => {
+                                        paint_image(ui.painter(), &tex, thumb_rect, "cover", 4.0, colors);
+                                    }
+                                    crate::media_cache::ThumbStatus::Pending => {
+                                        paint_loading_placeholder(ui.painter(), thumb_rect, colors);
+                                    }
+                                    crate::media_cache::ThumbStatus::Error(msg) => {
+                                        paint_error_placeholder(ui.painter(), thumb_rect, &msg, colors);
+                                    }
+                                }
+                                paint_play_button(ui.painter(), thumb_rect);
+                            }
+                            FileKind::Other => {
+                                paint_generic_file_icon(ui.painter(), thumb_rect, file, colors);
+                            }
+                        }
+
+                        if labels {
+                            let name = file
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("?");
+                            let truncated = truncate_for_width(name, cell);
+                            ui.painter().text(
+                                egui::pos2(thumb_rect.center().x, thumb_rect.max.y + 2.0),
+                                egui::Align2::CENTER_TOP,
+                                truncated,
+                                egui::FontId::proportional(10.0),
+                                colors.text_dim,
+                            );
+                        }
+
+                        // Click: open the file in the system default handler.
+                        let response = ui.interact(
+                            thumb_rect,
+                            egui::Id::new(("plexi-file-grid", file.as_path())),
+                            egui::Sense::click(),
+                        );
+                        if response.clicked() {
+                            log::info!("ProcessApp: opening file {:?}", file);
+                            let _ = std::process::Command::new("open").arg(file).spawn();
+                        }
+                    }
+                }
+
+                // RunInTerminal / Cd / Log / State / CostReport / Notification /
+                // SetCursor / MouseTracking / SpawnApp / PipeWrite / PipeSubscribe /
+                // SecretGet / RunCreate / RunUpdate / RunComplete / EventSubscribe /
+                // PipeListWires / FrameDone handled at the App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
-                | DrawCommand::FrameDone
+                | DrawCommand::State { .. }
+                | DrawCommand::CostReport { .. }
                 | DrawCommand::Notification { .. }
+                | DrawCommand::SetCursor { .. }
+                | DrawCommand::MouseTracking { .. }
+                | DrawCommand::SpawnApp { .. }
                 | DrawCommand::PipeWrite { .. }
+                | DrawCommand::PipeSubscribe { .. }
+                | DrawCommand::SecretGet { .. }
                 | DrawCommand::RunCreate { .. }
                 | DrawCommand::RunUpdate { .. }
                 | DrawCommand::RunComplete { .. }
                 | DrawCommand::EventSubscribe { .. }
-                | DrawCommand::PipeListWires => {}
+                | DrawCommand::PipeListWires
+                | DrawCommand::FrameDone => {}
             }
         }
+    }
+}
+
+/// What type of thumbnail to show for a file in a FileGrid.
+enum FileKind {
+    Image,
+    Video,
+    Other,
+}
+
+fn classify_file(path: &std::path::Path) -> FileKind {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "tiff" | "tif" => FileKind::Image,
+        "mp4" | "mov" | "webm" | "mkv" | "m4v" | "avi" => FileKind::Video,
+        _ => FileKind::Other,
+    }
+}
+
+/// Resolve a (possibly relative) path emitted by an app against the app's cwd.
+/// Matches the subprocess's own view of the filesystem.
+fn resolve_app_path(app_cwd: &std::path::Path, raw: &str) -> PathBuf {
+    let p = PathBuf::from(raw);
+    if p.is_absolute() {
+        p
+    } else {
+        app_cwd.join(p)
+    }
+}
+
+/// List files in a directory (non-recursive), optionally filtered by a set of
+/// simple glob patterns or bare extensions. Returns paths sorted by filename.
+fn list_dir_filtered(dir: &std::path::Path, filter: Option<&[String]>) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("ProcessApp: file_grid read_dir {:?}: {e}", dir);
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| filter.map_or(true, |f| path_matches_filter(p, f)))
+        .collect();
+    out.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    out
+}
+
+/// Match a path against a user-supplied filter list. Supports three forms:
+///   - `"*.png"`    — extension wildcard
+///   - `"png"`      — bare extension
+///   - any other pattern is substring-matched against the filename
+fn path_matches_filter(path: &std::path::Path, patterns: &[String]) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    for p in patterns {
+        let p = p.trim();
+        if let Some(rest) = p.strip_prefix("*.") {
+            if ext == rest.to_lowercase() {
+                return true;
+            }
+        } else if !p.contains('*') && !p.contains('.') {
+            if ext == p.to_lowercase() {
+                return true;
+            }
+        } else if name.contains(p.trim_start_matches('*').trim_end_matches('*')) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Paint a texture into `rect` respecting the given fit mode.
+fn paint_image(
+    painter: &egui::Painter,
+    tex: &egui::TextureHandle,
+    rect: egui::Rect,
+    fit: &str,
+    rounding: f32,
+    colors: &crate::theme::Colors,
+) {
+    let tex_size = tex.size_vec2();
+    // Destination rect inside `rect`, computed per-fit.
+    let (dest, uv) = match fit {
+        "fill" => (rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))),
+        "cover" => {
+            let src_aspect = tex_size.x / tex_size.y;
+            let dst_aspect = rect.width() / rect.height();
+            // Crop the source UV to match the destination aspect.
+            let (u_min, u_max, v_min, v_max) = if src_aspect > dst_aspect {
+                // source wider — crop horizontally
+                let crop = dst_aspect / src_aspect;
+                let half = (1.0 - crop) * 0.5;
+                (half, 1.0 - half, 0.0, 1.0)
+            } else {
+                // source taller — crop vertically
+                let crop = src_aspect / dst_aspect;
+                let half = (1.0 - crop) * 0.5;
+                (0.0, 1.0, half, 1.0 - half)
+            };
+            (
+                rect,
+                egui::Rect::from_min_max(
+                    egui::pos2(u_min, v_min),
+                    egui::pos2(u_max, v_max),
+                ),
+            )
+        }
+        _ => {
+            // "contain" (default) — fit inside preserving aspect, letterbox.
+            let src_aspect = tex_size.x / tex_size.y;
+            let dst_aspect = rect.width() / rect.height();
+            let inner = if src_aspect > dst_aspect {
+                // fit to width
+                let h = rect.width() / src_aspect;
+                let y = rect.center().y - h * 0.5;
+                egui::Rect::from_min_size(egui::pos2(rect.min.x, y), egui::vec2(rect.width(), h))
+            } else {
+                let w = rect.height() * src_aspect;
+                let x = rect.center().x - w * 0.5;
+                egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(w, rect.height()))
+            };
+            // Fill the surrounding letterbox area with the terminal bg so the
+            // image doesn't show whatever was painted under it.
+            painter.rect_filled(rect, rounding, colors.terminal_bg);
+            (inner, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)))
+        }
+    };
+
+    let mut mesh = egui::Mesh::with_texture(tex.id());
+    mesh.add_rect_with_uv(dest, uv, egui::Color32::WHITE);
+    if rounding > 0.0 {
+        // egui's mesh doesn't round natively — clip via a rounded rect by
+        // drawing a rounded mask frame over the corners using the terminal bg.
+        // This is a pragmatic approximation; a real mask would need a shader.
+        painter.rect_filled(rect, rounding, egui::Color32::TRANSPARENT);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+fn paint_error_placeholder(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    msg: &str,
+    colors: &crate::theme::Colors,
+) {
+    painter.rect_filled(rect, 2.0, Color32::from_rgb(60, 30, 30));
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, Color32::from_rgb(180, 70, 70)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "×",
+        egui::FontId::proportional(rect.height().min(rect.width()) * 0.5),
+        Color32::from_rgb(240, 160, 160),
+    );
+    log::debug!("ProcessApp: placeholder for {msg}");
+    let _ = colors;
+}
+
+fn paint_loading_placeholder(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    colors: &crate::theme::Colors,
+) {
+    painter.rect_filled(rect, 2.0, colors.bg_active);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "…",
+        egui::FontId::proportional(rect.height().min(rect.width()) * 0.4),
+        colors.text_dim,
+    );
+}
+
+fn paint_play_button(painter: &egui::Painter, rect: egui::Rect) {
+    let center = rect.center();
+    let r = rect.width().min(rect.height()) * 0.22;
+    // Dark circle behind the triangle for contrast.
+    painter.circle_filled(center, r, Color32::from_black_alpha(170));
+    // Equilateral triangle pointing right, optically centered.
+    let tri_size = r * 0.9;
+    let optical_shift = tri_size * 0.15; // triangles look off-center without this
+    let p0 = egui::pos2(center.x - tri_size * 0.45 + optical_shift, center.y - tri_size * 0.55);
+    let p1 = egui::pos2(center.x - tri_size * 0.45 + optical_shift, center.y + tri_size * 0.55);
+    let p2 = egui::pos2(center.x + tri_size * 0.55 + optical_shift, center.y);
+    painter.add(egui::Shape::convex_polygon(
+        vec![p0, p1, p2],
+        Color32::WHITE,
+        egui::Stroke::NONE,
+    ));
+}
+
+fn paint_generic_file_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    path: &std::path::Path,
+    colors: &crate::theme::Colors,
+) {
+    painter.rect_filled(rect, 4.0, colors.bg_active);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, colors.text_dim),
+        egui::StrokeKind::Inside,
+    );
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_uppercase())
+        .unwrap_or_else(|| "FILE".to_string());
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        ext,
+        egui::FontId::monospace(rect.height().min(rect.width()) * 0.22),
+        colors.text_primary,
+    );
+}
+
+/// Rough truncation for a fixed pixel width. egui has no width-measurement API
+/// available without a font atlas lookup, so approximate with 6px/char.
+fn truncate_for_width(s: &str, width_px: f32) -> String {
+    let max_chars = (width_px / 6.0).max(4.0) as usize;
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 
@@ -313,6 +1189,11 @@ impl App for ProcessApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+        // Check for hot-reload signal before rendering.
+        if self.check_reload() {
+            self.restart();
+        }
+
         let size = ui.available_size();
 
         // Send Init on first render.
@@ -335,7 +1216,9 @@ impl App for ProcessApp {
         }
 
         // Request a new frame.
-        self.send_event(&PlexiEvent::Render { width: size.x, height: size.y });
+        let delta_time = self.last_render_time.elapsed().as_secs_f32();
+        self.last_render_time = Instant::now();
+        self.send_event(&PlexiEvent::Render { width: size.x, height: size.y, delta_time });
 
         // Drain all draw commands that arrived since last frame (including response
         // to the Render we just sent — they come async so we take whatever is ready).
@@ -368,13 +1251,43 @@ impl App for ProcessApp {
                         _       => log::info!(target: &target, "{message}"),
                     }
                 }
-                DrawCommand::Notification { id, title, body, urgency, run_id, action } => {
-                    let urgency_str = urgency.clone().unwrap_or_else(|| "info".to_string());
+                DrawCommand::State { user_state, derived, session, persistent } => {
+                    self.handle_state_response(AppState {
+                        user_state,
+                        derived,
+                        session,
+                        persistent,
+                    });
+                }
+                DrawCommand::CostReport {
+                    app_id: _, service, model,
+                    input_tokens, output_tokens, cost_usd,
+                    operation_id, timestamp,
+                } => {
+                    self.cost_tracker.record(
+                        &service, &model,
+                        input_tokens, output_tokens, cost_usd,
+                        operation_id.as_deref(), timestamp.as_deref(),
+                    );
+                }
+                DrawCommand::Notification {
+                    id,
+                    title,
+                    body,
+                    source_app,
+                    urgency,
+                    expires_at,
+                    visible_after,
+                    run_id,
+                    action,
+                } => {
+                    let urgency_str = urgency.clone();
+                    // Emit bus event for notification.
                     if let Some(el) = &self.event_log {
                         el.emit(BusEventKind::NotificationEmitted {
                             id: id.clone(),
                             app_id: self.type_id.clone(),
-                            urgency: urgency_str,
+                            urgency: urgency_str.clone(),
                             run_id: run_id.clone(),
                         });
                     }
@@ -383,7 +1296,75 @@ impl App for ProcessApp {
                         self.type_id,
                         body.as_deref().map(|b| format!(" — {b}")).unwrap_or_default()
                     );
-                    let _ = (action, run_id); // stored in notification log via host
+                    // Trust the app's self-reported source_app if set.
+                    let src = source_app
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| self.type_id.clone());
+                    let source_tag = format!("app:{}", self.type_id);
+                    // Record to notification log with action payload extracted.
+                    let action_type = action.as_ref().map(|a| {
+                        match a {
+                            crate::app_protocol::NotificationAction::Focus { .. } => "focus",
+                            crate::app_protocol::NotificationAction::Confirm { .. } => "confirm",
+                            crate::app_protocol::NotificationAction::TextInput { .. } => "text_input",
+                            crate::app_protocol::NotificationAction::Dismiss => "dismiss",
+                            crate::app_protocol::NotificationAction::ResumeRun { .. } => "resume_run",
+                            crate::app_protocol::NotificationAction::OpenIntent { .. } => "open_intent",
+                            crate::app_protocol::NotificationAction::RunCommand { .. } => "run_command",
+                            crate::app_protocol::NotificationAction::ExternalUrl { .. } => "external_url",
+                        }.to_string()
+                    }).unwrap_or_else(|| "dismiss".to_string());
+                    crate::notification_log::record(
+                        title,
+                        body,
+                        src,
+                        urgency_str,
+                        expires_at,
+                        visible_after,
+                        action_type,
+                        None, // action_payload: structured action stored separately
+                        Some(source_tag),
+                    );
+                    let _ = (run_id, action); // wired into notification log above
+                }
+                DrawCommand::SetCursor { cursor } => {
+                    let icon = match cursor.as_str() {
+                        "pointer"   => egui::CursorIcon::PointingHand,
+                        "grab"      => egui::CursorIcon::Grab,
+                        "grabbing"  => egui::CursorIcon::Grabbing,
+                        "crosshair" => egui::CursorIcon::Crosshair,
+                        "text"      => egui::CursorIcon::Text,
+                        _           => egui::CursorIcon::Default,
+                    };
+                    self.pending_cursor = Some(icon);
+                }
+                DrawCommand::MouseTracking { enabled } => {
+                    self.mouse_tracking = enabled;
+                }
+                DrawCommand::SpawnApp {
+                    app_id,
+                    args,
+                    parent,
+                    layout,
+                    lifecycle,
+                    linked,
+                    wire_channels,
+                } => {
+                    let target = format!("app::{}", self.type_id);
+                    log::debug!(
+                        target: &target,
+                        "spawn_app requested: target={app_id} parent={parent:?} layout={layout:?} \
+                         lifecycle={lifecycle:?} linked={linked} channels={wire_channels:?}"
+                    );
+                    self.pending_spawns.push(PendingSpawn {
+                        app_id,
+                        args,
+                        parent,
+                        layout,
+                        lifecycle,
+                        linked,
+                        wire_channels,
+                    });
                 }
                 DrawCommand::PipeWrite { channel, value } => {
                     let bytes = value.to_string().len() as u32;
@@ -394,9 +1375,22 @@ impl App for ProcessApp {
                             bytes,
                         });
                     }
-                    // The wire-forwarding is done at the app.rs level via pipe_wires table.
-                    // Store it in pending_frame so app.rs can pick it up.
-                    self.pending_frame.push(DrawCommand::PipeWrite { channel, value });
+                    // Queue for the host pipe dispatcher.
+                    let target = format!("app::{}", self.type_id);
+                    log::debug!(target: &target, "pipe_write: channel={channel:?}");
+                    self.pending_pipe_writes.push((channel, value));
+                }
+                DrawCommand::PipeSubscribe { channel: _ } => {
+                    // Phase 0 no-op: silently consume. Forward-compat only.
+                }
+                DrawCommand::SecretGet { name } => {
+                    let dir_str = self.scope_root.display().to_string();
+                    let value = crate::secrets::resolve_secret(&name, &self.type_id, &dir_str)
+                        .map(|z| z.to_string());
+                    self.send_event(&PlexiEvent::SecretResponse {
+                        name: name.clone(),
+                        value,
+                    });
                 }
                 DrawCommand::RunCreate { head_task, payload, parent_run_id, notification_title } => {
                     let run_id = if let Some(rs) = &self.run_store {
@@ -454,18 +1448,13 @@ impl App for ProcessApp {
                         let (back_tx, back_rx) = mpsc::sync_channel::<PlexiEvent>(256);
                         self.event_back_tx = Some(back_tx);
                         let _ = scope;
-                        // Spawn thread to receive bus events and forward to app.
-                        // The back_rx will be drained in ui() each frame.
                         let _kinds = kinds;
-                        // We repurpose pending_back_events — drain back_rx each frame.
-                        // Store the back_rx in an Arc<Mutex> so ui() can drain it.
                         let back_rx_shared = Arc::new(Mutex::new(back_rx));
                         let back_rx2 = back_rx_shared.clone();
                         thread::spawn(move || {
                             while let Ok(event) = rx.recv() {
                                 let plexi_event = PlexiEvent::EventData { event };
                                 if back_rx2.lock().unwrap().try_recv().is_err() {
-                                    // Ignore — just showing the pattern
                                     let _ = plexi_event;
                                 }
                             }
@@ -485,12 +1474,18 @@ impl App for ProcessApp {
             self.send_event(&event);
         }
 
+        // Apply cursor override requested by the app this frame, then clear it.
+        if let Some(icon) = self.pending_cursor.take() {
+            ui.ctx().set_cursor_icon(icon);
+        }
+
         // Render the current frame.
         let frame_clone = self.frame.clone();
+        let cwd = self.cwd.clone();
         egui::Frame::new()
             .fill(ctx.colors.terminal_bg)
             .show(ui, |ui| {
-                Self::render_draw_commands(ui, &frame_clone, ctx.colors);
+                Self::render_draw_commands(ui, &frame_clone, ctx, &cwd);
             });
 
         // Poll the subprocess at ~60 fps. Using request_repaint() with no delay
@@ -556,6 +1551,74 @@ impl App for ProcessApp {
         std::mem::take(&mut self.pending_commands)
     }
 
+    fn take_pending_spawns(&mut self) -> Vec<PendingSpawn> {
+        std::mem::take(&mut self.pending_spawns)
+    }
+
+    fn take_pipe_writes(&mut self) -> Vec<(String, serde_json::Value)> {
+        ProcessApp::take_pipe_writes(self)
+    }
+
+    fn send_pipe_data(&mut self, from_app: &str, channel: &str, value: &serde_json::Value) {
+        ProcessApp::send_pipe_data(self, from_app, channel, value);
+    }
+
+    fn handle_drop(&mut self, local_pos: egui::Pos2, paths: &[PathBuf]) -> bool {
+        // Find the topmost DropTarget in the last committed frame whose rect
+        // contains the drop position. Iterate in reverse so later-declared
+        // targets (painted on top) take precedence.
+        let hit = self.frame.iter().rev().find_map(|cmd| {
+            if let DrawCommand::DropTarget { id, x, y, w, h, accept, .. } = cmd {
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(*x, *y),
+                    egui::vec2(*w, *h),
+                );
+                if rect.contains(local_pos) {
+                    Some((id.clone(), accept.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+
+        let Some((target_id, accept)) = hit else {
+            return false;
+        };
+
+        let accept_lower: Vec<String> =
+            accept.iter().map(|s| s.trim_start_matches('.').to_ascii_lowercase()).collect();
+        let filtered: Vec<String> = paths
+            .iter()
+            .filter(|p| {
+                if accept_lower.is_empty() {
+                    return true;
+                }
+                match p.extension().and_then(|e| e.to_str()) {
+                    Some(ext) => accept_lower.iter().any(|a| a == &ext.to_ascii_lowercase()),
+                    None => false,
+                }
+            })
+            .map(|p| p.display().to_string())
+            .collect();
+
+        if filtered.is_empty() {
+            log::debug!(
+                "ProcessApp[{}]: drop on '{}' filtered out all {} path(s)",
+                self.type_id, target_id, paths.len()
+            );
+            return true;
+        }
+
+        self.send_event(&PlexiEvent::Drop {
+            target_id,
+            paths: filtered,
+        });
+        true
+    }
+
+
     fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {
         self.send_event(&PlexiEvent::Command { text: cmd.to_string() });
         // Commands are dispatched to the app; we don't also run them in the terminal
@@ -567,6 +1630,36 @@ impl App for ProcessApp {
         Some(serde_json::json!({
             "type_id": self.type_id,
         }))
+    }
+
+    fn mouse_tracking_enabled(&self) -> bool {
+        self.mouse_tracking
+    }
+
+    fn send_mouse_down(&mut self, x: f32, y: f32, button: &str) {
+        self.send_event(&PlexiEvent::MouseDown { x, y, button: button.to_string() });
+    }
+
+    fn send_mouse_up(&mut self, x: f32, y: f32, button: &str) {
+        self.send_event(&PlexiEvent::MouseUp { x, y, button: button.to_string() });
+    }
+
+    fn send_mouse_move(&mut self, x: f32, y: f32) {
+        if self.mouse_tracking {
+            self.send_event(&PlexiEvent::MouseMove { x, y });
+        }
+    }
+
+    fn send_scroll(&mut self, x: f32, y: f32, delta_x: f32, delta_y: f32) {
+        self.send_event(&PlexiEvent::Scroll { x, y, delta_x, delta_y });
+    }
+
+    fn undo(&mut self) {
+        self.do_undo();
+    }
+
+    fn redo(&mut self) {
+        self.do_redo();
     }
 }
 

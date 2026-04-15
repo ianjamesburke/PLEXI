@@ -1,0 +1,11 @@
+[app]
+id = "markdown-preview"
+name = "Markdown Preview"
+entry = "markdown_preview.py"
+version = "0.1.0"
+description = "Live markdown preview — polls mtime every second, re-renders on change"
+
+[app.capabilities]
+file_types = ["md", "markdown"]
+terminal_write = false
+filesystem = "none"

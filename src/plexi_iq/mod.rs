@@ -1,51 +1,62 @@
-/// Plexi IQ — in-host agent orchestrator (Stage 1).
-///
-/// Stage 1 uses `claude -p --resume <session_id>` as the backend.
-/// The native API backend is a config option for the future.
+//! Plexi IQ — in-process agent harness.
+//!
+//! Stage 0 scaffolding. See `docs/specs/plexi-iq.md` §3 for the module
+//! layout and §9 for the staging plan.
+//!
+//! Re-exports below expose the public types (`PlexiIq`, `PlexiIqConfig`,
+//! `PlexiIqInstance`) that Stage 1 will flesh out.
+
+#![allow(dead_code)] // Stage 0: stubs only.
 
 pub mod backend;
+pub mod context;
+#[path = "loop.rs"]
+pub mod turn_loop;
+pub mod prompt;
+pub mod tools;
+
+pub use backend::{BillingModel, LlmBackend};
+pub use context::ToolContext;
+pub use tools::{Tool, ToolRegistry, ToolResult};
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// Top-level Plexi IQ handle — owns shared configuration and spawns per-pane
+/// `PlexiIqInstance`s. Stage 1 will give this real fields (backend factory,
+/// global budget ledger handle, MCP client pool, etc.). For now it is a
+/// zero-sized marker so downstream code can name the type.
+#[derive(Debug, Default)]
+pub struct PlexiIq {}
+
+/// Configuration passed when constructing a `PlexiIq`. See spec §3.6 for the
+/// backend-selection logic and §10 for budget fields that will land here.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PlexiIqConfig {
+    /// Optional override for the directory scope used when bootstrapping
+    /// instances. When `None`, instances will inherit the pane's cwd.
+    pub default_directory_scope: Option<PathBuf>,
+    /// Which backend to use for LLM calls.
+    #[serde(default)]
     pub backend: IqBackend,
+    /// API key for the native Anthropic backend (when `backend = "native_api"`).
     #[serde(default)]
     pub api_key: Option<String>,
-    pub default_directory_scope: Option<PathBuf>,
 }
 
-impl Default for PlexiIqConfig {
-    fn default() -> Self {
-        Self {
-            backend: IqBackend::ClaudeProxy,
-            api_key: None,
-            default_directory_scope: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IqBackend {
+    #[default]
     ClaudeProxy,
     NativeApi,
 }
 
-pub struct PlexiIq {
-    pub config: PlexiIqConfig,
-}
-
-impl PlexiIq {
-    pub fn new(config: PlexiIqConfig) -> Self {
-        Self { config }
-    }
-
-    pub fn default() -> Self {
-        Self::new(PlexiIqConfig::default())
-    }
-}
+/// Per-pane agent instance. Owns its own conversation, tool registry, and
+/// session state. Stage 1 will add the turn loop driver and the channels that
+/// connect it to the pane's `AgentMode` state machine.
+#[derive(Debug, Default)]
+pub struct PlexiIqInstance {}
 
 /// Per-pane IQ session. Tracks session state for `claude -p --resume`.
 pub struct IqSession {

@@ -1,0 +1,10 @@
+[app]
+id = "clipboard-stack"
+name = "Clipboard Stack"
+entry = "clipboard_stack.py"
+version = "0.1.0"
+description = "Persistent clipboard history with fuzzy search and pinned entries."
+icon = "📋"
+
+[app.capabilities]
+# Runs pbpaste/pbcopy subprocesses — macOS only

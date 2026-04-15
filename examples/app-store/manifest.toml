@@ -1,0 +1,11 @@
+[app]
+id = "app-store"
+name = "App Store"
+entry = "app_store.py"
+version = "0.1.1"
+description = "Browse, install, and update Plexi apps from the registry"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "read_only"

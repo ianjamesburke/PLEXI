@@ -1,0 +1,11 @@
+[app]
+id = "wikipedia"
+name = "Wikipedia"
+entry = "wikipedia.py"
+version = "0.1.0"
+description = "Browse Wikipedia — search articles and read summaries"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"

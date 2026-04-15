@@ -1,0 +1,10 @@
+[app]
+id          = "mock-target"
+name        = "Mock Target"
+entry       = "mock_target.py"
+version     = "0.0.1"
+description = "Fixture app for spiral_viewer tests."
+
+[app.layout]
+min_width  = 100
+min_height = 80

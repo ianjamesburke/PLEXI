@@ -1,0 +1,14 @@
+[app]
+id = "backlog-triage"
+name = "Backlog Triage"
+entry = "backlog_triage.py"
+version = "0.2.0"
+description = "Keyboard-driven review of backlog notes — archive, trash, or read"
+
+[app.launch]
+mode = "fullscreen"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "write"

@@ -1,9 +1,12 @@
+use crate::agent_mode::AgentMode;
 use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPACITY};
+use crate::media_cache::MediaCache;
 use crate::pane::TerminalPane;
 use crate::theme::{self, Colors};
-use egui::{Color32, Vec2};
+use egui::{Color32, Stroke, Vec2};
 use egui_term::{BackendCommand, TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Default height in logical pixels for the terminal command bar when an app is active.
@@ -44,6 +47,8 @@ pub struct PlexiBehavior<'a> {
     pub colors: Colors,
     pub pane_names: HashMap<PaneId, String>,
     pub drag_cursor_pos: Option<egui::Pos2>,
+    /// Shared media cache borrowed from `PlexiApp`.
+    pub media_cache: &'a RefCell<MediaCache>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -67,12 +72,46 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         // Handle file drops — use the same geometric hit test as hover detection
         // so the drop target matches the visual focus with no frame delay.
+        //
+        // Apps in AppActive mode get first crack at the drop via their declared
+        // DropTargets (see App::handle_drop). If no drop target claims the
+        // position, or the pane is in FullTerminal mode, fall back to the
+        // default behaviour: paste the shell-escaped path(s) into the terminal.
         if is_drag_hovering {
             let dropped = ui.input(|i| i.raw.dropped_files.clone());
             if !dropped.is_empty() {
-                if let Some(pane) = self.panes.get_mut(pane_id) {
-                    for file in dropped {
-                        if let Some(path) = &file.path {
+                let paths: Vec<std::path::PathBuf> = dropped
+                    .iter()
+                    .filter_map(|f| f.path.clone())
+                    .collect();
+
+                // Try the active app first. The Frame applied below uses an
+                // inner_margin of 8, so the app's local origin is offset from
+                // the pane's outer rect by (8, 8). Mirror that offset here so
+                // the position we pass to handle_drop matches the coordinate
+                // space of the DropTarget commands the app emitted.
+                let app_consumed = if let Some(pane) = self.panes.get_mut(pane_id) {
+                    if matches!(pane.surface_mode, SurfaceMode::AppActive)
+                        && pane.active_app.is_some()
+                    {
+                        let drop_pos = self
+                            .drag_cursor_pos
+                            .or_else(|| ui.input(|i| i.pointer.interact_pos()))
+                            .unwrap_or_else(|| ui.max_rect().center());
+                        let inner_origin = ui.max_rect().min + egui::vec2(8.0, 8.0);
+                        let local_pos = drop_pos - inner_origin.to_vec2();
+                        let app = pane.active_app.as_mut().unwrap();
+                        app.handle_drop(local_pos, &paths)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !app_consumed {
+                    if let Some(pane) = self.panes.get_mut(pane_id) {
+                        for path in &paths {
                             let path_str = path.display().to_string();
                             let escaped = if path_str.contains(|c: char| {
                                 c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)
@@ -128,6 +167,40 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
                     match pane.surface_mode {
                         SurfaceMode::FullTerminal => {
+                            // Agent mode: inline (Warp-style) rendering.
+                            //
+                            // We keep the normal TerminalView so shell
+                            // scrollback stays visible and mouse selection /
+                            // scroll still work. Two extra steps:
+                            //   1. Drain key/text events into AgentMode
+                            //      BEFORE TerminalView sees them, so the PTY
+                            //      never hears agent-mode keystrokes.
+                            //   2. Drain AgentMode's pending ANSI bytes into
+                            //      the terminal backend via write_agent_bytes,
+                            //      so the `>>> ` indicator and LLM replies
+                            //      render into the same grid as shell output.
+                            if is_focused && pane.agent_mode.is_active() {
+                                intercept_agent_keys(ui, &mut pane.agent_mode);
+                            }
+                            if pane.agent_mode.poll_llm() {
+                                ui.ctx().request_repaint_after(
+                                    std::time::Duration::from_millis(50),
+                                );
+                            }
+                            for chunk in pane.agent_mode.drain_output() {
+                                pane.backend.write_agent_bytes(&chunk);
+                            }
+                            if matches!(
+                                pane.agent_mode.state,
+                                crate::agent_mode::AgentModeState::Processing
+                            ) {
+                                // Keep polling the LLM worker while a request
+                                // is in flight even without new key input.
+                                ui.ctx().request_repaint_after(
+                                    std::time::Duration::from_millis(50),
+                                );
+                            }
+
                             render_name_bar_and_dots(
                                 ui,
                                 tile_id,
@@ -156,8 +229,65 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     colors: &self.colors,
                                     is_focused,
                                     linked_terminal: *pane_id,
+                                    media_cache: self.media_cache,
                                 };
                                 app.ui(ui, &app_ctx);
+
+                                // Forward mouse events to the focused app.
+                                // The app surface origin is the inner margin (8px) from the Frame.
+                                if is_focused {
+                                    let inner_origin = ui.min_rect().min + egui::vec2(8.0, 8.0);
+
+                                    ui.input(|i| {
+                                        // Mouse button presses and releases.
+                                        for event in &i.events {
+                                            match event {
+                                                egui::Event::PointerButton { pos, button, pressed, .. } => {
+                                                    if ui.max_rect().contains(*pos) {
+                                                        let lx = pos.x - inner_origin.x;
+                                                        let ly = pos.y - inner_origin.y;
+                                                        let btn = match button {
+                                                            egui::PointerButton::Primary   => "left",
+                                                            egui::PointerButton::Secondary => "right",
+                                                            egui::PointerButton::Middle    => "middle",
+                                                            _                              => "left",
+                                                        };
+                                                        if *pressed {
+                                                            app.send_mouse_down(lx, ly, btn);
+                                                        } else {
+                                                            app.send_mouse_up(lx, ly, btn);
+                                                        }
+                                                    }
+                                                }
+                                                egui::Event::MouseMoved(_) => {
+                                                    // MouseMove: only forward if the app opted in.
+                                                    if app.mouse_tracking_enabled() {
+                                                        if let Some(pos) = i.pointer.hover_pos() {
+                                                            if ui.max_rect().contains(pos) {
+                                                                let lx = pos.x - inner_origin.x;
+                                                                let ly = pos.y - inner_origin.y;
+                                                                app.send_mouse_move(lx, ly);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+
+                                        // Scroll delta — send whenever there is a non-zero scroll.
+                                        let scroll = i.smooth_scroll_delta;
+                                        if scroll.length_sq() > 0.0 {
+                                            if let Some(pos) = i.pointer.hover_pos() {
+                                                if ui.max_rect().contains(pos) {
+                                                    let lx = pos.x - inner_origin.x;
+                                                    let ly = pos.y - inner_origin.y;
+                                                    app.send_scroll(lx, ly, scroll.x, scroll.y);
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
                             } else {
                                 // App was dropped — fall back to full terminal.
                                 let font_size = pane.font_size;
@@ -171,6 +301,129 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     ));
                                 ui.add(terminal);
                             }
+                        }
+
+                        SurfaceMode::AppWithCompanion { companion_fraction } => {
+                            // Render the app on the top portion of the pane
+                            // and the existing (preserved) terminal on the
+                            // bottom portion. Both share the same pane id.
+                            let pane_rect = ui.max_rect();
+                            let frac = companion_fraction.clamp(0.10, 0.90);
+                            let separator_h = 1.0;
+                            let term_h = (pane_rect.height() * frac).max(40.0);
+                            let app_h = (pane_rect.height() - term_h - separator_h).max(40.0);
+
+                            let app_rect = egui::Rect::from_min_size(
+                                pane_rect.min,
+                                egui::vec2(pane_rect.width(), app_h),
+                            );
+                            let sep_rect = egui::Rect::from_min_size(
+                                egui::pos2(pane_rect.left(), pane_rect.top() + app_h),
+                                egui::vec2(pane_rect.width(), separator_h),
+                            );
+                            let term_rect = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    pane_rect.left(),
+                                    pane_rect.top() + app_h + separator_h,
+                                ),
+                                egui::vec2(pane_rect.width(), term_h),
+                            );
+
+                            // Separator line between app and terminal.
+                            ui.painter().rect_filled(
+                                sep_rect,
+                                0.0,
+                                self.colors.border,
+                            );
+
+                            // Track which surface the pointer is currently
+                            // over so a click promotes that surface inside
+                            // the pane (handled below the per-surface UIs).
+                            let pointer_over_app = ui
+                                .input(|i| i.pointer.hover_pos())
+                                .map(|p| app_rect.contains(p))
+                                .unwrap_or(false);
+                            let pointer_over_term = ui
+                                .input(|i| i.pointer.hover_pos())
+                                .map(|p| term_rect.contains(p))
+                                .unwrap_or(false);
+                            let click_pressed =
+                                ui.input(|i| i.pointer.any_pressed());
+
+                            // App surface (top).
+                            let app_focused = is_focused
+                                && pane.focused_surface == SurfaceLayer::App;
+                            if let Some(app) = pane.active_app.as_mut() {
+                                let mut app_ui = ui.new_child(
+                                    egui::UiBuilder::new().max_rect(app_rect),
+                                );
+                                let app_ctx = AppRenderContext {
+                                    colors: &self.colors,
+                                    is_focused: app_focused,
+                                    linked_terminal: *pane_id,
+                                    media_cache: self.media_cache,
+                                };
+                                app.ui(&mut app_ui, &app_ctx);
+                            }
+
+                            // Companion terminal surface (bottom). This is
+                            // the SAME terminal backend that was running in
+                            // this pane before the app opened — history,
+                            // running processes, agent sessions all intact.
+                            let term_focused = is_focused
+                                && pane.focused_surface == SurfaceLayer::Terminal;
+                            let mut term_ui = ui.new_child(
+                                egui::UiBuilder::new().max_rect(term_rect),
+                            );
+                            let font_size = pane.font_size;
+                            let terminal = TerminalView::new(&mut term_ui, &mut pane.backend)
+                                .set_focus(term_focused)
+                                .set_theme(self.theme.clone())
+                                .set_font(theme::terminal_font(font_size))
+                                .set_size(Vec2::new(term_rect.width(), term_rect.height()));
+                            term_ui.add(terminal);
+
+                            // Subtle highlight on the focused surface so the
+                            // user can see which one will receive keys.
+                            let highlight = Stroke::new(1.0, self.colors.accent);
+                            if app_focused {
+                                ui.painter().rect_stroke(
+                                    app_rect.shrink(0.5),
+                                    0.0,
+                                    highlight,
+                                    egui::StrokeKind::Inside,
+                                );
+                            } else if term_focused {
+                                ui.painter().rect_stroke(
+                                    term_rect.shrink(0.5),
+                                    0.0,
+                                    highlight,
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+
+                            // Click-to-focus inside the embedded layout: a
+                            // press inside the app rect promotes the app
+                            // surface; a press inside the terminal rect
+                            // promotes the terminal surface.
+                            if is_focused && click_pressed {
+                                if pointer_over_app
+                                    && pane.focused_surface != SurfaceLayer::App
+                                {
+                                    pane.focused_surface = SurfaceLayer::App;
+                                } else if pointer_over_term
+                                    && pane.focused_surface != SurfaceLayer::Terminal
+                                {
+                                    pane.focused_surface = SurfaceLayer::Terminal;
+                                }
+                            }
+
+                            // If the pointer is over a surface that isn't
+                            // the focused one, dim that surface slightly so
+                            // the user knows keys won't go there until they
+                            // click. Skipping for MVP — left intentionally
+                            // simple. The accent border is enough.
+                            let _ = APP_DIM_OPACITY;
                         }
                     }
 
@@ -248,6 +501,43 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let rect = rect.shrink(0.75);
             painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
         }
+    }
+}
+
+/// Route every key / text event for a focused, agent-mode pane into
+/// `AgentMode::handle_key_event`, draining the matched events from the frame
+/// so the terminal widget rendered afterward never sees them and nothing
+/// reaches the PTY.
+///
+/// This runs BEFORE `TerminalView::new().add(...)` renders, which is the
+/// lesson from `~/.claude/CLAUDE.md`: TextEdit/terminal widgets consume key
+/// events during their own rendering pass, so any app-level interception has
+/// to happen first. Filtering `input.events` here is equivalent to calling
+/// `consume_key` for every relevant event.
+fn intercept_agent_keys(ui: &mut egui::Ui, agent: &mut AgentMode) {
+    // Take the current events out of egui's input state, hand each eligible
+    // one to AgentMode, and put the non-consumed events back. The terminal
+    // widget rendered afterward clones `i.events` in its process_input pass,
+    // so anything we drop here never reaches the PTY.
+    let mut changed = false;
+    ui.input_mut(|input| {
+        let old = std::mem::take(&mut input.events);
+        let mut kept = Vec::with_capacity(old.len());
+        for event in old {
+            let eligible = matches!(
+                event,
+                egui::Event::Text(_) | egui::Event::Key { pressed: true, .. }
+            );
+            if eligible && agent.handle_key_event(&event) {
+                changed = true;
+                continue;
+            }
+            kept.push(event);
+        }
+        input.events = kept;
+    });
+    if changed {
+        ui.ctx().request_repaint();
     }
 }
 

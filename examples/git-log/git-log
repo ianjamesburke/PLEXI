@@ -9,6 +9,7 @@ Controls:
   k / ArrowUp     Previous commit
   Enter           Run `git show <hash>` in linked terminal
   r               Refresh log
+<<<<<<< HEAD
 """
 
 import subprocess
@@ -39,6 +40,34 @@ COLORS = {
 
 
 def load_commits():
+=======
+  ⌘W              Close app (host-handled)
+
+Phase 1 SDK components layer: uses ctx.header, ctx.status_bar,
+ctx.scrollable_list, ctx.empty_state, THEME. No hand-rolled scroll math,
+no local palette, no pixel-guess right-alignment.
+"""
+
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from plexi_sdk import (
+    App,
+    THEME,
+    BODY, CAPTION, MONO_SMALL,
+    PAD,
+)
+
+app = App()
+
+commits: list[tuple[str, str]] = []  # list of (short_hash, subject)
+selected = 0
+
+
+def load_commits() -> None:
+>>>>>>> origin/alpha
     global commits
     try:
         result = subprocess.run(
@@ -57,6 +86,7 @@ def load_commits():
 load_commits()
 
 
+<<<<<<< HEAD
 @app.on_render
 def render(ctx):
     global scroll_offset
@@ -102,6 +132,61 @@ def render(ctx):
     ctx.text(16, 13, "git log", size=14, color=COLORS["accent"], bold=True)
     hint = "j/k navigate  Enter=show  r=refresh"
     ctx.text(ctx.width - len(hint) * 7.5, 13, hint, size=11, color=COLORS["muted"])
+=======
+ROW_H = 44.0
+
+
+def _render_row(ctx, item, i, x, y, w, is_sel):
+    hash_str, subject = item
+    if is_sel:
+        ctx.rect(x, y, w, ROW_H, fill=THEME.highlight)
+
+    text_color = THEME.fg if is_sel else THEME.muted
+    text_y = y + (ROW_H - BODY) / 2
+
+    ctx.text(
+        x + PAD, text_y, subject,
+        size=BODY, color=text_color, bold=is_sel,
+    )
+    # Hash on the right (monospace, dimmed), host measures exact width.
+    ctx.text_right(
+        x + w - PAD, text_y + (BODY - MONO_SMALL) / 2, hash_str,
+        size=MONO_SMALL, color=THEME.muted, monospace=True,
+    )
+
+
+@app.on_render
+def render(ctx):
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
+
+    if not commits:
+        ctx.header("git log  ·  0 commits")
+        ctx.empty_state(
+            "No commits found",
+            "Not a git repository?",
+        )
+        ctx.status_bar([("r", "refresh"), ("⌘W", "close")])
+        return
+
+    ctx.header(f"git log  ·  {len(commits)} commit{'s' if len(commits) != 1 else ''}")
+
+    ctx.scrollable_list(
+        list_id="commits",
+        items=commits,
+        selected=selected,
+        row_height=ROW_H,
+        render_row=_render_row,
+    )
+
+    ctx.status_bar(
+        [
+            ("j/k", "navigate"),
+            ("Enter", "show"),
+            ("r", "refresh"),
+            ("⌘W", "close"),
+        ],
+    )
+>>>>>>> origin/alpha
 
 
 @app.on_key
@@ -110,7 +195,12 @@ def on_key(key, mods, emit):
     # Plexi sends printable characters via Event::Text as lowercase (e.g. "j", "r").
     # Control/navigation keys come via Event::Key as PascalCase (e.g. "ArrowDown", "Enter").
     if key in ("j", "ArrowDown"):
+<<<<<<< HEAD
         selected = min(selected + 1, len(commits) - 1)
+=======
+        if commits:
+            selected = min(selected + 1, len(commits) - 1)
+>>>>>>> origin/alpha
     elif key in ("k", "ArrowUp"):
         selected = max(selected - 1, 0)
     elif key == "Enter" and commits:

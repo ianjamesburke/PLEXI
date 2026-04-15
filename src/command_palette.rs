@@ -66,9 +66,9 @@ impl PlexiApp {
             rank(a).cmp(&rank(b))
         });
 
-        // ── App entries (appended after panes) ─────────────────────────────
+        // ── App entries (appended after panes, sorted by MRU) ─────────────
         // Collect outside the borrow of self.registry to avoid borrow conflicts
-        let app_entries: Vec<(String, String, String)> = self
+        let mut app_entries: Vec<(String, String, String)> = self
             .registry
             .list()
             .into_iter()
@@ -80,6 +80,15 @@ impl PlexiApp {
             })
             .map(|app| (app.manifest.id.clone(), app.manifest.name.clone(), app.manifest.description.clone()))
             .collect();
+
+        // Sort by MRU: apps in visit history first (by recency), then alphabetical
+        let mru = &self.app_visit_history;
+        app_entries.sort_by(|(id_a, name_a, _), (id_b, name_b, _)| {
+            let rank_a = mru.iter().position(|s| s == id_a).unwrap_or(usize::MAX);
+            let rank_b = mru.iter().position(|s| s == id_b).unwrap_or(usize::MAX);
+            rank_a.cmp(&rank_b).then_with(|| name_a.cmp(name_b))
+        });
+
 
         for (id, name, description) in app_entries {
             entries.push(PaletteEntry::App { id, name, description });
@@ -191,9 +200,22 @@ impl PlexiApp {
                         let current_ctx = self.active_context;
                         let current_focused = self.contexts[self.active_context].focused_pane;
 
+                        // Fixed list height — never adjusts with content so the modal
+                        // stays the same size regardless of how many items are visible.
+                        let screen_h = ctx.screen_rect().height();
+                        let list_height = (screen_h * 0.60).max(320.0).min(screen_h - 200.0);
+
                         // Track whether we've drawn the Apps section header
                         let mut shown_apps_header = false;
                         let mut click_action: Option<Action> = None;
+                        let mut selected_rect: Option<egui::Rect> = None;
+
+                        let scroll_id = egui::Id::new("palette_scroll");
+                        egui::ScrollArea::vertical()
+                            .id_salt(scroll_id)
+                            .max_height(list_height)
+                            .min_scrolled_height(list_height)
+                            .show(ui, |ui| {
 
                         for (i, entry) in entries.iter().enumerate() {
                             let is_selected = i == self.palette_selected;
@@ -206,6 +228,7 @@ impl PlexiApp {
 
                                     let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(MODAL_WIDTH, 36.0));
                                     ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
+                                    if is_selected { selected_rect = Some(row_rect); }
 
                                     ui.allocate_ui_with_layout(
                                         Vec2::new(MODAL_WIDTH, 36.0),
@@ -246,6 +269,7 @@ impl PlexiApp {
                                     let fill = if is_selected { self.colors.bg_active } else { Color32::TRANSPARENT };
                                     let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(MODAL_WIDTH, 36.0));
                                     ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
+                                    if is_selected { selected_rect = Some(row_rect); }
 
                                     ui.allocate_ui_with_layout(
                                         Vec2::new(MODAL_WIDTH, 36.0),
@@ -260,7 +284,12 @@ impl PlexiApp {
                                                     ui.label(RichText::new(name).size(12.0).color(self.colors.text_primary));
                                                 });
                                                 if !description.is_empty() {
-                                                    ui.label(RichText::new(description).size(9.0).color(self.colors.text_dim));
+                                                    let desc = if description.len() > 58 {
+                                                        format!("{}…", &description[..58])
+                                                    } else {
+                                                        description.clone()
+                                                    };
+                                                    ui.label(RichText::new(desc).size(9.0).color(self.colors.text_dim));
                                                 }
                                             });
                                         },
@@ -274,6 +303,18 @@ impl PlexiApp {
                                 }
                             }
                         }
+
+                        if entries.is_empty() {
+                            ui.label(RichText::new("No matching panes or apps").size(11.0).color(self.colors.text_dim));
+                        }
+
+                        }); // end ScrollArea
+
+                        // Scroll to keep selected row visible
+                        if let Some(rect) = selected_rect {
+                            ui.scroll_to_rect(rect, None);
+                        }
+
 
                         if let Some(act) = click_action {
                             match act {
@@ -292,10 +333,6 @@ impl PlexiApp {
                                     self.launch_app_by_id(&id);
                                 }
                             }
-                        }
-
-                        if entries.is_empty() {
-                            ui.label(RichText::new("No matching panes or apps").size(11.0).color(self.colors.text_dim));
                         }
                     });
             });

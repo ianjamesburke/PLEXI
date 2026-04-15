@@ -220,6 +220,11 @@ impl PlexiApp {
     /// Close a specific pane by its PaneId (the u64 backend ID, not the TileId).
     /// Searches all contexts to find the tile containing this pane.
     pub(crate) fn close_pane_by_id(&mut self, pane_id: PaneId) {
+        // Handle cascade/orphan before removing the tile so children are still
+        // findable in the tree.
+        self.handle_spawn_pane_close(pane_id);
+
+
         // Find which context and tile owns this pane_id.
         for ctx_idx in 0..self.contexts.len() {
             if let Some(tile_id) = self.contexts[ctx_idx].tree.tiles.find_pane(&pane_id) {
@@ -334,6 +339,43 @@ impl PlexiApp {
         self.active_context = self.contexts.len() - 1;
     }
 
+    /// Open a folder as a new context — used by the macOS Finder service
+    /// ("Open in Plexi") and by `plexi <path>` on the CLI. The context is
+    /// named after the folder's last path component.
+    pub(crate) fn open_path_as_context(&mut self, path: PathBuf) {
+        if !path.is_dir() {
+            log::warn!(
+                "open_path_as_context: path is not a directory, ignoring: {}",
+                path.display()
+            );
+            return;
+        }
+
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()))
+        else {
+            log::error!(
+                "open_path_as_context: failed to create terminal for {}",
+                path.display()
+            );
+            return;
+        };
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+
+        self.contexts.push(Context {
+            name,
+            path,
+            tree,
+            panes,
+            focused_pane: Some(root_tile),
+            zoomed_pane: None,
+        });
+        self.active_context = self.contexts.len() - 1;
+    }
+
     pub(crate) fn reset_active_context(&mut self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))
@@ -431,18 +473,52 @@ impl PlexiApp {
     }
 
     /// Close the active app on the focused terminal pane, returning to full terminal.
-    /// Also closes the linked terminal pane and collapses the split.
+    ///
+    /// Behavior depends on the mode the app was opened in:
+    ///
+    /// * `AppWithCompanion` — the existing terminal simply expands back to
+    ///   full pane. No tile destruction. The terminal instance is unchanged
+    ///   (history, running processes, agent conversations all preserved).
+    /// * `AppActive` (legacy auto-split) — closes the linked sibling terminal
+    ///   pane (which `open_app_on_focused` created) and collapses the split.
+    ///
+    /// If the app was tracking a directory (e.g. the file browser) and the user
+    /// navigated away from the opening directory, we propagate the final cwd back
+    /// to the underlying terminal by writing `cd '<path>'\n` to its PTY. The shell
+    /// is the source of truth for cwd, so we let it run `cd` rather than mutating
+    /// any in-memory cwd field.
     pub(crate) fn close_focused_app(&mut self) {
+        // Find the focused pane's tile id so we can collapse the split when
+        // it was a legacy auto-split. If the app was opened with a companion
+        // (no separate tile), `linked` will be None and we're done.
         let ctx = &mut self.contexts[self.active_context];
         let linked = if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            // Before closing, if the app reports a current directory that differs
+            // from the scope it was launched in, cd the underlying terminal to it.
+            let final_dir = pane
+                .active_app
+                .as_ref()
+                .and_then(|app| app.current_dir().map(|p| p.to_path_buf()));
+            if let (Some(final_dir), Some(scope)) = (final_dir, pane.app_scope.clone()) {
+                if final_dir != scope {
+                    let cmd = format!(
+                        "cd {}\n",
+                        crate::app::shell_escape(&final_dir.display().to_string())
+                    );
+                    pane.backend
+                        .process_command(BackendCommand::Write(cmd.into_bytes()));
+                }
+            }
             pane.close_app()
         } else {
             None
         };
 
-        // Close the linked terminal pane if it exists.
         if let Some(linked_id) = linked {
-            // Find the tile ID for the linked pane and remove it.
+            // Legacy path: there was a separate terminal tile. Remove it
+            // from the tree and drop the pane. (Same cleanup as before this
+            // refactor — kept verbatim to avoid changing legacy behavior.)
+            let ctx = &mut self.contexts[self.active_context];
             let tile_to_remove = ctx
                 .tree
                 .tiles
@@ -464,28 +540,146 @@ impl PlexiApp {
         }
     }
 
-    /// Open an app on the focused pane: auto-splits vertically, app on top,
-    /// fresh linked terminal on bottom.
+    /// Open an app on the focused pane.
+    ///
+    /// Preferred path: if the focused tile is already a plain terminal pane
+    /// with no app currently active, the app is opened *in the same pane*
+    /// using `SurfaceMode::AppWithCompanion`. The user's existing terminal —
+    /// including history, running processes, and any agent conversations —
+    /// is preserved, and the app overlays the top portion of the same pane.
+    /// No new `TerminalPane` is created and the tile tree is unchanged.
+    ///
+    /// Fallback path (when the focused pane is already showing an app, or
+    /// the focused tile is not a plain pane): legacy auto-split behavior —
+    /// create a fresh linked terminal pane below and put the app on top.
     pub(crate) fn open_app_on_focused(
         &mut self,
         app: Box<dyn App>,
         permissions: crate::app_permissions::AppPermissions,
         scope: PathBuf,
     ) {
+        self.open_app_on_focused_with_launch(app, permissions, scope, None);
+    }
+
+    /// Open an app on the focused pane with an optional manifest-declared
+    /// launch configuration that overrides the split direction, size, and
+    /// companion terminal cwd.
+    ///
+    /// When `launch` is `None`, the legacy 75/25 vertical split is used and the
+    /// companion terminal inherits the previous pane's cwd (unchanged behavior).
+    /// When `launch` is `Some`, the split direction, fraction, and companion
+    /// cwd come from the config. `{launch_dir}` in `companion_cwd` is resolved
+    /// to the app's `scope`.
+    pub(crate) fn open_app_on_focused_with_launch(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: crate::app_permissions::AppPermissions,
+        scope: PathBuf,
+        launch: Option<crate::app_registry::AppLaunchConfig>,
+    ) {
         let Some(focused) = self.contexts[self.active_context].focused_pane else {
             return;
         };
 
-        // Create a new terminal pane for the bottom split (same as split_focused).
+        // Fast path: focused tile is a plain terminal pane with no app yet.
+        // Open the app in-place, preserving the terminal instance. This
+        // preserves shell history, running processes, and agent conversations.
+        let can_embed = {
+            let ctx = &self.contexts[self.active_context];
+            if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                ctx.panes
+                    .get(pane_id)
+                    .map(|p| p.active_app.is_none())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        };
+
+        // Honor the manifest's [app.launch] mode. When an app declares
+        // mode = "fullscreen" (or doesn't opt into a companion terminal),
+        // open it in AppActive surface mode — the app owns the whole pane,
+        // no embedded terminal. Apps that want the 75/25 split must declare
+        // a companion explicitly.
+        let wants_fullscreen = launch
+            .as_ref()
+            .map(|l| l.mode == "fullscreen" || l.companion == "none")
+            .unwrap_or(true);
+
+        if can_embed {
+            let ctx = &mut self.contexts[self.active_context];
+            if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                let pane_id = *pane_id;
+                if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                    if wants_fullscreen {
+                        pane.open_app(app, permissions, scope);
+                    } else {
+                        pane.open_app_with_companion(app, permissions, scope);
+                        // Write manifest-declared startup message into this same
+                        // pane's terminal grid — it IS the companion.
+                        if let Some(msg) = launch.as_ref().and_then(|l| l.startup_message.as_deref()) {
+                            let bytes = format_startup_message(msg);
+                            pane.backend.write_agent_bytes(&bytes);
+                        }
+                    }
+                }
+            }
+            ctx.focused_pane = Some(focused);
+            return;
+        }
+
+        // When the focused pane already has an app and the new app wants
+        // fullscreen, replace it in place instead of splitting. This matches
+        // the user expectation that fullscreen apps never grow a companion
+        // terminal they didn't ask for.
+        if wants_fullscreen {
+            let ctx = &mut self.contexts[self.active_context];
+            if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                let pane_id = *pane_id;
+                if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                    pane.close_app();
+                    pane.open_app(app, permissions, scope);
+                }
+            }
+            ctx.focused_pane = Some(focused);
+            return;
+        }
+
+        // Fallback: legacy auto-split. Create a new terminal pane below and
+        // put the app in the existing focused pane.
+
+        // Resolve launch options (defaults match legacy behavior).
+        let vertical = match launch.as_ref().map(|l| l.companion_position.as_str()) {
+            Some("right") => false,
+            _ => true, // "bottom" or unset → vertical split (app on top)
+        };
+        // Fraction allocated to the companion terminal.
+        let companion_frac = launch
+            .as_ref()
+            .map(|l| l.companion_size.clamp(0.05, 0.95))
+            .unwrap_or(0.25);
+
+        // Companion terminal cwd:
+        //   - with launch config + `{launch_dir}` template → app's scope
+        //   - otherwise → previous focused pane's cwd (legacy)
+        let companion_cwd = if let Some(cfg) = launch.as_ref() {
+            if cfg.companion_cwd.contains("{launch_dir}") {
+                scope.clone()
+            } else {
+                PathBuf::from(&cfg.companion_cwd)
+            }
+        } else {
+            self.contexts[self.active_context]
+                .get_focused_pane_cwd(focused)
+                .unwrap_or_else(|| scope.clone())
+        };
+
+        // Create the companion terminal pane.
         let new_term_id = self.next_pane_id;
         self.next_pane_id += 1;
 
-        let cwd = self.contexts[self.active_context]
-            .get_focused_pane_cwd(focused)
-            .unwrap_or_else(|| scope.clone());
-
-        let settings = Self::make_backend_settings(Some(cwd), &self.colors);
-        let Some(new_pane) = TerminalPane::new(
+        let settings = Self::make_backend_settings(Some(companion_cwd), &self.colors);
+        let Some(mut new_pane) = TerminalPane::new(
             new_term_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
@@ -495,6 +689,12 @@ impl PlexiApp {
             log::error!("Failed to create linked terminal pane for app");
             return;
         };
+        // Write manifest-declared startup message into the new companion
+        // terminal's grid before inserting it into the context.
+        if let Some(msg) = launch.as_ref().and_then(|l| l.startup_message.as_deref()) {
+            let bytes = format_startup_message(msg);
+            new_pane.backend.write_agent_bytes(&bytes);
+        }
         self.contexts[self.active_context]
             .panes
             .insert(new_term_id, new_pane);
@@ -506,6 +706,12 @@ impl PlexiApp {
                 None => focused,
             };
 
+        let split_dir = if vertical {
+            egui_tiles::LinearDir::Vertical
+        } else {
+            egui_tiles::LinearDir::Horizontal
+        };
+
         let ctx = &mut self.contexts[self.active_context];
         let parent = ctx.tree.tiles.parent_of(split_target);
         let new_tile = ctx.tree.tiles.insert_pane(new_term_id);
@@ -514,7 +720,7 @@ impl PlexiApp {
             if let Some(Tile::Container(Container::Linear(linear))) =
                 ctx.tree.tiles.get_mut(parent_id)
             {
-                if linear.dir == egui_tiles::LinearDir::Vertical {
+                if linear.dir == split_dir {
                     if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
                         linear.children.insert(pos + 1, new_tile);
                         true
@@ -532,17 +738,19 @@ impl PlexiApp {
         };
 
         if !inserted_as_sibling {
-            let container_tile = ctx
-                .tree
-                .tiles
-                .insert_vertical_tile(vec![split_target, new_tile]);
+            let container_tile = if vertical {
+                ctx.tree.tiles.insert_vertical_tile(vec![split_target, new_tile])
+            } else {
+                ctx.tree.tiles.insert_horizontal_tile(vec![split_target, new_tile])
+            };
 
-            // Set 75/25 ratio for app (top) vs terminal (bottom).
+            // Set app / companion share ratio from config (or 0.75 / 0.25 default).
             if let Some(Tile::Container(Container::Linear(ref mut lin))) =
                 ctx.tree.tiles.get_mut(container_tile)
             {
-                lin.shares.set_share(split_target, 3.0);
-                lin.shares.set_share(new_tile, 1.0);
+                let app_share = (1.0 - companion_frac).max(0.05);
+                lin.shares.set_share(split_target, app_share);
+                lin.shares.set_share(new_tile, companion_frac);
             }
 
             if let Some(parent_id) = parent {
@@ -556,7 +764,7 @@ impl PlexiApp {
             }
         }
 
-        // Set the app on the focused (top) pane and link to the bottom terminal.
+        // Set the app on the focused (top) pane and link to the companion terminal.
         if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
             let pane_id = *pane_id;
             if let Some(pane) = ctx.panes.get_mut(&pane_id) {
@@ -693,9 +901,17 @@ impl PlexiApp {
             .and_then(|fp| self.contexts[self.active_context].get_focused_pane_cwd(fp))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
+        // Snapshot the manifest-declared launch config BEFORE calling into the
+        // registry (keeps the borrow of `self.registry` short).
+        let launch_cfg = self
+            .registry
+            .app_by_id(id)
+            .and_then(|installed| installed.manifest.launch.clone());
+
         if let Some(app) = self.registry.launch(id, &cwd, &[]) {
             let perms = crate::app_permissions::AppPermissions::default();
-            self.open_app_on_focused(app, perms, cwd);
+            self.open_app_on_focused_with_launch(app, perms, cwd, launch_cfg);
+            self.record_app_visit(id);
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
         }
@@ -741,7 +957,12 @@ impl PlexiApp {
         if let Some(app) = self.registry.launch_for_file(&file_path, &cwd) {
             // Third-party app — sandboxed by default, scoped to launch directory.
             let perms = crate::app_permissions::AppPermissions::default();
-            self.open_app_on_focused(app, perms, cwd.clone());
+            // If the app declared [app.launch], honor its companion split config.
+            let launch_cfg = self
+                .registry
+                .app_by_id(app.type_id())
+                .and_then(|installed| installed.manifest.launch.clone());
+            self.open_app_on_focused_with_launch(app, perms, cwd.clone(), launch_cfg);
         } else {
             // No registered app — fall back to writing the path into the terminal.
             let ctx = &mut self.contexts[self.active_context];
@@ -757,4 +978,395 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Toggle agent mode on the focused pane.
+    pub(crate) fn toggle_agent_mode(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            // Don't activate agent mode if an app is already open
+            if pane.active_app.is_some() {
+                return;
+            }
+            if pane.agent_mode.is_active() {
+                pane.agent_mode.deactivate();
+            } else {
+                // Update directory scope from terminal CWD before activating
+                if let Some(cwd) = crate::shell::get_pid_cwd(pane.backend.child_pid()) {
+                    pane.agent_mode.directory_scope = cwd;
+                }
+                pane.agent_mode.activate();
+            }
+        }
+    }
+
+    /// Trigger undo on the focused app.
+    pub(crate) fn app_undo(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            if let Some(app) = &mut pane.active_app {
+                app.undo();
+            }
+        }
+    }
+
+    /// Trigger redo on the focused app.
+    pub(crate) fn app_redo(&mut self) {
+        let ctx = &mut self.contexts[self.active_context];
+        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+            if let Some(app) = &mut pane.active_app {
+                app.redo();
+            }
+        }
+    }
+
+    // ─── Spawn dispatcher ────────────────────────────────────────────────────
+
+    /// Drain pending spawn requests from every active app and execute them.
+    /// Called once per frame from `update()`, after key dispatch and cwd sync.
+    pub(crate) fn dispatch_pending_spawns(&mut self) {
+        let active = self.active_context;
+
+        // Two-pass: collect first so we don't hold a mutable borrow while
+        // calling execute_spawn (which also borrows self mutably).
+        let mut to_spawn: Vec<(PaneId, crate::app_protocol::PendingSpawn)> = Vec::new();
+        for (&pane_id, pane) in self.contexts[active].panes.iter_mut() {
+            if let Some(app) = pane.active_app.as_mut() {
+                for spawn in app.take_pending_spawns() {
+                    to_spawn.push((pane_id, spawn));
+                }
+            }
+        }
+
+        for (requester_pane_id, spawn) in to_spawn {
+            self.execute_spawn(requester_pane_id, spawn);
+        }
+    }
+
+    // ─── Pipe dispatcher ─────────────────────────────────────────────────────
+
+    /// Route pending PipeWrite commands from all active apps to their connected
+    /// peers (parent and/or children via spawn_relationships).
+    ///
+    /// Called once per frame from `update()`, after `dispatch_pending_spawns()`.
+    /// Uses the standard two-phase collect-then-route pattern to avoid holding
+    /// a mutable borrow on `panes` across the routing pass.
+    pub(crate) fn dispatch_pipe_writes(&mut self) {
+        let active = self.active_context;
+
+        // Phase 1: collect all pending pipe writes with sender context.
+        // Each entry: (sender_pane_id, sender_app_id, channel, value)
+        let mut pipe_writes: Vec<(PaneId, String, String, serde_json::Value)> = Vec::new();
+        for (&pane_id, pane) in self.contexts[active].panes.iter_mut() {
+            if let Some(app) = pane.active_app.as_mut() {
+                for (channel, value) in app.take_pipe_writes() {
+                    let app_id = app.type_id().to_string();
+                    pipe_writes.push((pane_id, app_id, channel, value));
+                }
+            }
+        }
+
+        if pipe_writes.is_empty() {
+            return;
+        }
+
+        // Phase 2: for each write, route to connected peers.
+        for (sender_pane_id, sender_app_id, channel, value) in pipe_writes {
+            // Route to parent (if this pane is a child).
+            let parent_pane_id = self.spawn_relationships.parent_of(sender_pane_id);
+            if let Some(parent_id) = parent_pane_id {
+                if let Some(pane) = self.contexts[active].panes.get_mut(&parent_id) {
+                    if let Some(app) = pane.active_app.as_mut() {
+                        app.send_pipe_data(&sender_app_id, &channel, &value);
+                    }
+                }
+            }
+
+            // Route to all children (if this pane is a parent).
+            let child_pane_ids: Vec<PaneId> = self
+                .spawn_relationships
+                .children_of(sender_pane_id)
+                .iter()
+                .map(|r| r.child_pane)
+                .collect();
+            for child_id in child_pane_ids {
+                if let Some(pane) = self.contexts[active].panes.get_mut(&child_id) {
+                    if let Some(app) = pane.active_app.as_mut() {
+                        app.send_pipe_data(&sender_app_id, &channel, &value);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolve and execute one `PendingSpawn`, creating a new pane in the tree.
+    fn execute_spawn(
+        &mut self,
+        requester_pane_id: PaneId,
+        spawn: crate::app_protocol::PendingSpawn,
+    ) {
+        use crate::app_protocol::{SpawnLayout, SpawnLifecycle};
+
+        // 1. Gather context from the requester pane.
+        let (requester_app_id, scope) = {
+            let ctx = &self.contexts[self.active_context];
+            let pane = match ctx.panes.get(&requester_pane_id) {
+                Some(p) => p,
+                None => {
+                    log::warn!("execute_spawn: requester pane {} not found", requester_pane_id);
+                    return;
+                }
+            };
+            let app_id = pane
+                .active_app
+                .as_ref()
+                .map(|a| a.type_id().to_string())
+                .unwrap_or_default();
+            let scope = pane
+                .app_scope
+                .clone()
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            (app_id, scope)
+        };
+
+        // 2. Launch the child app subprocess.
+        // For built-in apps not in the registry (file_browser), fall back to
+        // the in-process implementation so spawning always works.
+        let child_app: Box<dyn crate::app_trait::App> = if let Some(a) = self.registry.launch_as_child(
+            &spawn.app_id,
+            &scope,
+            &spawn.args,
+            &requester_app_id,
+        ) {
+            a
+        } else if spawn.app_id == "file_browser" || spawn.app_id == "file-browser" {
+            Box::new(crate::file_browser::FileBrowserApp::from_args(
+                scope.clone(),
+                &spawn.args,
+            ))
+        } else {
+            log::warn!(
+                "execute_spawn: app '{}' not found in registry",
+                spawn.app_id
+            );
+            return;
+        };
+
+        // 3. Create a new TerminalPane for the child and open the app in it.
+        let child_pane_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let settings = Self::make_backend_settings(Some(scope.clone()), &self.colors);
+        let mut child_pane = match TerminalPane::new(
+            child_pane_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) {
+            Some(p) => p,
+            None => {
+                log::error!(
+                    "execute_spawn: failed to create terminal pane for '{}'",
+                    spawn.app_id
+                );
+                return;
+            }
+        };
+        let perms = crate::app_permissions::AppPermissions::default();
+        child_pane.open_app_with_companion(child_app, perms, scope);
+
+        // 4. Find the anchor tile in the tree (the tile containing the requester pane).
+        let anchor_tile = {
+            let ctx = &self.contexts[self.active_context];
+            // SpawnParent::SelfPane and NamedMark (v1: falls back to SelfPane) anchor
+            // to the requester's own tile. SpawnParent::Root anchors to the tree root.
+            match &spawn.parent {
+                crate::app_protocol::SpawnParent::Root => ctx.tree.root,
+                _ => ctx.tree.tiles.find_pane(&requester_pane_id),
+            }
+        };
+        let anchor_tile = match anchor_tile {
+            Some(t) => t,
+            None => {
+                log::warn!(
+                    "execute_spawn: could not find anchor tile for pane {}",
+                    requester_pane_id
+                );
+                return;
+            }
+        };
+
+        // 5. Insert pane into the panes map and create a tile.
+        self.contexts[self.active_context]
+            .panes
+            .insert(child_pane_id, child_pane);
+        let new_tile = self.contexts[self.active_context]
+            .tree
+            .tiles
+            .insert_pane(child_pane_id);
+
+        // 6. Determine split direction, new-pane position, and size ratio.
+        let (split_dir, new_before_anchor, ratio) = match &spawn.layout {
+            SpawnLayout::Cols { slot, ratio } => (
+                egui_tiles::LinearDir::Horizontal,
+                *slot == 0,
+                *ratio,
+            ),
+            SpawnLayout::Rows { slot, ratio } => (
+                egui_tiles::LinearDir::Vertical,
+                *slot == 0,
+                *ratio,
+            ),
+            // Fill and unsupported variants: default to right column at 50 %.
+            _ => (egui_tiles::LinearDir::Horizontal, false, 0.5),
+        };
+
+        // Share fractions: anchor keeps `anchor_share`, new pane gets `new_share`.
+        let (anchor_share, new_share) = if new_before_anchor {
+            (1.0 - ratio, ratio)
+        } else {
+            (ratio, 1.0 - ratio)
+        };
+
+        // 7. Insert the new tile next to the anchor in the tile tree.
+        let ctx = &mut self.contexts[self.active_context];
+        let parent = ctx.tree.tiles.parent_of(anchor_tile);
+
+        let inserted_as_sibling = if let Some(parent_id) = parent {
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                ctx.tree.tiles.get_mut(parent_id)
+            {
+                if linear.dir == split_dir {
+                    if let Some(pos) = linear.children.iter().position(|&c| c == anchor_tile) {
+                        if new_before_anchor {
+                            linear.children.insert(pos, new_tile);
+                        } else {
+                            linear.children.insert(pos + 1, new_tile);
+                        }
+                        // Update share ratios.
+                        linear.shares.set_share(anchor_tile, anchor_share);
+                        linear.shares.set_share(new_tile, new_share);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !inserted_as_sibling {
+            // Wrap anchor + new pane in a fresh linear container.
+            let children = if new_before_anchor {
+                vec![new_tile, anchor_tile]
+            } else {
+                vec![anchor_tile, new_tile]
+            };
+            let container_tile = if split_dir == egui_tiles::LinearDir::Vertical {
+                ctx.tree.tiles.insert_vertical_tile(children)
+            } else {
+                ctx.tree.tiles.insert_horizontal_tile(children)
+            };
+            // Set ratios on the new container.
+            if let Some(Tile::Container(Container::Linear(lin))) =
+                ctx.tree.tiles.get_mut(container_tile)
+            {
+                lin.shares.set_share(anchor_tile, anchor_share);
+                lin.shares.set_share(new_tile, new_share);
+            }
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent_container)) =
+                    ctx.tree.tiles.get_mut(parent_id)
+                {
+                    replace_child(parent_container, anchor_tile, container_tile);
+                }
+            } else {
+                ctx.tree.root = Some(container_tile);
+            }
+        }
+
+        // 8. Record the relationship so cascade/orphan close works.
+        let lifecycle = spawn.lifecycle;
+        let wire_channels = spawn.wire_channels.clone();
+        self.spawn_relationships.add(
+            requester_pane_id,
+            child_pane_id,
+            lifecycle,
+            wire_channels,
+        );
+
+        log::info!(
+            "execute_spawn: spawned '{}' (pane {}) from '{}' (pane {}) lifecycle={:?}",
+            spawn.app_id,
+            child_pane_id,
+            requester_app_id,
+            requester_pane_id,
+            lifecycle,
+        );
+    }
+
+    /// Wire cascade/orphan semantics into a pane close. Call this BEFORE the
+    /// tile is actually removed from the tree so children can still be found.
+    ///
+    /// - `Cascade`: close all transitive children alongside the closing pane.
+    /// - `Orphan`/`Prompt`: drop the relationship; children survive as top-level panes.
+    pub(crate) fn handle_spawn_pane_close(&mut self, closing_pane_id: PaneId) {
+        use crate::app_protocol::SpawnLifecycle;
+
+        // Collect direct children and their lifecycles.
+        let children: Vec<(PaneId, SpawnLifecycle)> = self
+            .spawn_relationships
+            .children_of(closing_pane_id)
+            .iter()
+            .map(|r| (r.child_pane, r.lifecycle))
+            .collect();
+
+        // Remove all relationships involving this pane.
+        self.spawn_relationships.remove_pane(closing_pane_id);
+
+        for (child_pane_id, lifecycle) in children {
+            match lifecycle {
+                SpawnLifecycle::Cascade => {
+                    // Recurse: close children of children first.
+                    self.handle_spawn_pane_close(child_pane_id);
+                    self.close_pane_by_id(child_pane_id);
+                }
+                SpawnLifecycle::Orphan | SpawnLifecycle::Prompt => {
+                    // Drop the relationship — child survives.
+                    // (Prompt is stubbed as Orphan in v1.)
+                }
+            }
+        }
+    }
+
+    /// Focus a pane by its `PaneId` (u64). Searches all contexts.
+    /// Optionally enters fullscreen (zoomed) mode on the target pane.
+    /// No-op if no pane with that id is found.
+    pub(crate) fn focus_pane_by_id(&mut self, pane_id: u64, fullscreen: bool) {
+        for ci in 0..self.contexts.len() {
+            if let Some(tile_id) = self.contexts[ci].tree.tiles.find_pane(&pane_id) {
+                self.active_context = ci;
+                self.contexts[ci].focused_pane = Some(tile_id);
+                if fullscreen {
+                    self.contexts[ci].zoomed_pane = Some(tile_id);
+                }
+                self.contexts[ci].activate_tab_for(tile_id);
+                return;
+            }
+        }
+        log::debug!("focus_pane_by_id: pane {pane_id} not found");
+    }
+}
+
+/// Format a manifest-declared `[app.launch].startup_message` into dim italic
+/// ANSI bytes suitable for `TerminalBackend::write_agent_bytes`. Wrapped in
+/// leading/trailing CRLF so the message always lands on its own line
+/// regardless of where the cursor was.
+fn format_startup_message(msg: &str) -> Vec<u8> {
+    format!("\r\n\x1b[2;3m{msg}\x1b[0m\r\n").into_bytes()
 }

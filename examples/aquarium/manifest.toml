@@ -1,0 +1,9 @@
+[app]
+id = "aquarium"
+name = "Aquarium"
+entry = "aquarium.py"
+version = "0.1.0"
+description = "Ambient underwater scene with procedural fish and plants"
+
+[app.capabilities]
+# No capabilities needed — pure rendering

@@ -45,6 +45,7 @@ pub struct ThemeConfig {
     pub terminal_bg: Option<String>,
     pub bg_hover: Option<String>,
     pub bg_active: Option<String>,
+    pub list_item_hover: Option<String>,
     pub text_primary: Option<String>,
     pub text_dim: Option<String>,
     pub text_section: Option<String>,
@@ -116,6 +117,7 @@ font_size = 14.0
 # terminal_bg = "#292a44"
 # bg_hover = "#2a2a3c"
 # bg_active = "#313144"
+# list_item_hover = "#2e2e42"
 # text_primary = "#cdd6f4"
 # text_dim = "#6c7086"
 # text_section = "#585b70"
@@ -180,6 +182,54 @@ impl PlexiConfig {
                 Self::default()
             }
         }
+    }
+}
+
+// ── App MRU persistence ───────────────────────────────────────────────────────
+
+/// Load the app visit history from `app_mru.json` in the config directory.
+/// Returns an empty list if the file doesn't exist or can't be parsed.
+pub fn load_app_mru() -> Vec<String> {
+    let path = config_dir().join("app_mru.json");
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+/// Persist the app visit history to `app_mru.json` in the config directory.
+/// Silently ignores errors (best-effort persistence).
+pub fn save_app_mru(history: &[String]) {
+    let path = config_dir().join("app_mru.json");
+    if let Ok(json) = serde_json::to_string(history) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+// ── Window size persistence ───────────────────────────────────────────────────
+
+/// Persist the window size to `window.json` in the config directory.
+/// Silently ignores errors (best-effort persistence).
+pub fn save_window_size(w: f32, h: f32) {
+    let path = config_dir().join("window.json");
+    let json = format!("{{\"width\":{w},\"height\":{h}}}");
+    let _ = std::fs::write(path, json);
+}
+
+/// Load the persisted window size from `window.json`.
+/// Returns `None` if the file doesn't exist, can't be parsed, or has
+/// unreasonable dimensions (< 400 or > 8000 in either axis).
+pub fn load_window_size() -> Option<(f32, f32)> {
+    let path = config_dir().join("window.json");
+    let data = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    let w = v["width"].as_f64()? as f32;
+    let h = v["height"].as_f64()? as f32;
+    if (400.0..=8000.0).contains(&w) && (300.0..=8000.0).contains(&h) {
+        Some((w, h))
+    } else {
+        None
     }
 }
 

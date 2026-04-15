@@ -23,6 +23,10 @@ pub enum ApiRequest {
     WriteFile { path: String, content: String },
     /// Store a secret in Keychain (scoped to app + directory). Requires secrets_write.
     SecretStore { key: String, value: String },
+    /// Retrieve a secret by name. Walks up from the app's launch directory to the
+    /// user's home directory, returning the first matching value. Returns
+    /// `ApiResponse::Secret { value: None }` if not found.
+    SecretGet { name: String },
     /// Request secure input from user (Plexi renders the masked field).
     SecureInput { prompt: String, mask: bool },
 }
@@ -35,6 +39,9 @@ pub enum ApiResponse {
     FileContent { content: String },
     WriteOk,
     SecretStored,
+    /// Response to a `SecretGet` request. `value` is `None` if the secret is
+    /// missing or resolution failed for any reason (e.g. Keychain error).
+    Secret { name: String, value: Option<String> },
     /// The secure input result comes asynchronously after user interaction.
     SecureInputPending { request_id: String },
     Error { message: String },
@@ -121,6 +128,7 @@ pub fn handle_api_request(
             }
             handle_secret_store(key, value, app_id, scope_root)
         }
+        ApiRequest::SecretGet { name } => handle_secret_get(name, app_id, scope_root),
         ApiRequest::SecureInput { prompt, mask } => handle_secure_input(prompt, *mask),
     }
 }
@@ -283,6 +291,19 @@ fn handle_secret_store(key: &str, value: &str, app_id: &str, scope_root: &Path) 
     }
 }
 
+/// Resolve a secret by walking up from the app's launch directory to home.
+/// Always returns `ApiResponse::Secret` — missing or error cases set `value: None`
+/// so the app can branch on a single shape without handling `Error` separately.
+fn handle_secret_get(name: &str, app_id: &str, scope_root: &Path) -> ApiResponse {
+    let dir_str = scope_root.display().to_string();
+    let value = crate::secrets::resolve_secret(name, app_id, &dir_str)
+        .map(|z| z.to_string());
+    ApiResponse::Secret {
+        name: name.to_string(),
+        value,
+    }
+}
+
 fn handle_secure_input(_prompt: &str, _mask: bool) -> ApiResponse {
     // Secure input is handled by the UI layer. We return a pending token;
     // the actual value is delivered asynchronously via a separate channel.
@@ -300,4 +321,57 @@ fn uuid_v4_simple() -> String {
     // Not cryptographically random, but sufficient for request correlation.
     // Replace with a proper UUID crate if one is already in the dependency tree.
     format!("{:016x}", nanos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_get_request_roundtrip() {
+        let req = ApiRequest::SecretGet { name: "OPENAI_API_KEY".into() };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"type\":\"secret_get\""));
+        assert!(json.contains("\"name\":\"OPENAI_API_KEY\""));
+        let decoded: ApiRequest = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ApiRequest::SecretGet { name } => assert_eq!(name, "OPENAI_API_KEY"),
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn secret_response_roundtrip_some() {
+        let resp = ApiResponse::Secret {
+            name: "OPENAI_API_KEY".into(),
+            value: Some("sk-abc".into()),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"type\":\"secret\""));
+        let decoded: ApiResponse = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ApiResponse::Secret { name, value } => {
+                assert_eq!(name, "OPENAI_API_KEY");
+                assert_eq!(value.as_deref(), Some("sk-abc"));
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn secret_response_roundtrip_none() {
+        let resp = ApiResponse::Secret {
+            name: "MISSING".into(),
+            value: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: ApiResponse = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ApiResponse::Secret { name, value } => {
+                assert_eq!(name, "MISSING");
+                assert!(value.is_none());
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
 }

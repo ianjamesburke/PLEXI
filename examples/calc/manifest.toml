@@ -1,0 +1,11 @@
+[app]
+id = "calc"
+name = "Calculator"
+entry = "calc.py"
+version = "0.1.0"
+description = "Calculator with expression evaluation and visual keypad reference"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"

@@ -1,0 +1,11 @@
+[app]
+id = "permissions-viewer"
+name = "Permissions"
+entry = "permissions_viewer.py"
+version = "0.1.0"
+description = "Capability matrix for all installed Plexi apps — see what each app can access"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "read"

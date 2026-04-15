@@ -1,0 +1,11 @@
+[app]
+id = "pomodoro"
+name = "Pomodoro"
+entry = "pomodoro.py"
+version = "0.1.0"
+description = "Focus timer with pomodoro technique — 25/5/15 minute intervals"
+
+[app.capabilities]
+file_types = []
+terminal_write = false
+filesystem = "none"

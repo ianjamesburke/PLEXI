@@ -1,0 +1,9 @@
+[app]
+id = "snake"
+name = "Snake"
+entry = "snake.py"
+version = "0.1.0"
+description = "Classic Snake — proof of concept game"
+
+[app.capabilities]
+# No capabilities needed — pure rendering + input
