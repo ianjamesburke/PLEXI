@@ -61,15 +61,26 @@ import os
 import pathlib
 import sys
 import uuid
+from collections import deque
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Deque, List, Optional, Tuple
 
 
 class Emitter:
-    """Emit commands to Plexi immediately (outside a render frame)."""
+    """Emit commands to Plexi immediately (outside a render frame).
 
-    def __init__(self, app_id: str = ""):
+    The emitter also owns the synchronous request/response path used by
+    `get_secret()`. It shares a pending-event deque with the parent `App`
+    so that any events read from stdin while waiting for a response (and
+    which are unrelated to that response) get processed by the main loop
+    on its next iteration instead of being dropped.
+    """
+
+    def __init__(self, app_id: str = "", pending_events: Optional[Deque[dict]] = None):
         self._app_id = app_id
+        # Shared with App.run(); None only in cases where the emitter is
+        # constructed standalone (e.g. legacy tests).
+        self._pending_events: Deque[dict] = pending_events if pending_events is not None else deque()
 
     def run_in_terminal(self, command: str):
         """Execute a shell command in the linked terminal."""
@@ -98,6 +109,44 @@ class Emitter:
     def debug(self, message: str):
         """Log at debug level."""
         self.log("debug", message)
+
+    def get_secret(self, name: str) -> Optional[str]:
+        """
+        Fetch a secret by name from Plexi's Keychain-backed store.
+
+        Resolution walks up from the app's launch directory to the user's
+        home, returning the first matching value. Returns None if the
+        secret is missing, Keychain is unavailable, or any other
+        resolution error occurred (the host logs the failure; the app
+        should not crash on a missing secret).
+
+        Blocks until Plexi responds. Safe to call from `on_render`,
+        `on_key`, `on_click`, or `on_command` handlers. Any unrelated
+        events that arrive while waiting for the response are queued and
+        processed by the main loop on its next iteration.
+        """
+        # Fire the request.
+        print(json.dumps({"type": "secret_get", "name": name}), flush=True)
+
+        # Block until we see the matching secret_response. Other events
+        # get stashed for the main loop so nothing is lost.
+        while True:
+            line = sys.stdin.readline()
+            if not line:
+                # stdin closed — treat as host death; no secret available.
+                return None
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "secret_response" and event.get("name") == name:
+                value = event.get("value")
+                return value if isinstance(value, str) else None
+            # Unrelated event — stash for the main loop.
+            self._pending_events.append(event)
 
     def cost_report(
         self,
@@ -344,12 +393,24 @@ class RenderContext:
     All coordinates are in logical pixels within the app surface.
     """
 
-    def __init__(self, width: float, height: float, app_id: str = ""):
+    def __init__(
+        self,
+        width: float,
+        height: float,
+        app_id: str = "",
+        emitter: Optional[Emitter] = None,
+    ):
         self.width = width
         self.height = height
         self.delta_time: float = 0.0
         self._app_id = app_id
+        # Carried so helpers like get_secret() can piggyback on the
+        # existing Emitter (and its shared pending-events deque).
+        self._emitter: Emitter = emitter if emitter is not None else Emitter(app_id)
         self._commands: list = []
+        # Carried so helpers like get_secret() can piggyback on the
+        # existing Emitter (and its shared pending-events deque).
+        self._emitter: Emitter = emitter if emitter is not None else Emitter()
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0):
         """Fill a rectangle."""
@@ -586,6 +647,17 @@ class RenderContext:
         """Log at debug level."""
         self.log("debug", message)
 
+    def get_secret(self, name: str) -> Optional[str]:
+        """
+        Fetch a secret by name from Plexi's Keychain-backed store.
+
+        Blocking request/response. See `Emitter.get_secret()` for full
+        semantics. Safe to call from inside `on_render` — the request is
+        sent immediately (not queued with the frame) so the response
+        arrives before the handler returns.
+        """
+        return self._emitter.get_secret(name)
+
     def notify(
         self,
         title: str,
@@ -716,7 +788,11 @@ class App:
         self._on_mouse_move: Optional[Callable] = None
         self._on_scroll: Optional[Callable] = None
         self._on_pipe_data: Optional[Callable] = None
-        self._emitter = Emitter(app_id=app_id)
+        # Events that arrived on stdin while a blocking request (e.g.
+        # get_secret) was waiting for its response. Drained at the top of
+        # each run-loop iteration before reading a fresh line from stdin.
+        self._pending_events: Deque[dict] = deque()
+        self._emitter = Emitter(app_id=app_id, pending_events=self._pending_events)
         # Breakpoints: list of (min_width, min_height, render_fn).
         # Walked in descending area order on each render to pick the
         # most specific match whose constraints fit the current pane.
@@ -1064,15 +1140,24 @@ class App:
         # Pull min-size from the manifest (if set_min_size was not called).
         self._load_manifest_layout()
 
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        while True:
+            # Drain any events that were queued by a blocking helper (e.g.
+            # get_secret) during a prior handler. These were read off stdin
+            # while waiting for a specific response, so they need to be
+            # replayed here before pulling more.
+            if self._pending_events:
+                event = self._pending_events.popleft()
+            else:
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
             event_type = event.get("type", "")
 
@@ -1099,7 +1184,12 @@ class App:
                 ):
                     self._render_min_size_fallback(self.width, self.height)
                     continue
-                ctx = RenderContext(self.width, self.height, app_id=self._emitter._app_id)
+                ctx = RenderContext(
+                    self.width,
+                    self.height,
+                    app_id=self._emitter._app_id,
+                    emitter=self._emitter,
+                )
                 ctx.delta_time = self.delta_time
                 # Breakpoint dispatch (if registered) overrides on_render.
                 if self._breakpoints:
@@ -1189,6 +1279,12 @@ class App:
                         event.get("value"),
                         self._emitter,
                     )
+
+            elif event_type == "secret_response":
+                # Should normally be consumed by the blocking get_secret()
+                # helper. If one arrives at top level (e.g. a late response
+                # after timeout), there's nothing sensible to do — drop it.
+                pass
 
             elif event_type == "shutdown":
                 break

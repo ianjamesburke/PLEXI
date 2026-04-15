@@ -29,9 +29,10 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::env;
 use std::fs::{create_dir_all, read_to_string, OpenOptions};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufReader, Stdin, Write};
 use std::path::PathBuf;
 
 // ── Inbound events (Plexi → app) ─────────────────────────────────────────────
@@ -106,6 +107,10 @@ pub enum PlexiEvent {
         #[serde(default)]
         persistent: Value,
     },
+    /// Response to a prior `DrawCommand::SecretGet`. The SDK's
+    /// `Emitter::get_secret` helper reads stdin until it sees this event
+    /// with a matching `name`. See `Emitter::get_secret` for details.
+    SecretResponse { name: String, value: Option<String> },
     Shutdown,
 }
 
@@ -281,6 +286,8 @@ pub enum DrawCommand {
         #[serde(default)]
         wire_channels: Vec<String>,
     },
+    /// Request a secret by name. Plexi responds with `PlexiEvent::SecretResponse`.
+    SecretGet { name: String },
     FrameDone,
 }
 
@@ -461,18 +468,31 @@ impl StateSnapshot {
 
 // ── Emitter: write commands outside a render frame ───────────────────────────
 
-/// Sends draw commands to Plexi outside of a render frame.
+/// Sends draw commands to Plexi outside of a render frame and handles
+/// synchronous request/response helpers like [`Emitter::get_secret`].
 ///
 /// Each call writes a single newline-delimited JSON object to stdout.
 /// `app_id` is set automatically by the runtime from the `PLEXI_APP_ID` env
 /// var so cost reports and notifications are attributed correctly.
+///
+/// The emitter owns the buffered stdin reader so that blocking helpers can
+/// read response events directly, and carries a shared `pending_events`
+/// buffer: any non-matching events pulled off stdin while waiting for a
+/// specific response are stashed here for the main [`run`] loop to process
+/// on its next iteration, instead of being dropped.
 pub struct Emitter {
     app_id: String,
+    stdin: BufReader<Stdin>,
+    pending_events: VecDeque<PlexiEvent>,
 }
 
 impl Emitter {
     fn new() -> Self {
-        Self { app_id: env::var("PLEXI_APP_ID").unwrap_or_default() }
+        Self {
+            app_id: env::var("PLEXI_APP_ID").unwrap_or_default(),
+            stdin: BufReader::new(io::stdin()),
+            pending_events: VecDeque::new(),
+        }
     }
 
     /// The app id this emitter was constructed with (from `PLEXI_APP_ID`).
@@ -497,6 +517,44 @@ impl Emitter {
     /// Change the linked terminal's working directory immediately.
     pub fn cd(&self, path: &str) {
         self.write(&DrawCommand::Cd { path: path.to_string() });
+    }
+
+    /// Fetch a secret by name from Plexi's Keychain-backed store.
+    ///
+    /// Resolution walks up from the app's launch directory to the user's
+    /// home, returning the first matching value. Returns `None` if the
+    /// secret is missing, Keychain is unavailable, or any other resolution
+    /// error occurred (the host logs the failure; the app should not crash
+    /// on a missing secret).
+    ///
+    /// Blocks until Plexi responds. Safe to call from any handler; any
+    /// unrelated events that arrive while waiting are queued and processed
+    /// by the main loop on its next iteration.
+    pub fn get_secret(&mut self, name: &str) -> Option<String> {
+        self.write(&DrawCommand::SecretGet { name: name.to_string() });
+
+        loop {
+            let mut line = String::new();
+            match self.stdin.read_line(&mut line) {
+                Ok(0) => return None, // stdin closed
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let event: PlexiEvent = match serde_json::from_str(trimmed) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            match event {
+                PlexiEvent::SecretResponse { name: resp_name, value } if resp_name == name => {
+                    return value;
+                }
+                other => self.pending_events.push_back(other),
+            }
+        }
     }
 
     /// Forward a log message to Plexi's logger (`error`|`warn`|`info`|`debug`).
@@ -1319,7 +1377,6 @@ fn render_min_size_fallback(width: f32, height: f32, min_w: f32, min_h: f32) {
 
 /// Start the Plexi event loop. Blocks until Plexi sends `Shutdown`.
 pub fn run(app: &mut dyn App) {
-    let stdin = io::stdin();
     let mut emitter = Emitter::new();
     let app_id = emitter.app_id().to_string();
 
@@ -1333,19 +1390,28 @@ pub fn run(app: &mut dyn App) {
         }
     };
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let event: PlexiEvent = match serde_json::from_str(line) {
-            Ok(e) => e,
-            Err(_) => continue,
+    loop {
+        // Drain any events that were queued by a blocking helper (e.g.
+        // `Emitter::get_secret`) during the previous handler. These were read
+        // off stdin while waiting for a specific response, so they need to be
+        // replayed here before pulling more.
+        let event = if let Some(e) = emitter.pending_events.pop_front() {
+            e
+        } else {
+            let mut line = String::new();
+            match emitter.stdin.read_line(&mut line) {
+                Ok(0) => break, // stdin closed
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<PlexiEvent>(trimmed) {
+                Ok(e) => e,
+                Err(_) => continue,
+            }
         };
 
         match event {
@@ -1406,6 +1472,10 @@ pub fn run(app: &mut dyn App) {
             }
             PlexiEvent::SetState { user_state, derived, session, persistent } => {
                 app.on_set_state(&user_state, &derived, &session, &persistent);
+            }
+            PlexiEvent::SecretResponse { .. } => {
+                // Should normally be consumed by a blocking get_secret() call.
+                // A stray top-level response is silently dropped.
             }
             PlexiEvent::Shutdown => break,
         }
