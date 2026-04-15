@@ -52,6 +52,8 @@ Cost reporting (for apps that call LLM APIs):
 """
 
 
+from __future__ import annotations
+
 __version__ = "0.3.0"
 
 import json
@@ -119,29 +121,55 @@ class Emitter:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }), flush=True)
 
+    def notify(
+        self,
+        title: str,
+        body: Optional[str] = None,
+        urgency: str = "low",
+        action_type: str = "dismiss",
+        action_payload: Optional[dict] = None,
+        expires_at: Optional[int] = None,
+        visible_after: Optional[int] = None,
+    ):
+        """
+        Raise a notification to Plexi's notification log.
+
+        urgency: "low" | "medium" | "high"
+        action_type: "dismiss" | "focus" | "confirm" | "text_input"
+        action_payload: type-dependent dict; for "focus": {"pane_id": int, "fullscreen": bool}
+        expires_at: unix timestamp (seconds); notification is dropped if already past
+        visible_after: unix timestamp (seconds); defer display until this time
+
+        The notification is recorded to ~/.plexi-alpha/notifications.jsonl,
+        increments the status-bar unread count, and appears in the
+        notification palette (Cmd+Shift+N).
+        """
+        cmd: dict = {
+            "type": "notification",
+            "title": title,
+            "source_app": self._app_id,
+            "urgency": urgency,
+            "action_type": action_type,
+        }
+        if body is not None:
+            cmd["body"] = body
+        if action_payload is not None:
+            cmd["action_payload"] = action_payload
+        if expires_at is not None:
+            cmd["expires_at"] = expires_at
+        if visible_after is not None:
+            cmd["visible_after"] = visible_after
+        print(json.dumps(cmd), flush=True)
+
     def notification(
         self,
         title: str,
         body: Optional[str] = None,
         priority: int = 1,
     ):
-        """
-        Raise a notification to Plexi's notification log.
-
-        Priority: 0 = info, 1 = normal, 2 = high, 3 = urgent.
-        The notification is recorded to ~/.plexi-alpha/notifications.jsonl,
-        increments the status-bar unread count, and appears in the
-        notification palette (Cmd+Shift+N).
-        """
-        cmd = {
-            "type": "notification",
-            "priority": priority,
-            "title": title,
-            "source_app": self._app_id,
-        }
-        if body:
-            cmd["body"] = body
-        print(json.dumps(cmd), flush=True)
+        """Deprecated: use notify() instead. Kept for backwards compatibility."""
+        urgency = {0: "low", 1: "low", 2: "medium", 3: "high"}.get(priority, "low")
+        self.notify(title=title, body=body, urgency=urgency)
 
     def spawn_app(
         self,
@@ -558,26 +586,51 @@ class RenderContext:
         """Log at debug level."""
         self.log("debug", message)
 
+    def notify(
+        self,
+        title: str,
+        body: Optional[str] = None,
+        urgency: str = "low",
+        action_type: str = "dismiss",
+        action_payload: Optional[dict] = None,
+        expires_at: Optional[int] = None,
+        visible_after: Optional[int] = None,
+    ):
+        """
+        Raise a notification from inside a render frame.
+
+        urgency: "low" | "medium" | "high"
+        action_type: "dismiss" | "focus" | "confirm" | "text_input"
+        action_payload: type-dependent dict; for "focus": {"pane_id": int, "fullscreen": bool}
+        expires_at: unix timestamp (seconds); notification is dropped if already past
+        visible_after: unix timestamp (seconds); defer display until this time
+        """
+        cmd: dict = {
+            "type": "notification",
+            "title": title,
+            "source_app": self._app_id,
+            "urgency": urgency,
+            "action_type": action_type,
+        }
+        if body is not None:
+            cmd["body"] = body
+        if action_payload is not None:
+            cmd["action_payload"] = action_payload
+        if expires_at is not None:
+            cmd["expires_at"] = expires_at
+        if visible_after is not None:
+            cmd["visible_after"] = visible_after
+        self._commands.append(cmd)
+
     def notification(
         self,
         title: str,
         body: Optional[str] = None,
         priority: int = 1,
     ):
-        """
-        Raise a notification from inside a render frame.
-
-        Priority: 0 = info, 1 = normal, 2 = high, 3 = urgent.
-        """
-        cmd = {
-            "type": "notification",
-            "priority": priority,
-            "title": title,
-            "source_app": self._app_id,
-        }
-        if body:
-            cmd["body"] = body
-        self._commands.append(cmd)
+        """Deprecated: use notify() instead. Kept for backwards compatibility."""
+        urgency = {0: "low", 1: "low", 2: "medium", 3: "high"}.get(priority, "low")
+        self.notify(title=title, body=body, urgency=urgency)
 
     def spawn_app(
         self,

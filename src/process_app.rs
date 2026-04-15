@@ -1205,7 +1205,16 @@ impl App for ProcessApp {
                         operation_id.as_deref(), timestamp.as_deref(),
                     );
                 }
-                DrawCommand::Notification { priority, title, body, source_app } => {
+                DrawCommand::Notification {
+                    title,
+                    body,
+                    source_app,
+                    urgency,
+                    expires_at,
+                    visible_after,
+                    action_type,
+                    action_payload,
+                } => {
                     // Trust the app's self-reported source_app if set, otherwise
                     // fall back to the ProcessApp's own type_id. This guards
                     // against apps that forget to populate the field.
@@ -1214,7 +1223,18 @@ impl App for ProcessApp {
                     } else {
                         source_app
                     };
-                    crate::notification_log::record(priority, title, body, src);
+                    let source_tag = format!("app:{}", self.type_id);
+                    crate::notification_log::record(
+                        title,
+                        body,
+                        src,
+                        urgency,
+                        expires_at,
+                        visible_after,
+                        action_type,
+                        action_payload,
+                        Some(source_tag),
+                    );
                 }
                 DrawCommand::SetCursor { cursor } => {
                     let icon = match cursor.as_str() {
