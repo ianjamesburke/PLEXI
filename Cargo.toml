@@ -35,6 +35,16 @@ rodio = { version = "0.19", default-features = false, features = ["mp3", "flac",
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
 ureq = { version = "2.10", features = ["json", "tls"] }
 
+# Plexi IQ (Stage 0 scaffolding — §9 of docs/specs/plexi-iq.md).
+# These are pulled in for the upcoming in-process agent harness. Stage 0
+# only uses them to type-check the stub module tree under src/plexi_iq/;
+# real usage lands in Stage 1. Native-only — the agent harness runs against
+# real network/subprocess backends, not in the browser.
+async-anthropic = "0.6"
+async-trait = "0.1"
+schemars = { version = "1", features = ["derive"] }
+rmcp = { version = "1", default-features = false, features = ["client", "macros"] }
+
 # macOS-only — AppKit menu bar integration.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
