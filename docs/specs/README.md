@@ -51,6 +51,7 @@ Exploratory design. Each file is a pitch that may or may not become a subsystem.
 - [`proposals/sync-architecture.md`](proposals/sync-architecture.md) — SpacetimeDB-backed collaborative workspaces (long-term)
 - [`proposals/agent-replay-testing.md`](proposals/agent-replay-testing.md) — deterministic agent replay + regression testing
 - [`proposals/telegram-integration.md`](proposals/telegram-integration.md) — Telegram bridge bot app
+- [`proposals/secrets-manager.md`](proposals/secrets-manager.md) — Keychain-backed secrets with global/directory scoping and runtime injection into agent sandboxes
 
 ---
 
