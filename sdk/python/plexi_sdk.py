@@ -62,9 +62,9 @@ import pathlib
 import shutil
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 
 # ─── Text size constants ──────────────────────────────────────────────────────
