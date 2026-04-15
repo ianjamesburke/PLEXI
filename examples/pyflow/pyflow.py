@@ -468,6 +468,8 @@ def draw_edges(ctx):
 def draw_wiring_preview(ctx):
     if not state.wiring:
         return
+    if state.wire_src_node_id is None or state.wire_src_port_index is None:
+        return
     src = state.node_by_id(state.wire_src_node_id)
     if src is None:
         return
@@ -636,7 +638,9 @@ def on_mouse_down(x, y, button, emit):
     # Input port — complete wiring
     if rid[0] == "in_port" and state.wiring:
         _, node_id, port_idx = rid
-        if node_id != state.wire_src_node_id:
+        if (node_id != state.wire_src_node_id
+                and state.wire_src_node_id is not None
+                and state.wire_src_port_index is not None):
             state.edges = [
                 e for e in state.edges
                 if not (e.dst_node_id == node_id and e.dst_port_index == port_idx)

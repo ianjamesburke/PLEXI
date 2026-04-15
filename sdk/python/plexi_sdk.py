@@ -313,6 +313,7 @@ class RenderContext:
         Render content inside a transformed viewport with zoom + pan.
         content_fn receives this RenderContext.
         """
+        _ = viewport_id; _ = on_pan; _ = on_zoom
         zoom = max(min_zoom, min(max_zoom, zoom))
         tx = pan[0] if pan else 0.0
         ty = pan[1] if pan else 0.0
@@ -337,6 +338,7 @@ class RenderContext:
         Draw a single-line text input widget. Returns the bounding rect dict.
         Cursor blinks at 1Hz based on accumulated _time.
         """
+        _ = input_id; _ = on_change; _ = max_length
         font_size = size or 14.0
         width = w or (self.width - x * 2)
         height = font_size + 12.0
@@ -369,6 +371,7 @@ class RenderContext:
         Draw a tab bar. tabs is a list of (key, label) tuples.
         selected is the key of the active tab. Returns bounding rect dict.
         """
+        _ = tab_id; _ = on_change
         y_pos = y if y is not None else 0.0
         total_w = w or self.width
         tab_w = total_w / max(len(tabs), 1)
@@ -394,6 +397,7 @@ class RenderContext:
         """
         Draw a uniform grid. render_cell(ctx, col, row, cx, cy, cw, ch) is called per cell.
         """
+        _ = grid_id
         gx = x or 0.0
         gy = y or 0.0
         gw = w or self.width
@@ -414,6 +418,7 @@ class RenderContext:
         Draw a centered modal dialog with a semi-transparent backdrop.
         content_fn(ctx, modal_x, modal_y, width, height) is called if visible.
         """
+        _ = modal_id; _ = on_dismiss
         if not visible:
             return
 
