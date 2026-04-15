@@ -213,7 +213,6 @@ impl PlexiApp {
                         egui::ScrollArea::vertical()
                             .id_salt(scroll_id)
                             .max_height(list_height)
-                            .min_scrolled_height(list_height)
                             .show(ui, |ui| {
 
                         for (i, entry) in entries.iter().enumerate() {
@@ -225,12 +224,13 @@ impl PlexiApp {
                                         && current_focused == Some(*tile_id);
                                     let fill = if is_selected { self.colors.bg_active } else { Color32::TRANSPARENT };
 
-                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(MODAL_WIDTH, 36.0));
+                                    let row_w = ui.available_width();
+                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(row_w, 36.0));
                                     ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
                                     if is_selected { selected_rect = Some(row_rect); }
 
                                     ui.allocate_ui_with_layout(
-                                        Vec2::new(MODAL_WIDTH, 36.0),
+                                        Vec2::new(row_w, 36.0),
                                         Layout::left_to_right(Align::Center),
                                         |ui| {
                                             ui.add_space(8.0);
@@ -266,12 +266,13 @@ impl PlexiApp {
                                     }
 
                                     let fill = if is_selected { self.colors.bg_active } else { Color32::TRANSPARENT };
-                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(MODAL_WIDTH, 36.0));
+                                    let row_w = ui.available_width();
+                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(row_w, 36.0));
                                     ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
                                     if is_selected { selected_rect = Some(row_rect); }
 
                                     ui.allocate_ui_with_layout(
-                                        Vec2::new(MODAL_WIDTH, 36.0),
+                                        Vec2::new(row_w, 36.0),
                                         Layout::left_to_right(Align::Center),
                                         |ui| {
                                             ui.add_space(8.0);
