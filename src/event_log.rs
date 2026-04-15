@@ -7,7 +7,7 @@ use crate::app_protocol::{BusEvent, BusEventKind, RunScope};
 
 pub struct EventLog {
     tx: std::sync::mpsc::SyncSender<BusEvent>,
-    broadcast_tx: std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<BusEvent>>>,
+    subscribers: Arc<std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<BusEvent>>>>,
     counter: Arc<AtomicU64>,
 }
 
@@ -16,7 +16,7 @@ impl EventLog {
         let (tx, rx) = std::sync::mpsc::sync_channel::<BusEvent>(4096);
         let subscribers: Arc<std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<BusEvent>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
-        let subscribers2 = subscribers.clone();
+        let subscribers_writer = subscribers.clone();
         let counter = Arc::new(AtomicU64::new(0));
 
         std::thread::spawn(move || {
@@ -38,14 +38,14 @@ impl EventLog {
                     }
                 }
                 // Fan out to subscribers; remove dead ones.
-                let mut subs = subscribers2.lock().unwrap();
+                let mut subs = subscribers_writer.lock().unwrap();
                 subs.retain(|sub| sub.try_send(event.clone()).is_ok());
             }
         });
 
         Self {
             tx,
-            broadcast_tx: std::sync::Mutex::new(Vec::new()),
+            subscribers,
             counter,
         }
     }
@@ -69,7 +69,7 @@ impl EventLog {
     /// Subscribe to bus events. Returns a receiver that gets a copy of each event.
     pub fn subscribe(&self) -> std::sync::mpsc::Receiver<BusEvent> {
         let (sub_tx, sub_rx) = std::sync::mpsc::sync_channel::<BusEvent>(256);
-        if let Ok(mut subs) = self.broadcast_tx.lock() {
+        if let Ok(mut subs) = self.subscribers.lock() {
             subs.push(sub_tx);
         }
         sub_rx
