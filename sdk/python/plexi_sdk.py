@@ -176,6 +176,97 @@ class Emitter:
         self._write({"type": "pipe_write", "channel": channel, "value": value})
 
 
+# ---------------------------------------------------------------------------
+# Module-level syntax colorizers
+# ---------------------------------------------------------------------------
+
+_SYN_KW = frozenset({
+    'def', 'class', 'return', 'import', 'from', 'if', 'else', 'elif',
+    'for', 'while', 'in', 'not', 'and', 'or', 'True', 'False', 'None',
+    'try', 'except', 'finally', 'with', 'as', 'pass', 'raise', 'yield',
+    'lambda', 'global', 'nonlocal', 'break', 'continue', 'is', 'del',
+})
+_COL_KW    = "#569cd6"
+_COL_STR   = "#ce9178"
+_COL_CMT   = "#6a9955"
+_COL_NUM   = "#b5cea8"
+_COL_PLAIN = "#d4d4d4"
+
+
+def _python_colorize(line: str):
+    """
+    Tokenize a single Python source line into (segment, color) pairs.
+    Returns a list — never None.
+    """
+    # Full-line comment fast path
+    stripped = line.lstrip()
+    if stripped.startswith("#"):
+        return [(line, _COL_CMT)]
+
+    segments: list = []
+    i = 0
+    in_str = False
+    str_char = ""
+    tok_start = 0
+
+    def flush_plain(end: int):
+        nonlocal tok_start
+        chunk = line[tok_start:end]
+        if chunk:
+            buf = ""
+            for ch in chunk:
+                if ch.isalnum() or ch in ("_", "."):
+                    buf += ch
+                else:
+                    if buf:
+                        if buf in _SYN_KW:
+                            color = _COL_KW
+                        elif buf.replace(".", "", 1).isdigit():
+                            color = _COL_NUM
+                        else:
+                            color = _COL_PLAIN
+                        segments.append((buf, color))
+                        buf = ""
+                    segments.append((ch, _COL_PLAIN))
+            if buf:
+                if buf in _SYN_KW:
+                    color = _COL_KW
+                elif buf.replace(".", "", 1).isdigit():
+                    color = _COL_NUM
+                else:
+                    color = _COL_PLAIN
+                segments.append((buf, color))
+        tok_start = end
+
+    while i < len(line):
+        ch = line[i]
+        if in_str:
+            if ch == str_char and (i == 0 or line[i - 1] != "\\"):
+                str_token = line[tok_start:i + 1]
+                segments.append((str_token, _COL_STR))
+                in_str = False
+                tok_start = i + 1
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            flush_plain(i)
+            in_str = True
+            str_char = ch
+            tok_start = i
+            i += 1
+            continue
+        if ch == "#":
+            flush_plain(i)
+            segments.append((line[i:], _COL_CMT))
+            i = len(line)
+            tok_start = i
+            continue
+        i += 1
+
+    flush_plain(len(line))
+    return segments
+
+
 class RenderContext:
     """
     Passed to the on_render handler. Accumulates draw commands, then flushes.
@@ -433,21 +524,32 @@ class RenderContext:
 
         content_fn(self, mx, my, width, height)
 
-    def code_editor(self, editor_id: str, lines: list, cursor_line: int,
-                    cursor_col: int, on_change, x: float, y: float,
-                    w: float, h: float, focused: bool = True) -> dict:
+    def multiline_text_input(self, editor_id: str, lines: list, cursor_line: int,
+                             cursor_col: int, on_change, x: float, y: float,
+                             w: float, h: float, focused: bool = True,
+                             bg: Optional[str] = None, fg: Optional[str] = None,
+                             font_size: float = 14.0,
+                             line_colorizer=None) -> dict:
         """
-        Draw a multi-line Python code editor with syntax highlighting.
+        Base multi-line text input primitive.
 
-        lines: list[str] — code content, one string per line (app owns state)
+        lines: list[str] — content, one string per line (app owns state)
         cursor_line, cursor_col — cursor position (app owns)
         on_change(new_lines, new_cursor_line, new_cursor_col) — called on edits
         focused — whether this editor captures key events
+        bg, fg — background/foreground colors (defaults to dark theme)
+        font_size — font size in logical pixels
+        line_colorizer — optional callable(line_str) -> list[(segment, color)] | None
+                         If None, each line is drawn in fg. If provided, each line is
+                         drawn segment-by-segment with per-segment colors.
 
         Keyboard handling is routed through App._editor_states when focused=True.
         Requires ctx._app to be set (done automatically by App.run()).
+        Returns bounding rect dict.
         """
         _app = self._app
+        bg_color = bg or "#1e1e2e"
+        fg_color = fg or "#cdd6f4"
 
         # Register with App for key routing
         if _app is not None and focused:
@@ -459,9 +561,7 @@ class RenderContext:
             }
             _app._focused_editor_id = editor_id
 
-        font_size = 13.0
         line_h = font_size + 4.0
-        line_num_w = 40.0
         visible_lines = max(1, int(h / line_h))
         scroll_line = _app._editor_scroll.get(editor_id, 0) if _app else 0
 
@@ -472,11 +572,7 @@ class RenderContext:
             _app._editor_scroll[editor_id] = scroll_line
 
         # Background
-        self.rect(x, y, w, h, fill="#1e1e2e", radius=4.0)
-        # Clip visually (no clip primitive — just let overdraw happen off-panel)
-
-        # Line number column bg
-        self.rect(x, y, line_num_w, h, fill="#181825", radius=0.0)
+        self.rect(x, y, w, h, fill=bg_color, radius=4.0)
 
         # Render visible lines
         for rel_idx in range(visible_lines):
@@ -489,120 +585,92 @@ class RenderContext:
             if focused and line_idx == cursor_line:
                 self.rect(x, ly, w, line_h, fill="#2a2a3e", radius=0.0)
 
-            # Line number
-            line_num_str = str(line_idx + 1)
-            lnx = x + line_num_w - len(line_num_str) * 7 - 4
-            self.text(lnx, ly + 2, line_num_str, size=font_size,
-                      color="#45475a", monospace=True)
-
-            # Syntax-highlighted code
             line_text = lines[line_idx]
-            self._draw_syntax_line(x + line_num_w + 4, ly + 2, line_text,
-                                   font_size)
+            if line_colorizer is not None:
+                segments = line_colorizer(line_text)
+                if segments:
+                    char_w = font_size * 0.6
+                    cx = x + 4
+                    for tok, color in segments:
+                        self.text(cx, ly + 2, tok, size=font_size, color=color, monospace=True)
+                        cx += len(tok) * char_w
+                else:
+                    self.text(x + 4, ly + 2, line_text, size=font_size, color=fg_color, monospace=True)
+            else:
+                self.text(x + 4, ly + 2, line_text, size=font_size, color=fg_color, monospace=True)
 
         # Cursor (blink)
         if focused and self._time % 1.0 < 0.5:
             rel = cursor_line - scroll_line
             if 0 <= rel < visible_lines:
-                # Approximate char width for monospace
                 char_w = font_size * 0.6
-                cur_x = x + line_num_w + 4 + cursor_col * char_w
+                cur_x = x + 4 + cursor_col * char_w
                 cur_y = y + rel * line_h
-                self.rect(cur_x, cur_y + 1, 2.0, line_h - 2, fill="#cdd6f4")
+                self.rect(cur_x, cur_y + 1, 2.0, line_h - 2, fill=fg_color)
 
         return {"x": x, "y": y, "w": w, "h": h}
 
-    # Syntax color constants
-    _KW = frozenset({
-        'def', 'class', 'return', 'import', 'from', 'if', 'else', 'elif',
-        'for', 'while', 'in', 'not', 'and', 'or', 'True', 'False', 'None',
-        'try', 'except', 'finally', 'with', 'as', 'pass', 'raise', 'yield',
-        'lambda', 'global', 'nonlocal', 'break', 'continue', 'is', 'del',
-    })
-    _COL_KW    = "#569cd6"
-    _COL_STR   = "#ce9178"
-    _COL_CMT   = "#6a9955"
-    _COL_NUM   = "#b5cea8"
-    _COL_PLAIN = "#d4d4d4"
+    def code_editor(self, editor_id: str, lines: list, cursor_line: int,
+                    cursor_col: int, on_change, x: float, y: float,
+                    w: float, h: float, focused: bool = True,
+                    language: str = "python") -> dict:
+        """
+        Multi-line code editor with line-number gutter and syntax highlighting.
+
+        Wraps multiline_text_input — draws a 40px line-number gutter, then delegates
+        to multiline_text_input with x offset by 40px and w reduced by 40px.
+        For language="python", passes _python_colorize as the line_colorizer.
+
+        lines: list[str] — code content, one string per line (app owns state)
+        cursor_line, cursor_col — cursor position (app owns)
+        on_change(new_lines, new_cursor_line, new_cursor_col) — called on edits
+        focused — whether this editor captures key events
+        language — syntax highlighting language ("python" supported; others = plain)
+
+        Keyboard handling is routed through App._editor_states when focused=True.
+        Requires ctx._app to be set (done automatically by App.run()).
+        Returns bounding rect dict.
+        """
+        _app = self._app
+        font_size = 13.0
+        line_h = font_size + 4.0
+        line_num_w = 40.0
+        visible_lines = max(1, int(h / line_h))
+        scroll_line = _app._editor_scroll.get(editor_id, 0) if _app else 0
+        max_scroll = max(0, len(lines) - visible_lines)
+        scroll_line = min(scroll_line, max_scroll)
+
+        # Gutter background
+        self.rect(x, y, line_num_w, h, fill="#181825", radius=0.0)
+
+        # Right-aligned line numbers
+        for rel_idx in range(visible_lines):
+            line_idx = scroll_line + rel_idx
+            if line_idx >= len(lines):
+                break
+            ly = y + rel_idx * line_h
+            line_num_str = str(line_idx + 1)
+            lnx = x + line_num_w - len(line_num_str) * 7 - 4
+            self.text(lnx, ly + 2, line_num_str, size=font_size,
+                      color="#45475a", monospace=True)
+
+        # Wrap on_change to forward unchanged
+        def _wrapped_on_change(new_lines, new_cl, new_cc):
+            on_change(new_lines, new_cl, new_cc)
+
+        colorizer = _python_colorize if language == "python" else None
+
+        return self.multiline_text_input(
+            editor_id, lines, cursor_line, cursor_col, _wrapped_on_change,
+            x=x + line_num_w, y=y, w=w - line_num_w, h=h,
+            focused=focused, font_size=font_size, line_colorizer=colorizer,
+        )
 
     def _draw_syntax_line(self, x: float, y: float, line: str, size: float):
-        """Draw a single code line with basic syntax highlighting."""
+        """Draw a single code line with Python syntax highlighting. Delegates to _python_colorize."""
         char_w = size * 0.6
-        col = 0  # character offset
-
-        # Detect full-line comment
-        stripped = line.lstrip()
-        if stripped.startswith("#"):
-            self.text(x, y, line, size=size, color=self._COL_CMT, monospace=True)
-            return
-
-        # Split into (token, color) segments
-        segments: list = []
-        i = 0
-        in_str = False
-        str_char = ""
-        tok_start = 0
-
-        def flush_plain(end: int):
-            nonlocal tok_start
-            chunk = line[tok_start:end]
-            if chunk:
-                buf = ""
-                for ch in chunk:
-                    if ch.isalnum() or ch in ("_", "."):
-                        buf += ch
-                    else:
-                        if buf:
-                            if buf in self._KW:
-                                color = self._COL_KW
-                            elif buf.replace(".", "", 1).isdigit():
-                                color = self._COL_NUM
-                            else:
-                                color = self._COL_PLAIN
-                            segments.append((buf, color))
-                            buf = ""
-                        segments.append((ch, self._COL_PLAIN))
-                if buf:
-                    if buf in self._KW:
-                        color = self._COL_KW
-                    elif buf.replace(".", "", 1).isdigit():
-                        color = self._COL_NUM
-                    else:
-                        color = self._COL_PLAIN
-                    segments.append((buf, color))
-            tok_start = end
-
-        while i < len(line):
-            ch = line[i]
-            if in_str:
-                if ch == str_char and (i == 0 or line[i - 1] != "\\"):
-                    # End of string — emit the whole string token as COL_STR
-                    str_token = line[tok_start:i + 1]
-                    segments.append((str_token, self._COL_STR))
-                    in_str = False
-                    tok_start = i + 1
-                i += 1
-                continue
-            if ch in ('"', "'"):
-                flush_plain(i)   # flush everything before the quote
-                in_str = True
-                str_char = ch
-                tok_start = i    # string token starts at opening quote
-                i += 1
-                continue
-            if ch == "#":
-                flush_plain(i)
-                segments.append((line[i:], self._COL_CMT))
-                i = len(line)
-                tok_start = i
-                continue
-            i += 1
-
-        flush_plain(len(line))
-
-        # Render segments
         cx = x
-        for tok, color in segments:
+        for tok, color in _python_colorize(line):
             self.text(cx, y, tok, size=size, color=color, monospace=True)
             cx += len(tok) * char_w
 
