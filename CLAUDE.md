@@ -27,12 +27,14 @@ Every issue gets exactly one **type**, one **priority**, and one **version**. Op
 
 ## Branches
 
-Three long-lived branches, no sibling worktrees:
+Three long-lived branches plus a parked experiments family:
+
 - `main` — stable releases. Beta → main when ready to tag a version and ship.
 - `beta` — staging. Alpha → beta when a set of features is tested together.
 - `alpha` — active development. **All v2 progress lands here first.** Feature branches are cut from alpha, worked in `.claude/worktrees/` subdirectories, merged back via PR.
+- `experiments/v2-*` — **parked, not under active development.** A frozen set of pre-reorg feature branches preserved after the 2026-04-15 cleanup. Each contains unique v2-adjacent work (core type registry TOMLs, plexi-iq stub, per-app tests, input layering spec, cross-language editor example, SecretGet API, etc.) that was too tangled with the old SDK/spec layout to mechanically merge. **Cherry-pick from them; do not merge wholesale.** See `NEXT_SESSION.md` at the repo root for a per-branch inventory of what's worth extracting. Delete each branch once its valuable pieces have been cherry-picked onto a fresh feature branch off current alpha.
 
-Feature branch naming: `feature/<issue-number>-short-description` (e.g., `feature/228-run-primitive`).
+Feature branch naming for NEW work: `feature/<issue-number>-short-description` (e.g., `feature/228-run-primitive`).
 
 Sub-agent workflow: agents use `isolation: "worktree"` to create feature branches off alpha, do their work, and open PRs targeting alpha. Never push directly to alpha, beta, or main.
 

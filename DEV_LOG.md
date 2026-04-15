@@ -1,5 +1,37 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [CHANGED] Parked feature branches renamed to `experiments/v2-*`; WIP committed; worktrees fully purged
+
+Follow-up to the branch/worktree cleanup earlier today. The 6 "preserved for later review" feature branches had an ambiguous status — sitting in the `feature/*` namespace implied they were active, but they were actually parked. Two also had real uncommitted work sitting in worktrees that would be lost on the next `git worktree remove`.
+
+**Committed WIP on `feature/104-slash-trigger-and-commands`**: the worktree at `.claude/worktrees/agent-ae3ad3ec` had 5 dirty files including 344 new lines in `src/agent_mode.rs` and 98 new lines in `src/tiling.rs` — genuine slash-command / tiling work from the 2026-04-12 session. Committed as `c7d9cc3 wip: checkpoint before experiments/v2-slash-commands-spawn rename` so the work is safe before rename. No claim it compiles against current alpha.
+
+**Two other dirty worktrees were build noise** and force-removed without commits:
+- `agent-a364e07d`: 19 files all in `sdk/rust/target/` (build output, should be gitignored but tracked historically — irrelevant)
+- `feature+mermaid-viewer`: only `Cargo.lock` — noise
+
+**Renamed 7 preserved branches to `experiments/v2-*`**:
+- `feature/104-slash-trigger-and-commands` → `experiments/v2-slash-commands-spawn`
+- `feature/external-text-editor-app` → `experiments/v2-external-text-editor`
+- `feature/v2-input-layering-contract` → `experiments/v2-input-layering`
+- `feature/237-file-explorer-75-split` → `experiments/v2-plexi-iq-stage0` (real value is the `src/plexi_iq/` stub, not the file explorer split fix)
+- `feature/plexi-v2-scope-spec` → `experiments/v2-scope-spec`
+- `feature/spawn-app-protocol` → `experiments/v2-spawn-app`
+- `feature/sdk-breakpoints-min-size` → `experiments/v2-sdk-breakpoints`
+- `worktree-agent-a364e07d` → `experiments/v2-secrets-get-api`
+
+The `experiments/v2-*` namespace makes it unambiguous that these are parked. Cherry-pick source, not active development target. `feature/*` stays reserved for NEW work off current alpha.
+
+**Dropped redundant session branch.** `feature/notifications-urgency-socket-actions` was fully merged into alpha (they point at the same commit). Deleted with `-D` to get it out of the local namespace.
+
+**Final branch count: 12.** 4 long-lived (`main`, `beta`, `alpha`, `dev`) + 8 `experiments/v2-*`.
+
+**Final worktree count: 2.** Main (on alpha) + external `beta/v2`.
+
+**Updated `NEXT_SESSION.md`** with the new branch names, a per-branch cherry-pick value inventory, and a recommended extraction order. **Updated `CLAUDE.md` `## Branches` section** to document the `experiments/v2-*` convention so future sessions know these branches are parked and understood.
+
+**Alpha is stable and ready for v2 PRs** — clean branch namespace, no dangling worktrees, all parked work preserved and documented, labels versioned.
+
 ## 2026-04-15 — [CHANGED] Branch + worktree cleanup; alpha fast-forwarded to own all v2 work
 
 Started the session with **~80 local branches and 36 worktrees**, most from sub-agent isolation runs that never progressed past the initial `324b534 chore: bump 1.1.2` commit. Git diffs and branch listings were archaeology. The goal: three long-lived branches (`main`, `beta`, `alpha`), alpha holds all v2 progress, issues labeled by target version.
