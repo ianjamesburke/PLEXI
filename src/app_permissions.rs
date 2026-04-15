@@ -243,3 +243,74 @@ impl PermissionsConfig {
 fn permissions_path() -> PathBuf {
     crate::config::config_dir().join("permissions.toml")
 }
+
+// ─── Runtime permission store ─────────────────────────────────────────────────
+
+/// Persistent store for runtime capability decisions (yes_once, yes_always, no).
+/// Stored as JSON at `{config_dir}/permissions.json`.
+pub struct PermissionStore {
+    path: PathBuf,
+    decisions: HashMap<String, String>,
+}
+
+impl PermissionStore {
+    pub fn new(path: PathBuf) -> Self {
+        let decisions = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        Self { path, decisions }
+    }
+
+    /// Check whether a decision exists for app_id:capability.
+    pub fn check(&self, app_id: &str, capability: &str) -> Option<&str> {
+        self.decisions
+            .get(&format!("{app_id}:{capability}"))
+            .map(|s| s.as_str())
+    }
+
+    /// Record a decision for app_id:capability.
+    pub fn record(&mut self, app_id: &str, capability: &str, decision: &str) {
+        self.decisions
+            .insert(format!("{app_id}:{capability}"), decision.to_string());
+        match serde_json::to_string_pretty(&self.decisions) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&self.path, json) {
+                    log::warn!("permission_store: failed to persist: {e}");
+                }
+            }
+            Err(e) => log::warn!("permission_store: serialize error: {e}"),
+        }
+    }
+}
+
+/// Returns true if the app's `observes` list allows receiving events of `kind_tag`.
+pub fn check_observes_capability(observes: &[String], kind_tag: &str) -> bool {
+    observes.iter().any(|o| o == "*" || o == kind_tag)
+}
+
+/// Validate that a file path in an OpenIntent doesn't escape the workspace root.
+pub fn validate_open_intent_path(path: &str, workspace_root: Option<&str>) -> Result<(), String> {
+    if let Some(root) = workspace_root {
+        let abs_path = std::path::Path::new(path);
+        let abs_root = std::path::Path::new(root);
+        if abs_path.is_absolute() {
+            let canonical_path = abs_path
+                .canonicalize()
+                .unwrap_or_else(|_| abs_path.to_path_buf());
+            let canonical_root = abs_root
+                .canonicalize()
+                .unwrap_or_else(|_| abs_root.to_path_buf());
+            if !canonical_path.starts_with(&canonical_root) {
+                return Err(format!(
+                    "path {path:?} escapes workspace root {root:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}

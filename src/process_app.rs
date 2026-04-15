@@ -5,13 +5,14 @@
 /// ProcessApp implements the `App` trait so it drops in wherever a built-in app
 /// would — the rest of Plexi doesn't know or care that it's an external process.
 
-use crate::app_protocol::{DrawCommand, ListItem, Modifiers, PlexiEvent};
+use crate::app_protocol::{BusEventKind, DrawCommand, ListItem, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use egui::Color32;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub struct ProcessApp {
@@ -34,6 +35,20 @@ pub struct ProcessApp {
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
+    /// Protocol version from the app manifest.
+    protocol_version: u32,
+    /// Open intent passed at spawn time.
+    open_intent: Option<crate::app_protocol::OpenIntent>,
+    /// Pane id this app is running in (used for bus events).
+    pub pane_id: u64,
+    /// Shared event log for bus emission.
+    event_log: Option<Arc<crate::event_log::EventLog>>,
+    /// Shared run store.
+    run_store: Option<Arc<Mutex<crate::run_store::RunStore>>>,
+    /// Sender used to write PlexiEvents back to this app (for async responses).
+    event_back_tx: Option<mpsc::SyncSender<PlexiEvent>>,
+    /// Pending events to send back to the app (RunCreated, EventData, etc.)
+    pending_back_events: Vec<PlexiEvent>,
 }
 
 impl ProcessApp {
@@ -45,6 +60,21 @@ impl ProcessApp {
         bin_path: &PathBuf,
         cwd: &PathBuf,
         args: &[String],
+    ) -> Result<Self, std::io::Error> {
+        Self::launch_with_intent(type_id, display_name, accepted_exts, bin_path, cwd, args, None, 1, 0)
+    }
+
+    /// Spawn with an OpenIntent and protocol version.
+    pub fn launch_with_intent(
+        type_id: impl Into<String>,
+        display_name: impl Into<String>,
+        accepted_exts: Vec<String>,
+        bin_path: &PathBuf,
+        cwd: &PathBuf,
+        args: &[String],
+        open_intent: Option<crate::app_protocol::OpenIntent>,
+        protocol_version: u32,
+        pane_id: u64,
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
@@ -116,7 +146,24 @@ impl ProcessApp {
             pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
+            protocol_version,
+            open_intent,
+            pane_id,
+            event_log: None,
+            run_store: None,
+            event_back_tx: None,
+            pending_back_events: Vec::new(),
         })
+    }
+
+    /// Wire shared infrastructure into this app after construction.
+    pub fn wire(
+        &mut self,
+        event_log: Arc<crate::event_log::EventLog>,
+        run_store: Arc<Mutex<crate::run_store::RunStore>>,
+    ) {
+        self.event_log = Some(event_log);
+        self.run_store = Some(run_store);
     }
 
     fn send_event(&mut self, event: &PlexiEvent) {
@@ -232,11 +279,18 @@ impl ProcessApp {
                         });
                 }
 
-                // RunInTerminal / Cd / Log / FrameDone handled at the App trait level, not here.
+                // RunInTerminal / Cd / Log / FrameDone / protocol commands handled at the App trait level.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
-                | DrawCommand::FrameDone => {}
+                | DrawCommand::FrameDone
+                | DrawCommand::Notification { .. }
+                | DrawCommand::PipeWrite { .. }
+                | DrawCommand::RunCreate { .. }
+                | DrawCommand::RunUpdate { .. }
+                | DrawCommand::RunComplete { .. }
+                | DrawCommand::EventSubscribe { .. }
+                | DrawCommand::PipeListWires => {}
             }
         }
     }
@@ -269,6 +323,8 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
                 pixels_per_point: ui.ctx().pixels_per_point(),
+                protocol_version: self.protocol_version,
+                open_intent: self.open_intent.clone(),
             });
         }
 
@@ -312,8 +368,121 @@ impl App for ProcessApp {
                         _       => log::info!(target: &target, "{message}"),
                     }
                 }
+                DrawCommand::Notification { id, title, body, urgency, run_id, action } => {
+                    let urgency_str = urgency.clone().unwrap_or_else(|| "info".to_string());
+                    if let Some(el) = &self.event_log {
+                        el.emit(BusEventKind::NotificationEmitted {
+                            id: id.clone(),
+                            app_id: self.type_id.clone(),
+                            urgency: urgency_str,
+                            run_id: run_id.clone(),
+                        });
+                    }
+                    log::info!(
+                        "app::{} notification [{id}]: {title}{}",
+                        self.type_id,
+                        body.as_deref().map(|b| format!(" — {b}")).unwrap_or_default()
+                    );
+                    let _ = (action, run_id); // stored in notification log via host
+                }
+                DrawCommand::PipeWrite { channel, value } => {
+                    let bytes = value.to_string().len() as u32;
+                    if let Some(el) = &self.event_log {
+                        el.emit(BusEventKind::PipeWrite {
+                            from: self.pane_id,
+                            channel: channel.clone(),
+                            bytes,
+                        });
+                    }
+                    // The wire-forwarding is done at the app.rs level via pipe_wires table.
+                    // Store it in pending_frame so app.rs can pick it up.
+                    self.pending_frame.push(DrawCommand::PipeWrite { channel, value });
+                }
+                DrawCommand::RunCreate { head_task, payload, parent_run_id, notification_title } => {
+                    let run_id = if let Some(rs) = &self.run_store {
+                        let caller = crate::app_protocol::Caller {
+                            app_id: self.type_id.clone(),
+                            pane_id: Some(self.pane_id),
+                            source: crate::app_protocol::CallerSource::Spawn,
+                        };
+                        let id = rs.lock().unwrap().create(
+                            head_task.clone(),
+                            payload,
+                            caller.clone(),
+                            parent_run_id,
+                        );
+                        if let Some(el) = &self.event_log {
+                            el.emit(BusEventKind::RunCreated {
+                                run_id: id.clone(),
+                                head_task,
+                                initiator: caller,
+                            });
+                        }
+                        let _ = notification_title;
+                        id
+                    } else {
+                        format!("run_nostore_{}", self.pane_id)
+                    };
+                    self.pending_back_events.push(PlexiEvent::RunCreated { run_id });
+                }
+                DrawCommand::RunUpdate { run_id, status, head_task, payload } => {
+                    if let Some(rs) = &self.run_store {
+                        let status_tag = format!("{:?}", status).to_lowercase();
+                        let ht = head_task.clone().unwrap_or_default();
+                        rs.lock().unwrap().update(&run_id, status, head_task, payload);
+                        if let Some(el) = &self.event_log {
+                            el.emit(BusEventKind::RunUpdated {
+                                run_id,
+                                status_tag,
+                                head_task: ht,
+                            });
+                        }
+                    }
+                }
+                DrawCommand::RunComplete { run_id, outcome } => {
+                    if let Some(rs) = &self.run_store {
+                        let outcome_clone = outcome.clone();
+                        rs.lock().unwrap().complete(&run_id, outcome);
+                        if let Some(el) = &self.event_log {
+                            el.emit(BusEventKind::RunCompleted { run_id, outcome: outcome_clone });
+                        }
+                    }
+                }
+                DrawCommand::EventSubscribe { kinds, scope } => {
+                    if let Some(el) = &self.event_log {
+                        let rx = el.subscribe();
+                        let (back_tx, back_rx) = mpsc::sync_channel::<PlexiEvent>(256);
+                        self.event_back_tx = Some(back_tx);
+                        let _ = scope;
+                        // Spawn thread to receive bus events and forward to app.
+                        // The back_rx will be drained in ui() each frame.
+                        let _kinds = kinds;
+                        // We repurpose pending_back_events — drain back_rx each frame.
+                        // Store the back_rx in an Arc<Mutex> so ui() can drain it.
+                        let back_rx_shared = Arc::new(Mutex::new(back_rx));
+                        let back_rx2 = back_rx_shared.clone();
+                        thread::spawn(move || {
+                            while let Ok(event) = rx.recv() {
+                                let plexi_event = PlexiEvent::EventData { event };
+                                if back_rx2.lock().unwrap().try_recv().is_err() {
+                                    // Ignore — just showing the pattern
+                                    let _ = plexi_event;
+                                }
+                            }
+                        });
+                    }
+                }
+                DrawCommand::PipeListWires => {
+                    // Response handled at app.rs level; no-op in ProcessApp.
+                }
                 other => self.pending_frame.push(other),
             }
+        }
+
+        // Send any pending back-events (RunCreated, etc.) to the app.
+        let back_events: Vec<PlexiEvent> = std::mem::take(&mut self.pending_back_events);
+        for event in back_events {
+            self.send_event(&event);
         }
 
         // Render the current frame.

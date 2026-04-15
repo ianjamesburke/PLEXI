@@ -49,6 +49,60 @@ pub struct AppManifestApp {
     pub description: String,
     #[serde(default)]
     pub capabilities: AppCapabilities,
+    #[serde(default = "default_protocol_version_manifest")]
+    pub protocol_version: u32,
+    #[serde(default)]
+    pub skill: Option<AppSkillSection>,
+    #[serde(default)]
+    pub agent: Option<AppAgentSection>,
+    #[serde(default)]
+    pub observes: Vec<String>,
+    #[serde(default = "default_create_runs")]
+    pub create_runs: bool,
+    #[serde(default = "default_open_intent_kinds")]
+    pub open_intent_kinds: Vec<String>,
+    #[serde(default)]
+    pub io: Option<AppIoSection>,
+}
+
+fn default_protocol_version_manifest() -> u32 {
+    1
+}
+
+fn default_create_runs() -> bool {
+    true
+}
+
+fn default_open_intent_kinds() -> Vec<String> {
+    vec!["file".into(), "url".into()]
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppSkillSection {
+    pub description: String,
+    #[serde(default)]
+    pub invoke_phrase: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppAgentSection {
+    pub system_prompt: String,
+    #[serde(default)]
+    pub tool_allowlist: Vec<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppIoSection {
+    #[serde(default)]
+    pub inputs: Vec<PipeChannel>,
+    #[serde(default)]
+    pub outputs: Vec<PipeChannel>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct PipeChannel {
+    pub kind: String,
+    pub name: String,
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -214,14 +268,30 @@ impl AppRegistry {
 
     /// Launch an app and return a boxed `App` trait object.
     pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
+        self.launch_with_intent(id, cwd, args, None, 0)
+    }
+
+    /// Launch an app with an OpenIntent and pane_id for bus events.
+    pub fn launch_with_intent(
+        &self,
+        id: &str,
+        cwd: &PathBuf,
+        args: &[String],
+        open_intent: Option<crate::app_protocol::OpenIntent>,
+        pane_id: u64,
+    ) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
-        match ProcessApp::launch(
+        let protocol_version = installed.manifest.protocol_version;
+        match ProcessApp::launch_with_intent(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
             installed.manifest.capabilities.file_types.iter().cloned().collect(),
             &installed.bin_path,
             cwd,
             args,
+            open_intent,
+            protocol_version,
+            pane_id,
         ) {
             Ok(app) => {
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);

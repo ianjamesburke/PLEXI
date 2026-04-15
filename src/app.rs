@@ -36,6 +36,10 @@ pub struct PlexiApp {
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
+    pub(crate) event_log: std::sync::Arc<crate::event_log::EventLog>,
+    pub(crate) run_store: std::sync::Arc<std::sync::Mutex<crate::run_store::RunStore>>,
+    pub(crate) permission_store: std::sync::Arc<std::sync::Mutex<crate::app_permissions::PermissionStore>>,
+    pub(crate) pipe_wires: Vec<crate::app_protocol::PipeWire>,
 }
 
 impl PlexiApp {
@@ -167,6 +171,19 @@ impl PlexiApp {
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
+                    event_log: {
+                        let p = crate::config::config_dir().join("events.jsonl");
+                        std::sync::Arc::new(crate::event_log::EventLog::new(p))
+                    },
+                    run_store: {
+                        let p = crate::config::config_dir().join("runs.jsonl");
+                        std::sync::Arc::new(std::sync::Mutex::new(crate::run_store::RunStore::new(p)))
+                    },
+                    permission_store: {
+                        let p = crate::config::config_dir().join("permissions.json");
+                        std::sync::Arc::new(std::sync::Mutex::new(crate::app_permissions::PermissionStore::new(p)))
+                    },
+                    pipe_wires: Vec::new(),
                 };
             }
         }
@@ -214,6 +231,19 @@ impl PlexiApp {
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
+            event_log: {
+                let p = crate::config::config_dir().join("events.jsonl");
+                std::sync::Arc::new(crate::event_log::EventLog::new(p))
+            },
+            run_store: {
+                let p = crate::config::config_dir().join("runs.jsonl");
+                std::sync::Arc::new(std::sync::Mutex::new(crate::run_store::RunStore::new(p)))
+            },
+            permission_store: {
+                let p = crate::config::config_dir().join("permissions.json");
+                std::sync::Arc::new(std::sync::Mutex::new(crate::app_permissions::PermissionStore::new(p)))
+            },
+            pipe_wires: Vec::new(),
         }
     }
 
