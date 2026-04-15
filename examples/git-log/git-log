@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 git-log — Plexi app
 Browse recent git commits for the linked terminal's working directory.

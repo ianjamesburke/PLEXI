@@ -64,6 +64,9 @@ install-alpha:
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
 
+    # Ensure Python app entry points are executable after install.
+    find ~/.plexi-alpha/apps -name "*.py" -exec chmod +x {} \;
+
 install-beta:
     #!/usr/bin/env bash
     set -euo pipefail
