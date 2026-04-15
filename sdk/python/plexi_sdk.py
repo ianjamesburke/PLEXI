@@ -190,6 +190,7 @@ class RenderContext:
         self._measure_cache: dict = {}
         self._measure_req_id: int = 0
         self._time: float = 0.0
+        self._pending_events: list = []
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0):
         """Fill a rectangle."""
@@ -283,6 +284,9 @@ class RenderContext:
         }), flush=True)
 
         # Read stdin until we get the matching TextMetrics reply.
+        # Any non-metric events that arrive during this wait are buffered
+        # in _pending_events and replayed by the main loop after we return,
+        # so they are never discarded.
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -299,6 +303,9 @@ class RenderContext:
                 )
                 self._measure_cache[cache_key] = metrics
                 return metrics
+            else:
+                # Buffer this event — it will be replayed after measurement returns.
+                self._pending_events.append(event)
 
         # Fallback if stdin closed (should not happen in normal operation).
         return TextMetrics(width=size * len(text) * 0.6, height=size, ascent=size * 0.8)
@@ -457,6 +464,7 @@ class App:
         self.open_intent: Optional[OpenIntent] = None
         self._render_time: float = 0.0
         self._measure_req_id: int = 0
+        self._pending_events: list = []
         self._on_init: Optional[Callable] = None
         self._on_render: Optional[Callable] = None
         self._on_key: Optional[Callable] = None
@@ -508,11 +516,86 @@ class App:
             cmd["open_intent"] = open_intent.to_dict()
         self._emitter._write(cmd)
 
+    def _dispatch_event(self, event: dict) -> bool:
+        """Dispatch a single parsed event. Returns True if loop should break (shutdown)."""
+        event_type = event.get("type", "")
+
+        if event_type == "init":
+            self.width = event.get("width", self.width)
+            self.height = event.get("height", self.height)
+            self.protocol_version = event.get("protocol_version", 1)
+            raw_intent = event.get("open_intent")
+            if raw_intent:
+                self.open_intent = OpenIntent.from_dict(raw_intent)
+            if self._on_init:
+                self._on_init(event, self._emitter)
+
+        elif event_type == "resize":
+            self.width = event.get("width", self.width)
+            self.height = event.get("height", self.height)
+            if self._on_resize:
+                self._on_resize(self.width, self.height)
+
+        elif event_type == "render":
+            self.width = event.get("width", self.width)
+            self.height = event.get("height", self.height)
+            delta_time = event.get("delta_time", 0.016)
+            self._render_time += delta_time
+            ctx = RenderContext(self.width, self.height)
+            ctx._time = self._render_time
+            ctx._measure_cache = {}  # clear per-frame
+            ctx._measure_req_id = self._measure_req_id
+            ctx._pending_events = self._pending_events
+            if self._on_render:
+                self._on_render(ctx)
+            self._measure_req_id = ctx._measure_req_id
+            ctx._flush()
+
+        elif event_type == "key":
+            if self._on_key:
+                self._on_key(
+                    event.get("key", ""),
+                    event.get("modifiers", {}),
+                    self._emitter,
+                )
+
+        elif event_type == "click":
+            if self._on_click:
+                self._on_click(
+                    event.get("x", 0.0),
+                    event.get("y", 0.0),
+                    event.get("button", "primary"),
+                    self._emitter,
+                )
+
+        elif event_type == "command":
+            if self._on_command:
+                self._on_command(event.get("text", ""), self._emitter)
+
+        elif event_type == "run_created":
+            if self._on_run_created:
+                self._on_run_created(event.get("run_id", ""), self._emitter)
+
+        elif event_type == "event_data":
+            if self._on_event:
+                self._on_event(event.get("event", {}), self._emitter)
+
+        elif event_type == "shutdown":
+            return True
+
+        return False
+
     def run(self):
         """Start the event loop. Blocks until Plexi sends Shutdown."""
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
         for line in sys.stdin:
+            # Drain events buffered during any measure_text_exact call first.
+            while self._pending_events:
+                buffered = self._pending_events.pop(0)
+                if self._dispatch_event(buffered):
+                    return
+
             line = line.strip()
             if not line:
                 continue
@@ -522,66 +605,5 @@ class App:
             except json.JSONDecodeError:
                 continue
 
-            event_type = event.get("type", "")
-
-            if event_type == "init":
-                self.width = event.get("width", self.width)
-                self.height = event.get("height", self.height)
-                self.protocol_version = event.get("protocol_version", 1)
-                raw_intent = event.get("open_intent")
-                if raw_intent:
-                    self.open_intent = OpenIntent.from_dict(raw_intent)
-                if self._on_init:
-                    self._on_init(event, self._emitter)
-
-            elif event_type == "resize":
-                self.width = event.get("width", self.width)
-                self.height = event.get("height", self.height)
-                if self._on_resize:
-                    self._on_resize(self.width, self.height)
-
-            elif event_type == "render":
-                self.width = event.get("width", self.width)
-                self.height = event.get("height", self.height)
-                delta_time = event.get("delta_time", 0.016)
-                self._render_time += delta_time
-                ctx = RenderContext(self.width, self.height)
-                ctx._time = self._render_time
-                ctx._measure_cache = {}  # clear per-frame
-                ctx._measure_req_id = self._measure_req_id
-                if self._on_render:
-                    self._on_render(ctx)
-                self._measure_req_id = ctx._measure_req_id
-                ctx._flush()
-
-            elif event_type == "key":
-                if self._on_key:
-                    self._on_key(
-                        event.get("key", ""),
-                        event.get("modifiers", {}),
-                        self._emitter,
-                    )
-
-            elif event_type == "click":
-                if self._on_click:
-                    self._on_click(
-                        event.get("x", 0.0),
-                        event.get("y", 0.0),
-                        event.get("button", "primary"),
-                        self._emitter,
-                    )
-
-            elif event_type == "command":
-                if self._on_command:
-                    self._on_command(event.get("text", ""), self._emitter)
-
-            elif event_type == "run_created":
-                if self._on_run_created:
-                    self._on_run_created(event.get("run_id", ""), self._emitter)
-
-            elif event_type == "event_data":
-                if self._on_event:
-                    self._on_event(event.get("event", {}), self._emitter)
-
-            elif event_type == "shutdown":
+            if self._dispatch_event(event):
                 break

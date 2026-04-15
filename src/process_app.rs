@@ -257,12 +257,10 @@ impl ProcessApp {
             match cmd {
                 DrawCommand::Rect { x, y, w, h, fill, radius } => {
                     let (tx, ty) = apply_tx(&transform_stack, *x, *y);
-                    // Scale w/h by the topmost scale if stack is non-empty.
-                    let (sw, sh) = if let Some(&(sx, sy, _, _)) = transform_stack.last() {
-                        (*w * sx, *h * sy)
-                    } else {
-                        (*w, *h)
-                    };
+                    // Scale w/h by the cumulative product of all scales in the stack.
+                    let (cum_sx, cum_sy) = transform_stack.iter()
+                        .fold((1.0_f32, 1.0_f32), |(ax, ay), &(sx, sy, _, _)| (ax * sx, ay * sy));
+                    let (sw, sh) = (*w * cum_sx, *h * cum_sy);
                     let rect = egui::Rect::from_min_size(
                         egui::pos2(origin.x + tx, origin.y + ty),
                         egui::vec2(sw, sh),
