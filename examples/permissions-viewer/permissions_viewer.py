@@ -10,24 +10,19 @@ Keys:
   j / Down    next app
   k / Up      previous app
   r           reload from disk
-  q / Esc     quit
+  ⌘W          close
 """
 
 import os
 import pathlib
-from plexi_sdk import App, load_manifest
 
-# ── palette ───────────────────────────────────────────────────────────────────
-BG        = "#1e1e2e"
-SURFACE   = "#313244"
-HIGHLIGHT = "#45475a"
-ACCENT    = "#89b4fa"
-MUTED     = "#6c7086"
-FG        = "#cdd6f4"
-RED       = "#f38ba8"
-GREEN     = "#a6e3a1"
-YELLOW    = "#f9e2af"
-BLUE      = "#89dceb"
+from plexi_sdk import (
+    App, load_manifest,
+    THEME,
+    BODY, CAPTION, HINT,
+    PAD, HEADER_H,
+)
+
 
 # ── TOML micro-parser (reuses the same logic as load_manifest) ───────────────
 def _parse_toml(text: str) -> dict:
@@ -103,11 +98,11 @@ def _load_apps() -> list[dict]:
 
 def _fs_color(fs: str) -> str:
     return {
-        "none":  GREEN,
-        "read":  YELLOW,
-        "write": RED,
-        "full":  RED,
-    }.get(fs, MUTED)
+        "none":  THEME.green,
+        "read":  THEME.yellow,
+        "write": THEME.red,
+        "full":  THEME.red,
+    }.get(fs, THEME.muted)
 
 
 def _bool_label(b: bool) -> str:
@@ -115,7 +110,7 @@ def _bool_label(b: bool) -> str:
 
 
 def _bool_color(b: bool) -> str:
-    return YELLOW if b else MUTED
+    return THEME.yellow if b else THEME.muted
 
 
 # ── state ─────────────────────────────────────────────────────────────────────
@@ -134,74 +129,110 @@ def _clamp(idx: int) -> int:
     return max(0, min(len(apps) - 1, idx))
 
 
+# ── rendering ─────────────────────────────────────────────────────────────────
+def _col_positions() -> dict:
+    return {
+        "name":       PAD,
+        "version":    200.0,
+        "filesystem": 290.0,
+        "terminal":   400.0,
+        "mouse":      490.0,
+        "filetypes":  570.0,
+    }
+
+
+def _render_row(ctx, a, i, x, y, w, is_sel):
+    row_h = 36.0
+    bg = THEME.highlight if is_sel else (THEME.surface if i % 2 == 0 else THEME.bg)
+    ctx.rect(x, y, w, row_h - 1, fill=bg)
+
+    cols = _col_positions()
+    name_color = THEME.accent if is_sel else THEME.fg
+    text_y = y + (row_h - CAPTION) / 2
+
+    ctx.text(cols["name"],       text_y, a["name"][:22],
+             size=BODY, color=name_color, bold=is_sel)
+    ctx.text(cols["version"],    text_y, a["version"],
+             size=CAPTION, color=THEME.muted)
+    ctx.text(cols["filesystem"], text_y, a["filesystem"],
+             size=CAPTION, color=_fs_color(a["filesystem"]))
+    ctx.text(cols["terminal"],   text_y, _bool_label(a["terminal_write"]),
+             size=CAPTION, color=_bool_color(a["terminal_write"]))
+    ctx.text(cols["mouse"],      text_y, _bool_label(a["mouse_tracking"]),
+             size=CAPTION, color=_bool_color(a["mouse_tracking"]))
+    fts = ", ".join(a["file_types"]) if a["file_types"] else "—"
+    ctx.text(cols["filetypes"],  text_y, fts[:24],
+             size=CAPTION,
+             color=THEME.accent if a["file_types"] else THEME.muted)
+
+
 @app.on_render
 def render(ctx):
-    ctx.rect(0, 0, ctx.width, ctx.height, fill=BG)
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
     # ── header ────────────────────────────────────────────────────────────────
-    ctx.rect(0, 0, ctx.width, 36, fill=SURFACE)
-    ctx.text(16, 10, "Permissions Viewer", size=14, color=ACCENT, bold=True)
-    ctx.text(ctx.width - 170, 10, f"{len(apps)} apps  ·  v{APP_VERSION}", size=11, color=MUTED)
+    ctx.header(
+        "Permissions Viewer",
+        subtitle=f"{len(apps)} apps  ·  v{APP_VERSION}",
+    )
 
+    # ── empty state ───────────────────────────────────────────────────────────
     if not apps:
-        ctx.text(ctx.width / 2 - 100, ctx.height / 2, "No apps found in apps directory.", size=14, color=MUTED)
+        ctx.empty_state(
+            "No apps found",
+            subtitle="Nothing in the apps directory.",
+        )
+        ctx.status_bar([("⌘W", "close")])
         return
 
     # ── column header row ─────────────────────────────────────────────────────
-    col_y = 44.0
-    ctx.rect(0, col_y, ctx.width, 24, fill=SURFACE)
-    cols = _col_positions(ctx.width)
-    ctx.text(cols["name"],       col_y + 5, "App",        size=11, color=MUTED, bold=True)
-    ctx.text(cols["version"],    col_y + 5, "Version",    size=11, color=MUTED, bold=True)
-    ctx.text(cols["filesystem"], col_y + 5, "Filesystem", size=11, color=MUTED, bold=True)
-    ctx.text(cols["terminal"],   col_y + 5, "Terminal",   size=11, color=MUTED, bold=True)
-    ctx.text(cols["mouse"],      col_y + 5, "Mouse",      size=11, color=MUTED, bold=True)
-    ctx.text(cols["filetypes"],  col_y + 5, "File types", size=11, color=MUTED, bold=True)
+    col_y = HEADER_H + PAD / 4
+    ctx.rect(0, col_y, ctx.width, 24, fill=THEME.surface)
+    cols = _col_positions()
+    label_y = col_y + (24 - HINT) / 2
+    for key, label in (
+        ("name",       "App"),
+        ("version",    "Version"),
+        ("filesystem", "Filesystem"),
+        ("terminal",   "Terminal"),
+        ("mouse",      "Mouse"),
+        ("filetypes",  "File types"),
+    ):
+        ctx.text(cols[key], label_y, label,
+                 size=HINT, color=THEME.muted, bold=True)
 
     # ── rows ──────────────────────────────────────────────────────────────────
     row_h = 36.0
     list_top = col_y + 24
-    visible = max(1, int((ctx.height - list_top - 56) / row_h))
-    scroll_off = max(0, selected - visible + 1)
-
-    for i in range(visible):
-        ni = scroll_off + i
-        if ni >= len(apps):
-            break
-        a = apps[ni]
-        y = list_top + i * row_h
-        is_sel = ni == selected
-
-        bg = HIGHLIGHT if is_sel else (SURFACE if i % 2 == 0 else BG)
-        ctx.rect(0, y, ctx.width, row_h - 1, fill=bg)
-
-        name_color = ACCENT if is_sel else FG
-        ctx.text(cols["name"],       y + 10, a["name"][:22],                             size=12, color=name_color, bold=is_sel)
-        ctx.text(cols["version"],    y + 10, a["version"],                                size=11, color=MUTED)
-        ctx.text(cols["filesystem"], y + 10, a["filesystem"],                             size=11, color=_fs_color(a["filesystem"]))
-        ctx.text(cols["terminal"],   y + 10, _bool_label(a["terminal_write"]),            size=11, color=_bool_color(a["terminal_write"]))
-        ctx.text(cols["mouse"],      y + 10, _bool_label(a["mouse_tracking"]),            size=11, color=_bool_color(a["mouse_tracking"]))
-        fts = ", ".join(a["file_types"]) if a["file_types"] else "—"
-        ctx.text(cols["filetypes"],  y + 10, fts[:24],                                   size=11, color=BLUE if a["file_types"] else MUTED)
+    # Reserve space for detail panel (52) + status bar (30) + padding.
+    list_bottom = ctx.height - 52 - 30
+    ctx.scrollable_list(
+        list_id="permissions",
+        items=apps,
+        selected=selected,
+        row_height=row_h,
+        render_row=_render_row,
+        x=0.0,
+        y=list_top,
+        w=ctx.width,
+        h=max(row_h, list_bottom - list_top),
+    )
 
     # ── detail panel for selected ─────────────────────────────────────────────
-    if apps:
-        a = apps[selected]
-        detail_y = ctx.height - 52
-        ctx.rect(0, detail_y, ctx.width, 52, fill=SURFACE)
-        ctx.text(16, detail_y + 8, a["description"] or a["name"], size=12, color=FG)
-        ctx.text(16, detail_y + 28, "j/k  navigate    r  reload    q  quit", size=10, color=MUTED)
+    a = apps[selected]
+    detail_y = ctx.height - 52 - 30
+    ctx.rect(0, detail_y, ctx.width, 52, fill=THEME.surface)
+    ctx.text(PAD, detail_y + 10, a["description"] or a["name"],
+             size=BODY, color=THEME.fg)
+    ctx.text_right(ctx.width - PAD, detail_y + 10,
+                   f"id: {a['id']}", size=CAPTION, color=THEME.muted)
 
-
-def _col_positions(width: float) -> dict:
-    return {
-        "name":       16,
-        "version":    200,
-        "filesystem": 290,
-        "terminal":   400,
-        "mouse":      490,
-        "filetypes":  570,
-    }
+    # ── status bar ────────────────────────────────────────────────────────────
+    ctx.status_bar([
+        ("j/k", "navigate"),
+        ("r", "reload"),
+        ("⌘W", "close"),
+    ])
 
 
 @app.on_key
@@ -215,8 +246,6 @@ def on_key(key, mods, emit):
     elif key == "r":
         apps = _load_apps()
         selected = _clamp(selected)
-    elif key in ("q", "Escape"):
-        emit.run_in_terminal("")
 
 
 app.run()

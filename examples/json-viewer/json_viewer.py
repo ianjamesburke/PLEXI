@@ -1,53 +1,41 @@
-#!/usr/bin/env python3
+from __future__ import annotations
 """
 json-viewer — Plexi app
-Collapsible tree viewer for JSON files.
 
-Launch via PLEXI_LAUNCH_PATH env var pointing to a .json file,
-or open any .json file from Plexi's file picker.
+Collapsible tree viewer for JSON files. Built on the Phase 1 SDK components
+layer (Theme, ctx.header, ctx.status_bar, ctx.scrollable_list,
+ctx.empty_state) — no inline palette, no hand-rolled scroll clamp, no
+custom status bar.
+
+Launch via PLEXI_LAUNCH_PATH env var pointing to a .json file, or open any
+.json file from Plexi's file picker / drop target.
 
 Controls:
-  j / ↓    Move down
-  k / ↑    Move up
+  j / ↓            Move down
+  k / ↑            Move up
   Enter / Space    Expand / collapse node
-  q        Quit (close app)
+  ⌘W               Close app (host-handled)
 """
-from __future__ import annotations
 
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App
+from plexi_sdk import (
+    App,
+    THEME,
+    BODY, CAPTION, HINT, MONO_SMALL,
+    PAD, HEADER_H,
+)
 
-# ---------------------------------------------------------------------------
-# Catppuccin Mocha
-# ---------------------------------------------------------------------------
-
-C = {
-    "bg":      "#1e1e2e",
-    "surface": "#313244",
-    "text":    "#cdd6f4",
-    "subtext": "#6c7086",
-    "accent":  "#89b4fa",
-    "green":   "#a6e3a1",
-    "yellow":  "#f9e2af",
-    "red":     "#f38ba8",
-    "mauve":   "#cba6f7",
-    "peach":   "#fab387",
-    "header":  "#181825",
-    "sel":     "#313244",
-}
-
-PADDING  = 16
-HEADER_H = 48
-ITEM_H   = 20
-INDENT_W = 16
+ITEM_H = 22.0
+INDENT_W = 16.0
 
 # ---------------------------------------------------------------------------
 # Tree node
 # ---------------------------------------------------------------------------
+
 
 class Node:
     def __init__(self, key: str | None, value: object, depth: int = 0):
@@ -70,10 +58,6 @@ class Node:
     def is_container(self) -> bool:
         return isinstance(self.value, (dict, list))
 
-    @property
-    def child_count(self) -> int:
-        return len(self.children)
-
     def type_label(self) -> str:
         if isinstance(self.value, dict):
             return f"{{}} {len(self.value)} keys"
@@ -94,14 +78,14 @@ class Node:
 
     def value_color(self) -> str:
         if isinstance(self.value, str):
-            return C["green"]
+            return THEME.green
         if self.value is None:
-            return C["subtext"]
+            return THEME.muted
         if isinstance(self.value, bool):
-            return C["mauve"]
+            return THEME.accent
         if isinstance(self.value, (int, float)):
-            return C["yellow"]
-        return C["text"]
+            return THEME.yellow
+        return THEME.fg
 
 
 def flatten(node: Node, out: list[Node]):
@@ -119,14 +103,15 @@ root: Node | None = None
 error_msg: str = ""
 flat: list[Node] = []
 cursor: int = 0
-scroll: int = 0
+
 
 # ---------------------------------------------------------------------------
 # Load
 # ---------------------------------------------------------------------------
 
+
 def load_file(path: str):
-    global root, error_msg, flat, cursor, scroll
+    global root, error_msg, flat, cursor
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -139,6 +124,7 @@ def load_file(path: str):
         error_msg = f"Cannot open file: {exc}"
         root = None
     _rebuild_flat()
+    cursor = 0
 
 
 def _rebuild_flat():
@@ -160,115 +146,110 @@ if _launch_path and os.path.isfile(_launch_path):
     load_file(_launch_path)
 
 
+def _render_row(ctx, node, i, x, y, w, is_sel):
+    if is_sel:
+        ctx.rect(x, y, w, ITEM_H, fill=THEME.highlight)
+
+    tx = x + PAD + node.depth * INDENT_W
+    text_y = y + (ITEM_H - BODY) / 2 - 1
+
+    # Expand/collapse indicator
+    if node.is_container:
+        arrow = "▼" if node.expanded else "▶"
+        ctx.text(tx, text_y, arrow, size=CAPTION, color=THEME.muted)
+        tx += 14
+
+    # Key
+    if node.key is not None:
+        ctx.text(tx, text_y, node.key, size=BODY, color=THEME.accent, bold=True, monospace=True)
+        tx += ctx.measure_text(node.key, BODY, monospace=True) + 4
+        ctx.text(tx, text_y, ":", size=BODY, color=THEME.muted, monospace=True)
+        tx += 10
+
+    # Value / type label
+    if node.is_container:
+        ctx.text(tx, text_y, node.type_label(), size=BODY, color=THEME.muted, monospace=True)
+    else:
+        ctx.text(tx, text_y, node.value_str(), size=BODY, color=node.value_color(), monospace=True)
+
+
 @app.on_render
 def render(ctx):
-    global scroll, cursor
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
-    w = ctx.width
-    h = ctx.height
-
-    ctx.rect(0, 0, w, h, fill=C["bg"])
-
-    # Header
-    ctx.rect(0, 0, w, HEADER_H, fill=C["header"])
-    title = "JSON Viewer"
-    if root:
-        title += f"  —  {root.key}"
-    ctx.text(PADDING, 14, title, size=14, color=C["accent"], bold=True)
-    hint = "j/k=nav  Space=expand  q=quit"
-    ctx.text(w - len(hint) * 7.2 - PADDING, 16, hint, size=10, color=C["subtext"])
-    ctx.line(0, HEADER_H, w, HEADER_H, color=C["surface"], width=1.0)
-
-    body_y = HEADER_H + PADDING
-    body_h = h - body_y - PADDING
-
+    # ── error state ──────────────────────────────────────────────────────────
     if error_msg:
-        ctx.text(PADDING, body_y, error_msg, size=13, color=C["red"])
+        ctx.header("JSON Viewer  ·  error")
+        ctx.empty_state("Could not load file", error_msg, icon_color=THEME.red)
+        ctx.status_bar([("⌘W", "close")])
         return
 
+    # ── empty state ──────────────────────────────────────────────────────────
     if root is None:
-        ctx.text(PADDING, body_y, "Drop a JSON file here or open via file picker.", size=13, color=C["subtext"])
-        # Drop target hint
-        ctx.rect(PADDING, body_y + 30, w - PADDING * 2, 80, fill=C["surface"], radius=8.0)
-        ctx.text(w / 2 - 80, body_y + 62, "Drop .json file here", size=13, color=C["subtext"])
-        ctx.drop_target("json", PADDING, body_y + 30, w - PADDING * 2, 80,
-                        accept=["json"], label="Drop JSON file")
+        ctx.header("JSON Viewer")
+        ctx.empty_state("No file loaded", "Drop a .json file here or open via the file picker.")
+        # Drop target covers the body area so users can drag in a file.
+        drop_y = HEADER_H + PAD
+        drop_h = ctx.height - drop_y - 30.0 - PAD
+        ctx.drop_target(
+            "json", PAD, drop_y, ctx.width - PAD * 2, drop_h,
+            accept=["json"], label="Drop JSON file",
+        )
+        ctx.status_bar([("⌘W", "close")])
         return
 
-    # Visible rows
-    visible = max(1, int(body_h / ITEM_H))
+    # ── tree view ────────────────────────────────────────────────────────────
+    title = f"JSON Viewer  ·  {root.key}"
+    ctx.header(title)
 
-    # Clamp scroll to keep cursor visible
-    if cursor < scroll:
-        scroll = cursor
-    elif cursor >= scroll + visible:
-        scroll = cursor - visible + 1
-    scroll = max(0, min(scroll, max(0, len(flat) - visible)))
+    ctx.scrollable_list(
+        list_id="tree",
+        items=flat,
+        selected=cursor,
+        row_height=ITEM_H,
+        render_row=_render_row,
+    )
 
-    for i, node in enumerate(flat[scroll:scroll + visible]):
-        row_idx = scroll + i
-        ry = body_y + i * ITEM_H
+    ctx.status_bar(
+        [
+            ("j/k", "navigate"),
+            ("Enter", "expand"),
+            ("⌘W", "close"),
+        ],
+    )
 
-        # Selection highlight
-        if row_idx == cursor:
-            ctx.rect(0, ry, w, ITEM_H, fill=C["sel"])
 
-        x = PADDING + node.depth * INDENT_W
-
-        # Expand/collapse indicator
-        if node.is_container:
-            arrow = "▼" if node.expanded else "▶"
-            ctx.text(x, ry + 2, arrow, size=11, color=C["subtext"])
-            x += 14
-
-        # Key
-        if node.key is not None:
-            ctx.text(x, ry + 2, node.key, size=12, color=C["accent"], bold=True)
-            x += len(node.key) * 7.5 + 4
-            ctx.text(x, ry + 2, ": ", size=12, color=C["subtext"])
-            x += 10
-
-        # Value / type label
-        if node.is_container:
-            ctx.text(x, ry + 2, node.type_label(), size=12, color=C["subtext"])
-        else:
-            ctx.text(x, ry + 2, node.value_str(), size=12, color=node.value_color())
-
-    # Scroll indicator
-    if len(flat) > visible:
-        pct = scroll / max(1, len(flat) - visible)
-        bar_h = max(20, int(body_h * visible / len(flat)))
-        bar_y = body_y + int((body_h - bar_h) * pct)
-        ctx.rect(w - 4, bar_y, 3, bar_h, fill=C["overlay"], radius=1.5)
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
 
 
 @app.on_key
-def on_key(key: str, _mods: dict, _emit):
-    global cursor, scroll
+def on_key(key, mods, emit):
+    global cursor
+
+    if not flat:
+        return
 
     if key in ("j", "ArrowDown"):
         cursor = min(cursor + 1, len(flat) - 1)
     elif key in ("k", "ArrowUp"):
         cursor = max(cursor - 1, 0)
     elif key in ("Enter", " "):
-        if flat and 0 <= cursor < len(flat):
+        if 0 <= cursor < len(flat):
             node = flat[cursor]
             if node.is_container:
                 node.expanded = not node.expanded
                 _rebuild_flat()
-                # Clamp cursor after collapse
                 cursor = min(cursor, len(flat) - 1)
-    elif key == "q":
-        pass  # Plexi handles quit via the pane close button; q is a no-op here
 
 
 @app.on_drop
-def on_drop(target_id: str, paths: list, _emit):
+def on_drop(target_id, paths, emit):
+    global cursor
     if paths:
         load_file(paths[0])
-        global cursor, scroll
         cursor = 0
-        scroll = 0
 
 
 app.run()

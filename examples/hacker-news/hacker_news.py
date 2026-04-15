@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """
 hacker-news — Plexi app
@@ -10,60 +11,44 @@ Controls (list view):
 
 Controls (detail view):
   o        Open URL in browser
-  Escape/q Back to list
+  Enter    Back to list
 """
-from __future__ import annotations
 
 import json
-import math
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App
+from plexi_sdk import (
+    App,
+    THEME,
+    TITLE, BODY, CAPTION, HINT, MONO_BODY,
+    PAD, HEADER_H,
+)
 
-# ---------------------------------------------------------------------------
-# Catppuccin Mocha
-# ---------------------------------------------------------------------------
 
-C = {
-    "bg":      "#1e1e2e",
-    "surface": "#313244",
-    "overlay": "#45475a",
-    "text":    "#cdd6f4",
-    "subtext": "#6c7086",
-    "accent":  "#89b4fa",
-    "green":   "#a6e3a1",
-    "yellow":  "#f9e2af",
-    "red":     "#f38ba8",
-    "orange":  "#fab387",
-    "header":  "#181825",
-}
-
-PADDING  = 16
-HEADER_H = 48
-ITEM_H   = 52
-TOP_N    = 30
+TOP_N = 30
 
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
 
-VIEW_LIST   = "list"
+VIEW_LIST = "list"
 VIEW_DETAIL = "detail"
-VIEW_LOAD   = "loading"
+VIEW_LOAD = "loading"
 
-view: str     = VIEW_LOAD
+view: str = VIEW_LOAD
 stories: list = []
 selected: int = 0
-detail: dict | None  = None
+detail: dict | None = None
+detail_scroll: int = 0
 load_msg: str = "Loading top stories…"
 
 result_q: queue.Queue = queue.Queue()
@@ -131,6 +116,7 @@ def start_fetch_list():
     t = threading.Thread(target=fetch_top_stories, daemon=True)
     t.start()
 
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -138,9 +124,44 @@ def start_fetch_list():
 app = App(app_id="hacker-news")
 
 
+def _render_row(ctx, story, i, x, y, w, is_sel):
+    row_h = 52.0
+    bg = THEME.highlight if is_sel else THEME.bg
+    ctx.rect(x + PAD / 2, y, w - PAD, row_h, fill=bg, radius=6)
+
+    rank = f"#{i + 1}"
+    ctx.text(
+        x + PAD, y + 6,
+        rank,
+        size=CAPTION,
+        color=THEME.accent if is_sel else THEME.muted,
+        bold=True,
+    )
+
+    title = story.get("title", "")
+    ctx.text(
+        x + PAD + 44, y + 6,
+        title[:120],
+        size=BODY,
+        color=THEME.fg if is_sel else THEME.muted,
+        bold=is_sel,
+    )
+
+    score = story.get("score", 0)
+    comments = story.get("descendants", 0)
+    domain = _domain(story.get("url"))
+    secondary = f"▲ {score}  💬 {comments}  {domain}"
+    ctx.text(
+        x + PAD + 44, y + 6 + BODY + 4,
+        secondary[:140],
+        size=CAPTION,
+        color=THEME.muted,
+    )
+
+
 @app.on_render
 def render(ctx):
-    global view, stories, selected, detail, load_msg
+    global view, stories, selected, detail, load_msg, detail_scroll
 
     # Drain queue
     try:
@@ -157,120 +178,124 @@ def render(ctx):
     except queue.Empty:
         pass
 
-    w = ctx.width
-    h = ctx.height
-
-    ctx.rect(0, 0, w, h, fill=C["bg"])
-
-    # Header
-    ctx.rect(0, 0, w, HEADER_H, fill=C["header"])
-    ctx.text(PADDING, 14, "Hacker News", size=14, color=C["orange"], bold=True)
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
     if view == VIEW_LOAD:
-        _render_loading(ctx, w, h)
-    elif view == VIEW_DETAIL:
-        _render_detail(ctx, w, h)
-    else:
-        _render_list(ctx, w, h)
-
-
-def _render_loading(ctx, w: float, h: float):
-    ctx.text(PADDING, HEADER_H + 20, load_msg, size=13, color=C["subtext"])
-
-
-def _render_list(ctx, w: float, h: float):
-    hint = "j/k=nav  Enter=open"
-    ctx.text(w - len(hint) * 7.2 - PADDING, 16, hint, size=11, color=C["subtext"])
-    ctx.line(0, HEADER_H, w, HEADER_H, color=C["surface"], width=1.0)
-
-    items = []
-    for i, s in enumerate(stories):
-        rank = f"#{i+1}"
-        title = s.get("title", "")
-        score = s.get("score", 0)
-        comments = s.get("descendants", 0)
-        domain = _domain(s.get("url"))
-        label = f"{rank}  {title}"
-        secondary = f"▲ {score}  💬 {comments}  {domain}"
-        items.append({"label": label, "secondary": secondary})
-
-    ctx.list(items, selected=selected, item_height=float(ITEM_H))
-
-    # Re-paint header
-    ctx.rect(0, 0, w, HEADER_H, fill=C["header"])
-    ctx.text(PADDING, 14, "Hacker News", size=14, color=C["orange"], bold=True)
-    ctx.text(w - len(hint) * 7.2 - PADDING, 16, hint, size=11, color=C["subtext"])
-    ctx.line(0, HEADER_H, w, HEADER_H, color=C["surface"], width=1.0)
-
-
-def _render_detail(ctx, w: float, h: float):
-    if not detail:
+        ctx.header("Hacker News")
+        ctx.empty_state(load_msg)
+        ctx.status_bar([("⌘W", "close")])
         return
 
-    hint = "o=open URL  Esc/q=back"
-    ctx.text(w - len(hint) * 7.2 - PADDING, 16, hint, size=11, color=C["subtext"])
-    ctx.line(0, HEADER_H, w, HEADER_H, color=C["surface"], width=1.0)
+    if view == VIEW_DETAIL and detail:
+        _render_detail(ctx)
+        return
 
-    y = HEADER_H + PADDING
+    _render_list(ctx)
 
-    # Title
+
+def _render_list(ctx):
+    ctx.header(f"Hacker News  ·  {len(stories)} stories")
+
+    if not stories:
+        ctx.empty_state("No stories")
+        ctx.status_bar([("⌘W", "close")])
+        return
+
+    ctx.scrollable_list(
+        list_id="stories",
+        items=stories,
+        selected=selected,
+        row_height=56.0,
+        render_row=_render_row,
+    )
+
+    ctx.status_bar(
+        [
+            ("j/k", "navigate"),
+            ("Enter", "open"),
+            ("⌘W", "close"),
+        ],
+    )
+
+
+def _render_detail(ctx):
+    global detail_scroll
+    assert detail is not None
+
     title = detail.get("title", "")
-    ctx.text(PADDING, y, title, size=16, color=C["text"], bold=True)
-    y += 28
+    ctx.header(title[:80])
 
-    # URL / domain
-    url = detail.get("url") or ""
-    if url:
-        ctx.text(PADDING, y, _domain(url), size=12, color=C["accent"])
-        y += 20
-
-    # Meta row
-    score    = detail.get("score", 0)
-    author   = detail.get("by", "")
+    # Build body lines: meta + URL + self-text
+    score = detail.get("score", 0)
+    author = detail.get("by", "")
     comments = detail.get("descendants", 0)
-    ts       = detail.get("time")
-    meta = f"▲ {score}  by {author}  💬 {comments}  {_time_ago(ts)}"
-    ctx.text(PADDING, y, meta, size=12, color=C["subtext"])
-    y += 28
+    ts = detail.get("time")
+    url = detail.get("url") or ""
 
-    ctx.line(0, y, w, y, color=C["surface"], width=1.0)
-    y += 12
+    meta_lines: list[str] = []
+    meta_lines.append(f"▲ {score}  by {author}  💬 {comments}  {_time_ago(ts)}")
+    if url:
+        meta_lines.append(_domain(url))
+        meta_lines.append(url)
+    meta_lines.append("")
 
-    # Self-post text if present
     text_body = detail.get("text") or ""
     if text_body:
-        # Strip HTML tags simply
-        import re
         clean = re.sub(r"<[^>]+>", " ", text_body).strip()
-        import textwrap
-        lines = textwrap.wrap(clean, 80)
-        for line in lines[:30]:
-            ctx.text(PADDING, y, line, size=12, color=C["text"])
-            y += 18
+        wrapped = ctx.wrap_text(
+            clean,
+            max_width_px=ctx.width - PAD * 2,
+            size=BODY,
+        )
+        body_lines = meta_lines + wrapped
     else:
-        ctx.text(PADDING, y, "Press o to open in browser.", size=12, color=C["subtext"])
+        body_lines = meta_lines + ["Press o to open in browser."]
+
+    detail_scroll = ctx.scrollable_text(
+        text_id="hn_detail",
+        lines=body_lines,
+        scroll_offset=detail_scroll,
+        line_height=BODY + 6,
+        size=BODY,
+    )
+
+    ctx.status_bar(
+        [
+            ("j/k", "scroll"),
+            ("o", "open URL"),
+            ("Enter", "back"),
+            ("⌘W", "close"),
+        ],
+    )
 
 
 @app.on_key
 def on_key(key: str, _mods: dict, _emit):
-    global view, selected, detail
+    global view, selected, detail, detail_scroll
 
     if view == VIEW_LOAD:
         return
 
     if view == VIEW_LIST:
         if key in ("j", "ArrowDown"):
-            selected = min(selected + 1, len(stories) - 1)
+            selected = min(selected + 1, max(len(stories) - 1, 0))
         elif key in ("k", "ArrowUp"):
             selected = max(selected - 1, 0)
         elif key == "Enter" and stories:
             detail = stories[selected]
+            detail_scroll = 0
             view = VIEW_DETAIL
+        return
 
-    elif view == VIEW_DETAIL:
-        if key in ("Escape", "q"):
+    if view == VIEW_DETAIL:
+        if key in ("j", "ArrowDown"):
+            detail_scroll += 1
+        elif key in ("k", "ArrowUp"):
+            detail_scroll = max(0, detail_scroll - 1)
+        elif key == "Enter":
             view = VIEW_LIST
             detail = None
+            detail_scroll = 0
         elif key == "o":
             url = detail.get("url") if detail else None
             if url:

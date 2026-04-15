@@ -9,9 +9,10 @@ Controls:
   j / ArrowDown     Next line
   k / ArrowUp       Previous line
   Enter             Show diff for commit under cursor
-  Esc               Close diff popup
+  Esc               Close diff popup (in popup), exit filter mode
   /                 Enter filter mode (type author name)
   r                 Reload blame
+  ⌘W                Close app (list view)
 """
 
 import os
@@ -20,27 +21,12 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App
-
-# ---------------------------------------------------------------------------
-# Colors — Catppuccin Mocha
-# ---------------------------------------------------------------------------
-
-C = {
-    "bg":      "#1e1e2e",
-    "surface": "#313244",
-    "header":  "#181825",
-    "text":    "#cdd6f4",
-    "subtext": "#6c7086",
-    "accent":  "#89b4fa",   # recent commits (< 7 days)
-    "overlay": "#45475a",
-    "red":     "#f38ba8",
-    "green":   "#a6e3a1",
-}
-
-HEADER_H = 40.0
-ITEM_H = 22.0
-CHAR_W = 7.5  # approximate monospace char width at size 12
+from plexi_sdk import (
+    App,
+    THEME,
+    BODY, HINT, MONO_SMALL,
+    PAD, HEADER_H,
+)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -71,7 +57,6 @@ branch_name: str = ""
 error_msg: str = ""
 
 cursor: int = 0
-scroll_offset: int = 0
 
 # Diff popup
 diff_lines: list[str] = []
@@ -172,7 +157,7 @@ def parse_blame(raw: str) -> list[BlameEntry]:
 
 
 def load_blame(filepath: str):
-    global blame_lines, filtered_lines, current_file, branch_name, error_msg, cursor, scroll_offset, NOW
+    global blame_lines, filtered_lines, current_file, branch_name, error_msg, cursor, NOW
 
     NOW = int(time.time())
     current_file = filepath
@@ -208,7 +193,8 @@ def apply_filter():
 
 
 def load_diff(commit_hash: str):
-    global diff_lines, diff_scroll, show_diff
+    global diff_lines, show_diff, diff_scroll
+    diff_scroll = 0
     try:
         result = subprocess.run(
             ["git", "show", "--color=never", commit_hash],
@@ -219,7 +205,6 @@ def load_diff(commit_hash: str):
         ]
     except Exception as e:
         diff_lines = [f"Error: {e}"]
-    diff_scroll = 0
     show_diff = True
 
 
@@ -230,22 +215,22 @@ def load_diff(commit_hash: str):
 def age_color(author_time: int) -> str:
     age_secs = NOW - author_time
     if age_secs < 7 * 86400:
-        return C["accent"]    # blue — recent
+        return THEME.accent    # blue — recent
     if age_secs < 30 * 86400:
-        return C["text"]      # normal — medium
-    return C["subtext"]       # dimmed — old
+        return THEME.fg        # normal — medium
+    return THEME.muted         # dimmed — old
 
 
 def diff_line_color(line: str) -> str:
     if line.startswith("+") and not line.startswith("+++"):
-        return C["green"]
+        return THEME.green
     if line.startswith("-") and not line.startswith("---"):
-        return C["red"]
+        return THEME.red
     if line.startswith("@@"):
-        return C["accent"]
+        return THEME.accent
     if line.startswith("commit ") or line.startswith("diff "):
-        return C["text"]
-    return C["subtext"]
+        return THEME.fg
+    return THEME.muted
 
 
 # ---------------------------------------------------------------------------
@@ -262,78 +247,105 @@ else:
     error_msg = "No git repo found or no tracked files."
 
 
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+ROW_H = 22.0
+
+
+def _render_blame_row(ctx, entry, i, x, y, w, is_sel):
+    if is_sel:
+        ctx.rect(x, y, w, ROW_H, fill=THEME.highlight)
+
+    # Short hash — age-colored
+    ctx.text(
+        x + PAD / 2, y + 4, entry.short_hash,
+        size=MONO_SMALL, color=age_color(entry.author_time), monospace=True,
+    )
+
+    # Author first name (truncated to 10 chars)
+    first_name = (entry.author.split()[0] if entry.author else "?")[:10]
+    author_x = x + PAD / 2 + ctx.measure_text("abcdefgh ", MONO_SMALL, monospace=True)
+    ctx.text(
+        author_x, y + 4, first_name,
+        size=MONO_SMALL, color=THEME.fg if is_sel else THEME.muted,
+    )
+
+    # Line content — fill remaining width
+    content_x = author_x + ctx.measure_text("FirstName  ", MONO_SMALL, monospace=True)
+    content_budget = max(0.0, (x + w) - content_x - PAD / 2)
+    content = entry.content
+    max_chars = max(10, int(content_budget / (MONO_SMALL * 0.60)))
+    if len(content) > max_chars:
+        content = content[:max_chars - 1] + "…"
+    ctx.text(
+        content_x, y + 4, content,
+        size=MONO_SMALL, color=THEME.fg, monospace=True,
+    )
+
+
 @app.on_render
 def render(ctx):
-    global scroll_offset
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
-    ctx.rect(0, 0, ctx.width, ctx.height, fill=C["bg"])
+    # ── header ──────────────────────────────────────────────────────────────
+    title = current_file or "git blame"
+    subtitle = f"[{branch_name}]" if branch_name else None
+    ctx.header(title, subtitle=subtitle)
 
+    # ── error / empty state ─────────────────────────────────────────────────
     if error_msg and not blame_lines:
-        _render_header(ctx)
-        ctx.text(16, HEADER_H + 20, error_msg, size=13, color=C["subtext"])
+        ctx.empty_state("git blame unavailable", error_msg, icon_color=THEME.red)
+        ctx.status_bar([("⌘W", "close")])
         return
 
     lines = filtered_lines
-    visible_rows = max(1, int((ctx.height - HEADER_H) / ITEM_H))
 
-    # Clamp scroll so cursor stays visible
-    if cursor < scroll_offset:
-        scroll_offset = cursor
-    elif cursor >= scroll_offset + visible_rows:
-        scroll_offset = cursor - visible_rows + 1
+    if not lines:
+        ctx.empty_state(
+            "No matching lines",
+            f"filter: {filter_text}" if filter_text else "Load a tracked file",
+        )
+    else:
+        ctx.scrollable_list(
+            list_id="blame",
+            items=lines,
+            selected=cursor,
+            row_height=ROW_H,
+            render_row=_render_blame_row,
+            x=0,
+            y=HEADER_H,
+            w=ctx.width,
+            h=ctx.height - HEADER_H - 30.0,
+        )
 
-    # Column layout
-    hash_col_w = 8 * CHAR_W    # "abc1234 "
-    author_col_w = 11 * CHAR_W # "FirstName  "
-    content_x = hash_col_w + author_col_w + 8
-    content_max_chars = max(10, int((ctx.width - content_x - 8) / CHAR_W))
-
-    for i in range(scroll_offset, min(scroll_offset + visible_rows, len(lines))):
-        entry = lines[i]
-        row_index = i - scroll_offset
-        y = HEADER_H + row_index * ITEM_H
-        is_cursor = (i == cursor)
-
-        if is_cursor:
-            ctx.rect(0, y, ctx.width, ITEM_H, fill=C["surface"])
-
-        # Short hash — age colored
-        ctx.text(8, y + 4, entry.short_hash, size=12,
-                 color=age_color(entry.author_time), monospace=True)
-
-        # Author first name (truncated to 10 chars)
-        first_name = (entry.author.split()[0] if entry.author else "?")[:10]
-        ctx.text(hash_col_w + 8, y + 4, first_name, size=12,
-                 color=C["text"] if is_cursor else C["subtext"])
-
-        # Line content (truncated to fit)
-        content = entry.content
-        if len(content) > content_max_chars:
-            content = content[:content_max_chars - 1] + "…"
-        ctx.text(content_x, y + 4, content, size=12,
-                 color=C["text"], monospace=True)
-
-    _render_header(ctx)
-
-    # Filter bar at bottom
+    # ── filter bar (overlay just above status bar) ──────────────────────────
     if filter_mode:
-        bar_y = ctx.height - 28
-        ctx.rect(0, bar_y, ctx.width, 28, fill=C["surface"])
-        ctx.text(12, bar_y + 6, f"/ {filter_text}_", size=12,
-                 color=C["accent"], monospace=True)
+        bar_h = 24.0
+        bar_y = ctx.height - 30.0 - bar_h
+        ctx.rect(0, bar_y, ctx.width, bar_h, fill=THEME.surface)
+        ctx.text(
+            PAD, bar_y + (bar_h - HINT) / 2,
+            f"/ {filter_text}_",
+            size=HINT, color=THEME.accent, monospace=True,
+        )
 
+    # ── status bar ──────────────────────────────────────────────────────────
+    if filter_mode:
+        ctx.status_bar([("type", "filter"), ("Enter/Esc", "done")])
+    else:
+        ctx.status_bar([
+            ("j/k", "navigate"),
+            ("Enter", "diff"),
+            ("/", "filter"),
+            ("r", "reload"),
+            ("⌘W", "close"),
+        ])
+
+    # ── diff popup overlay ──────────────────────────────────────────────────
     if show_diff:
         _render_diff(ctx)
-
-
-def _render_header(ctx):
-    ctx.rect(0, 0, ctx.width, HEADER_H, fill=C["header"])
-    title = current_file or "git blame"
-    if branch_name:
-        title = f"{title}  [{branch_name}]"
-    ctx.text(12, 11, title, size=13, color=C["accent"], bold=True)
-    hint = "j/k  Enter=diff  /=filter  r=reload"
-    ctx.text(ctx.width - len(hint) * 6.5 - 8, 11, hint, size=11, color=C["subtext"])
 
 
 def _render_diff(ctx):
@@ -342,27 +354,53 @@ def _render_diff(ctx):
     px = (ctx.width - pw) / 2
     py = 40.0
 
-    ctx.rect(px, py, pw, ph, fill=C["bg"], radius=6.0)
-    ctx.rect(px, py, pw, 32, fill=C["header"], radius=6.0)
-    ctx.text(px + 12, py + 8, "git show", size=13, color=C["accent"], bold=True)
-    ctx.text(px + pw - 100, py + 8, "Esc to close", size=11, color=C["subtext"])
+    # Dim background
+    ctx.rect(px, py, pw, ph, fill=THEME.bg, radius=6.0)
+    ctx.rect(px, py, pw, 32, fill=THEME.surface, radius=6.0)
+    ctx.text(px + PAD, py + (32 - BODY) / 2, "git show",
+             size=BODY, color=THEME.accent, bold=True)
+    ctx.text_right(px + pw - PAD, py + (32 - HINT) / 2,
+                   "⌘W close", size=HINT, color=THEME.muted)
 
+    inner_x = px + PAD
     inner_y = py + 36
-    inner_h = ph - 36
-    visible = max(1, int(inner_h / ITEM_H))
-    max_chars = max(10, int((pw - 24) / CHAR_W))
+    inner_w = pw - PAD * 2
+    line_h = MONO_SMALL + 4
 
-    for i in range(diff_scroll, min(diff_scroll + visible, len(diff_lines))):
-        line = diff_lines[i]
-        row_y = inner_y + (i - diff_scroll) * ITEM_H
+    # scrollable_text applies one color globally, but diff lines need
+    # per-line coloring (+/-/@@). Draw manually with module-level scroll.
+    global diff_scroll
+    visible = max(1, int((ph - 36) / line_h))
+    max_offset = max(0, len(diff_lines) - visible)
+    diff_scroll = max(0, min(diff_scroll, max_offset))
+    offset = diff_scroll
+
+    max_chars = max(10, int(inner_w / (MONO_SMALL * 0.60)))
+    for i in range(visible):
+        idx = offset + i
+        if idx >= len(diff_lines):
+            break
+        line = diff_lines[idx]
         display = line if len(line) <= max_chars else line[:max_chars - 1] + "…"
-        ctx.text(px + 12, row_y + 3, display, size=12,
-                 color=diff_line_color(line), monospace=True)
+        ctx.text(
+            inner_x, inner_y + i * line_h, display,
+            size=MONO_SMALL, color=diff_line_color(line), monospace=True,
+        )
+
+    # Scrollbar
+    if len(diff_lines) > visible:
+        track_x = px + pw - PAD / 2 - 3
+        track_h = line_h * visible
+        thumb_h = max(24.0, track_h * visible / len(diff_lines))
+        denom = max(1, len(diff_lines) - visible)
+        thumb_y = inner_y + (track_h - thumb_h) * (offset / denom)
+        ctx.rect(track_x, inner_y, 3, track_h, fill=THEME.surface, radius=2)
+        ctx.rect(track_x, thumb_y, 3, thumb_h, fill=THEME.muted, radius=2)
 
 
 @app.on_key
 def on_key(key, mods, emit):
-    global cursor, scroll_offset, show_diff, diff_scroll
+    global cursor, show_diff, diff_scroll
     global filter_mode, filter_text
 
     if show_diff:
@@ -400,7 +438,6 @@ def on_key(key, mods, emit):
         if current_file:
             load_blame(current_file)
         cursor = 0
-        scroll_offset = 0
 
 
 @app.on_command

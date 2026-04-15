@@ -595,12 +595,43 @@ impl PlexiApp {
             }
         };
 
+        // Honor the manifest's [app.launch] mode. When an app declares
+        // mode = "fullscreen" (or doesn't opt into a companion terminal),
+        // open it in AppActive surface mode — the app owns the whole pane,
+        // no embedded terminal. Apps that want the 75/25 split must declare
+        // a companion explicitly.
+        let wants_fullscreen = launch
+            .as_ref()
+            .map(|l| l.mode == "fullscreen" || l.companion == "none")
+            .unwrap_or(true);
+
         if can_embed {
             let ctx = &mut self.contexts[self.active_context];
             if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                    pane.open_app_with_companion(app, permissions, scope);
+                    if wants_fullscreen {
+                        pane.open_app(app, permissions, scope);
+                    } else {
+                        pane.open_app_with_companion(app, permissions, scope);
+                    }
+                }
+            }
+            ctx.focused_pane = Some(focused);
+            return;
+        }
+
+        // When the focused pane already has an app and the new app wants
+        // fullscreen, replace it in place instead of splitting. This matches
+        // the user expectation that fullscreen apps never grow a companion
+        // terminal they didn't ask for.
+        if wants_fullscreen {
+            let ctx = &mut self.contexts[self.active_context];
+            if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                let pane_id = *pane_id;
+                if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                    pane.close_app();
+                    pane.open_app(app, permissions, scope);
                 }
             }
             ctx.focused_pane = Some(focused);

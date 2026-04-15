@@ -1,6 +1,12 @@
 from __future__ import annotations
 #!/usr/bin/env python3
-"""apiary — Plexi beehive management simulation."""
+"""apiary — Plexi beehive management simulation.
+
+Migrated to the Phase 1 SDK components layer: THEME palette, named size
+constants, ctx.header, ctx.status_bar, text_center/text_right. Honey-specific
+cell colors (brood/honey/pollen/queen/infected/cold) aren't part of THEME and
+stay as an app-local palette.
+"""
 
 import math
 import os
@@ -9,26 +15,23 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App
+from plexi_sdk import (
+    App,
+    THEME,
+    TITLE, HEADING, BODY, CAPTION, HINT,
+    PAD, HEADER_H,
+)
 
-C = {
-    "bg":       "#1e1e2e",
-    "surface":  "#313244",
-    "text":     "#cdd6f4",
-    "subtext":  "#6c7086",
-    "header":   "#181825",
-    "empty":    "#313244",
-    "brood":    "#f5f5e8",
-    "honey":    "#f9a825",
-    "pollen":   "#fab387",
-    "queen":    "#cba6f7",
-    "infected": "#f38ba8",
-    "cold":     "#45475a",
-    "cursor":   "#ffffff",
-    "accent":   "#89b4fa",
-    "green":    "#a6e3a1",
-    "red":      "#f38ba8",
-}
+# App-local cell palette — these hues aren't in THEME and are semantic to the
+# beehive sim, so we keep them as plain constants rather than a dict lookup.
+CELL_EMPTY    = THEME.surface
+CELL_BROOD    = "#f5f5e8"
+CELL_HONEY    = "#f9a825"
+CELL_POLLEN   = "#fab387"
+CELL_QUEEN    = "#cba6f7"
+CELL_INFECTED = "#f38ba8"
+CELL_COLD     = "#45475a"
+CURSOR_COLOR  = "#ffffff"
 
 COLS = 6
 ROWS = 8
@@ -239,18 +242,30 @@ app = App(app_id="apiary")
 _start = time.monotonic()
 _last_t = _start
 
-SIDEBAR_W = 160.0
+SIDEBAR_W = 180.0
 CELL_W = 52.0
 CELL_H = 40.0
 H_OFFSET = CELL_W * 0.5
-PADDING = 16.0
+
+# Layout chrome — header at top, status bar at bottom, sidebar on the right.
+STATUS_BAR_H = 30.0
+
+
+def _play_area() -> tuple[float, float]:
+    """Vertical bounds of the playfield (between header and status bar)."""
+    top = HEADER_H
+    bot_h = STATUS_BAR_H
+    return top, bot_h
 
 
 def grid_origin(ctx_w: float, ctx_h: float) -> tuple[float, float]:
+    top, bot_h = _play_area()
     grid_w = COLS * CELL_W + H_OFFSET
     grid_h = ROWS * CELL_H
-    ox = (ctx_w - SIDEBAR_W - grid_w) / 2.0 + PADDING / 2.0
-    oy = (ctx_h - grid_h) / 2.0
+    avail_w = ctx_w - SIDEBAR_W
+    avail_h = ctx_h - top - bot_h
+    ox = (avail_w - grid_w) / 2.0 + PAD / 2.0
+    oy = top + (avail_h - grid_h) / 2.0
     return ox, oy
 
 
@@ -260,8 +275,9 @@ def cell_xy(r: int, c: int, ox: float, oy: float) -> tuple[float, float]:
 
 
 CELL_COLORS = {
-    EMPTY: C["empty"], BROOD: C["brood"], HONEY: C["honey"],
-    POLLEN: C["pollen"], QUEEN: C["queen"], INFECTED: C["infected"], COLD: C["cold"],
+    EMPTY: CELL_EMPTY, BROOD: CELL_BROOD, HONEY: CELL_HONEY,
+    POLLEN: CELL_POLLEN, QUEEN: CELL_QUEEN,
+    INFECTED: CELL_INFECTED, COLD: CELL_COLD,
 }
 
 
@@ -275,17 +291,39 @@ def render(ctx) -> None:
 
     hive.update(now, dt)
 
-    ctx.rect(0, 0, ctx.width, ctx.height, fill=C["bg"])
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
     if hive.state in (STATE_WIN, STATE_LOSE):
         _render_endscreen(ctx)
         return
 
+    # Header with title + current season day.
+    season_day = hive.tick + 1
+    ctx.header(
+        f"Apiary  ·  tick {season_day}/{MAX_TICKS}",
+        subtitle=f"{hive.honey_jars}/{WIN_JARS} jars  ·  {hive.colony_size} bees",
+    )
+
     _render_hive(ctx, now)
     _render_sidebar(ctx, now)
     _render_foragers(ctx, now)
-    if hive._status_msg and hive._status_timer > 0:
-        _render_status(ctx)
+
+    # Status bar — replaces the old inline sidebar controls + status popup.
+    show_msg = bool(hive._status_msg and hive._status_timer > 0)
+    ctx.status_bar(
+        [
+            ("←↑↓→", "move"),
+            ("q", "queen"),
+            ("h", "harvest"),
+            ("t", "treat"),
+            ("+/-", "supers"),
+            ("space", "tick"),
+            ("⌘W", "close"),
+        ],
+        status_msg=hive._status_msg if show_msg else None,
+        status_color=THEME.yellow if show_msg else None,
+        height=STATUS_BAR_H,
+    )
 
 
 def _render_hive(ctx, now: float) -> None:
@@ -296,14 +334,15 @@ def _render_hive(ctx, now: float) -> None:
         for c in range(COLS):
             x, y = cell_xy(r, c, ox, oy)
             state = hive.cells[r][c]
-            fill = CELL_COLORS.get(state, C["empty"])
+            fill = CELL_COLORS.get(state, CELL_EMPTY)
 
             if state == INFECTED:
                 p = 0.7 + 0.3 * math.sin(now * 5.0)
                 fill = f"#{int(0xf3*p):02x}{int(0x8b*p):02x}{int(0xa8*p):02x}"
             cw, ch = CELL_W - pad * 2, CELL_H - pad * 2
             if r == cr and c == cc:
-                ctx.rect(x + pad - 2.5, y + pad - 2.5, cw + 5, ch + 5, fill=C["cursor"], radius=8.0)
+                ctx.rect(x + pad - 2.5, y + pad - 2.5, cw + 5, ch + 5,
+                         fill=CURSOR_COLOR, radius=8.0)
             ctx.rect(x + pad, y + pad, cw, ch, fill=fill, radius=6.0)
 
             # Label inside cell
@@ -318,71 +357,61 @@ def _render_hive(ctx, now: float) -> None:
             if label:
                 lx = x + CELL_W / 2.0 - 5.0
                 ly = y + CELL_H / 2.0 - 7.0
-                txt_color = C["bg"] if state in (HONEY, BROOD, POLLEN, QUEEN) else C["text"]
-                ctx.text(lx, ly, label, size=13, color=txt_color, bold=True)
+                txt_color = (THEME.bg if state in (HONEY, BROOD, POLLEN, QUEEN)
+                             else THEME.fg)
+                ctx.text(lx, ly, label, size=CAPTION, color=txt_color, bold=True)
 
 
 def _render_sidebar(ctx, now: float) -> None:
+    top, bot_h = _play_area()
     sx = ctx.width - SIDEBAR_W
-    ctx.rect(sx, 0, SIDEBAR_W, ctx.height, fill=C["header"], radius=0.0)
+    sy = top
+    sh = ctx.height - top - bot_h
+    ctx.rect(sx, sy, SIDEBAR_W, sh, fill=THEME.surface, radius=0.0)
 
-    y = 20.0
-    ctx.text(sx + 12, y, "APIARY", size=16, color=C["honey"], bold=True)
-    y += 32
+    y = sy + PAD
+    ctx.text(sx + PAD, y, "STATS", size=CAPTION, color=THEME.accent, bold=True)
+    y += 24
 
-    def row(label: str, val: str, color: str = C["text"]) -> None:
+    def row(label: str, val: str, color: str = THEME.fg) -> None:
         nonlocal y
-        ctx.text(sx + 12, y, label, size=11, color=C["subtext"])
-        ctx.text(sx + 12, y + 14, val, size=13, color=color, bold=True)
+        ctx.text(sx + PAD, y, label, size=HINT, color=THEME.muted)
+        ctx.text(sx + PAD, y + 14, val, size=CAPTION, color=color, bold=True)
         y += 36
 
-    season_day = hive.tick + 1
-    row("TICK", f"{season_day} / {MAX_TICKS}")
     row("HONEY JARS", f"{hive.honey_jars} / {WIN_JARS}",
-        color=C["honey"] if hive.honey_jars > 0 else C["subtext"])
+        color=CELL_HONEY if hive.honey_jars > 0 else THEME.muted)
     row("COLONY SIZE", str(hive.colony_size))
 
     # Queen health bar
-    ctx.text(sx + 12, y, "QUEEN HEALTH", size=11, color=C["subtext"])
+    ctx.text(sx + PAD, y, "QUEEN HEALTH", size=HINT, color=THEME.muted)
     y += 14
-    bar_w = SIDEBAR_W - 24
-    ctx.rect(sx + 12, y, bar_w, 8, fill=C["surface"], radius=4.0)
+    bar_w = SIDEBAR_W - PAD * 2
+    ctx.rect(sx + PAD, y, bar_w, 8, fill=THEME.highlight, radius=4.0)
     qh_ratio = hive.queen_health / 100.0
-    qh_color = C["green"] if qh_ratio > 0.5 else (C["honey"] if qh_ratio > 0.25 else C["red"])
-    ctx.rect(sx + 12, y, bar_w * qh_ratio, 8, fill=qh_color, radius=4.0)
-    y += 20
-    ctx.text(sx + 12, y, f"{hive.queen_health}%", size=11, color=C["subtext"])
-    y += 28
+    qh_color = (THEME.green if qh_ratio > 0.5
+                else (CELL_HONEY if qh_ratio > 0.25 else THEME.red))
+    ctx.rect(sx + PAD, y, bar_w * qh_ratio, 8, fill=qh_color, radius=4.0)
+    y += 16
+    ctx.text_right(sx + SIDEBAR_W - PAD, y, f"{hive.queen_health}%",
+                   size=HINT, color=THEME.muted)
+    y += 24
 
     # Supers
-    ctx.text(sx + 12, y, "SUPERS", size=11, color=C["subtext"])
+    ctx.text(sx + PAD, y, "SUPERS", size=HINT, color=THEME.muted)
     y += 14
     for i in range(5):
-        box_x = sx + 12 + i * 22
-        box_fill = C["honey"] if i < hive.supers else C["surface"]
+        box_x = sx + PAD + i * 22
+        box_fill = CELL_HONEY if i < hive.supers else THEME.highlight
         ctx.rect(box_x, y, 18, 14, fill=box_fill, radius=3.0)
     y += 28
 
     # Honey capacity
     cap = hive.max_honey_cells()
     cur_h = hive.honey_count()
-    ctx.text(sx + 12, y, f"HONEY CELLS: {cur_h}/{cap}", size=11, color=C["subtext"])
-    y += 30
-
-    # Controls
-    ctx.text(sx + 12, y, "CONTROLS", size=11, color=C["accent"], bold=True)
-    y += 16
-    for key, desc in [
-        ("arrows", "move cursor"),
-        ("q", "move queen"),
-        ("h", "harvest"),
-        ("t", "treat (-2j)"),
-        ("+/-", "supers"),
-        ("space", "manual tick"),
-    ]:
-        ctx.text(sx + 12, y, f"[{key}]", size=10, color=C["accent"])
-        ctx.text(sx + 12 + 52, y, desc, size=10, color=C["subtext"])
-        y += 15
+    ctx.text(sx + PAD, y, f"HONEY CELLS", size=HINT, color=THEME.muted)
+    ctx.text_right(sx + SIDEBAR_W - PAD, y, f"{cur_h}/{cap}",
+                   size=HINT, color=THEME.fg)
 
 
 def _render_foragers(ctx, now: float) -> None:
@@ -408,30 +437,28 @@ def _render_foragers(ctx, now: float) -> None:
         ctx.rect(dot_x - 3, dot_y - 3, 6, 6, fill=dot_color, radius=3.0)
 
 
-def _render_status(ctx) -> None:
-    msg = hive._status_msg
-    panel_w = max(200.0, len(msg) * 8.0 + 24)
-    panel_h = 36.0
-    px = (ctx.width - panel_w) / 2.0
-    py = ctx.height - 60.0
-    ctx.rect(px, py, panel_w, panel_h, fill=C["surface"], radius=8.0)
-    ctx.text(px + 12, py + 10, msg, size=13, color=C["text"])
-
-
 def _render_endscreen(ctx) -> None:
-    ctx.rect(0, 0, ctx.width, ctx.height, fill=C["bg"])
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
     cx = ctx.width / 2.0
     cy = ctx.height / 2.0
 
     if hive.state == STATE_WIN:
-        ctx.text(cx - 80, cy - 50, "YOU WIN!", size=28, color=C["honey"], bold=True)
+        ctx.text_center(cx, cy - 50, "YOU WIN!", size=TITLE + 6,
+                        color=CELL_HONEY, bold=True)
         msg = f"Harvested {hive.honey_jars} jars in {hive.tick} ticks"
     else:
-        ctx.text(cx - 80, cy - 50, "SEASON OVER", size=24, color=C["red"], bold=True)
+        ctx.text_center(cx, cy - 50, "SEASON OVER", size=TITLE + 2,
+                        color=THEME.red, bold=True)
         msg = f"Only {hive.honey_jars} / {WIN_JARS} jars harvested"
 
-    ctx.text(cx - len(msg) * 4, cy, msg, size=14, color=C["text"])
-    ctx.text(cx - 70, cy + 40, "Press R to restart", size=13, color=C["subtext"])
+    ctx.text_center(cx, cy, msg, size=BODY, color=THEME.fg)
+    ctx.text_center(cx, cy + 40, "Press R to restart",
+                    size=CAPTION, color=THEME.muted)
+
+    ctx.status_bar(
+        [("R", "restart"), ("⌘W", "close")],
+        height=STATUS_BAR_H,
+    )
 
 
 # ---------------------------------------------------------------------------

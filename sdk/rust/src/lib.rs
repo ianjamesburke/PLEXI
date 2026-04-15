@@ -151,6 +151,8 @@ pub enum DrawCommand {
         monospace: bool,
         #[serde(default)]
         bold: bool,
+        #[serde(default)]
+        align: Option<String>,
     },
     Line {
         x1: f32,
@@ -684,7 +686,7 @@ impl RenderContext {
     pub fn text(&mut self, x: f32, y: f32, text: &str, size: f32, color: &str) -> &mut Self {
         self.commands.push(DrawCommand::Text {
             x, y, text: text.to_string(), size, color: color.to_string(),
-            monospace: false, bold: false,
+            monospace: false, bold: false, align: None,
         });
         self
     }
@@ -693,7 +695,7 @@ impl RenderContext {
     pub fn text_mono(&mut self, x: f32, y: f32, text: &str, size: f32, color: &str) -> &mut Self {
         self.commands.push(DrawCommand::Text {
             x, y, text: text.to_string(), size, color: color.to_string(),
-            monospace: true, bold: false,
+            monospace: true, bold: false, align: None,
         });
         self
     }
@@ -702,7 +704,25 @@ impl RenderContext {
     pub fn text_bold(&mut self, x: f32, y: f32, text: &str, size: f32, color: &str) -> &mut Self {
         self.commands.push(DrawCommand::Text {
             x, y, text: text.to_string(), size, color: color.to_string(),
-            monospace: false, bold: true,
+            monospace: false, bold: true, align: None,
+        });
+        self
+    }
+
+    /// Draw right-aligned text (anchor at `x` = right edge of text).
+    pub fn text_right(&mut self, x: f32, y: f32, text: &str, size: f32, color: &str) -> &mut Self {
+        self.commands.push(DrawCommand::Text {
+            x, y, text: text.to_string(), size, color: color.to_string(),
+            monospace: false, bold: false, align: Some("right".to_string()),
+        });
+        self
+    }
+
+    /// Draw center-aligned text (anchor at `x` = horizontal center of text).
+    pub fn text_center(&mut self, x: f32, y: f32, text: &str, size: f32, color: &str) -> &mut Self {
+        self.commands.push(DrawCommand::Text {
+            x, y, text: text.to_string(), size, color: color.to_string(),
+            monospace: false, bold: false, align: Some("center".to_string()),
         });
         self
     }
@@ -1282,6 +1302,7 @@ fn render_min_size_fallback(width: f32, height: f32, min_w: f32, min_h: f32) {
         color: fg.to_string(),
         monospace: false,
         bold: true,
+        align: None,
     });
     if !arrow.is_empty() {
         cmds.push(DrawCommand::Text {
@@ -1292,6 +1313,7 @@ fn render_min_size_fallback(width: f32, height: f32, min_w: f32, min_h: f32) {
             color: accent.to_string(),
             monospace: false,
             bold: false,
+            align: None,
         });
     }
     cmds.push(DrawCommand::Text {
@@ -1302,6 +1324,7 @@ fn render_min_size_fallback(width: f32, height: f32, min_w: f32, min_h: f32) {
         color: fg.to_string(),
         monospace: false,
         bold: false,
+        align: None,
     });
     cmds.push(DrawCommand::FrameDone);
 

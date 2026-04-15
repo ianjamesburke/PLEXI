@@ -194,11 +194,13 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::DecreasePaneFontSize);
         }
 
-        // App surface: Escape closes app, Tab toggles terminal split.
-        // These are only intercepted at the global level when an app is active,
-        // so that Escape and Tab work normally in a plain terminal.
+        // App surface: Cmd+W closes app, Tab toggles terminal split.
+        // Escape is NOT consumed here — it belongs to the focused app so apps
+        // can use it for modal dismissal, form cancel, detail-view exit, etc.
+        // Cmd+W is the native macOS "close window" shortcut and is not
+        // consumable by apps, so hung/buggy apps are still always killable.
         if app_active {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
                 actions.push(Action::CloseApp);
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {

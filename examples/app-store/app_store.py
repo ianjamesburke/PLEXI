@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+from __future__ import annotations
 """
 app-store — Plexi app store
 Browse, install, and update Plexi apps from the community registry.
@@ -21,7 +21,6 @@ Keys (browse view):
     U            update every app that has an UPDATE badge
     x            uninstall (in detail view)
 """
-from __future__ import annotations
 
 import json
 import os
@@ -35,26 +34,12 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plexi_sdk import App, load_manifest  # type: ignore[import]
-
-# ---------------------------------------------------------------------------
-# Colors — Catppuccin Mocha
-# ---------------------------------------------------------------------------
-
-C = {
-    "bg":       "#1e1e2e",
-    "surface":  "#313244",
-    "overlay":  "#45475a",
-    "text":     "#cdd6f4",
-    "subtext":  "#6c7086",
-    "accent":   "#89b4fa",   # not installed
-    "installed":"#a6e3a1",   # installed
-    "dimmed":   "#45475a",
-    "header":   "#181825",
-    "red":      "#f38ba8",
-    "yellow":   "#f9e2af",
-    "green":    "#a6e3a1",
-}
+from plexi_sdk import (  # type: ignore[import]
+    App, load_manifest,
+    THEME,
+    TITLE, HEADING, BODY, CAPTION, HINT,
+    PAD, PAD_TIGHT, HEADER_H,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -65,10 +50,7 @@ CACHE_PATH    = pathlib.Path.home() / ".plexi-alpha" / "app_store_cache.json"
 APPS_DIR      = pathlib.Path.home() / ".plexi-alpha" / "apps"
 CACHE_TTL_S   = 3600  # 1 hour
 
-HEADER_H      = 32.0
-FILTER_H      = 32.0
-ROW_H         = 52.0
-DETAIL_PADDING = 20.0
+ROW_H         = 64.0
 
 TAG_CYCLE = ["all", "game", "productivity", "creative", "system"]
 
@@ -78,6 +60,7 @@ SPINNER_FPS    = 8
 VIEW_BROWSE  = "browse"
 VIEW_DETAIL  = "detail"
 VIEW_INSTALL = "install"
+
 
 class State:
     def __init__(self):
@@ -90,10 +73,8 @@ class State:
 
         # Browse
         self.cursor = 0
-        self.scroll_offset = 0.0
         self.filter_active = False
         self.filter_text = ""
-        self.filter_cursor_blink = True
         self.tag_filter_idx = 0  # index into TAG_CYCLE
 
         # Detail / install
@@ -107,6 +88,9 @@ class State:
         self.install_done_name = ""
         self.install_done_time = 0.0
         self._install_thread: threading.Thread | None = None
+
+        # Detail scroll offset (for long descriptions)
+        self.detail_scroll = 0
 
         # Update All
         self.update_all_status: str = ""
@@ -147,6 +131,7 @@ class State:
 
 
 state = State()
+
 
 def _load_registry():
     try:
@@ -190,6 +175,8 @@ def _load_registry():
 
 
 threading.Thread(target=_load_registry, daemon=True).start()
+
+
 def _parse_entry_from_manifest(manifest_text: str) -> str | None:
     try:
         import tomllib  # type: ignore
@@ -397,9 +384,6 @@ def is_installed(app_id: str) -> bool:
 def _version_tuple(v: str) -> tuple[int, ...]:
     # Strip any pre-release / build suffix ("1.2.3-alpha", "1.2.3+meta") then
     # split on dots and coerce to ints. Non-numeric components become 0.
-    # Limitation: this is a stdlib-only fallback, not a real semver — pre-release
-    # ordering ("1.0.0-rc1" vs "1.0.0") is intentionally ignored; ranks suffixes
-    # equal to the base version. Good enough for the patch-bump update flow.
     if not v:
         return (0,)
     base = v.split("-", 1)[0].split("+", 1)[0]
@@ -415,7 +399,6 @@ def _version_tuple(v: str) -> tuple[int, ...]:
 def compare_versions(a: str, b: str) -> int:
     """Compare two version strings. Returns -1 if a<b, 0 if equal, 1 if a>b."""
     ta, tb = _version_tuple(a), _version_tuple(b)
-    # Pad to equal length so (1,2) compares as (1,2,0) against (1,2,0).
     n = max(len(ta), len(tb))
     ta = ta + (0,) * (n - len(ta))
     tb = tb + (0,) * (n - len(tb))
@@ -432,7 +415,6 @@ def _installed_version(app_id: str) -> str | None:
     if not manifest_path.exists():
         return None
     try:
-        # load_manifest() takes any file in the app dir; pass manifest itself.
         manifest = load_manifest(str(manifest_path))
         ver = manifest.get("app", {}).get("version", "")
         return ver or None
@@ -461,24 +443,80 @@ def truncate(text: str, max_chars: int) -> str:
     return text[:max_chars - 1] + "…"
 
 
-def visible_rows(pane_h: float) -> int:
-    usable = pane_h - HEADER_H - (FILTER_H if state.filter_active else 0)
-    return max(1, int(usable // ROW_H))
+# ---------------------------------------------------------------------------
+# Row renderer — browse list
+# ---------------------------------------------------------------------------
+
+def _render_entry_row(ctx, entry, i, x, y, w, is_sel):
+    app_id = entry.get("id", "")
+    name = entry.get("name", app_id)
+    desc = entry.get("description", "")
+    installed = is_installed(app_id)
+    installed_ver = _installed_version(app_id) if installed else None
+    available_ver = entry.get("version", "") or ""
+
+    # Row background + selection accent.
+    bg = THEME.highlight if is_sel else THEME.bg
+    ctx.rect(x + PAD / 2, y, w - PAD, ROW_H - 4, fill=bg, radius=6)
+    if is_sel:
+        ctx.rect(x + PAD / 2, y, 3, ROW_H - 4, fill=THEME.accent, radius=2)
+
+    # Name (left column).
+    name_color = THEME.muted if installed else THEME.accent
+    ctx.text(
+        x + PAD + 8, y + 8, name,
+        size=BODY, color=THEME.fg if is_sel else name_color, bold=True,
+    )
+
+    # Description (left column, second line), width-budgeted against the right badge area.
+    desc_max_px = max(40.0, w - PAD * 2 - 200.0)
+    desc_max_chars = max(10, int(desc_max_px / (CAPTION * 0.52)))
+    ctx.text(
+        x + PAD + 8, y + 8 + BODY + 6, truncate(desc, desc_max_chars),
+        size=CAPTION, color=THEME.muted,
+    )
+
+    # Right-side badge.
+    if installed:
+        if _has_update(entry):
+            badge = "UPDATE"
+            badge_color = THEME.yellow
+        else:
+            badge = "INSTALLED"
+            badge_color = THEME.green
+    else:
+        badge = "NEW"
+        badge_color = THEME.accent
+
+    badge_right = x + w - PAD
+    ctx.text_right(badge_right, y + 8, badge, size=HINT, color=badge_color, bold=True)
+
+    # Version line under the badge, right-aligned.
+    if installed and installed_ver and available_ver and compare_versions(available_ver, installed_ver) > 0:
+        ver_line = f"v{installed_ver} → v{available_ver}"
+        ver_color = THEME.yellow
+    elif installed and installed_ver:
+        ver_line = f"v{installed_ver}"
+        ver_color = THEME.muted
+    elif available_ver:
+        ver_line = f"v{available_ver}"
+        ver_color = THEME.muted
+    else:
+        ver_line = ""
+        ver_color = THEME.muted
+
+    if ver_line:
+        ctx.text_right(
+            badge_right, y + 8 + HINT + 6, ver_line,
+            size=HINT, color=ver_color,
+        )
 
 
-def render_header(ctx, title: str, subtitle: str = ""):
-    ctx.rect(0, 0, ctx.width, HEADER_H, fill=C["header"])
-    ctx.text(12, 9, title, size=14, color=C["text"], bold=True)
-    if subtitle:
-        sub_x = ctx.width - len(subtitle) * 7 - 12
-        ctx.text(max(200, sub_x), 10, subtitle, size=12, color=C["subtext"])
+# ---------------------------------------------------------------------------
+# Views
+# ---------------------------------------------------------------------------
 
-
-def render_tag_pill(ctx, tag: str, x: float, y: float):
-    w = len(tag) * 7 + 10
-    ctx.rect(x, y, w, 16, fill=C["surface"], radius=4.0)
-    ctx.text(x + 5, y + 2, tag, size=10, color=C["subtext"])
-    return w + 6
+app = App(app_id="app-store")
 
 
 def render_browse(ctx, now: float):
@@ -487,120 +525,72 @@ def render_browse(ctx, now: float):
 
     n = len(entries)
     tag_label = TAG_CYCLE[state.tag_filter_idx]
-    tag_str = f"[{tag_label}]"
+
+    # Subtitle: "N apps · [tag]" (when filtered to a specific tag).
     subtitle_parts = []
     if n > 0:
-        subtitle_parts.append(f"{n} apps")
+        subtitle_parts.append(f"{n} app{'s' if n != 1 else ''}")
     if tag_label != "all":
-        subtitle_parts.append(tag_str)
-    subtitle = "  ".join(subtitle_parts) if subtitle_parts else ""
-    render_header(ctx, "App Store", subtitle)
+        subtitle_parts.append(f"[{tag_label}]")
+    if state.filter_text:
+        subtitle_parts.append(f"/{state.filter_text}")
+    subtitle = "  ·  ".join(subtitle_parts) if subtitle_parts else None
+
+    ctx.header("App Store", subtitle=subtitle)
 
     if state.loading:
-        ctx.text(12, HEADER_H + 20, "Loading registry...", size=13, color=C["subtext"])
+        ctx.empty_state("Loading registry…", icon_color=THEME.muted)
+        _browse_status_bar(ctx)
         return
 
     if state.load_error:
-        ctx.text(12, HEADER_H + 20, state.load_error, size=13, color=C["red"])
+        ctx.empty_state(state.load_error, icon_color=THEME.red)
+        _browse_status_bar(ctx)
         return
 
     if not entries:
         msg = "No apps match." if state.filter_text or tag_label != "all" else "Registry is empty."
-        ctx.text(12, HEADER_H + 20, msg, size=13, color=C["subtext"])
-    else:
-        vis = visible_rows(ctx.height)
+        ctx.empty_state(msg, icon_color=THEME.muted)
+        _browse_status_bar(ctx)
+        return
 
-        # Keep cursor in scroll window
-        if state.cursor < int(state.scroll_offset):
-            state.scroll_offset = float(state.cursor)
-        elif state.cursor >= int(state.scroll_offset) + vis:
-            state.scroll_offset = float(state.cursor - vis + 1)
+    ctx.scrollable_list(
+        list_id="apps",
+        items=entries,
+        selected=state.cursor,
+        row_height=ROW_H,
+        render_row=_render_entry_row,
+    )
 
-        for i in range(vis):
-            idx = int(state.scroll_offset) + i
-            if idx >= n:
-                break
-            entry = entries[idx]
-            app_id = entry.get("id", "")
-            name = entry.get("name", app_id)
-            desc = entry.get("description", "")
-            tags = entry.get("tags", [])
-            installed = is_installed(app_id)
-            installed_ver = _installed_version(app_id) if installed else None
-            available_ver = entry.get("version", "") or ""
+    _browse_status_bar(ctx)
 
-            ry = HEADER_H + i * ROW_H
 
-            if idx == state.cursor:
-                ctx.rect(0, ry, ctx.width, ROW_H, fill=C["surface"])
-                ctx.rect(0, ry, 3, ROW_H, fill=C["accent"])
-
-            name_color = C["dimmed"] if installed else C["accent"]
-            ctx.text(12, ry + 9, name, size=13, color=name_color, bold=True)
-
-            # Version line: "v0.1.0 → v0.2.0" when update, else "v0.1.0"
-            if installed and installed_ver and available_ver and compare_versions(available_ver, installed_ver) > 0:
-                ver_line = f"v{installed_ver} → v{available_ver}"
-                ver_color = C["yellow"]
-            elif installed and installed_ver:
-                ver_line = f"v{installed_ver}"
-                ver_color = C["subtext"]
-            elif available_ver:
-                ver_line = f"v{available_ver}"
-                ver_color = C["subtext"]
-            else:
-                ver_line = ""
-                ver_color = C["subtext"]
-
-            desc_max_chars = max(10, int((ctx.width - 24 - 100) / 7))
-            ctx.text(12, ry + 28, truncate(desc, desc_max_chars), size=11, color=C["subtext"])
-
-            # Right-side badge
-            if installed:
-                if _has_update(entry):
-                    badge = "UPDATE"
-                    badge_color = C["yellow"]
-                else:
-                    badge = "INSTALLED"
-                    badge_color = C["installed"]
-            else:
-                badge = "NEW"
-                badge_color = C["accent"]
-
-            bx = ctx.width - len(badge) * 7 - 16
-            ctx.rect(bx - 4, ry + 8, len(badge) * 7 + 8, 16, fill=C["surface"], radius=4.0)
-            ctx.text(bx, ry + 10, badge, size=10, color=badge_color)
-
-            # Version line under badge (right-aligned)
-            if ver_line:
-                vx = ctx.width - len(ver_line) * 6 - 16
-                ctx.text(vx, ry + 28, ver_line, size=10, color=ver_color)
-
-    # Filter bar at bottom
-    if state.filter_active:
-        fy = ctx.height - FILTER_H
-        ctx.rect(0, fy, ctx.width, FILTER_H, fill=C["surface"])
-        prompt = "/"
-        query_display = state.filter_text
-        # Blinking cursor
-        blink = int(now * 2) % 2 == 0
-        if blink:
-            query_display += "|"
-        ctx.text(12, fy + 8, f"{prompt} {query_display}", size=13, color=C["text"])
-
-    # Update All status message (shown in header area while running)
-    if state.update_all_status:
-        status_x = ctx.width // 2 - len(state.update_all_status) * 3
-        ctx.text(max(120, status_x), 9, state.update_all_status, size=11, color=C["yellow"])
-
-    # Transient error (3s)
+def _browse_status_bar(ctx):
+    # Transient error takes priority over the shortcut hints.
     if state.transient_error and (time.monotonic() - state.transient_error_time) < 3.0:
-        ctx.text(12, ctx.height - 36, state.transient_error, size=11, color=C["red"])
+        ctx.status_bar([], status_msg=state.transient_error, status_color=THEME.red)
+        return
 
-    # Hint bar (only when filter not active)
-    if not state.filter_active:
-        hints = "j/k nav  /  filter  Tab  tag  Enter  open  u  update  U  update all"
-        ctx.text(12, ctx.height - 18, hints, size=10, color=C["dimmed"])
+    if state.update_all_status:
+        ctx.status_bar([], status_msg=state.update_all_status, status_color=THEME.yellow)
+        return
+
+    if state.filter_active:
+        ctx.status_bar(
+            [("/", f"{state.filter_text}_"), ("Enter", "open"), ("Esc", "cancel")],
+        )
+        return
+
+    ctx.status_bar(
+        [
+            ("j/k", "nav"),
+            ("/", "filter"),
+            ("Tab", "tag"),
+            ("Enter", "open"),
+            ("u/U", "update"),
+            ("⌘W", "close"),
+        ],
+    )
 
 
 def render_detail(ctx, _now: float):
@@ -617,57 +607,68 @@ def render_detail(ctx, _now: float):
     desc = entry.get("description", "")
     installed = is_installed(app_id)
 
-    render_header(ctx, name, f"v{version}" if version else "")
-
-    y = HEADER_H + DETAIL_PADDING
-
-    # Author
-    ctx.text(DETAIL_PADDING, y, f"by {author}", size=12, color=C["subtext"])
-    y += 22
-
-    # Tags row
-    tx = DETAIL_PADDING
-    for tag in tags:
-        w = render_tag_pill(ctx, tag, tx, y)
-        tx += w
+    subtitle_bits: list[str] = []
+    if version:
+        subtitle_bits.append(f"v{version}")
+    subtitle_bits.append(f"by {author}")
     if tags:
-        y += 26
+        subtitle_bits.append("  ".join(f"#{t}" for t in tags))
+    ctx.header(name, subtitle="  ·  ".join(subtitle_bits))
 
-    # Description (word-wrapped)
-    words = desc.split()
-    line = ""
-    max_w = max(10, int((ctx.width - DETAIL_PADDING * 2) / 7))
-    for word in words:
-        if len(line) + len(word) + 1 <= max_w:
-            line = (line + " " + word).strip()
-        else:
-            if line:
-                ctx.text(DETAIL_PADDING, y, line, size=13, color=C["text"])
-                y += 20
-            line = word
-    if line:
-        ctx.text(DETAIL_PADDING, y, line, size=13, color=C["text"])
-        y += 28
+    # Body area: wrap description, plus a status line + action hints.
+    body_lines: list[str] = []
+    wrapped_desc = ctx.wrap_text(
+        desc, max_width_px=ctx.width - PAD * 2, size=BODY, monospace=False,
+    )
+    body_lines.extend(wrapped_desc)
+    body_lines.append("")
 
-    # Install status
     if installed:
         has_upd = _has_update(entry)
         registry_ver = entry.get("version", "")
         if has_upd:
-            ctx.text(DETAIL_PADDING, y, f"Update available (v{registry_ver})", size=13, color=C["yellow"])
+            body_lines.append(f"Update available (v{registry_ver})")
         else:
-            ctx.text(DETAIL_PADDING, y, "Already installed", size=13, color=C["installed"])
-        y += 24
+            body_lines.append("Already installed")
+        body_lines.append("")
         if state.confirm_uninstall:
-            ctx.text(DETAIL_PADDING, y, f"Uninstall {name}? (y/n)", size=13, color=C["yellow"])
-        elif has_upd:
-            ctx.text(DETAIL_PADDING, y, "u  update    x  uninstall    q / Backspace  back", size=11, color=C["subtext"])
-        else:
-            ctx.text(DETAIL_PADDING, y, "x  uninstall    q / Backspace  back", size=11, color=C["subtext"])
+            body_lines.append(f"Uninstall {name}? (y/n)")
     else:
-        ctx.text(DETAIL_PADDING, y, "Not installed", size=13, color=C["subtext"])
-        y += 24
-        ctx.text(DETAIL_PADDING, y, "i  install    q / Backspace  back", size=11, color=C["subtext"])
+        body_lines.append("Not installed")
+
+    state.detail_scroll = ctx.scrollable_text(
+        text_id="detail",
+        lines=body_lines,
+        scroll_offset=state.detail_scroll,
+        line_height=BODY + 6,
+        size=BODY,
+    )
+
+    # Status bar shortcuts depend on install state.
+    if installed:
+        has_upd = _has_update(entry)
+        if state.confirm_uninstall:
+            shortcuts = [("y", "confirm"), ("n", "cancel"), ("⌘W", "close")]
+        elif has_upd:
+            shortcuts = [
+                ("u", "update"),
+                ("x", "uninstall"),
+                ("q/Backspace", "back"),
+                ("⌘W", "close"),
+            ]
+        else:
+            shortcuts = [
+                ("x", "uninstall"),
+                ("q/Backspace", "back"),
+                ("⌘W", "close"),
+            ]
+    else:
+        shortcuts = [
+            ("i", "install"),
+            ("q/Backspace", "back"),
+            ("⌘W", "close"),
+        ]
+    ctx.status_bar(shortcuts)
 
 
 def render_install(ctx, now: float):
@@ -676,31 +677,37 @@ def render_install(ctx, now: float):
         return
 
     name = state.selected_entry.get("name", "")
-    render_header(ctx, f"Installing {name}")
+    ctx.header(f"Installing {name}")
 
     cx = ctx.width / 2
     cy = ctx.height / 2
 
     if state.install_done:
-        ctx.text(cx - 160, cy - 10, state.install_status, size=14, color=C["installed"])
-        ctx.text(cx - 100, cy + 20, "Backspace / q  to go back", size=11, color=C["subtext"])
+        ctx.text_center(cx, cy - BODY / 2, state.install_status,
+                        size=BODY, color=THEME.green, bold=True)
+        ctx.status_bar([("Backspace/q", "back"), ("⌘W", "close")])
     elif state.install_error:
-        ctx.text(cx - 160, cy - 10, state.install_status, size=13, color=C["red"])
-        ctx.text(cx - 100, cy + 20, "Backspace / q  to go back", size=11, color=C["subtext"])
+        ctx.text_center(cx, cy - BODY / 2, state.install_status,
+                        size=BODY, color=THEME.red)
+        ctx.status_bar([("Backspace/q", "back"), ("⌘W", "close")])
     else:
         frame_idx = int(now * SPINNER_FPS) % len(SPINNER_FRAMES)
         spinner = SPINNER_FRAMES[frame_idx]
-        ctx.text(cx - 10, cy - 10, spinner, size=20, color=C["accent"], monospace=True)
-        ctx.text(cx - 100, cy + 20, state.install_status or "Working...", size=13, color=C["text"])
+        ctx.text_center(cx, cy - TITLE - 4, spinner,
+                        size=TITLE, color=THEME.accent, monospace=True)
+        ctx.text_center(cx, cy, state.install_status or "Working...",
+                        size=BODY, color=THEME.fg)
+        ctx.status_bar([("⌘W", "close")])
 
 
-app = App(app_id="app-store")
-
+# ---------------------------------------------------------------------------
+# Top-level render
+# ---------------------------------------------------------------------------
 
 @app.on_render
 def render(ctx):
     now = state.elapsed
-    ctx.rect(0, 0, ctx.width, ctx.height, fill=C["bg"])
+    ctx.rect(0, 0, ctx.width, ctx.height, fill=THEME.bg)
 
     # Auto-return from install done after 3 seconds
     if state.view == VIEW_INSTALL and state.install_done:
@@ -740,9 +747,14 @@ def on_key(key, _mods, emit):
                 state.confirm_uninstall = False
             return
 
-        if key in ("Backspace", "q", "Escape"):
+        if key in ("j", "ArrowDown"):
+            state.detail_scroll += 1
+        elif key in ("k", "ArrowUp"):
+            state.detail_scroll = max(0, state.detail_scroll - 1)
+        elif key in ("Backspace", "q", "Escape"):
             state.view = VIEW_BROWSE
             state.confirm_uninstall = False
+            state.detail_scroll = 0
         elif key == "i" and not is_installed(app_id):
             start_install(entry)
         elif key == "u" and is_installed(app_id) and _has_update(entry):
@@ -768,10 +780,10 @@ def on_key(key, _mods, emit):
             if entries:
                 state.selected_entry = entries[state.cursor]
                 state.view = VIEW_DETAIL
+                state.detail_scroll = 0
         elif len(key) == 1:
             state.filter_text += key
             state.cursor = 0
-            state.scroll_offset = 0.0
         return
 
     # Normal browse
@@ -783,18 +795,16 @@ def on_key(key, _mods, emit):
         state.filter_active = True
         state.filter_text = ""
         state.cursor = 0
-        state.scroll_offset = 0.0
     elif key == "Escape":
         state.filter_text = ""
         state.cursor = 0
-        state.scroll_offset = 0.0
     elif key == "Tab":
         state.tag_filter_idx = (state.tag_filter_idx + 1) % len(TAG_CYCLE)
         state.cursor = 0
-        state.scroll_offset = 0.0
     elif key == "Enter" and entries:
         state.selected_entry = entries[state.cursor]
         state.view = VIEW_DETAIL
+        state.detail_scroll = 0
         state.confirm_uninstall = False
     elif key == "u" and entries:
         # Update the selected app in place, if it has an UPDATE badge
@@ -812,13 +822,16 @@ def on_key(key, _mods, emit):
 
 @app.on_scroll
 def on_scroll(x, y, delta_x, delta_y, _emit):
+    # Cursor-driven: scrollable_list auto-scrolls to keep selected visible,
+    # so emulating a mouse wheel means nudging the cursor.
     if state.view == VIEW_BROWSE:
         entries = state.filtered_entries()
-        n = len(entries)
-        if n == 0:
+        if not entries:
             return
-        state.scroll_offset = max(0.0, min(state.scroll_offset + delta_y * 0.1, float(n - 1)))
-        state.cursor = int(state.scroll_offset)
+        if delta_y > 0:
+            state.cursor = min(state.cursor + 1, len(entries) - 1)
+        elif delta_y < 0:
+            state.cursor = max(state.cursor - 1, 0)
 
 
 app.run()
