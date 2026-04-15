@@ -42,6 +42,7 @@ pub enum Direction {
     Down,
 }
 
+#[derive(Debug)]
 pub enum Action {
     SplitHorizontal,
     SplitVertical,

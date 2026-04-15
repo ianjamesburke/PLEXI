@@ -201,10 +201,17 @@ fn call_claude(
 
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::null());
+    cmd.stderr(Stdio::piped());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return tx.send(LlmResponse::Error(
+                "Claude Code CLI not found. Install it at https://claude.ai/code, \
+                 then restart Plexi."
+                    .to_string(),
+            ));
+        }
         Err(e) => {
             return tx.send(LlmResponse::Error(format!(
                 "failed to spawn claude CLI ({claude_bin}): {e}"
@@ -218,6 +225,45 @@ fn call_claude(
             log::error!("agent_llm: failed to write prompt to claude stdin: {e}");
         }
         // stdin is dropped here, closing the pipe
+    }
+
+    // Capture stderr on a background thread and forward each line to the log.
+    // This is the primary diagnostic path — claude CLI errors (auth, bad flags,
+    // permission denials) go to stderr and were previously silently discarded.
+    //
+    // `stderr_upgrade_error` is set when stderr mentions an update/upgrade, so
+    // the user gets an actionable message in the agent UI rather than only in
+    // the log file.
+    let stderr_upgrade_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let stderr_upgrade_clone = Arc::clone(&stderr_upgrade_error);
+
+    if let Some(stderr) = child.stderr.take() {
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) if !l.trim().is_empty() => {
+                        log::warn!("agent_llm stderr: {l}");
+                        let lower = l.to_lowercase();
+                        if lower.contains("update")
+                            || lower.contains("newer version")
+                            || lower.contains("outdated")
+                            || lower.contains("upgrade")
+                        {
+                            let mut slot = stderr_upgrade_clone
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner());
+                            if slot.is_none() {
+                                *slot = Some(
+                                    "claude CLI needs an update — run `claude update` in your terminal, then restart Plexi".to_string(),
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 
     let stdout = match child.stdout.take() {
@@ -308,6 +354,15 @@ fn call_claude(
         return Ok(());
     }
 
+    // Promote a version/upgrade message from stderr if no other stream error
+    // was captured — this gives the user an actionable message in the agent UI.
+    let stream_error = stream_error.or_else(|| {
+        stderr_upgrade_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    });
+
     if let Some(msg) = stream_error {
         return tx.send(LlmResponse::Error(msg));
     }
@@ -395,10 +450,17 @@ fn parse_stream_event(line: &str) -> StreamEvent {
 /// do not inherit the user's shell PATH, so we probe known install paths
 /// before falling back to a raw `claude` (which works in dev/terminal runs).
 fn find_claude_binary() -> Option<String> {
+    // Probe in priority order. The official Claude Code installer puts the
+    // binary under ~/.local/bin/ (symlink → ~/.local/share/claude/versions/X).
+    // That must come before the npm global path (/usr/local/bin/claude) which
+    // can be a stale older version left over from a previous npm install.
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+    let local_bin = home.join(".local/bin/claude").to_string_lossy().into_owned();
+
     let candidates = [
+        local_bin.as_str(),
         "/usr/local/bin/claude",
         "/opt/homebrew/bin/claude",
-        // npm global installs
         "/usr/local/share/npm/bin/claude",
     ];
 

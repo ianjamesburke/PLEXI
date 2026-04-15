@@ -55,11 +55,19 @@ pub fn init(level: log::LevelFilter) {
     // Try to open the log file; if it fails, use stderr only.
     let file_result = fern::log_file(&log_file_path);
 
+    // CARGO_CRATE_NAME is the crate name with hyphens replaced by underscores,
+    // which matches the module path prefix Rust uses for log targets.
+    // "plexi" → "plexi::*", "plexi-alpha" → "plexi_alpha::*", etc.
+    // Using a hardcoded "plexi" would NOT match "plexi_alpha::*" because fern
+    // checks `target.starts_with("plexi::")` — note the "::" separator.
+    let crate_log_target: &'static str = env!("CARGO_CRATE_NAME");
+
     let dispatch = fern::Dispatch::new()
         .format(formatter)
-        // plexi::* at the configured level
-        .level(log::LevelFilter::Warn) // default for third-party
-        .level_for("plexi", level);
+        // plexi::* (or plexi_alpha::*, plexi_beta::*) at the configured level;
+        // all third-party crates fall back to Warn.
+        .level(log::LevelFilter::Warn)
+        .level_for(crate_log_target, level);
 
     let dispatch = match file_result {
         Ok(file) => dispatch

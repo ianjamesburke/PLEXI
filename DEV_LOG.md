@@ -1,5 +1,27 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [FIX] agent mode Escape key didn't restore ZSH prompt
+
+`intercept_agent_keys()` in `tiling.rs` only had access to `&mut AgentMode`, so when Escape fired it called `self.deactivate()` directly — no PTY access, no `\r` written to the PTY. ZSH never knew agent mode ended and the prompt was visually displaced. The `toggle_agent_mode()` path in `pane_ops.rs` was correct (sends `BackendCommand::Write(b"\r")` after deactivate), but Escape bypassed it entirely. Fixed by returning `bool` from `intercept_agent_keys` and writing `\r` to `pane.backend` at the call site when deactivation is detected. All exit paths now converge on the same PTY write.
+**Breaks if:** pressing Escape to exit agent mode leaves the ZSH prompt missing or cursor stranded — means the `\r` isn't reaching the PTY. Check that `intercept_agent_keys` returns `true` on Escape and the `process_command` call fires.
+
+## 2026-04-15 — [FIX] agent mode silently discards claude CLI update-required errors
+
+When the claude CLI subprocess printed an update notice to stderr, it was forwarded to the log file but never surfaced to the user. Agent mode would silently fail — no response, no explanation. Added version-error detection in the stderr capture thread: lines containing "update", "newer version", "outdated", or "upgrade" are stored in a shared slot. After the stdout stream ends, that message is promoted to `LlmResponse::Error` if no other stream error was captured, so the user sees "claude CLI needs an update — run `claude update`" directly in the agent conversation.
+**Breaks if:** stale claude CLI produces only silence in agent mode with no error message — check `agent_llm stderr:` log lines for update language, and verify the upgrade slot promotion runs after the stdout loop.
+
+## 2026-04-15 — [FIX] Plexi-in-Plexi guard blocks alpha from launching alongside stable
+
+The `PLEXI_RUNNING=1` guard in `main.rs` prevented alpha/beta builds from launching when stable Plexi is the daily driver. Stable Plexi sets `PLEXI_RUNNING=1` in all PTY children, so every terminal pane inside it had the var set. `open -a "Plexi Alpha"` also inherited it. Alpha would silently exit immediately. Fixed by skipping the guard when `current_exe()` contains "alpha" or "beta" — dev builds are always allowed to coexist with stable.
+**Breaks if:** `plexi-alpha` still silently exits when launched from inside the stable app — check `ps aux | grep plexi-alpha` after launch.
+
+## 2026-04-15 — [FIX] alpha/beta builds silently dropped all INFO/DEBUG log messages
+
+`logging.rs` used `.level_for("plexi", level)`. fern's matching checks `target == "plexi" || target.starts_with("plexi::")`. In the alpha build the crate is `plexi-alpha`, so all log targets are `plexi_alpha::*`. `"plexi_alpha::foo".starts_with("plexi::")` is false — the `_` breaks the `::` prefix check. Every INFO/DEBUG message fell through to the default `Warn` filter and was silently dropped. Fixed by using `env!("CARGO_CRATE_NAME")` which gives the underscore-normalized crate name at compile time (`plexi_alpha` in alpha builds).
+**Breaks if:** alpha log only ever shows `[WARN]`/`[ERROR]` entries, never `[INFO]` or `[DEBUG]` — grep for `INFO` in `~/.plexi-alpha/plexi.log` after startup.
+
+## 2026-04-15 — [CHANGED] Lifecycle + debug logging added across core modules
+
 ## 2026-04-15 — [FIX] agent mode: silent response + static thinking indicator
 
 Two bugs fixed together:

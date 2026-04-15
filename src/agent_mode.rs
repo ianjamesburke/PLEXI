@@ -393,6 +393,7 @@ impl AgentMode {
                     self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
                 }
                 LlmResponse::Token(chunk) => {
+                    log::debug!("agent: token ({} chars)", chunk.len());
                     // First token: clear the spinner line before writing.
                     if self.current_response.is_empty() {
                         self.enqueue(b"\r\x1b[K".to_vec());

@@ -49,6 +49,7 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
+        log::info!("pane {new_id}: created via {} split", if vertical { "vertical" } else { "horizontal" });
         self.contexts[self.active_context]
             .panes
             .insert(new_id, pane);
@@ -129,6 +130,7 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
+        log::info!("pane {new_id}: created as new tab");
         self.contexts[self.active_context]
             .panes
             .insert(new_id, pane);
@@ -299,6 +301,7 @@ impl PlexiApp {
         }
 
         if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
+            log::info!("pane {pane_id}: closed");
             ctx.panes.remove(&pane_id);
         }
 
@@ -327,6 +330,7 @@ impl PlexiApp {
         };
 
         let name = format!("Context {}", self.contexts.len() + 1);
+        log::info!("context '{}': created", name);
         self.contexts.push(Context {
             name,
             path: home,
@@ -498,6 +502,8 @@ impl PlexiApp {
                 .active_app
                 .as_ref()
                 .and_then(|app| app.current_dir().map(|p| p.to_path_buf()));
+            let closing_app_id = pane.active_app.as_ref().map(|a| a.type_id()).unwrap_or("unknown");
+            log::info!("app '{closing_app_id}': closed");
             if let (Some(final_dir), Some(scope)) = (final_dir, pane.app_scope.clone()) {
                 if final_dir != scope {
                     let cmd = format!(
@@ -611,8 +617,10 @@ impl PlexiApp {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
                     if wants_fullscreen {
+                        log::info!("app '{}': opened on pane {pane_id}", app.type_id());
                         pane.open_app(app, permissions, scope);
                     } else {
+                        log::info!("app '{}': opened on pane {pane_id} with companion", app.type_id());
                         pane.open_app_with_companion(app, permissions, scope);
                         // Write manifest-declared startup message into this same
                         // pane's terminal grid — it IS the companion.
@@ -636,6 +644,7 @@ impl PlexiApp {
             if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                    log::info!("app '{}': replacing existing app on pane {pane_id}", app.type_id());
                     pane.close_app();
                     pane.open_app(app, permissions, scope);
                 }
@@ -767,6 +776,7 @@ impl PlexiApp {
         if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
             let pane_id = *pane_id;
             if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                log::info!("app '{}': opened on pane {pane_id} with companion terminal {new_term_id}", app.type_id());
                 pane.open_app(app, permissions, scope);
                 pane.linked_terminal_pane = Some(new_term_id);
             }
@@ -824,7 +834,8 @@ impl PlexiApp {
         scope: PathBuf,
     ) {
         let ctx = &mut self.contexts[self.active_context];
-        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+        if let Some((pane_id, pane)) = ctx.focused_pane_mut() {
+            log::info!("app '{}': opened fullscreen on pane {pane_id}", app.type_id());
             pane.open_app(app, permissions, scope);
             // No linked terminal — app takes the full pane.
         }
@@ -987,6 +998,7 @@ impl PlexiApp {
                 return;
             }
             if pane.agent_mode.is_active() {
+                log::info!("agent mode: deactivated");
                 pane.agent_mode.deactivate();
                 // Write \r to the PTY so ZSH redraws its prompt cleanly at
                 // the current cursor position. Without this, ZSH doesn't know
@@ -998,6 +1010,7 @@ impl PlexiApp {
                 if let Some(cwd) = crate::shell::get_pid_cwd(pane.backend.child_pid()) {
                     pane.agent_mode.directory_scope = cwd;
                 }
+                log::info!("agent mode: activated");
                 pane.agent_mode.activate();
             }
         }

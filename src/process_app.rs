@@ -245,6 +245,7 @@ impl ProcessApp {
         let watcher = Self::setup_watcher(watch_dir, reload_tx);
 
         let cost_tracker = CostTracker::new(&type_id);
+        log::info!("ProcessApp[{type_id}]: subprocess launched");
         Ok(Self {
             type_id,
             display_name,
@@ -1183,6 +1184,7 @@ impl App for ProcessApp {
                     self.pending_frame.clear();
                 }
                 DrawCommand::RunInTerminal { command } => {
+                    log::debug!("ProcessApp[{}]: RunInTerminal: {command}", self.type_id);
                     self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
                 }
                 DrawCommand::Cd { path } => {

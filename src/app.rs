@@ -530,6 +530,11 @@ impl eframe::App for PlexiApp {
 
         // Handle keyboard shortcuts
         for action in keys::poll_actions(ctx, app_active) {
+            // Log all actions at debug level (noise filter: skip high-frequency navigation/scroll).
+            match &action {
+                keys::Action::Navigate(_) | keys::Action::ScrollUp | keys::Action::ScrollDown => {}
+                _ => log::debug!("input: {:?}", action),
+            }
             match action {
                 Action::SplitHorizontal => {
                     self.contexts[self.active_context].zoomed_pane = None;
@@ -630,6 +635,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::SwitchContext(n) => {
                     if n < self.contexts.len() {
+                        log::info!("context: switched to {} ('{}')", n, self.contexts[n].name);
                         self.active_context = n;
                     }
                 }
