@@ -504,15 +504,7 @@ impl PlexiApp {
                 .and_then(|app| app.current_dir().map(|p| p.to_path_buf()));
             let closing_app_id = pane.active_app.as_ref().map(|a| a.type_id()).unwrap_or("unknown");
             log::info!("app '{closing_app_id}': closed");
-            let ts = crate::event_log::now_timestamp();
-            log::debug!("event_log: emitting AppClosed for '{closing_app_id}' on pane {pane_id}");
-            crate::event_log::emit(crate::event_log::HostEvent::AppClosed {
-                app_id: closing_app_id.to_string(),
-                type_id: closing_app_id.to_string(),
-                pane_id,
-                timestamp: ts,
-                reason: None,
-            });
+            crate::event_log::emit_app_closed(closing_app_id, closing_app_id, pane_id, None);
             if let (Some(final_dir), Some(scope)) = (final_dir, pane.app_scope.clone()) {
                 if final_dir != scope {
                     let cmd = format!(
@@ -639,14 +631,7 @@ impl PlexiApp {
                             pane.backend.write_agent_bytes(&bytes);
                         }
                     }
-                    let ts = crate::event_log::now_timestamp();
-                    log::debug!("event_log: emitting AppSpawned for '{type_id}' on pane {pane_id}");
-                    crate::event_log::emit(crate::event_log::HostEvent::AppSpawned {
-                        app_id: type_id.clone(),
-                        type_id,
-                        pane_id,
-                        timestamp: ts,
-                    });
+                    crate::event_log::emit_app_spawned(&type_id, &type_id, pane_id);
                 }
             }
             ctx.focused_pane = Some(focused);
@@ -666,14 +651,7 @@ impl PlexiApp {
                     log::info!("app '{}': replacing existing app on pane {pane_id}", type_id);
                     pane.close_app();
                     pane.open_app(app, permissions, scope);
-                    let ts = crate::event_log::now_timestamp();
-                    log::debug!("event_log: emitting AppSpawned (replace) for '{type_id}' on pane {pane_id}");
-                    crate::event_log::emit(crate::event_log::HostEvent::AppSpawned {
-                        app_id: type_id.clone(),
-                        type_id,
-                        pane_id,
-                        timestamp: ts,
-                    });
+                    crate::event_log::emit_app_spawned(&type_id, &type_id, pane_id);
                 }
             }
             ctx.focused_pane = Some(focused);
@@ -866,14 +844,7 @@ impl PlexiApp {
             log::info!("app '{}': opened fullscreen on pane {pane_id}", type_id);
             pane.open_app(app, permissions, scope);
             // No linked terminal — app takes the full pane.
-            let ts = crate::event_log::now_timestamp();
-            log::debug!("event_log: emitting AppSpawned for '{type_id}' on pane {pane_id}");
-            crate::event_log::emit(crate::event_log::HostEvent::AppSpawned {
-                app_id: type_id.clone(),
-                type_id,
-                pane_id,
-                timestamp: ts,
-            });
+            crate::event_log::emit_app_spawned(&type_id, &type_id, pane_id);
         }
     }
 
@@ -1125,13 +1096,7 @@ impl PlexiApp {
         // Phase 2: for each write, route to connected peers and log to event bus.
         for (sender_pane_id, sender_app_id, channel, value) in pipe_writes {
             // Emit to event log (no payload value — summary only).
-            let ts = crate::event_log::now_timestamp();
-            log::debug!("event_log: emitting PipeWrite from '{}' on channel '{}'", sender_app_id, channel);
-            crate::event_log::emit(crate::event_log::HostEvent::PipeWrite {
-                from_app: sender_app_id.clone(),
-                channel: channel.clone(),
-                timestamp: ts,
-            });
+            crate::event_log::emit_pipe_write(&sender_app_id, &channel);
 
             // Route to parent (if this pane is a child).
             let parent_pane_id = self.spawn_relationships.parent_of(sender_pane_id);
