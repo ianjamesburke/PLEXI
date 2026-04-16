@@ -1,6 +1,6 @@
 use crate::context::{replace_child, Context};
 use crate::keys::Direction;
-use crate::pane::TerminalPane;
+use crate::pane::{Pane, TerminalPane};
 use crate::shell;
 use crate::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
@@ -16,7 +16,7 @@ impl PlexiApp {
     fn create_single_pane_tree(
         &mut self,
         cwd: Option<PathBuf>,
-    ) -> Option<(Tree<PaneId>, HashMap<PaneId, TerminalPane>, TileId)> {
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
 
@@ -30,7 +30,7 @@ impl PlexiApp {
         )?;
 
         let mut panes = HashMap::new();
-        panes.insert(new_id, pane);
+        panes.insert(new_id, Pane::Terminal(pane));
 
         let mut tiles = egui_tiles::Tiles::default();
         let root_tile = tiles.insert_pane(new_id);
@@ -44,7 +44,7 @@ impl PlexiApp {
     fn create_split_pane_tree(
         &mut self,
         cwd: Option<PathBuf>,
-    ) -> Option<(Tree<PaneId>, HashMap<PaneId, TerminalPane>, TileId)> {
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let id_left = self.next_pane_id;
         self.next_pane_id += 1;
         let id_right = self.next_pane_id;
@@ -69,8 +69,8 @@ impl PlexiApp {
         )?;
 
         let mut panes = HashMap::new();
-        panes.insert(id_left, pane_left);
-        panes.insert(id_right, pane_right);
+        panes.insert(id_left, Pane::Terminal(pane_left));
+        panes.insert(id_right, Pane::Terminal(pane_right));
 
         let mut tiles = egui_tiles::Tiles::default();
         let left_tile = tiles.insert_pane(id_left);
@@ -87,7 +87,7 @@ impl PlexiApp {
         &mut self,
         n: usize,
         cwd: Option<PathBuf>,
-    ) -> Option<(Tree<PaneId>, HashMap<PaneId, TerminalPane>, Vec<egui_tiles::TileId>)> {
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, Vec<egui_tiles::TileId>)> {
         let count = n.max(1);
         let mut panes = HashMap::new();
         let mut tiles = egui_tiles::Tiles::default();
@@ -104,7 +104,7 @@ impl PlexiApp {
                 settings,
                 self.default_font_size,
             )?;
-            panes.insert(id, pane);
+            panes.insert(id, Pane::Terminal(pane));
             let tile = tiles.insert_pane(id);
             tile_ids.push(tile);
         }
@@ -144,7 +144,7 @@ impl PlexiApp {
         );
         self.contexts[self.active_context]
             .panes
-            .insert(new_id, pane);
+            .insert(new_id, Pane::Terminal(pane));
 
         let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
@@ -228,7 +228,7 @@ impl PlexiApp {
         log::info!("pane {new_id}: created as new tab");
         self.contexts[self.active_context]
             .panes
-            .insert(new_id, pane);
+            .insert(new_id, Pane::Terminal(pane));
 
         let ctx = &mut self.contexts[self.active_context];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
@@ -837,7 +837,7 @@ impl PlexiApp {
         }
         self.contexts[self.active_context]
             .panes
-            .insert(new_term_id, new_pane);
+            .insert(new_term_id, Pane::Terminal(new_pane));
 
         // Split using the exact same logic as split_focused (which works).
         let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
@@ -1401,7 +1401,7 @@ impl PlexiApp {
         // 5. Insert pane into the panes map and create a tile.
         self.contexts[self.active_context]
             .panes
-            .insert(child_pane_id, child_pane);
+            .insert(child_pane_id, Pane::Terminal(child_pane));
         let new_tile = self.contexts[self.active_context]
             .tree
             .tiles

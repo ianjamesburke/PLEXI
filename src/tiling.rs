@@ -1,7 +1,7 @@
 use crate::agent_mode::AgentMode;
 use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPACITY};
 use crate::media_cache::MediaCache;
-use crate::pane::TerminalPane;
+use crate::pane::Pane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Stroke, Vec2};
 use egui_term::{BackendCommand, TerminalTheme, TerminalView};
@@ -37,7 +37,7 @@ pub(crate) fn paint_tab_dots(
 }
 
 pub struct PlexiBehavior<'a> {
-    pub panes: &'a mut HashMap<PaneId, TerminalPane>,
+    pub panes: &'a mut HashMap<PaneId, Pane>,
     pub focused_tile: Option<TileId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,

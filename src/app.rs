@@ -3,7 +3,7 @@ use crate::config;
 use crate::context::Context;
 use crate::keys::{self, Action};
 use crate::media_cache::MediaCache;
-use crate::pane::TerminalPane;
+use crate::pane::{Pane, TerminalPane};
 use crate::shell;
 use crate::theme::{self, Colors};
 use crate::tiling::{PaneId, PlexiBehavior};
@@ -204,7 +204,7 @@ impl PlexiApp {
                                 }
                             }
                         }
-                        panes.insert(saved_pane.id, pane);
+                        panes.insert(saved_pane.id, Pane::Terminal(pane));
                     }
                 }
                 if panes.is_empty() {
@@ -280,7 +280,7 @@ impl PlexiApp {
         )
         .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
-        panes.insert(0u64, pane);
+        panes.insert(0u64, Pane::Terminal(pane));
 
         let mut tiles = egui_tiles::Tiles::default();
         let root_tile = tiles.insert_pane(0u64);
