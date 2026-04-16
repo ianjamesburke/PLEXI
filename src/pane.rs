@@ -30,6 +30,70 @@ pub struct TerminalPane {
     pub locked: bool,
 }
 
+/// Top-level pane primitive. A pane is one of several variants; this enum
+/// locks the ADT shape that later PRs will flesh out (AgentPane, AppPane).
+/// PR1: single variant wrapping the existing `TerminalPane` struct.
+pub enum Pane {
+    Terminal(TerminalPane),
+    // TODO(PR2): Agent(AgentPane),
+    // TODO(PR2): App(AppPane),
+}
+
+impl Pane {
+    #[inline]
+    pub fn as_terminal(&self) -> Option<&TerminalPane> {
+        match self {
+            Pane::Terminal(p) => Some(p),
+        }
+    }
+
+    #[inline]
+    pub fn as_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
+        match self {
+            Pane::Terminal(p) => Some(p),
+        }
+    }
+
+    /// PR1 convenience: until sibling variants exist, every pane is a terminal.
+    /// Call sites can use this when they know the variant. In PR2, these
+    /// become fallible matches on specific variants.
+    #[inline]
+    pub fn terminal(&self) -> &TerminalPane {
+        match self {
+            Pane::Terminal(p) => p,
+        }
+    }
+
+    #[inline]
+    pub fn terminal_mut(&mut self) -> &mut TerminalPane {
+        match self {
+            Pane::Terminal(p) => p,
+        }
+    }
+}
+
+// TODO(PR2): remove Deref/DerefMut. They exist only to minimize PR1 call-site
+// churn while wrapping the single existing variant. When sibling variants
+// (Agent, App) land, callers must match the variant explicitly.
+impl std::ops::Deref for Pane {
+    type Target = TerminalPane;
+    #[inline]
+    fn deref(&self) -> &TerminalPane {
+        match self {
+            Pane::Terminal(p) => p,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Pane {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut TerminalPane {
+        match self {
+            Pane::Terminal(p) => p,
+        }
+    }
+}
+
 impl TerminalPane {
     pub fn new(
         id: u64,
