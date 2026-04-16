@@ -3,9 +3,7 @@
 mod app;
 mod app_protocol;
 mod app_registry;
-mod app_api;
 mod app_permissions;
-mod audio_app;
 mod app_trait;
 mod cli;
 mod command_palette;
@@ -17,6 +15,7 @@ mod text_editor_app;
 mod config;
 mod context;
 mod logging;
+mod event_log;
 mod features;
 mod keys;
 #[cfg(target_os = "macos")]
@@ -24,6 +23,7 @@ mod macos_menu;
 mod overlays;
 mod pane;
 mod pane_ops;
+mod plexi_iq;
 mod secrets;
 mod shell;
 mod sidebar;

@@ -99,14 +99,6 @@ impl PlexiApp {
                                     }
                                     (Some(Box::new(note)), builtin_perms)
                                 }
-                                "audio_player" => {
-                                    let mut player = crate::audio_app::AudioApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        player.restore_state(state);
-                                    }
-                                    (Some(Box::new(player)), builtin_perms)
-                                }
                                 "secrets_manager" => {
                                     let mut secrets = crate::secrets_app::SecretsApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
@@ -545,9 +537,6 @@ impl eframe::App for PlexiApp {
                 }
                 Action::OpenQuickNote => {
                     self.open_quick_note();
-                }
-                Action::OpenAudioPlayer => {
-                    self.open_audio_player();
                 }
                 Action::OpenConfig => {
                     self.open_config_editor();

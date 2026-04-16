@@ -637,37 +637,6 @@ impl PlexiApp {
         self.open_app_fullscreen(app, perms, cwd);
     }
 
-    /// Open the audio player app scoped to the current directory.
-    pub(crate) fn open_audio_player(&mut self) {
-        let cwd = {
-            let ctx = &self.contexts[self.active_context];
-            ctx.focused_pane
-                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-        };
-
-        // Toggle: if audio player already open, close it.
-        let ctx = &self.contexts[self.active_context];
-        if let Some(focused) = ctx.focused_pane {
-            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
-                if let Some(pane) = ctx.panes.get(pane_id) {
-                    if let Some(app) = &pane.active_app {
-                        if app.type_id() == "audio_player" {
-                            self.close_focused_app();
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        let app = Box::new(crate::audio_app::AudioApp::new(cwd.clone()));
-        // Audio player: read-only filesystem, no terminal write.
-        let mut perms = crate::app_permissions::AppPermissions::default();
-        perms.filesystem = crate::app_permissions::FsPermission::ReadOnly;
-        self.open_app_fullscreen(app, perms, cwd);
-    }
-
     /// Open the Plexi config file in the text editor app.
     pub(crate) fn open_config_editor(&mut self) {
         let config_path = crate::config::config_path();

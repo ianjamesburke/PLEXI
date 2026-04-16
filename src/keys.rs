@@ -66,8 +66,6 @@ pub enum Action {
     OpenFileBrowser,
     /// Open the quick note app (full pane, no terminal split).
     OpenQuickNote,
-    /// Open the audio player app.
-    OpenAudioPlayer,
     /// Open config file in the text editor.
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
@@ -196,11 +194,6 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open quick note (Cmd+0)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0) {
             actions.push(Action::OpenQuickNote);
-        }
-
-        // Open audio player (Cmd+Shift+A)
-        if input.consume_key(cmd_shift, egui::Key::A) {
-            actions.push(Action::OpenAudioPlayer);
         }
 
         // Open config (Cmd+,)
