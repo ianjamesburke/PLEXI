@@ -367,6 +367,17 @@ impl AgentMode {
                 LlmResponse::Complete(text, session_id) => {
                     // Store session ID for the next turn.
                     log::info!("agent_mode: turn complete, session_id={session_id}");
+                    // Emit AgentTurn to the event bus. Use response length as token_count
+                    // proxy until real token counts are threaded through from the LLM backend.
+                    {
+                        let ts = crate::event_log::now_timestamp();
+                        log::debug!("event_log: emitting AgentTurn, token_count={}", text.len());
+                        crate::event_log::emit(crate::event_log::HostEvent::AgentTurn {
+                            session_id: Some(session_id.clone()),
+                            token_count: text.len(),
+                            timestamp: ts,
+                        });
+                    }
                     self.session_id = Some(session_id);
                     self.spinner_tick = 0;
 

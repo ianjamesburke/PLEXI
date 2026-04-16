@@ -376,6 +376,25 @@ class Emitter:
             self.warn(f"submit_feedback: could not write to {feedback_file}: {e}")
         self.info(f"feedback submitted: {text[:80]}")
 
+    def event_subscribe(self, kinds=None, scope="workspace"):
+        """Subscribe to host events. Matched events arrive via on_event handler.
+
+        Args:
+            kinds: List of event kind strings to subscribe to, e.g.
+                   ["app_spawned", "pipe_write"]. Pass None or [] for all events.
+            scope: One of "workspace" (default), "pane", or "global".
+                   Controls which events are filtered by proximity.
+
+        Note: Phase 0 — the subscribe command is accepted by the host but
+        EventData delivery is not yet implemented. Full forwarding lands in
+        a follow-up PR.
+        """
+        print(json.dumps({
+            "type": "event_subscribe",
+            "kinds": kinds or [],
+            "scope": scope,
+        }), flush=True)
+
 
 def load_manifest(app_file: str = __file__) -> dict:
     """
@@ -1159,6 +1178,7 @@ class App:
         self._on_mouse_move: Optional[Callable] = None
         self._on_scroll: Optional[Callable] = None
         self._on_pipe_data: Optional[Callable] = None
+        self._on_event: Optional[Callable] = None
         self._emitter = Emitter(app_id=app_id)
         # Breakpoints: list of (min_width, min_height, render_fn).
         # Walked in descending area order on each render to pick the
@@ -1471,6 +1491,25 @@ class App:
         self._on_pipe_data = fn
         return fn
 
+    def on_event(self, fn: Callable) -> Callable:
+        """Register a handler for host events received after EventSubscribe.
+
+        Called when the host delivers an EventData event matching an active
+        subscription (initiated via emit.event_subscribe(...)).
+
+        Handler signature: fn(kind: str, payload: dict, emit: Emitter)
+
+        Args:
+            kind:    The event kind string (e.g. "app_spawned", "pipe_write").
+            payload: The full event payload as a dict.
+            emit:    An Emitter to respond or trigger further actions.
+
+        Note: Phase 0 — delivery requires a prior EventSubscribe call. The host
+        does not yet forward EventData events; full delivery lands in a follow-up PR.
+        """
+        self._on_event = fn
+        return fn
+
     def _handle_get_state(self):
         """Respond to a get_state request from Plexi."""
         if self._on_get_state:
@@ -1651,6 +1690,14 @@ class App:
                         event.get("from_app", ""),
                         event.get("channel", ""),
                         event.get("value"),
+                        self._emitter,
+                    )
+
+            elif event_type == "event_data":
+                if self._on_event:
+                    self._on_event(
+                        event.get("kind", ""),
+                        event.get("payload", {}),
                         self._emitter,
                     )
 

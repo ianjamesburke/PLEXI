@@ -495,7 +495,7 @@ impl PlexiApp {
         // it was a legacy auto-split. If the app was opened with a companion
         // (no separate tile), `linked` will be None and we're done.
         let ctx = &mut self.contexts[self.active_context];
-        let linked = if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
+        let linked = if let Some((pane_id, pane)) = ctx.focused_pane_mut() {
             // Before closing, if the app reports a current directory that differs
             // from the scope it was launched in, cd the underlying terminal to it.
             let final_dir = pane
@@ -504,6 +504,15 @@ impl PlexiApp {
                 .and_then(|app| app.current_dir().map(|p| p.to_path_buf()));
             let closing_app_id = pane.active_app.as_ref().map(|a| a.type_id()).unwrap_or("unknown");
             log::info!("app '{closing_app_id}': closed");
+            let ts = crate::event_log::now_timestamp();
+            log::debug!("event_log: emitting AppClosed for '{closing_app_id}' on pane {pane_id}");
+            crate::event_log::emit(crate::event_log::HostEvent::AppClosed {
+                app_id: closing_app_id.to_string(),
+                type_id: closing_app_id.to_string(),
+                pane_id,
+                timestamp: ts,
+                reason: None,
+            });
             if let (Some(final_dir), Some(scope)) = (final_dir, pane.app_scope.clone()) {
                 if final_dir != scope {
                     let cmd = format!(
@@ -616,11 +625,12 @@ impl PlexiApp {
             if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                    let type_id = app.type_id().to_string();
                     if wants_fullscreen {
-                        log::info!("app '{}': opened on pane {pane_id}", app.type_id());
+                        log::info!("app '{}': opened on pane {pane_id}", type_id);
                         pane.open_app(app, permissions, scope);
                     } else {
-                        log::info!("app '{}': opened on pane {pane_id} with companion", app.type_id());
+                        log::info!("app '{}': opened on pane {pane_id} with companion", type_id);
                         pane.open_app_with_companion(app, permissions, scope);
                         // Write manifest-declared startup message into this same
                         // pane's terminal grid — it IS the companion.
@@ -629,6 +639,14 @@ impl PlexiApp {
                             pane.backend.write_agent_bytes(&bytes);
                         }
                     }
+                    let ts = crate::event_log::now_timestamp();
+                    log::debug!("event_log: emitting AppSpawned for '{type_id}' on pane {pane_id}");
+                    crate::event_log::emit(crate::event_log::HostEvent::AppSpawned {
+                        app_id: type_id.clone(),
+                        type_id,
+                        pane_id,
+                        timestamp: ts,
+                    });
                 }
             }
             ctx.focused_pane = Some(focused);
@@ -644,9 +662,18 @@ impl PlexiApp {
             if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                    log::info!("app '{}': replacing existing app on pane {pane_id}", app.type_id());
+                    let type_id = app.type_id().to_string();
+                    log::info!("app '{}': replacing existing app on pane {pane_id}", type_id);
                     pane.close_app();
                     pane.open_app(app, permissions, scope);
+                    let ts = crate::event_log::now_timestamp();
+                    log::debug!("event_log: emitting AppSpawned (replace) for '{type_id}' on pane {pane_id}");
+                    crate::event_log::emit(crate::event_log::HostEvent::AppSpawned {
+                        app_id: type_id.clone(),
+                        type_id,
+                        pane_id,
+                        timestamp: ts,
+                    });
                 }
             }
             ctx.focused_pane = Some(focused);
@@ -835,9 +862,18 @@ impl PlexiApp {
     ) {
         let ctx = &mut self.contexts[self.active_context];
         if let Some((pane_id, pane)) = ctx.focused_pane_mut() {
-            log::info!("app '{}': opened fullscreen on pane {pane_id}", app.type_id());
+            let type_id = app.type_id().to_string();
+            log::info!("app '{}': opened fullscreen on pane {pane_id}", type_id);
             pane.open_app(app, permissions, scope);
             // No linked terminal — app takes the full pane.
+            let ts = crate::event_log::now_timestamp();
+            log::debug!("event_log: emitting AppSpawned for '{type_id}' on pane {pane_id}");
+            crate::event_log::emit(crate::event_log::HostEvent::AppSpawned {
+                app_id: type_id.clone(),
+                type_id,
+                pane_id,
+                timestamp: ts,
+            });
         }
     }
 
@@ -1086,8 +1122,17 @@ impl PlexiApp {
             return;
         }
 
-        // Phase 2: for each write, route to connected peers.
+        // Phase 2: for each write, route to connected peers and log to event bus.
         for (sender_pane_id, sender_app_id, channel, value) in pipe_writes {
+            // Emit to event log (no payload value — summary only).
+            let ts = crate::event_log::now_timestamp();
+            log::debug!("event_log: emitting PipeWrite from '{}' on channel '{}'", sender_app_id, channel);
+            crate::event_log::emit(crate::event_log::HostEvent::PipeWrite {
+                from_app: sender_app_id.clone(),
+                channel: channel.clone(),
+                timestamp: ts,
+            });
+
             // Route to parent (if this pane is a child).
             let parent_pane_id = self.spawn_relationships.parent_of(sender_pane_id);
             if let Some(parent_id) = parent_pane_id {

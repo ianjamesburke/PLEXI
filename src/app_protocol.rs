@@ -120,6 +120,14 @@ pub enum PlexiEvent {
     ///
     /// `value` is `None` if the secret is missing or resolution failed.
     SecretResponse { name: String, value: Option<String> },
+    /// A host event matching an active `DrawCommand::EventSubscribe` subscription.
+    ///
+    /// `kind` is the event's tag (e.g. `"app_spawned"`, `"pipe_write"`).
+    /// `payload` is the full event JSON, minus the `source` field.
+    EventData {
+        kind: String,
+        payload: serde_json::Value,
+    },
     /// App is being closed. Process should exit.
     Shutdown,
     /// A value arrived on a named pipe channel from another app.
@@ -428,6 +436,28 @@ pub enum DrawCommand {
     /// Missing secrets and resolution failures both return `value: None` — the
     /// SDK should not crash the app on a failed lookup.
     SecretGet { name: String },
+    /// Subscribe to host events. Matching events will be forwarded to the app
+    /// as `PlexiEvent::EventData`.
+    ///
+    /// `kinds` — list of event kind strings to subscribe to (e.g. `"app_spawned"`,
+    /// `"pipe_write"`). An empty list means subscribe to all events.
+    /// `scope` — one of `"workspace"`, `"pane"`, or `"global"`.
+    ///
+    /// The subscription persists until the app is closed or a new
+    /// `EventSubscribe` replaces it. Emitting this command with an empty
+    /// `kinds` list and scope `"global"` subscribes to all host events.
+    ///
+    /// **Phase 0 implementation note:** subscription tracking and event
+    /// forwarding are stubbed. The command is accepted for forward compatibility
+    /// but the host does not yet deliver `EventData` events to the app's stdin.
+    /// Full delivery will land in a follow-up PR.
+    EventSubscribe {
+        /// Empty = all event kinds.
+        #[serde(default)]
+        kinds: Vec<String>,
+        /// `"workspace"` | `"pane"` | `"global"`
+        scope: String,
+    },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,
 }
