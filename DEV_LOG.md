@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-16 — [CHANGED] Capability enforcement runtime prompts — §7 closes #230 (PR → alpha)
+
+Wired §7 end-to-end: `ProcessApp` now checks `RunCreate`, `EventSubscribe`, and `SpawnApp` commands against manifest-declared capabilities (`create_runs`, `observes`, `open_intent_kinds`). Undeclared capabilities queue a `PendingCapabilityPrompt` drained by `PlexiApp` each frame and shown as a modal ("Allow once / Always allow / Deny"). Decisions persist to `permissions.json` via the existing `PermissionStore`. Orchestrator apps (`is_orchestrator = true` in manifest) bypass all prompts. `PermissionPrompted` events emit to the bus so v2.1 trust scoring can train on them. Two pre-existing bugs fixed in the same pass: `SubscribeScope` enum missing closing brace in `app_protocol.rs`, duplicate `protocol_version` field in `PlexiEvent::Init` struct literal in `process_app.rs`.
+
+Permission store is wired into `ProcessApp` at app-open time via `wire_permission_store()` called in `open_app_on_focused_with_launch`. Manifest capabilities are set via `set_manifest_capabilities()` called from `AppRegistry::launch_inner` after `ProcessApp` construction.
+
+**Breaks if:** An app tries to use `RunCreate` or `EventSubscribe` and receives no response — check that `pending_capability_prompts` are being drained in the update loop and the modal appears. If prompts never fire, check that `wire_permission_store` is being called on app open.
+
 ## 2026-04-15 — [DECISION] v2.0 RC: full protocol implementation — OpenIntent, event bus, Run primitive, typed pipes Phase 1, Plexi IQ Stage 1
 
 Implemented all v2.0 scope items in a single RC branch. Key choices: event bus uses std::sync::mpsc with 4096-bound sync_channel and fan-out via a subscriber Vec (no tokio dep needed — matches existing sync threading model in ProcessApp); RunStore is in-memory with JSONL append log (no SQLite, mirrors notification log pattern); Plexi IQ Stage 1 uses `claude -p --resume` subprocess backend per spec §9 (native API mode is config option, not default); typed pipes auto-wiring on spawn rather than at runtime for simplicity. EventSubscribe uses broadcast via a shared subscriber list rather than tokio::broadcast to stay on std threads. ProcessApp now holds optional Arc refs to EventLog and RunStore — wired at launch time via wire() method rather than passing through the App trait (which is object-safe and couldn't hold generics).

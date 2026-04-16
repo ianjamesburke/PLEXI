@@ -98,6 +98,29 @@ pub struct ProcessApp {
     parent_app_id: Option<String>,
     /// Transform stack for PushTransform/PopTransform. Each entry: (scale_x, scale_y, tx, ty, rotate, ox, oy).
     transform_stack: Vec<(f32, f32, f32, f32, f32, f32, f32)>,
+    /// Capabilities declared in the manifest (observes, create_runs, open_intent_kinds).
+    /// Stored here so per-command enforcement doesn't need the registry.
+    manifest_observes: Vec<String>,
+    manifest_create_runs: bool,
+    manifest_open_intent_kinds: Vec<String>,
+    /// If true, this app is a trusted orchestrator — capability prompts are
+    /// skipped and the decision is auto-approved as "always_allow".
+    is_orchestrator: bool,
+    /// Pending capability prompt requests collected this frame, to be drained
+    /// by the host (PlexiApp) and shown as a modal to the user.
+    pub pending_capability_prompts: Vec<PendingCapabilityPrompt>,
+    /// Shared permission store for runtime capability decisions.
+    permission_store: Option<Arc<Mutex<crate::app_permissions::PermissionStore>>>,
+}
+
+/// A runtime capability prompt request: the host must show a "Allow / Allow always / Deny"
+/// modal and record the decision before the blocked command can proceed.
+#[derive(Debug, Clone)]
+pub struct PendingCapabilityPrompt {
+    pub app_id: String,
+    pub app_name: String,
+    pub capability: String,
+    pub capability_label: String,
 }
 
 /// Snapshot of an app's state buckets.
@@ -321,7 +344,36 @@ impl ProcessApp {
             pending_cursor: None,
             parent_app_id: parent_app_id.map(|s| s.to_string()),
             transform_stack: Vec::new(),
+            manifest_observes: Vec::new(),
+            manifest_create_runs: true,
+            manifest_open_intent_kinds: vec!["file".into(), "url".into()],
+            is_orchestrator: false,
+            pending_capability_prompts: Vec::new(),
+            permission_store: None,
         })
+    }
+
+    /// Set capability declarations from the app manifest. Called by the host
+    /// after construction so capability enforcement knows what the app declared.
+    pub fn set_manifest_capabilities(
+        &mut self,
+        observes: Vec<String>,
+        create_runs: bool,
+        open_intent_kinds: Vec<String>,
+        is_orchestrator: bool,
+    ) {
+        self.manifest_observes = observes;
+        self.manifest_create_runs = create_runs;
+        self.manifest_open_intent_kinds = open_intent_kinds;
+        self.is_orchestrator = is_orchestrator;
+    }
+
+    /// Wire a shared permission store into this app after construction.
+    pub fn wire_permission_store(
+        &mut self,
+        permission_store: Arc<Mutex<crate::app_permissions::PermissionStore>>,
+    ) {
+        self.permission_store = Some(permission_store);
     }
 
     /// Wire shared infrastructure into this app after construction.
@@ -566,6 +618,56 @@ impl ProcessApp {
     /// Total cost accumulated by this app in the current session.
     pub fn session_cost_usd(&self) -> f64 {
         self.cost_tracker.session_total_usd()
+    }
+
+    /// Check whether this app is allowed to use `capability`. Returns true if
+    /// allowed (declared in manifest, previously approved, or orchestrator).
+    /// If undeclared and no stored decision, queues a `PendingCapabilityPrompt`
+    /// for the host to show the user and returns false (block for now).
+    fn check_capability(&mut self, capability: &str, capability_label: &str, declared: bool) -> bool {
+        // Orchestrators are always allowed.
+        if self.is_orchestrator {
+            return true;
+        }
+        // Manifest-declared capabilities are always allowed.
+        if declared {
+            return true;
+        }
+        // Check the persisted decision store.
+        if let Some(store) = &self.permission_store {
+            let decision = store.lock().unwrap()
+                .check(&self.type_id, capability)
+                .map(|s| s.to_string());
+            match decision.as_deref() {
+                Some("always_allow") => return true,
+                Some("deny") => {
+                    log::info!(
+                        "ProcessApp[{}]: capability '{}' denied (stored decision)",
+                        self.type_id, capability
+                    );
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        // Undeclared and no stored decision — queue a prompt.
+        log::info!(
+            "ProcessApp[{}]: capability '{}' not declared — queuing prompt",
+            self.type_id, capability
+        );
+        // Emit PermissionPrompted event to the bus.
+        crate::event_log::emit(crate::event_log::HostEvent::PermissionPrompted {
+            app_id: self.type_id.clone(),
+            capability: capability.to_string(),
+            timestamp: crate::event_log::now_timestamp(),
+        });
+        self.pending_capability_prompts.push(PendingCapabilityPrompt {
+            app_id: self.type_id.clone(),
+            app_name: self.display_name.clone(),
+            capability: capability.to_string(),
+            capability_label: capability_label.to_string(),
+        });
+        false // block until user responds
     }
 
     fn send_event(&mut self, event: &PlexiEvent) {
@@ -1284,9 +1386,8 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
                 pixels_per_point: ui.ctx().pixels_per_point(),
-                protocol_version: self.protocol_version,
-                open_intent: self.open_intent.clone(),
                 protocol_version: crate::app_protocol::HOST_PROTOCOL_VERSION,
+                open_intent: self.open_intent.clone(),
                 capability_manifest: None,
             });
         }
@@ -1441,21 +1542,41 @@ impl App for ProcessApp {
                     linked,
                     wire_channels,
                 } => {
-                    let target = format!("app::{}", self.type_id);
-                    log::debug!(
-                        target: &target,
-                        "spawn_app requested: target={app_id} parent={parent:?} layout={layout:?} \
-                         lifecycle={lifecycle:?} linked={linked} channels={wire_channels:?}"
-                    );
-                    self.pending_spawns.push(PendingSpawn {
-                        app_id,
-                        args,
-                        parent,
-                        layout,
-                        lifecycle,
-                        linked,
-                        wire_channels,
-                    });
+                    // Validate open_intent_kinds against the app's OpenIntent.
+                    // SpawnApp itself is a "spawn" capability — check the manifest.
+                    let manifest_spawn_kinds = self.manifest_open_intent_kinds.clone();
+                    let declared_spawn = manifest_spawn_kinds.iter().any(|k| k == "*" || k == "spawn");
+                    // If the app has any open_intent_kinds declared (non-default), we
+                    // treat spawn as covered. Default allows spawn unless restricted.
+                    // Only block if the manifest explicitly restricts open_intent_kinds
+                    // to a subset that doesn't include "spawn" AND omits "*".
+                    let spawn_allowed = self.is_orchestrator
+                        || manifest_spawn_kinds.is_empty()
+                        || manifest_spawn_kinds.iter().any(|k| k == "*")
+                        || declared_spawn
+                        || self.check_capability(
+                            "spawn_app",
+                            "spawn other apps",
+                            false,
+                        );
+
+                    if spawn_allowed {
+                        let target = format!("app::{}", self.type_id);
+                        log::debug!(
+                            target: &target,
+                            "spawn_app requested: target={app_id} parent={parent:?} layout={layout:?} \
+                             lifecycle={lifecycle:?} linked={linked} channels={wire_channels:?}"
+                        );
+                        self.pending_spawns.push(PendingSpawn {
+                            app_id,
+                            args,
+                            parent,
+                            layout,
+                            lifecycle,
+                            linked,
+                            wire_channels,
+                        });
+                    }
                 }
                 DrawCommand::PipeWrite { channel, value } => {
                     // Emit event log entry for pipe write.
@@ -1478,6 +1599,16 @@ impl App for ProcessApp {
                     });
                 }
                 DrawCommand::RunCreate { head_task, payload, parent_run_id, notification_title } => {
+                    // Enforce create_runs capability.
+                    let manifest_create_runs = self.manifest_create_runs;
+                    if !self.check_capability("create_runs", "create runs", manifest_create_runs) {
+                        log::info!("ProcessApp[{}]: RunCreate blocked — undeclared capability", self.type_id);
+                        // Send an error back so the app isn't silently hung.
+                        self.send_event(&PlexiEvent::RunCreated {
+                            run_id: "blocked_capability".into(),
+                        });
+                        // Don't execute the RunCreate.
+                    } else {
                     let run_id = if let Some(rs) = &self.run_store {
                         let caller = crate::app_protocol::Caller {
                             app_id: self.type_id.clone(),
@@ -1501,6 +1632,7 @@ impl App for ProcessApp {
                         format!("run_nostore_{}", self.pane_id)
                     };
                     self.pending_back_events.push(PlexiEvent::RunCreated { run_id });
+                    } // end capability check else
                 }
                 DrawCommand::RunUpdate { run_id, status, head_task, payload } => {
                     if let Some(rs) = &self.run_store {
@@ -1524,11 +1656,28 @@ impl App for ProcessApp {
                         });
                     }
                 }
-                DrawCommand::EventSubscribe { kinds: _, scope: _ } => {
-                    // Phase 0 no-op: accepted for forward compatibility.
-                    // Full subscription tracking and EventData delivery will land
-                    // in a follow-up PR once the event routing layer is built.
-                    log::debug!("ProcessApp[{}]: EventSubscribe received (Phase 0 no-op)", self.type_id);
+                DrawCommand::EventSubscribe { kinds, scope: _ } => {
+                    // Enforce observes capability: each requested kind must be
+                    // covered by the manifest's observes list or user must approve.
+                    let manifest_observes = self.manifest_observes.clone();
+                    let all_declared = kinds.iter().all(|k| {
+                        manifest_observes.iter().any(|o| o == "*" || o == k.as_str())
+                    });
+                    if self.check_capability(
+                        "observes",
+                        &format!("observe events: {}", kinds.join(", ")),
+                        all_declared,
+                    ) {
+                        // Phase 0 no-op: accepted for forward compatibility.
+                        // Full subscription tracking and EventData delivery will land
+                        // in a follow-up PR once the event routing layer is built.
+                        log::debug!("ProcessApp[{}]: EventSubscribe received (Phase 0 no-op)", self.type_id);
+                    } else {
+                        log::info!(
+                            "ProcessApp[{}]: EventSubscribe blocked — undeclared observes capability",
+                            self.type_id
+                        );
+                    }
                 }
                 DrawCommand::PipeListWires => {
                     // Response handled at app.rs level; no-op in ProcessApp.
@@ -1664,6 +1813,17 @@ impl App for ProcessApp {
 
     fn take_pipe_writes(&mut self) -> Vec<(String, serde_json::Value)> {
         ProcessApp::take_pipe_writes(self)
+    }
+
+    fn take_pending_capability_prompts(&mut self) -> Vec<PendingCapabilityPrompt> {
+        std::mem::take(&mut self.pending_capability_prompts)
+    }
+
+    fn wire_permission_store(
+        &mut self,
+        store: std::sync::Arc<std::sync::Mutex<crate::app_permissions::PermissionStore>>,
+    ) {
+        self.permission_store = Some(store);
     }
 
     fn send_pipe_data(&mut self, from_app: &str, channel: &str, value: &serde_json::Value) {

@@ -242,6 +242,97 @@ impl PlexiApp {
             });
     }
 
+    /// Show a modal when an app requests a capability it didn't declare.
+    /// Buttons: Allow once / Always allow / Deny.
+    pub(crate) fn draw_capability_prompt_overlay(&mut self, ctx: &egui::Context) {
+        let prompt = match &self.active_capability_prompt {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        // Dark scrim behind the modal.
+        egui::Area::new(egui::Id::new("capability_prompt_scrim"))
+            .anchor(Align2::LEFT_TOP, Vec2::ZERO)
+            .order(egui::Order::Background)
+            .show(ctx, |ui| {
+                let screen = ctx.screen_rect();
+                ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+            });
+
+        let mut decision: Option<&str> = None;
+
+        egui::Area::new(egui::Id::new("capability_prompt_modal"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(20, 16))
+                    .show(ui, |ui| {
+                        ui.set_width(380.0);
+
+                        ui.label(
+                            RichText::new(format!("\"{}\" wants permission", prompt.app_name))
+                                .size(14.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!("Capability: {}", prompt.capability_label))
+                                .size(12.0)
+                                .color(self.colors.text_primary.gamma_multiply(0.65)),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(
+                                "This app did not declare this capability in its manifest.\n\
+                                 \"Always allow\" records the decision so you won't be asked again.",
+                            )
+                            .size(11.0)
+                            .color(self.colors.text_primary.gamma_multiply(0.65)),
+                        );
+
+                        ui.add_space(14.0);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Deny").clicked() {
+                                decision = Some("deny");
+                            }
+                            ui.add_space(6.0);
+                            if ui.button("Always allow").clicked() {
+                                decision = Some("always_allow");
+                            }
+                            ui.add_space(6.0);
+                            if ui.button("Allow once").clicked() {
+                                decision = Some("allow_once");
+                            }
+                        });
+
+                        // Escape = deny.
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            decision = Some("deny");
+                        }
+                    });
+            });
+
+        if let Some(d) = decision {
+            // Persist "always_allow" and "deny" decisions; "allow_once" is ephemeral.
+            if d == "always_allow" || d == "deny" {
+                if let Ok(mut store) = self.permission_store.lock() {
+                    store.record(&prompt.app_id, &prompt.capability, d);
+                }
+            }
+            log::info!(
+                "capability_prompt: app='{}' capability='{}' decision='{}'",
+                prompt.app_id, prompt.capability, d
+            );
+            // Dismiss the modal and advance to the next prompt.
+            self.active_capability_prompt = self.pending_capability_prompts.pop_front();
+        }
+    }
+
     pub(crate) fn draw_rename_pane_overlay(&mut self, ctx: &egui::Context) {
         let pane_id: PaneId = match self.renaming_pane {
             Some(id) => id,

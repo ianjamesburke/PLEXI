@@ -96,6 +96,13 @@ pub struct AppManifestApp {
     pub spawnable: AppSpawnable,
     #[serde(default)]
     pub protocol: Option<AppProtocolSection>,
+    /// Marks this app as a trusted orchestrator (e.g. Plexi IQ). Orchestrators
+    /// are granted full observes / create_runs / open_intent_kinds at install
+    /// time and never see capability prompts. User sees the prompt once at
+    /// install; after that the decision is stored as "always_allow" for all
+    /// capabilities.
+    #[serde(default)]
+    pub is_orchestrator: bool,
 }
 
 fn default_protocol_version_manifest() -> u32 {
@@ -486,6 +493,11 @@ impl AppRegistry {
 
         let protocol_version = installed.manifest.protocol_version;
         let mouse_tracking = installed.manifest.capabilities.mouse_tracking;
+        let observes = installed.manifest.observes.clone();
+        let create_runs = installed.manifest.create_runs;
+        let open_intent_kinds = installed.manifest.open_intent_kinds.clone();
+        let is_orchestrator = installed.manifest.is_orchestrator;
+
         match ProcessApp::launch_with_intent(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -499,7 +511,10 @@ impl AppRegistry {
             mouse_tracking,
             parent_app_id,
         ) {
-            Ok(app) => {
+            Ok(mut app) => {
+                // Wire manifest-declared capability declarations so the runtime
+                // enforcer knows what this app is allowed to do without prompting.
+                app.set_manifest_capabilities(observes, create_runs, open_intent_kinds, is_orchestrator);
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);
                 Some(Box::new(app))
             }

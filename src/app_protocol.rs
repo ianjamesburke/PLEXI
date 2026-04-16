@@ -425,6 +425,7 @@ pub enum SubscribeScope {
     Workspace,
     Pane,
     Group,
+}
 /// How a render request should behave.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]

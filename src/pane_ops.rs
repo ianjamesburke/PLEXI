@@ -696,11 +696,15 @@ impl PlexiApp {
     /// to the app's `scope`.
     pub(crate) fn open_app_on_focused_with_launch(
         &mut self,
-        app: Box<dyn App>,
+        mut app: Box<dyn App>,
         permissions: crate::app_permissions::AppPermissions,
         scope: PathBuf,
         launch: Option<crate::app_registry::AppLaunchConfig>,
     ) {
+        // Wire the shared permission store so ProcessApps can consult recorded
+        // capability decisions without going through the host each frame.
+        app.wire_permission_store(self.permission_store.clone());
+
         let Some(focused) = self.contexts[self.active_context].focused_pane else {
             return;
         };

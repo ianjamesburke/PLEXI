@@ -56,7 +56,7 @@ Everything on `main` plus:
 |---|---|
 | Rich notification actions (extends #219) | Notifications can wrap and resume a Run |
 | Render summary protocol | Parent depths can request cheap status without full embedded rendering |
-| Capability enforcement + `permissions.json` | Runtime Yes once / Yes always / No; persistent grants |
+| Capability enforcement + `permissions.json` ✅ | Runtime Yes once / Yes always / No; persistent grants |
 | Typed pipes Phase 1 — manifest `[app.io]`, auto-wire | Apps compose without code changes |
 
 ### Month 3 — Intelligence
