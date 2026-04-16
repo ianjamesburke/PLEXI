@@ -11,7 +11,7 @@ Controls (list view):
 
 Controls (detail view):
   o        Open URL in browser
-  Enter    Back to list
+  Esc      Back to list (Backspace also works)
 """
 
 import json
@@ -263,7 +263,7 @@ def _render_detail(ctx):
         [
             ("j/k", "scroll"),
             ("o", "open URL"),
-            ("Enter", "back"),
+            ("Esc", "back"),
             ("⌘W", "close"),
         ],
     )
@@ -292,7 +292,7 @@ def on_key(key: str, _mods: dict, _emit):
             detail_scroll += 1
         elif key in ("k", "ArrowUp"):
             detail_scroll = max(0, detail_scroll - 1)
-        elif key == "Enter":
+        elif key in ("Escape", "Backspace", "Enter"):
             view = VIEW_LIST
             detail = None
             detail_scroll = 0

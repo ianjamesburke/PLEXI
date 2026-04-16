@@ -1285,7 +1285,6 @@ impl App for ProcessApp {
                 height: size.y,
                 pixels_per_point: ui.ctx().pixels_per_point(),
                 open_intent: self.open_intent.clone(),
-                protocol_version: crate::app_protocol::HOST_PROTOCOL_VERSION,
                 capability_manifest: None,
             });
         }
