@@ -740,8 +740,21 @@ impl eframe::App for PlexiApp {
                 .unwrap_or(false)
         };
 
-        // Handle keyboard shortcuts
-        for action in keys::poll_actions(ctx, app_active) {
+        // Handle keyboard shortcuts — skip global key routing when the command
+        // palette is open so it gets exclusive keyboard focus. The palette
+        // handles Escape/Arrow/Enter itself via ctx.input_mut inside
+        // draw_command_palette. We do still consume Cmd+P here to allow
+        // toggling the palette off while it is open.
+        if self.show_command_palette {
+            let toggled_off = ctx.input_mut(|input| {
+                input.consume_key(egui::Modifiers::COMMAND, egui::Key::P)
+            });
+            if toggled_off {
+                self.show_command_palette = false;
+                self.palette_query.clear();
+            }
+        }
+        for action in if self.show_command_palette { vec![] } else { keys::poll_actions(ctx, app_active) } {
             // Log all actions at debug level (noise filter: skip high-frequency navigation/scroll).
             match &action {
                 keys::Action::Navigate(_) | keys::Action::ScrollUp | keys::Action::ScrollDown => {}

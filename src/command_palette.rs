@@ -309,12 +309,14 @@ impl PlexiApp {
                             ui.label(RichText::new("No matching panes or apps").size(11.0).color(self.colors.text_dim));
                         }
 
-                        }); // end ScrollArea
-
-                        // Scroll to keep selected row visible
+                        // Scroll to keep selected row visible — must be called
+                        // inside the ScrollArea closure so it targets this
+                        // scroll area's viewport, not the outer egui Area.
                         if let Some(rect) = selected_rect {
                             ui.scroll_to_rect(rect, None);
                         }
+
+                        }); // end ScrollArea
 
 
                         if let Some(act) = click_action {
