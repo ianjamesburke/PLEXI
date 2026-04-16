@@ -186,6 +186,70 @@ fn main() -> eframe::Result {
                     }
                 }
             }
+            // `plexi secrets` — v2.0 plural form with --global, unset, which
+            "secrets" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi secrets <set|unset|list|which> [--global] [key]");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "set" => {
+                        // plexi secrets set [--global] <KEY>
+                        let mut global = false;
+                        let mut key = "";
+                        let mut i = 3;
+                        while i < args.len() {
+                            if args[i] == "--global" {
+                                global = true;
+                                i += 1;
+                            } else {
+                                key = args[i].as_str();
+                                i += 1;
+                            }
+                        }
+                        if key.is_empty() {
+                            eprintln!("Usage: plexi secrets set [--global] <KEY>");
+                            std::process::exit(1);
+                        }
+                        std::process::exit(cli::secrets_set(global, key));
+                    }
+                    "unset" => {
+                        // plexi secrets unset [--global] <KEY>
+                        let mut global = false;
+                        let mut key = "";
+                        let mut i = 3;
+                        while i < args.len() {
+                            if args[i] == "--global" {
+                                global = true;
+                                i += 1;
+                            } else {
+                                key = args[i].as_str();
+                                i += 1;
+                            }
+                        }
+                        if key.is_empty() {
+                            eprintln!("Usage: plexi secrets unset [--global] <KEY>");
+                            std::process::exit(1);
+                        }
+                        std::process::exit(cli::secrets_unset(global, key));
+                    }
+                    "list" => {
+                        std::process::exit(cli::secrets_list());
+                    }
+                    "which" => {
+                        if args.len() < 4 {
+                            eprintln!("Usage: plexi secrets which <KEY>");
+                            std::process::exit(1);
+                        }
+                        std::process::exit(cli::secrets_which(&args[3]));
+                    }
+                    other => {
+                        eprintln!("Unknown secrets subcommand: {other}");
+                        eprintln!("Usage: plexi secrets <set|unset|list|which> [--global] [key]");
+                        std::process::exit(1);
+                    }
+                }
+            }
             "app" => {
                 if args.len() < 3 {
                     eprintln!("Usage: plexi app <init|install|uninstall|list> [options]");

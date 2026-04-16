@@ -4,6 +4,10 @@ use zeroize::Zeroizing;
 
 const SERVICE_NAME: &str = "plexi";
 
+/// Sentinel directory value used to represent a globally-scoped secret.
+/// Must not be a valid filesystem path on any platform.
+pub const GLOBAL_SCOPE: &str = "__global__";
+
 /// A parsed Keychain entry stored under service="plexi".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretEntry {
@@ -183,8 +187,41 @@ pub fn list_all_secrets() -> Vec<SecretEntry> {
     read_index()
 }
 
+/// List secrets visible in a given directory: global secrets plus any scoped
+/// to that exact directory path. Names only — no values.
+pub fn list_secrets_for_dir(app_id: &str, directory: &str) -> Vec<SecretEntry> {
+    read_index()
+        .into_iter()
+        .filter(|e| {
+            e.app_id == app_id
+                && (e.directory == GLOBAL_SCOPE || e.directory == directory)
+        })
+        .collect()
+}
+
+/// Returns which scope ("global" or the directory path) a key resolves from,
+/// or `None` if not found. Does not return the value.
+pub fn which_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<String> {
+    let index = read_index();
+    // Directory-scoped wins over global.
+    let dir_match = index.iter().find(|e| {
+        e.key == key && e.app_id == app_id && e.directory == launch_dir
+    });
+    if dir_match.is_some() {
+        return Some(launch_dir.to_string());
+    }
+    let global_match = index.iter().find(|e| {
+        e.key == key && e.app_id == app_id && e.directory == GLOBAL_SCOPE
+    });
+    if global_match.is_some() {
+        return Some("global".to_string());
+    }
+    None
+}
+
 /// Walk up from `launch_dir` to the user's home directory, returning the first
-/// matching secret. Returns `None` if no match is found at any level.
+/// matching secret. Falls through to global scope if no directory match found.
+/// Returns `None` if no match is found at any scope.
 #[cfg(target_os = "macos")]
 pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
     use std::path::PathBuf;
@@ -214,7 +251,8 @@ pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroi
         }
     }
 
-    None
+    // Fall through to global scope.
+    retrieve_secret(key, app_id, GLOBAL_SCOPE)
 }
 
 // ── Non-macOS stubs ────────────────────────────────────────────────────
