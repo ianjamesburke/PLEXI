@@ -5,7 +5,10 @@ pub struct QuickNoteApp {
     text: String,
     saved: bool,
     pending_cmds: Vec<AppCommand>,
-    focus_set: bool,
+    /// Tracks whether the pane was focused on the previous frame. When the pane
+    /// gains focus (transitions from unfocused → focused), we re-request egui
+    /// focus on the TextEdit so typing works immediately after Cmd+H/J/K/L.
+    was_pane_focused: bool,
     /// Set to true after save — signals the host to close the app.
     pub should_close: bool,
 }
@@ -16,7 +19,7 @@ impl QuickNoteApp {
             text: String::new(),
             saved: false,
             pending_cmds: Vec::new(),
-            focus_set: false,
+            was_pane_focused: false,
             should_close: false,
         }
     }
@@ -73,6 +76,13 @@ impl App for QuickNoteApp {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let colors = ctx.colors;
 
+        // Re-request egui focus whenever the pane becomes the active one.
+        // `was_pane_focused` lets us detect the rising edge (unfocused → focused)
+        // so we don't fight egui every frame — only on the first frame after focus
+        // moves here (e.g. via Cmd+H/J/K/L).
+        let pane_just_focused = ctx.is_focused && !self.was_pane_focused;
+        self.was_pane_focused = ctx.is_focused;
+
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
 
@@ -125,9 +135,10 @@ impl App for QuickNoteApp {
                     ),
             );
 
-            if !self.focus_set {
+            // Request focus on first render OR whenever the pane regains focus
+            // (e.g. after Cmd+H/J/K/L navigates back to this pane).
+            if pane_just_focused {
                 response.request_focus();
-                self.focus_set = true;
             }
         });
     }
