@@ -222,7 +222,7 @@ These are integration-layer issues. They require the protocol surface (Phase 1) 
   - Parallel with: #212, #214
   - Done looks like: `plexi open parallax` in a Parallax project opens the viewer pane alongside a linked terminal; the in-app chat UI is removed
 
-- [ ] #215 Parallax: migrate env-var secrets to SecretGet API
+- [x] #215 Parallax: migrate env-var secrets to SecretGet API
   - Blocks: nothing downstream
   - Parallel with: nothing in Phase 4 (depends on #247 in Phase 3, #113 above)
   - Done looks like: Parallax session starts without `ANTHROPIC_API_KEY` in the environment; it fetches the key via `SecretGet` at runtime; `.env` file is no longer required
