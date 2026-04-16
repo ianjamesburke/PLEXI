@@ -156,6 +156,21 @@ pub trait App: Send {
 
     /// Trigger redo (pop next state from redo stack and restore).
     fn redo(&mut self) {}
+
+    /// Drain any pending capability prompt requests the app queued this frame.
+    /// The host (PlexiApp) calls this each frame and shows the modal to the user.
+    /// Default returns empty — only `ProcessApp` overrides this.
+    fn take_pending_capability_prompts(&mut self) -> Vec<crate::process_app::PendingCapabilityPrompt> {
+        vec![]
+    }
+
+    /// Wire the shared permission store into this app so it can consult
+    /// previously-recorded decisions without going through the host each frame.
+    /// Default no-op — only `ProcessApp` needs this.
+    fn wire_permission_store(
+        &mut self,
+        _store: std::sync::Arc<std::sync::Mutex<crate::app_permissions::PermissionStore>>,
+    ) {}
 }
 
 /// Whether the app surface or the terminal command bar has keyboard focus.
