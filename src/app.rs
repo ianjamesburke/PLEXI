@@ -78,6 +78,15 @@ impl PlexiApp {
         let cwd = std::env::current_dir().unwrap_or_default();
         let registry = AppRegistry::load(&cwd);
 
+        // Initialize the global event log. Global path is always under config_dir().
+        // Workspace path is detected by walking up from the current working directory.
+        {
+            let global_events_path = config::config_dir().join("events.jsonl");
+            let workspace_events_path = crate::event_log::find_workspace_events_path(&cwd);
+            crate::event_log::init_global(global_events_path, workspace_events_path);
+            log::debug!("event_log: initialized");
+        }
+
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut contexts = Vec::new();

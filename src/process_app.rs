@@ -890,6 +890,7 @@ impl ProcessApp {
                 | DrawCommand::PipeWrite { .. }
                 | DrawCommand::PipeSubscribe { .. }
                 | DrawCommand::SecretGet { .. }
+                | DrawCommand::EventSubscribe { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1328,6 +1329,12 @@ impl App for ProcessApp {
                 }
                 DrawCommand::PipeSubscribe { channel: _ } => {
                     // Phase 0 no-op: silently consume. Forward-compat only.
+                }
+                DrawCommand::EventSubscribe { kinds: _, scope: _ } => {
+                    // Phase 0 no-op: accepted for forward compatibility.
+                    // Full subscription tracking and EventData delivery will land
+                    // in a follow-up PR once the event routing layer is built.
+                    log::debug!("ProcessApp[{}]: EventSubscribe received (Phase 0 no-op)", self.type_id);
                 }
                 DrawCommand::SecretGet { name } => {
                     // Resolve against the Keychain, walking up from the app's launch
