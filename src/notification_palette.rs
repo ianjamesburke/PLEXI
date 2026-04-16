@@ -1,9 +1,14 @@
 /// Notification palette — Cmd+Shift+N.
 ///
-/// Minimum viable UI: lists all notifications newest-first, shows priority
-/// dot + source_app + title + time, click to mark read, keyboard nav.
+/// Lists notifications newest-first (top section) and backlog notes from
+/// `~/.plexi-alpha/backlog/` (bottom section, urgency = "backlog").
+/// Backlog items are scanned fresh each time the palette opens; dismissing
+/// one moves the `.md` file to `backlog/.dismissed/`.
+///
 /// Separate from `command_palette.rs` so the list/filter logic stays
 /// independent. Modeled structurally on the command palette.
+
+use std::path::PathBuf;
 
 use egui::{Align, Align2, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 
@@ -11,6 +16,108 @@ use crate::app::PlexiApp;
 use crate::app_protocol::NotificationAction;
 use crate::notification_log::{self, Notification};
 use crate::overlays::MODAL_WIDTH;
+
+/// A backlog note scanned from `~/.plexi-alpha/backlog/`.
+#[derive(Clone, Debug)]
+struct BacklogItem {
+    /// Filename (no directory prefix) — used as a stable ID for dismiss.
+    filename: String,
+    /// Full path to the file (for dismiss/move operations).
+    path: PathBuf,
+    /// First non-empty, non-header line used as the display title.
+    title: String,
+    /// File modification time, displayed as a relative age.
+    modified: std::time::SystemTime,
+}
+
+/// Scan `~/.plexi-alpha/backlog/` for `.md` files. Returns items sorted
+/// oldest-first (by mtime) so the user naturally sees stale notes near the
+/// top and recent ones at the bottom. Skips `.dismissed/` subdirectory.
+fn scan_backlog() -> Vec<BacklogItem> {
+    let dir = crate::config::config_dir().join("backlog");
+    let mut items: Vec<BacklogItem> = Vec::new();
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return items, // dir doesn't exist yet — normal on first run
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only `.md` files at the top level (not `.dismissed/`)
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+
+        let filename = match path.file_name().and_then(|f| f.to_str()) {
+            Some(f) => f.to_string(),
+            None => continue,
+        };
+
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+
+        // Extract title: skip the `# Quick Note — …` header, use next non-empty line.
+        let title = extract_backlog_title(&path);
+
+        items.push(BacklogItem { filename, path, title, modified });
+    }
+
+    // Oldest first so long-ignored notes rise to the top.
+    items.sort_by_key(|i| i.modified);
+    items
+}
+
+/// Read the file and return the first non-empty, non-`#`-prefixed line as the
+/// display title. Falls back to the filename stem if the file can't be parsed.
+fn extract_backlog_title(path: &PathBuf) -> String {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let title = trimmed.to_string();
+        return if title.len() > 80 { format!("{}…", &title[..79]) } else { title };
+    }
+    // Fallback: filename without extension.
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("note")
+        .to_string()
+}
+
+/// Move a backlog file to `backlog/.dismissed/<filename>`.
+fn dismiss_backlog_file(path: &PathBuf) {
+    let dismissed_dir = match path.parent() {
+        Some(p) => p.join(".dismissed"),
+        None => {
+            log::warn!("backlog_dismiss: no parent dir for {:?}", path);
+            return;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dismissed_dir) {
+        log::warn!("backlog_dismiss: failed to create .dismissed dir: {e}");
+        return;
+    }
+    let filename = match path.file_name() {
+        Some(f) => f,
+        None => {
+            log::warn!("backlog_dismiss: no filename in {:?}", path);
+            return;
+        }
+    };
+    let dest = dismissed_dir.join(filename);
+    match std::fs::rename(path, &dest) {
+        Ok(()) => log::info!("backlog_dismiss: moved {:?} → {:?}", path, dest),
+        Err(e) => log::warn!("backlog_dismiss: rename failed: {e}"),
+    }
+}
 
 impl PlexiApp {
     pub(crate) fn draw_notification_palette(&mut self, ctx: &egui::Context) {
@@ -33,8 +140,12 @@ impl PlexiApp {
             .collect();
         ordered.reverse();
 
+        // Scan backlog dir fresh each open — cheap, and avoids needing a watcher.
+        let backlog_items: Vec<BacklogItem> = scan_backlog();
+
         let total = ordered.len();
-        if self.notification_palette_selected >= total.max(1) {
+        let total_rows = total + backlog_items.len();
+        if self.notification_palette_selected >= total_rows.max(1) {
             self.notification_palette_selected = 0;
         }
 
@@ -46,6 +157,8 @@ impl PlexiApp {
             /// Enter pressed: dispatch based on the selected notification's
             /// `action_type`, then mark it read and close.
             ActivateSelected,
+            /// Dismiss the backlog item at the given index in `backlog_items`.
+            DismissBacklog(usize),
         }
         let mut action: Option<Action> = None;
 
@@ -54,8 +167,8 @@ impl PlexiApp {
                 action = Some(Action::Close);
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                && total > 0
-                && self.notification_palette_selected + 1 < total
+                && total_rows > 0
+                && self.notification_palette_selected + 1 < total_rows
             {
                 self.notification_palette_selected += 1;
             }
@@ -64,17 +177,30 @@ impl PlexiApp {
             {
                 self.notification_palette_selected -= 1;
             }
-            // Enter → dispatch action_type; Delete/Backspace → mark read only.
+            // Enter on a notification → dispatch action; on a backlog item → open in editor.
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                && self.notification_palette_selected < total
+                && self.notification_palette_selected < total_rows
             {
                 action = Some(Action::ActivateSelected);
             }
-            let want_mark = input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+            // Delete/Backspace on notification → mark read; on backlog item → dismiss.
+            let want_dismiss = input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
                 || input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace);
-            if want_mark && self.notification_palette_selected < total {
-                let (log_idx, _) = ordered[self.notification_palette_selected];
-                action = Some(Action::MarkReadAt(log_idx));
+            if want_dismiss && self.notification_palette_selected < total_rows {
+                let sel = self.notification_palette_selected;
+                if sel < total {
+                    let (log_idx, _) = ordered[sel];
+                    action = Some(Action::MarkReadAt(log_idx));
+                } else {
+                    action = Some(Action::DismissBacklog(sel - total));
+                }
+            }
+            // `d` also dismisses a focused backlog item (matches the backlog-triage UX).
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::D)
+                && self.notification_palette_selected >= total
+                && self.notification_palette_selected < total_rows
+            {
+                action = Some(Action::DismissBacklog(self.notification_palette_selected - total));
             }
         });
 
@@ -130,7 +256,7 @@ impl PlexiApp {
                         });
                         ui.add_space(6.0);
 
-                        if ordered.is_empty() {
+                        if ordered.is_empty() && backlog_items.is_empty() {
                             ui.label(
                                 RichText::new("No notifications yet")
                                     .size(11.0)
@@ -143,6 +269,7 @@ impl PlexiApp {
                             .max_height(360.0)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
+                                // ── Notifications ──────────────────────────
                                 for (row_idx, (log_idx, n)) in ordered.iter().enumerate() {
                                     let is_selected = row_idx == self.notification_palette_selected;
                                     let fill = if is_selected {
@@ -258,6 +385,95 @@ impl PlexiApp {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     }
                                 }
+
+                                // ── Backlog items ──────────────────────────
+                                if !backlog_items.is_empty() {
+                                    if !ordered.is_empty() {
+                                        ui.add_space(6.0);
+                                        ui.separator();
+                                        ui.add_space(4.0);
+                                    }
+                                    ui.label(
+                                        RichText::new("Backlog")
+                                            .size(10.0)
+                                            .color(self.colors.text_section)
+                                            .strong(),
+                                    );
+                                    ui.add_space(4.0);
+
+                                    for (bl_idx, item) in backlog_items.iter().enumerate() {
+                                        let row_idx = total + bl_idx;
+                                        let is_selected = row_idx == self.notification_palette_selected;
+                                        let fill = if is_selected {
+                                            self.colors.bg_active
+                                        } else {
+                                            Color32::TRANSPARENT
+                                        };
+
+                                        let row_rect = Rect::from_min_size(
+                                            ui.cursor().min,
+                                            Vec2::new(MODAL_WIDTH, 42.0),
+                                        );
+                                        ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
+
+                                        // Backlog dot: dim gray (lowest urgency).
+                                        ui.painter().circle_filled(
+                                            egui::pos2(row_rect.min.x + 12.0, row_rect.min.y + 21.0),
+                                            4.0,
+                                            self.colors.text_section,
+                                        );
+
+                                        ui.allocate_ui_with_layout(
+                                            Vec2::new(MODAL_WIDTH, 42.0),
+                                            Layout::left_to_right(Align::Center),
+                                            |ui| {
+                                                ui.add_space(24.0);
+                                                ui.vertical(|ui| {
+                                                    ui.add_space(4.0);
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new("backlog")
+                                                                .size(10.0)
+                                                                .color(self.colors.text_section),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new("\u{203A}")
+                                                                .size(10.0)
+                                                                .color(self.colors.text_dim),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(&item.title)
+                                                                .size(12.0)
+                                                                .color(self.colors.text_primary),
+                                                        );
+                                                    });
+                                                    let age = format_age(item.modified);
+                                                    ui.label(
+                                                        RichText::new(format!("{age}  ·  d to dismiss"))
+                                                            .size(9.0)
+                                                            .color(self.colors.text_dim),
+                                                    );
+                                                });
+                                            },
+                                        );
+
+                                        let r = ui.interact(
+                                            row_rect,
+                                            egui::Id::new(("backlog_row", bl_idx)),
+                                            egui::Sense::click(),
+                                        );
+                                        if r.clicked() {
+                                            // Open the note in the system editor on click.
+                                            let p = item.path.clone();
+                                            if let Err(e) = std::process::Command::new("open").arg(&p).spawn() {
+                                                log::warn!("backlog: failed to open {:?}: {e}", p);
+                                            }
+                                        }
+                                        if r.hovered() {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        }
+                                    }
+                                }
                             });
                     });
             });
@@ -282,13 +498,31 @@ impl PlexiApp {
                 }
             }
             Some(Action::ActivateSelected) => {
-                if self.notification_palette_selected < total {
-                    let (log_idx, ref n) = ordered[self.notification_palette_selected];
+                let sel = self.notification_palette_selected;
+                if sel < total {
+                    let (log_idx, ref n) = ordered[sel];
                     dispatch_notification_action(self, n);
                     if let Ok(mut log) = notification_log::global().lock() {
                         log.mark_read(log_idx);
                     }
                     self.show_notification_palette = false;
+                } else {
+                    // Backlog item selected: open in system editor.
+                    let bl_idx = sel - total;
+                    if let Some(item) = backlog_items.get(bl_idx) {
+                        if let Err(e) = std::process::Command::new("open").arg(&item.path).spawn() {
+                            log::warn!("backlog: failed to open {:?}: {e}", item.path);
+                        }
+                    }
+                }
+            }
+            Some(Action::DismissBacklog(bl_idx)) => {
+                if let Some(item) = backlog_items.get(bl_idx) {
+                    dismiss_backlog_file(&item.path);
+                }
+                // Adjust selection so it doesn't go out of bounds after dismiss.
+                if self.notification_palette_selected > 0 {
+                    self.notification_palette_selected -= 1;
                 }
             }
             None => {}
@@ -357,4 +591,19 @@ fn dispatch_notification_action(app: &mut PlexiApp, n: &Notification) {
 fn format_time(ts: &chrono::DateTime<chrono::Utc>) -> String {
     let local: chrono::DateTime<chrono::Local> = chrono::DateTime::from(*ts);
     local.format("%H:%M:%S").to_string()
+}
+
+/// Format a `SystemTime` as a human-readable age (e.g. "2h ago", "3d ago").
+fn format_age(modified: std::time::SystemTime) -> String {
+    let elapsed = modified.elapsed().unwrap_or_default();
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
 }
