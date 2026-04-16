@@ -994,6 +994,7 @@ impl ProcessApp {
                 | DrawCommand::RunCreate { .. }
                 | DrawCommand::RunUpdate { .. }
                 | DrawCommand::RunComplete { .. }
+                | DrawCommand::RunGet { .. }
                 | DrawCommand::EventSubscribe { .. }
                 | DrawCommand::PipeListWires
                 | DrawCommand::PushTransform { .. }
@@ -1284,6 +1285,7 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
                 pixels_per_point: ui.ctx().pixels_per_point(),
+                protocol_version: crate::app_protocol::HOST_PROTOCOL_VERSION,
                 open_intent: self.open_intent.clone(),
                 capability_manifest: None,
             });
@@ -1507,6 +1509,12 @@ impl App for ProcessApp {
                             timestamp: crate::event_log::now_timestamp(),
                         });
                     }
+                }
+                DrawCommand::RunGet { run_id } => {
+                    let run = self.run_store.as_ref()
+                        .and_then(|rs| rs.lock().ok())
+                        .and_then(|store| store.get(&run_id).cloned());
+                    self.send_event(&PlexiEvent::RunState { run_id, run });
                 }
                 DrawCommand::EventSubscribe { kinds: _, scope: _ } => {
                     // Phase 0 no-op: accepted for forward compatibility.

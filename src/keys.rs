@@ -89,6 +89,8 @@ pub enum Action {
     AppRedo,
     /// Open the notification palette (shows unread notifications).
     ToggleNotificationPalette,
+    /// Open the run palette (shows active and recent runs).
+    ToggleRunPalette,
     /// Ascend one depth level in the Z-axis (Cmd+Escape).
     AscendDepth,
     /// Toggle lock on the focused pane (prevents Cmd+W close).
@@ -167,6 +169,7 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         Binding { key: egui::Key::P, modifiers: cmd, guard: Guard::Always, action: || Action::ToggleCommandPalette },
         Binding { key: egui::Key::R, modifiers: cmd_shift, guard: Guard::Always, action: || Action::RenamePane },
         Binding { key: egui::Key::N, modifiers: cmd_shift, guard: Guard::Always, action: || Action::ToggleNotificationPalette },
+        Binding { key: egui::Key::U, modifiers: cmd_shift, guard: Guard::Always, action: || Action::ToggleRunPalette },
         Binding { key: egui::Key::N, modifiers: cmd, guard: Guard::Always, action: || Action::NewContext },
         // Scroll
         Binding { key: egui::Key::ArrowUp, modifiers: cmd, guard: Guard::Always, action: || Action::ScrollUp },

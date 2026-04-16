@@ -49,7 +49,7 @@ Everything on `main` plus:
 | Host event bus (`events.jsonl`) | Cross-app observation; required by everything downstream |
 | Fractal depth tree POC (#260) | `.plexi` boundaries are discoverable and visible before embedded rendering |
 | `OpenIntent` payload on `Init` | Apps know *why* they were opened (file, prompt, caller) |
-| `Run` primitive — dumb store, draw commands | Stateful multi-step tasks with blocked/running/done lifecycle |
+| `Run` primitive — dumb store, draw commands | Stateful multi-step tasks with blocked/running/done lifecycle | **Done** (#228) |
 
 ### Month 2 — Surface
 | Item | Unlocks |

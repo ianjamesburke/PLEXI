@@ -92,6 +92,8 @@ mod notification_palette;
 #[cfg(not(target_arch = "wasm32"))]
 mod notify_socket;
 #[cfg(not(target_arch = "wasm32"))]
+mod run_palette;
+#[cfg(not(target_arch = "wasm32"))]
 mod overlays;
 #[cfg(not(target_arch = "wasm32"))]
 mod pane;

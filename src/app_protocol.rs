@@ -146,6 +146,12 @@ pub enum PlexiEvent {
     Shutdown,
     /// A Run was created; the run_id is returned to the requesting app.
     RunCreated { run_id: String },
+    /// Response to a RunGet request — the current state of a run.
+    RunState {
+        run_id: String,
+        /// `None` if the run_id was not found.
+        run: Option<Run>,
+    },
     /// A value arrived on a named pipe channel from another app.
     ///
     /// Sent by the host when a connected app (parent or child via spawn
@@ -824,6 +830,8 @@ pub enum DrawCommand {
         run_id: String,
         outcome: RunOutcome,
     },
+    /// Fetch the current state of a run by id. Plexi responds with `PlexiEvent::RunState`.
+    RunGet { run_id: String },
     /// List active pipe wires.
     PipeListWires,
     /// Push a transform onto the transform stack.
