@@ -454,10 +454,38 @@ impl FileBrowserApp {
         self.save_text_preview_if_dirty();
         self.text_preview_path = Some(path.to_path_buf());
         self.text_preview_dirty = false;
-        match fs::read_to_string(path) {
-            Ok(text) => {
-                self.text_preview_saved_body = Some(text.clone());
-                self.text_preview_body = Some(text);
+
+        // Cap preview reads at 64 KB to avoid blocking the UI thread on large
+        // files (e.g. DJI debug logs, core dumps). Files over the limit show a
+        // truncation notice at the end.
+        const MAX_PREVIEW_BYTES: u64 = 64 * 1024;
+        let text = match std::fs::File::open(path) {
+            Err(e) => Err(e.to_string()),
+            Ok(file) => {
+                let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                use std::io::Read;
+                let mut reader = std::io::BufReader::new(file);
+                let mut buf = Vec::with_capacity(MAX_PREVIEW_BYTES.min(file_len) as usize);
+                let mut handle = reader.by_ref().take(MAX_PREVIEW_BYTES);
+                match handle.read_to_end(&mut buf) {
+                    Err(e) => Err(e.to_string()),
+                    Ok(_) => {
+                        let mut s = String::from_utf8_lossy(&buf).into_owned();
+                        if file_len > MAX_PREVIEW_BYTES {
+                            s.push_str(&format!(
+                                "\n\n[… truncated — file is {:.1} MB, showing first 64 KB]",
+                                file_len as f64 / 1_048_576.0
+                            ));
+                        }
+                        Ok(s)
+                    }
+                }
+            }
+        };
+        match text {
+            Ok(t) => {
+                self.text_preview_saved_body = Some(t.clone());
+                self.text_preview_body = Some(t);
             }
             Err(e) => {
                 self.text_preview_body = Some(format!("Error: {e}"));
