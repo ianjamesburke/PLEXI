@@ -510,6 +510,28 @@ impl ProcessApp {
     }
 
     fn send_event(&mut self, event: &PlexiEvent) {
+        // Debug-mode event tracing. Render/Resize are excluded — they fire every
+        // frame and would bury actual signal. Everything else (keys, clicks, init,
+        // commands, pipe data) is logged so bugs can be reproduced from the log.
+        if log::log_enabled!(log::Level::Debug) {
+            match event {
+                PlexiEvent::Render { .. } | PlexiEvent::Resize { .. } => {}
+                PlexiEvent::Key { key, modifiers } => {
+                    let mods = {
+                        let mut parts = Vec::new();
+                        if modifiers.shift { parts.push("Shift"); }
+                        if modifiers.alt   { parts.push("Alt"); }
+                        if modifiers.ctrl  { parts.push("Ctrl"); }
+                        if parts.is_empty() { String::new() } else { format!("{}+", parts.join("+")) }
+                    };
+                    log::debug!("app[{}]: key {}{}", self.type_id, mods, key);
+                }
+                _ => {
+                    log::debug!("app[{}]: event {:?}", self.type_id, event);
+                }
+            }
+        }
+
         let Some(stdin) = self.stdin.as_mut() else {
             return;
         };

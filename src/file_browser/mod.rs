@@ -1066,6 +1066,7 @@ impl App for FileBrowserApp {
 
         // Cmd+Backspace — move the selected file to the Trash.
         if input.modifiers.command && input.key_pressed(egui::Key::Backspace) {
+            log::debug!("file_browser: key Cmd+Backspace → trash selected {:?}", self.selected_entry().map(|e| &e.path));
             self.trash_selected();
             return true;
         }
@@ -1077,38 +1078,46 @@ impl App for FileBrowserApp {
             self.selected = (self.selected + 1).min(last);
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key J/↓ → selected {}/{}", self.selected, last);
         }
         if input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::K) {
             self.selected = self.selected.saturating_sub(1);
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key K/↑ → selected {}/{}", self.selected, last);
         }
         if input.key_pressed(egui::Key::Home) {
             self.selected = 0;
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key Home → selected 0");
         }
         if input.key_pressed(egui::Key::End) {
             self.selected = last;
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key End → selected {}", last);
         }
         if input.key_pressed(egui::Key::PageDown) {
             self.selected = (self.selected + 10).min(last);
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key PageDown → selected {}", self.selected);
         }
         if input.key_pressed(egui::Key::PageUp) {
             self.selected = self.selected.saturating_sub(10);
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key PageUp → selected {}", self.selected);
         }
 
         if !input.modifiers.command && (input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::L)) {
             if let Some(entry) = self.selected_entry().cloned() {
                 if entry.is_dir {
+                    log::debug!("file_browser: key Enter/→/L → navigate into {:?}", entry.path);
                     self.navigate_into(entry.path);
                 } else {
+                    log::debug!("file_browser: key Enter/→/L → open file {:?}", entry.path);
                     self.open_file(entry.path);
                 }
             }
@@ -1116,6 +1125,7 @@ impl App for FileBrowserApp {
         }
 
         if !input.modifiers.command && (input.key_pressed(egui::Key::Backspace) || input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::H)) {
+            log::debug!("file_browser: key Backspace/←/H → navigate up from {:?}", self.current_dir());
             self.navigate_up();
             consumed = true;
         }
@@ -1127,11 +1137,13 @@ impl App for FileBrowserApp {
             };
             self.refresh();
             consumed = true;
+            log::debug!("file_browser: key S → sort mode {:?}", self.sort_mode);
         }
 
         if input.key_pressed(egui::Key::R) {
             self.refresh();
             consumed = true;
+            log::debug!("file_browser: key R → refresh {:?}", self.current_dir());
         }
 
         if input.key_pressed(egui::Key::Space) {

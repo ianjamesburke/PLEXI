@@ -1,5 +1,9 @@
 Always confirm best practices by researching the docs.
 
+## Terminology
+
+**PGAP** — Plexi Generic App Protocol. The newline-delimited JSON protocol over stdin/stdout that all Plexi apps and nested instances communicate through. Defined in `src/app_protocol.rs`. `PlexiEvent` flows Plexi→app, `DrawCommand` flows app→Plexi. PGAP is the isolation boundary — every capability request, draw command, and input event passes through it. No shared memory, no inherited file descriptors. When we say "PGAP boundary" or "PGAP pipe," we mean this protocol layer.
+
 ## ROADMAP Hygiene
 
 **When landing a PR or closing an issue, always check ROADMAP.md for stale status.** Run:
