@@ -119,50 +119,6 @@ class TextMetrics:
     ascent: float
 
 
-# ─── v2.0 OpenIntent ─────────────────────────────────────────────────────────
-
-class OpenIntent:
-    """Structured spawn intent passed at app startup via the Init event."""
-
-    def __init__(self, kind_type: str, **kwargs):
-        self.kind_type = kind_type
-        self.kwargs = kwargs
-
-    @classmethod
-    def file(cls, path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> "OpenIntent":
-        """Open a file, optionally at a specific line range."""
-        r: dict = {"kind": "file", "path": path}
-        if start_line is not None:
-            r["range"] = {"start_line": start_line, "end_line": end_line or start_line}
-        return cls("file", **r)
-
-    @classmethod
-    def prompt(cls, text: str, model_hint: Optional[str] = None) -> "OpenIntent":
-        """Open with a text prompt."""
-        d: dict = {"kind": "prompt", "text": text}
-        if model_hint:
-            d["model_hint"] = model_hint
-        return cls("prompt", **d)
-
-    @classmethod
-    def bare(cls) -> "OpenIntent":
-        """Open with no structured intent."""
-        return cls("bare", kind="bare")
-
-    @classmethod
-    def resume(cls, snapshot_key: str) -> "OpenIntent":
-        """Resume from a snapshot key."""
-        return cls("resume", kind="resume", snapshot_key=snapshot_key)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "OpenIntent":
-        """Deserialize from the Init event payload."""
-        kind_type = d.get("kind", "bare")
-        return cls(kind_type, **d)
-
-    def to_dict(self) -> dict:
-        return self.kwargs
-
 
 @dataclass
 class Theme:
