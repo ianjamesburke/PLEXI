@@ -7,8 +7,15 @@ use crate::agent_llm::{LlmRequest, LlmResponse, LlmWorker};
 
 /// Cyan foreground for the `>>> ` prompt indicator.
 const PROMPT_ANSI: &str = "\r\n\x1b[36m>>> \x1b[0m";
-/// Dim italics for the "thinking..." indicator.
-const THINKING_ANSI: &str = "\r\n\x1b[2;3magent thinking...\x1b[0m\r\n";
+/// Dot states for the processing spinner. Rendered with cursor-overwrite so
+/// they animate in place. Each string is padded to 3 chars so the width is
+/// constant and the overwrite doesn't leave stale characters.
+const SPINNER_DOTS: [&str; 3] = ["·  ", "·· ", "···"];
+/// Frames between spinner advances (~20 frames at 60fps ≈ 3 advances/sec).
+const SPINNER_INTERVAL: u32 = 20;
+/// Initial spinner emit — no trailing \r\n so the cursor stays on this line
+/// and subsequent frames can overwrite it with \r.
+const THINKING_ANSI: &str = "\r\n\x1b[2m·  \x1b[0m";
 /// Bright red prefix for error lines.
 const ERROR_ANSI_PREFIX: &str = "\r\n\x1b[31m! ";
 const ERROR_ANSI_SUFFIX: &str = "\x1b[0m\r\n";
@@ -58,6 +65,9 @@ pub struct AgentMode {
     /// Buffer accumulating streamed token chunks for the current turn.
     /// Flushed to `conversation` when `LlmResponse::Complete` arrives.
     current_response: String,
+    /// Frame counter for the processing spinner. Incremented each poll_llm
+    /// call while in Processing state before the first token arrives.
+    spinner_tick: u32,
 }
 
 /// A single message in the agent conversation. Kept around for future
@@ -86,6 +96,7 @@ impl AgentMode {
             llm: None,
             session_id: None,
             current_response: String::new(),
+            spinner_tick: 0,
         }
     }
 
@@ -119,8 +130,25 @@ impl AgentMode {
     pub fn deactivate(&mut self) {
         self.state = AgentModeState::Inactive;
         self.input_buffer.clear();
+        self.spinner_tick = 0;
         self.enqueue(b"\r\n".to_vec());
         log::info!("Agent mode deactivated");
+    }
+
+    /// Advance the dot spinner one frame. Emits an overwrite sequence using
+    /// `\r` to return to column 0 and rewrite the 3-char spinner in place.
+    /// Only called while Processing and before the first token arrives.
+    fn advance_spinner(&mut self) {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        if self.spinner_tick % SPINNER_INTERVAL != 0 {
+            return;
+        }
+        let idx = (self.spinner_tick / SPINNER_INTERVAL) as usize % SPINNER_DOTS.len();
+        let dots = SPINNER_DOTS[idx];
+        let mut out = b"\r\x1b[2m".to_vec();
+        out.extend_from_slice(dots.as_bytes());
+        out.extend_from_slice(b"\x1b[0m");
+        self.enqueue(out);
     }
 
     pub fn is_active(&self) -> bool {
@@ -313,14 +341,25 @@ impl AgentMode {
     /// if any output was produced (so the caller can request a repaint).
     pub fn poll_llm(&mut self) -> bool {
         let Some(worker) = self.llm.as_ref() else {
+            // Advance spinner even when no responses arrive, so it animates
+            // smoothly while the LLM subprocess is initialising.
+            if self.state == AgentModeState::Processing {
+                self.advance_spinner();
+            }
             return false;
         };
         let mut pending: Vec<LlmResponse> = Vec::new();
         while let Some(resp) = worker.try_recv() {
             pending.push(resp);
         }
+
+        // Animate the spinner while waiting for the first token.
+        if self.state == AgentModeState::Processing && self.current_response.is_empty() {
+            self.advance_spinner();
+        }
+
         if pending.is_empty() {
-            return false;
+            return self.state == AgentModeState::Processing; // keep requesting repaint
         }
 
         for resp in pending {
@@ -328,21 +367,30 @@ impl AgentMode {
                 LlmResponse::Complete(text, session_id) => {
                     // Store session ID for the next turn.
                     log::info!("agent_mode: turn complete, session_id={session_id}");
+                    // Emit AgentTurn to the event bus. Use response length as token_count
+                    // proxy until real token counts are threaded through from the LLM backend.
+                    {
+                        let ts = crate::event_log::now_timestamp();
+                        log::debug!("event_log: emitting AgentTurn, token_count={}", text.len());
+                        crate::event_log::emit(crate::event_log::HostEvent::AgentTurn {
+                            session_id: Some(session_id.clone()),
+                            token_count: text.len(),
+                            timestamp: ts,
+                        });
+                    }
                     self.session_id = Some(session_id);
+                    self.spinner_tick = 0;
 
                     // If no tokens were streamed (e.g. non-streaming path),
-                    // render the full text now. Otherwise, the terminal grid
-                    // already shows the streamed output — just push the newline
-                    // separator and the next prompt.
+                    // clear the spinner line then render the full text.
+                    // Otherwise the terminal grid already shows streamed output.
                     if self.current_response.is_empty() && !text.is_empty() {
+                        // Clear spinner line before writing response.
+                        self.enqueue(b"\r\x1b[K".to_vec());
                         let ansi = markdown_to_ansi(&text);
-                        let mut bytes = b"\r\n".to_vec();
-                        bytes.extend_from_slice(ansi.as_bytes());
-                        self.enqueue(bytes);
+                        self.enqueue(ansi.into_bytes());
+                        self.enqueue(b"\r\n".to_vec());
                     } else {
-                        // Streaming mode: tokens already rendered inline.
-                        // Emit a trailing newline so the next prompt starts
-                        // on a clean line.
                         self.enqueue(b"\r\n".to_vec());
                     }
 
@@ -356,12 +404,13 @@ impl AgentMode {
                     self.enqueue(PROMPT_ANSI.as_bytes().to_vec());
                 }
                 LlmResponse::Token(chunk) => {
-                    // Streaming chunk — render it directly into the terminal grid.
-                    // The chunks arrive as plain text (not markdown), so we emit
-                    // them verbatim. Markdown rendering is applied to the full
-                    // text on Complete only when there was no streaming.
+                    log::debug!("agent: token ({} chars)", chunk.len());
+                    // First token: clear the spinner line before writing.
+                    if self.current_response.is_empty() {
+                        self.enqueue(b"\r\x1b[K".to_vec());
+                        self.spinner_tick = 0;
+                    }
                     self.current_response.push_str(&chunk);
-                    // Convert newlines to CRLF for the terminal emulator.
                     let bytes = chunk.replace('\n', "\r\n").into_bytes();
                     self.enqueue(bytes);
                 }

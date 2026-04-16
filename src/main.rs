@@ -81,7 +81,6 @@ mod cost_tracker;
 mod event_log;
 #[cfg(not(target_arch = "wasm32"))]
 mod run_store;
-#[cfg(not(target_arch = "wasm32"))]
 mod plexi_iq;
 #[cfg(not(target_arch = "wasm32"))]
 mod logging;
@@ -241,7 +240,16 @@ fn main() -> eframe::Result {
 
     // Plexi-in-Plexi detection: if already running inside a Plexi terminal, don't
     // launch a second GUI — just report the nearest .plexi/ workspace.
-    if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
+    //
+    // Alpha and beta builds are exempt: they need to run alongside the stable
+    // daily-driver app for testing. Only same-version re-entry is blocked.
+    let is_dev_build = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .map(|name| name.contains("alpha") || name.contains("beta"))
+        .unwrap_or(false);
+
+    if !is_dev_build && std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
         let cwd = std::env::current_dir().unwrap_or_default();
         let home = dirs::home_dir().unwrap_or_default();
         let mut dir = cwd.as_path();

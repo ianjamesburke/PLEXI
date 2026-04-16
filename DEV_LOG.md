@@ -4,6 +4,67 @@
 
 Implemented all v2.0 scope items in a single RC branch. Key choices: event bus uses std::sync::mpsc with 4096-bound sync_channel and fan-out via a subscriber Vec (no tokio dep needed — matches existing sync threading model in ProcessApp); RunStore is in-memory with JSONL append log (no SQLite, mirrors notification log pattern); Plexi IQ Stage 1 uses `claude -p --resume` subprocess backend per spec §9 (native API mode is config option, not default); typed pipes auto-wiring on spawn rather than at runtime for simplicity. EventSubscribe uses broadcast via a shared subscriber list rather than tokio::broadcast to stay on std threads. ProcessApp now holds optional Arc refs to EventLog and RunStore — wired at launch time via wire() method rather than passing through the App trait (which is object-safe and couldn't hold generics).
 
+## 2026-04-15 — [CHANGED] Host event bus — append-only JSONL log + EventSubscribe/EventData protocol (PR #259 → alpha, refs #226)
+
+`src/event_log.rs`: `EventLog` struct with a `mpsc::sync_channel(4096)` feeding a background writer thread. Drop-on-full with `AtomicU64` counter; no rotation, no retry. `HostEvent` enum covers the full v2.0 protocol surface: `AppSpawned`, `AppClosed`, `PipeWrite`, `AgentTurn` are emitted; `NotificationEmitted`, `NotificationActioned`, `ApiCall`, `RunCreated`, `RunUpdated`, `RunCompleted`, `PermissionPrompted`, `CostReport` are forward-declared stubs. Global `OnceLock` singleton initialized at startup. Workspace detection walks up from cwd looking for a `.plexi/` dir — if found, events also append to `.plexi/events.jsonl`. `EventSubscribe` DrawCommand and `EventData` PlexiEvent added to the PGAP protocol. Subscription tracking and EventData delivery are Phase 0 no-ops — wire accepted for forward compat. Python SDK gets `Emitter.event_subscribe()`, `App.on_event()` decorator, and `event_data` dispatch in `run()`.
+**Breaks if:** `~/.plexi-alpha/events.jsonl` doesn't appear after launching and opening an app. Verify init_global() is reached in `PlexiApp::new()` and the writer thread is alive (check `plexi.log` for `event_log:` entries). If AppSpawned is missing from the log, check the three `open_app*` call sites in `pane_ops.rs`.
+
+## 2026-04-15 — [CHANGED] Protocol version negotiation — Init carries version, apps validate minimum (PR #254 → alpha)
+
+Added `protocol_version: u32` to `PlexiEvent::Init`. `HOST_PROTOCOL_VERSION = 2` is the constant in `app_protocol.rs`. `process_app.rs` sends it on every Init. The app registry logs a deprecation warning when a manifest is missing the field or declares version < 2. Python and Rust SDKs read the version from Init and expose it; apps can declare `min_protocol_version` and exit with a clear error if the host is too old. All 37 bundled example manifests updated to `protocol_version = 2`. JSON forward-compat is handled by `#[serde(default)]` — v1 apps deserialize to version 0, continue running with a warning.
+**Breaks if:** apps fail to launch or Init events are malformed — check that `protocol_version` field is present in the Init JSON emitted by `process_app.rs`. v1 manifests (missing field) should log a deprecation warn but still open.
+
+## 2026-04-15 — [FIX] agent mode Escape key didn't restore ZSH prompt
+
+`intercept_agent_keys()` in `tiling.rs` only had access to `&mut AgentMode`, so when Escape fired it called `self.deactivate()` directly — no PTY access, no `\r` written to the PTY. ZSH never knew agent mode ended and the prompt was visually displaced. The `toggle_agent_mode()` path in `pane_ops.rs` was correct (sends `BackendCommand::Write(b"\r")` after deactivate), but Escape bypassed it entirely. Fixed by returning `bool` from `intercept_agent_keys` and writing `\r` to `pane.backend` at the call site when deactivation is detected. All exit paths now converge on the same PTY write.
+**Breaks if:** pressing Escape to exit agent mode leaves the ZSH prompt missing or cursor stranded — means the `\r` isn't reaching the PTY. Check that `intercept_agent_keys` returns `true` on Escape and the `process_command` call fires.
+
+## 2026-04-15 — [FIX] agent mode silently discards claude CLI update-required errors
+
+When the claude CLI subprocess printed an update notice to stderr, it was forwarded to the log file but never surfaced to the user. Agent mode would silently fail — no response, no explanation. Added version-error detection in the stderr capture thread: lines containing "update", "newer version", "outdated", or "upgrade" are stored in a shared slot. After the stdout stream ends, that message is promoted to `LlmResponse::Error` if no other stream error was captured, so the user sees "claude CLI needs an update — run `claude update`" directly in the agent conversation.
+**Breaks if:** stale claude CLI produces only silence in agent mode with no error message — check `agent_llm stderr:` log lines for update language, and verify the upgrade slot promotion runs after the stdout loop.
+
+## 2026-04-15 — [FIX] Plexi-in-Plexi guard blocks alpha from launching alongside stable
+
+The `PLEXI_RUNNING=1` guard in `main.rs` prevented alpha/beta builds from launching when stable Plexi is the daily driver. Stable Plexi sets `PLEXI_RUNNING=1` in all PTY children, so every terminal pane inside it had the var set. `open -a "Plexi Alpha"` also inherited it. Alpha would silently exit immediately. Fixed by skipping the guard when `current_exe()` contains "alpha" or "beta" — dev builds are always allowed to coexist with stable.
+**Breaks if:** `plexi-alpha` still silently exits when launched from inside the stable app — check `ps aux | grep plexi-alpha` after launch.
+
+## 2026-04-15 — [FIX] alpha/beta builds silently dropped all INFO/DEBUG log messages
+
+`logging.rs` used `.level_for("plexi", level)`. fern's matching checks `target == "plexi" || target.starts_with("plexi::")`. In the alpha build the crate is `plexi-alpha`, so all log targets are `plexi_alpha::*`. `"plexi_alpha::foo".starts_with("plexi::")` is false — the `_` breaks the `::` prefix check. Every INFO/DEBUG message fell through to the default `Warn` filter and was silently dropped. Fixed by using `env!("CARGO_CRATE_NAME")` which gives the underscore-normalized crate name at compile time (`plexi_alpha` in alpha builds).
+**Breaks if:** alpha log only ever shows `[WARN]`/`[ERROR]` entries, never `[INFO]` or `[DEBUG]` — grep for `INFO` in `~/.plexi-alpha/plexi.log` after startup.
+
+## 2026-04-15 — [CHANGED] Lifecycle + debug logging added across core modules
+
+## 2026-04-15 — [FIX] agent mode: silent response + static thinking indicator
+
+Two bugs fixed together:
+
+1. **Silent response (no reply to "hi")**: `--tools ""` in the original code was an invalid flag (not in claude CLI help) — silently ignored. After removing it, claude ran with full tool access. In a GUI subprocess with no TTY, tool permission prompts hang; tool calls produce empty `assistant` events → `full_response` empty → nothing displayed. Fix: `--allowedTools ""` (the correct flag name) disables all tools, forcing conversational-only mode. Tool use can be re-enabled deliberately once permission handling is wired (Plexi IQ Stage 1).
+
+2. **"agent thinking..." static text**: replaced with an animated `·` / `··` / `···` dot spinner that overwrites in place using `\r\x1b[K`. `THINKING_ANSI` no longer emits a trailing `\r\n` — cursor stays on the spinner line. First token (or non-streamed Complete) clears the spinner line with `\r\x1b[K` before writing response text. `advance_spinner()` is called each `poll_llm` frame, throttled to every 20 frames (~3 advances/sec at 60fps).
+**Breaks if:** agent mode shows no spinner or spinner persists after response appears — check `advance_spinner()` being called in `poll_llm`, and `\r\x1b[K` clear on first token.
+
+## 2026-04-15 — [FIX] agent mode exit: cursor displaced, ZSH prompt not redrawn
+
+`deactivate()` only emitted `\r\n` into the terminal grid. The PTY received nothing, so ZSH never redraws its prompt — cursor lands visually displaced and the shell appears unresponsive until the user types. Fix: write `\r` to the PTY via `BackendCommand::Write` after `deactivate()` in `toggle_agent_mode()`. ZSH interprets `\r` on an empty readline buffer as Enter → redraws prompt at correct position. Also added `Ctrl+Tab` as an alias for the existing `Ctrl+/` toggle — bare Tab conflicts with ZSH completion so the full Tab ergonomic requires shell integration (deferred).
+**Breaks if:** exiting agent mode leaves cursor stranded with no ZSH prompt — means the `BackendCommand::Write(b"\r")` call isn't reaching the PTY notifier.
+
+## 2026-04-15 — [FIX] agent_llm: system prompt re-injected on resumed sessions
+
+`call_claude()` was passing `--system-prompt` on every turn including `--resume` turns. On a resumed session the system prompt in Claude Code is carried in the session history; re-injecting a different one on turn 2+ causes context confusion (the model sees conflicting instructions). Fixed by gating on `session_id.is_none()` — system prompt only on the first turn. Also removed the `--tools ""` blanket disable (it prevented bash/file ops that are expected in a terminal assistant). No observable behavior change for existing single-turn usage; multi-turn sessions now get clean context.
+**Breaks if:** agent mode gives inconsistent responses across turns, or the second turn response ignores the conversation history — means `--resume` isn't being passed or session_id isn't being captured from the `result` JSON line.
+
+## 2026-04-15 — [DECISION] Layer 4.6 closed — ROADMAP was stale, implementation already on alpha
+
+The ROADMAP marked Layer 4.6 (spawn_app host dispatcher) as "in flight / pending WIP app.rs" but the implementation had already landed in the `f8da18e` squash merge (PR #246). `dispatch_pending_spawns()` and `execute_spawn()` are fully implemented in `src/pane_ops.rs`, called each frame from `app.rs`. File browser is wired to emit `SpawnApp` for `.txt` → text-editor and images → photo-viewer. Both apps are installed at `~/.plexi-alpha/apps/`. Build is clean (0 errors). Updated ROADMAP Layer 4.6 status to Done and corrected the task table. No code changes needed — this was a documentation sync.
+
+## 2026-04-15 — [FIX] ProcessApp Drop and restart() left child processes orphaned
+
+`Drop` was calling `child.wait()` before `child.kill()`, and without closing `stdin` or `draw_rx` first. Since the child blocks on its stdin read loop waiting for events, `wait()` would block indefinitely — `kill()` was never reached. On Plexi exit or pane close, subprocess shells were reparented to PID 1 and continued burning CPU (confirmed: two zsh processes at 100% CPU, ~1400 min runtime). Same bug in `restart()`: `self.stdin = None` / `self.draw_rx = None` happened after kill/wait, leaving the pipe open during the wait.
+
+Fix: close `stdin` (gives child EOF so it can exit cleanly), then close `draw_rx` (so stdout reader thread exits on its next `send()`), then `kill()`, then `wait()`. Applied to both `Drop` and `restart()`.
+
 ## 2026-04-15 — [DECISION] Secrets CLI added to v2.0 scope as BYOK infrastructure for Plexi IQ
 
 Added `P.6 — Secrets CLI` to `plexi-v2.0-scope.md`. The secrets manager proposal (`proposals/secrets-manager.md`, issue #247) was already designed with Plexi IQ in mind — its "Plexi IQ Pro Integration" section describes exactly how BYOK (user sets `ANTHROPIC_KEY` via `plexi secrets set --global`) and managed Pro keys (Plexi sets the global key on activation) use identical injection infrastructure.

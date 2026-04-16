@@ -5,7 +5,7 @@
 /// ProcessApp implements the `App` trait so it drops in wherever a built-in app
 /// would — the rest of Plexi doesn't know or care that it's an external process.
 
-use crate::app_protocol::{BusEventKind, DrawCommand, ListItem, Modifiers, PendingSpawn, PlexiEvent};
+use crate::app_protocol::{DrawCommand, ListItem, Modifiers, PendingSpawn, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::cost_tracker::CostTracker;
 use egui::Color32;
@@ -381,14 +381,15 @@ impl ProcessApp {
     fn restart(&mut self) {
         log::info!("ProcessApp[{}]: hot-reloading app", self.type_id);
 
-        // Send shutdown and kill old process.
+        // Send shutdown and kill old process. Close stdin/draw_rx first so
+        // the child sees EOF and the reader threads exit cleanly before we reap.
         self.send_event(&PlexiEvent::Shutdown);
+        self.stdin = None;
+        self.draw_rx = None;
         if let Some(mut child) = self.process.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        self.stdin = None;
-        self.draw_rx = None;
 
         // Respawn — same Python interpreter logic as initial launch.
         let (cmd, extra_args): (std::ffi::OsString, Vec<std::ffi::OsString>) =
@@ -557,6 +558,28 @@ impl ProcessApp {
     }
 
     fn send_event(&mut self, event: &PlexiEvent) {
+        // Debug-mode event tracing. Render/Resize are excluded — they fire every
+        // frame and would bury actual signal. Everything else (keys, clicks, init,
+        // commands, pipe data) is logged so bugs can be reproduced from the log.
+        if log::log_enabled!(log::Level::Debug) {
+            match event {
+                PlexiEvent::Render { .. } | PlexiEvent::Resize { .. } => {}
+                PlexiEvent::Key { key, modifiers } => {
+                    let mods = {
+                        let mut parts = Vec::new();
+                        if modifiers.shift { parts.push("Shift"); }
+                        if modifiers.alt   { parts.push("Alt"); }
+                        if modifiers.ctrl  { parts.push("Ctrl"); }
+                        if parts.is_empty() { String::new() } else { format!("{}+", parts.join("+")) }
+                    };
+                    log::debug!("app[{}]: key {}{}", self.type_id, mods, key);
+                }
+                _ => {
+                    log::debug!("app[{}]: event {:?}", self.type_id, event);
+                }
+            }
+        }
+
         let Some(stdin) = self.stdin.as_mut() else {
             return;
         };
@@ -1329,15 +1352,13 @@ impl App for ProcessApp {
                     action,
                 } => {
                     let urgency_str = urgency.clone();
-                    // Emit bus event for notification.
-                    if let Some(el) = &self.event_log {
-                        el.emit(BusEventKind::NotificationEmitted {
-                            id: id.clone(),
-                            app_id: self.type_id.clone(),
-                            urgency: urgency_str.clone(),
-                            run_id: run_id.clone(),
-                        });
-                    }
+                    // Emit event log entry for notification.
+                    crate::event_log::emit(crate::event_log::HostEvent::NotificationEmitted {
+                        id: id.clone(),
+                        title: title.clone(),
+                        urgency: urgency_str.clone(),
+                        timestamp: crate::event_log::now_timestamp(),
+                    });
                     log::info!(
                         "app::{} notification [{id}]: {title}{}",
                         self.type_id,
@@ -1414,14 +1435,8 @@ impl App for ProcessApp {
                     });
                 }
                 DrawCommand::PipeWrite { channel, value } => {
-                    let bytes = value.to_string().len() as u32;
-                    if let Some(el) = &self.event_log {
-                        el.emit(BusEventKind::PipeWrite {
-                            from: self.pane_id,
-                            channel: channel.clone(),
-                            bytes,
-                        });
-                    }
+                    // Emit event log entry for pipe write.
+                    crate::event_log::emit_pipe_write(self.type_id.clone(), channel.clone());
                     // Queue for the host pipe dispatcher.
                     let target = format!("app::{}", self.type_id);
                     log::debug!(target: &target, "pipe_write: channel={channel:?}");
@@ -1452,13 +1467,11 @@ impl App for ProcessApp {
                             caller.clone(),
                             parent_run_id,
                         );
-                        if let Some(el) = &self.event_log {
-                            el.emit(BusEventKind::RunCreated {
-                                run_id: id.clone(),
-                                head_task,
-                                initiator: caller,
-                            });
-                        }
+                        crate::event_log::emit(crate::event_log::HostEvent::RunCreated {
+                            run_id: id.clone(),
+                            app_id: self.type_id.clone(),
+                            timestamp: crate::event_log::now_timestamp(),
+                        });
                         let _ = notification_title;
                         id
                     } else {
@@ -1469,44 +1482,30 @@ impl App for ProcessApp {
                 DrawCommand::RunUpdate { run_id, status, head_task, payload } => {
                     if let Some(rs) = &self.run_store {
                         let status_tag = format!("{:?}", status).to_lowercase();
-                        let ht = head_task.clone().unwrap_or_default();
                         rs.lock().unwrap().update(&run_id, status, head_task, payload);
-                        if let Some(el) = &self.event_log {
-                            el.emit(BusEventKind::RunUpdated {
-                                run_id,
-                                status_tag,
-                                head_task: ht,
-                            });
-                        }
+                        crate::event_log::emit(crate::event_log::HostEvent::RunUpdated {
+                            run_id,
+                            status: status_tag,
+                            timestamp: crate::event_log::now_timestamp(),
+                        });
                     }
                 }
                 DrawCommand::RunComplete { run_id, outcome } => {
                     if let Some(rs) = &self.run_store {
-                        let outcome_clone = outcome.clone();
+                        let outcome_str = format!("{:?}", outcome).to_lowercase();
                         rs.lock().unwrap().complete(&run_id, outcome);
-                        if let Some(el) = &self.event_log {
-                            el.emit(BusEventKind::RunCompleted { run_id, outcome: outcome_clone });
-                        }
-                    }
-                }
-                DrawCommand::EventSubscribe { kinds, scope } => {
-                    if let Some(el) = &self.event_log {
-                        let rx = el.subscribe();
-                        let (back_tx, back_rx) = mpsc::sync_channel::<PlexiEvent>(256);
-                        self.event_back_tx = Some(back_tx);
-                        let _ = scope;
-                        let _kinds = kinds;
-                        let back_rx_shared = Arc::new(Mutex::new(back_rx));
-                        let back_rx2 = back_rx_shared.clone();
-                        thread::spawn(move || {
-                            while let Ok(event) = rx.recv() {
-                                let plexi_event = PlexiEvent::EventData { event };
-                                if back_rx2.lock().unwrap().try_recv().is_err() {
-                                    let _ = plexi_event;
-                                }
-                            }
+                        crate::event_log::emit(crate::event_log::HostEvent::RunCompleted {
+                            run_id,
+                            status: outcome_str,
+                            timestamp: crate::event_log::now_timestamp(),
                         });
                     }
+                }
+                DrawCommand::EventSubscribe { kinds: _, scope: _ } => {
+                    // Phase 0 no-op: accepted for forward compatibility.
+                    // Full subscription tracking and EventData delivery will land
+                    // in a follow-up PR once the event routing layer is built.
+                    log::debug!("ProcessApp[{}]: EventSubscribe received (Phase 0 no-op)", self.type_id);
                 }
                 DrawCommand::PipeListWires => {
                     // Response handled at app.rs level; no-op in ProcessApp.
@@ -1751,10 +1750,16 @@ impl App for ProcessApp {
 impl Drop for ProcessApp {
     fn drop(&mut self) {
         self.send_event(&PlexiEvent::Shutdown);
+        // Close stdin first so the child sees EOF and can exit cleanly rather
+        // than blocking on its read loop. Close draw_rx so the stdout reader
+        // thread sees send() fail and exits without spinning.
+        self.stdin = None;
+        self.draw_rx = None;
         if let Some(mut child) = self.process.take() {
-            // Give the process 200ms to exit cleanly, then kill it.
-            let _ = child.wait(); // non-blocking on the second call after shutdown
+            // Kill then wait — kill() is safe if the child already exited,
+            // and wait() reaps the zombie so the process doesn't linger.
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

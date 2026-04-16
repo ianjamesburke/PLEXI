@@ -41,7 +41,6 @@ pub struct PlexiApp {
     pub(crate) app_visit_history: Vec<String>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
-    pub(crate) event_log: std::sync::Arc<crate::event_log::EventLog>,
     pub(crate) run_store: std::sync::Arc<std::sync::Mutex<crate::run_store::RunStore>>,
     pub(crate) permission_store: std::sync::Arc<std::sync::Mutex<crate::app_permissions::PermissionStore>>,
     pub(crate) pipe_wires: Vec<crate::app_protocol::PipeWire>,
@@ -81,6 +80,15 @@ impl PlexiApp {
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let registry = AppRegistry::load(&cwd);
+
+        // Initialize the global event log. Global path is always under config_dir().
+        // Workspace path is detected by walking up from the current working directory.
+        {
+            let global_events_path = config::config_dir().join("events.jsonl");
+            let workspace_events_path = crate::event_log::find_workspace_events_path(&cwd);
+            crate::event_log::init_global(global_events_path, workspace_events_path);
+            log::debug!("event_log: initialized");
+        }
 
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
@@ -204,10 +212,6 @@ impl PlexiApp {
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
-                    event_log: {
-                        let p = crate::config::config_dir().join("events.jsonl");
-                        std::sync::Arc::new(crate::event_log::EventLog::new(p))
-                    },
                     run_store: {
                         let p = crate::config::config_dir().join("runs.jsonl");
                         std::sync::Arc::new(std::sync::Mutex::new(crate::run_store::RunStore::new(p)))
@@ -270,10 +274,6 @@ impl PlexiApp {
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
-            event_log: {
-                let p = crate::config::config_dir().join("events.jsonl");
-                std::sync::Arc::new(crate::event_log::EventLog::new(p))
-            },
             run_store: {
                 let p = crate::config::config_dir().join("runs.jsonl");
                 std::sync::Arc::new(std::sync::Mutex::new(crate::run_store::RunStore::new(p)))
@@ -560,6 +560,11 @@ impl eframe::App for PlexiApp {
 
         // Handle keyboard shortcuts
         for action in keys::poll_actions(ctx, app_active) {
+            // Log all actions at debug level (noise filter: skip high-frequency navigation/scroll).
+            match &action {
+                keys::Action::Navigate(_) | keys::Action::ScrollUp | keys::Action::ScrollDown => {}
+                _ => log::debug!("input: {:?}", action),
+            }
             match action {
                 Action::SplitHorizontal => {
                     self.contexts[self.active_context].zoomed_pane = None;
@@ -660,6 +665,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::SwitchContext(n) => {
                     if n < self.contexts.len() {
+                        log::info!("context: switched to {} ('{}')", n, self.contexts[n].name);
                         self.active_context = n;
                     }
                 }

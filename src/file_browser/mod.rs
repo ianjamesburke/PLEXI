@@ -454,10 +454,38 @@ impl FileBrowserApp {
         self.save_text_preview_if_dirty();
         self.text_preview_path = Some(path.to_path_buf());
         self.text_preview_dirty = false;
-        match fs::read_to_string(path) {
-            Ok(text) => {
-                self.text_preview_saved_body = Some(text.clone());
-                self.text_preview_body = Some(text);
+
+        // Cap preview reads at 64 KB to avoid blocking the UI thread on large
+        // files (e.g. DJI debug logs, core dumps). Files over the limit show a
+        // truncation notice at the end.
+        const MAX_PREVIEW_BYTES: u64 = 64 * 1024;
+        let text = match std::fs::File::open(path) {
+            Err(e) => Err(e.to_string()),
+            Ok(file) => {
+                let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                use std::io::Read;
+                let mut reader = std::io::BufReader::new(file);
+                let mut buf = Vec::with_capacity(MAX_PREVIEW_BYTES.min(file_len) as usize);
+                let mut handle = reader.by_ref().take(MAX_PREVIEW_BYTES);
+                match handle.read_to_end(&mut buf) {
+                    Err(e) => Err(e.to_string()),
+                    Ok(_) => {
+                        let mut s = String::from_utf8_lossy(&buf).into_owned();
+                        if file_len > MAX_PREVIEW_BYTES {
+                            s.push_str(&format!(
+                                "\n\n[… truncated — file is {:.1} MB, showing first 64 KB]",
+                                file_len as f64 / 1_048_576.0
+                            ));
+                        }
+                        Ok(s)
+                    }
+                }
+            }
+        };
+        match text {
+            Ok(t) => {
+                self.text_preview_saved_body = Some(t.clone());
+                self.text_preview_body = Some(t);
             }
             Err(e) => {
                 self.text_preview_body = Some(format!("Error: {e}"));
@@ -1066,6 +1094,7 @@ impl App for FileBrowserApp {
 
         // Cmd+Backspace — move the selected file to the Trash.
         if input.modifiers.command && input.key_pressed(egui::Key::Backspace) {
+            log::debug!("file_browser: key Cmd+Backspace → trash selected {:?}", self.selected_entry().map(|e| &e.path));
             self.trash_selected();
             return true;
         }
@@ -1077,38 +1106,48 @@ impl App for FileBrowserApp {
             self.selected = (self.selected + 1).min(last);
             self.pending_scroll = true;
             consumed = true;
+            let name = self.selected_entry().map(|e| e.path.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_default();
+            log::debug!("file_browser: key J/↓ → selected {}/{} ({})", self.selected, last, name);
         }
         if input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::K) {
             self.selected = self.selected.saturating_sub(1);
             self.pending_scroll = true;
             consumed = true;
+            let name = self.selected_entry().map(|e| e.path.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_default();
+            log::debug!("file_browser: key K/↑ → selected {}/{} ({})", self.selected, last, name);
         }
         if input.key_pressed(egui::Key::Home) {
             self.selected = 0;
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key Home → selected 0");
         }
         if input.key_pressed(egui::Key::End) {
             self.selected = last;
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key End → selected {}", last);
         }
         if input.key_pressed(egui::Key::PageDown) {
             self.selected = (self.selected + 10).min(last);
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key PageDown → selected {}", self.selected);
         }
         if input.key_pressed(egui::Key::PageUp) {
             self.selected = self.selected.saturating_sub(10);
             self.pending_scroll = true;
             consumed = true;
+            log::debug!("file_browser: key PageUp → selected {}", self.selected);
         }
 
         if !input.modifiers.command && (input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::L)) {
             if let Some(entry) = self.selected_entry().cloned() {
                 if entry.is_dir {
+                    log::debug!("file_browser: key Enter/→/L → navigate into {:?}", entry.path);
                     self.navigate_into(entry.path);
                 } else {
+                    log::debug!("file_browser: key Enter/→/L → open file {:?}", entry.path);
                     self.open_file(entry.path);
                 }
             }
@@ -1116,6 +1155,7 @@ impl App for FileBrowserApp {
         }
 
         if !input.modifiers.command && (input.key_pressed(egui::Key::Backspace) || input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::H)) {
+            log::debug!("file_browser: key Backspace/←/H → navigate up from {:?}", self.current_dir());
             self.navigate_up();
             consumed = true;
         }
@@ -1127,11 +1167,13 @@ impl App for FileBrowserApp {
             };
             self.refresh();
             consumed = true;
+            log::debug!("file_browser: key S → sort mode {:?}", self.sort_mode);
         }
 
         if input.key_pressed(egui::Key::R) {
             self.refresh();
             consumed = true;
+            log::debug!("file_browser: key R → refresh {:?}", self.current_dir());
         }
 
         if input.key_pressed(egui::Key::Space) {

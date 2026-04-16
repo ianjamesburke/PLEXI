@@ -1,4 +1,5 @@
 [app]
+protocol_version = 2
 id = "color-palette"
 name = "Color Palette"
 entry = "color_palette.py"

@@ -9,7 +9,6 @@
 // Cmd+B                 — toggle sidebar
 // Cmd+Enter             — toggle zoom
 // Cmd+/                 — toggle shortcuts overlay
-// Ctrl+/                — toggle agent mode overlay
 // Cmd+P                 — command palette
 // Cmd+Shift+R           — rename pane
 // Cmd+N                 — new context
@@ -43,6 +42,7 @@ pub enum Direction {
     Down,
 }
 
+#[derive(Debug)]
 pub enum Action {
     SplitHorizontal,
     SplitVertical,
@@ -83,7 +83,7 @@ pub enum Action {
     AppUndo,
     /// Redo last undone action in the focused app.
     AppRedo,
-    /// Open the notification palette (Cmd+Shift+N).
+    /// Open the notification palette (shows unread notifications).
     ToggleNotificationPalette,
 }
 
@@ -154,11 +154,6 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Toggle shortcuts overlay (Cmd+/)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash) {
             actions.push(Action::ToggleShortcuts);
-        }
-
-        // Toggle agent mode overlay (Ctrl+/)
-        if input.consume_key(egui::Modifiers::CTRL, egui::Key::Slash) {
-            actions.push(Action::ToggleAgentMode);
         }
 
         // Command palette (Cmd+P)
@@ -239,6 +234,22 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::OpenSecretsManager);
         }
 
+        // Toggle agent mode (Ctrl+/ or Ctrl+Tab)
+        // Ctrl+Tab is the ergonomic alias — bare Tab conflicts with ZSH completion.
+        let ctrl_only = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        if input.consume_key(ctrl_only, egui::Key::Slash)
+            || (!input.modifiers.shift
+                && !input.modifiers.alt
+                && !input.modifiers.command
+                && input.modifiers.ctrl
+                && input.consume_key(ctrl_only, egui::Key::Tab))
+        {
+            actions.push(Action::ToggleAgentMode);
+        }
+
         // Undo / Redo in focused app (Cmd+Z / Cmd+Shift+Z)
         // Only when an app is active — otherwise Cmd+Z goes to the terminal.
         if app_active {
@@ -248,7 +259,6 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
                 actions.push(Action::AppUndo);
             }
         }
-
 
         // Switch context (Cmd+1 through Cmd+9)
         let num_keys = [

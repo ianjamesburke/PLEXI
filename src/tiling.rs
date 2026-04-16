@@ -180,7 +180,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             //      so the `>>> ` indicator and LLM replies
                             //      render into the same grid as shell output.
                             if is_focused && pane.agent_mode.is_active() {
-                                intercept_agent_keys(ui, &mut pane.agent_mode);
+                                let deactivated = intercept_agent_keys(ui, &mut pane.agent_mode);
+                                if deactivated {
+                                    // Escape path: write \r to the PTY so ZSH
+                                    // redraws its prompt, same as toggle_agent_mode().
+                                    pane.backend.process_command(
+                                        egui_term::BackendCommand::Write(b"\r".to_vec()),
+                                    );
+                                }
                             }
                             if pane.agent_mode.poll_llm() {
                                 ui.ctx().request_repaint_after(
@@ -514,11 +521,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 /// events during their own rendering pass, so any app-level interception has
 /// to happen first. Filtering `input.events` here is equivalent to calling
 /// `consume_key` for every relevant event.
-fn intercept_agent_keys(ui: &mut egui::Ui, agent: &mut AgentMode) {
+/// Returns `true` if agent mode was deactivated during this call (Escape was
+/// pressed). The caller is responsible for sending `\r` to the PTY backend so
+/// ZSH redraws its prompt — `AgentMode::deactivate()` has no PTY access.
+fn intercept_agent_keys(ui: &mut egui::Ui, agent: &mut AgentMode) -> bool {
     // Take the current events out of egui's input state, hand each eligible
     // one to AgentMode, and put the non-consumed events back. The terminal
     // widget rendered afterward clones `i.events` in its process_input pass,
     // so anything we drop here never reaches the PTY.
+    let was_active = agent.is_active();
     let mut changed = false;
     ui.input_mut(|input| {
         let old = std::mem::take(&mut input.events);
@@ -539,6 +550,8 @@ fn intercept_agent_keys(ui: &mut egui::Ui, agent: &mut AgentMode) {
     if changed {
         ui.ctx().request_repaint();
     }
+    // Return true if agent mode transitioned active → inactive (Escape fired).
+    was_active && !agent.is_active()
 }
 
 /// Render the pane name bar (if named) and tab dot indicators for a terminal in FullTerminal mode.

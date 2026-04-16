@@ -12,7 +12,7 @@ pub(crate) struct Entry {
     pub modified: Option<SystemTime>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SortMode {
     RecentlyTouched,
     Name,

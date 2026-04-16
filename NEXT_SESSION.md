@@ -72,6 +72,22 @@ SecretGet app API request + Python/Rust SDK exposure. May be partially covered b
 7. `experiments/v2-scope-spec` → extract CODEOWNERS if missing, then delete.
 8. `experiments/v2-external-text-editor` → preserve until v2.1 lands `ctx.text_input`; then use as Tier 3 reference.
 
+## v2.0 RC (PR #249) — bugs found during testing (2026-04-15)
+
+Worktree: `.claude/worktrees/agent-ad8a1f5b`, branch: `worktree-agent-ad8a1f5b`
+
+Fix these before merging to alpha:
+
+1. **No shebang on Python example apps** — all `.py` entry points installed to `~/.plexi-alpha/apps/` are missing `#!/usr/bin/env python3`. Shell executes them as bash → immediate crash. Fix: add shebang to every example app entry point, or add `chmod +x` + shebang enforcement to `just install-alpha`.
+
+2. **Event bus emits nothing** — `events.jsonl` is created (0 bytes) but no events are written during a session. `EventLog::emit` calls in `process_app.rs` are either not being called or not reaching the background writer task. Likely cause: `AppState` field not being threaded through to the draw-command handlers, or the tokio task in `EventLog::new` is spawned outside the active runtime.
+
+4. **Ctrl+/ agent mode regression** — Ctrl+/ no longer opens the agent mode overlay. Likely same root cause as #3 — keybinding conflict or the agent mode wiring to IQ broke the shortcut handler.
+
+3. **Cmd+Shift+N keybinding regression** — notification palette no longer opens on Cmd+Shift+N. Opens a new context instead. A new keybinding added in the v2 RC is stealing the shortcut. Grep for `Shift+N` / `shift_n` in the worktree diff vs alpha to find the conflict.
+
+---
+
 ## When to delete each experiment branch
 
 As soon as its unique pieces are cherry-picked onto a clean feature branch off alpha and verified building. `git branch -D experiments/v2-<name>`. Remote tracking branches untouched — push deletions explicitly with `git push origin --delete` only if you want the GitHub UI cleaned up.
