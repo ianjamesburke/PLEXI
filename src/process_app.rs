@@ -222,13 +222,26 @@ impl ProcessApp {
                 (bin_path.as_os_str().to_owned(), vec![])
             };
 
+        // Resolve the shared SDK dir: <config_dir>/sdk — used as the canonical
+        // location for plexi_sdk.py so all apps share one copy and get updates
+        // automatically when Plexi is reinstalled. Prepend to any existing
+        // PYTHONPATH so per-app vendored copies (escape hatch) still win.
+        let sdk_dir = crate::config::config_dir().join("sdk");
+        let pythonpath = match std::env::var("PYTHONPATH") {
+            Ok(existing) if !existing.is_empty() => {
+                format!("{}:{}", sdk_dir.display(), existing)
+            }
+            _ => sdk_dir.display().to_string(),
+        };
+
         let mut cmd_builder = std::process::Command::new(&cmd);
         cmd_builder
             .args(&extra_args)
             .args(args)
             .current_dir(cwd)
             .env("PLEXI_APP_ID", &type_id)
-            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str())
+            .env("PYTHONPATH", &pythonpath);
         if let Some(parent_id) = parent_app_id {
             cmd_builder
                 .env("PLEXI_LAUNCH_MODE", "spawned")
@@ -443,13 +456,23 @@ impl ProcessApp {
             } else {
                 (self.bin_path.as_os_str().to_owned(), vec![])
             };
+
+        let sdk_dir = crate::config::config_dir().join("sdk");
+        let pythonpath = match std::env::var("PYTHONPATH") {
+            Ok(existing) if !existing.is_empty() => {
+                format!("{}:{}", sdk_dir.display(), existing)
+            }
+            _ => sdk_dir.display().to_string(),
+        };
+
         let mut cmd_builder = std::process::Command::new(&cmd);
         cmd_builder
             .args(&extra_args)
             .args(&self.args)
             .current_dir(&self.cwd)
             .env("PLEXI_APP_ID", &self.type_id)
-            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str());
+            .env("PLEXI_APPS_DIR", crate::app_registry::apps_dir().as_os_str())
+            .env("PYTHONPATH", &pythonpath);
         if let Some(parent_id) = &self.parent_app_id {
             cmd_builder
                 .env("PLEXI_LAUNCH_MODE", "spawned")
