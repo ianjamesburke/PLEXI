@@ -13,6 +13,7 @@
 /// styling, no dismissal persistence, no tray. See issue #74 for the full
 /// attention queue vision; this is the unblock-Parallax MVP.
 
+use crate::app_protocol::NotificationAction;
 use crate::config;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -23,16 +24,16 @@ fn default_urgency() -> String {
     "low".to_string()
 }
 
-fn default_action_type() -> String {
-    "dismiss".to_string()
-}
-
 /// A notification record.
 ///
 /// `timestamp` is UTC; `read` defaults to false and flips when the user clicks
 /// the notification in the palette. `read` is NOT persisted — on restart,
 /// reloaded notifications come back as read since the user has presumably
 /// already seen them in a previous session.
+///
+/// v2.0: `action` replaces the old `action_type`/`action_payload` string pair.
+/// Both fields are kept for backwards-compat deserialization of JSONL written
+/// by older builds; new code should read `action` first.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Notification {
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -52,12 +53,18 @@ pub struct Notification {
     /// Unix timestamp (seconds). Defer rendering until this time has passed.
     #[serde(default)]
     pub visible_after: Option<i64>,
-    /// Action triggered when the user presses Enter on this notification.
-    /// Values: "focus" | "confirm" | "text_input" | "dismiss".
-    #[serde(default = "default_action_type")]
-    pub action_type: String,
-    /// Type-dependent payload for `action_type`.
-    /// For "focus": `{"pane_id": u64, "fullscreen": bool}`.
+    /// Run this notification is associated with. When set, the palette renders
+    /// this notification as a run card (head_task + elapsed + status pill).
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Structured action (v2.0+). Supersedes `action_type`/`action_payload`.
+    #[serde(default)]
+    pub action: Option<NotificationAction>,
+    /// Legacy action type string — kept for JSONL round-trip compat.
+    /// Prefer `action` for new code.
+    #[serde(default)]
+    pub action_type: Option<String>,
+    /// Legacy action payload — kept for JSONL round-trip compat.
     #[serde(default)]
     pub action_payload: Option<serde_json::Value>,
     /// Who emitted this notification: "app:<id>", "claude-code", "socket", etc.
@@ -189,8 +196,8 @@ pub fn record(
     urgency: String,
     expires_at: Option<i64>,
     visible_after: Option<i64>,
-    action_type: String,
-    action_payload: Option<serde_json::Value>,
+    run_id: Option<String>,
+    action: Option<NotificationAction>,
     source: Option<String>,
 ) {
     let n = Notification {
@@ -202,8 +209,10 @@ pub fn record(
         urgency,
         expires_at,
         visible_after,
-        action_type,
-        action_payload,
+        run_id,
+        action,
+        action_type: None,
+        action_payload: None,
         source,
     };
     match global().lock() {

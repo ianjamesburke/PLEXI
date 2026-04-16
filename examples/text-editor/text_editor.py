@@ -1156,11 +1156,27 @@ def on_click(x: float, y: float, button: str, emit: Emitter):
 
 
 # ---------------------------------------------------------------------------
-# Initial file load from argv
+# Initial file load — OpenIntent takes priority over argv (§3 of protocol v2)
 # ---------------------------------------------------------------------------
 
-if len(sys.argv) > 1:
-    load_file(sys.argv[1])
+@app.on_init
+def on_init():
+    """Read OpenIntent at startup; fall back to argv for CLI compat."""
+    intent = app.open_intent
+    if intent is not None and intent.kind == "file" and intent.payload:
+        path = intent.payload.get("path", "")
+        if path:
+            load_file(path)
+            # If a line range was supplied, jump to the start line.
+            text_range = intent.payload.get("range")
+            if text_range and "start_line" in text_range:
+                line = max(0, int(text_range["start_line"]) - 1)
+                state.scroll_line = line
+                state.cursor = _line_start(line)
+            return
+    # Fallback: honour argv so `python3 text_editor.py <file>` still works.
+    if len(sys.argv) > 1:
+        load_file(sys.argv[1])
 
 
 if __name__ == "__main__":

@@ -1509,7 +1509,7 @@ impl App for ProcessApp {
                         urgency_str,
                         expires_at,
                         visible_after,
-                        action_type,
+                        Some(action_type),
                         None, // action_payload: structured action stored separately
                         Some(source_tag),
                     );

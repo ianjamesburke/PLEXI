@@ -2,11 +2,23 @@
 
 ## 2026-04-16 — [CHANGED] Capability enforcement runtime prompts — §7 closes #230 (PR → alpha)
 
-Wired §7 end-to-end: `ProcessApp` now checks `RunCreate`, `EventSubscribe`, and `SpawnApp` commands against manifest-declared capabilities (`create_runs`, `observes`, `open_intent_kinds`). Undeclared capabilities queue a `PendingCapabilityPrompt` drained by `PlexiApp` each frame and shown as a modal ("Allow once / Always allow / Deny"). Decisions persist to `permissions.json` via the existing `PermissionStore`. Orchestrator apps (`is_orchestrator = true` in manifest) bypass all prompts. `PermissionPrompted` events emit to the bus so v2.1 trust scoring can train on them. Two pre-existing bugs fixed in the same pass: `SubscribeScope` enum missing closing brace in `app_protocol.rs`, duplicate `protocol_version` field in `PlexiEvent::Init` struct literal in `process_app.rs`.
+Wired §7 end-to-end: `ProcessApp` now checks `RunCreate`, `EventSubscribe`, and `SpawnApp` commands against manifest-declared capabilities (`create_runs`, `observes`, `open_intent_kinds`). Undeclared capabilities queue a `PendingCapabilityPrompt` drained by `PlexiApp` each frame and shown as a modal ("Allow once / Always allow / Deny"). Decisions persist to `permissions.json` via the existing `PermissionStore`. Orchestrator apps (`is_orchestrator = true` in manifest) bypass all prompts. `PermissionPrompted` events emit to the bus so v2.1 trust scoring can train on them. Two pre-existing bugs fixed in the same pass: duplicate `protocol_version` field in `PlexiEvent::Init` struct literal in `process_app.rs`.
 
 Permission store is wired into `ProcessApp` at app-open time via `wire_permission_store()` called in `open_app_on_focused_with_launch`. Manifest capabilities are set via `set_manifest_capabilities()` called from `AppRegistry::launch_inner` after `ProcessApp` construction.
 
 **Breaks if:** An app tries to use `RunCreate` or `EventSubscribe` and receives no response — check that `pending_capability_prompts` are being drained in the update loop and the modal appears. If prompts never fire, check that `wire_permission_store` is being called on app open.
+
+## 2026-04-16 — [CHANGED] Rich notification action payloads — closes #229
+
+`NotificationAction` enum was already in `app_protocol.rs` with all 8 variants. Three gaps closed:
+
+1. `notification_log::Notification` now carries `run_id: Option<String>` and `action: Option<NotificationAction>` (structured, v2.0+). The old `action_type: String` / `action_payload: Value` pair is kept as `Option<String>` / `Option<Value>` for backwards-compat JSONL round-tripping from older builds.
+
+2. `notification_palette.rs` now dispatches all 8 action types via `dispatch_notification_action()`. `Focus` and `ExternalUrl` are fully wired. `ResumeRun`, `OpenIntent`, `RunCommand` log a TODO and no-op until their respective host-side paths exist. `Confirm`/`TextInput` degrade to mark-read+close. Run cards (taller rows with run_id pill + action label) render when `run_id` is set.
+
+3. Python SDK: `Emitter.notify()` and `RenderContext.notify()` updated to emit the structured `action` field. Added `NotificationAction` helper class with factory statics for all 8 types. Old `action_type`/`action_payload` params removed in favour of `action: dict`.
+
+**Breaks if:** notification palette crashes on Enter with any notification that has a `run_id` set.
 
 ## 2026-04-15 — [DECISION] v2.0 RC: full protocol implementation — OpenIntent, event bus, Run primitive, typed pipes Phase 1, Plexi IQ Stage 1
 

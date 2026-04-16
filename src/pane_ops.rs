@@ -957,7 +957,15 @@ impl PlexiApp {
 
         // Built-in file browser gets full permissions.
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_app_on_focused(app, perms, cwd);
+        // Open with a companion terminal taking 25% at the bottom so the file
+        // browser defaults to a 75% upper / 25% lower split (issue #237).
+        let launch = crate::app_registry::AppLaunchConfig {
+            mode: "companion".to_string(),
+            companion: "terminal".to_string(),
+            companion_size: 0.25,
+            ..Default::default()
+        };
+        self.open_app_on_focused_with_launch(app, perms, cwd, Some(launch));
     }
 
     /// Toggle the depth tree browser in the focused pane.

@@ -224,6 +224,143 @@ pub fn list_secrets() -> i32 {
     0
 }
 
+// ── plexi secrets subcommands (plural, v2.0) ──────────────────────────────────
+
+/// `plexi secrets set [--global] <KEY>` — stores a secret, prompting for value on stdin.
+pub fn secrets_set(global: bool, key: &str) -> i32 {
+    let directory = if global {
+        crate::secrets::GLOBAL_SCOPE.to_string()
+    } else {
+        match std::env::current_dir() {
+            Ok(d) => d.to_string_lossy().to_string(),
+            Err(e) => {
+                eprintln!("error: could not determine current directory: {e}");
+                return 1;
+            }
+        }
+    };
+
+    eprint!("Enter value for {key}: ");
+    let _ = io::stderr().flush();
+
+    let value = match read_secret_from_stdin() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("\nerror: failed to read secret: {e}");
+            return 1;
+        }
+    };
+    eprintln!(); // newline after hidden input
+
+    if value.is_empty() {
+        eprintln!("error: empty value, nothing stored");
+        return 1;
+    }
+
+    if crate::secrets::store_secret(key, &value, APP_ID, &directory) {
+        let scope = if global { "global".to_string() } else { directory.clone() };
+        eprintln!("Stored secret '{key}' ({scope})");
+        0
+    } else {
+        eprintln!("error: failed to store secret '{key}'");
+        1
+    }
+}
+
+/// `plexi secrets unset [--global] <KEY>` — removes a secret.
+pub fn secrets_unset(global: bool, key: &str) -> i32 {
+    let directory = if global {
+        crate::secrets::GLOBAL_SCOPE.to_string()
+    } else {
+        match std::env::current_dir() {
+            Ok(d) => d.to_string_lossy().to_string(),
+            Err(e) => {
+                eprintln!("error: could not determine current directory: {e}");
+                return 1;
+            }
+        }
+    };
+
+    if crate::secrets::delete_secret(key, APP_ID, &directory) {
+        let scope = if global { "global".to_string() } else { directory };
+        eprintln!("Removed secret '{key}' ({scope})");
+        0
+    } else {
+        eprintln!("error: secret '{key}' not found (does it exist at this scope?)");
+        1
+    }
+}
+
+/// `plexi secrets list` — lists key names visible in the current directory (no values).
+pub fn secrets_list() -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d.to_string_lossy().to_string(),
+        Err(e) => {
+            eprintln!("error: could not determine current directory: {e}");
+            return 1;
+        }
+    };
+
+    let entries = crate::secrets::list_secrets_for_dir(APP_ID, &cwd);
+
+    if entries.is_empty() {
+        eprintln!("No secrets visible in {cwd}.");
+        return 0;
+    }
+
+    let mut globals: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.directory == crate::secrets::GLOBAL_SCOPE)
+        .map(|e| e.key.as_str())
+        .collect();
+    globals.sort();
+
+    let mut dir_keys: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.directory != crate::secrets::GLOBAL_SCOPE)
+        .map(|e| e.key.as_str())
+        .collect();
+    dir_keys.sort();
+
+    if !dir_keys.is_empty() {
+        println!("{cwd}:");
+        for k in &dir_keys {
+            println!("  {k}");
+        }
+    }
+
+    if !globals.is_empty() {
+        println!("global:");
+        for k in &globals {
+            println!("  {k}");
+        }
+    }
+
+    0
+}
+
+/// `plexi secrets which <KEY>` — shows which scope a key resolves from.
+pub fn secrets_which(key: &str) -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d.to_string_lossy().to_string(),
+        Err(e) => {
+            eprintln!("error: could not determine current directory: {e}");
+            return 1;
+        }
+    };
+
+    match crate::secrets::which_secret(key, APP_ID, &cwd) {
+        Some(scope) => {
+            println!("{key} → {scope}");
+            0
+        }
+        None => {
+            eprintln!("'{key}' is not set in any scope visible from {cwd}");
+            1
+        }
+    }
+}
+
 // ── plexi app subcommands ─────────────────────────────────────────────────────
 
 /// `plexi app init [--lang python|rust] <name>` — scaffold a new app in `.plexi/apps/<name>/`.
