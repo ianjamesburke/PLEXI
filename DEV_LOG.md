@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-15 — [CHANGED] Protocol version negotiation — Init carries version, apps validate minimum (PR #254 → alpha)
+
+Added `protocol_version: u32` to `PlexiEvent::Init`. `HOST_PROTOCOL_VERSION = 2` is the constant in `app_protocol.rs`. `process_app.rs` sends it on every Init. The app registry logs a deprecation warning when a manifest is missing the field or declares version < 2. Python and Rust SDKs read the version from Init and expose it; apps can declare `min_protocol_version` and exit with a clear error if the host is too old. All 37 bundled example manifests updated to `protocol_version = 2`. JSON forward-compat is handled by `#[serde(default)]` — v1 apps deserialize to version 0, continue running with a warning.
+**Breaks if:** apps fail to launch or Init events are malformed — check that `protocol_version` field is present in the Init JSON emitted by `process_app.rs`. v1 manifests (missing field) should log a deprecation warn but still open.
+
 ## 2026-04-15 — [FIX] agent mode Escape key didn't restore ZSH prompt
 
 `intercept_agent_keys()` in `tiling.rs` only had access to `&mut AgentMode`, so when Escape fired it called `self.deactivate()` directly — no PTY access, no `\r` written to the PTY. ZSH never knew agent mode ended and the prompt was visually displaced. The `toggle_agent_mode()` path in `pane_ops.rs` was correct (sends `BackendCommand::Write(b"\r")` after deactivate), but Escape bypassed it entirely. Fixed by returning `bool` from `intercept_agent_keys` and writing `\r` to `pane.backend` at the call site when deactivation is detected. All exit paths now converge on the same PTY write.

@@ -1153,6 +1153,7 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
                 pixels_per_point: ui.ctx().pixels_per_point(),
+                protocol_version: crate::app_protocol::HOST_PROTOCOL_VERSION,
             });
         }
 

@@ -35,6 +35,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The protocol version this host speaks. Sent in every `Init` event.
+/// Apps that require features from a specific version compare this to
+/// their declared minimum and exit cleanly if incompatible.
+pub const HOST_PROTOCOL_VERSION: u32 = 2;
+
 // ── Serde default helpers ─────────────────────────────────────────────────────
 
 fn notification_default_urgency() -> String {
@@ -56,6 +61,12 @@ pub enum PlexiEvent {
         height: f32,
         /// Logical pixels per point (display scale factor).
         pixels_per_point: f32,
+        /// Protocol version spoken by the host. Apps should compare this
+        /// against their declared minimum and exit if incompatible.
+        /// `#[serde(default)]` ensures v1 apps (no field) deserialize to 0,
+        /// which the host treats as "version 1" (legacy, deprecation warned).
+        #[serde(default)]
+        protocol_version: u32,
     },
     /// Request a new frame. App should reply with DrawCommands + FrameDone.
     Render { width: f32, height: f32, delta_time: f32 },

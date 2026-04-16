@@ -1,4 +1,5 @@
 [app]
+protocol_version = 2
 id = "git-blame"
 name = "Git Blame Lens"
 entry = "git_blame.py"

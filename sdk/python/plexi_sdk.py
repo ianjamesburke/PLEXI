@@ -62,9 +62,9 @@ import pathlib
 import shutil
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 
 # ─── Text size constants ──────────────────────────────────────────────────────
@@ -1137,10 +1137,15 @@ class App:
         @app.on_scroll        fn(x: float, y: float, delta_x: float, delta_y: float, emit: Emitter)
     """
 
-    def __init__(self, app_id: str = "", auto_min_size: bool = True):
+    def __init__(self, app_id: str = "", auto_min_size: bool = True,
+                 min_protocol_version: int = 0):
         self.width: float = 800.0
         self.height: float = 600.0
         self.delta_time: float = 0.0
+        self.protocol_version: int = 0
+        """Protocol version sent by the host in the Init event. 0 means the
+        host did not send a version (v1 host). Set once at startup."""
+        self._min_protocol_version: int = min_protocol_version
         self._on_render: Optional[Callable] = None
         self._on_key: Optional[Callable] = None
         self._on_click: Optional[Callable] = None
@@ -1518,10 +1523,23 @@ class App:
 
             event_type = event.get("type", "")
 
-            if event_type in ("init", "resize"):
+            if event_type == "init":
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
-                if event_type == "resize" and self._on_resize:
+                self.protocol_version = event.get("protocol_version", 0)
+                if self._min_protocol_version > 0 and self.protocol_version < self._min_protocol_version:
+                    print(
+                        f"plexi_sdk: host protocol version {self.protocol_version} is below "
+                        f"this app's minimum required version {self._min_protocol_version}. "
+                        f"Please update your Plexi host.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+            elif event_type == "resize":
+                self.width = event.get("width", self.width)
+                self.height = event.get("height", self.height)
+                if self._on_resize:
                     self._on_resize(self.width, self.height)
 
             elif event_type == "render":

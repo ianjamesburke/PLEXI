@@ -47,6 +47,12 @@ pub struct AppManifestApp {
     pub version: String,
     #[serde(default)]
     pub description: String,
+    /// Protocol version the app was written against. Missing or < 2 triggers
+    /// a deprecation warning at load time — the app still runs, but is
+    /// flagged as using the v1 protocol. Apps should declare
+    /// `protocol_version = 2` in their manifest.
+    #[serde(default)]
+    pub protocol_version: u32,
     #[serde(default)]
     pub capabilities: AppCapabilities,
     /// Optional companion-pane launch configuration. When present, Plexi splits
@@ -315,6 +321,15 @@ impl AppRegistry {
             .map_err(|e| format!("invalid manifest: {e}"))?;
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
+
+        // Warn when manifest lacks an explicit protocol_version or declares v1.
+        if manifest.app.protocol_version < 2 {
+            log::warn!(
+                "AppRegistry: app '{}' declares protocol_version = {} (< 2). \
+                 Update the manifest to `protocol_version = 2` to suppress this warning.",
+                manifest.app.id, manifest.app.protocol_version
+            );
+        }
 
         Ok(InstalledApp {
             manifest: manifest.app,

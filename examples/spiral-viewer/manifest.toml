@@ -1,4 +1,5 @@
 [app]
+protocol_version = 2
 id          = "spiral-viewer"
 name        = "Spiral Viewer"
 entry       = "spiral_viewer.py"
