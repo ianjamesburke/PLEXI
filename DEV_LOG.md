@@ -3,6 +3,54 @@
 ## 2026-04-15 — [DECISION] v2.0 RC: full protocol implementation — OpenIntent, event bus, Run primitive, typed pipes Phase 1, Plexi IQ Stage 1
 
 Implemented all v2.0 scope items in a single RC branch. Key choices: event bus uses std::sync::mpsc with 4096-bound sync_channel and fan-out via a subscriber Vec (no tokio dep needed — matches existing sync threading model in ProcessApp); RunStore is in-memory with JSONL append log (no SQLite, mirrors notification log pattern); Plexi IQ Stage 1 uses `claude -p --resume` subprocess backend per spec §9 (native API mode is config option, not default); typed pipes auto-wiring on spawn rather than at runtime for simplicity. EventSubscribe uses broadcast via a shared subscriber list rather than tokio::broadcast to stay on std threads. ProcessApp now holds optional Arc refs to EventLog and RunStore — wired at launch time via wire() method rather than passing through the App trait (which is object-safe and couldn't hold generics).
+## 2026-04-16 — [FIX] Embedded mode missing FrameDone + code quality audit
+
+Four issues fixed in the fractal worktree:
+
+1. **`run_embedded_stdio` missing `FrameDone`** — the embedded instance was emitting `StatusSummary` but never `FrameDone`. The host's `ProcessApp` accumulates DrawCommands until `FrameDone` before swapping the frame buffer; without it the frame never commits and the parent pane shows nothing. Fixed by emitting `FrameDone` immediately after each `StatusSummary`.
+
+2. **`Suspend`/`Resume` silently dropped** — embedded mode's `_ => {}` catch-all swallowed `Suspend` and `Resume` events without acknowledgement. Added explicit `Log` responses so the parent can observe lifecycle transitions in the event stream.
+
+3. **`emit_tree_status` double timestamp** — `last_activity_timestamp` and `timestamp` fields were stamped by two separate `Utc::now()` calls, meaning they could differ by microseconds. Fixed by computing the timestamp once and cloning it.
+
+4. **`open_log_file(&PathBuf)` → `&Path`** — unnecessarily specific type; deref-coerces anyway. Cosmetic but removes a Clippy lint.
+
+Also fixed: `visible_rows()` was computed twice per frame in `DepthTreeApp::ui()` — once for the empty-check and once inside the `ScrollArea`. Now computed once and reused.
+
+**Breaks if:** embedded instance receives Init/Render but the parent pane never repaints (frame buffer stays empty). Observable as a blank pane where the depth preview should appear.
+
+## 2026-04-16 — [FUTURE] True recursive Plexi-in-Plexi not yet proven — visual goal is Sierpinski-style pane recursion
+
+The whole fractal branch is motivated by wanting to see a visible recursive hierarchy: a 2×2 split where the bottom-right pane is itself another 2×2 split (and so on), like a Sierpinski triangle but with panes. Nothing in the current POC branch delivers that — the `DepthTreeApp` shows the `.plexi` directory tree as a text list, and `--embedded` proves the PGAP pipe shape via stdio, but neither renders a live nested Plexi instance inside a pane. The missing piece is a windowless egui renderer that a host Plexi instance can drive over PGAP and composite into a pane rect. That requires either an offscreen wgpu surface or a serialized draw-tree protocol (host tells child what to render; child returns a pixel buffer or draw command list). Neither exists yet. Deferred until the embedded renderer spike (roadmap step 04) is explored — at that point this should be the acceptance criterion: open Plexi, see a pane that contains a running child Plexi instance with its own split layout, visible as a distinct inset.
+
+## 2026-04-16 — Fractal PGAP POC branch
+
+**Status: in PR on `feature/260-fractal-pgap-poc` targeting `alpha`**
+
+Created the `fractal` worktree and landed the first focused Fractal PGAP implementation slice for #260:
+
+- Added additive PGAP v2 wire pieces: `Suspend`, `Resume`, `RenderMode`, `StatusSummary`, `PaneSummary`, `Health`, and an optional wire-only `CapabilityManifest` on `Init`.
+- Added serde coverage for old `Render` JSON, old `Init` JSON, status summaries, lifecycle events, and capability manifest round-trips.
+- Added `.plexi` depth discovery in `src/fractal_depth.rs` with fixture-style tests for nested boundaries, node IDs, display names, parent IDs, child counts, depth levels, and ignored non-boundary directories.
+- Added a built-in `DepthTreeApp` with simple rows, indentation, selected-row highlight, current-depth marker, parent/child focus navigation, persisted app state, toolbar button, and `Cmd+Shift+E` shortcut.
+- Added depth observability events: `DepthTransition` and `TreeStatus`, emitted from existing workspace/context state.
+- Added `plexi --embedded` stdio smoke mode. It reads PGAP JSON lines and returns valid `status_summary` / `log` draw commands for `Init`, `Render`, and `Shutdown`. This proves the pipe shape but does not attempt offscreen egui/wgpu rendering yet.
+- Updated Python SDK/docs with v2 helpers for lifecycle, render mode, status summaries, open intent, and capability manifest fields.
+- Updated Fractal roadmap docs with explicit embedded/capability blockers and next patch points.
+
+Validation:
+
+- `cargo test` — 38 passed.
+- `python3 -m py_compile sdk/python/plexi_sdk.py` — passed.
+- Embedded smoke: piping `Init`, `Render`, `Shutdown` into `cargo run --quiet -- --embedded` emitted valid PGAP JSON.
+- `cargo fmt --check` was intentionally not treated as a branch blocker because the existing tree has broad pre-existing rustfmt drift outside the Fractal files.
+
+Remaining after this POC:
+
+- Full process-group reaping and host-driven `Suspend`/`Resume` policy are still not implemented.
+- `DepthTreeApp` uses a UI-local grouping snapshot over `.plexi` boundaries; `fractal_depth.rs` is the canonical discovery model for future host integrations.
+- Capability enforcement is wire-only; filesystem/secret/network/spawn attenuation still needs the dedicated enforcement patch.
+- Embedded mode proves stdio JSON, not a windowless renderer.
 
 ## 2026-04-15 — [CHANGED] Host event bus — append-only JSONL log + EventSubscribe/EventData protocol (PR #259 → alpha, refs #226)
 

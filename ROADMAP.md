@@ -7,7 +7,7 @@
 >
 > This roadmap is the **weekly operational view**. The scope doc (linked via the spec index) is the contract. When they disagree, the spec wins.
 
-**Last updated:** 2026-04-14
+**Last updated:** 2026-04-16
 
 ---
 
@@ -32,6 +32,7 @@ Everything on `main` plus:
 | Notification system — urgency, Unix socket ingestion, action types, focus-pane | ✅ merged |
 | `docs/VISION.md` — foundational vision as source of truth | ✅ merged |
 | `docs/specs/releases/plexi-v2.0.md` — full V2 technical spec + ship order | ✅ merged |
+| Fractal PGAP POC (#260) — `.plexi` depth discovery, depth tree pane, v2 lifecycle/render summary wire types, embedded stdio smoke | 🚧 in PR |
 | Homebrew release automation (SHA256 + cask update on tag) | ✅ merged |
 
 ---
@@ -46,6 +47,7 @@ Everything on `main` plus:
 |---|---|
 | Protocol version negotiation | Every subsequent change is additive |
 | Host event bus (`events.jsonl`) | Cross-app observation; required by everything downstream |
+| Fractal depth tree POC (#260) | `.plexi` boundaries are discoverable and visible before embedded rendering |
 | `OpenIntent` payload on `Init` | Apps know *why* they were opened (file, prompt, caller) |
 | `Run` primitive — dumb store, draw commands | Stateful multi-step tasks with blocked/running/done lifecycle |
 
@@ -53,6 +55,7 @@ Everything on `main` plus:
 | Item | Unlocks |
 |---|---|
 | Rich notification actions (extends #219) | Notifications can wrap and resume a Run |
+| Render summary protocol | Parent depths can request cheap status without full embedded rendering |
 | Capability enforcement + `permissions.json` | Runtime Yes once / Yes always / No; persistent grants |
 | Typed pipes Phase 1 — manifest `[app.io]`, auto-wire | Apps compose without code changes |
 
@@ -61,6 +64,7 @@ Everything on `main` plus:
 |---|---|
 | `[app.skill]` manifest section | Plexi IQ skill registry — apps are invokable capabilities |
 | `[app.agent]` manifest section | Installable agent apps: system prompt + tool allowlist |
+| Embedded Plexi spike (`--embedded`) | PGAP stdin/stdout path for recursive instances; renderer internals still later |
 | Plexi IQ Stage 1 — in-host orchestrator | Agent delegation, Run lifecycle, `/approve` workflow, `@agent` syntax |
 | SDK 0.4.0 | `OpenIntent` + `Run` convenience methods; all examples migrated |
 

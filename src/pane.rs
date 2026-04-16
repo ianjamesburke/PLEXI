@@ -26,6 +26,8 @@ pub struct TerminalPane {
     pub linked_terminal_pane: Option<PaneId>,
     /// Agent mode state for this pane.
     pub agent_mode: AgentMode,
+    /// When true, Cmd+W will not close this pane.
+    pub locked: bool,
 }
 
 impl TerminalPane {
@@ -57,6 +59,7 @@ impl TerminalPane {
             app_scope: None,
             linked_terminal_pane: None,
             agent_mode: AgentMode::new(cwd),
+            locked: false,
         })
     }
 

@@ -2,6 +2,12 @@
 
 This is the development loop for building Plexi apps. It's test-driven: write the tests first, then iterate the app until they pass. An agent (or human) follows this flow to produce a working app from a description.
 
+## V2 Rule
+
+Plexi v2 apps are capabilities inside recursive `.plexi` instance boundaries. New apps should exist to validate the v2 protocol: depth navigation, explicit capability manifests, typed pipes, depth notifications, render summaries, or Plexi IQ. Do not build or preserve decorative demo apps during the v2 rewrite.
+
+On startup, v2 apps should read `app.protocol_version`, `app.open_intent`, `app.capability_manifest`, and `app.render_mode`. Use `@app.on_init` to capture the launch context, `@app.on_suspend` / `@app.on_resume` for lifecycle changes, and `ctx.status_summary(...)` or `emit.status_summary(...)` when you need cheap preview data for recursive depths.
+
 ---
 
 ## Prerequisites
@@ -25,6 +31,7 @@ Create `manifest.toml` with app metadata and required capabilities:
 id = "my-app"
 name = "My App"
 entry = "app.py"
+protocol_version = 2
 version = "0.1.0"
 description = "One sentence."
 
@@ -71,6 +78,8 @@ def test_app_state_roundtrip():
 ```
 
 All tests will fail. That's correct.
+
+For recursive v2 apps, add at least one startup-context test that checks `protocol_version`, `open_intent`, and `capability_manifest`, plus one summary test that exercises `status_summary` in preview mode.
 
 ### Step 3: Write the app
 

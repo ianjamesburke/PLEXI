@@ -4,9 +4,15 @@ Python SDK for building external apps that run inside [Plexi](https://github.com
 
 Plexi apps are standalone Python (or Rust) programs that speak a newline-delimited JSON protocol over stdin/stdout. The host sends render/input events, the app responds with draw commands. No GUI toolkit, no framework lock-in — just stdlib and a few hundred lines of SDK glue.
 
+## Plexi v2 Direction
+
+Plexi v2 is a recursive `.plexi` instance system. A project-local `.plexi` directory is an instance boundary; nested instances speak PGAP to their parent and receive explicit capabilities. The SDK is being rewritten around that model, and the Python surface now exposes the recursive probes that matter for v2: `protocol_version`, `open_intent`, `render_mode`, `status_summary`, `Suspend`/`Resume`, and depth-scoped capability context.
+
+Treat the existing example apps as protocol probes, not product surface. They may be deleted or rewritten during v2 if they do not validate recursive instances, capability manifests, typed pipes, depth notifications, or Plexi IQ.
+
 ## Status
 
-Pre-release. The protocol is still evolving. Pin a version in production.
+Pre-release. The v1/v0.3 SDK documents the current app protocol. The v2 SDK target is `0.4.0` and must expose recursive protocol fields such as protocol version, open intent, render mode previews, status summaries, lifecycle events, capability manifests, typed pipes, and depth-aware notifications.
 
 ## Installation
 
@@ -74,15 +80,25 @@ Install it into your local Plexi apps directory (`~/.plexi-alpha/apps/hello-app/
 
 ## Core concepts
 
-- **`App`** — the top-level object. Register handlers with `@app.on_render`, `@app.on_key`, `@app.on_mouse`, `@app.on_command`, `@app.on_get_state`, `@app.on_set_state`, etc. Call `app.run()` to enter the event loop.
-- **`RenderContext`** — passed to your `on_render` handler. Exposes `ctx.width`, `ctx.height`, plus draw primitives: `rect`, `text`, `image`, `video_thumbnail`, `file_grid`, `list`, and structured logging methods (`ctx.info`, `ctx.warn`, `ctx.error`, `ctx.debug`).
-- **`Emitter`** — passed to input handlers. Lets you drive the host: `emit.run_in_terminal(cmd)`, `emit.cost_report(...)`, structured logging, and more.
-- **Draw commands** — each draw call produces a JSON message. A frame is a stream of draw commands terminated by a `frame_done` marker; Plexi double-buffers and flushes atomically.
-- **Events** — render, key, mouse, command, get_state, set_state. Only subscribe to what you need.
+- **`App`** — the top-level object. Register handlers with `@app.on_init`, `@app.on_render`, `@app.on_suspend`, `@app.on_resume`, `@app.on_key`, `@app.on_mouse`, `@app.on_command`, `@app.on_get_state`, `@app.on_set_state`, etc. Call `app.run()` to enter the event loop.
+- **`RenderContext`** — passed to your `on_render` handler. Exposes `ctx.width`, `ctx.height`, `ctx.render_mode`, plus draw primitives: `rect`, `text`, `image`, `video_thumbnail`, `file_grid`, `list`, `status_summary`, and structured logging methods (`ctx.info`, `ctx.warn`, `ctx.error`, `ctx.debug`).
+- **`Emitter`** — passed to input handlers. Lets you drive the host: `emit.run_in_terminal(cmd)`, `emit.spawn_app(..., open_intent=...)`, `emit.status_summary(...)`, `emit.cost_report(...)`, structured logging, and more.
+- **Draw commands** — each draw call produces a JSON message. A frame is a stream of draw commands terminated by a `frame_done` marker; Plexi double-buffers and flushes atomically. Preview frames use the same pipe with `render_mode="preview"`.
+- **Events** — init, render, preview render, suspend, resume, key, mouse, command, get_state, set_state. Only subscribe to what you need.
 - **State buckets** — `user_state` (undoable), `derived` (recomputable), `session` (per-window), `persistent` (across restarts). Plexi handles undo/redo and serialization; you return dicts.
-- **Capabilities** — declared in `manifest.toml`. The app sandbox grants filesystem, network, subprocess, and terminal-write access only when the manifest requests it.
+- **Capabilities** — declared in `manifest.toml`. The app sandbox grants filesystem, network, subprocess, and terminal-write access only when the manifest requests it. Recursive launches also receive a depth-scoped capability manifest on `init`.
 
-See the [app protocol spec](../../docs/specs/subsystems/app-infrastructure.md) for the full message reference.
+Protocol helpers for the recursive model:
+
+- `app.protocol_version` — host/app protocol handshake version.
+- `app.open_intent` — structured launch context for file, prompt, or resume flows.
+- `app.capability_manifest` — allowlisted depth-scoped permissions.
+- `app.render_mode` — `full` or `preview`.
+- `RenderMode.FULL` / `RenderMode.PREVIEW` — convenience constants for render passes.
+- `OpenIntent.file(...)`, `OpenIntent.prompt(...)`, `OpenIntent.resume(...)` — convenience constructors for recursive launches.
+- `StatusSummary(...)`, `PaneSummary(...)`, `Health(...)` — lightweight status payloads for tree summaries and preview renders.
+
+See the [spec index](../../docs/specs/README.md) for the protocol contract and recursive subsystem references.
 
 ## Breakpoints and minimum size
 
@@ -100,6 +116,7 @@ Add an `[app.layout]` table to your `manifest.toml`:
 id    = "my-app"
 name  = "My App"
 entry = "my_app.py"
+protocol_version = 2
 
 [app.layout]
 min_width  = 400   # logical pixels, default 0 (no floor)
@@ -184,13 +201,15 @@ from plexi_sdk_advanced import Canvas, FrameTimer, Tween, ease_out_cubic
 
 ## Example apps
 
-The [`examples/`](../../examples/) directory in the Plexi repo contains ~30 working apps covering terminals, canvases, file grids, git tooling, LLM integrations, games, and dashboards. Good places to start:
+The [`examples/`](../../examples/) directory is a historical protocol lab. For v2, keep only examples that prove the recursive protocol. Good temporary references:
 
 - `hello-app/` — minimal render + key handling + media draw commands
 - `todo/` — list, persistent state, keyboard navigation
 - `snake/`, `sandfall/` — game loops via `FrameTimer`
 - `git-log/`, `github-issues/` — subprocess + list rendering
 - `wikipedia/`, `hacker-news/` — network fetches, cost reporting
+
+Do not preserve an example app just because it exists. Rewriting or deleting apps is allowed when the protocol changes.
 
 ## How apps are installed at runtime
 

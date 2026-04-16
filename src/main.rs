@@ -30,11 +30,11 @@ mod agent_mode;
 // `features` and `app_permissions` transitively reference `config` and
 // `app_trait`, which are native-only. Gated until they're decoupled.
 #[cfg(not(target_arch = "wasm32"))]
+mod app_permissions;
+#[cfg(not(target_arch = "wasm32"))]
 mod features;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod finder_service;
-#[cfg(not(target_arch = "wasm32"))]
-mod app_permissions;
 
 // ── Native-only modules ──────────────────────────────────────────────────────
 //
@@ -50,27 +50,17 @@ mod agent_llm;
 #[cfg(not(target_arch = "wasm32"))]
 mod app;
 #[cfg(not(target_arch = "wasm32"))]
-mod app_registry;
-#[cfg(not(target_arch = "wasm32"))]
 mod app_api;
 #[cfg(not(target_arch = "wasm32"))]
-mod audio_app;
+mod app_registry;
 #[cfg(not(target_arch = "wasm32"))]
 mod app_trait;
+#[cfg(not(target_arch = "wasm32"))]
+mod audio_app;
 #[cfg(not(target_arch = "wasm32"))]
 mod cli;
 #[cfg(not(target_arch = "wasm32"))]
 mod command_palette;
-#[cfg(not(target_arch = "wasm32"))]
-mod file_browser;
-#[cfg(not(target_arch = "wasm32"))]
-mod process_app;
-#[cfg(not(target_arch = "wasm32"))]
-mod quick_note_app;
-#[cfg(not(target_arch = "wasm32"))]
-mod secrets_app;
-#[cfg(not(target_arch = "wasm32"))]
-mod text_editor_app;
 #[cfg(not(target_arch = "wasm32"))]
 mod config;
 #[cfg(not(target_arch = "wasm32"))]
@@ -78,12 +68,23 @@ mod context;
 #[cfg(not(target_arch = "wasm32"))]
 mod cost_tracker;
 #[cfg(not(target_arch = "wasm32"))]
+mod depth_tree_app;
+#[cfg(not(target_arch = "wasm32"))]
 mod event_log;
 #[cfg(not(target_arch = "wasm32"))]
 mod run_store;
 mod plexi_iq;
+mod file_browser;
+#[cfg(not(target_arch = "wasm32"))]
+mod fractal_depth;
+#[cfg(not(target_arch = "wasm32"))]
+mod keys;
 #[cfg(not(target_arch = "wasm32"))]
 mod logging;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+mod macos_menu;
+#[cfg(not(target_arch = "wasm32"))]
+mod media_cache;
 #[cfg(not(target_arch = "wasm32"))]
 mod notification_log;
 #[cfg(not(target_arch = "wasm32"))]
@@ -91,23 +92,25 @@ mod notification_palette;
 #[cfg(not(target_arch = "wasm32"))]
 mod notify_socket;
 #[cfg(not(target_arch = "wasm32"))]
-mod keys;
-#[cfg(not(target_arch = "wasm32"))]
-mod media_cache;
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-mod macos_menu;
-#[cfg(not(target_arch = "wasm32"))]
 mod overlays;
 #[cfg(not(target_arch = "wasm32"))]
 mod pane;
 #[cfg(not(target_arch = "wasm32"))]
 mod pane_ops;
 #[cfg(not(target_arch = "wasm32"))]
+mod process_app;
+#[cfg(not(target_arch = "wasm32"))]
+mod quick_note_app;
+#[cfg(not(target_arch = "wasm32"))]
 mod secrets;
+#[cfg(not(target_arch = "wasm32"))]
+mod secrets_app;
 #[cfg(not(target_arch = "wasm32"))]
 mod shell;
 #[cfg(not(target_arch = "wasm32"))]
 mod sidebar;
+#[cfg(not(target_arch = "wasm32"))]
+mod text_editor_app;
 #[cfg(not(target_arch = "wasm32"))]
 mod theme;
 #[cfg(not(target_arch = "wasm32"))]
@@ -131,6 +134,19 @@ fn main() -> eframe::Result {
 
     // Handle CLI subcommands before launching the GUI.
     let args: Vec<String> = std::env::args().collect();
+    let wants_help = args.iter().any(|arg| arg == "--help" || arg == "-h");
+    let wants_embedded = args.iter().any(|arg| arg == "--embedded");
+
+    if wants_help {
+        print_main_help(wants_embedded);
+        return Ok(());
+    }
+
+    if wants_embedded {
+        run_embedded_stdio();
+        return Ok(());
+    }
+
     if args.len() >= 2 {
         match args[1].as_str() {
             "run" => {
@@ -255,7 +271,10 @@ fn main() -> eframe::Result {
         let mut dir = cwd.as_path();
         loop {
             if dir.join(".plexi").is_dir() {
-                eprintln!("plexi: already running inside Plexi. Nearest workspace: {}", dir.join(".plexi").display());
+                eprintln!(
+                    "plexi: already running inside Plexi. Nearest workspace: {}",
+                    dir.join(".plexi").display()
+                );
                 std::process::exit(0);
             }
             if dir == home || dir.parent().is_none() {
@@ -267,9 +286,8 @@ fn main() -> eframe::Result {
         std::process::exit(0);
     }
 
-    let icon =
-        eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
-            .expect("failed to load app icon");
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
+        .expect("failed to load app icon");
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -287,6 +305,183 @@ fn main() -> eframe::Result {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn print_main_help(embedded_selected: bool) {
+    println!("Plexi");
+    println!();
+    println!("Usage:");
+    println!("  plexi [--embedded] [run|secret|app|<path>]");
+    println!();
+    println!("Flags:");
+    println!("  --embedded    Read PGAP JSON lines from stdin and emit DrawCommand JSON");
+    println!("  -h, --help    Show this help");
+    if embedded_selected {
+        println!();
+        println!("Embedded mode is available.");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_embedded_stdio() {
+    use crate::app_protocol::{DrawCommand, PlexiEvent};
+    use std::io::BufRead;
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout().lock();
+    let started_at = std::time::Instant::now();
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(err) => {
+                let _ = write_embedded_draw(
+                    &mut stdout,
+                    &DrawCommand::Log {
+                        level: "warn".to_string(),
+                        message: format!("embedded stdin read error: {err}"),
+                    },
+                );
+                break;
+            }
+        };
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let event: PlexiEvent = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(err) => {
+                let _ = write_embedded_draw(
+                    &mut stdout,
+                    &DrawCommand::Log {
+                        level: "warn".to_string(),
+                        message: format!("embedded parse error: {err}"),
+                    },
+                );
+                continue;
+            }
+        };
+
+        match &event {
+            PlexiEvent::Init { .. } | PlexiEvent::Render { .. } => {
+                let elapsed = started_at.elapsed().as_secs_f64();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let summary = build_embedded_status_summary(&event, elapsed, now_ms, &cwd);
+                if write_embedded_draw(&mut stdout, &summary).is_err() {
+                    break;
+                }
+                // FrameDone terminates the frame so the host's DrawCommand buffer commits.
+                if write_embedded_draw(&mut stdout, &DrawCommand::FrameDone).is_err() {
+                    break;
+                }
+            }
+            PlexiEvent::Suspend => {
+                let _ = write_embedded_draw(
+                    &mut stdout,
+                    &DrawCommand::Log {
+                        level: "info".to_string(),
+                        message: "embedded suspended".to_string(),
+                    },
+                );
+            }
+            PlexiEvent::Resume => {
+                let _ = write_embedded_draw(
+                    &mut stdout,
+                    &DrawCommand::Log {
+                        level: "info".to_string(),
+                        message: "embedded resumed".to_string(),
+                    },
+                );
+            }
+            PlexiEvent::Shutdown => {
+                let _ = write_embedded_draw(
+                    &mut stdout,
+                    &DrawCommand::Log {
+                        level: "info".to_string(),
+                        message: "embedded shutdown".to_string(),
+                    },
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Build a `StatusSummary` DrawCommand for an Init or Render event in embedded mode.
+///
+/// The summary lets the host display a lightweight status preview of this embedded
+/// instance without a full render. Only call this for `Init` and `Render` events —
+/// other event types are handled directly in `run_embedded_stdio`.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_embedded_status_summary(
+    event: &crate::app_protocol::PlexiEvent,
+    uptime_seconds: f64,
+    now_ms: i64,
+    cwd: &str,
+) -> crate::app_protocol::DrawCommand {
+    use crate::app_protocol::{DrawCommand, Health, PaneSummary, StatusSummary};
+
+    let (summary_text, status_text) = match event {
+        crate::app_protocol::PlexiEvent::Init {
+            width,
+            height,
+            pixels_per_point,
+            protocol_version,
+            ..
+        } => (
+            format!(
+                "embedded init {width:.0}x{height:.0} @ {pixels_per_point:.2} (protocol v{protocol_version})"
+            ),
+            Some("ready".to_string()),
+        ),
+        crate::app_protocol::PlexiEvent::Render {
+            width,
+            height,
+            delta_time,
+            mode,
+        } => (
+            format!("embedded render {width:.0}x{height:.0} dt={delta_time:.3} mode={mode:?}"),
+            Some("rendering".to_string()),
+        ),
+        _ => unreachable!("build_embedded_status_summary only called for Init/Render"),
+    };
+
+    DrawCommand::StatusSummary {
+        summary: StatusSummary {
+            uptime_seconds,
+            process_count: 1,
+            last_activity_unix_ms: Some(now_ms),
+            summary_text: Some(summary_text),
+            health: Health::Running,
+            panes: vec![PaneSummary {
+                pane_id: 0,
+                cwd: cwd.to_string(),
+                status_text,
+                last_activity_unix_ms: Some(now_ms),
+                health: Health::Running,
+            }],
+        },
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_embedded_draw(
+    stdout: &mut std::io::StdoutLock<'_>,
+    command: &crate::app_protocol::DrawCommand,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    serde_json::to_writer(&mut *stdout, command).map_err(std::io::Error::other)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WASM entry point — stub for Phase 1
 // ─────────────────────────────────────────────────────────────────────────────
@@ -300,4 +495,107 @@ fn main() {
     // module once Phase 3 wires up `eframe::WebRunner`. For now, `main` only
     // exists so `cargo build --target wasm32-unknown-unknown` has an entry
     // symbol for the binary crate.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_init_and_render_produce_status_summary() {
+        use crate::app_protocol::{DrawCommand, Health, PlexiEvent, RenderMode, StatusSummary};
+
+        let init_event = PlexiEvent::Init {
+            width: 800.0,
+            height: 600.0,
+            pixels_per_point: 2.0,
+            protocol_version: 2,
+            capability_manifest: None,
+        };
+        let init =
+            build_embedded_status_summary(&init_event, 0.25, 1_725_000_000_000, "/tmp/project");
+        match init {
+            DrawCommand::StatusSummary {
+                summary: StatusSummary {
+                    process_count,
+                    health,
+                    ref summary_text,
+                    ..
+                },
+            } => {
+                assert_eq!(process_count, 1);
+                assert_eq!(health, Health::Running);
+                assert!(summary_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("protocol v2"));
+            }
+            _ => panic!("expected StatusSummary for Init"),
+        }
+
+        let render_event = PlexiEvent::Render {
+            width: 1024.0,
+            height: 768.0,
+            delta_time: 0.016,
+            mode: RenderMode::Preview,
+        };
+        let render = build_embedded_status_summary(
+            &render_event,
+            0.5,
+            1_725_000_000_500,
+            "/tmp/project",
+        );
+        match render {
+            DrawCommand::StatusSummary {
+                summary: StatusSummary {
+                    ref summary_text, ..
+                },
+            } => {
+                let text = summary_text.as_deref().unwrap_or("");
+                assert!(text.contains("1024x768"), "got: {text}");
+                assert!(text.contains("Preview"), "got: {text}");
+            }
+            _ => panic!("expected StatusSummary for Render"),
+        }
+    }
+
+    /// Verify that the embedded frame sequence (StatusSummary + FrameDone) serialises
+    /// to valid JSON so the host's DrawCommand buffer can commit the frame correctly.
+    #[test]
+    fn embedded_frame_sequence_serialises_correctly() {
+        use crate::app_protocol::{DrawCommand, PlexiEvent, RenderMode};
+        use std::io::Write;
+
+        let render_event = PlexiEvent::Render {
+            width: 640.0,
+            height: 480.0,
+            delta_time: 0.016,
+            mode: RenderMode::Full,
+        };
+        let summary =
+            build_embedded_status_summary(&render_event, 1.0, 1_725_000_000_000, "/tmp");
+
+        let mut buf = Vec::<u8>::new();
+        serde_json::to_writer(&mut buf, &summary).unwrap();
+        buf.write_all(b"\n").unwrap();
+        serde_json::to_writer(&mut buf, &DrawCommand::FrameDone).unwrap();
+        buf.write_all(b"\n").unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        let mut lines = output.lines();
+
+        let first_line = lines.next().expect("first line");
+        let first: DrawCommand = serde_json::from_str(first_line).expect("parse first");
+        assert!(
+            matches!(first, DrawCommand::StatusSummary { .. }),
+            "expected StatusSummary, got: {first_line}"
+        );
+
+        let second_line = lines.next().expect("second line");
+        let second: DrawCommand = serde_json::from_str(second_line).expect("parse second");
+        assert!(
+            matches!(second, DrawCommand::FrameDone),
+            "expected FrameDone, got: {second_line}"
+        );
+    }
 }

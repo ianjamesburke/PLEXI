@@ -14,7 +14,6 @@
 /// Drop-on-full policy: if the channel is at capacity (4096 events), the
 /// event is silently discarded and `dropped_count` is incremented. No retry,
 /// no blocking, no rotation.
-
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
@@ -31,7 +30,6 @@ use std::sync::{mpsc, Arc, OnceLock};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostEvent {
     // ── Currently emitted ────────────────────────────────────────────────────
-
     /// A ProcessApp was successfully spawned.
     AppSpawned {
         app_id: String,
@@ -53,6 +51,30 @@ pub enum HostEvent {
         channel: String,
         timestamp: String,
     },
+    /// The active depth/context changed.
+    DepthTransition {
+        from_node_id: Option<String>,
+        to_node_id: String,
+        from_depth_level: Option<u32>,
+        to_depth_level: u32,
+        transition_kind: String,
+        timestamp: String,
+    },
+    /// A compact snapshot of the current tree/depth state.
+    TreeStatus {
+        node_id: String,
+        path: String,
+        depth_level: u32,
+        status: String,
+        health: String,
+        pane_count: usize,
+        child_count: usize,
+        active_app_count: usize,
+        focused_pane: Option<u64>,
+        zoomed_pane: Option<u64>,
+        last_activity_timestamp: String,
+        timestamp: String,
+    },
     /// An agent-mode LLM turn completed.
     AgentTurn {
         session_id: Option<String>,
@@ -63,7 +85,6 @@ pub enum HostEvent {
     },
 
     // ── v2 stubs — forward-complete protocol, not yet emitted ────────────────
-
     /// A notification was raised by an app.
     NotificationEmitted {
         id: String,
@@ -194,14 +215,18 @@ impl EventLog {
 
 // ── File helpers ──────────────────────────────────────────────────────────────
 
-fn open_log_file(path: &PathBuf) -> Option<std::fs::File> {
+fn open_log_file(path: &std::path::Path) -> Option<std::fs::File> {
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             log::warn!("event_log: failed to create log dir {:?}: {e}", parent);
             return None;
         }
     }
-    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         Ok(f) => Some(f),
         Err(e) => {
             log::warn!("event_log: failed to open {:?}: {e}", path);
@@ -299,4 +324,105 @@ pub fn emit_pipe_write(from_app: impl Into<String>, channel: impl Into<String>) 
         channel,
         timestamp: now_timestamp(),
     });
+}
+
+/// Emit a depth/context transition event.
+pub fn emit_depth_transition(
+    from_node_id: Option<String>,
+    to_node_id: impl Into<String>,
+    from_depth_level: Option<u32>,
+    to_depth_level: u32,
+    transition_kind: impl Into<String>,
+) {
+    let to_node_id = to_node_id.into();
+    let transition_kind = transition_kind.into();
+    log::debug!(
+        "event_log: emitting DepthTransition {from_node_id:?} -> {to_node_id} (kind={transition_kind}, depth={to_depth_level})"
+    );
+    emit(HostEvent::DepthTransition {
+        from_node_id,
+        to_node_id,
+        from_depth_level,
+        to_depth_level,
+        transition_kind,
+        timestamp: now_timestamp(),
+    });
+}
+
+/// Emit a compact tree/depth status snapshot.
+pub fn emit_tree_status(
+    node_id: impl Into<String>,
+    path: impl Into<String>,
+    depth_level: u32,
+    status: impl Into<String>,
+    health: impl Into<String>,
+    pane_count: usize,
+    child_count: usize,
+    active_app_count: usize,
+    focused_pane: Option<u64>,
+    zoomed_pane: Option<u64>,
+) {
+    let node_id = node_id.into();
+    let path = path.into();
+    let status = status.into();
+    let health = health.into();
+    log::debug!(
+        "event_log: emitting TreeStatus for '{node_id}' (depth={depth_level}, panes={pane_count}, apps={active_app_count})"
+    );
+    let timestamp = now_timestamp();
+    emit(HostEvent::TreeStatus {
+        node_id,
+        path,
+        depth_level,
+        status,
+        health,
+        pane_count,
+        child_count,
+        active_app_count,
+        focused_pane,
+        zoomed_pane,
+        last_activity_timestamp: timestamp.clone(),
+        timestamp,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn depth_transition_round_trip() {
+        let event = HostEvent::DepthTransition {
+            from_node_id: Some("/root".to_string()),
+            to_node_id: "/root/agents/scraper".to_string(),
+            from_depth_level: Some(0),
+            to_depth_level: 1,
+            transition_kind: "switch".to_string(),
+            timestamp: "2026-04-16T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        let decoded: HostEvent = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), json);
+    }
+
+    #[test]
+    fn tree_status_round_trip() {
+        let event = HostEvent::TreeStatus {
+            node_id: "/root/agents/scraper".to_string(),
+            path: "/root/agents/scraper".to_string(),
+            depth_level: 1,
+            status: "2 panes, 1 app".to_string(),
+            health: "running".to_string(),
+            pane_count: 2,
+            child_count: 1,
+            active_app_count: 1,
+            focused_pane: Some(12),
+            zoomed_pane: None,
+            last_activity_timestamp: "2026-04-16T00:00:00Z".to_string(),
+            timestamp: "2026-04-16T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        let decoded: HostEvent = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), json);
+    }
 }

@@ -1,24 +1,26 @@
-# Plexi Protocol v2 — The Agent-Native Release
+# Plexi Protocol v2 — Recursive Agent-Native Foundation
 
 **Status:** Draft
-**Last updated:** 2026-04-14
+**Last updated:** 2026-04-16
 **Owner:** plexi-core
-**Target:** Plexi 2.0 — 3 months from doc date
+**Target:** Plexi 2.0 — recursive `.plexi` instance foundation
 
 ---
 
 ## TL;DR
 
-Plexi v1's protocol is solid for single-app rendering and parent↔child composition (see `subsystems/app-infrastructure.md`, `subsystems/typed-pipes.md` Phase 0). It is not sufficient for the agent-native vision in `VISION.md` because it lacks four load-bearing primitives:
+Plexi v1's protocol is solid for single-app rendering and parent↔child composition (see `subsystems/app-infrastructure.md`, `subsystems/typed-pipes.md` Phase 0). It is not sufficient for the agent-native vision in `VISION.md` because it lacks the recursive substrate: `.plexi` directories as sealed instance boundaries, nested Plexi processes as PGAP-speaking children, and root-visible depth state.
 
-1. **Structured spawn intent** — no in-protocol way to say *why* an app was opened (which file, which prompt, which caller).
-2. **A host-side event bus** — no way for any app to observe what other apps are doing, which blocks every cross-cutting feature: agent flow visualizer, trust learning, replay testing, attention queue.
-3. **A Run primitive** — no host-side concept of a stateful multi-step task that can be blocked on user input. Notifications are fire-and-forget; agent jobs have nowhere to live between turns.
-4. **Rich notifications** — action payloads are underspecified; notifications cannot wrap or resume a Run.
+Plexi 2.0 makes recursion foundational:
 
-Everything else Plexi needs for v2 — Plexi IQ Stage 1, typed pipes Phase 1, capability enforcement, directory-scoped sandboxing — is already spec'd or partially implemented. This doc is an **index + gap-fill**, not a replacement. It references existing specs by file, defines the two genuinely new primitives (`OpenIntent`, `Run`) inline, resolves four contradictions between existing specs, and publishes the ship order.
+1. **Depth is structural** — a `.plexi` directory is an instance boundary and a node in the depth tree.
+2. **PGAP is the recursive boundary** — nested instances are subprocesses; stdin/stdout JSON is the only shared interface.
+3. **Capabilities attenuate downward** — child instances can receive fewer permissions than parents, never more.
+4. **Root keeps the global view** — event bus, tree status, Runs, notifications, and IQ make depth visible and controllable.
 
-The explicit design constraint: **the SDK barely changes.** The host gets smarter; apps stay dumb. That matches the "one install, three interfaces" non-negotiable in `VISION.md` and the zero-dependency SDK rule from DEV_LOG.
+The earlier v2 primitives remain, but they now serve the recursive model. `OpenIntent`, the event bus, Runs, rich notifications, typed pipes, capability enforcement, protocol version negotiation, and Plexi IQ are not parallel pillars; they are the machinery that makes recursive `.plexi` instances usable.
+
+The explicit design constraint: **recursion must be visible before it is complete.** v2.0 first proves `.plexi` directory discovery and navigation, then layers embedded rendering, capability manifests, depth notifications, and portals on top.
 
 ---
 
@@ -26,6 +28,13 @@ The explicit design constraint: **the SDK barely changes.** The host gets smarte
 
 ### In scope for Plexi 2.0
 
+- Fractal PGAP foundation (`subsystems/fractal-pgap.md`, `roadmaps/fractal-pgap/`)
+- `.plexi` boundary discovery and depth-tree proof of concept
+- Process lifecycle foundation: process groups, shutdown, `Suspend`, `Resume`
+- Render summary protocol: `RenderMode`, `StatusSummary`, `PaneSummary`, `Health`
+- Embedded Plexi spike: `plexi --embedded`
+- TreeStatus rollup and depth-addressed notifications
+- Capability manifest and root-mediated secret broker MVP
 - Init `OpenIntent` payload (new, this doc)
 - Host event bus / `.plexi` event log (#91, this doc formalizes)
 - `Run` primitive (new, this doc)
@@ -34,6 +43,7 @@ The explicit design constraint: **the SDK barely changes.** The host gets smarte
 - Typed pipes Phase 1 (`subsystems/typed-pipes.md`)
 - Capability enforcement pass (`app_permissions.rs` → runtime prompt)
 - Protocol version negotiation (new, trivial)
+- Portals and direct pipe promotion proof, at POC quality
 
 ### Explicitly deferred to v2.1+
 
@@ -45,8 +55,10 @@ The explicit design constraint: **the SDK barely changes.** The host gets smarte
 - Chat primitive (`proposals/chat-primitive.md`)
 - Core text editor primitive (`proposals/core-text-editor-primitive.md`)
 - Advanced UI SDK egui widgets (`proposals/core-advanced-ui-sdk.md`, #132)
-- Spatial canvas Option B/C (`proposals/spatial-canvas.md`) — v2 stays on Option A as background
+- Spatial canvas Option B/C beyond the `.plexi` depth tree proof
 - Spawn `SpawnLifecycle::Prompt` — stays stubbed as `Orphan`
+- Production-grade hibernation for deep inactive instances
+- Full 3D depth visualization
 
 ### Non-goals — will never be in protocol v2
 
@@ -81,7 +93,7 @@ This is the ground truth as of 2026-04-14. Anything not listed here does not exi
 
 `DrawCommand`: `Rect`, `Text`, `Line`, `List`, `Image`, `VideoThumbnail`, `FileGrid`, `RunInTerminal`, `Cd`, `Log`, `State`, `CostReport`, `Notification`, `DropTarget`, `SetCursor`, `MouseTracking`, `SpawnApp`, `PipeWrite`, `PipeSubscribe`, `FrameDone`.
 
-v2 adds: `OpenIntent` field on `Init`, `RunCreate`/`RunUpdate`/`RunComplete` draw commands, `RunEvent` PlexiEvent, `EventSubscribe` draw command, `Event` PlexiEvent, and a `protocol_version` handshake on `Init`. Everything else is unchanged.
+v2 adds: `protocol_version`, `OpenIntent`, optional capability manifest on `Init`, `RenderMode`, `Suspend`/`Resume`, `StatusSummary`, `TreeStatus`, `RunCreate`/`RunUpdate`/`RunComplete`, `RunEvent`, `EventSubscribe`, and `EventData`. Existing apps remain valid because new fields are optional and new events/commands are additive.
 
 ---
 
@@ -427,38 +439,50 @@ Spatial canvas "linked pane group" definition also resolved in §8 (simple paren
 
 ---
 
-## 12. Ship Order (3 Months)
+## 12. Ship Order
 
-The order is derived from dependencies, not ambition. Each item unblocks the next.
+The order is derived from the recursive model. Each slice must be end-to-end testable and should be safe to hand to a Codex agent in series.
 
-### Month 1 — Plumbing
+### Phase 1 — See The Depth Tree
 
-1. **Protocol version negotiation** (§10) — trivial. 1 day. Lands first so every subsequent change is additive behind a version bump.
-2. **Event bus** (§4) — background writer, JSONL format, `EventSubscribe`/`EventData` plumbing, scoping. ~1 week. Everything downstream consumes this.
-3. **`OpenIntent` payload** (§3) — add fields, thread through palette/CLI/SpawnApp. Backfill existing spawn paths. ~3-4 days.
-4. **Run primitive** (§5) — dumb store, JSONL log, draw commands, run palette card rendering. ~1 week.
+1. **Protocol version negotiation** (§10) — keep every later change additive and explicit.
+2. **Process lifecycle foundation** (`roadmaps/fractal-pgap/01-process-lifecycle.md`) — process groups, shutdown, `Suspend`, `Resume`.
+3. **Depth tree proof of concept** (`roadmaps/fractal-pgap/02-depth-tree-poc.md`) — discover `.plexi` directories and render them as depth nodes.
+4. **Event bus** (§4) — log app lifecycle, depth transitions, and pipe summaries.
 
-### Month 2 — Surface
+### Phase 2 — Make Depth Protocol-Native
 
-5. **Rich notifications** (§6) — action enum, run_id binding, palette integration. ~4 days.
-6. **Capability enforcement pass** (§7) — runtime prompt flow, permissions.json, `observes` capability, OpenIntent path validation. ~1 week.
-7. **Typed pipes Phase 1** (`subsystems/typed-pipes.md`) — manifest parsing, auto-wiring, linking matrix UI. ~2 weeks. (Largest item; parallelizable with #5-6.)
+5. **OpenIntent with depth context** (§3) — launches carry file/prompt/caller/run/depth context.
+6. **Render summary protocol** (`roadmaps/fractal-pgap/03-render-summary-protocol.md`) — `RenderMode`, `StatusSummary`, `PaneSummary`, `Health`.
+7. **TreeStatus + depth notifications** (`subsystems/fractal-pgap.md`) — root can see active depths and jump to notification sources.
+8. **Run primitive** (§5) — multi-step work is scoped to a depth and stored as events.
 
-### Month 3 — Intelligence
+### Phase 3 — Make Depth Safe And Recursive
 
-8. **Plexi IQ Stage 1** (§9, #210/#212) — in-host orchestrator, claude -p backend, agent mode integration, Run lifecycle, `/approve` workflow. ~2-3 weeks.
-9. **Agent flow visualizer app** (validation) — first external consumer of the event bus. Proves the bus is sufficient. Not a must-ship; a must-exist-during-testing.
-10. **Migration pass** — all bundled example apps bumped to `protocol_version = 2`. SDK 0.4.0 released with OpenIntent + Run convenience methods. DEV_LOG entry. CHANGELOG.
+9. **Embedded Plexi spike** (`roadmaps/fractal-pgap/04-embedded-instance-spike.md`) — `plexi --embedded` proves PGAP input/output or documents the blocker.
+10. **Capability containers** (`roadmaps/fractal-pgap/05-capability-containers.md`) — capability manifest, attenuation, TTL, secret broker MVP.
+11. **Typed pipes Phase 1** (`subsystems/typed-pipes.md`) — manifest wiring and auto-wire for app composition.
+12. **Plexi IQ Stage 1, depth-aware** (§9) — root/depth-aware delegation using Runs, event bus, OpenIntent, and capabilities.
+
+### Phase 4 — Prove The Fractal UX
+
+13. **Portals and direct pipe promotion proof** (`roadmaps/fractal-pgap/06-portals-and-direct-pipes.md`) — root can view a child depth and focused-depth I/O avoids unnecessary render loops.
+14. **SDK 0.4.0 rewrite** — Python and Rust SDKs expose v2 recursive protocol fields; vendored/example SDK copies are regenerated.
+15. **App reduction + migration pass** — keep only apps that validate the new protocol. Existing proof-of-concept apps may be deleted or rewritten instead of preserved.
+16. **Installable fractal worktree** — `fractal` worktree installs cleanly and demonstrates recursive `.plexi` navigation.
 
 ### What validates each item
 
-- Event bus: `tail -f ~/.plexi-alpha/events.jsonl` during any session shows a coherent stream.
-- OpenIntent: `plexi launch text-editor foo.md` opens foo.md without text-editor reading argv.
-- Run: the video editor scenario in §5 runs end-to-end.
-- Rich notifications: a notification with `ResumeRun` action resumes a blocked run in one click.
-- Capability: trying to read a file outside scope from an app returns a permission error, prompts the user, and the decision persists.
-- Typed pipes: two unrelated example apps compose via matching kind+name with no code changes.
-- Plexi IQ: agent mode can delegate a task to parallax, track it as a Run, and surface completion.
+- Depth tree: fixture `.plexi` directories render as navigable nodes.
+- Lifecycle: pane close/crash reaps child process trees.
+- Event bus: `tail -f ~/.plexi-alpha/events.jsonl` shows app/depth events.
+- OpenIntent: depth/app launch carries context without argv conventions.
+- Render summary: parent can request cheap child status.
+- Notification: child depth notification can jump back to source.
+- Embedded: `plexi --embedded` exchanges valid PGAP JSON.
+- Capability: child reads allowed scope and is denied outside it.
+- Typed pipes: unrelated apps compose via matching kind/name.
+- IQ: agent mode delegates to an installed agent app and tracks a depth-scoped Run.
 
 ---
 
@@ -468,18 +492,18 @@ Each non-negotiable from `VISION.md` maps to a v2 decision:
 
 | Non-negotiable | How v2 preserves it |
 |---|---|
-| Agent-native first, human-friendly always | Every v2 primitive is invokable by agents: OpenIntent via SpawnApp, Runs via IQ, event bus via subscribe, notifications via notify_socket. |
-| One install, three interfaces | Manifest adds `protocol_version`, `observes`, `open_intent_kinds`, `create_runs` — no new install surface. |
-| The permission model is the product | §7 wires enforcement end-to-end. `PermissionPrompted` events are logged. |
-| PGAP is the only path to intelligence | Deferred to v2.1. v2 uses `claude -p` for IQ; individual apps keep their existing patterns. Clear path to PGAP because all LLM calls will be observable via `AgentTurn` events in the bus. |
-| Beautiful is not cosmetic | No new draw primitives; notification palette and linking matrix get design pass. |
-| Directory is the permission boundary | §7 rule: OpenIntent paths validated at host boundary. |
+| Agent-native first, human-friendly always | Every depth/app capability can be invoked through PGAP; UI is one surface over the same capability. |
+| One install, three interfaces | A `.plexi` directory owns apps, skills, agents, permissions, events, and state. |
+| The permission model is the product | Capability manifests and root-mediated secret access make nested instances sealed boxes. |
+| PGAP is the only path to intelligence | Nested instances and IQ communicate through PGAP; direct model calls are phased out of protocol-conforming apps. |
+| Beautiful is not cosmetic | The depth tree and portal surfaces are product requirements, not debug overlays. |
+| Directory is the permission boundary | `.plexi` directories are the structural boundary; filesystem scope is enforced at host/API/spawn boundaries. |
 
-And against the operational rules from `CLAUDE.md` and DEV_LOG:
+Operational rules:
 
-- **Keep SDK simple.** v2 adds ~4 optional methods, all stdlib JSON. Python SDK stays zero-dependency. Rust SDK gets a parity pass as part of Month 3.
-- **Explicit over defaults.** `protocol_version` is required in manifest. No silent v1 fallback for new apps.
-- **Configuration philosophy.** Runs, OpenIntent, notification actions all use discriminated unions — no magic string matching.
+- **Protocol first, apps second.** Existing example apps are disposable. Keep or rewrite only the apps that prove the v2 protocol.
+- **Explicit over defaults.** v2 apps declare protocol version, capabilities, skill/agent surfaces, and pipe contracts.
+- **No invisible authority.** A child can only narrow its parent's grants.
 
 ---
 
@@ -487,37 +511,37 @@ And against the operational rules from `CLAUDE.md` and DEV_LOG:
 
 Risks ordered by likelihood:
 
-1. **Plexi IQ Stage 1 is bigger than Month 3.** The existing issue #210/#212 tracks it but the scope is fuzzy. Mitigation: define IQ's v2 scope as "agent mode delegation + Run lifecycle + notification dispatch" and defer everything else (task decomposition, multi-agent workflows, improvement officer) to v2.1. Ship a dumb IQ.
-2. **Event bus hot-loop cost.** If the bus is called on every pipe write it could slow renders. Mitigation: bounded channel, drop-on-full, background writer, periodic flush.
-3. **Typed pipes Phase 1 manifest wiring complexity.** The linking matrix UI has been spec'd in 824 lines for a reason. Mitigation: ship auto-wiring first, ship the matrix UI second, accept that if the UI slips to v2.1 the auto-wiring alone is still a huge improvement.
-4. **OpenIntent payload escape hatch abuse.** Apps stuff domain-specific schemas into `payload` and the "advisory" contract erodes. Mitigation: require apps using `payload` to declare its schema in `[app.open_intent]` and emit a deprecation warning when undeclared payloads are used.
-5. **v1 apps break when the host sends v2 Inits.** Mitigation: JSON forward-compat — unknown fields must be ignored by both SDKs. Test with the full bundled example suite during Month 1.
-6. **Capability prompts are annoying.** If every agent turn prompts the user, the agent is unusable. Mitigation: `observes` and `create_runs` are granted to IQ at install time with an explicit "this is the orchestrator" manifest flag. User sees the prompt once for IQ, never again.
+1. **Embedded rendering is harder than expected.** Mitigation: depth-tree POC ships first; `--embedded` is a spike with a documented yes/no result before broad renderer refactors.
+2. **Scope becomes too wide.** Mitigation: every Fractal roadmap file must produce a testable artifact. Anything not testable moves out.
+3. **Old app compatibility drags the architecture backward.** Mitigation: v2 may delete or rewrite proof-of-concept apps. Backward compatibility is best-effort for installed third-party apps, not for repo examples.
+4. **Event bus hot-loop cost.** Mitigation: bounded channel, drop-on-full, background writer, summaries for pipe writes.
+5. **Capability prompts are noisy.** Mitigation: manifests declare ceilings, runtime prompts persist decisions, IQ gets explicit orchestrator grants.
+6. **Depth UX is visually confusing.** Mitigation: ship the depth tree pane before portals/direct pipes, and make the structure inspectable at all times.
 
 ---
 
 ## 15. What This Doc Replaces, Supersedes, and References
 
-**Supersedes:** nothing. All existing specs remain valid; v2 is additive.
+**Supersedes:** the previous v2 framing where OpenIntent/event bus/Runs/notifications were the release's top-level story. They remain in scope, but as machinery for recursive `.plexi` instances.
 
-**Resolves:** contradictions in `subsystems/agent-mode.md`, `subsystems/agent-orchestration.md`, `subsystems/typed-pipes.md`, `VISION.md` (see §11).
+**Resolves:** contradictions in `subsystems/agent-mode.md`, `subsystems/agent-orchestration.md`, `subsystems/typed-pipes.md`, `VISION.md` (see §11), plus the earlier ambiguity about whether issue #260 belonged inside Plexi 2.0.
 
-**Defers:** `subsystems/intelligence-protocol.md`, `proposals/agent-replay-testing.md`, `proposals/wasm-pwa-deployment.md`, `proposals/sync-architecture.md`, `proposals/chat-primitive.md`, `proposals/core-text-editor-primitive.md`, `proposals/core-advanced-ui-sdk.md`, `proposals/core-layout-presets.md`, `proposals/app-focus-manager.md`, `proposals/app-shell-config.md`. None of these are deleted; none are required for v2.0.
+**Defers:** `subsystems/intelligence-protocol.md`, `proposals/agent-replay-testing.md`, `proposals/wasm-pwa-deployment.md`, `proposals/sync-architecture.md`, `proposals/chat-primitive.md`, `proposals/core-text-editor-primitive.md`, `proposals/core-advanced-ui-sdk.md`, `proposals/core-layout-presets.md`, `proposals/app-focus-manager.md`, `proposals/app-shell-config.md`. None are deleted; none are required for v2.0.
 
-**Depends on:** `subsystems/app-infrastructure.md` (v1 contract), `subsystems/typed-pipes.md` (Phase 1), `subsystems/agent-orchestration.md` (IQ design), `subsystems/agent-mode.md` (UI surface), manifest schema at `schemas/plexi-manifest-schema.json`.
+**Depends on:** `subsystems/app-infrastructure.md`, `subsystems/typed-pipes.md`, `subsystems/agent-orchestration.md`, `subsystems/agent-mode.md`, `subsystems/fractal-pgap.md`, and `roadmaps/fractal-pgap/`.
 
-**Implemented across:** `src/app_protocol.rs` (types), `src/process_app.rs` (subprocess handling), `src/pane_ops.rs` (dispatch), `src/app_registry.rs` (manifest), `src/app_permissions.rs` (enforcement), `src/notification_log.rs` (notifications), `src/notify_socket.rs` (external ingestion), new `src/event_log.rs` (bus), new `src/run_store.rs` (runs), new `src/plexi_iq/` (orchestrator).
-
----
-
-## 16. Open Questions — Decide Before Month 1
-
-1. **Should Runs have a TTL?** A run in `BlockedOnUser` for 6 months is clutter. Proposal: 30-day default, `expires_at` field in Run, expired runs moved to a separate log. Decide before shipping §5.
-2. **Should the event bus be per-workspace or global by default?** Global is easier; per-workspace is the directory-scope story. Proposal: per-workspace when inside `.plexi/`, global otherwise. Decide before shipping §4.
-3. **Should `OpenIntent::Resume` be its own kind or folded into `run_id`?** Proposal: just `run_id` on the Init + whatever `OpenKind` the caller specified. `Resume` is a UX concept, not a protocol one.
-4. **Protocol version: u32 vs. semver?** Proposal: u32 for simplicity. v2 → 2, v3 → 3. Breaking changes increment; non-breaking changes don't need negotiation.
-5. **Rust SDK parity — block v2 on it or defer?** Proposal: defer. Rust SDK gets the event bus, OpenIntent, and Run primitives in Month 3 but lags in polish. No example apps are blocked.
+**Implemented across:** `src/app_protocol.rs`, `src/process_app.rs`, `src/pane_ops.rs`, `src/app_registry.rs`, `src/app_permissions.rs`, `src/app_api.rs`, `src/notification_log.rs`, `src/notify_socket.rs`, `src/context.rs`, `src/plexi_iq/`, and new depth/event/run modules as needed.
 
 ---
 
-**End of spec.** This doc is the contract for Plexi 2.0. Changes to it require a bump to `Last updated` and a DEV_LOG entry.
+## 16. Open Questions — Decide Before Implementation
+
+1. **How much embedded rendering must v2.0 ship?** Proposal: require a PGAP JSON proof and one visible nested frame; defer polish.
+2. **Should the first depth tree be a built-in Rust pane or external app?** Proposal: built-in until TreeStatus is stable, then expose to apps.
+3. **What is the canonical depth address format?** Proposal: stable path-derived IDs plus display labels from `.plexi/bookmarks.toml`.
+4. **Should Runs have a TTL?** Proposal: inherit optional TTL from capability manifest; default none for user-visible runs.
+5. **Which example apps survive v2?** Proposal: keep a small conformance suite: depth tree, text/file opener, typed-pipe pair, notification sender, IQ agent stub, and one visual app.
+
+---
+
+**End of spec.** This doc is the contract for Plexi 2.0. Changes require a `Last updated` bump and a DEV_LOG entry.

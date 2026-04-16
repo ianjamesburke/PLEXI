@@ -139,8 +139,8 @@ pub fn check_command(
             }
             PermissionCheck::Allowed
         }
-        AppCommand::Notify(_) => {
-            // Notifications are always allowed — they're non-destructive.
+        AppCommand::Notify(_) | AppCommand::DescendDepth(_) => {
+            // Notifications and depth navigation are always allowed — non-destructive.
             PermissionCheck::Allowed
         }
     }

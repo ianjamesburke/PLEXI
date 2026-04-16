@@ -52,6 +52,13 @@ pub struct PlexiApp {
     pub(crate) spawn_relationships: crate::app_protocol::SpawnRelationships,
     /// Receives notifications from the Unix socket listener thread.
     pub(crate) notify_rx: Option<mpsc::Receiver<crate::notification_log::Notification>>,
+    /// Last active context we emitted a depth-transition event for.
+    last_observed_context: Option<usize>,
+    /// Last tree-status fingerprint we emitted for the active context.
+    last_tree_status_fingerprint: Option<String>,
+    /// Z-axis depth stack. Each entry records the context index and root path
+    /// of the depth we descended from. `depth_stack.len()` is the current depth.
+    pub(crate) depth_stack: Vec<(usize, std::path::PathBuf)>,
 }
 
 impl PlexiApp {
@@ -75,7 +82,8 @@ impl PlexiApp {
         let (tx, rx) = mpsc::channel();
 
         // Start the Unix socket listener for external notification ingestion.
-        let (notify_tx, notify_rx_channel) = mpsc::channel::<crate::notification_log::Notification>();
+        let (notify_tx, notify_rx_channel) =
+            mpsc::channel::<crate::notification_log::Notification>();
         crate::notify_socket::start(notify_tx);
 
         let cwd = std::env::current_dir().unwrap_or_default();
@@ -104,56 +112,76 @@ impl PlexiApp {
                         dirs::home_dir()
                     };
                     let settings = Self::make_backend_settings(cwd, &colors);
-                    if let Some(mut pane) =
-                        TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
-                    {
+                    if let Some(mut pane) = TerminalPane::new(
+                        saved_pane.id,
+                        cc.egui_ctx.clone(),
+                        tx.clone(),
+                        settings,
+                        default_font_size,
+                    ) {
                         pane.name = saved_pane.name.clone();
+                        pane.locked = saved_pane.locked;
                         // Restore active app if one was saved.
                         if let Some(app_type) = &saved_pane.active_app_type {
                             let cwd = saved_pane.cwd.clone();
                             let builtin_perms = crate::app_permissions::AppPermissions::builtin();
 
-                            let (app, perms): (Option<Box<dyn crate::app_trait::App>>, _) = match app_type.as_str() {
-                                "file_browser" => {
-                                    let mut fb = crate::file_browser::FileBrowserApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        fb.restore_state(state);
+                            let (app, perms): (Option<Box<dyn crate::app_trait::App>>, _) =
+                                match app_type.as_str() {
+                                    "file_browser" => {
+                                        let mut fb =
+                                            crate::file_browser::FileBrowserApp::new(cwd.clone());
+                                        if let Some(state) = &saved_pane.active_app_state {
+                                            use crate::app_trait::App;
+                                            fb.restore_state(state);
+                                        }
+                                        (Some(Box::new(fb)), builtin_perms)
                                     }
-                                    (Some(Box::new(fb)), builtin_perms)
-                                }
-                                "quick_note" => {
-                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        note.restore_state(state);
+                                    "quick_note" => {
+                                        let mut note =
+                                            crate::quick_note_app::QuickNoteApp::new(cwd.clone());
+                                        if let Some(state) = &saved_pane.active_app_state {
+                                            use crate::app_trait::App;
+                                            note.restore_state(state);
+                                        }
+                                        (Some(Box::new(note)), builtin_perms)
                                     }
-                                    (Some(Box::new(note)), builtin_perms)
-                                }
-                                "audio_player" => {
-                                    let mut player = crate::audio_app::AudioApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        player.restore_state(state);
+                                    "audio_player" => {
+                                        let mut player =
+                                            crate::audio_app::AudioApp::new(cwd.clone());
+                                        if let Some(state) = &saved_pane.active_app_state {
+                                            use crate::app_trait::App;
+                                            player.restore_state(state);
+                                        }
+                                        (Some(Box::new(player)), builtin_perms)
                                     }
-                                    (Some(Box::new(player)), builtin_perms)
-                                }
-                                "secrets_manager" => {
-                                    let mut secrets = crate::secrets_app::SecretsApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        secrets.restore_state(state);
+                                    "secrets_manager" => {
+                                        let mut secrets =
+                                            crate::secrets_app::SecretsApp::new(cwd.clone());
+                                        if let Some(state) = &saved_pane.active_app_state {
+                                            use crate::app_trait::App;
+                                            secrets.restore_state(state);
+                                        }
+                                        (Some(Box::new(secrets)), builtin_perms)
                                     }
-                                    (Some(Box::new(secrets)), builtin_perms)
-                                }
-                                // Third-party apps: launch via registry using type_id.
-                                other => {
-                                    let app = registry.launch(other, &cwd, &[]);
-                                    let perms = registry.permissions_for(other)
-                                        .unwrap_or(builtin_perms);
-                                    (app, perms)
-                                }
-                            };
+                                    "depth_tree" => {
+                                        let mut tree =
+                                            crate::depth_tree_app::DepthTreeApp::new(cwd.clone());
+                                        if let Some(state) = &saved_pane.active_app_state {
+                                            use crate::app_trait::App;
+                                            tree.restore_state(state);
+                                        }
+                                        (Some(Box::new(tree)), builtin_perms)
+                                    }
+                                    // Third-party apps: launch via registry using type_id.
+                                    other => {
+                                        let app = registry.launch(other, &cwd, &[]);
+                                        let perms = registry
+                                            .permissions_for(other)
+                                            .unwrap_or(builtin_perms);
+                                        (app, perms)
+                                    }
+                                };
                             if let Some(app) = app {
                                 // Restore in the same mode the workspace was
                                 // saved in. If the saved pane had a linked
@@ -163,8 +191,7 @@ impl PlexiApp {
                                 // terminal hosts the embedded companion view.
                                 if saved_pane.linked_terminal_pane.is_some() {
                                     pane.open_app(app, perms, cwd);
-                                    pane.linked_terminal_pane =
-                                        saved_pane.linked_terminal_pane;
+                                    pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
                                 } else {
                                     pane.open_app_with_companion(app, perms, cwd);
                                 }
@@ -224,14 +251,23 @@ impl PlexiApp {
                     media_cache: RefCell::new(MediaCache::new()),
                     spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
                     notify_rx: Some(notify_rx_channel),
+                    last_observed_context: None,
+                    last_tree_status_fingerprint: None,
+                    depth_stack: Vec::new(),
                 };
             }
         }
 
         // Default: single context with single pane
         let settings = Self::make_backend_settings(None, &colors);
-        let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
-            .expect("failed to create initial terminal");
+        let pane = TerminalPane::new(
+            0,
+            cc.egui_ctx.clone(),
+            tx.clone(),
+            settings,
+            default_font_size,
+        )
+        .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
         panes.insert(0u64, pane);
 
@@ -286,6 +322,9 @@ impl PlexiApp {
             media_cache: RefCell::new(MediaCache::new()),
             spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
             notify_rx: Some(notify_rx_channel),
+            last_observed_context: None,
+            last_tree_status_fingerprint: None,
+            depth_stack: Vec::new(),
         }
     }
 
@@ -301,7 +340,10 @@ impl PlexiApp {
         user_theme
     }
 
-    pub(crate) fn make_backend_settings(working_directory: Option<PathBuf>, colors: &Colors) -> BackendSettings {
+    pub(crate) fn make_backend_settings(
+        working_directory: Option<PathBuf>,
+        colors: &Colors,
+    ) -> BackendSettings {
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
@@ -372,8 +414,7 @@ impl PlexiApp {
             }
             let surface_mode = pane.surface_mode;
             let focused_surface = pane.focused_surface;
-            let app_has_focus =
-                focused_surface == crate::app_trait::SurfaceLayer::App;
+            let app_has_focus = focused_surface == crate::app_trait::SurfaceLayer::App;
 
             let app = pane.active_app.as_mut().unwrap();
             if app_has_focus {
@@ -391,23 +432,41 @@ impl PlexiApp {
             (cmds, scope, perms, target)
         };
 
-        if let Some(target_id) = target_id {
-            if let Some(target_pane) = self.contexts[active].panes.get_mut(&target_id) {
-                for cmd in commands {
-                    match crate::app_permissions::check_command(&cmd, &perms, &scope) {
-                        crate::app_permissions::PermissionCheck::Allowed => {
-                            Self::execute_app_command(cmd, target_pane);
-                        }
-                        crate::app_permissions::PermissionCheck::Denied(reason) => {
-                            log::warn!("App command denied: {reason}");
-                        }
+        // Separate DescendDepth commands (need &mut self) from pane-targeted commands.
+        let mut descend_path = None;
+        let mut pane_commands = Vec::new();
+        for cmd in commands {
+            match crate::app_permissions::check_command(&cmd, &perms, &scope) {
+                crate::app_permissions::PermissionCheck::Allowed => {
+                    if let crate::app_trait::AppCommand::DescendDepth(path) = cmd {
+                        descend_path = Some(path);
+                    } else {
+                        pane_commands.push(cmd);
                     }
+                }
+                crate::app_permissions::PermissionCheck::Denied(reason) => {
+                    log::warn!("App command denied: {reason}");
                 }
             }
         }
+
+        if let Some(target_id) = target_id {
+            if let Some(target_pane) = self.contexts[active].panes.get_mut(&target_id) {
+                for cmd in pane_commands {
+                    Self::execute_app_command(cmd, target_pane);
+                }
+            }
+        }
+
+        if let Some(path) = descend_path {
+            self.descend_to_depth(path);
+        }
     }
 
-    fn execute_app_command(cmd: crate::app_trait::AppCommand, pane: &mut crate::pane::TerminalPane) {
+    fn execute_app_command(
+        cmd: crate::app_trait::AppCommand,
+        pane: &mut crate::pane::TerminalPane,
+    ) {
         use crate::app_trait::AppCommand;
         use egui_term::BackendCommand;
 
@@ -421,12 +480,18 @@ impl PlexiApp {
                 // Clear the terminal then cd, so the user doesn't see the raw
                 // `cd` command printing and reflowing. The next prompt appears
                 // clean in the new directory.
-                let cmd = format!("clear && cd {}\n", shell_escape(&path.display().to_string()));
+                let cmd = format!(
+                    "clear && cd {}\n",
+                    shell_escape(&path.display().to_string())
+                );
                 pane.backend
                     .process_command(BackendCommand::Write(cmd.into_bytes()));
             }
             AppCommand::Notify(_msg) => {
                 // Notification system not yet wired — no-op for now.
+            }
+            AppCommand::DescendDepth(_) => {
+                // Handled at the call site — needs &mut self which this static method lacks.
             }
         }
     }
@@ -457,9 +522,10 @@ impl PlexiApp {
 
         for (app_pane_id, linked_id) in app_panes {
             // Get the linked terminal's CWD via lsof.
-            let cwd = ctx.panes.get(&linked_id).and_then(|linked_pane| {
-                crate::shell::get_pid_cwd(linked_pane.backend.child_pid())
-            });
+            let cwd = ctx
+                .panes
+                .get(&linked_id)
+                .and_then(|linked_pane| crate::shell::get_pid_cwd(linked_pane.backend.child_pid()));
             if let Some(cwd) = cwd {
                 if let Some(app_pane) = ctx.panes.get_mut(&app_pane_id) {
                     if let Some(app) = app_pane.active_app.as_mut() {
@@ -467,6 +533,108 @@ impl PlexiApp {
                     }
                 }
             }
+        }
+    }
+
+    fn depth_level_for_path(path: &Path) -> u32 {
+        let mut depth: u32 = 0;
+        let mut current = Some(path);
+        while let Some(dir) = current {
+            if dir.join(".plexi").is_dir() {
+                depth += 1;
+            }
+            current = dir.parent();
+        }
+        depth.saturating_sub(1)
+    }
+
+    fn emit_depth_observability(&mut self) {
+        let active = self.active_context;
+        let Some(context) = self.contexts.get(active) else {
+            return;
+        };
+
+        let depth_level = Self::depth_level_for_path(&context.path);
+        let node_id = context.path.display().to_string();
+        let pane_count = context.panes.len();
+        let active_app_count = context
+            .panes
+            .values()
+            .filter(|pane| pane.active_app.is_some())
+            .count();
+        let child_count = pane_count.saturating_sub(1);
+        let focused_pane = context
+            .focused_pane
+            .and_then(|tile_id| context.tree.tiles.get(tile_id))
+            .and_then(|tile| {
+                if let Tile::Pane(pane_id) = tile {
+                    Some(*pane_id)
+                } else {
+                    None
+                }
+            });
+        let zoomed_pane = context
+            .zoomed_pane
+            .and_then(|tile_id| context.tree.tiles.get(tile_id))
+            .and_then(|tile| {
+                if let Tile::Pane(pane_id) = tile {
+                    Some(*pane_id)
+                } else {
+                    None
+                }
+            });
+        let health = if context.panes.is_empty() {
+            "idle"
+        } else if context.panes.values().any(|pane| pane.exited) {
+            "error"
+        } else {
+            "running"
+        };
+        let status = format!("{pane_count} pane(s), {active_app_count} app(s)");
+        let fingerprint = format!(
+            "{node_id}|{depth_level}|{pane_count}|{active_app_count}|{:?}|{:?}|{}|{}",
+            context.focused_pane, context.zoomed_pane, context.name, health
+        );
+
+        if self.last_observed_context != Some(active) {
+            let (from_node_id, from_depth_level) = self
+                .last_observed_context
+                .and_then(|idx| self.contexts.get(idx))
+                .map(|ctx| {
+                    (
+                        Some(ctx.path.display().to_string()),
+                        Some(Self::depth_level_for_path(&ctx.path)),
+                    )
+                })
+                .unwrap_or((None, None));
+            crate::event_log::emit_depth_transition(
+                from_node_id,
+                node_id.clone(),
+                from_depth_level,
+                depth_level,
+                if self.last_observed_context.is_none() {
+                    "startup"
+                } else {
+                    "switch"
+                },
+            );
+            self.last_observed_context = Some(active);
+        }
+
+        if self.last_tree_status_fingerprint.as_deref() != Some(&fingerprint) {
+            crate::event_log::emit_tree_status(
+                node_id,
+                context.path.display().to_string(),
+                depth_level,
+                status,
+                health,
+                pane_count,
+                child_count,
+                active_app_count,
+                focused_pane,
+                zoomed_pane,
+            );
+            self.last_tree_status_fingerprint = Some(fingerprint);
         }
     }
 }
@@ -495,6 +663,7 @@ impl eframe::App for PlexiApp {
         self.sync_app_cwd();
         self.dispatch_pending_spawns();
         self.dispatch_pipe_writes();
+        self.emit_depth_observability();
 
         // Drain completed ffmpeg thumbnail extractions from worker threads. The
         // worker itself also calls `request_repaint`, but polling here keeps
@@ -515,10 +684,15 @@ impl eframe::App for PlexiApp {
         // Check if the focused app wants to close itself (e.g. after saving).
         {
             let ctx_ref = &self.contexts[self.active_context];
-            let should_close = ctx_ref.focused_pane
+            let should_close = ctx_ref
+                .focused_pane
                 .and_then(|tile| ctx_ref.tree.tiles.get(tile))
                 .and_then(|tile| {
-                    if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None }
+                    if let egui_tiles::Tile::Pane(pid) = tile {
+                        Some(*pid)
+                    } else {
+                        None
+                    }
                 })
                 .and_then(|pid| ctx_ref.panes.get(&pid))
                 .and_then(|pane| pane.active_app.as_ref())
@@ -532,9 +706,16 @@ impl eframe::App for PlexiApp {
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
             let context = &self.contexts[self.active_context];
-            let pane_name = context.focused_pane
+            let pane_name = context
+                .focused_pane
                 .and_then(|tile_id| context.tree.tiles.get(tile_id))
-                .and_then(|tile| if let egui_tiles::Tile::Pane(pane_id) = tile { context.panes.get(pane_id) } else { None })
+                .and_then(|tile| {
+                    if let egui_tiles::Tile::Pane(pane_id) = tile {
+                        context.panes.get(pane_id)
+                    } else {
+                        None
+                    }
+                })
                 .and_then(|pane| pane.name.clone());
             let title = match pane_name {
                 Some(name) => format!("{} — {}", context.name, name),
@@ -546,7 +727,8 @@ impl eframe::App for PlexiApp {
         // Determine if the focused pane has an active app surface.
         let app_active = {
             let context = &self.contexts[self.active_context];
-            context.focused_pane
+            context
+                .focused_pane
                 .and_then(|tile_id| {
                     if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
                         context.panes.get(pane_id)
@@ -590,7 +772,8 @@ impl eframe::App for PlexiApp {
                     // closes the whole pane (legacy behavior).
                     let in_pane_app_focused = {
                         let context = &self.contexts[self.active_context];
-                        context.focused_pane
+                        context
+                            .focused_pane
                             .and_then(|tile| {
                                 if let Some(Tile::Pane(pid)) = context.tree.tiles.get(tile) {
                                     context.panes.get(pid)
@@ -602,8 +785,7 @@ impl eframe::App for PlexiApp {
                                 matches!(
                                     pane.surface_mode,
                                     crate::app_trait::SurfaceMode::AppWithCompanion { .. }
-                                ) && pane.focused_surface
-                                    == crate::app_trait::SurfaceLayer::App
+                                ) && pane.focused_surface == crate::app_trait::SurfaceLayer::App
                             })
                             .unwrap_or(false)
                     };
@@ -621,8 +803,25 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
+                Action::LockPane => {
+                    let ctx = &mut self.contexts[self.active_context];
+                    if let Some(focused) = ctx.focused_pane {
+                        if let Some(Tile::Pane(pid)) = ctx.tree.tiles.get(focused) {
+                            if let Some(pane) = ctx.panes.get_mut(pid) {
+                                pane.locked = !pane.locked;
+                                log::info!(
+                                    "pane lock toggled: {} (locked={})",
+                                    pid,
+                                    pane.locked
+                                );
+                            }
+                        }
+                    }
+                }
                 Action::NewTab => self.new_tab(),
                 Action::ToggleZoom => {
+                    // Pure zoom toggle — depth descent is handled
+                    // exclusively through the depth tree app.
                     let ctx = &mut self.contexts[self.active_context];
                     if let Some(focused) = ctx.focused_pane {
                         if ctx.zoomed_pane == Some(focused) {
@@ -697,20 +896,21 @@ impl eframe::App for PlexiApp {
                     // sibling terminal pane.
                     let in_pane_companion = {
                         let context = &self.contexts[self.active_context];
-                        context.focused_pane
+                        context
+                            .focused_pane
                             .and_then(|tile| {
-                                if let Some(Tile::Pane(pane_id)) =
-                                    context.tree.tiles.get(tile)
-                                {
+                                if let Some(Tile::Pane(pane_id)) = context.tree.tiles.get(tile) {
                                     context.panes.get(pane_id)
                                 } else {
                                     None
                                 }
                             })
-                            .map(|pane| matches!(
-                                pane.surface_mode,
-                                crate::app_trait::SurfaceMode::AppWithCompanion { .. }
-                            ))
+                            .map(|pane| {
+                                matches!(
+                                    pane.surface_mode,
+                                    crate::app_trait::SurfaceMode::AppWithCompanion { .. }
+                                )
+                            })
                             .unwrap_or(false)
                     };
                     if in_pane_companion {
@@ -721,6 +921,9 @@ impl eframe::App for PlexiApp {
                 }
                 Action::OpenFileBrowser => {
                     self.open_file_browser();
+                }
+                Action::OpenDepthTree => {
+                    self.open_depth_tree();
                 }
                 Action::OpenQuickNote => {
                     self.open_quick_note();
@@ -748,6 +951,9 @@ impl eframe::App for PlexiApp {
                     if self.show_notification_palette {
                         self.notification_palette_selected = 0;
                     }
+                }
+                Action::AscendDepth => {
+                    self.ascend_depth();
                 }
             }
         }
@@ -789,6 +995,30 @@ impl eframe::App for PlexiApp {
             .frame(egui::Frame::new().fill(self.colors.border))
             .show(ctx, |_ui| {});
 
+        // Depth breadcrumb (visible when navigated below root depth)
+        if !self.depth_stack.is_empty() {
+            egui::TopBottomPanel::top("depth_breadcrumb")
+                .exact_height(24.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(self.colors.bg_darkest)
+                        .inner_margin(egui::Margin {
+                            left: 12,
+                            right: 12,
+                            top: 4,
+                            bottom: 4,
+                        }),
+                )
+                .show(ctx, |ui| {
+                    self.draw_depth_breadcrumb(ui);
+                });
+            // Thin separator under breadcrumb
+            egui::TopBottomPanel::top("depth_breadcrumb_sep")
+                .exact_height(1.0)
+                .frame(egui::Frame::new().fill(self.colors.accent.gamma_multiply(0.3)))
+                .show(ctx, |_ui| {});
+        }
+
         // Sidebar
         if self.sidebar_visible {
             egui::SidePanel::left("sidebar")
@@ -812,6 +1042,95 @@ impl eframe::App for PlexiApp {
                 ..Default::default()
             })
             .show(ctx, |ui| {
+                let panel_rect = ui.max_rect();
+                let depth = self.depth_stack.len();
+
+                // ── Parent depth behind (dimmed) ──────────────────────────
+                // Render the parent context's live terminal content at full
+                // size, then overlay a heavy dark scrim. The active depth
+                // renders in a slightly inset rect on top, creating a
+                // spatial zoom-into-depth illusion.
+                if depth > 0 {
+                    let (parent_idx, _) = self.depth_stack[depth - 1];
+                    if parent_idx != self.active_context
+                        && parent_idx < self.contexts.len()
+                    {
+                        // Wireframe preview of parent depth: colored rectangles
+                        // per pane showing app name/status. Lightweight stand-in
+                        // for full preview-mode rendering.
+                        let parent = &self.contexts[parent_idx];
+                        let pane_summaries: Vec<(String, bool)> = parent
+                            .panes
+                            .values()
+                            .map(|p| {
+                                let label = if let Some(app) = &p.active_app {
+                                    app.type_id().to_string()
+                                } else if p.exited {
+                                    "[exited]".to_string()
+                                } else {
+                                    "Terminal".to_string()
+                                };
+                                let has_app = p.active_app.is_some();
+                                (label, has_app)
+                            })
+                            .collect();
+                        let n = pane_summaries.len().max(1);
+                        let cell_w = panel_rect.width() / n as f32;
+                        let painter = ui.painter();
+                        for (i, (label, has_app)) in pane_summaries.iter().enumerate() {
+                            let cell = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    panel_rect.left() + i as f32 * cell_w,
+                                    panel_rect.top(),
+                                ),
+                                egui::vec2(cell_w, panel_rect.height()),
+                            )
+                            .shrink(3.0);
+                            let fill = if *has_app {
+                                Color32::from_rgba_unmultiplied(
+                                    self.colors.accent.r(),
+                                    self.colors.accent.g(),
+                                    self.colors.accent.b(),
+                                    18,
+                                )
+                            } else {
+                                Color32::from_white_alpha(6)
+                            };
+                            painter.rect_filled(cell, CornerRadius::same(4), fill);
+                            painter.rect_stroke(
+                                cell,
+                                CornerRadius::same(4),
+                                Stroke::new(1.0, Color32::from_white_alpha(20)),
+                                StrokeKind::Inside,
+                            );
+                            painter.text(
+                                cell.center(),
+                                egui::Align2::CENTER_CENTER,
+                                label,
+                                egui::FontId::proportional(13.0),
+                                Color32::from_white_alpha(50),
+                            );
+                        }
+                        // Context name at top
+                        painter.text(
+                            egui::pos2(panel_rect.left() + 8.0, panel_rect.top() + 12.0),
+                            egui::Align2::LEFT_TOP,
+                            &parent.name,
+                            egui::FontId::proportional(11.0),
+                            Color32::from_white_alpha(35),
+                        );
+                    }
+                }
+
+                // ── Active depth ──────────────────────────────────────────
+                // Inset slightly per depth level to reinforce the zoom feel.
+                let inset = (depth as f32 * 10.0).min(40.0);
+                let active_rect = if depth > 0 {
+                    panel_rect.shrink(inset)
+                } else {
+                    panel_rect
+                };
+
                 let ctx = &mut self.contexts[self.active_context];
 
                 // Resolve focused_pane if simplifier moved the tile
@@ -833,7 +1152,14 @@ impl eframe::App for PlexiApp {
                 let pane_names: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
-                    .filter_map(|(&id, p)| p.name.as_ref().map(|n| (id, n.clone())))
+                    .filter_map(|(&id, p)| {
+                        let prefix = if p.locked { "\u{1F512} " } else { "" };
+                        match &p.name {
+                            Some(n) => Some((id, format!("{prefix}{n}"))),
+                            None if p.locked => Some((id, "\u{1F512}".to_string())),
+                            None => None,
+                        }
+                    })
                     .collect();
                 let suppress_focus = self.renaming_context.is_some()
                     || self.show_command_palette
@@ -845,7 +1171,7 @@ impl eframe::App for PlexiApp {
                         !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty()
                     });
                     if has_drag {
-                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16)); // continuous repaints while dragging
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
                         use objc2_app_kit::NSApplication;
                         use objc2_foundation::MainThreadMarker;
                         MainThreadMarker::new()
@@ -866,6 +1192,19 @@ impl eframe::App for PlexiApp {
                 #[cfg(not(target_os = "macos"))]
                 let drag_cursor_pos: Option<egui::Pos2> = None;
 
+                // Render the active depth in its (possibly inset) rect.
+                let mut active_ui = ui.new_child(
+                    egui::UiBuilder::new().max_rect(active_rect),
+                );
+                // Dark background fill for the inset area
+                if depth > 0 {
+                    active_ui.painter().rect_filled(
+                        active_rect,
+                        CornerRadius::same(4),
+                        self.colors.bg_darkest,
+                    );
+                }
+
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     focused_tile: if suppress_focus { None } else { ctx.focused_pane },
@@ -879,7 +1218,7 @@ impl eframe::App for PlexiApp {
                     drag_cursor_pos,
                     media_cache: &self.media_cache,
                 };
-                ctx.tree.ui(&mut behavior, ui);
+                ctx.tree.ui(&mut behavior, &mut active_ui);
 
                 if let Some(new) = behavior.new_focused {
                     ctx.focused_pane = Some(new);
@@ -887,11 +1226,30 @@ impl eframe::App for PlexiApp {
 
                 let should_close_exited = behavior.close_exited.is_some();
 
+                // Depth accent border around the inset active area
+                if depth > 0 {
+                    let accent = self.colors.accent;
+                    let border_alpha =
+                        ((60 + depth as u32 * 30).min(150)) as u8;
+                    let border_color = Color32::from_rgba_unmultiplied(
+                        accent.r(),
+                        accent.g(),
+                        accent.b(),
+                        border_alpha,
+                    );
+                    ui.painter().rect_stroke(
+                        active_rect,
+                        CornerRadius::same(4),
+                        Stroke::new(2.0, border_color),
+                        StrokeKind::Inside,
+                    );
+                }
+
                 // Draw zoom overlay if a pane is zoomed
                 if let Some(zoomed_tile) = zoomed_pane {
                     if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(zoomed_tile) {
                         let pane_id = *pane_id;
-                        let panel_rect = ui.max_rect();
+                        let panel_rect = active_rect;
                         let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).copied();
 
                         // Drop behavior to release the mutable borrow on ctx.panes
@@ -1087,7 +1445,8 @@ impl eframe::App for PlexiApp {
 
 impl PlexiApp {
     pub(crate) fn record_pane_visit(&mut self, ctx_idx: usize, tile_id: egui_tiles::TileId) {
-        self.pane_visit_history.retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
+        self.pane_visit_history
+            .retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
         self.pane_visit_history.insert(0, (ctx_idx, tile_id));
         self.pane_visit_history.truncate(100);
     }
@@ -1113,11 +1472,7 @@ impl PlexiApp {
                     let painter = ui.painter();
 
                     // Green phosphor tint
-                    painter.rect_filled(
-                        screen,
-                        0.0,
-                        Color32::from_rgba_unmultiplied(0, 40, 0, 18),
-                    );
+                    painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0, 40, 0, 18));
 
                     // Scanlines every 3 pixels
                     let mut y = screen.top();
@@ -1177,4 +1532,18 @@ impl PlexiApp {
             raw
         }
     }
+}
+
+/// Find the first child directory that contains a `.plexi` boundary.
+/// Returns `None` if the cwd itself doesn't exist or has no such children.
+fn find_child_plexi(cwd: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(cwd).ok()?;
+    let mut candidates: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .filter(|e| e.path().join(".plexi").is_dir())
+        .map(|e| e.path())
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
 }

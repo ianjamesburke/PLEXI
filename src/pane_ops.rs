@@ -21,7 +21,13 @@ impl PlexiApp {
         self.next_pane_id += 1;
 
         let settings = Self::make_backend_settings(cwd, &self.colors);
-        let pane = TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)?;
+        let pane = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        )?;
 
         let mut panes = HashMap::new();
         panes.insert(new_id, pane);
@@ -31,6 +37,85 @@ impl PlexiApp {
         let tree = Tree::new("plexi", root_tile, tiles);
 
         Some((tree, panes, root_tile))
+    }
+
+    /// Create a two-pane horizontal split tree rooted at `cwd`.
+    /// Returns (tree, panes, left_tile_id).
+    fn create_split_pane_tree(
+        &mut self,
+        cwd: Option<PathBuf>,
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, TerminalPane>, TileId)> {
+        let id_left = self.next_pane_id;
+        self.next_pane_id += 1;
+        let id_right = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let settings_left = Self::make_backend_settings(cwd.clone(), &self.colors);
+        let pane_left = TerminalPane::new(
+            id_left,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings_left,
+            self.default_font_size,
+        )?;
+
+        let settings_right = Self::make_backend_settings(cwd, &self.colors);
+        let pane_right = TerminalPane::new(
+            id_right,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings_right,
+            self.default_font_size,
+        )?;
+
+        let mut panes = HashMap::new();
+        panes.insert(id_left, pane_left);
+        panes.insert(id_right, pane_right);
+
+        let mut tiles = egui_tiles::Tiles::default();
+        let left_tile = tiles.insert_pane(id_left);
+        let right_tile = tiles.insert_pane(id_right);
+        let root = tiles.insert_horizontal_tile(vec![left_tile, right_tile]);
+        let tree = Tree::new("plexi", root, tiles);
+
+        Some((tree, panes, left_tile))
+    }
+
+    /// Create a tree with N panes in a horizontal split, all rooted at `cwd`.
+    /// Returns (tree, panes, first_tile_id). Falls back to 2 panes if n < 1.
+    fn create_n_pane_tree(
+        &mut self,
+        n: usize,
+        cwd: Option<PathBuf>,
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, TerminalPane>, Vec<egui_tiles::TileId>)> {
+        let count = n.max(1);
+        let mut panes = HashMap::new();
+        let mut tiles = egui_tiles::Tiles::default();
+        let mut tile_ids = Vec::new();
+
+        for _ in 0..count {
+            let id = self.next_pane_id;
+            self.next_pane_id += 1;
+            let settings = Self::make_backend_settings(cwd.clone(), &self.colors);
+            let pane = TerminalPane::new(
+                id,
+                self.ctx.clone(),
+                self.pty_event_tx.clone(),
+                settings,
+                self.default_font_size,
+            )?;
+            panes.insert(id, pane);
+            let tile = tiles.insert_pane(id);
+            tile_ids.push(tile);
+        }
+
+        let root = if tile_ids.len() == 1 {
+            tile_ids[0]
+        } else {
+            tiles.insert_horizontal_tile(tile_ids.clone())
+        };
+        let tree = Tree::new("plexi", root, tiles);
+        Some((tree, panes, tile_ids))
     }
 
     pub(crate) fn split_focused(&mut self, vertical: bool) {
@@ -43,22 +128,28 @@ impl PlexiApp {
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
-        let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)
-        else {
+        let Some(pane) = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
             log::error!("Failed to create new terminal pane");
             return;
         };
-        log::info!("pane {new_id}: created via {} split", if vertical { "vertical" } else { "horizontal" });
+        log::info!(
+            "pane {new_id}: created via {} split",
+            if vertical { "vertical" } else { "horizontal" }
+        );
         self.contexts[self.active_context]
             .panes
             .insert(new_id, pane);
 
-        let split_target =
-            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
-                Some((tabs_id, _)) => tabs_id,
-                None => focused,
-            };
+        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+            Some((tabs_id, _)) => tabs_id,
+            None => focused,
+        };
 
         let ctx = &mut self.contexts[self.active_context];
         let parent = ctx.tree.tiles.parent_of(split_target);
@@ -124,9 +215,13 @@ impl PlexiApp {
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
-        let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)
-        else {
+        let Some(pane) = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
             log::error!("Failed to create new terminal pane");
             return;
         };
@@ -139,9 +234,7 @@ impl PlexiApp {
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
 
         if let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) {
-            if let Some(Tile::Container(Container::Tabs(tabs))) =
-                ctx.tree.tiles.get_mut(tabs_id)
-            {
+            if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tabs_id) {
                 tabs.add_child(new_tile);
                 tabs.set_active(new_tile);
             }
@@ -216,6 +309,17 @@ impl PlexiApp {
             Some(f) => f,
             None => return,
         };
+        // Refuse to close locked panes.
+        if let Some(Tile::Pane(pid)) = self.contexts[self.active_context].tree.tiles.get(focused) {
+            if self.contexts[self.active_context]
+                .panes
+                .get(pid)
+                .is_some_and(|p| p.locked)
+            {
+                log::info!("close_focused: pane is locked, refusing to close");
+                return;
+            }
+        }
         self.close_tile(self.active_context, focused);
     }
 
@@ -432,6 +536,7 @@ impl PlexiApp {
                     active_app_type: app_type,
                     active_app_state: app_state,
                     linked_terminal_pane: pane.linked_terminal_pane,
+                    locked: pane.locked,
                 });
             }
             saved_contexts.push(crate::workspace::SavedContext {
@@ -458,8 +563,12 @@ impl PlexiApp {
 
     pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
         let ctx = &mut self.contexts[self.active_context];
-        let Some(focused_tile) = ctx.focused_pane else { return };
-        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
+        let Some(focused_tile) = ctx.focused_pane else {
+            return;
+        };
+        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else {
+            return;
+        };
         let pane_id = *pane_id;
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             pane.backend.process_command(BackendCommand::Scroll(lines));
@@ -468,8 +577,12 @@ impl PlexiApp {
 
     pub(crate) fn adjust_focused_pane_font_size(&mut self, delta: f32) {
         let ctx = &mut self.contexts[self.active_context];
-        let Some(focused_tile) = ctx.focused_pane else { return };
-        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
+        let Some(focused_tile) = ctx.focused_pane else {
+            return;
+        };
+        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else {
+            return;
+        };
         let pane_id = *pane_id;
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             pane.font_size = (pane.font_size + delta).clamp(8.0, 32.0);
@@ -503,7 +616,11 @@ impl PlexiApp {
                 .active_app
                 .as_ref()
                 .and_then(|app| app.current_dir().map(|p| p.to_path_buf()));
-            let closing_app_id = pane.active_app.as_ref().map(|a| a.type_id()).unwrap_or("unknown");
+            let closing_app_id = pane
+                .active_app
+                .as_ref()
+                .map(|a| a.type_id())
+                .unwrap_or("unknown");
             log::info!("app '{closing_app_id}': closed");
             crate::event_log::emit_app_closed(closing_app_id, closing_app_id, pane_id, None);
             if let (Some(final_dir), Some(scope)) = (final_dir, pane.app_scope.clone()) {
@@ -627,7 +744,9 @@ impl PlexiApp {
                         pane.open_app_with_companion(app, permissions, scope);
                         // Write manifest-declared startup message into this same
                         // pane's terminal grid — it IS the companion.
-                        if let Some(msg) = launch.as_ref().and_then(|l| l.startup_message.as_deref()) {
+                        if let Some(msg) =
+                            launch.as_ref().and_then(|l| l.startup_message.as_deref())
+                        {
                             let bytes = format_startup_message(msg);
                             pane.backend.write_agent_bytes(&bytes);
                         }
@@ -649,7 +768,10 @@ impl PlexiApp {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
                     let type_id = app.type_id().to_string();
-                    log::info!("app '{}': replacing existing app on pane {pane_id}", type_id);
+                    log::info!(
+                        "app '{}': replacing existing app on pane {pane_id}",
+                        type_id
+                    );
                     pane.close_app();
                     pane.open_app(app, permissions, scope);
                     crate::event_log::emit_app_spawned(&type_id, &type_id, pane_id);
@@ -714,11 +836,10 @@ impl PlexiApp {
             .insert(new_term_id, new_pane);
 
         // Split using the exact same logic as split_focused (which works).
-        let split_target =
-            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
-                Some((tabs_id, _)) => tabs_id,
-                None => focused,
-            };
+        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+            Some((tabs_id, _)) => tabs_id,
+            None => focused,
+        };
 
         let split_dir = if vertical {
             egui_tiles::LinearDir::Vertical
@@ -753,9 +874,13 @@ impl PlexiApp {
 
         if !inserted_as_sibling {
             let container_tile = if vertical {
-                ctx.tree.tiles.insert_vertical_tile(vec![split_target, new_tile])
+                ctx.tree
+                    .tiles
+                    .insert_vertical_tile(vec![split_target, new_tile])
             } else {
-                ctx.tree.tiles.insert_horizontal_tile(vec![split_target, new_tile])
+                ctx.tree
+                    .tiles
+                    .insert_horizontal_tile(vec![split_target, new_tile])
             };
 
             // Set app / companion share ratio from config (or 0.75 / 0.25 default).
@@ -768,9 +893,7 @@ impl PlexiApp {
             }
 
             if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent_container)) =
-                    ctx.tree.tiles.get_mut(parent_id)
-                {
+                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
                     replace_child(parent_container, split_target, container_tile);
                 }
             } else {
@@ -782,7 +905,10 @@ impl PlexiApp {
         if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
             let pane_id = *pane_id;
             if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                log::info!("app '{}': opened on pane {pane_id} with companion terminal {new_term_id}", app.type_id());
+                log::info!(
+                    "app '{}': opened on pane {pane_id} with companion terminal {new_term_id}",
+                    app.type_id()
+                );
                 pane.open_app(app, permissions, scope);
                 pane.linked_terminal_pane = Some(new_term_id);
             }
@@ -828,6 +954,35 @@ impl PlexiApp {
         // Built-in file browser gets full permissions.
         let perms = crate::app_permissions::AppPermissions::builtin();
         self.open_app_on_focused(app, perms, cwd);
+    }
+
+    /// Toggle the depth tree browser in the focused pane.
+    pub(crate) fn open_depth_tree(&mut self) {
+        let ctx = &self.contexts[self.active_context];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                let pane_id = *pane_id;
+                if let Some(pane) = ctx.panes.get(&pane_id) {
+                    if let Some(app) = &pane.active_app {
+                        if app.type_id() == "depth_tree" {
+                            self.close_focused_app();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let cwd = {
+            let ctx = &self.contexts[self.active_context];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        let app = Box::new(crate::depth_tree_app::DepthTreeApp::new(cwd.clone()));
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_app_fullscreen(app, perms, cwd);
     }
 
     /// Open an app on the focused pane WITHOUT creating a linked terminal split.
@@ -902,9 +1057,13 @@ impl PlexiApp {
             if let Some(parent) = config_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(&config_path, "# Plexi configuration\n# See docs for options\n");
+            let _ = std::fs::write(
+                &config_path,
+                "# Plexi configuration\n# See docs for options\n",
+            );
         }
-        let scope = config_path.parent()
+        let scope = config_path
+            .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let editor = crate::text_editor_app::TextEditorApp::from_file(config_path);
@@ -986,7 +1145,9 @@ impl PlexiApp {
             let ctx = &mut self.contexts[self.active_context];
             if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
                 let path_str = file_path.display().to_string();
-                let escaped = if path_str.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
+                let escaped = if path_str
+                    .contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c))
+                {
                     format!("'{}'", path_str.replace('\'', "'\\''"))
                 } else {
                     path_str
@@ -1140,7 +1301,10 @@ impl PlexiApp {
             let pane = match ctx.panes.get(&requester_pane_id) {
                 Some(p) => p,
                 None => {
-                    log::warn!("execute_spawn: requester pane {} not found", requester_pane_id);
+                    log::warn!(
+                        "execute_spawn: requester pane {} not found",
+                        requester_pane_id
+                    );
                     return;
                 }
             };
@@ -1159,12 +1323,10 @@ impl PlexiApp {
         // 2. Launch the child app subprocess.
         // For built-in apps not in the registry (file_browser), fall back to
         // the in-process implementation so spawning always works.
-        let child_app: Box<dyn crate::app_trait::App> = if let Some(a) = self.registry.launch_as_child(
-            &spawn.app_id,
-            &scope,
-            &spawn.args,
-            &requester_app_id,
-        ) {
+        let child_app: Box<dyn crate::app_trait::App> = if let Some(a) = self
+            .registry
+            .launch_as_child(&spawn.app_id, &scope, &spawn.args, &requester_app_id)
+        {
             a
         } else if spawn.app_id == "file_browser" || spawn.app_id == "file-browser" {
             Box::new(crate::file_browser::FileBrowserApp::from_args(
@@ -1235,16 +1397,12 @@ impl PlexiApp {
 
         // 6. Determine split direction, new-pane position, and size ratio.
         let (split_dir, new_before_anchor, ratio) = match &spawn.layout {
-            SpawnLayout::Cols { slot, ratio } => (
-                egui_tiles::LinearDir::Horizontal,
-                *slot == 0,
-                *ratio,
-            ),
-            SpawnLayout::Rows { slot, ratio } => (
-                egui_tiles::LinearDir::Vertical,
-                *slot == 0,
-                *ratio,
-            ),
+            SpawnLayout::Cols { slot, ratio } => {
+                (egui_tiles::LinearDir::Horizontal, *slot == 0, *ratio)
+            }
+            SpawnLayout::Rows { slot, ratio } => {
+                (egui_tiles::LinearDir::Vertical, *slot == 0, *ratio)
+            }
             // Fill and unsupported variants: default to right column at 50 %.
             _ => (egui_tiles::LinearDir::Horizontal, false, 0.5),
         };
@@ -1308,9 +1466,7 @@ impl PlexiApp {
                 lin.shares.set_share(new_tile, new_share);
             }
             if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent_container)) =
-                    ctx.tree.tiles.get_mut(parent_id)
-                {
+                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
                     replace_child(parent_container, anchor_tile, container_tile);
                 }
             } else {
@@ -1321,12 +1477,8 @@ impl PlexiApp {
         // 8. Record the relationship so cascade/orphan close works.
         let lifecycle = spawn.lifecycle;
         let wire_channels = spawn.wire_channels.clone();
-        self.spawn_relationships.add(
-            requester_pane_id,
-            child_pane_id,
-            lifecycle,
-            wire_channels,
-        );
+        self.spawn_relationships
+            .add(requester_pane_id, child_pane_id, lifecycle, wire_channels);
 
         log::info!(
             "execute_spawn: spawned '{}' (pane {}) from '{}' (pane {}) lifecycle={:?}",
@@ -1389,6 +1541,199 @@ impl PlexiApp {
         }
         log::debug!("focus_pane_by_id: pane {pane_id} not found");
     }
+
+    // ── Z-axis depth navigation ────────────────────────────────────────────
+
+    /// Descend into a child `.plexi` depth boundary. Creates a new context
+    /// rooted at `path`, pushes the current context onto the depth stack,
+    /// and switches to the new context.
+    pub(crate) fn descend_to_depth(&mut self, path: PathBuf) {
+        if !path.is_dir() {
+            log::warn!(
+                "descend_to_depth: path is not a directory: {}",
+                path.display()
+            );
+            return;
+        }
+        if !path.join(".plexi").is_dir() {
+            log::warn!(
+                "descend_to_depth: no .plexi boundary at {}",
+                path.display()
+            );
+            return;
+        }
+
+        // Guard: don't descend into the current context's own path.
+        if self.contexts[self.active_context].path == path {
+            log::debug!(
+                "descend_to_depth: already at {}, ignoring",
+                path.display()
+            );
+            return;
+        }
+
+        let prev_depth = self.depth_stack.len() as u32;
+        let prev_ctx = self.active_context;
+        let prev_path = self.contexts[prev_ctx].path.clone();
+
+        // Push current context onto the depth stack.
+        // Clear the zoom — the zoom was the entry gesture, not a state to
+        // preserve. The parent should show its full layout on return.
+        self.contexts[prev_ctx].zoomed_pane = None;
+        self.depth_stack
+            .push((prev_ctx, prev_path.clone()));
+
+        // Reuse an existing context for this path if one exists (preserves
+        // whatever pane layout the user built there previously).
+        if let Some(existing_idx) = self.contexts.iter().position(|c| c.path == path) {
+            log::info!(
+                "depth: re-entering existing context for {} (depth {})",
+                path.display(),
+                self.depth_stack.len()
+            );
+            self.active_context = existing_idx;
+        } else {
+            // First visit — read .plexi/config.toml for workspace config.
+            let depth_config = read_depth_config(&path);
+            let pane_count = depth_config
+                .as_ref()
+                .map(|c| c.apps.len().max(1))
+                .unwrap_or(2);
+
+            let Some((tree, panes, tile_ids)) =
+                self.create_n_pane_tree(pane_count, Some(path.clone()))
+            else {
+                log::error!(
+                    "descend_to_depth: failed to create terminal for {}",
+                    path.display()
+                );
+                self.depth_stack.pop();
+                return;
+            };
+
+            let config_name = depth_config.as_ref().and_then(|c| c.name.clone());
+            let name = config_name.unwrap_or_else(|| {
+                format!(
+                    "depth {} — {}",
+                    self.depth_stack.len(),
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                )
+            });
+            log::info!(
+                "depth: descending to {} (depth {})",
+                path.display(),
+                self.depth_stack.len()
+            );
+
+            let first_tile = tile_ids.first().copied();
+            self.contexts.push(Context {
+                name,
+                path: path.clone(),
+                tree,
+                panes,
+                focused_pane: first_tile,
+                zoomed_pane: None,
+            });
+            self.active_context = self.contexts.len() - 1;
+
+            // Launch configured apps into the panes.
+            if let Some(config) = depth_config {
+                for (i, app_id) in config.apps.iter().enumerate() {
+                    if let Some(&tile_id) = tile_ids.get(i) {
+                        // Focus this pane, then launch the app.
+                        self.contexts[self.active_context].focused_pane = Some(tile_id);
+                        self.launch_app_by_id(app_id);
+                    }
+                }
+                // Restore focus to first pane.
+                self.contexts[self.active_context].focused_pane = first_tile;
+            }
+        }
+
+        // Emit depth transition event.
+        crate::event_log::emit_depth_transition(
+            Some(prev_path.display().to_string()),
+            path.display().to_string(),
+            Some(prev_depth),
+            self.depth_stack.len() as u32,
+            "descend",
+        );
+    }
+
+    /// Ascend one depth level. Switches back to the parent context and
+    /// removes the depth entry from the stack.
+    pub(crate) fn ascend_depth(&mut self) {
+        let Some((parent_ctx_idx, parent_path)) = self.depth_stack.pop() else {
+            log::debug!("ascend_depth: already at root depth, nothing to do");
+            return;
+        };
+
+        let current_path = self.contexts[self.active_context].path.clone();
+        let prev_depth = (self.depth_stack.len() + 1) as u32;
+
+        // Switch back to the parent context. Clear zoom so the parent
+        // shows its full layout — ascending = zooming out.
+        if parent_ctx_idx < self.contexts.len() {
+            log::info!(
+                "depth: ascending to {} (depth {})",
+                parent_path.display(),
+                self.depth_stack.len()
+            );
+            self.active_context = parent_ctx_idx;
+            self.contexts[parent_ctx_idx].zoomed_pane = None;
+        } else {
+            log::warn!(
+                "ascend_depth: parent context {} no longer exists, staying at current",
+                parent_ctx_idx
+            );
+            return;
+        }
+
+        // Emit depth transition event.
+        crate::event_log::emit_depth_transition(
+            Some(current_path.display().to_string()),
+            parent_path.display().to_string(),
+            Some(prev_depth),
+            self.depth_stack.len() as u32,
+            "ascend",
+        );
+    }
+}
+
+// ─── Depth config ─────────────────────────────────────────────────────────
+
+/// Configuration read from `.plexi/config.toml` at a depth boundary.
+struct DepthConfig {
+    name: Option<String>,
+    apps: Vec<String>,
+}
+
+/// Read `.plexi/config.toml` from a directory if it exists.
+/// Expected format:
+/// ```toml
+/// name = "Dev Environment"
+/// apps = ["git-log", "file-browser"]
+/// ```
+fn read_depth_config(dir: &std::path::Path) -> Option<DepthConfig> {
+    let config_path = dir.join(".plexi").join("config.toml");
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let table: toml::Table = content.parse().ok()?;
+    let name = table
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let apps = table
+        .get("apps")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(DepthConfig { name, apps })
 }
 
 /// Format a manifest-declared `[app.launch].startup_message` into dim italic

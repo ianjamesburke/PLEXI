@@ -32,7 +32,6 @@
 ///   }
 /// }
 /// ```
-
 use serde::{Deserialize, Serialize};
 
 /// The protocol version this host speaks. Sent in every `Init` event.
@@ -70,16 +69,27 @@ pub enum PlexiEvent {
         /// Structured spawn intent.
         #[serde(default)]
         open_intent: Option<OpenIntent>,
+        /// Optional capability manifest for nested instances. Hosts may leave
+        /// this unset until capability enforcement is fully wired up.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability_manifest: Option<CapabilityManifest>,
     },
     /// Request a new frame. App should reply with DrawCommands + FrameDone.
-    Render { width: f32, height: f32, delta_time: f32 },
+    Render {
+        width: f32,
+        height: f32,
+        delta_time: f32,
+        #[serde(default)]
+        mode: RenderMode,
+    },
+    /// Temporarily pause active work and render loops if possible.
+    Suspend,
+    /// Resume active work and render loops.
+    Resume,
     /// Surface was resized.
     Resize { width: f32, height: f32 },
     /// A key was pressed.
-    Key {
-        key: String,
-        modifiers: Modifiers,
-    },
+    Key { key: String, modifiers: Modifiers },
     /// Mouse click at logical coordinates within the app surface.
     Click { x: f32, y: f32, button: MouseButton },
     /// Mouse button pressed (distinct from Click which fires on release).
@@ -90,7 +100,12 @@ pub enum PlexiEvent {
     /// in the app's manifest capabilities.
     MouseMove { x: f32, y: f32 },
     /// Scroll wheel / trackpad scroll over the app surface.
-    Scroll { x: f32, y: f32, delta_x: f32, delta_y: f32 },
+    Scroll {
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    },
     /// User submitted a command via the terminal command bar.
     Command { text: String },
     /// Files were dropped on a registered drop target region.
@@ -410,6 +425,77 @@ pub enum SubscribeScope {
     Workspace,
     Pane,
     Group,
+/// How a render request should behave.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderMode {
+    #[default]
+    Full,
+    Preview,
+}
+
+/// Current health for a pane or depth summary.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Health {
+    #[default]
+    Running,
+    Idle,
+    Error,
+}
+
+/// Summary for one pane in a depth.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PaneSummary {
+    pub pane_id: u64,
+    pub cwd: String,
+    #[serde(default)]
+    pub status_text: Option<String>,
+    #[serde(default)]
+    pub last_activity_unix_ms: Option<i64>,
+    #[serde(default)]
+    pub health: Health,
+}
+
+/// Lightweight render/status metadata used for preview summaries and rollups.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct StatusSummary {
+    pub uptime_seconds: f64,
+    pub process_count: u32,
+    #[serde(default)]
+    pub last_activity_unix_ms: Option<i64>,
+    #[serde(default)]
+    pub summary_text: Option<String>,
+    #[serde(default)]
+    pub health: Health,
+    #[serde(default)]
+    pub panes: Vec<PaneSummary>,
+}
+
+/// Capability allowlist passed to nested instances via `Init`.
+///
+/// This is intentionally additive-only at the wire layer. Enforcement stays
+/// host-side in the process/app/api path once the rollout is ready.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct CapabilityManifest {
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default)]
+    pub network: Vec<String>,
+    #[serde(default)]
+    pub fs_read: Vec<String>,
+    #[serde(default)]
+    pub fs_write: Vec<String>,
+    #[serde(default)]
+    pub hardware: Vec<String>,
+    #[serde(default)]
+    pub spawn: Vec<String>,
+    #[serde(default)]
+    pub pipe: Vec<String>,
+    #[serde(default)]
+    pub ttl_seconds: Option<u64>,
 }
 
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
@@ -596,6 +682,8 @@ pub enum DrawCommand {
     /// Plexi does not send `MouseMove` events to avoid flooding the pipe.
     /// This command is stateful — the setting persists until changed.
     MouseTracking { enabled: bool },
+    /// Summary-only metadata for a parent depth preview or tree rollup.
+    StatusSummary { summary: StatusSummary },
     /// Ask Plexi to spawn another app and place it in a layout slot relative
     /// to the emitting pane. This is the composition primitive: a file
     /// browser pressing Enter on a .txt file emits `spawn_app` to bring up
@@ -640,9 +728,7 @@ pub enum DrawCommand {
     /// **Phase 0 no-op:** this command is accepted for forward compatibility
     /// with Phase 1 manifest wiring but performs no action in Phase 0. Apps
     /// may re-emit it each frame; the host silently discards it.
-    PipeSubscribe {
-        channel: String,
-    },
+    PipeSubscribe { channel: String },
     /// Request a secret by name. Plexi resolves against the Keychain, walking
     /// up from the app's launch directory to home, and sends the result back
     /// as a `PlexiEvent::SecretResponse` with the same `name`.
@@ -1137,5 +1223,147 @@ mod spawn_tests {
         assert_eq!(rels.children_of(1).len(), 1);
         assert_eq!(rels.children_of(2).len(), 0);
         assert_eq!(rels.parent_of(4), None);
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn render_defaults_mode_to_full_for_old_json() {
+        let json = r#"{"type":"render","width":120,"height":40,"delta_time":0.016}"#;
+        let event: PlexiEvent = serde_json::from_str(json).unwrap();
+        match event {
+            PlexiEvent::Render {
+                mode,
+                width,
+                height,
+                delta_time,
+            } => {
+                assert_eq!(mode, RenderMode::Full);
+                assert_eq!(width, 120.0);
+                assert_eq!(height, 40.0);
+                assert_eq!(delta_time, 0.016);
+            }
+            other => panic!("expected render, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_defaults_capability_manifest_to_none_for_old_json() {
+        let json = r#"{
+            "type":"init",
+            "width":800,
+            "height":600,
+            "pixels_per_point":2,
+            "protocol_version":2
+        }"#;
+        let event: PlexiEvent = serde_json::from_str(json).unwrap();
+        match event {
+            PlexiEvent::Init {
+                capability_manifest,
+                protocol_version,
+                ..
+            } => {
+                assert_eq!(protocol_version, 2);
+                assert!(capability_manifest.is_none());
+            }
+            other => panic!("expected init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capability_manifest_roundtrips() {
+        let manifest = CapabilityManifest {
+            cwd: Some("/project/agents/scraper".to_string()),
+            secrets: vec!["GITHUB_TOKEN".to_string()],
+            network: vec!["api.github.com".to_string()],
+            fs_read: vec!["/project/data".to_string()],
+            fs_write: vec!["/project/output".to_string()],
+            hardware: vec!["microphone".to_string()],
+            spawn: vec!["text-editor".to_string()],
+            pipe: vec!["events".to_string()],
+            ttl_seconds: Some(3600),
+        };
+
+        let event = PlexiEvent::Init {
+            width: 800.0,
+            height: 600.0,
+            pixels_per_point: 2.0,
+            protocol_version: 2,
+            capability_manifest: Some(manifest.clone()),
+        };
+
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json["capability_manifest"]["cwd"],
+            "/project/agents/scraper"
+        );
+        assert_eq!(json["capability_manifest"]["ttl_seconds"], 3600);
+
+        let de: PlexiEvent = serde_json::from_value(json).unwrap();
+        match de {
+            PlexiEvent::Init {
+                capability_manifest: Some(roundtrip),
+                ..
+            } => assert_eq!(roundtrip, manifest),
+            other => panic!("expected init with capability manifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn existing_events_still_deserialize() {
+        let key: PlexiEvent = serde_json::from_str(
+            r#"{"type":"key","key":"enter","modifiers":{"shift":false,"ctrl":true,"alt":false,"cmd":false}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            key,
+            PlexiEvent::Key { key, modifiers } if key == "enter" && modifiers.ctrl
+        ));
+
+        let shutdown: PlexiEvent = serde_json::from_str(r#"{"type":"shutdown"}"#).unwrap();
+        assert!(matches!(shutdown, PlexiEvent::Shutdown));
+
+        let suspend: PlexiEvent = serde_json::from_str(r#"{"type":"suspend"}"#).unwrap();
+        assert!(matches!(suspend, PlexiEvent::Suspend));
+
+        let resume: PlexiEvent = serde_json::from_str(r#"{"type":"resume"}"#).unwrap();
+        assert!(matches!(resume, PlexiEvent::Resume));
+    }
+
+    #[test]
+    fn status_summary_roundtrips() {
+        let summary = StatusSummary {
+            uptime_seconds: 12.5,
+            process_count: 3,
+            last_activity_unix_ms: Some(1234),
+            summary_text: Some("idle".to_string()),
+            health: Health::Idle,
+            panes: vec![PaneSummary {
+                pane_id: 7,
+                cwd: "/tmp".to_string(),
+                status_text: Some("waiting".to_string()),
+                last_activity_unix_ms: None,
+                health: Health::Running,
+            }],
+        };
+
+        let cmd = DrawCommand::StatusSummary {
+            summary: summary.clone(),
+        };
+        let json = serde_json::to_value(&cmd).unwrap();
+        assert_eq!(json["type"], "status_summary");
+        assert_eq!(json["summary"]["health"], "idle");
+        assert_eq!(json["summary"]["panes"][0]["pane_id"], 7);
+
+        let de: DrawCommand = serde_json::from_value(json).unwrap();
+        match de {
+            DrawCommand::StatusSummary { summary: roundtrip } => {
+                assert_eq!(roundtrip, summary);
+            }
+            other => panic!("expected status summary, got {other:?}"),
+        }
     }
 }
