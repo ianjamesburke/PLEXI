@@ -1078,13 +1078,15 @@ impl App for FileBrowserApp {
             self.selected = (self.selected + 1).min(last);
             self.pending_scroll = true;
             consumed = true;
-            log::debug!("file_browser: key J/↓ → selected {}/{}", self.selected, last);
+            let name = self.selected_entry().map(|e| e.path.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_default();
+            log::debug!("file_browser: key J/↓ → selected {}/{} ({})", self.selected, last, name);
         }
         if input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::K) {
             self.selected = self.selected.saturating_sub(1);
             self.pending_scroll = true;
             consumed = true;
-            log::debug!("file_browser: key K/↑ → selected {}/{}", self.selected, last);
+            let name = self.selected_entry().map(|e| e.path.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_default();
+            log::debug!("file_browser: key K/↑ → selected {}/{} ({})", self.selected, last, name);
         }
         if input.key_pressed(egui::Key::Home) {
             self.selected = 0;
