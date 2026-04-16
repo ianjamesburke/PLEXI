@@ -80,16 +80,24 @@ install-alpha:
     # in the launcher. Each directory under examples/ that has a manifest.toml
     # is copied wholesale (overwriting any previous copy).
     apps_dir="$HOME/.plexi-alpha/apps"
-    mkdir -p "$apps_dir"
+    sdk_dir="$HOME/.plexi-alpha/sdk"
+    mkdir -p "$apps_dir" "$sdk_dir"
+
+    # Install the canonical shared SDK. ProcessApp::launch injects PYTHONPATH
+    # pointing here so all apps share one copy and pick up updates automatically.
+    cp sdk/python/plexi_sdk.py "$sdk_dir/plexi_sdk.py"
+    echo "Installed SDK: $sdk_dir/plexi_sdk.py"
+
     for dir in examples/*/; do
       if [[ -f "${dir}manifest.toml" ]]; then
         name="$(basename "$dir")"
         rm -rf "$apps_dir/$name"
-        # -L dereferences symlinks (e.g. the plexi_sdk.py symlink in each
-        # example dir that points to sdk/python/plexi_sdk.py). Installed apps
-        # get a real bundled copy alongside their entry file — symlinks are a
-        # dev-tree cleanliness convenience, not a deployment mechanism.
-        cp -RL "$dir" "$apps_dir/$name"
+        # Use cp -R (not -RL) — symlinks in the dev tree (e.g. plexi_sdk.py →
+        # sdk/python/plexi_sdk.py) are NOT followed. After copying, remove any
+        # plexi_sdk.py symlinks or copies from installed app dirs: apps now
+        # import from the shared SDK via PYTHONPATH, not from their own dir.
+        cp -R "$dir" "$apps_dir/$name"
+        find "$apps_dir/$name" -maxdepth 1 -name "plexi_sdk.py" -delete
         # Build Rust apps and place the binary where the manifest expects it.
         if [[ -f "${dir}Cargo.toml" ]]; then
           echo "Building Rust app: $name"
