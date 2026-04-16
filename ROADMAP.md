@@ -182,7 +182,7 @@ The Warp-style inline agent UI is live. `claude -p --resume` backend is wired wi
 | Senior-only routing (drop Junior, simplify) | **Done** | HoP routes footage_edit directly to SeniorEditor on Sonnet |
 | Parallax viewer app (companion pane in Plexi) | **Done** | Launched from command palette, companion pane |
 | Cost reporting via cost_report events | **Done** | 11+ `cost_report` calls across `head_of_production.py`, `cost_tracker.py`, `improvement_officer.py` |
-| SecretGet integration for API keys | Not started | Currently uses env vars — only Layer 3 item still pending |
+| SecretGet integration for API keys | **Done** (#215) | Emitter.get_secret + on_init hook; manifest declares [app.secrets] |
 
 ### Verification steps for Layer 3
 ```bash

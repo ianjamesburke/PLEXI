@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-16 — [CHANGED] Parallax: migrate ANTHROPIC_API_KEY to SecretGet API — closes #215 (PR → alpha)
+Added `Emitter.get_secret(name)` to `parallax-app/plexi_sdk.py`: sends a `secret_get` draw command, blocks on stdin until `secret_response` arrives (stashes any intervening events). Added `App.on_init` decorator so apps can fetch secrets as soon as the PGAP pipe is active. Wired in `parallax.py` via `@app.on_init` which calls `emit.get_secret("ANTHROPIC_API_KEY")` and passes the result to `chat.set_anthropic_api_key()`. The dispatch subprocess in `chat.py._start_dispatch` now builds an explicit env dict with the resolved key, falling back to the inherited env var with a warning if not provisioned. `manifest.toml` declares `[app.secrets] required = ["ANTHROPIC_API_KEY"]`. One-time setup: `plexi secrets store ANTHROPIC_API_KEY <value>`.
+**Breaks if:** Parallax dispatches a render and `parallax CLI` errors with "ANTHROPIC_API_KEY not set" — check `plexi.log` for the SecretGet warning and confirm `plexi secrets store ANTHROPIC_API_KEY` was run.
+
 ## 2026-04-16 — [CHANGED] Capability enforcement runtime prompts — §7 closes #230 (PR → alpha)
 
 Wired §7 end-to-end: `ProcessApp` checks `RunCreate`, `EventSubscribe`, and `SpawnApp` against manifest-declared capabilities. Undeclared capabilities queue a `PendingCapabilityPrompt` shown as a modal ("Allow once / Always allow / Deny"). Decisions persist to `permissions.json`. `is_orchestrator = true` in manifest bypasses all prompts. `PermissionPrompted` events emitted to bus for future trust scoring.
