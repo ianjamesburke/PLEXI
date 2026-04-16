@@ -8,6 +8,7 @@
 use egui::{Align, Align2, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 
 use crate::app::PlexiApp;
+use crate::app_protocol::NotificationAction;
 use crate::notification_log::{self, Notification};
 use crate::overlays::MODAL_WIDTH;
 
@@ -150,9 +151,11 @@ impl PlexiApp {
                                         Color32::TRANSPARENT
                                     };
 
+                                    // Run-card notifications get taller rows.
+                                    let row_h = if n.run_id.is_some() { 58.0 } else { 42.0 };
                                     let row_rect = Rect::from_min_size(
                                         ui.cursor().min,
-                                        Vec2::new(MODAL_WIDTH, 42.0),
+                                        Vec2::new(MODAL_WIDTH, row_h),
                                     );
                                     ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
 
@@ -167,13 +170,13 @@ impl PlexiApp {
                                         }
                                     };
                                     ui.painter().circle_filled(
-                                        egui::pos2(row_rect.min.x + 12.0, row_rect.center().y),
+                                        egui::pos2(row_rect.min.x + 12.0, row_rect.min.y + 21.0),
                                         4.0,
                                         dot_color,
                                     );
 
                                     ui.allocate_ui_with_layout(
-                                        Vec2::new(MODAL_WIDTH, 42.0),
+                                        Vec2::new(MODAL_WIDTH, row_h),
                                         Layout::left_to_right(Align::Center),
                                         |ui| {
                                             ui.add_space(24.0);
@@ -212,6 +215,33 @@ impl PlexiApp {
                                                         .size(9.0)
                                                         .color(self.colors.text_dim),
                                                 );
+                                                // Run card: show run_id pill when present.
+                                                if let Some(run_id) = &n.run_id {
+                                                    ui.add_space(2.0);
+                                                    ui.horizontal(|ui| {
+                                                        let run_label = format!("\u{25B6} run:{}", &run_id[..run_id.len().min(8)]);
+                                                        ui.label(
+                                                            RichText::new(run_label)
+                                                                .size(9.0)
+                                                                .color(Color32::from_rgb(0x6a, 0xb0, 0xf9))
+                                                                .monospace(),
+                                                        );
+                                                        // Action label for run-associated notifications.
+                                                        let action_label = match &n.action {
+                                                            Some(NotificationAction::ResumeRun { .. }) => Some("Resume"),
+                                                            Some(NotificationAction::OpenIntent { .. }) => Some("Open"),
+                                                            Some(NotificationAction::Focus { .. }) => Some("Focus"),
+                                                            _ => None,
+                                                        };
+                                                        if let Some(label) = action_label {
+                                                            ui.label(
+                                                                RichText::new(format!("· {label}"))
+                                                                    .size(9.0)
+                                                                    .color(self.colors.text_dim),
+                                                            );
+                                                        }
+                                                    });
+                                                }
                                             });
                                         },
                                     );
@@ -254,28 +284,7 @@ impl PlexiApp {
             Some(Action::ActivateSelected) => {
                 if self.notification_palette_selected < total {
                     let (log_idx, ref n) = ordered[self.notification_palette_selected];
-                    match n.action_type.as_str() {
-                        "focus" => {
-                            // Payload: {"pane_id": u64, "fullscreen": bool}
-                            let pane_id = n
-                                .action_payload
-                                .as_ref()
-                                .and_then(|p| p.get("pane_id"))
-                                .and_then(|v| v.as_u64());
-                            let fullscreen = n
-                                .action_payload
-                                .as_ref()
-                                .and_then(|p| p.get("fullscreen"))
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            if let Some(pid) = pane_id {
-                                self.focus_pane_by_id(pid, fullscreen);
-                            }
-                        }
-                        // "confirm" and "text_input" degrade to mark-read + close
-                        // until inline sub-prompt UI is implemented.
-                        _ => {}
-                    }
+                    dispatch_notification_action(self, n);
                     if let Ok(mut log) = notification_log::global().lock() {
                         log.mark_read(log_idx);
                     }
@@ -283,6 +292,63 @@ impl PlexiApp {
                 }
             }
             None => {}
+        }
+    }
+}
+
+/// Dispatch the structured action on a notification. Called on Enter press or
+/// button click. Falls back to mark-read-only for action types that require
+/// additional UI (Confirm, TextInput) until inline sub-prompt UI is implemented.
+fn dispatch_notification_action(app: &mut PlexiApp, n: &Notification) {
+    // Resolve the effective action: prefer the v2.0 structured field; fall back
+    // to legacy action_type/action_payload for JSONL entries from older builds.
+    let effective_action: Option<NotificationAction> = n.action.clone().or_else(|| {
+        n.action_type.as_deref().and_then(|at| match at {
+            "focus" => {
+                let pane_id = n.action_payload.as_ref()?.get("pane_id")?.as_u64()?;
+                let fullscreen = n
+                    .action_payload
+                    .as_ref()
+                    .and_then(|p| p.get("fullscreen"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Some(NotificationAction::Focus { pane_id, fullscreen })
+            }
+            _ => Some(NotificationAction::Dismiss),
+        })
+    });
+
+    match effective_action {
+        Some(NotificationAction::Focus { pane_id, fullscreen }) => {
+            app.focus_pane_by_id(pane_id, fullscreen);
+        }
+        Some(NotificationAction::ResumeRun { run_id }) => {
+            // TODO(#229): wire ResumeRun once run wakeup path is defined.
+            log::info!("notification_palette: ResumeRun {run_id} (wakeup path pending)");
+        }
+        Some(NotificationAction::OpenIntent { open_intent }) => {
+            // TODO(#229): wire OpenIntent dispatch once app-spawn-from-palette is implemented.
+            log::info!("notification_palette: OpenIntent {:?} (dispatch pending)", open_intent);
+        }
+        Some(NotificationAction::RunCommand { app_id, command, args }) => {
+            // TODO(#229): wire RunCommand once inter-app command channel exists.
+            log::info!(
+                "notification_palette: RunCommand app={app_id} cmd={command} args={args:?} (dispatch pending)"
+            );
+        }
+        Some(NotificationAction::ExternalUrl { url }) => {
+            log::info!("notification_palette: opening ExternalUrl {url}");
+            if let Err(e) = std::process::Command::new("open").arg(&url).spawn() {
+                log::warn!("notification_palette: failed to open URL {url}: {e}");
+            }
+        }
+        Some(NotificationAction::Confirm { .. }) | Some(NotificationAction::TextInput { .. }) => {
+            // TODO(#229): inline sub-prompt UI for Confirm/TextInput.
+            // For now, mark-read + close is the fallback (handled by caller).
+            log::debug!("notification_palette: Confirm/TextInput action deferred to future UI");
+        }
+        Some(NotificationAction::Dismiss) | None => {
+            // Nothing to do — caller marks read and closes.
         }
     }
 }

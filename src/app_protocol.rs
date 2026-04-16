@@ -45,10 +45,6 @@ fn notification_default_urgency() -> String {
     "low".to_string()
 }
 
-fn notification_default_action_type() -> String {
-    "dismiss".to_string()
-}
-
 // ── Events sent FROM Plexi TO the app ────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
