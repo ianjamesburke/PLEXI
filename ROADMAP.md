@@ -49,14 +49,14 @@ Everything on `main` plus:
 | Host event bus (`events.jsonl`) | Cross-app observation; required by everything downstream |
 | Fractal depth tree POC (#260) | `.plexi` boundaries are discoverable and visible before embedded rendering |
 | `OpenIntent` payload on `Init` | Apps know *why* they were opened (file, prompt, caller) |
-| `Run` primitive — dumb store, draw commands | Stateful multi-step tasks with blocked/running/done lifecycle | **Done** (#228) |
+| `Run` primitive — dumb store, draw commands | Stateful multi-step tasks with blocked/running/done lifecycle |
 
 ### Month 2 — Surface
 | Item | Unlocks |
 |---|---|
 | ~~Rich notification actions (#229)~~ | Done — `NotificationAction` enum, `run_id`, SDK helpers |
 | Render summary protocol | Parent depths can request cheap status without full embedded rendering |
-| Capability enforcement + `permissions.json` | Runtime Yes once / Yes always / No; persistent grants |
+| Capability enforcement + `permissions.json` ✅ | Runtime Yes once / Yes always / No; persistent grants |
 | Typed pipes Phase 1 — manifest `[app.io]`, auto-wire | Apps compose without code changes |
 
 ### Month 3 — Intelligence

@@ -61,6 +61,11 @@ pub struct PlexiApp {
     /// Z-axis depth stack. Each entry records the context index and root path
     /// of the depth we descended from. `depth_stack.len()` is the current depth.
     pub(crate) depth_stack: Vec<(usize, std::path::PathBuf)>,
+    /// Capability prompts collected from ProcessApps this frame, waiting to be
+    /// shown as a modal to the user. We show one at a time; the rest wait.
+    pub(crate) pending_capability_prompts: std::collections::VecDeque<crate::process_app::PendingCapabilityPrompt>,
+    /// The capability prompt currently being shown to the user, if any.
+    pub(crate) active_capability_prompt: Option<crate::process_app::PendingCapabilityPrompt>,
 }
 
 impl PlexiApp {
@@ -258,6 +263,8 @@ impl PlexiApp {
                     last_observed_context: None,
                     last_tree_status_fingerprint: None,
                     depth_stack: Vec::new(),
+                    pending_capability_prompts: std::collections::VecDeque::new(),
+                    active_capability_prompt: None,
                 };
             }
         }
@@ -331,6 +338,8 @@ impl PlexiApp {
             last_observed_context: None,
             last_tree_status_fingerprint: None,
             depth_stack: Vec::new(),
+            pending_capability_prompts: std::collections::VecDeque::new(),
+            active_capability_prompt: None,
         }
     }
 
@@ -554,6 +563,24 @@ impl PlexiApp {
         depth.saturating_sub(1)
     }
 
+    /// Collect capability prompts from all active ProcessApps this frame and
+    /// queue them. Advances to the next prompt if no modal is currently active.
+    fn collect_capability_prompts(&mut self) {
+        for ctx in &mut self.contexts {
+            for pane in ctx.panes.values_mut() {
+                if let Some(app) = pane.active_app.as_mut() {
+                    for prompt in app.take_pending_capability_prompts() {
+                        self.pending_capability_prompts.push_back(prompt);
+                    }
+                }
+            }
+        }
+        // Show the next queued prompt if none is currently active.
+        if self.active_capability_prompt.is_none() {
+            self.active_capability_prompt = self.pending_capability_prompts.pop_front();
+        }
+    }
+
     fn emit_depth_observability(&mut self) {
         let active = self.active_context;
         let Some(context) = self.contexts.get(active) else {
@@ -669,6 +696,7 @@ impl eframe::App for PlexiApp {
         self.sync_app_cwd();
         self.dispatch_pending_spawns();
         self.dispatch_pipe_writes();
+        self.collect_capability_prompts();
         self.emit_depth_observability();
 
         // Drain completed ffmpeg thumbnail extractions from worker threads. The
@@ -1469,6 +1497,11 @@ impl eframe::App for PlexiApp {
         // Rename pane overlay
         if self.renaming_pane.is_some() {
             self.draw_rename_pane_overlay(ctx);
+        }
+
+        // Capability prompt modal — shown when an app requests an undeclared capability.
+        if self.active_capability_prompt.is_some() {
+            self.draw_capability_prompt_overlay(ctx);
         }
 
         self.draw_feature_effects(ctx);

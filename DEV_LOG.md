@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-16 — [CHANGED] Capability enforcement runtime prompts — §7 closes #230 (PR → alpha)
+
+Wired §7 end-to-end: `ProcessApp` checks `RunCreate`, `EventSubscribe`, and `SpawnApp` against manifest-declared capabilities. Undeclared capabilities queue a `PendingCapabilityPrompt` shown as a modal ("Allow once / Always allow / Deny"). Decisions persist to `permissions.json`. `is_orchestrator = true` in manifest bypasses all prompts. `PermissionPrompted` events emitted to bus for future trust scoring.
+
+**Breaks if:** An app tries to use `RunCreate` or `EventSubscribe` and receives no response — check the capability prompt modal appears and `pending_capability_prompts` are being drained.
+
 ## 2026-04-16 — [CHANGED] Rich notification action payloads — closes #229
 
 `NotificationAction` enum was already in `app_protocol.rs` with all 8 variants. Three gaps closed:
