@@ -1,5 +1,17 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-16 — [CHANGED] Plexi IQ Stage 1 — minimum viable loop — closes #211, #212, #231 (PR → alpha)
+
+Wired the `plexi_iq` module into the build graph (`mod plexi_iq;` on main.rs — #211) and implemented the Stage 1 streaming turn loop (#212, #231 scope lock).
+
+**What landed:** `src/plexi_iq/backend/mod.rs` — redesigned `LlmBackend` trait with `stream_to_channel(request, tx)` instead of an async `stream()` call; both backends spawn background threads and deliver `StreamEvent` variants (Text / Done / Error) into an `mpsc::Sender`. `ClaudeCliBackend` wraps `claude -p --output-format stream-json --verbose`, parsing the same events as `agent_llm.rs`. `AnthropicApiBackend` uses `async-anthropic` via a dedicated single-threaded tokio runtime per turn, streams `ContentBlockDelta` events. `src/plexi_iq/loop.rs` — synchronous `run_turn()` drains the receiver, accumulates text, calls `on_token` for each chunk, and appends a ledger row on Done. `src/plexi_iq/ledger.rs` — append-only JSONL at `~/.plexi-alpha/ledger.jsonl`, one row per turn with backend name, billing model, token counts, and USD cost (null for subscription).
+
+**Design choices:** `stream_to_channel` (sync, mpsc) over `async fn stream -> impl Stream` — no async runtime on the main UI thread, same egui-frame-drain pattern already used by `agent_llm.rs`. Native backend gets its own per-turn tokio rt rather than a shared one — simpler lifetime story, no Arc juggling. `#[allow(dead_code)]` kept on the module; nothing in `agent_mode.rs` routes through IQ yet — that's Stage 2 (wiring agent mode Ctrl+/ through PlexiIqInstance).
+
+**Bug fixed:** `async-anthropic 0.6` `MessageDelta` carries `usage: Option<Usage>`, not `Usage` — the codegen had `usage.output_tokens` which required adding `.and_then(|u| u.output_tokens)`. Also had to add `tokio` and `tokio-stream` as explicit Cargo dependencies (they were only transitive via async-anthropic, not directly usable). Builder pattern for `CreateMessagesRequestBuilder` required restructuring to avoid E0716 temporary-dropped-while-borrowed.
+
+**Breaks if:** `cargo build` fails in the `plexi_iq` subtree, or `~/.plexi-alpha/ledger.jsonl` is not created on the first agent turn when `[agent.backend] = "native"`.
+
 ## 2026-04-16 — [CHANGED] Parallax: migrate ANTHROPIC_API_KEY to SecretGet API — closes #215 (PR → alpha)
 Added `Emitter.get_secret(name)` to `parallax-app/plexi_sdk.py`: sends a `secret_get` draw command, blocks on stdin until `secret_response` arrives (stashes any intervening events). Added `App.on_init` decorator so apps can fetch secrets as soon as the PGAP pipe is active. Wired in `parallax.py` via `@app.on_init` which calls `emit.get_secret("ANTHROPIC_API_KEY")` and passes the result to `chat.set_anthropic_api_key()`. The dispatch subprocess in `chat.py._start_dispatch` now builds an explicit env dict with the resolved key, falling back to the inherited env var with a warning if not provisioned. `manifest.toml` declares `[app.secrets] required = ["ANTHROPIC_API_KEY"]`. One-time setup: `plexi secrets store ANTHROPIC_API_KEY <value>`.
 **Breaks if:** Parallax dispatches a render and `parallax CLI` errors with "ANTHROPIC_API_KEY not set" — check `plexi.log` for the SecretGet warning and confirm `plexi secrets store ANTHROPIC_API_KEY` was run.

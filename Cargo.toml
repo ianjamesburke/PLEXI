@@ -44,6 +44,8 @@ async-anthropic = "0.6"
 async-trait = "0.1"
 schemars = { version = "1", features = ["derive"] }
 rmcp = { version = "1", default-features = false, features = ["client", "macros"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+tokio-stream = "0.1"
 
 # macOS-only — AppKit menu bar integration.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -34,6 +34,7 @@ Everything on `main` plus:
 | `docs/specs/releases/plexi-v2.0.md` — full V2 technical spec + ship order | ✅ merged |
 | Fractal PGAP POC (#260) — `.plexi` depth discovery, depth tree pane, v2 lifecycle/render summary wire types, embedded stdio smoke | 🚧 in PR |
 | Homebrew release automation (SHA256 + cask update on tag) | ✅ merged |
+| Plexi IQ Stage 1 — `ClaudeCliBackend` + `AnthropicApiBackend` + streaming turn loop + ledger (#211, #212, #231) | ✅ merged |
 
 ---
 

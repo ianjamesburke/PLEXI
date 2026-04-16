@@ -1,22 +1,25 @@
-//! LLM backend abstraction for Plexi IQ.
+//! LLM backend abstraction for Plexi IQ — Stage 1.
 //!
-//! Two concrete backends land in Stage 1 behind this trait (spec §3.6):
+//! Two concrete backends (spec §3.6):
 //!
-//! - `AnthropicApiBackend` — native mode, direct Messages API via
-//!   `async-anthropic`. Plexi IQ owns the tool loop.
-//! - `ClaudeCliBackend` — proxied mode, slots the existing
-//!   `src/agent_llm.rs` `claude -p --resume` wrapper in behind the trait.
-//!   Claude Code owns the tool loop internally; Plexi IQ sees only
-//!   streamed text.
+//! - `ClaudeCliBackend` — proxied mode. Slots the existing `src/agent_llm.rs`
+//!   `claude -p --resume --output-format stream-json` subprocess in behind the
+//!   trait. Claude Code owns the tool loop; Plexi IQ sees only streamed text.
 //!
-//! Stage 0 is just the trait shape. Both implementations are `todo!()`
-//! stubs so Stage 1 can fill them in without touching the trait.
+//! - `AnthropicApiBackend` — native mode. Direct Messages API via
+//!   `async-anthropic`. Plexi IQ owns the tool loop; raw tool_use events are
+//!   visible. Requires `ANTHROPIC_API_KEY` or a key from the Plexi secrets store.
+//!
+//! Both backends deliver events through an `mpsc::Sender<StreamEvent>` so the
+//! UI thread can drain a receiver each frame without blocking.
 
 pub mod anthropic_api;
 pub mod claude_cli;
 
 pub use anthropic_api::AnthropicApiBackend;
 pub use claude_cli::ClaudeCliBackend;
+
+use std::sync::mpsc;
 
 /// Invoke `claude -p --resume <session_id>` with the given prompt.
 /// Writes prompt to stdin, reads response from stdout.
@@ -64,7 +67,8 @@ pub async fn run_claude_proxy(
 
 /// Whether the backend is billed per-token or via a flat subscription.
 /// Drives the cost ledger (§10) and the pre-flight budget gate (§8, risk #10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BillingModel {
     /// Per-token USD. Pre-flight enforcement against a dollar envelope.
     Metered,
@@ -73,56 +77,77 @@ pub enum BillingModel {
     Subscription,
 }
 
-/// Streaming event yielded by `LlmBackend::stream`. Stage 1 will flesh this
-/// out to cover text deltas, tool-use start/delta/stop, and message stop with
-/// a stop reason; for now it's a single opaque variant so the trait signature
-/// can be stable.
+/// Streaming event delivered to the turn loop.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    /// Placeholder — replaced in Stage 1 with the full event taxonomy
-    /// described in spec §3.2.
-    Placeholder,
+    /// Incremental text chunk — append to the pane's output buffer.
+    Text(String),
+    /// Turn complete. Token counts are `Some` only for metered backends.
+    Done {
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
+        /// Session ID returned by the `claude -p` process (proxied mode).
+        /// Used to `--resume` the next turn.
+        session_id: Option<String>,
+    },
+    /// Terminal error. Surface in the conversation buffer.
+    Error(String),
 }
 
-/// Request object passed to `LlmBackend::stream`. Stage 1 will expand this
-/// into the full Messages API envelope (system prompt, messages, tools,
-/// cache breakpoints, max_thinking_tokens, etc.).
+/// Conversation turn passed to `LlmBackend::stream_to_channel`.
 #[derive(Debug, Clone, Default)]
 pub struct LlmRequest {
-    /// Placeholder — real fields land in Stage 1.
-    pub _placeholder: (),
+    /// User message for this turn.
+    pub prompt: String,
+    /// System prompt (injected on turn 0 for proxied mode; every call for native).
+    pub system: String,
+    /// Resume token from a previous turn (`None` on the first turn).
+    pub session_id: Option<String>,
 }
 
-/// Error type for backend streaming. Stage 1 will split this into
-/// transport / rate-limit / budget / abort variants.
+/// Error returned when a backend call cannot start.
+/// Individual stream failures are delivered as `StreamEvent::Error`.
 #[derive(Debug)]
 pub enum LlmError {
-    /// Placeholder — real variants land in Stage 1.
-    Todo,
+    /// Binary not found or API client cannot be constructed.
+    NotAvailable(String),
+    /// I/O failure before streaming began.
+    Io(String),
+    /// API-level rejection (auth, quota, bad request).
+    Api(String),
 }
 
-/// The core backend contract. See spec §3.6 for the capability split and
-/// §7 for why this is Anthropic-only (no multi-provider abstraction).
+impl std::fmt::Display for LlmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LlmError::NotAvailable(s) => write!(f, "backend not available: {s}"),
+            LlmError::Io(s) => write!(f, "I/O error: {s}"),
+            LlmError::Api(s) => write!(f, "API error: {s}"),
+        }
+    }
+}
+
+/// The core backend contract.
 ///
-/// Stage 1 will almost certainly change the `stream` return type to a
-/// proper `Stream<Item = Result<StreamEvent, LlmError>>` once we settle on
-/// whether to use `futures::Stream` or a custom channel.
-#[async_trait::async_trait]
+/// `stream_to_channel` spawns background work and delivers `StreamEvent`s
+/// into `tx`. The caller (turn loop) holds the receiver and drains it
+/// each UI frame, so the main thread is never blocked.
 pub trait LlmBackend: Send + Sync {
     /// Human-readable backend name for logs and the pane-header badge.
     fn name(&self) -> &str;
 
     /// Whether this backend exposes raw tool_use events to Plexi IQ's
-    /// turn loop. Native mode returns `true`; proxied mode returns
-    /// `false` because Claude Code owns its own tool loop.
+    /// turn loop. `true` → native mode (Plexi IQ owns tool dispatch).
+    /// `false` → proxied mode (Claude Code owns its own tool loop).
     fn supports_tool_dispatch(&self) -> bool;
 
-    /// How this backend bills — drives the cost ledger and pre-flight
-    /// budget gate.
+    /// How this backend bills — drives the cost ledger and pre-flight gate.
     fn billing_model(&self) -> BillingModel;
 
-    /// Stream a single LLM request. Stage 1 will change the return type
-    /// to a real async stream; for now this is a placeholder signature
-    /// so the trait compiles.
-    async fn stream(&self, request: LlmRequest) -> Result<StreamEvent, LlmError>;
+    /// Start streaming a turn. Returns immediately; events arrive on `tx`.
+    fn stream_to_channel(
+        &self,
+        request: LlmRequest,
+        tx: mpsc::Sender<StreamEvent>,
+    ) -> Result<(), LlmError>;
 }
