@@ -1,0 +1,41 @@
+# Plexi backlog — deferred ideas, not yet scoped for a release
+
+Items here are "don't lose this thought" captures. Promote to a GitHub issue
+only when the item has a clear done-state and is ready to be worked.
+
+---
+
+## Agent mode: tool call visibility
+
+When `--allowedTools ""` is lifted (Plexi IQ Stage 1), stream-json emits
+`tool_use` events that are currently swallowed as `StreamEvent::Unknown`.
+Wire parsing to emit in-progress tool call lines into the terminal (e.g.
+`[tool: bash] ls -la`, `[tool: read] src/main.rs`) so the user can see what
+the agent is doing mid-response. Already have all the JSON parsing scaffolding
+in `parse_stream_event`.
+
+## Agent mode: streaming scroll behavior polish
+
+Tokens write into egui_term's PTY buffer; scroll position is maintained
+independently. If user scrolls up mid-response, new tokens still arrive but
+the view stays. Needs UX testing at scroll boundary edge cases — does the
+terminal snap back on turn complete? Does it lose position mid-stream? Likely
+a small fix in how write_agent_bytes interacts with the terminal's autoscroll
+flag.
+
+## Plexi IQ Native — replace claude CLI subprocess with direct Anthropic API
+
+Current agent mode uses `claude -p` subprocess. Long-term: Plexi IQ native
+mode calls the Anthropic API directly (no subprocess, full control over model,
+tools, context window, cost). Secrets CLI (v2.0 P.6) is the prerequisite —
+user sets ANTHROPIC_KEY via `plexi secret set`. Native mode becomes the default
+once Plexi IQ Stage 1 ships (Month 3). The `claude -p` path stays as a fallback
+for users without a direct API key.
+
+## Agent mode: re-enable tool use with permission model
+
+Currently `--allowedTools ""` forces conversational-only mode. Terminal
+assistant is much more useful with bash/read/write access. Needs: (1) TTY or
+non-interactive permission model so claude CLI doesn't hang waiting for a
+prompt, (2) UI for surfacing pending permission requests to the user, (3)
+scoping to pane's CWD. Prerequisite for Plexi IQ Stage 1 native mode.

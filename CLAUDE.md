@@ -99,7 +99,14 @@ Do this before reporting a task complete so the user can immediately test in the
 ## Logging
 
 ### Log file
-Plexi writes to `~/.plexi-alpha/plexi.log` (or `~/.plexi/plexi.log` on stable). Rotates to `plexi.log.1` at startup if over 10 MB. Also printed to stderr during CLI/dev runs.
+Plexi writes to a build-specific log file:
+- Alpha: `~/.plexi-alpha/plexi.log`
+- Beta: `~/.plexi-beta/plexi.log`
+- Stable: `~/.plexi/plexi.log`
+
+Rotates to `plexi.log.1` at startup if over 10 MB. Also printed to stderr during CLI/dev runs.
+
+**When debugging any issue, check the log file first.** Most runtime failures, panics, and app errors are recorded there before anything else.
 
 ### Log level
 Set in `config.toml`:

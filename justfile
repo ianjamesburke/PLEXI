@@ -1,6 +1,15 @@
 dev:
     cargo run
 
+# Lint all TOML files for syntax errors. Catches manifest issues before Gemini does.
+lint-toml:
+    taplo lint $(find . -name '*.toml' -not -path './.claude/*' -not -path './sdk/rust/target/*')
+
+# Run all pre-PR checks: Rust build + TOML lint
+check:
+    cargo check
+    just lint-toml
+
 build:
     cargo build --release
 

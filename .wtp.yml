@@ -1,0 +1,14 @@
+# Worktree Plus Configuration
+version: "1.0"
+
+defaults:
+  base_dir: .claude/worktrees
+
+hooks:
+  post_create:
+    # Copy secrets into new worktree
+    - type: copy
+      from: .env
+      to: .env
+    - type: command
+      command: wtp list
