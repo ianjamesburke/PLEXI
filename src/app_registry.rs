@@ -67,12 +67,10 @@ pub struct AppManifestApp {
     /// a deprecation warning at load time — the app still runs, but is
     /// flagged as using the v1 protocol. Apps should declare
     /// `protocol_version = 2` in their manifest.
-    #[serde(default)]
+    #[serde(default = "default_protocol_version_manifest")]
     pub protocol_version: u32,
     #[serde(default)]
     pub capabilities: AppCapabilities,
-    #[serde(default = "default_protocol_version_manifest")]
-    pub protocol_version: u32,
     #[serde(default)]
     pub skill: Option<AppSkillSection>,
     #[serde(default)]
