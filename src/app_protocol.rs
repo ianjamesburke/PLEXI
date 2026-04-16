@@ -45,10 +45,6 @@ fn notification_default_urgency() -> String {
     "low".to_string()
 }
 
-fn notification_default_action_type() -> String {
-    "dismiss".to_string()
-}
-
 // ── Events sent FROM Plexi TO the app ────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -425,6 +421,8 @@ pub enum SubscribeScope {
     Workspace,
     Pane,
     Group,
+}
+
 /// How a render request should behave.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]

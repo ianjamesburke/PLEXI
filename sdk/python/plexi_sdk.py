@@ -325,6 +325,68 @@ def safe_move(src: pathlib.Path, dest_dir: pathlib.Path) -> str:
         return f"Error: {e}"
 
 
+class NotificationAction:
+    """
+    Factory helpers for structured notification actions (v2.0+).
+
+    Each method returns a dict that can be passed as the `action` argument
+    to `Emitter.notify()` or `RenderContext.notify()`.
+
+    Example::
+
+        emit.notify(
+            "Build finished",
+            action=NotificationAction.external_url("https://ci.example.com/runs/42"),
+        )
+
+        emit.notify(
+            "Run blocked — needs input",
+            action=NotificationAction.resume_run(run_id),
+            run_id=run_id,
+        )
+    """
+
+    @staticmethod
+    def dismiss() -> dict:
+        return {"type": "dismiss"}
+
+    @staticmethod
+    def focus(pane_id: int, fullscreen: bool = False) -> dict:
+        return {"type": "focus", "pane_id": pane_id, "fullscreen": fullscreen}
+
+    @staticmethod
+    def resume_run(run_id: str) -> dict:
+        return {"type": "resume_run", "run_id": run_id}
+
+    @staticmethod
+    def open_intent(open_intent: dict) -> dict:
+        return {"type": "open_intent", "open_intent": open_intent}
+
+    @staticmethod
+    def run_command(app_id: str, command: str, args: Optional[list] = None) -> dict:
+        return {"type": "run_command", "app_id": app_id, "command": command, "args": args or []}
+
+    @staticmethod
+    def external_url(url: str) -> dict:
+        return {"type": "external_url", "url": url}
+
+    @staticmethod
+    def confirm(confirm_text: str, cancel_text: str, on_confirm: dict) -> dict:
+        return {
+            "type": "confirm",
+            "confirm_text": confirm_text,
+            "cancel_text": cancel_text,
+            "on_confirm": on_confirm,
+        }
+
+    @staticmethod
+    def text_input(prompt: str, on_submit: dict, placeholder: Optional[str] = None) -> dict:
+        action: dict = {"type": "text_input", "prompt": prompt, "on_submit": on_submit}
+        if placeholder is not None:
+            action["placeholder"] = placeholder
+        return action
+
+
 class Emitter:
     """Emit commands to Plexi immediately (outside a render frame)."""
 
@@ -386,8 +448,8 @@ class Emitter:
         title: str,
         body: Optional[str] = None,
         urgency: str = "low",
-        action_type: str = "dismiss",
-        action_payload: Optional[dict] = None,
+        action: Optional[dict] = None,
+        run_id: Optional[str] = None,
         expires_at: Optional[int] = None,
         visible_after: Optional[int] = None,
     ):
@@ -395,8 +457,20 @@ class Emitter:
         Raise a notification to Plexi's notification log.
 
         urgency: "low" | "medium" | "high"
-        action_type: "dismiss" | "focus" | "confirm" | "text_input"
-        action_payload: type-dependent dict; for "focus": {"pane_id": int, "fullscreen": bool}
+
+        action: structured NotificationAction dict (v2.0+). Use the helpers:
+            NotificationAction.focus(pane_id, fullscreen=False)
+            NotificationAction.resume_run(run_id)
+            NotificationAction.open_intent(open_intent_dict)
+            NotificationAction.run_command(app_id, command, args=[])
+            NotificationAction.external_url(url)
+            NotificationAction.confirm(confirm_text, cancel_text, on_confirm)
+            NotificationAction.text_input(prompt, placeholder=None, on_submit)
+            NotificationAction.dismiss()
+
+        run_id: associate this notification with a Run. Renders as a run card
+            in the palette with elapsed time and status pill.
+
         expires_at: unix timestamp (seconds); notification is dropped if already past
         visible_after: unix timestamp (seconds); defer display until this time
 
@@ -406,15 +480,17 @@ class Emitter:
         """
         cmd: dict = {
             "type": "notification",
+            "id": str(uuid.uuid4()),
             "title": title,
             "source_app": self._app_id,
             "urgency": urgency,
-            "action_type": action_type,
         }
         if body is not None:
             cmd["body"] = body
-        if action_payload is not None:
-            cmd["action_payload"] = action_payload
+        if action is not None:
+            cmd["action"] = action
+        if run_id is not None:
+            cmd["run_id"] = run_id
         if expires_at is not None:
             cmd["expires_at"] = expires_at
         if visible_after is not None:
@@ -1361,8 +1437,8 @@ class RenderContext:
         title: str,
         body: Optional[str] = None,
         urgency: str = "low",
-        action_type: str = "dismiss",
-        action_payload: Optional[dict] = None,
+        action: Optional[dict] = None,
+        run_id: Optional[str] = None,
         expires_at: Optional[int] = None,
         visible_after: Optional[int] = None,
     ):
@@ -1370,22 +1446,34 @@ class RenderContext:
         Raise a notification from inside a render frame.
 
         urgency: "low" | "medium" | "high"
-        action_type: "dismiss" | "focus" | "confirm" | "text_input"
-        action_payload: type-dependent dict; for "focus": {"pane_id": int, "fullscreen": bool}
+
+        action: structured NotificationAction dict (v2.0+). Use the helpers:
+            NotificationAction.focus(pane_id, fullscreen=False)
+            NotificationAction.resume_run(run_id)
+            NotificationAction.open_intent(open_intent_dict)
+            NotificationAction.run_command(app_id, command, args=[])
+            NotificationAction.external_url(url)
+            NotificationAction.confirm(confirm_text, cancel_text, on_confirm)
+            NotificationAction.text_input(prompt, placeholder=None, on_submit)
+            NotificationAction.dismiss()
+
+        run_id: associate this notification with a Run; renders as a run card.
         expires_at: unix timestamp (seconds); notification is dropped if already past
         visible_after: unix timestamp (seconds); defer display until this time
         """
         cmd: dict = {
             "type": "notification",
+            "id": str(uuid.uuid4()),
             "title": title,
             "source_app": self._app_id,
             "urgency": urgency,
-            "action_type": action_type,
         }
         if body is not None:
             cmd["body"] = body
-        if action_payload is not None:
-            cmd["action_payload"] = action_payload
+        if action is not None:
+            cmd["action"] = action
+        if run_id is not None:
+            cmd["run_id"] = run_id
         if expires_at is not None:
             cmd["expires_at"] = expires_at
         if visible_after is not None:

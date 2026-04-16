@@ -1284,7 +1284,6 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
                 pixels_per_point: ui.ctx().pixels_per_point(),
-                protocol_version: self.protocol_version,
                 open_intent: self.open_intent.clone(),
                 protocol_version: crate::app_protocol::HOST_PROTOCOL_VERSION,
                 capability_manifest: None,
@@ -1388,19 +1387,6 @@ impl App for ProcessApp {
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| self.type_id.clone());
                     let source_tag = format!("app:{}", self.type_id);
-                    // Record to notification log with action payload extracted.
-                    let action_type = action.as_ref().map(|a| {
-                        match a {
-                            crate::app_protocol::NotificationAction::Focus { .. } => "focus",
-                            crate::app_protocol::NotificationAction::Confirm { .. } => "confirm",
-                            crate::app_protocol::NotificationAction::TextInput { .. } => "text_input",
-                            crate::app_protocol::NotificationAction::Dismiss => "dismiss",
-                            crate::app_protocol::NotificationAction::ResumeRun { .. } => "resume_run",
-                            crate::app_protocol::NotificationAction::OpenIntent { .. } => "open_intent",
-                            crate::app_protocol::NotificationAction::RunCommand { .. } => "run_command",
-                            crate::app_protocol::NotificationAction::ExternalUrl { .. } => "external_url",
-                        }.to_string()
-                    }).unwrap_or_else(|| "dismiss".to_string());
                     crate::notification_log::record(
                         title,
                         body,
@@ -1408,11 +1394,10 @@ impl App for ProcessApp {
                         urgency_str,
                         expires_at,
                         visible_after,
-                        action_type,
-                        None, // action_payload: structured action stored separately
+                        run_id,
+                        action,
                         Some(source_tag),
                     );
-                    let _ = (run_id, action); // wired into notification log above
                 }
                 DrawCommand::SetCursor { cursor } => {
                     let icon = match cursor.as_str() {
