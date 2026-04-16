@@ -54,17 +54,19 @@ Cost reporting (for apps that call LLM APIs):
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
+import inspect
 import json
 import os
 import pathlib
 import shutil
 import sys
+import traceback
 import uuid
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 
 # ─── Text size constants ──────────────────────────────────────────────────────
@@ -751,6 +753,266 @@ def _python_colorize(line: str):
     return segments
 
 
+# ─── Typed event models ───────────────────────────────────────────────────────
+# These are passed to event handler methods on App subclasses.
+# The decorator-style API still receives raw positional args for backward compat.
+
+@dataclass
+class RenderEvent:
+    """Inbound render request from the host."""
+    width: float
+    height: float
+    delta_time: float = 0.0
+    mode: str = "full"
+
+
+@dataclass
+class KeyEvent:
+    """A keyboard event from the host."""
+    key: str
+    modifiers: Dict[str, bool] = field(default_factory=dict)
+
+    @property
+    def shift(self) -> bool:
+        return self.modifiers.get("shift", False)
+
+    @property
+    def command(self) -> bool:
+        return self.modifiers.get("command", False)
+
+    @property
+    def ctrl(self) -> bool:
+        return self.modifiers.get("ctrl", False)
+
+    @property
+    def alt(self) -> bool:
+        return self.modifiers.get("alt", False)
+
+
+@dataclass
+class ClickEvent:
+    """A mouse click event from the host."""
+    x: float
+    y: float
+    button: str = "primary"
+
+
+@dataclass
+class MouseDownEvent:
+    """Mouse button press event."""
+    x: float
+    y: float
+    button: str = "left"
+
+
+@dataclass
+class MouseUpEvent:
+    """Mouse button release event."""
+    x: float
+    y: float
+    button: str = "left"
+
+
+@dataclass
+class MouseMoveEvent:
+    """Mouse movement event."""
+    x: float
+    y: float
+
+
+@dataclass
+class ScrollEvent:
+    """Scroll wheel / trackpad scroll event."""
+    x: float
+    y: float
+    delta_x: float
+    delta_y: float
+
+
+@dataclass
+class CommandEvent:
+    """Command bar invocation event."""
+    text: str
+
+
+@dataclass
+class DropEvent:
+    """File drop event onto a declared drop target."""
+    target_id: str
+    paths: List[str] = field(default_factory=list)
+
+
+@dataclass
+class PipeDataEvent:
+    """Data received from a connected app via a named pipe channel."""
+    from_app: str
+    channel: str
+    value: Any = None
+
+
+@dataclass
+class EventDataEvent:
+    """Host event received after an EventSubscribe call."""
+    kind: str
+    payload: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RunCreatedEvent:
+    """Response to a RunCreate call containing the assigned run ID."""
+    run_id: str
+
+
+# ─── Typed draw command models ────────────────────────────────────────────────
+# Use these with ctx.draw(DrawRect(...)) for LSP autocomplete and type safety.
+# They serialize to the same JSON as the raw dict calls.
+
+@dataclass
+class DrawRect:
+    """Fill a rectangle with an optional corner radius."""
+    x: float
+    y: float
+    w: float
+    h: float
+    fill: str
+    radius: float = 0.0
+
+    def to_draw_dict(self) -> dict:
+        return {"type": "rect", "x": self.x, "y": self.y, "w": self.w,
+                "h": self.h, "fill": self.fill, "radius": self.radius}
+
+
+@dataclass
+class DrawText:
+    """Draw text at a position."""
+    x: float
+    y: float
+    text: str
+    size: float
+    color: str
+    monospace: bool = False
+    bold: bool = False
+    align: str = "left"
+
+    def to_draw_dict(self) -> dict:
+        d = {"type": "text", "x": self.x, "y": self.y, "text": self.text,
+             "size": self.size, "color": self.color, "monospace": self.monospace,
+             "bold": self.bold}
+        if self.align and self.align != "left":
+            d["align"] = self.align
+        return d
+
+
+@dataclass
+class DrawLine:
+    """Draw a line between two points."""
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    color: str
+    width: float = 1.0
+
+    def to_draw_dict(self) -> dict:
+        return {"type": "line", "x1": self.x1, "y1": self.y1,
+                "x2": self.x2, "y2": self.y2, "color": self.color, "width": self.width}
+
+
+@dataclass
+class DrawImage:
+    """Draw an image from a file path."""
+    x: float
+    y: float
+    w: float
+    h: float
+    path: str
+    radius: float = 0.0
+
+    def to_draw_dict(self) -> dict:
+        return {"type": "image", "x": self.x, "y": self.y, "w": self.w,
+                "h": self.h, "path": self.path, "radius": self.radius}
+
+
+@dataclass
+class DrawScrollbar:
+    """Draw a scrollbar indicator."""
+    x: float
+    y: float
+    h: float
+    scroll_offset: int
+    total_items: int
+    visible_items: int
+    color: str = "#45475a"
+    width: float = 4.0
+
+    def to_draw_dict(self) -> dict:
+        return {"type": "scrollbar", "x": self.x, "y": self.y, "h": self.h,
+                "scroll_offset": self.scroll_offset, "total_items": self.total_items,
+                "visible_items": self.visible_items, "color": self.color, "width": self.width}
+
+
+# Union type for all typed draw commands
+DrawCommand = Any  # DrawRect | DrawText | DrawLine | DrawImage | DrawScrollbar
+
+
+# ─── Crash handling helpers ───────────────────────────────────────────────────
+
+def _write_crash_log(app_id: str, exc: BaseException) -> Optional[str]:
+    """Write crash traceback to ~/.plexi/logs/<app-id>/crash.log. Returns path or None."""
+    try:
+        log_dir = pathlib.Path.home() / ".plexi" / "logs" / (app_id or "unknown")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        crash_path = log_dir / "crash.log"
+        ts = datetime.now(timezone.utc).isoformat()
+        tb = traceback.format_exc()
+        with open(crash_path, "a") as f:
+            f.write(f"\n--- {ts} ---\n{tb}\n")
+        return str(crash_path)
+    except OSError:
+        return None
+
+
+def _emit_crash_frame(width: float, height: float, exc: BaseException,
+                      crash_log_path: Optional[str] = None) -> None:
+    """Render a crash frame with error details and flush it."""
+    exc_type = type(exc).__name__
+    exc_msg = str(exc)
+    tb_lines = traceback.format_exc().splitlines()
+    # Find the last "File ..." line for context
+    file_line = next((l.strip() for l in reversed(tb_lines) if l.strip().startswith("File")), "")
+
+    border = 3.0
+    bg = "#1e1e2e"
+    red = "#f38ba8"
+    fg = "#cdd6f4"
+    muted = "#6c7086"
+    yellow = "#f9e2af"
+
+    cmds = [
+        {"type": "rect", "x": 0, "y": 0, "w": width, "h": height, "fill": bg, "radius": 0},
+        {"type": "rect", "x": 0, "y": 0, "w": width, "h": border, "fill": red, "radius": 0},
+        {"type": "rect", "x": 0, "y": height - border, "w": width, "h": border, "fill": red, "radius": 0},
+        {"type": "rect", "x": 0, "y": 0, "w": border, "h": height, "fill": red, "radius": 0},
+        {"type": "rect", "x": width - border, "y": 0, "w": border, "h": height, "fill": red, "radius": 0},
+        {"type": "text", "x": 20, "y": 20, "text": f"App crash: {exc_type}",
+         "size": 18.0, "color": red, "monospace": False, "bold": True},
+        {"type": "text", "x": 20, "y": 50, "text": exc_msg[:120],
+         "size": 14.0, "color": fg, "monospace": True, "bold": False},
+    ]
+    if file_line:
+        cmds.append({"type": "text", "x": 20, "y": 78, "text": file_line[:120],
+                     "size": 12.0, "color": muted, "monospace": True, "bold": False})
+    if crash_log_path:
+        cmds.append({"type": "text", "x": 20, "y": 100, "text": f"Log: {crash_log_path}",
+                     "size": 11.0, "color": yellow, "monospace": True, "bold": False})
+    cmds.append({"type": "text", "x": 20, "y": 124,
+                 "text": "Press R to restart  •  Q to quit",
+                 "size": 12.0, "color": muted, "monospace": False, "bold": False})
+    cmds.append({"type": "frame_done"})
+    for cmd in cmds:
+        print(json.dumps(cmd), flush=True)
+
+
 class RenderContext:
     """
     Passed to the on_render handler. Accumulates draw commands, then flushes.
@@ -773,6 +1035,26 @@ class RenderContext:
         self._app_state: dict = app_state if app_state is not None else {}
         self._time: float = 0.0
         self._app: Optional["App"] = None  # set by App.run() before on_render
+
+    def draw(self, cmd: DrawCommand) -> None:
+        """
+        Emit a typed draw command.
+
+        Accepts any DrawRect, DrawText, DrawLine, DrawImage, or DrawScrollbar
+        instance. This is the typed alternative to calling ctx.rect(),
+        ctx.text(), etc. directly — use whichever style fits your app.
+
+        Example::
+
+            ctx.draw(DrawRect(x=0, y=0, w=ctx.width, h=ctx.height, fill="#1e1e2e"))
+            ctx.draw(DrawText(x=20, y=20, text="Hello", size=16, color="#cdd6f4"))
+        """
+        if hasattr(cmd, "to_draw_dict"):
+            self._commands.append(cmd.to_draw_dict())
+        elif isinstance(cmd, dict):
+            self._commands.append(cmd)
+        else:
+            raise TypeError(f"draw() expects a typed draw command, got {type(cmd).__name__}")
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0):
         """Fill a rectangle."""
@@ -1769,9 +2051,48 @@ class RenderContext:
 
 class App:
     """
-    Base class for Plexi apps. Register event handlers via decorators.
+    Base class for Plexi apps. Two usage styles:
 
-    Handlers:
+    **Decorator style** (original, backward-compatible)::
+
+        app = App()
+
+        @app.on_render
+        def render(ctx):
+            ctx.rect(0, 0, ctx.width, ctx.height, fill="#1e1e2e")
+
+        app.run()
+
+    **Subclass style** (new, typed, LSP-friendly)::
+
+        class MyApp(App):
+            def on_render(self, ctx: RenderContext) -> None:
+                ctx.draw(DrawRect(x=0, y=0, w=ctx.width, h=ctx.height, fill="#1e1e2e"))
+
+            def on_key(self, event: KeyEvent, emit: Emitter) -> None:
+                if event.key == "q":
+                    sys.exit(0)
+
+        MyApp().run()
+
+    Typed event objects (KeyEvent, ClickEvent, etc.) are passed to subclass
+    handler methods. The decorator-style handlers still receive raw positional
+    args for full backward compatibility.
+
+    **Crash handling**: uncaught exceptions in any event handler are caught,
+    logged to stderr and ~/.plexi/logs/<app-id>/crash.log, and a crash frame
+    is rendered (red border, exception details, log path). The event loop
+    continues — the next render will call your handler again.
+
+    **@command decorator**: register typed command handlers::
+
+        @app.command("search")
+        def handle_search(query: str, limit: int = 10) -> None:
+            ...
+
+    Args are parsed from the command bar text; type annotations drive coercion.
+
+    Handlers (decorator style):
         @app.on_init         fn() — inspect app.protocol_version, open_intent,
                                capability_manifest, and render_mode
         @app.on_render        fn(ctx: RenderContext)
@@ -1822,6 +2143,12 @@ class App:
         self._on_run_created: Optional[Callable] = None
         self.open_intent: Optional[OpenIntent] = None
         self._emitter = Emitter(app_id=app_id)
+        self._app_id: str = app_id
+        # Named command registry: {name: (fn, param_annotations)}
+        self._command_registry: Dict[str, Callable] = {}
+        # Detect subclass style — if a subclass has overridden any on_* method
+        # directly (not via decorator), wire it up automatically.
+        self._wire_subclass_handlers()
         # Breakpoints: list of (min_width, min_height, render_fn).
         # Walked in descending area order on each render to pick the
         # most specific match whose constraints fit the current pane.
@@ -2177,6 +2504,205 @@ class App:
         self._on_run_created = fn
         return fn
 
+    def command(self, name: str) -> Callable:
+        """
+        Register a typed command handler for the Plexi command bar.
+
+        The decorated function's type annotations drive argument coercion.
+        When the user invokes ``/<name> arg1 arg2`` from the command bar,
+        args are split on whitespace and coerced to the annotated types
+        (str, int, float supported). Missing args with defaults are OK;
+        extra positional args are passed as strings. Invalid args render
+        a typed error frame with a usage hint instead of crashing.
+
+        Example::
+
+            @app.command("search")
+            def handle_search(query: str, limit: int = 10) -> None:
+                ...
+
+        The handler is also called when the raw ``on_command`` text starts
+        with ``/<name> `` — so this composes with the existing command event.
+        """
+        def decorator(fn: Callable) -> Callable:
+            self._command_registry[name] = fn
+            return fn
+        return decorator
+
+    def _wire_subclass_handlers(self) -> None:
+        """
+        Auto-wire subclass method overrides as event handlers.
+
+        Checks whether each on_* method has been overridden in a subclass
+        (i.e., exists on the type and is not the base App method). If so,
+        wraps it to adapt the typed-event signature to the internal dispatch.
+        """
+        base = App
+        cls = type(self)
+        if cls is base:
+            return  # pure decorator style — nothing to wire
+
+        # Subclass on_render(self, ctx) → _on_render
+        if cls.on_render is not base.on_render:
+            _self = self
+            def _subclass_render(ctx: RenderContext) -> None:
+                cls.on_render(_self, ctx)
+            self._on_render = _subclass_render
+
+        # Subclass on_key(self, event: KeyEvent, emit: Emitter) → _on_key
+        if cls.on_key is not base.on_key:
+            _self = self
+            def _subclass_key(key: str, mods: dict, emit: Emitter) -> None:
+                cls.on_key(_self, KeyEvent(key=key, modifiers=mods), emit)
+            self._on_key = _subclass_key
+
+        # Subclass on_click(self, event: ClickEvent, emit: Emitter) → _on_click
+        if cls.on_click is not base.on_click:
+            _self = self
+            def _subclass_click(x: float, y: float, button: str, emit: Emitter) -> None:
+                cls.on_click(_self, ClickEvent(x=x, y=y, button=button), emit)
+            self._on_click = _subclass_click
+
+        # Subclass on_mouse_down
+        if cls.on_mouse_down is not base.on_mouse_down:
+            _self = self
+            def _subclass_mouse_down(x: float, y: float, button: str, emit: Emitter) -> None:
+                cls.on_mouse_down(_self, MouseDownEvent(x=x, y=y, button=button), emit)
+            self._on_mouse_down = _subclass_mouse_down
+
+        # Subclass on_mouse_up
+        if cls.on_mouse_up is not base.on_mouse_up:
+            _self = self
+            def _subclass_mouse_up(x: float, y: float, button: str, emit: Emitter) -> None:
+                cls.on_mouse_up(_self, MouseUpEvent(x=x, y=y, button=button), emit)
+            self._on_mouse_up = _subclass_mouse_up
+
+        # Subclass on_mouse_move
+        if cls.on_mouse_move is not base.on_mouse_move:
+            _self = self
+            def _subclass_mouse_move(x: float, y: float, emit: Emitter) -> None:
+                cls.on_mouse_move(_self, MouseMoveEvent(x=x, y=y), emit)
+            self._on_mouse_move = _subclass_mouse_move
+
+        # Subclass on_scroll
+        if cls.on_scroll is not base.on_scroll:
+            _self = self
+            def _subclass_scroll(x: float, y: float, dx: float, dy: float, emit: Emitter) -> None:
+                cls.on_scroll(_self, ScrollEvent(x=x, y=y, delta_x=dx, delta_y=dy), emit)
+            self._on_scroll = _subclass_scroll
+
+        # Subclass on_command
+        if cls.on_command is not base.on_command:
+            _self = self
+            def _subclass_command(text: str, emit: Emitter) -> None:
+                cls.on_command(_self, CommandEvent(text=text), emit)
+            self._on_command = _subclass_command
+
+        # Subclass on_drop
+        if cls.on_drop is not base.on_drop:
+            _self = self
+            def _subclass_drop(target_id: str, paths: List[str], emit: Emitter) -> None:
+                cls.on_drop(_self, DropEvent(target_id=target_id, paths=paths), emit)
+            self._on_drop = _subclass_drop
+
+        # Subclass on_pipe_data
+        if cls.on_pipe_data is not base.on_pipe_data:
+            _self = self
+            def _subclass_pipe_data(from_app: str, channel: str, value: Any, emit: Emitter) -> None:
+                cls.on_pipe_data(_self, PipeDataEvent(from_app=from_app, channel=channel, value=value), emit)
+            self._on_pipe_data = _subclass_pipe_data
+
+        # Subclass on_event
+        if cls.on_event is not base.on_event:
+            _self = self
+            def _subclass_event(kind: str, payload: dict, emit: Emitter) -> None:
+                cls.on_event(_self, EventDataEvent(kind=kind, payload=payload), emit)
+            self._on_event = _subclass_event
+
+        # Subclass on_run_created
+        if cls.on_run_created is not base.on_run_created:
+            _self = self
+            def _subclass_run_created(run_id: str, emit: Emitter) -> None:
+                cls.on_run_created(_self, RunCreatedEvent(run_id=run_id), emit)
+            self._on_run_created = _subclass_run_created
+
+        # on_init, on_suspend, on_resume, on_resize, on_get_state, on_set_state
+        # pass no typed event object — wire them through directly if overridden.
+        for attr in ("on_init", "on_suspend", "on_resume", "on_resize",
+                     "on_get_state", "on_set_state"):
+            if getattr(cls, attr) is not getattr(base, attr):
+                setattr(self, f"_{attr}", getattr(cls, attr).__get__(self, cls))
+
+    def _dispatch_command_text(self, text: str, emit: Emitter) -> bool:
+        """
+        Try to dispatch `text` against the command registry.
+
+        Returns True if a registered command matched and was called.
+        text is expected in the form ``<name> [args...]`` (no leading slash).
+        """
+        parts = text.strip().lstrip("/").split()
+        if not parts:
+            return False
+        name = parts[0]
+        if name not in self._command_registry:
+            return False
+        fn = self._command_registry[name]
+        raw_args = parts[1:]
+        try:
+            hints = {}
+            try:
+                hints = fn.__annotations__
+            except AttributeError:
+                pass
+            params = list(inspect.signature(fn).parameters.values())
+            # Drop 'emit' and 'self' params — they are passed separately
+            inject_emit = any(p.name == "emit" for p in params)
+            sig_params = [p for p in params if p.name not in ("self", "emit")]
+            coerced: list = []
+            for i, param in enumerate(sig_params):
+                ann = hints.get(param.name, str)
+                if i < len(raw_args):
+                    try:
+                        coerced.append(ann(raw_args[i]))
+                    except (ValueError, TypeError):
+                        emit.error(f"command '{name}': bad value for {param.name!r}: {raw_args[i]!r}")
+                        return True
+                elif param.default is not inspect.Parameter.empty:
+                    coerced.append(param.default)
+                else:
+                    emit.error(f"command '{name}': missing required argument {param.name!r}")
+                    return True
+            if inject_emit:
+                fn(*coerced, emit=emit)
+            else:
+                fn(*coerced)
+        except Exception as exc:
+            crash_path = _write_crash_log(self._app_id, exc)
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+            emit.error(f"command '{name}' crashed: {exc}")
+        return True
+
+    def _safe_call(self, fn: Optional[Callable], *args: Any,
+                   width: float = 0.0, height: float = 0.0) -> bool:
+        """
+        Call fn(*args), catching any exception.
+
+        On exception: logs traceback to stderr, writes crash log,
+        and if width/height are nonzero renders a crash frame.
+        Returns True on success, False on crash.
+        """
+        if fn is None:
+            return True
+        try:
+            fn(*args)
+            return True
+        except Exception as exc:
+            crash_path = _write_crash_log(self._app_id, exc)
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+            if width > 0 and height > 0:
+                _emit_crash_frame(width, height, exc, crash_path)
+            return False
+
     def _route_key_to_editor(self, editor_id: str, es: dict, key: str, mods: dict) -> bool:
         """Handle a key event for a focused code editor. Returns True if consumed."""
         lines = [l for l in es["lines"]]  # shallow copy to mutate
@@ -2381,13 +2907,18 @@ class App:
                 ctx._time = self._render_time
                 ctx._app = self  # allow code_editor to register state
                 # Breakpoint dispatch (if registered) overrides on_render.
+                render_ok = True
                 if self._breakpoints:
                     fn = self._pick_breakpoint(self.width, self.height)
                     if fn is not None:
-                        fn(ctx)
+                        render_ok = self._safe_call(fn, ctx,
+                                                    width=self.width, height=self.height)
                 elif self._on_render:
-                    self._on_render(ctx)
-                ctx._flush()
+                    render_ok = self._safe_call(self._on_render, ctx,
+                                                width=self.width, height=self.height)
+                # Only flush if render succeeded (crash frame already flushed on failure)
+                if render_ok:
+                    ctx._flush()
 
             elif event_type == "key":
                 key = event.get("key", "")
@@ -2401,19 +2932,19 @@ class App:
                     if es:
                         editor_consumed = self._route_key_to_editor(eid, es, key, mods)
                 if not editor_consumed and self._on_key:
-                    self._on_key(key, mods, self._emitter)
+                    self._safe_call(self._on_key, key, mods, self._emitter)
 
             elif event_type == "suspend":
                 if self._on_suspend:
-                    self._on_suspend()
+                    self._safe_call(self._on_suspend)
 
             elif event_type == "resume":
                 if self._on_resume:
-                    self._on_resume()
+                    self._safe_call(self._on_resume)
 
             elif event_type == "click":
                 if self._on_click:
-                    self._on_click(
+                    self._safe_call(self._on_click,
                         event.get("x", 0.0),
                         event.get("y", 0.0),
                         event.get("button", "primary"),
@@ -2421,8 +2952,11 @@ class App:
                     )
 
             elif event_type == "command":
-                if self._on_command:
-                    self._on_command(event.get("text", ""), self._emitter)
+                cmd_text = event.get("text", "")
+                # Try typed command registry first; fall through to on_command handler
+                dispatched = self._dispatch_command_text(cmd_text, self._emitter)
+                if not dispatched and self._on_command:
+                    self._safe_call(self._on_command, cmd_text, self._emitter)
 
             elif event_type == "get_state":
                 self._handle_get_state()
@@ -2432,7 +2966,7 @@ class App:
 
             elif event_type == "drop":
                 if self._on_drop:
-                    self._on_drop(
+                    self._safe_call(self._on_drop,
                         event.get("target_id", ""),
                         event.get("paths", []),
                         self._emitter,
@@ -2440,7 +2974,7 @@ class App:
 
             elif event_type == "mouse_down":
                 if self._on_mouse_down:
-                    self._on_mouse_down(
+                    self._safe_call(self._on_mouse_down,
                         event.get("x", 0.0),
                         event.get("y", 0.0),
                         event.get("button", "left"),
@@ -2449,7 +2983,7 @@ class App:
 
             elif event_type == "mouse_up":
                 if self._on_mouse_up:
-                    self._on_mouse_up(
+                    self._safe_call(self._on_mouse_up,
                         event.get("x", 0.0),
                         event.get("y", 0.0),
                         event.get("button", "left"),
@@ -2458,7 +2992,7 @@ class App:
 
             elif event_type == "mouse_move":
                 if self._on_mouse_move:
-                    self._on_mouse_move(
+                    self._safe_call(self._on_mouse_move,
                         event.get("x", 0.0),
                         event.get("y", 0.0),
                         self._emitter,
@@ -2466,7 +3000,7 @@ class App:
 
             elif event_type == "scroll":
                 if self._on_scroll:
-                    self._on_scroll(
+                    self._safe_call(self._on_scroll,
                         event.get("x", 0.0),
                         event.get("y", 0.0),
                         event.get("delta_x", 0.0),
@@ -2476,7 +3010,7 @@ class App:
 
             elif event_type == "pipe_data":
                 if self._on_pipe_data:
-                    self._on_pipe_data(
+                    self._safe_call(self._on_pipe_data,
                         event.get("from_app", ""),
                         event.get("channel", ""),
                         event.get("value"),
@@ -2485,7 +3019,7 @@ class App:
 
             elif event_type == "event_data":
                 if self._on_event:
-                    self._on_event(
+                    self._safe_call(self._on_event,
                         event.get("kind", ""),
                         event.get("payload", {}),
                         self._emitter,
@@ -2493,7 +3027,8 @@ class App:
 
             elif event_type == "run_created":
                 if self._on_run_created:
-                    self._on_run_created(event.get("run_id", ""), self._emitter)
+                    self._safe_call(self._on_run_created,
+                        event.get("run_id", ""), self._emitter)
 
             elif event_type == "shutdown":
                 break
