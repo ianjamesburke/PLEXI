@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-16 — [CHANGED] Agent streaming + backlog→notification palette — closes #214, closes #234 (PR → alpha)
+
+**#214 (agent streaming):** Already fully implemented in `agent_llm.rs` + `agent_mode.rs` as of the RC commit. `call_claude()` parses stream-json line-by-line and emits `LlmResponse::Token` per `assistant` delta; `poll_llm()` clears the spinner on first token and appends each chunk to `pending_output`. No code changes needed — closed as complete.
+
+**#234 (backlog→notification palette):** `notification_palette.rs` extended with `scan_backlog()` that reads `~/.plexi-alpha/backlog/*.md` at palette-open time (no watcher needed — cheap enough to scan on demand). Backlog items render as a tiered section below live notifications with a dim-gray urgency dot. Delete/Backspace or `d` key dismisses a focused item by moving its file to `backlog/.dismissed/`. Click opens the note in the system editor via `open`. Items are sorted oldest-first (longest-ignored surfaces first). Intentionally deferred: weighted priority scoring, AI triage suggestions, snooze UI — all require #228/#229/#231 or event-log data to be meaningful.
+
+**Breaks if:** Cmd+Shift+N crashes when `~/.plexi-alpha/backlog/` is missing (should silently return empty list, not panic).
+
 ## 2026-04-16 — [CHANGED] Capability enforcement runtime prompts — §7 closes #230 (PR → alpha)
 
 Wired §7 end-to-end: `ProcessApp` checks `RunCreate`, `EventSubscribe`, and `SpawnApp` against manifest-declared capabilities. Undeclared capabilities queue a `PendingCapabilityPrompt` shown as a modal ("Allow once / Always allow / Deny"). Decisions persist to `permissions.json`. `is_orchestrator = true` in manifest bypasses all prompts. `PermissionPrompted` events emitted to bus for future trust scoring.
