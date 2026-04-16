@@ -1,7 +1,11 @@
 # Plexi Python App — Agent Guide
 
-SDK version: **0.3.0** (`plexi_sdk.py`). Protocol: newline-delimited JSON over stdin/stdout.
-This doc is the fast path. Read it once and you can build a working app without touching the full spec.
+SDK version: **0.3.0 legacy** (`plexi_sdk.py`). Protocol: newline-delimited JSON over stdin/stdout.
+This doc is the fast path for current apps, but Plexi v2 is being rewritten around recursive `.plexi` instance boundaries. Prefer the spec index and fractal roadmap for new architecture work: `docs/specs/README.md` and `docs/specs/roadmaps/fractal-pgap/`.
+
+Existing example apps are disposable protocol probes. It is acceptable to delete or rewrite them during v2 if they do not validate recursive instances, capability manifests, typed pipes, depth notifications, or Plexi IQ.
+
+The Python SDK now exposes the recursive probes the v2 apps need: `protocol_version`, `open_intent`, `render_mode`, `capability_manifest`, `status_summary`, and `Suspend`/`Resume`.
 
 ---
 
@@ -37,8 +41,10 @@ Plexi sends JSON events on stdin. `app.run()` reads them in a loop. Register han
 
 | Event | Decorator | Signature | When it fires |
 |---|---|---|---|
-| `init` | _(none)_ | — | First event; size is available but no frame expected |
-| `render` | `@app.on_render` | `fn(ctx: RenderContext)` | Every frame — draw here |
+| `init` | `@app.on_init` | `fn()` | First event; inspect `app.protocol_version`, `app.open_intent`, `app.capability_manifest`, and `app.render_mode` |
+| `render` | `@app.on_render` | `fn(ctx: RenderContext)` | Every frame — draw here; inspect `ctx.render_mode` for `full` vs `preview` |
+| `suspend` | `@app.on_suspend` | `fn()` | Host is pausing work for this depth |
+| `resume` | `@app.on_resume` | `fn()` | Host is resuming work for this depth |
 | `resize` | `@app.on_resize` | `fn(width, height)` | Pane size changed (before next render) |
 | `key` | `@app.on_key` | `fn(key: str, mods: dict, emit: Emitter)` | Key pressed while app has focus |
 | `click` | `@app.on_click` | `fn(x, y, button: str, emit: Emitter)` | Mouse click in app surface |
@@ -114,9 +120,10 @@ Enable/disable continuous `mouse_move` events. Persists until changed; do not re
 | `emit.cd(path)` | Change the linked terminal's cwd. Requires `terminal_write = true`. |
 | `emit.notification(title, body=None, priority=1)` | Post to Plexi's notification log (Cmd+Shift+N). Priority: 0=info, 1=normal, 2=high, 3=urgent. |
 | `emit.cost_report(service, model, input_tokens, output_tokens, cost_usd)` | Report LLM API cost for tracking. Use after every API call. |
+| `emit.status_summary(summary)` | Emit lightweight status/preview metadata for depth trees and recursive panes. |
 | `emit.info(msg)` / `.warn(msg)` / `.error(msg)` / `.debug(msg)` | Forward log messages into `~/.plexi-alpha/plexi.log` tagged `app::<app_id>`. |
 | `emit.log(level, msg)` | Generic log; level is `"error"`, `"warn"`, `"info"`, or `"debug"`. |
-| `emit.spawn_app(app_id, ...)` | Spawn another app (see below). |
+| `emit.spawn_app(app_id, ..., open_intent=None)` | Spawn another app (see below). |
 | `emit.submit_feedback(text, rating=None, category=None)` | Append user feedback to the app's `feedback.jsonl`. |
 
 ---
@@ -162,12 +169,13 @@ emit.spawn_app(
     lifecycle="cascade",           # "cascade" | "orphan" | "prompt"
     linked=True,                   # share terminal link group
     wire_channels=None,            # typed-pipe channel names (future)
+    open_intent=None,              # OpenIntent.file(...) / .prompt(...) / .resume(...)
 )
 ```
 
 Layout kinds: `"fill"`, `"cols"` (slot 0=left/1=right), `"rows"` (slot 0=top/1=bottom), `"grid_2x2"` (stub, falls back to fill).
 
-The target app's `[app.spawnable]` manifest table controls who may spawn it and which lifecycles it accepts. Refused spawns send an error notification back to the caller.
+The target app's `[app.spawnable]` manifest table controls who may spawn it and which lifecycles it accepts. Refused spawns send an error notification back to the caller. When the host starts the child, the SDK surfaces the launch context on `app.open_intent` and the depth-scoped permission set on `app.capability_manifest`.
 
 ---
 
@@ -180,6 +188,7 @@ Place `manifest.toml` next to the entry point. The registry refuses to load apps
 id          = "my-app"          # required — unique, used in logs and composition
 name        = "My App"          # required — shown in app switcher
 entry       = "my_app.py"       # required — must exist and have +x bit set
+protocol_version = 2            # required for v2 apps
 version     = "0.1.0"           # optional
 description = "Does a thing"    # optional
 

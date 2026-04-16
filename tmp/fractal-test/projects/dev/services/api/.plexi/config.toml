@@ -1,0 +1,2 @@
+name = "API Service"
+apps = ["git-log", "hacker-news", "stopwatch"]

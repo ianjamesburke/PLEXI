@@ -217,6 +217,12 @@ impl ProcessApp {
         } else {
             cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
         }
+        // Create a new process group so we can reap the entire subtree on shutdown.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd_builder.process_group(0);
+        }
         let mut child = cmd_builder
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -411,6 +417,11 @@ impl ProcessApp {
                 .env("PLEXI_PARENT_APP_ID", parent_id);
         } else {
             cmd_builder.env("PLEXI_LAUNCH_MODE", "direct");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd_builder.process_group(0);
         }
         let mut child = match cmd_builder
             .stdin(Stdio::piped())
@@ -975,6 +986,7 @@ impl ProcessApp {
                 | DrawCommand::Notification { .. }
                 | DrawCommand::SetCursor { .. }
                 | DrawCommand::MouseTracking { .. }
+                | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::PipeWrite { .. }
                 | DrawCommand::PipeSubscribe { .. }
@@ -1274,6 +1286,8 @@ impl App for ProcessApp {
                 pixels_per_point: ui.ctx().pixels_per_point(),
                 protocol_version: self.protocol_version,
                 open_intent: self.open_intent.clone(),
+                protocol_version: crate::app_protocol::HOST_PROTOCOL_VERSION,
+                capability_manifest: None,
             });
         }
 
@@ -1286,7 +1300,12 @@ impl App for ProcessApp {
         // Request a new frame.
         let delta_time = self.last_render_time.elapsed().as_secs_f32();
         self.last_render_time = Instant::now();
-        self.send_event(&PlexiEvent::Render { width: size.x, height: size.y, delta_time });
+        self.send_event(&PlexiEvent::Render {
+            width: size.x,
+            height: size.y,
+            delta_time,
+            mode: crate::app_protocol::RenderMode::Full,
+        });
 
         // Drain all draw commands that arrived since last frame (including response
         // to the Render we just sent — they come async so we take whatever is ready).
@@ -1408,6 +1427,10 @@ impl App for ProcessApp {
                 }
                 DrawCommand::MouseTracking { enabled } => {
                     self.mouse_tracking = enabled;
+                }
+                DrawCommand::StatusSummary { summary: _ } => {
+                    // Summary-only metadata is reserved for parent/depth views.
+                    // Do not include it in the committed visual frame.
                 }
                 DrawCommand::SpawnApp {
                     app_id,

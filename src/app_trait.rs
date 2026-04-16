@@ -22,6 +22,8 @@ pub enum AppCommand {
     Cd(PathBuf),
     /// Post an ephemeral notification.
     Notify(String),
+    /// Descend into a child `.plexi` depth boundary.
+    DescendDepth(PathBuf),
 }
 
 /// The trait all Plexi apps implement.

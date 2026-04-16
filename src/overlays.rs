@@ -29,7 +29,8 @@ impl PlexiApp {
                     } else {
                         self.colors.bg_active
                     };
-                    ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
+                    ui.painter()
+                        .circle_filled(egui::pos2(cx, y), dot_radius, color);
                 }
                 ui.add_space(4.0);
             }
@@ -57,6 +58,27 @@ impl PlexiApp {
                 .size(11.0)
                 .color(self.colors.text_section),
             );
+            // Depth indicator (Z-axis)
+            let depth = self.depth_stack.len();
+            if depth > 0 {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("Z{depth}"))
+                        .size(10.0)
+                        .color(self.colors.accent)
+                        .strong()
+                        .family(egui::FontFamily::Monospace),
+                );
+            }
+
+            ui.add_space(8.0);
+            if ui
+                .small_button("Depth tree")
+                .on_hover_text("Open the recursive .plexi tree")
+                .clicked()
+            {
+                self.open_depth_tree();
+            }
 
             // Right side — help button + notification indicator
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -106,6 +128,64 @@ impl PlexiApp {
         });
     }
 
+    pub(crate) fn draw_depth_breadcrumb(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let mono = egui::FontFamily::Monospace;
+
+            // Walk the depth stack — each entry is (context_idx, path).
+            // The first entry's path is the root workspace.
+            for (i, (_, path)) in self.depth_stack.iter().enumerate() {
+                if i > 0 {
+                    ui.label(
+                        RichText::new("\u{203A}")
+                            .size(11.0)
+                            .color(self.colors.text_dim),
+                    );
+                }
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "~".into());
+                ui.label(
+                    RichText::new(name)
+                        .size(11.0)
+                        .color(self.colors.text_dim)
+                        .family(mono.clone()),
+                );
+            }
+
+            // Current level (active context)
+            ui.label(
+                RichText::new("\u{203A}")
+                    .size(11.0)
+                    .color(self.colors.text_dim),
+            );
+            let current = &self.contexts[self.active_context];
+            let current_name = current
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| current.path.display().to_string());
+            ui.label(
+                RichText::new(current_name)
+                    .size(11.0)
+                    .color(self.colors.accent)
+                    .strong()
+                    .family(mono),
+            );
+
+            // Right-aligned ascend hint
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new("\u{2318}\u{238B} ascend")
+                        .size(10.0)
+                        .color(self.colors.text_dim)
+                        .family(egui::FontFamily::Monospace),
+                );
+            });
+        });
+    }
+
     pub(crate) fn draw_shortcuts_overlay(&self, ctx: &egui::Context) {
         egui::Area::new(egui::Id::new("shortcuts_overlay"))
             .anchor(Align2::RIGHT_TOP, Vec2::new(-16.0, 44.0))
@@ -133,11 +213,13 @@ impl PlexiApp {
                             ("\u{2318}D", "Split right"),
                             ("\u{2318}\u{21E7}D", "Split down"),
                             ("\u{2318}W", "Close pane"),
+                            ("\u{2318}\u{21E7}L", "Lock/unlock pane"),
                             ("\u{2318}B", "Toggle sidebar"),
                             ("\u{2318}H/J/K/L", "Focus pane"),
                             ("\u{2318}\u{21A9}", "Zoom pane"),
                             ("\u{2318}N", "New context"),
                             ("\u{2318}1-9", "Switch context"),
+                            ("\u{2318}\u{21E7}E", "Depth tree"),
                             ("\u{2318}/", "This help"),
                             ("\u{2318}Q", "Quit"),
                         ];
@@ -152,9 +234,7 @@ impl PlexiApp {
                                 );
                                 ui.add_space(8.0);
                                 ui.label(
-                                    RichText::new(desc)
-                                        .size(11.0)
-                                        .color(self.colors.text_dim),
+                                    RichText::new(desc).size(11.0).color(self.colors.text_dim),
                                 );
                             });
                         }
@@ -223,9 +303,7 @@ impl PlexiApp {
                         // Auto-focus and select all
                         if !te.has_focus() {
                             te.request_focus();
-                            if let Some(mut state) =
-                                egui::TextEdit::load_state(ui.ctx(), te_id)
-                            {
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
                                 state
                                     .cursor
                                     .set_char_range(Some(egui::text::CCursorRange::two(

@@ -62,7 +62,7 @@ import pathlib
 import shutil
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Tuple
 
@@ -178,6 +178,125 @@ class Theme:
 
 
 THEME = Theme()
+
+
+class RenderMode:
+    """Render modes surfaced by protocol v2."""
+
+    FULL = "full"
+    PREVIEW = "preview"
+
+
+@dataclass
+class OpenIntent:
+    """Structured launch context supplied by the host on Init."""
+
+    kind: str = "bare"
+    caller: Optional[dict] = None
+    payload: Optional[dict] = None
+    run_id: Optional[str] = None
+
+    @classmethod
+    def bare(cls) -> "OpenIntent":
+        return cls(kind="bare")
+
+    @classmethod
+    def file(cls, path: str, text_range: Optional[dict] = None) -> "OpenIntent":
+        payload: dict = {"path": path}
+        if text_range is not None:
+            payload["range"] = text_range
+        return cls(kind="file", payload=payload)
+
+    @classmethod
+    def url(cls, url: str) -> "OpenIntent":
+        return cls(kind="url", payload={"url": url})
+
+    @classmethod
+    def prompt(cls, text: str, model_hint: Optional[str] = None) -> "OpenIntent":
+        payload: dict = {"text": text}
+        if model_hint is not None:
+            payload["model_hint"] = model_hint
+        return cls(kind="prompt", payload=payload)
+
+    @classmethod
+    def resume(cls, snapshot_key: str) -> "OpenIntent":
+        return cls(kind="resume", payload={"snapshot_key": snapshot_key})
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_value(cls, value) -> Optional["OpenIntent"]:
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            return None
+        return cls(
+            kind=str(value.get("kind", "bare")),
+            caller=value.get("caller"),
+            payload=value.get("payload"),
+            run_id=value.get("run_id"),
+        )
+
+
+@dataclass
+class Health:
+    """Compact status indicator surfaced in StatusSummary."""
+
+    status: str = "running"
+
+
+@dataclass
+class PaneSummary:
+    """Serializable one-line summary for a pane/depth node."""
+
+    pane_id: int
+    cwd: str
+    status_text: Optional[str] = None
+    last_activity_unix_ms: Optional[int] = None
+    health: Health = field(default_factory=Health)
+
+    def to_dict(self) -> dict:
+        return {
+            "pane_id": self.pane_id,
+            "cwd": self.cwd,
+            "status_text": self.status_text,
+            "last_activity_unix_ms": self.last_activity_unix_ms,
+            "health": self.health.status,
+        }
+
+
+@dataclass
+class StatusSummary:
+    """Serializable cheap-status payload for preview renders."""
+
+    uptime_seconds: float = 0.0
+    process_count: int = 0
+    summary_text: Optional[str] = None
+    health: Health = field(default_factory=Health)
+    last_activity_unix_ms: Optional[int] = None
+    panes: List[PaneSummary] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "uptime_seconds": self.uptime_seconds,
+            "process_count": self.process_count,
+            "last_activity_unix_ms": self.last_activity_unix_ms,
+            "summary_text": self.summary_text,
+            "health": self.health.status,
+            "panes": [_payload_dict(pane) for pane in self.panes],
+        }
+
+
+def _payload_dict(value):
+    """Serialize dataclasses and helper objects to plain JSON values."""
+    if value is None:
+        return None
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if is_dataclass(value):
+        return asdict(value)
+    return value
 
 
 # ─── Filesystem utilities ─────────────────────────────────────────────────────
@@ -321,6 +440,7 @@ class Emitter:
         lifecycle: str = "cascade",
         linked: bool = True,
         wire_channels: Optional[List[str]] = None,
+        open_intent: Optional[OpenIntent] = None,
     ):
         """
         Ask Plexi to spawn another app and place it in a layout slot relative to this one.
@@ -361,6 +481,11 @@ class Emitter:
                 Typed-pipe channel names to pre-wire (e.g. ["file_buffer"]).
                 Stored on the spawn relationship for the typed-pipes spec;
                 defaults to no pre-wired channels.
+            open_intent:
+                Optional structured launch context for the child. Use
+                OpenIntent.file(...), OpenIntent.prompt(...), or
+                OpenIntent.resume(...) when the child should open with
+                depth-aware context.
 
         Authorization: the target app's `[app.spawnable]` manifest table is
         consulted — if `allow_callers` doesn't include this app, or the
@@ -376,8 +501,16 @@ class Emitter:
             "lifecycle": lifecycle,
             "linked": linked,
             "wire_channels": wire_channels or [],
+            "open_intent": _payload_dict(open_intent),
         }
         print(json.dumps(cmd), flush=True)
+
+    def status_summary(self, summary) -> None:
+        """Emit a structured preview/status summary outside a frame."""
+        print(json.dumps({
+            "type": "status_summary",
+            "summary": _payload_dict(summary),
+        }), flush=True)
 
     def pipe_write(self, channel: str, value) -> None:
         """Write a value to a named output pipe channel.
@@ -438,7 +571,9 @@ class Emitter:
             kinds: List of event kind strings to subscribe to, e.g.
                    ["app_spawned", "pipe_write"]. Pass None or [] for all events.
             scope: One of "workspace" (default), "pane", or "global".
-                   Controls which events are filtered by proximity.
+                   Controls which events are filtered by proximity. Global
+                   subscriptions are reserved for apps granted the observes
+                   capability by the host.
 
         Note: Phase 0 — the subscribe command is accepted by the host but
         EventData delivery is not yet implemented. Full forwarding lands in
@@ -533,10 +668,12 @@ class RenderContext:
     """
 
     def __init__(self, width: float, height: float, app_id: str = "",
-                 app_state: Optional[dict] = None):
+                 app_state: Optional[dict] = None,
+                 render_mode: str = RenderMode.FULL):
         self.width = width
         self.height = height
         self.delta_time: float = 0.0
+        self.render_mode: str = render_mode
         self._app_id = app_id
         self._commands: list = []
         # Shared mutable state owned by the App instance (survives across
@@ -1181,6 +1318,7 @@ class RenderContext:
         lifecycle: str = "cascade",
         linked: bool = True,
         wire_channels: Optional[List[str]] = None,
+        open_intent: Optional[OpenIntent] = None,
     ):
         """
         Ask Plexi to spawn another app at end of this frame.
@@ -1199,6 +1337,7 @@ class RenderContext:
             "lifecycle": lifecycle,
             "linked": linked,
             "wire_channels": wire_channels or [],
+            "open_intent": _payload_dict(open_intent),
         })
 
     def pipe_write(self, channel: str, value) -> None:
@@ -1212,6 +1351,13 @@ class RenderContext:
             value: Any JSON-serializable value (str, int, float, dict, list, etc.)
         """
         self._commands.append({"type": "pipe_write", "channel": channel, "value": value})
+
+    def status_summary(self, summary) -> None:
+        """Emit a structured preview/status summary for the current frame."""
+        self._commands.append({
+            "type": "status_summary",
+            "summary": _payload_dict(summary),
+        })
 
     def _flush(self):
         for cmd in self._commands:
@@ -1383,8 +1529,12 @@ class App:
     Base class for Plexi apps. Register event handlers via decorators.
 
     Handlers:
+        @app.on_init         fn() — inspect app.protocol_version, open_intent,
+                               capability_manifest, and render_mode
         @app.on_render        fn(ctx: RenderContext)
         @app.on_key           fn(key: str, mods: dict, emit: Emitter)
+        @app.on_suspend       fn() — host is pausing the app
+        @app.on_resume        fn() — host is resuming the app
         @app.on_click         fn(x: float, y: float, button: str, emit: Emitter)
         @app.on_command       fn(text: str, emit: Emitter)
         @app.on_resize        fn(width: float, height: float)
@@ -1405,9 +1555,15 @@ class App:
         self.protocol_version: int = 0
         """Protocol version sent by the host in the Init event. 0 means the
         host did not send a version (v1 host). Set once at startup."""
+        self.render_mode: str = RenderMode.FULL
+        self.open_intent: Optional[OpenIntent] = None
+        self.capability_manifest: dict = {}
         self._min_protocol_version: int = min_protocol_version
+        self._on_init: Optional[Callable] = None
         self._on_render: Optional[Callable] = None
         self._on_key: Optional[Callable] = None
+        self._on_suspend: Optional[Callable] = None
+        self._on_resume: Optional[Callable] = None
         self._on_click: Optional[Callable] = None
         self._on_command: Optional[Callable] = None
         self._on_resize: Optional[Callable] = None
@@ -1445,6 +1601,11 @@ class App:
 
     def on_render(self, fn: Callable) -> Callable:
         self._on_render = fn
+        return fn
+
+    def on_init(self, fn: Callable) -> Callable:
+        """Register a handler for the Init event (called once at startup)."""
+        self._on_init = fn
         return fn
 
     def breakpoint(
@@ -1645,6 +1806,16 @@ class App:
         self._on_key = fn
         return fn
 
+    def on_suspend(self, fn: Callable) -> Callable:
+        """Register a handler for host Suspend events."""
+        self._on_suspend = fn
+        return fn
+
+    def on_resume(self, fn: Callable) -> Callable:
+        """Register a handler for host Resume events."""
+        self._on_resume = fn
+        return fn
+
     def on_click(self, fn: Callable) -> Callable:
         self._on_click = fn
         return fn
@@ -1817,6 +1988,12 @@ class App:
                 raw_intent = event.get("open_intent")
                 if raw_intent:
                     self.open_intent = OpenIntent.from_dict(raw_intent)
+                self.render_mode = event.get("mode", event.get("render_mode", RenderMode.FULL))
+                self.open_intent = OpenIntent.from_value(event.get("open_intent"))
+                capability_manifest = event.get("capability_manifest", {})
+                self.capability_manifest = (
+                    capability_manifest if isinstance(capability_manifest, dict) else {}
+                )
                 if self._min_protocol_version > 0 and self.protocol_version < self._min_protocol_version:
                     print(
                         f"plexi_sdk: host protocol version {self.protocol_version} is below "
@@ -1825,6 +2002,8 @@ class App:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+                if self._on_init:
+                    self._on_init()
 
             elif event_type == "resize":
                 self.width = event.get("width", self.width)
@@ -1836,6 +2015,7 @@ class App:
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
                 self.delta_time = event.get("delta_time", 0.0)
+                self.render_mode = event.get("mode", event.get("render_mode", self.render_mode))
                 # Auto min-size fallback: if the pane is smaller than
                 # our declared floor on either axis, draw the built-in
                 # "too small" frame and skip user rendering entirely.
@@ -1853,6 +2033,7 @@ class App:
                     self.width, self.height,
                     app_id=self._emitter._app_id,
                     app_state={"scroll": self._scroll_state},
+                    render_mode=self.render_mode,
                 )
                 ctx.delta_time = self.delta_time
                 # Breakpoint dispatch (if registered) overrides on_render.
@@ -1871,6 +2052,14 @@ class App:
                         event.get("modifiers", {}),
                         self._emitter,
                     )
+
+            elif event_type == "suspend":
+                if self._on_suspend:
+                    self._on_suspend()
+
+            elif event_type == "resume":
+                if self._on_resume:
+                    self._on_resume()
 
             elif event_type == "click":
                 if self._on_click:

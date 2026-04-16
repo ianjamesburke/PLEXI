@@ -37,6 +37,9 @@ pub struct SavedPane {
     /// PaneId of the linked terminal (for split restoration).
     #[serde(default)]
     pub linked_terminal_pane: Option<u64>,
+    /// Whether this pane is locked against Cmd+W close.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 fn workspace_path() -> PathBuf {
@@ -107,6 +110,7 @@ mod tests {
                         active_app_type: None,
                         active_app_state: None,
                         linked_terminal_pane: None,
+                        locked: false,
                     },
                     SavedPane {
                         id: 2,
@@ -115,6 +119,7 @@ mod tests {
                         active_app_type: None,
                         active_app_state: None,
                         linked_terminal_pane: None,
+                        locked: false,
                     },
                 ],
                 focused_pane: None,

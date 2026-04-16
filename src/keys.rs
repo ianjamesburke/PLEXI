@@ -16,6 +16,8 @@
 // Cmd+Up / Cmd+Down     — scroll
 // Cmd+= / Cmd+-         — font size
 // Cmd+E                 — file browser
+// Cmd+Shift+E           — depth tree
+// Cmd+Escape            — ascend depth (Z-axis)
 // Cmd+0                 — quick note
 // Cmd+1–9               — switch context
 // Ctrl+/                — toggle agent mode
@@ -69,6 +71,8 @@ pub enum Action {
     ToggleAppFocus,
     /// Open the file browser app in the focused terminal.
     OpenFileBrowser,
+    /// Open the depth tree browser in the focused terminal.
+    OpenDepthTree,
     /// Open the quick note app (full pane, no terminal split).
     OpenQuickNote,
     /// Open the audio player app.
@@ -85,182 +89,138 @@ pub enum Action {
     AppRedo,
     /// Open the notification palette (shows unread notifications).
     ToggleNotificationPalette,
+    /// Ascend one depth level in the Z-axis (Cmd+Escape).
+    AscendDepth,
+    /// Toggle lock on the focused pane (prevents Cmd+W close).
+    LockPane,
+}
+
+/// Guard condition for a key binding.
+#[derive(Clone, Copy)]
+enum Guard {
+    /// Always active.
+    Always,
+    /// Only fires when an app surface is open in the focused pane.
+    AppActive,
+    /// Only fires when no app surface is open in the focused pane.
+    AppInactive,
+}
+
+struct Binding {
+    key: egui::Key,
+    modifiers: egui::Modifiers,
+    guard: Guard,
+    action: fn() -> Action,
+}
+
+/// Count how many modifier flags are set, for specificity sorting.
+#[inline]
+fn modifier_count(m: egui::Modifiers) -> u32 {
+    (m.alt as u32) + (m.ctrl as u32) + (m.shift as u32) + (m.mac_cmd as u32)
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
 /// pane currently has an app surface open (affects Escape and Tab handling).
 pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
-    let mut actions = Vec::new();
+    // Modifier shorthands
+    let cmd = egui::Modifiers::COMMAND;
     let cmd_shift = egui::Modifiers {
         shift: true,
         ..egui::Modifiers::COMMAND
     };
+    let ctrl = egui::Modifiers {
+        ctrl: true,
+        ..Default::default()
+    };
+    let none = egui::Modifiers::NONE;
+
+    // Binding table. Bindings with the same key are checked in descending
+    // modifier-count order (more-specific first), so Cmd+Shift+X is consumed
+    // before Cmd+X and shadowing is impossible.
+    //
+    // Cmd+W appears twice: CloseApp (AppActive) and ClosePane (AppInactive).
+    // They share the key but have mutually exclusive guards, so exactly one
+    // fires per frame.
+    let mut bindings: Vec<Binding> = vec![
+        // Split
+        Binding { key: egui::Key::D, modifiers: cmd_shift, guard: Guard::Always, action: || Action::SplitVertical },
+        Binding { key: egui::Key::D, modifiers: cmd, guard: Guard::Always, action: || Action::SplitHorizontal },
+        // Pane management
+        Binding { key: egui::Key::W, modifiers: cmd, guard: Guard::AppActive, action: || Action::CloseApp },
+        Binding { key: egui::Key::W, modifiers: cmd, guard: Guard::AppInactive, action: || Action::ClosePane },
+        Binding { key: egui::Key::L, modifiers: cmd_shift, guard: Guard::Always, action: || Action::LockPane },
+        // Navigation
+        Binding { key: egui::Key::H, modifiers: cmd, guard: Guard::Always, action: || Action::Navigate(Direction::Left) },
+        Binding { key: egui::Key::J, modifiers: cmd, guard: Guard::Always, action: || Action::Navigate(Direction::Down) },
+        Binding { key: egui::Key::K, modifiers: cmd, guard: Guard::Always, action: || Action::Navigate(Direction::Up) },
+        Binding { key: egui::Key::L, modifiers: cmd, guard: Guard::Always, action: || Action::Navigate(Direction::Right) },
+        // Tabs
+        Binding { key: egui::Key::T, modifiers: cmd, guard: Guard::Always, action: || Action::NewTab },
+        Binding { key: egui::Key::CloseBracket, modifiers: cmd, guard: Guard::Always, action: || Action::NextTab },
+        Binding { key: egui::Key::OpenBracket, modifiers: cmd, guard: Guard::Always, action: || Action::PrevTab },
+        // App-level
+        Binding { key: egui::Key::Q, modifiers: cmd, guard: Guard::Always, action: || Action::Quit },
+        Binding { key: egui::Key::B, modifiers: cmd, guard: Guard::Always, action: || Action::ToggleSidebar },
+        Binding { key: egui::Key::Enter, modifiers: cmd, guard: Guard::Always, action: || Action::ToggleZoom },
+        Binding { key: egui::Key::Escape, modifiers: cmd, guard: Guard::Always, action: || Action::AscendDepth },
+        Binding { key: egui::Key::Slash, modifiers: cmd, guard: Guard::Always, action: || Action::ToggleShortcuts },
+        Binding { key: egui::Key::P, modifiers: cmd, guard: Guard::Always, action: || Action::ToggleCommandPalette },
+        Binding { key: egui::Key::R, modifiers: cmd_shift, guard: Guard::Always, action: || Action::RenamePane },
+        Binding { key: egui::Key::N, modifiers: cmd_shift, guard: Guard::Always, action: || Action::ToggleNotificationPalette },
+        Binding { key: egui::Key::N, modifiers: cmd, guard: Guard::Always, action: || Action::NewContext },
+        // Scroll
+        Binding { key: egui::Key::ArrowUp, modifiers: cmd, guard: Guard::Always, action: || Action::ScrollUp },
+        Binding { key: egui::Key::ArrowDown, modifiers: cmd, guard: Guard::Always, action: || Action::ScrollDown },
+        // Font size
+        Binding { key: egui::Key::Equals, modifiers: cmd, guard: Guard::Always, action: || Action::IncreasePaneFontSize },
+        Binding { key: egui::Key::Minus, modifiers: cmd, guard: Guard::Always, action: || Action::DecreasePaneFontSize },
+        // App surface focus toggle (Tab, no modifiers, only when app open)
+        Binding { key: egui::Key::Tab, modifiers: none, guard: Guard::AppActive, action: || Action::ToggleAppFocus },
+        // File/tree browsers
+        Binding { key: egui::Key::E, modifiers: cmd_shift, guard: Guard::Always, action: || Action::OpenDepthTree },
+        Binding { key: egui::Key::E, modifiers: cmd, guard: Guard::Always, action: || Action::OpenFileBrowser },
+        // Other apps
+        Binding { key: egui::Key::Num0, modifiers: cmd, guard: Guard::Always, action: || Action::OpenQuickNote },
+        Binding { key: egui::Key::A, modifiers: cmd_shift, guard: Guard::Always, action: || Action::OpenAudioPlayer },
+        Binding { key: egui::Key::Comma, modifiers: cmd, guard: Guard::Always, action: || Action::OpenConfig },
+        Binding { key: egui::Key::S, modifiers: cmd_shift, guard: Guard::Always, action: || Action::OpenSecretsManager },
+        // Agent mode (Ctrl+/)
+        Binding { key: egui::Key::Slash, modifiers: ctrl, guard: Guard::Always, action: || Action::ToggleAgentMode },
+        // Undo / Redo in focused app (only when app active)
+        Binding { key: egui::Key::Z, modifiers: cmd_shift, guard: Guard::AppActive, action: || Action::AppRedo },
+        Binding { key: egui::Key::Z, modifiers: cmd, guard: Guard::AppActive, action: || Action::AppUndo },
+    ];
+
+    // Sort more-specific bindings first (descending modifier count).
+    // Stable sort preserves declaration order for ties.
+    bindings.sort_by(|a, b| modifier_count(b.modifiers).cmp(&modifier_count(a.modifiers)));
+
+    let mut actions = Vec::new();
 
     ctx.input_mut(|input| {
-        // Check Cmd+Shift+D before Cmd+D (more specific first)
-        if input.consume_key(cmd_shift, egui::Key::D) {
-            actions.push(Action::SplitVertical);
-        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
-            actions.push(Action::SplitHorizontal);
-        }
-
-        // Close pane (Ctrl+W on Linux; on macOS, Cmd+W goes through close_requested)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
-            actions.push(Action::ClosePane);
-        }
-
-        // Focus navigation (Cmd+HJKL)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::H) {
-            actions.push(Action::Navigate(Direction::Left));
-        }
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::J) {
-            actions.push(Action::Navigate(Direction::Down));
-        }
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::K) {
-            actions.push(Action::Navigate(Direction::Up));
-        }
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::L) {
-            actions.push(Action::Navigate(Direction::Right));
-        }
-
-        // New tab (Cmd+T)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::T) {
-            actions.push(Action::NewTab);
-        }
-
-        // Cycle tabs (Cmd+] / Cmd+[)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
-            actions.push(Action::NextTab);
-        }
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
-            actions.push(Action::PrevTab);
-        }
-
-        // Quit (Cmd+Q)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q) {
-            actions.push(Action::Quit);
-        }
-
-        // Toggle sidebar (Cmd+B)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::B) {
-            actions.push(Action::ToggleSidebar);
-        }
-
-        // Toggle zoom (Cmd+Enter)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter) {
-            actions.push(Action::ToggleZoom);
-        }
-
-        // Toggle shortcuts overlay (Cmd+/)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash) {
-            actions.push(Action::ToggleShortcuts);
-        }
-
-        // Command palette (Cmd+P)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
-            actions.push(Action::ToggleCommandPalette);
-        }
-
-        // Rename pane (Cmd+Shift+R)
-        if input.consume_key(cmd_shift, egui::Key::R) {
-            actions.push(Action::RenamePane);
-        }
-
-        // Notification palette (Cmd+Shift+N) — check before bare Cmd+N so the
-        // more-specific binding wins.
-        if input.consume_key(cmd_shift, egui::Key::N) {
-            actions.push(Action::ToggleNotificationPalette);
-        }
-
-        // New context (Cmd+N)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
-            actions.push(Action::NewContext);
-        }
-
-        // Scrollback (Cmd+Up / Cmd+Down)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::ArrowUp) {
-            actions.push(Action::ScrollUp);
-        }
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::ArrowDown) {
-            actions.push(Action::ScrollDown);
-        }
-
-        // Per-pane font size (Cmd+= / Cmd+-)
-        // Use exact modifier checks to avoid matching Cmd+Shift variants.
-        let cmd_only = egui::Modifiers::COMMAND;
-        if !input.modifiers.shift && input.consume_key(cmd_only, egui::Key::Equals) {
-            actions.push(Action::IncreasePaneFontSize);
-        }
-        if !input.modifiers.shift && input.consume_key(cmd_only, egui::Key::Minus) {
-            actions.push(Action::DecreasePaneFontSize);
-        }
-
-        // App surface: Cmd+W closes app, Tab toggles terminal split.
-        // Escape is NOT consumed here — it belongs to the focused app so apps
-        // can use it for modal dismissal, form cancel, detail-view exit, etc.
-        // Cmd+W is the native macOS "close window" shortcut and is not
-        // consumable by apps, so hung/buggy apps are still always killable.
-        if app_active {
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
-                actions.push(Action::CloseApp);
+        for binding in &bindings {
+            // Guard check
+            let guard_ok = match binding.guard {
+                Guard::Always => true,
+                Guard::AppActive => app_active,
+                Guard::AppInactive => !app_active,
+            };
+            if !guard_ok {
+                continue;
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
-                actions.push(Action::ToggleAppFocus);
+
+            // Specificity sort guarantees more-specific bindings (e.g.
+            // Cmd+Shift+L) are checked before less-specific ones (Cmd+L).
+            // consume_key requires *at least* the declared modifiers, so
+            // Cmd+Shift+L won't match when only Cmd is held, and once it
+            // consumes the event, Cmd+L won't see it.
+            if input.consume_key(binding.modifiers, binding.key) {
+                actions.push((binding.action)());
             }
         }
 
-        // Open file browser (Cmd+E)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::E) {
-            actions.push(Action::OpenFileBrowser);
-        }
-
-        // Open quick note (Cmd+0)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0) {
-            actions.push(Action::OpenQuickNote);
-        }
-
-        // Open audio player (Cmd+Shift+A)
-        if input.consume_key(cmd_shift, egui::Key::A) {
-            actions.push(Action::OpenAudioPlayer);
-        }
-
-        // Open config (Cmd+,)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma) {
-            actions.push(Action::OpenConfig);
-        }
-
-        // Open secrets manager (Cmd+Shift+S)
-        if input.consume_key(cmd_shift, egui::Key::S) {
-            actions.push(Action::OpenSecretsManager);
-        }
-
-        // Toggle agent mode (Ctrl+/ or Ctrl+Tab)
-        // Ctrl+Tab is the ergonomic alias — bare Tab conflicts with ZSH completion.
-        let ctrl_only = egui::Modifiers {
-            ctrl: true,
-            ..Default::default()
-        };
-        if input.consume_key(ctrl_only, egui::Key::Slash)
-            || (!input.modifiers.shift
-                && !input.modifiers.alt
-                && !input.modifiers.command
-                && input.modifiers.ctrl
-                && input.consume_key(ctrl_only, egui::Key::Tab))
-        {
-            actions.push(Action::ToggleAgentMode);
-        }
-
-        // Undo / Redo in focused app (Cmd+Z / Cmd+Shift+Z)
-        // Only when an app is active — otherwise Cmd+Z goes to the terminal.
-        if app_active {
-            if input.consume_key(cmd_shift, egui::Key::Z) {
-                actions.push(Action::AppRedo);
-            } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
-                actions.push(Action::AppUndo);
-            }
-        }
-
-        // Switch context (Cmd+1 through Cmd+9)
+        // Switch context (Cmd+1 through Cmd+9).
+        // Handled outside the table because the action carries a parameter.
         let num_keys = [
             egui::Key::Num1,
             egui::Key::Num2,
@@ -276,6 +236,15 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             if input.consume_key(egui::Modifiers::COMMAND, key) {
                 actions.push(Action::SwitchContext(i));
             }
+        }
+
+        // Ctrl+Tab — ergonomic alias for ToggleAgentMode.
+        let ctrl_only = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        if input.consume_key(ctrl_only, egui::Key::Tab) {
+            actions.push(Action::ToggleAgentMode);
         }
     });
 
