@@ -3360,6 +3360,8 @@ dependencies = [
  "serde",
  "serde_json",
  "syntect",
+ "tokio",
+ "tokio-stream",
  "toml",
  "ureq",
  "wasm-bindgen",

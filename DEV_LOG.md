@@ -1,5 +1,17 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-16 — [CHANGED] Plexi IQ Stage 1 — minimum viable loop — closes #211, #212, #231 (PR → alpha)
+
+Wired the `plexi_iq` module into the build graph (`mod plexi_iq;` on main.rs — #211) and implemented the Stage 1 streaming turn loop (#212, #231 scope lock).
+
+**What landed:** `src/plexi_iq/backend/mod.rs` — redesigned `LlmBackend` trait with `stream_to_channel(request, tx)` instead of an async `stream()` call; both backends spawn background threads and deliver `StreamEvent` variants (Text / Done / Error) into an `mpsc::Sender`. `ClaudeCliBackend` wraps `claude -p --output-format stream-json --verbose`, parsing the same events as `agent_llm.rs`. `AnthropicApiBackend` uses `async-anthropic` via a dedicated single-threaded tokio runtime per turn, streams `ContentBlockDelta` events. `src/plexi_iq/loop.rs` — synchronous `run_turn()` drains the receiver, accumulates text, calls `on_token` for each chunk, and appends a ledger row on Done. `src/plexi_iq/ledger.rs` — append-only JSONL at `~/.plexi-alpha/ledger.jsonl`, one row per turn with backend name, billing model, token counts, and USD cost (null for subscription).
+
+**Design choices:** `stream_to_channel` (sync, mpsc) over `async fn stream -> impl Stream` — no async runtime on the main UI thread, same egui-frame-drain pattern already used by `agent_llm.rs`. Native backend gets its own per-turn tokio rt rather than a shared one — simpler lifetime story, no Arc juggling. `#[allow(dead_code)]` kept on the module; nothing in `agent_mode.rs` routes through IQ yet — that's Stage 2 (wiring agent mode Ctrl+/ through PlexiIqInstance).
+
+**Bug fixed:** `async-anthropic 0.6` `MessageDelta` carries `usage: Option<Usage>`, not `Usage` — the codegen had `usage.output_tokens` which required adding `.and_then(|u| u.output_tokens)`. Also had to add `tokio` and `tokio-stream` as explicit Cargo dependencies (they were only transitive via async-anthropic, not directly usable). Builder pattern for `CreateMessagesRequestBuilder` required restructuring to avoid E0716 temporary-dropped-while-borrowed.
+
+**Breaks if:** `cargo build` fails in the `plexi_iq` subtree, or `~/.plexi-alpha/ledger.jsonl` is not created on the first agent turn when `[agent.backend] = "native"`.
+
 ## 2026-04-16 — [CHANGED] Agent streaming + backlog→notification palette — closes #214, closes #234 (PR → alpha)
 
 **#214 (agent streaming):** Already fully implemented in `agent_llm.rs` + `agent_mode.rs` as of the RC commit. `call_claude()` parses stream-json line-by-line and emits `LlmResponse::Token` per `assistant` delta; `poll_llm()` clears the spinner on first token and appends each chunk to `pending_output`. No code changes needed — closed as complete.
