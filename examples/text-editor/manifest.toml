@@ -1,5 +1,6 @@
 [app]
-protocol_version = 2id          = "text-editor"
+protocol_version = 2
+id          = "text-editor"
 name        = "Text Editor"
 entry       = "text_editor.py"
 version     = "0.1.0"

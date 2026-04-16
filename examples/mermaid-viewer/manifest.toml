@@ -1,5 +1,6 @@
 [app]
-protocol_version = 2id          = "mermaid-viewer"
+protocol_version = 2
+id          = "mermaid-viewer"
 name        = "Mermaid Viewer"
 entry       = "mermaid_viewer.py"
 version     = "0.1.0"
