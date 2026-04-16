@@ -37,6 +37,8 @@ pub struct PlexiApp {
     pub(crate) palette_selected: usize,
     pub(crate) show_notification_palette: bool,
     pub(crate) notification_palette_selected: usize,
+    pub(crate) show_run_palette: bool,
+    pub(crate) run_palette_selected: usize,
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) app_visit_history: Vec<String>,
     pub(crate) renaming_pane: Option<PaneId>,
@@ -234,6 +236,8 @@ impl PlexiApp {
                     palette_selected: 0,
                     show_notification_palette: false,
                     notification_palette_selected: 0,
+                    show_run_palette: false,
+                    run_palette_selected: 0,
                     pane_visit_history: Vec::new(),
                     app_visit_history: config::load_app_mru(),
                     renaming_pane: None,
@@ -305,6 +309,8 @@ impl PlexiApp {
             palette_selected: 0,
             show_notification_palette: false,
             notification_palette_selected: 0,
+            show_run_palette: false,
+            run_palette_selected: 0,
             pane_visit_history: Vec::new(),
             app_visit_history: config::load_app_mru(),
             renaming_pane: None,
@@ -965,6 +971,12 @@ impl eframe::App for PlexiApp {
                         self.notification_palette_selected = 0;
                     }
                 }
+                Action::ToggleRunPalette => {
+                    self.show_run_palette = !self.show_run_palette;
+                    if self.show_run_palette {
+                        self.run_palette_selected = 0;
+                    }
+                }
                 Action::AscendDepth => {
                     self.ascend_depth();
                 }
@@ -1176,6 +1188,8 @@ impl eframe::App for PlexiApp {
                     .collect();
                 let suppress_focus = self.renaming_context.is_some()
                     || self.show_command_palette
+                    || self.show_notification_palette
+                    || self.show_run_palette
                     || self.renaming_pane.is_some();
 
                 #[cfg(target_os = "macos")]
@@ -1445,6 +1459,11 @@ impl eframe::App for PlexiApp {
         // Notification palette overlay
         if self.show_notification_palette {
             self.draw_notification_palette(ctx);
+        }
+
+        // Run palette overlay
+        if self.show_run_palette {
+            self.draw_run_palette(ctx);
         }
 
         // Rename pane overlay

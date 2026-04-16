@@ -12,6 +12,10 @@
 
 **Breaks if:** notification palette crashes on Enter with any notification that has a `run_id` set.
 
+## 2026-04-16 — [CHANGED] Run primitive end-to-end: RunGet + run palette (PR → alpha, closes #228)
+Completed the Run primitive (#228): added `DrawCommand::RunGet` (app fetches run state by id) with `PlexiEvent::RunState` response; added `run_store.list_all()` alongside existing `list_active()`; created `src/run_palette.rs` (Cmd+Shift+U) showing active/completed runs as cards with status pills, head_task, initiating app, and elapsed time — `BlockedOnUser` runs surface the prompt inline. Also fixed two pre-existing bugs in `app_protocol.rs` (missing `}` on `SubscribeScope`) and `process_app.rs` (duplicate `protocol_version` field in `Init` struct literal) that caused compile failures.
+**Breaks if:** Cmd+Shift+U doesn't open the run palette; or `run_state` events are not delivered back to apps after a `run_get` draw command.
+
 ## 2026-04-15 — [DECISION] v2.0 RC: full protocol implementation — OpenIntent, event bus, Run primitive, typed pipes Phase 1, Plexi IQ Stage 1
 
 Implemented all v2.0 scope items in a single RC branch. Key choices: event bus uses std::sync::mpsc with 4096-bound sync_channel and fan-out via a subscriber Vec (no tokio dep needed — matches existing sync threading model in ProcessApp); RunStore is in-memory with JSONL append log (no SQLite, mirrors notification log pattern); Plexi IQ Stage 1 uses `claude -p --resume` subprocess backend per spec §9 (native API mode is config option, not default); typed pipes auto-wiring on spawn rather than at runtime for simplicity. EventSubscribe uses broadcast via a shared subscriber list rather than tokio::broadcast to stay on std threads. ProcessApp now holds optional Arc refs to EventLog and RunStore — wired at launch time via wire() method rather than passing through the App trait (which is object-safe and couldn't hold generics).

@@ -92,6 +92,11 @@ impl RunStore {
         )).collect()
     }
 
+    /// All runs in the in-memory index (active and completed), unsorted.
+    pub fn list_all(&self) -> Vec<&Run> {
+        self.runs.values().collect()
+    }
+
     fn append_log(&self, run: &Run) {
         if let Ok(line) = serde_json::to_string(run) {
             match OpenOptions::new().create(true).append(true).open(&self.log_path) {
