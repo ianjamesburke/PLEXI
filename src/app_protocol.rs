@@ -21,7 +21,7 @@
 /// loop {
 ///   let event = read_json_line(stdin);
 ///   match event {
-///     Init { width, height } => { /* store dimensions */ }
+///     Init { width, height, .. } => { /* store dimensions */ }
 ///     Render => {
 ///       write_json(DrawCommand::Rect { x:0, y:0, w:width, h:height, fill:"#1e1e2e" });
 ///       write_json(DrawCommand::Text { x:20, y:20, text:"Hello Plexi!", size:14.0, color:"#cdd6f4" });
@@ -67,6 +67,9 @@ pub enum PlexiEvent {
         /// which the host treats as "version 1" (legacy, deprecation warned).
         #[serde(default)]
         protocol_version: u32,
+        /// Structured spawn intent.
+        #[serde(default)]
+        open_intent: Option<OpenIntent>,
     },
     /// Request a new frame. App should reply with DrawCommands + FrameDone.
     Render { width: f32, height: f32, delta_time: f32 },
@@ -130,6 +133,8 @@ pub enum PlexiEvent {
     },
     /// App is being closed. Process should exit.
     Shutdown,
+    /// A Run was created; the run_id is returned to the requesting app.
+    RunCreated { run_id: String },
     /// A value arrived on a named pipe channel from another app.
     ///
     /// Sent by the host when a connected app (parent or child via spawn
@@ -142,6 +147,17 @@ pub enum PlexiEvent {
         /// The JSON value written by the sender.
         value: serde_json::Value,
     },
+    /// Response to a MeasureText request.
+    TextMetrics {
+        request_id: u32,
+        width: f32,
+        height: f32,
+        ascent: f32,
+    },
+}
+
+fn default_protocol_version() -> u32 {
+    2
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -157,6 +173,243 @@ pub struct Modifiers {
 pub enum MouseButton {
     Primary,
     Secondary,
+}
+
+// ── OpenIntent ────────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OpenIntent {
+    pub kind: OpenKind,
+    #[serde(default)]
+    pub caller: Option<Caller>,
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OpenKind {
+    File {
+        path: String,
+        #[serde(default)]
+        range: Option<TextRange>,
+    },
+    Url { url: String },
+    Prompt {
+        text: String,
+        #[serde(default)]
+        model_hint: Option<String>,
+    },
+    Resume { snapshot_key: String },
+    Bare,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct TextRange {
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Caller {
+    pub app_id: String,
+    #[serde(default)]
+    pub pane_id: Option<u64>,
+    pub source: CallerSource,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CallerSource {
+    #[default]
+    Palette,
+    Cli,
+    Spawn,
+    Notification,
+    AgentMode,
+    ApiCall,
+}
+
+// ── Run primitive ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Run {
+    pub id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub status: RunStatus,
+    pub head_task: String,
+    pub initiator: Caller,
+    pub scope: RunScope,
+    #[serde(default)]
+    pub notification_id: Option<String>,
+    #[serde(default)]
+    pub parent_run_id: Option<String>,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum RunStatus {
+    Pending,
+    Running,
+    BlockedOnUser {
+        prompt: String,
+        resume_intent: OpenIntent,
+    },
+    BlockedOnChild {
+        child_run_id: String,
+    },
+    Complete,
+    Failed { error: String },
+    Cancelled,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum RunOutcome {
+    Success,
+    Failed { error: String },
+    Cancelled,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunScope {
+    #[default]
+    Global,
+    Workspace { path: String },
+}
+
+// ── Notification actions ──────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NotificationAction {
+    Focus {
+        pane_id: u64,
+        fullscreen: bool,
+    },
+    Confirm {
+        confirm_text: String,
+        cancel_text: String,
+        on_confirm: Box<NotificationAction>,
+    },
+    TextInput {
+        prompt: String,
+        #[serde(default)]
+        placeholder: Option<String>,
+        on_submit: Box<NotificationAction>,
+    },
+    Dismiss,
+    ResumeRun {
+        run_id: String,
+    },
+    OpenIntent {
+        open_intent: OpenIntent,
+    },
+    RunCommand {
+        app_id: String,
+        command: String,
+        args: Vec<String>,
+    },
+    ExternalUrl {
+        url: String,
+    },
+}
+
+// ── Event bus ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BusEvent {
+    pub id: u64,
+    pub ts: i64,
+    pub scope: RunScope,
+    pub kind: BusEventKind,
+    #[serde(default)]
+    pub caller: Option<Caller>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum BusEventKind {
+    AppSpawned {
+        #[serde(default)]
+        parent_pane: Option<u64>,
+        child_pane: u64,
+        app_id: String,
+        #[serde(default)]
+        open_intent: Option<OpenIntent>,
+    },
+    AppClosed {
+        pane: u64,
+        app_id: String,
+        reason: String,
+    },
+    PipeWrite {
+        from: u64,
+        channel: String,
+        bytes: u32,
+    },
+    NotificationEmitted {
+        id: String,
+        app_id: String,
+        urgency: String,
+        #[serde(default)]
+        run_id: Option<String>,
+    },
+    NotificationActioned {
+        id: String,
+        action: String,
+    },
+    ApiCall {
+        app_id: String,
+        method: String,
+        ok: bool,
+    },
+    AgentTurn {
+        agent_id: String,
+        #[serde(default)]
+        run_id: Option<String>,
+        tokens_in: u32,
+        tokens_out: u32,
+        model: String,
+    },
+    RunCreated {
+        run_id: String,
+        head_task: String,
+        initiator: Caller,
+    },
+    RunUpdated {
+        run_id: String,
+        status_tag: String,
+        head_task: String,
+    },
+    RunCompleted {
+        run_id: String,
+        outcome: RunOutcome,
+    },
+    PermissionPrompted {
+        app_id: String,
+        capability: String,
+        decision: String,
+    },
+    CostReported {
+        app_id: String,
+        usd: f64,
+        model: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscribeScope {
+    #[default]
+    Workspace,
+    Pane,
+    Group,
 }
 
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
@@ -311,33 +564,6 @@ pub enum DrawCommand {
         #[serde(default)]
         timestamp: Option<String>,
     },
-    /// Raise a notification. Plexi records it to the notification log,
-    /// increments the status-bar unread count, and surfaces it in the
-    /// notification palette (Cmd+Shift+N).
-    Notification {
-        title: String,
-        #[serde(default)]
-        body: Option<String>,
-        /// The `app_id` of the emitter (e.g. `"parallax"`).
-        source_app: String,
-        /// Urgency level: "low" | "medium" | "high". Defaults to "low".
-        #[serde(default = "notification_default_urgency")]
-        urgency: String,
-        /// Unix timestamp (seconds). Host drops the notification if this is
-        /// already past at ingestion time.
-        #[serde(default)]
-        expires_at: Option<i64>,
-        /// Unix timestamp (seconds). Defer rendering in the palette until then.
-        #[serde(default)]
-        visible_after: Option<i64>,
-        /// Action triggered when the user presses Enter on this notification.
-        /// "focus" | "confirm" | "text_input" | "dismiss" (default).
-        #[serde(default = "notification_default_action_type")]
-        action_type: String,
-        /// Type-dependent payload. For "focus": `{"pane_id": u64, "fullscreen": bool}`.
-        #[serde(default)]
-        action_payload: Option<serde_json::Value>,
-    },
     /// Declare a drop target region. Stateless per frame: apps must re-emit
     /// this on every render frame for the drop zone to remain active.
     ///
@@ -409,18 +635,6 @@ pub enum DrawCommand {
         #[serde(default)]
         wire_channels: Vec<String>,
     },
-    /// Write a value to a named output pipe channel.
-    ///
-    /// The host routes this to all connected apps: if the emitter is a child
-    /// pane, its parent app receives a `PlexiEvent::PipeData`; if the emitter
-    /// is a parent pane, all its child apps receive `PlexiEvent::PipeData`.
-    /// Routing is bidirectional — parent→children and child→parent.
-    PipeWrite {
-        /// Channel name (e.g. "selection", "result", "data").
-        channel: String,
-        /// Any JSON-representable value.
-        value: serde_json::Value,
-    },
     /// Subscribe to a named input channel.
     ///
     /// **Phase 0 no-op:** this command is accepted for forward compatibility
@@ -455,11 +669,108 @@ pub enum DrawCommand {
         /// Empty = all event kinds.
         #[serde(default)]
         kinds: Vec<String>,
-        /// `"workspace"` | `"pane"` | `"global"`
-        scope: String,
+        #[serde(default)]
+        scope: SubscribeScope,
     },
     /// End of frame — Plexi will render everything queued since last FrameDone.
     FrameDone,
+    /// Emit a notification. Plexi records it to the notification log,
+    /// increments the status-bar unread count, and surfaces it in the
+    /// notification palette (Cmd+Shift+N).
+    ///
+    /// Uses structured `NotificationAction` for the action field (v2.0+).
+    /// `source_app` is the `app_id` of the emitter.
+    Notification {
+        id: String,
+        title: String,
+        #[serde(default)]
+        body: Option<String>,
+        /// The `app_id` of the emitter (e.g. `"parallax"`).
+        #[serde(default)]
+        source_app: Option<String>,
+        /// Urgency level: "low" | "medium" | "high". Defaults to "low".
+        #[serde(default = "notification_default_urgency")]
+        urgency: String,
+        /// Unix timestamp (seconds). Host drops the notification if this is
+        /// already past at ingestion time.
+        #[serde(default)]
+        expires_at: Option<i64>,
+        /// Unix timestamp (seconds). Defer rendering in the palette until then.
+        #[serde(default)]
+        visible_after: Option<i64>,
+        #[serde(default)]
+        run_id: Option<String>,
+        /// Structured action triggered when the user interacts with this notification.
+        #[serde(default)]
+        action: Option<NotificationAction>,
+    },
+    /// Write data to a named pipe channel.
+    ///
+    /// The host routes this to all connected apps: if the emitter is a child
+    /// pane, its parent app receives a `PlexiEvent::PipeData`; if the emitter
+    /// is a parent pane, all its child apps receive `PlexiEvent::PipeData`.
+    /// Routing is bidirectional — parent→children and child→parent.
+    PipeWrite {
+        /// Channel name (e.g. "selection", "result", "data").
+        channel: String,
+        /// Any JSON-representable value.
+        value: serde_json::Value,
+    },
+    /// Create a Run.
+    RunCreate {
+        head_task: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+        #[serde(default)]
+        parent_run_id: Option<String>,
+        #[serde(default)]
+        notification_title: Option<String>,
+    },
+    /// Update a Run's status.
+    RunUpdate {
+        run_id: String,
+        status: RunStatus,
+        #[serde(default)]
+        head_task: Option<String>,
+        #[serde(default)]
+        payload: Option<serde_json::Value>,
+    },
+    /// Complete a Run.
+    RunComplete {
+        run_id: String,
+        outcome: RunOutcome,
+    },
+    /// List active pipe wires.
+    PipeListWires,
+    /// Push a transform onto the transform stack.
+    PushTransform {
+        #[serde(default = "default_one_f32")]
+        scale_x: f32,
+        #[serde(default = "default_one_f32")]
+        scale_y: f32,
+        #[serde(default)]
+        translate_x: f32,
+        #[serde(default)]
+        translate_y: f32,
+        #[serde(default)]
+        rotate: f32,
+        #[serde(default)]
+        origin_x: f32,
+        #[serde(default)]
+        origin_y: f32,
+    },
+    /// Pop the top transform off the stack.
+    PopTransform,
+    /// Request exact text measurement. Plexi responds with a TextMetrics event.
+    MeasureText {
+        request_id: u32,
+        text: String,
+        size: f32,
+        #[serde(default)]
+        monospace: bool,
+        #[serde(default)]
+        bold: bool,
+    },
 }
 
 /// Anchor for a `SpawnApp` layout — where the new pane is positioned relative
@@ -590,6 +901,18 @@ fn default_stroke_width() -> f32 {
     1.0
 }
 
+fn default_one_f32() -> f32 {
+    1.0
+}
+
+/// A wired connection between two app panes on a named channel.
+#[derive(Debug, Clone)]
+pub struct PipeWire {
+    pub from_pane: u64,
+    pub to_pane: u64,
+    pub channel: String,
+}
+
 // ── Spawn-relationship host bookkeeping ──────────────────────────────────────
 
 /// Record of one parent → child pane spawn, produced when the host honors a
@@ -676,7 +999,6 @@ impl SpawnRelationships {
 /// A spawn request drained from a `ProcessApp` between frames. The host
 /// dispatcher walks this list, validates each request against the registry
 /// and target app's manifest, and turns it into a real pane + child process.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PendingSpawn {
     pub app_id: String,

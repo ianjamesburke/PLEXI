@@ -153,14 +153,20 @@ impl App for ProcessMonitor {
         if text == "r" || text == "refresh" {
             self.refresh();
         } else if let Some(pid) = text.strip_prefix("kill ") {
-            emit.run_in_terminal(&format!("kill {}", pid.trim()));
+            let pid = pid.trim();
+            if pid.chars().all(|c| c.is_ascii_digit()) {
+                emit.run_in_terminal(&format!("kill {}", pid));
+            }
         }
     }
 }
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max { s.to_string() }
-    else { format!("{}…", &s[..max - 1]) }
+    else {
+        let end = s.char_indices().map(|(i, _)| i).take_while(|&i| i < max).last().unwrap_or(0);
+        format!("{}…", &s[..end])
+    }
 }
 
 fn main() {

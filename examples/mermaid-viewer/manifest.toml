@@ -11,6 +11,10 @@ filesystem     = "read_write"
 network        = false
 terminal_write = false
 mouse_tracking = false
+file_types     = ["mmd", "mermaid"]
+
+[app.protocol]
+requires = ["ui_primitives_v1"]
 
 [app.layout]
 min_width  = 400

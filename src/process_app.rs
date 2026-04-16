@@ -14,6 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -41,9 +42,7 @@ pub struct ProcessApp {
     /// drained by the host via take_pending_commands().
     pending_commands: Vec<crate::app_trait::AppCommand>,
     /// Pending `spawn_app` requests collected from the subprocess, to be
-    /// drained by the host via take_pending_spawns() each frame. Held in a
-    /// separate queue from `pending_commands` so the existing `AppCommand`
-    /// enum stays source-compatible while the spawn dispatcher is wired in.
+    /// drained by the host via take_pending_spawns() each frame.
     pending_spawns: Vec<PendingSpawn>,
     /// Pending PipeWrite commands collected from the subprocess, to be drained
     /// by the host's pipe dispatcher via take_pipe_writes() each frame.
@@ -51,6 +50,20 @@ pub struct ProcessApp {
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
+    /// Protocol version from the app manifest.
+    protocol_version: u32,
+    /// Open intent passed at spawn time.
+    open_intent: Option<crate::app_protocol::OpenIntent>,
+    /// Pane id this app is running in (used for bus events).
+    pub pane_id: u64,
+    /// Shared event log for bus emission.
+    event_log: Option<Arc<crate::event_log::EventLog>>,
+    /// Shared run store.
+    run_store: Option<Arc<Mutex<crate::run_store::RunStore>>>,
+    /// Sender used to write PlexiEvents back to this app (for async responses).
+    event_back_tx: Option<mpsc::SyncSender<PlexiEvent>>,
+    /// Pending events to send back to the app (RunCreated, EventData, etc.)
+    pending_back_events: Vec<PlexiEvent>,
     // Hot reload state
     bin_path: PathBuf,
     cwd: PathBuf,
@@ -83,6 +96,8 @@ pub struct ProcessApp {
     /// Re-injected as PLEXI_PARENT_APP_ID on hot-reload so the app always
     /// knows it was spawned, not opened directly.
     parent_app_id: Option<String>,
+    /// Transform stack for PushTransform/PopTransform. Each entry: (scale_x, scale_y, tx, ty, rotate, ox, oy).
+    transform_stack: Vec<(f32, f32, f32, f32, f32, f32, f32)>,
 }
 
 /// Snapshot of an app's state buckets.
@@ -120,7 +135,6 @@ fn find_python() -> std::ffi::OsString {
         if !path.exists() {
             continue;
         }
-        // Ask the interpreter for its version string ("3.11.6\n").
         let ok = std::process::Command::new(candidate)
             .args(["-c", "import sys; v=sys.version_info; exit(0 if v>=(3,10) else 1)"])
             .stdout(Stdio::null())
@@ -157,6 +171,23 @@ impl ProcessApp {
         bin_path: &PathBuf,
         cwd: &PathBuf,
         args: &[String],
+        mouse_tracking: bool,
+        parent_app_id: Option<&str>,
+    ) -> Result<Self, std::io::Error> {
+        Self::launch_with_intent(type_id, display_name, accepted_exts, bin_path, cwd, args, None, 1, 0, mouse_tracking, parent_app_id)
+    }
+
+    /// Spawn with an OpenIntent, protocol version, pane_id, mouse_tracking, and optional parent.
+    pub fn launch_with_intent(
+        type_id: impl Into<String>,
+        display_name: impl Into<String>,
+        accepted_exts: Vec<String>,
+        bin_path: &PathBuf,
+        cwd: &PathBuf,
+        args: &[String],
+        open_intent: Option<crate::app_protocol::OpenIntent>,
+        protocol_version: u32,
+        pane_id: u64,
         mouse_tracking: bool,
         parent_app_id: Option<&str>,
     ) -> Result<Self, std::io::Error> {
@@ -245,7 +276,6 @@ impl ProcessApp {
         let watcher = Self::setup_watcher(watch_dir, reload_tx);
 
         let cost_tracker = CostTracker::new(&type_id);
-        log::info!("ProcessApp[{type_id}]: subprocess launched");
         Ok(Self {
             type_id,
             display_name,
@@ -261,6 +291,13 @@ impl ProcessApp {
             pending_pipe_writes: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
+            protocol_version,
+            open_intent,
+            pane_id,
+            event_log: None,
+            run_store: None,
+            event_back_tx: None,
+            pending_back_events: Vec::new(),
             bin_path: bin_path.clone(),
             cwd: cwd.clone(),
             args: args.to_vec(),
@@ -277,7 +314,18 @@ impl ProcessApp {
             mouse_tracking,
             pending_cursor: None,
             parent_app_id: parent_app_id.map(|s| s.to_string()),
+            transform_stack: Vec::new(),
         })
+    }
+
+    /// Wire shared infrastructure into this app after construction.
+    pub fn wire(
+        &mut self,
+        event_log: Arc<crate::event_log::EventLog>,
+        run_store: Arc<Mutex<crate::run_store::RunStore>>,
+    ) {
+        self.event_log = Some(event_log);
+        self.run_store = Some(run_store);
     }
 
     /// Create a file watcher that sends a signal on any .py file change in the directory.
@@ -589,13 +637,50 @@ impl ProcessApp {
     ) {
         let origin = ui.min_rect().min;
         let colors = ctx.colors;
+        // Transform stack: (scale_x, scale_y, tx, ty). Rotate not supported in v2.1.
+        let mut transform_stack: Vec<(f32, f32, f32, f32)> = Vec::new();
+
+        // Apply transform stack to a point.
+        let apply_tx = |stack: &Vec<(f32, f32, f32, f32)>, x: f32, y: f32| -> (f32, f32) {
+            let mut px = x;
+            let mut py = y;
+            for &(sx, sy, tx, ty) in stack {
+                px = px * sx + tx;
+                py = py * sy + ty;
+            }
+            (px, py)
+        };
 
         for cmd in commands {
             match cmd {
+                DrawCommand::PushTransform { scale_x, scale_y, translate_x, translate_y, rotate, .. } => {
+                    if *rotate != 0.0 {
+                        log::warn!("ProcessApp: rotation transforms not supported in v2.1 (rotate={rotate}), skipping");
+                    }
+                    transform_stack.push((*scale_x, *scale_y, *translate_x, *translate_y));
+                    continue;
+                }
+                DrawCommand::PopTransform => {
+                    if transform_stack.pop().is_none() {
+                        log::warn!("ProcessApp: PopTransform called on empty transform stack");
+                    }
+                    continue;
+                }
+                // MeasureText is resolved before rendering — skip here.
+                DrawCommand::MeasureText { .. } => continue,
+                _ => {}
+            }
+
+            match cmd {
                 DrawCommand::Rect { x, y, w, h, fill, radius } => {
+                    let (tx, ty) = apply_tx(&transform_stack, *x, *y);
+                    // Scale w/h by the cumulative product of all scales in the stack.
+                    let (cum_sx, cum_sy) = transform_stack.iter()
+                        .fold((1.0_f32, 1.0_f32), |(ax, ay), &(sx, sy, _, _)| (ax * sx, ay * sy));
+                    let (sw, sh) = (*w * cum_sx, *h * cum_sy);
                     let rect = egui::Rect::from_min_size(
-                        egui::pos2(origin.x + x, origin.y + y),
-                        egui::vec2(*w, *h),
+                        egui::pos2(origin.x + tx, origin.y + ty),
+                        egui::vec2(sw, sh),
                     );
                     let color = parse_color(fill).unwrap_or(colors.bg_active);
                     ui.painter().rect_filled(rect, *radius, color);
@@ -610,13 +695,14 @@ impl ProcessApp {
                     } else {
                         egui::FontId::proportional(*size)
                     };
+                    let (tx, ty) = apply_tx(&transform_stack, *x, *y);
                     let anchor = match align.as_deref() {
                         Some("center") => egui::Align2::CENTER_TOP,
                         Some("right") => egui::Align2::RIGHT_TOP,
                         _ => egui::Align2::LEFT_TOP,
                     };
                     ui.painter().text(
-                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::pos2(origin.x + tx, origin.y + ty),
                         anchor,
                         text,
                         font_id,
@@ -626,10 +712,12 @@ impl ProcessApp {
 
                 DrawCommand::Line { x1, y1, x2, y2, color, width } => {
                     let color = parse_color(color).unwrap_or(colors.bg_active);
+                    let (tx1, ty1) = apply_tx(&transform_stack, *x1, *y1);
+                    let (tx2, ty2) = apply_tx(&transform_stack, *x2, *y2);
                     ui.painter().line_segment(
                         [
-                            egui::pos2(origin.x + x1, origin.y + y1),
-                            egui::pos2(origin.x + x2, origin.y + y2),
+                            egui::pos2(origin.x + tx1, origin.y + ty1),
+                            egui::pos2(origin.x + tx2, origin.y + ty2),
                         ],
                         egui::Stroke::new(*width, color),
                     );
@@ -877,7 +965,8 @@ impl ProcessApp {
 
                 // RunInTerminal / Cd / Log / State / CostReport / Notification /
                 // SetCursor / MouseTracking / SpawnApp / PipeWrite / PipeSubscribe /
-                // SecretGet / FrameDone handled at the App trait level, not here.
+                // SecretGet / RunCreate / RunUpdate / RunComplete / EventSubscribe /
+                // PipeListWires / FrameDone handled at the App trait level, not here.
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
@@ -890,7 +979,14 @@ impl ProcessApp {
                 | DrawCommand::PipeWrite { .. }
                 | DrawCommand::PipeSubscribe { .. }
                 | DrawCommand::SecretGet { .. }
+                | DrawCommand::RunCreate { .. }
+                | DrawCommand::RunUpdate { .. }
+                | DrawCommand::RunComplete { .. }
                 | DrawCommand::EventSubscribe { .. }
+                | DrawCommand::PipeListWires
+                | DrawCommand::PushTransform { .. }
+                | DrawCommand::PopTransform
+                | DrawCommand::MeasureText { .. }
                 | DrawCommand::FrameDone => {}
             }
         }
@@ -1176,7 +1272,8 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
                 pixels_per_point: ui.ctx().pixels_per_point(),
-                protocol_version: crate::app_protocol::HOST_PROTOCOL_VERSION,
+                protocol_version: self.protocol_version,
+                open_intent: self.open_intent.clone(),
             });
         }
 
@@ -1206,9 +1303,10 @@ impl App for ProcessApp {
                     // Commit: swap pending into frame, reset pending for next frame.
                     std::mem::swap(&mut self.frame, &mut self.pending_frame);
                     self.pending_frame.clear();
+                    // Reset transform stack at frame boundary.
+                    self.transform_stack.clear();
                 }
                 DrawCommand::RunInTerminal { command } => {
-                    log::debug!("ProcessApp[{}]: RunInTerminal: {command}", self.type_id);
                     self.pending_commands.push(crate::app_trait::AppCommand::RunInTerminal(command));
                 }
                 DrawCommand::Cd { path } => {
@@ -1243,35 +1341,59 @@ impl App for ProcessApp {
                     );
                 }
                 DrawCommand::Notification {
+                    id,
                     title,
                     body,
                     source_app,
                     urgency,
                     expires_at,
                     visible_after,
-                    action_type,
-                    action_payload,
+                    run_id,
+                    action,
                 } => {
-                    // Trust the app's self-reported source_app if set, otherwise
-                    // fall back to the ProcessApp's own type_id. This guards
-                    // against apps that forget to populate the field.
-                    let src = if source_app.is_empty() {
-                        self.type_id.clone()
-                    } else {
-                        source_app
-                    };
+                    let urgency_str = urgency.clone();
+                    // Emit event log entry for notification.
+                    crate::event_log::emit(crate::event_log::HostEvent::NotificationEmitted {
+                        id: id.clone(),
+                        title: title.clone(),
+                        urgency: urgency_str.clone(),
+                        timestamp: crate::event_log::now_timestamp(),
+                    });
+                    log::info!(
+                        "app::{} notification [{id}]: {title}{}",
+                        self.type_id,
+                        body.as_deref().map(|b| format!(" — {b}")).unwrap_or_default()
+                    );
+                    // Trust the app's self-reported source_app if set.
+                    let src = source_app
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| self.type_id.clone());
                     let source_tag = format!("app:{}", self.type_id);
+                    // Record to notification log with action payload extracted.
+                    let action_type = action.as_ref().map(|a| {
+                        match a {
+                            crate::app_protocol::NotificationAction::Focus { .. } => "focus",
+                            crate::app_protocol::NotificationAction::Confirm { .. } => "confirm",
+                            crate::app_protocol::NotificationAction::TextInput { .. } => "text_input",
+                            crate::app_protocol::NotificationAction::Dismiss => "dismiss",
+                            crate::app_protocol::NotificationAction::ResumeRun { .. } => "resume_run",
+                            crate::app_protocol::NotificationAction::OpenIntent { .. } => "open_intent",
+                            crate::app_protocol::NotificationAction::RunCommand { .. } => "run_command",
+                            crate::app_protocol::NotificationAction::ExternalUrl { .. } => "external_url",
+                        }.to_string()
+                    }).unwrap_or_else(|| "dismiss".to_string());
                     crate::notification_log::record(
                         title,
                         body,
                         src,
-                        urgency,
+                        urgency_str,
                         expires_at,
                         visible_after,
                         action_type,
-                        action_payload,
+                        None, // action_payload: structured action stored separately
                         Some(source_tag),
                     );
+                    let _ = (run_id, action); // wired into notification log above
                 }
                 DrawCommand::SetCursor { cursor } => {
                     let icon = match cursor.as_str() {
@@ -1296,11 +1418,6 @@ impl App for ProcessApp {
                     linked,
                     wire_channels,
                 } => {
-                    // Route to the pending-spawns queue. The actual pane
-                    // creation, registry lookup, manifest permission check,
-                    // and parent/child relationship bookkeeping happen in the
-                    // host's spawn dispatcher (which drains this queue via
-                    // `take_pending_spawns()` between frames).
                     let target = format!("app::{}", self.type_id);
                     log::debug!(
                         target: &target,
@@ -1318,28 +1435,17 @@ impl App for ProcessApp {
                     });
                 }
                 DrawCommand::PipeWrite { channel, value } => {
-                    // Queue for the host pipe dispatcher to route to connected
-                    // apps (parent or children) via take_pipe_writes().
+                    // Emit event log entry for pipe write.
+                    crate::event_log::emit_pipe_write(self.type_id.clone(), channel.clone());
+                    // Queue for the host pipe dispatcher.
                     let target = format!("app::{}", self.type_id);
-                    log::debug!(
-                        target: &target,
-                        "pipe_write: channel={channel:?}"
-                    );
+                    log::debug!(target: &target, "pipe_write: channel={channel:?}");
                     self.pending_pipe_writes.push((channel, value));
                 }
                 DrawCommand::PipeSubscribe { channel: _ } => {
                     // Phase 0 no-op: silently consume. Forward-compat only.
                 }
-                DrawCommand::EventSubscribe { kinds: _, scope: _ } => {
-                    // Phase 0 no-op: accepted for forward compatibility.
-                    // Full subscription tracking and EventData delivery will land
-                    // in a follow-up PR once the event routing layer is built.
-                    log::debug!("ProcessApp[{}]: EventSubscribe received (Phase 0 no-op)", self.type_id);
-                }
                 DrawCommand::SecretGet { name } => {
-                    // Resolve against the Keychain, walking up from the app's launch
-                    // directory. Missing secrets and any failure return None — the
-                    // SDK's get_secret() turns that into Python None / Rust Option::None.
                     let dir_str = self.scope_root.display().to_string();
                     let value = crate::secrets::resolve_secret(&name, &self.type_id, &dir_str)
                         .map(|z| z.to_string());
@@ -1348,8 +1454,108 @@ impl App for ProcessApp {
                         value,
                     });
                 }
+                DrawCommand::RunCreate { head_task, payload, parent_run_id, notification_title } => {
+                    let run_id = if let Some(rs) = &self.run_store {
+                        let caller = crate::app_protocol::Caller {
+                            app_id: self.type_id.clone(),
+                            pane_id: Some(self.pane_id),
+                            source: crate::app_protocol::CallerSource::Spawn,
+                        };
+                        let id = rs.lock().unwrap().create(
+                            head_task.clone(),
+                            payload,
+                            caller.clone(),
+                            parent_run_id,
+                        );
+                        crate::event_log::emit(crate::event_log::HostEvent::RunCreated {
+                            run_id: id.clone(),
+                            app_id: self.type_id.clone(),
+                            timestamp: crate::event_log::now_timestamp(),
+                        });
+                        let _ = notification_title;
+                        id
+                    } else {
+                        format!("run_nostore_{}", self.pane_id)
+                    };
+                    self.pending_back_events.push(PlexiEvent::RunCreated { run_id });
+                }
+                DrawCommand::RunUpdate { run_id, status, head_task, payload } => {
+                    if let Some(rs) = &self.run_store {
+                        let status_tag = format!("{:?}", status).to_lowercase();
+                        rs.lock().unwrap().update(&run_id, status, head_task, payload);
+                        crate::event_log::emit(crate::event_log::HostEvent::RunUpdated {
+                            run_id,
+                            status: status_tag,
+                            timestamp: crate::event_log::now_timestamp(),
+                        });
+                    }
+                }
+                DrawCommand::RunComplete { run_id, outcome } => {
+                    if let Some(rs) = &self.run_store {
+                        let outcome_str = format!("{:?}", outcome).to_lowercase();
+                        rs.lock().unwrap().complete(&run_id, outcome);
+                        crate::event_log::emit(crate::event_log::HostEvent::RunCompleted {
+                            run_id,
+                            status: outcome_str,
+                            timestamp: crate::event_log::now_timestamp(),
+                        });
+                    }
+                }
+                DrawCommand::EventSubscribe { kinds: _, scope: _ } => {
+                    // Phase 0 no-op: accepted for forward compatibility.
+                    // Full subscription tracking and EventData delivery will land
+                    // in a follow-up PR once the event routing layer is built.
+                    log::debug!("ProcessApp[{}]: EventSubscribe received (Phase 0 no-op)", self.type_id);
+                }
+                DrawCommand::PipeListWires => {
+                    // Response handled at app.rs level; no-op in ProcessApp.
+                }
+                DrawCommand::PushTransform { .. } => {
+                    // Keep in pending_frame so the renderer can apply transforms inline.
+                    self.pending_frame.push(cmd);
+                }
+                DrawCommand::PopTransform => {
+                    self.pending_frame.push(DrawCommand::PopTransform);
+                }
+                DrawCommand::MeasureText { request_id, text, size, monospace, bold } => {
+                    // Store in pending_frame; resolved to a TextMetrics event in ui() where we have egui context.
+                    self.pending_frame.push(DrawCommand::MeasureText { request_id, text, size, monospace, bold });
+                }
                 other => self.pending_frame.push(other),
             }
+        }
+
+        // Handle MeasureText commands — requires egui context.
+        // Scan pending_frame for MeasureText, respond immediately, then remove them.
+        let measure_cmds: Vec<DrawCommand> = self.pending_frame
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::MeasureText { .. }))
+            .cloned()
+            .collect();
+        self.pending_frame.retain(|c| !matches!(c, DrawCommand::MeasureText { .. }));
+        for cmd in measure_cmds {
+            if let DrawCommand::MeasureText { request_id, text, size, monospace, .. } = cmd {
+                let font_id = if monospace {
+                    egui::FontId::monospace(size)
+                } else {
+                    egui::FontId::proportional(size)
+                };
+                let text_size = ui.ctx().fonts(|f| {
+                    f.layout_no_wrap(text.clone(), font_id, egui::Color32::WHITE).rect.size()
+                });
+                self.pending_back_events.push(PlexiEvent::TextMetrics {
+                    request_id,
+                    width: text_size.x,
+                    height: text_size.y,
+                    ascent: text_size.y * 0.8,
+                });
+            }
+        }
+
+        // Send any pending back-events (RunCreated, etc.) to the app.
+        let back_events: Vec<PlexiEvent> = std::mem::take(&mut self.pending_back_events);
+        for event in back_events {
+            self.send_event(&event);
         }
 
         // Apply cursor override requested by the app this frame, then clear it.
@@ -1465,7 +1671,6 @@ impl App for ProcessApp {
             return false;
         };
 
-        // Filter paths against the accept list. Empty accept = accept anything.
         let accept_lower: Vec<String> =
             accept.iter().map(|s| s.trim_start_matches('.').to_ascii_lowercase()).collect();
         let filtered: Vec<String> = paths
@@ -1483,9 +1688,6 @@ impl App for ProcessApp {
             .collect();
 
         if filtered.is_empty() {
-            // Target exists but no paths matched the accept filter. Still
-            // considered "consumed" — the app owns that region and the user's
-            // intent was clearly to drop there.
             log::debug!(
                 "ProcessApp[{}]: drop on '{}' filtered out all {} path(s)",
                 self.type_id, target_id, paths.len()
@@ -1499,6 +1701,7 @@ impl App for ProcessApp {
         });
         true
     }
+
 
     fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {
         self.send_event(&PlexiEvent::Command { text: cmd.to_string() });

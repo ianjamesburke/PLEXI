@@ -41,6 +41,9 @@ pub struct PlexiApp {
     pub(crate) app_visit_history: Vec<String>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
+    pub(crate) run_store: std::sync::Arc<std::sync::Mutex<crate::run_store::RunStore>>,
+    pub(crate) permission_store: std::sync::Arc<std::sync::Mutex<crate::app_permissions::PermissionStore>>,
+    pub(crate) pipe_wires: Vec<crate::app_protocol::PipeWire>,
     /// Shared image + video thumbnail cache. Owned here so all apps on all
     /// panes share the same decoded textures and ffmpeg-generated thumbnails.
     pub(crate) media_cache: RefCell<MediaCache>,
@@ -209,6 +212,15 @@ impl PlexiApp {
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
+                    run_store: {
+                        let p = crate::config::config_dir().join("runs.jsonl");
+                        std::sync::Arc::new(std::sync::Mutex::new(crate::run_store::RunStore::new(p)))
+                    },
+                    permission_store: {
+                        let p = crate::config::config_dir().join("permissions.json");
+                        std::sync::Arc::new(std::sync::Mutex::new(crate::app_permissions::PermissionStore::new(p)))
+                    },
+                    pipe_wires: Vec::new(),
                     media_cache: RefCell::new(MediaCache::new()),
                     spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
                     notify_rx: Some(notify_rx_channel),
@@ -262,6 +274,15 @@ impl PlexiApp {
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
+            run_store: {
+                let p = crate::config::config_dir().join("runs.jsonl");
+                std::sync::Arc::new(std::sync::Mutex::new(crate::run_store::RunStore::new(p)))
+            },
+            permission_store: {
+                let p = crate::config::config_dir().join("permissions.json");
+                std::sync::Arc::new(std::sync::Mutex::new(crate::app_permissions::PermissionStore::new(p)))
+            },
+            pipe_wires: Vec::new(),
             media_cache: RefCell::new(MediaCache::new()),
             spawn_relationships: crate::app_protocol::SpawnRelationships::new(),
             notify_rx: Some(notify_rx_channel),

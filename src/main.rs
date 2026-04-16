@@ -80,6 +80,9 @@ mod cost_tracker;
 #[cfg(not(target_arch = "wasm32"))]
 mod event_log;
 #[cfg(not(target_arch = "wasm32"))]
+mod run_store;
+mod plexi_iq;
+#[cfg(not(target_arch = "wasm32"))]
 mod logging;
 #[cfg(not(target_arch = "wasm32"))]
 mod notification_log;

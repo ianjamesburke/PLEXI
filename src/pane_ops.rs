@@ -226,6 +226,7 @@ impl PlexiApp {
         // findable in the tree.
         self.handle_spawn_pane_close(pane_id);
 
+
         // Find which context and tile owns this pane_id.
         for ctx_idx in 0..self.contexts.len() {
             if let Some(tile_id) = self.contexts[ctx_idx].tree.tiles.find_pane(&pane_id) {

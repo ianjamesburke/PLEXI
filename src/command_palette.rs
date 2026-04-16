@@ -89,6 +89,7 @@ impl PlexiApp {
             rank_a.cmp(&rank_b).then_with(|| name_a.cmp(name_b))
         });
 
+
         for (id, name, description) in app_entries {
             entries.push(PaletteEntry::App { id, name, description });
         }
@@ -314,6 +315,7 @@ impl PlexiApp {
                         if let Some(rect) = selected_rect {
                             ui.scroll_to_rect(rect, None);
                         }
+
 
                         if let Some(act) = click_action {
                             match act {

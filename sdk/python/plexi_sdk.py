@@ -109,6 +109,61 @@ STATUS_H    = 44.0
 # reference `THEME.accent`, etc., or construct their own `Theme(...)` and
 # pass it into component calls (`ctx.header(..., theme=my_theme)`).
 
+# ─── v2.1 measurement type ────────────────────────────────────────────────────
+
+@dataclass
+class TextMetrics:
+    """Result of a MeasureText request — exact font metrics from Plexi."""
+    width: float
+    height: float
+    ascent: float
+
+
+# ─── v2.0 OpenIntent ─────────────────────────────────────────────────────────
+
+class OpenIntent:
+    """Structured spawn intent passed at app startup via the Init event."""
+
+    def __init__(self, kind_type: str, **kwargs):
+        self.kind_type = kind_type
+        self.kwargs = kwargs
+
+    @classmethod
+    def file(cls, path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> "OpenIntent":
+        """Open a file, optionally at a specific line range."""
+        r: dict = {"kind": "file", "path": path}
+        if start_line is not None:
+            r["range"] = {"start_line": start_line, "end_line": end_line or start_line}
+        return cls("file", **r)
+
+    @classmethod
+    def prompt(cls, text: str, model_hint: Optional[str] = None) -> "OpenIntent":
+        """Open with a text prompt."""
+        d: dict = {"kind": "prompt", "text": text}
+        if model_hint:
+            d["model_hint"] = model_hint
+        return cls("prompt", **d)
+
+    @classmethod
+    def bare(cls) -> "OpenIntent":
+        """Open with no structured intent."""
+        return cls("bare", kind="bare")
+
+    @classmethod
+    def resume(cls, snapshot_key: str) -> "OpenIntent":
+        """Resume from a snapshot key."""
+        return cls("resume", kind="resume", snapshot_key=snapshot_key)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "OpenIntent":
+        """Deserialize from the Init event payload."""
+        kind_type = d.get("kind", "bare")
+        return cls(kind_type, **d)
+
+    def to_dict(self) -> dict:
+        return self.kwargs
+
+
 @dataclass
 class Theme:
     bg:        str = "#1e1e2e"
@@ -394,6 +449,34 @@ class Emitter:
             "kinds": kinds or [],
             "scope": scope,
         }), flush=True)
+
+    def run_create(self, head_task: str, payload: Optional[dict] = None,
+                   parent_run_id: Optional[str] = None,
+                   notification_title: Optional[str] = None):
+        """Create a Run. Plexi will respond with a RunCreated event containing the run_id."""
+        cmd: dict = {"type": "run_create", "head_task": head_task, "payload": payload or {}}
+        if parent_run_id:
+            cmd["parent_run_id"] = parent_run_id
+        if notification_title:
+            cmd["notification_title"] = notification_title
+        print(json.dumps(cmd), flush=True)
+
+    def run_update(self, run_id: str, status: dict, head_task: Optional[str] = None,
+                   payload: Optional[dict] = None):
+        """Update a Run's status. status is a dict with a 'status' key matching RunStatus."""
+        cmd: dict = {"type": "run_update", "run_id": run_id, "status": status}
+        if head_task:
+            cmd["head_task"] = head_task
+        if payload:
+            cmd["payload"] = payload
+        print(json.dumps(cmd), flush=True)
+
+    def run_complete(self, run_id: str, outcome: str = "success", error: Optional[str] = None):
+        """Complete a Run. outcome: 'success' | 'failed' | 'cancelled'."""
+        o: dict = {"outcome": outcome}
+        if error:
+            o["error"] = error
+        print(json.dumps({"type": "run_complete", "run_id": run_id, "outcome": o}), flush=True)
 
 
 def load_manifest(app_file: str = __file__) -> dict:
@@ -1136,6 +1219,164 @@ class RenderContext:
         print(json.dumps({"type": "frame_done"}), flush=True)
         self._commands.clear()
 
+    # ─── v2.1 UI primitives ────────────────────────────────────────────────────
+
+    def measure_text_exact(self, text: str, size: float, monospace: bool = False, bold: bool = False) -> TextMetrics:
+        """
+        Request exact text measurement from Plexi. Blocking — waits for TextMetrics reply.
+        Results are cached per-frame (cache clears each frame).
+        """
+        if not hasattr(self, "_measure_cache"):
+            self._measure_cache: dict = {}
+        if not hasattr(self, "_measure_req_id"):
+            self._measure_req_id: int = 0
+        if not hasattr(self, "_pending_events"):
+            self._pending_events: list = []
+
+        cache_key = (text, size, monospace, bold)
+        if cache_key in self._measure_cache:
+            return self._measure_cache[cache_key]
+
+        self._measure_req_id += 1
+        req_id = self._measure_req_id
+
+        # Flush current commands first so measure request is sent in-band.
+        for cmd in self._commands:
+            print(json.dumps(cmd), flush=True)
+        self._commands.clear()
+
+        print(json.dumps({
+            "type": "measure_text",
+            "request_id": req_id,
+            "text": text,
+            "size": size,
+            "monospace": monospace,
+            "bold": bold,
+        }), flush=True)
+
+        # Read stdin until we get the matching TextMetrics reply.
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "text_metrics" and event.get("request_id") == req_id:
+                metrics = TextMetrics(
+                    width=event.get("width", 0.0),
+                    height=event.get("height", 0.0),
+                    ascent=event.get("ascent", 0.0),
+                )
+                self._measure_cache[cache_key] = metrics
+                return metrics
+            else:
+                self._pending_events.append(event)
+
+        return TextMetrics(width=size * len(text) * 0.6, height=size, ascent=size * 0.8)
+
+    def viewport(self, viewport_id: str, content_fn: Callable, zoom: float = 1.0,
+                 pan: Optional[tuple] = None, x: Optional[float] = None,
+                 y: Optional[float] = None, w: Optional[float] = None,
+                 h: Optional[float] = None, min_zoom: float = 0.1,
+                 max_zoom: float = 10.0, on_pan=None, on_zoom=None):
+        """Render content inside a transformed viewport with zoom + pan."""
+        zoom = max(min_zoom, min(max_zoom, zoom))
+        tx = pan[0] if pan else 0.0
+        ty = pan[1] if pan else 0.0
+        self._commands.append({
+            "type": "push_transform",
+            "scale_x": zoom,
+            "scale_y": zoom,
+            "translate_x": tx,
+            "translate_y": ty,
+        })
+        content_fn(self)
+        self._commands.append({"type": "pop_transform"})
+        return {"x": x or 0, "y": y or 0, "w": w or self.width, "h": h or self.height}
+
+    def text_input(self, input_id: str, value: str, on_change: Callable,
+                   cursor: Optional[int] = None, placeholder: Optional[str] = None,
+                   max_length: Optional[int] = None, size: Optional[float] = None,
+                   x: float = 0, y: float = 0, w: Optional[float] = None,
+                   bg: Optional[str] = None, fg: Optional[str] = None,
+                   focused: bool = True) -> dict:
+        """Draw a single-line text input widget. Returns the bounding rect dict."""
+        font_size = size or 14.0
+        width = w or (self.width - x * 2)
+        height = font_size + 12.0
+        bg_color = bg or "#2a2a3e"
+        fg_color = fg or "#cdd6f4"
+        placeholder_color = "#6c7086"
+
+        self.rect(x, y, width, height, fill=bg_color, radius=4.0)
+        display_text = value if value else (placeholder or "")
+        display_color = fg_color if value else placeholder_color
+        self.text(x + 6, y + (height - font_size) / 2, display_text, size=font_size, color=display_color)
+
+        if focused and hasattr(self, "_time") and self._time % 1.0 < 0.5:
+            cur_pos = cursor if cursor is not None else len(value)
+            cursor_x = x + 6 + cur_pos * font_size * 0.6
+            cursor_h = font_size + 2
+            cursor_y = y + (height - cursor_h) / 2
+            self.rect(cursor_x, cursor_y, 2.0, cursor_h, fill=fg_color)
+
+        return {"x": x, "y": y, "w": width, "h": height}
+
+    def tabs(self, tab_id: str, tabs: list, selected: str,
+             on_change=None, height: float = 36, x: float = 0,
+             y: Optional[float] = None, w: Optional[float] = None) -> dict:
+        """Draw a tab bar. tabs is a list of (key, label) tuples. Returns bounding rect."""
+        y_pos = y if y is not None else 0.0
+        total_w = w or self.width
+        tab_w = total_w / max(len(tabs), 1)
+        accent = "#89b4fa"
+        bg_selected = "#313244"
+        bg_normal = "#1e1e2e"
+        fg = "#cdd6f4"
+
+        for i, (key, label) in enumerate(tabs):
+            tx = x + i * tab_w
+            is_sel = key == selected
+            self.rect(tx, y_pos, tab_w, height, fill=bg_selected if is_sel else bg_normal)
+            self.text(tx + tab_w / 2 - len(label) * 4, y_pos + (height - 14) / 2, label, size=14.0, color=fg)
+            if is_sel:
+                self.rect(tx, y_pos + height - 2, tab_w, 2.0, fill=accent)
+
+        return {"x": x, "y": y_pos, "w": total_w, "h": height}
+
+    def grid(self, grid_id: str, cols: int, rows: int, render_cell: Callable,
+             x: Optional[float] = None, y: Optional[float] = None,
+             w: Optional[float] = None, h: Optional[float] = None,
+             gap: float = 4.0):
+        """Draw a uniform grid. render_cell(ctx, col, row, cx, cy, cw, ch) is called per cell."""
+        gx = x or 0.0
+        gy = y or 0.0
+        gw = w or self.width
+        gh = h or self.height
+        cell_w = (gw - gap * (cols - 1)) / max(cols, 1)
+        cell_h = (gh - gap * (rows - 1)) / max(rows, 1)
+
+        for row in range(rows):
+            for col in range(cols):
+                cx = gx + col * (cell_w + gap)
+                cy = gy + row * (cell_h + gap)
+                render_cell(self, col, row, cx, cy, cell_w, cell_h)
+
+    def modal(self, modal_id: str, visible: bool, content_fn: Callable,
+              width: float = 400, height: float = 200,
+              backdrop_alpha: int = 128, on_dismiss=None):
+        """Draw a centered modal dialog with a semi-transparent backdrop."""
+        if not visible:
+            return
+        alpha_hex = format(backdrop_alpha, '02x')
+        self.rect(0, 0, self.width, self.height, fill=f"#000000{alpha_hex}")
+        mx = (self.width - width) / 2
+        my = (self.height - height) / 2
+        self.rect(mx, my, width, height, fill="#1e1e2e", radius=8.0)
+        content_fn(self, mx, my, width, height)
+
 
 class App:
     """
@@ -1179,6 +1420,8 @@ class App:
         self._on_scroll: Optional[Callable] = None
         self._on_pipe_data: Optional[Callable] = None
         self._on_event: Optional[Callable] = None
+        self._on_run_created: Optional[Callable] = None
+        self.open_intent: Optional[OpenIntent] = None
         self._emitter = Emitter(app_id=app_id)
         # Breakpoints: list of (min_width, min_height, render_fn).
         # Walked in descending area order on each render to pick the
@@ -1510,6 +1753,11 @@ class App:
         self._on_event = fn
         return fn
 
+    def on_run_created(self, fn: Callable) -> Callable:
+        """Register a handler for RunCreated responses. fn(run_id: str, emit: Emitter)."""
+        self._on_run_created = fn
+        return fn
+
     def _handle_get_state(self):
         """Respond to a get_state request from Plexi."""
         if self._on_get_state:
@@ -1566,6 +1814,9 @@ class App:
                 self.width = event.get("width", self.width)
                 self.height = event.get("height", self.height)
                 self.protocol_version = event.get("protocol_version", 0)
+                raw_intent = event.get("open_intent")
+                if raw_intent:
+                    self.open_intent = OpenIntent.from_dict(raw_intent)
                 if self._min_protocol_version > 0 and self.protocol_version < self._min_protocol_version:
                     print(
                         f"plexi_sdk: host protocol version {self.protocol_version} is below "
@@ -1700,6 +1951,10 @@ class App:
                         event.get("payload", {}),
                         self._emitter,
                     )
+
+            elif event_type == "run_created":
+                if self._on_run_created:
+                    self._on_run_created(event.get("run_id", ""), self._emitter)
 
             elif event_type == "shutdown":
                 break

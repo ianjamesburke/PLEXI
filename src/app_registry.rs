@@ -33,9 +33,25 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Features supported by this build of the Plexi host.
+pub const HOST_FEATURES: &[&str] = &[
+    "core_v1",
+    "open_intent_v1",
+    "event_bus_v1",
+    "runs_v1",
+    "typed_pipes_v1",
+    "ui_primitives_v1",
+];
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct AppManifest {
     pub app: AppManifestApp,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppProtocolSection {
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -51,10 +67,22 @@ pub struct AppManifestApp {
     /// a deprecation warning at load time — the app still runs, but is
     /// flagged as using the v1 protocol. Apps should declare
     /// `protocol_version = 2` in their manifest.
-    #[serde(default)]
+    #[serde(default = "default_protocol_version_manifest")]
     pub protocol_version: u32,
     #[serde(default)]
     pub capabilities: AppCapabilities,
+    #[serde(default)]
+    pub skill: Option<AppSkillSection>,
+    #[serde(default)]
+    pub agent: Option<AppAgentSection>,
+    #[serde(default)]
+    pub observes: Vec<String>,
+    #[serde(default = "default_create_runs")]
+    pub create_runs: bool,
+    #[serde(default = "default_open_intent_kinds")]
+    pub open_intent_kinds: Vec<String>,
+    #[serde(default)]
+    pub io: Option<AppIoSection>,
     /// Optional companion-pane launch configuration. When present, Plexi splits
     /// the launching pane and starts the companion in the secondary slot.
     #[serde(default)]
@@ -66,6 +94,48 @@ pub struct AppManifestApp {
     #[serde(default)]
     #[allow(dead_code)]
     pub spawnable: AppSpawnable,
+    #[serde(default)]
+    pub protocol: Option<AppProtocolSection>,
+}
+
+fn default_protocol_version_manifest() -> u32 {
+    1
+}
+
+fn default_create_runs() -> bool {
+    true
+}
+
+fn default_open_intent_kinds() -> Vec<String> {
+    vec!["file".into(), "url".into()]
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppSkillSection {
+    pub description: String,
+    #[serde(default)]
+    pub invoke_phrase: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppAgentSection {
+    pub system_prompt: String,
+    #[serde(default)]
+    pub tool_allowlist: Vec<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppIoSection {
+    #[serde(default)]
+    pub inputs: Vec<PipeChannel>,
+    #[serde(default)]
+    pub outputs: Vec<PipeChannel>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct PipeChannel {
+    pub kind: String,
+    pub name: String,
 }
 
 /// Launch configuration declared under `[app.launch]` in `manifest.toml`.
@@ -363,7 +433,19 @@ impl AppRegistry {
 
     /// Launch an app and return a boxed `App` trait object.
     pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
-        self.launch_inner(id, cwd, args, None)
+        self.launch_with_intent(id, cwd, args, None, 0)
+    }
+
+    /// Launch an app with an OpenIntent and pane_id for bus events.
+    pub fn launch_with_intent(
+        &self,
+        id: &str,
+        cwd: &PathBuf,
+        args: &[String],
+        open_intent: Option<crate::app_protocol::OpenIntent>,
+        pane_id: u64,
+    ) -> Option<Box<dyn App>> {
+        self.launch_inner(id, cwd, args, open_intent, pane_id, None)
     }
 
     /// Launch an app that was spawned by another app. Sets PLEXI_LAUNCH_MODE=spawned
@@ -375,7 +457,7 @@ impl AppRegistry {
         args: &[String],
         parent_app_id: &str,
     ) -> Option<Box<dyn App>> {
-        self.launch_inner(id, cwd, args, Some(parent_app_id))
+        self.launch_inner(id, cwd, args, None, 0, Some(parent_app_id))
     }
 
     fn launch_inner(
@@ -383,17 +465,38 @@ impl AppRegistry {
         id: &str,
         cwd: &PathBuf,
         args: &[String],
+        open_intent: Option<crate::app_protocol::OpenIntent>,
+        pane_id: u64,
         parent_app_id: Option<&str>,
     ) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
-        match ProcessApp::launch(
+
+        // Feature negotiation: check that all required features are supported by this host.
+        if let Some(protocol) = &installed.manifest.protocol {
+            for required in &protocol.requires {
+                if !HOST_FEATURES.contains(&required.as_str()) {
+                    log::error!(
+                        "AppRegistry: cannot launch '{}': host does not support '{}' (required by this app). Update Plexi to support this feature.",
+                        id, required
+                    );
+                    return None;
+                }
+            }
+        }
+
+        let protocol_version = installed.manifest.protocol_version;
+        let mouse_tracking = installed.manifest.capabilities.mouse_tracking;
+        match ProcessApp::launch_with_intent(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
             installed.manifest.capabilities.file_types.iter().cloned().collect(),
             &installed.bin_path,
             cwd,
             args,
-            installed.manifest.capabilities.mouse_tracking,
+            open_intent,
+            protocol_version,
+            pane_id,
+            mouse_tracking,
             parent_app_id,
         ) {
             Ok(app) => {

@@ -2,6 +2,22 @@
 
 Newest releases appear first.
 
+## [2.0.0-rc.1] — 2026-04-15
+
+### Added
+- **`OpenIntent`** — structured spawn intent on `Init`: file, url, prompt, resume, bare
+- **Host event bus** — `events.jsonl` append log, `EventSubscribe`/`EventData` protocol commands
+- **`Run` primitive** — `RunCreate`/`RunUpdate`/`RunComplete` draw commands, `runs.jsonl` log
+- **Rich notification actions** — typed `NotificationAction` enum (Focus, Confirm, TextInput, Dismiss, ResumeRun, OpenIntent, RunCommand, ExternalUrl)
+- **Protocol version negotiation** — `protocol_version` field on `Init` and manifests (default 1 for existing apps)
+- **Capability enforcement** — `observes`, `create_runs`, `open_intent_kinds` manifest fields; `PermissionStore` at `permissions.json`
+- **Typed pipes Phase 1** — `[app.io]` manifest section, `PipeWire` table, `PipeWrite`/`PipeListWires` draw commands
+- **Plexi IQ Stage 1** — `claude -p --resume` backend, `IqSession` per pane, `PlexiIq` config struct
+- **`[app.skill]`** manifest section (description, invoke_phrase)
+- **`[app.agent]`** manifest section (system_prompt, tool_allowlist)
+- **Python SDK 0.4.0** — `OpenIntent` class, `run_create/update/complete`, `event_subscribe`, `notify`, `pipe_write`, `on_init`/`on_event`/`on_run_created` handlers
+- All bundled example apps updated to `protocol_version = 2`
+
 ## [Unreleased] — 2026-04-14
 
 ### Added
