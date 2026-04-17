@@ -13,10 +13,71 @@ install:
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
 
-# Deprecated: use install-alpha or install-beta instead
+# ── Profiles — isolated local dev sandboxes ──────────────────────────────────
+#
+# Each profile lives at ~/.plexi-<name>/ with its own apps/, logs, permissions,
+# and secrets index. First launch auto-creates and seeds the dir with the six
+# bundled example apps. Wipe freely.
+
+# Launch plexi-v3 with a profile (creates if missing). Usage: just p scratch
+p profile:
+    plexi-v3 --profile {{profile}}
+
+# Launch from cargo run (dev build). Useful for iterating without install.
+pdev profile:
+    cargo run --release -- --profile {{profile}}
+
+# List all existing profiles and their disk usage.
+profiles:
+    #!/usr/bin/env bash
+    echo "Profiles at ~/.plexi-*:"
+    find ~ -maxdepth 1 -type d -name '.plexi-*' 2>/dev/null | while read d; do
+      size=$(du -sh "$d" | awk '{print $1}')
+      apps=$(ls "$d/apps" 2>/dev/null | wc -l | tr -d ' ')
+      name=$(basename "$d" | sed 's/^.plexi-//')
+      printf "  %-20s  %s  (%s apps)\n" "$name" "$size" "$apps"
+    done
+
+# Wipe a profile completely. Usage: just pwipe scratch
+pwipe profile:
+    #!/usr/bin/env bash
+    dir="$HOME/.plexi-{{profile}}"
+    if [[ ! -d "$dir" ]]; then
+      echo "Profile {{profile}} does not exist."
+      exit 0
+    fi
+    read -p "Delete $dir? [y/N] " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+      rm -rf "$dir"
+      echo "Wiped $dir"
+    fi
+
+# Re-seed a profile's apps/ dir from current examples/. Destroys custom apps.
+preseed profile:
+    #!/usr/bin/env bash
+    dir="$HOME/.plexi-{{profile}}/apps"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cp -R examples/. "$dir/"
+    find "$dir" -name '*.py' -exec chmod +x {} \;
+    echo "Re-seeded $dir ($(ls $dir | wc -l | tr -d ' ') apps)"
+
+# Tail a profile's log file. Usage: just plogs scratch
+plogs profile:
+    tail -f ~/.plexi-{{profile}}/plexi.log
+
+# Show the last 100 log lines (non-following).
+ptail profile:
+    tail -100 ~/.plexi-{{profile}}/plexi.log
+
+# Open a profile's config dir in Finder.
+popen profile:
+    open ~/.plexi-{{profile}}/
+
+# Deprecated: use install-alpha or install-beta or install-v3 instead
 install-apps:
     #!/usr/bin/env bash
-    echo "install-apps is deprecated. Use 'just install-alpha' or 'just install-beta' instead."
+    echo "install-apps is deprecated. Use 'just install-alpha', 'just install-beta', or 'just install-v3'."
     exit 1
 
 install-alpha:
