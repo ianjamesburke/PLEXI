@@ -35,6 +35,13 @@ mod typed_pipes;
 mod workspace;
 
 fn main() -> eframe::Result {
+    // Parse --profile <name> early so config_dir() resolves correctly for
+    // both logging and all downstream I/O.
+    let raw_args: Vec<String> = std::env::args().collect();
+    let profile = parse_profile_flag(&raw_args);
+    crate::config::set_profile(profile);
+    crate::config::ensure_profile_initialized();
+
     let log_level = crate::config::PlexiConfig::load()
         .log
         .and_then(|l| l.level_filter())
@@ -42,7 +49,16 @@ fn main() -> eframe::Result {
     crate::logging::init(log_level);
 
     // Handle CLI subcommands before launching the GUI.
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = raw_args
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            // strip --profile and its value from downstream arg parsing
+            if a == "--profile" { return None; }
+            if i > 0 && raw_args.get(i - 1).map(|x| x.as_str()) == Some("--profile") { return None; }
+            Some(a.clone())
+        })
+        .collect();
     if args.len() >= 2 {
         match args[1].as_str() {
             "run" => {
@@ -170,4 +186,18 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc)))),
     )
+}
+
+/// Scan argv for `--profile <name>`. Returns the name if present.
+fn parse_profile_flag(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        if a == "--profile" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = a.strip_prefix("--profile=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }

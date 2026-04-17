@@ -72,18 +72,81 @@ pub struct ThemeConfig {
     pub bright_foreground: Option<String>,
 }
 
-/// Returns the config directory name based on the running binary name.
-/// `plexi-alpha` → `.plexi-alpha`, `plexi-beta` → `.plexi-beta`,
-/// `plexi-v3` → `.plexi-v3`, anything else → `.plexi`
-fn config_dir_name() -> &'static str {
+use std::sync::OnceLock;
+
+static PROFILE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+
+/// Set the active profile. Called once from main() after CLI parsing.
+/// `None` or `Some("default")` → fall through to binary-name detection.
+/// `Some(name)` → use `.plexi-<name>` as the config dir.
+pub fn set_profile(name: Option<String>) {
+    let normalized = match name.as_deref() {
+        None | Some("") | Some("default") => None,
+        Some(_) => name,
+    };
+    let _ = PROFILE_OVERRIDE.set(normalized);
+}
+
+/// If a profile is set and its directory doesn't exist yet, create it and
+/// seed `apps/` from the example apps embedded at compile time.
+pub fn ensure_profile_initialized() {
+    let dir = config_dir();
+    if dir.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("profile init: failed to create {}: {e}", dir.display());
+        return;
+    }
+    let apps_dir = dir.join("apps");
+    if let Err(e) = std::fs::create_dir_all(&apps_dir) {
+        eprintln!("profile init: failed to create apps dir: {e}");
+        return;
+    }
+    let embedded = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
+    if let Err(e) = embedded.extract(&apps_dir) {
+        eprintln!("profile init: failed to seed apps from bundle: {e}");
+        return;
+    }
+    // chmod +x on all .py entries.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(entries) = std::fs::read_dir(&apps_dir) {
+            for app_dir in entries.flatten().filter(|e| e.path().is_dir()) {
+                if let Ok(files) = std::fs::read_dir(app_dir.path()) {
+                    for f in files.flatten() {
+                        let p = f.path();
+                        if p.extension().and_then(|x| x.to_str()) == Some("py") {
+                            if let Ok(meta) = std::fs::metadata(&p) {
+                                let mut perms = meta.permissions();
+                                perms.set_mode(perms.mode() | 0o111);
+                                let _ = std::fs::set_permissions(&p, perms);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("profile init: seeded {} with {} apps", dir.display(),
+              std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0));
+}
+
+/// Returns the config directory name.
+/// Priority: `--profile <name>` CLI flag → binary-name detection → `.plexi`.
+fn config_dir_name() -> String {
+    if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
+        return format!(".plexi-{profile}");
+    }
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha",
-        Some(name) if name.contains("beta") => ".plexi-beta",
-        Some(name) if name.contains("v3") => ".plexi-v3",
-        _ => ".plexi",
+        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
+        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
+        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
+        _ => ".plexi".to_string(),
     }
 }
 
