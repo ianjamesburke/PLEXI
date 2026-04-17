@@ -107,8 +107,37 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 .fill(self.colors.terminal_bg)
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
-                    // Only terminal panes are rendered here; App/Agent variants are
-                    // handled by their own subsystems (Layer 3b/3c).
+                    // Agent panes: render placeholder title + empty transcript.
+                    // Turn loop wiring is Layer 4.
+                    if let Some(agent) = pane.as_agent() {
+                        let rect = ui.max_rect();
+                        // Title bar.
+                        let title_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
+                        ui.painter().rect_filled(title_rect, 0.0, self.colors.bg_toolbar);
+                        ui.painter().text(
+                            egui::pos2(title_rect.min.x + 8.0, title_rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            format!("🤖 {}", agent.label),
+                            egui::FontId::proportional(12.0),
+                            self.colors.text_primary,
+                        );
+                        // Empty transcript area.
+                        let body_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x, title_rect.max.y),
+                            rect.max,
+                        );
+                        ui.painter().rect_filled(body_rect, 0.0, self.colors.terminal_bg);
+                        ui.painter().text(
+                            body_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Plexi IQ — turn loop wires in Layer 4",
+                            egui::FontId::proportional(11.0),
+                            self.colors.text_dim,
+                        );
+                        return;
+                    }
+
+                    // App panes: handled by their own subsystems (Layer 3b).
                     let Some(t) = pane.as_terminal_mut() else { return };
 
                     if t.exited {

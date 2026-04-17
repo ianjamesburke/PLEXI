@@ -30,6 +30,7 @@ mod shell;
 mod sidebar;
 mod theme;
 mod tiling;
+mod runs;
 mod typed_pipes;
 mod workspace;
 

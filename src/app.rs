@@ -556,6 +556,9 @@ impl eframe::App for PlexiApp {
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
                 }
+                Action::SpawnAgentPane => {
+                    self.spawn_agent_pane();
+                }
             }
         }
 

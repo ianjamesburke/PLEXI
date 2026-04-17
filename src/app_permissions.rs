@@ -139,9 +139,9 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
 
 /// Check whether an `AppCommand` is allowed given the app's permissions.
 ///
-/// **v2 back-compat shim.** Will be removed in Layer 3 when AppCommand routing
-/// is replaced by the v3 capability broker.
-/// TODO(layer-3): remove check_command; all call sites should call check() with a Capability.
+/// **v2 back-compat shim.** Will be removed once all call sites (tiling.rs, overlays.rs)
+/// are migrated to call `check()` directly with a `Capability`.
+/// TODO(layer-4): remove check_command; migrate remaining call sites to check() + Capability.
 pub fn check_command(
     cmd: &AppCommand,
     perms: &AppPermissions,
@@ -154,9 +154,8 @@ pub fn check_command(
     match cmd {
         AppCommand::RunInTerminal(_) => {
             // RunInTerminal is not a v3 capability — it's legacy PTY write.
-            // Allow if app has FsWrite as a rough approximation until Layer 3 wires
-            // the proper terminal-write surface.
-            // TODO(layer-3): RunInTerminal is not a v3 capability; route through PipeSend instead.
+            // Allow if app has FsWrite as a rough approximation.
+            // TODO(layer-4): remove RunInTerminal; all callers should use PipeSend instead.
             if perms.capabilities.contains(&Capability::FsWrite) {
                 PermissionCheck::Allowed
             } else {
@@ -315,8 +314,8 @@ fn permissions_jsonl_path() -> PathBuf {
 // ── v2 back-compat types ──────────────────────────────────────────────────────
 // These remain so that pane.rs, pane_ops.rs, and app.rs compile without changes
 // until Layer 3 migrates them to the v3 AppPermissions + Capability model.
-// TODO(layer-3): delete TrustLevel, FsPermission, GlobalPermissions, PermissionsConfig
-//   once all call sites in pane.rs / pane_ops.rs / app.rs are migrated.
+// TODO(layer-4): delete TrustLevel, FsPermission, GlobalPermissions, PermissionsConfig
+//   once all remaining v2 call sites are migrated to AppPermissions + Capability.
 
 /// v2 trust level. Kept for back-compat. Do not use in new v3 code.
 #[allow(dead_code)]

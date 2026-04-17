@@ -70,6 +70,8 @@ pub enum Action {
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
+    /// Spawn a new Plexi IQ agent pane in the focused context.
+    SpawnAgentPane,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -204,6 +206,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open secrets manager (Cmd+Shift+S)
         if input.consume_key(cmd_shift, egui::Key::S) {
             actions.push(Action::OpenSecretsManager);
+        }
+
+        // Spawn agent pane (Cmd+Shift+I)
+        if input.consume_key(cmd_shift, egui::Key::I) {
+            actions.push(Action::SpawnAgentPane);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

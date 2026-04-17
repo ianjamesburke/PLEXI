@@ -107,6 +107,16 @@ pub enum PlexiEvent {
     Resume,
     /// App is being closed. Process must exit within a short timeout.
     Shutdown,
+    /// Binary pipe opened — app connects to `socket_path` as a unix socket client.
+    PipeOpened {
+        pipe_id: String,
+        socket_path: String,
+    },
+    /// Binary pipe backpressure — host dropped `dropped_frames` frames from the ring.
+    PipeOverrun {
+        pipe_id: String,
+        dropped_frames: u64,
+    },
 }
 
 /// A simple rectangle (logical coordinates).

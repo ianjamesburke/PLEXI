@@ -8,7 +8,7 @@
 
 **Branch:** `v3` (off `main` at `060b729`)
 **Worktree:** `.claude/worktrees/v3/`
-**Head:** layer 3a complete — clean compile, 122 warnings (all dead-code on unwired items, no errors). 3/3 typed_pipes tests passing.
+**Head:** layer 3b complete — clean compile, ~12 warnings (all pre-existing dead-code/unused-import). 18/18 tests passing (3/3 typed_pipes + 15 others).
 
 ## Layer status
 
@@ -34,25 +34,38 @@ Three parallel Sonnet agents, merged cleanly.
 - [x] `src/media/` (mod.rs, audio.rs, video.rs) — `AudioDevice` + `VideoDecoder` traits. `MockAudioDevice` reads/writes WAV at realtime pace via mpsc. `MockVideoDecoder` generates procedural RGBA at 30fps with full play/pause/seek state machine. Prod impls (`CoreAudioDevice`, `AvfVideoDecoder`) stubbed `todo!()` for Layer 4. Factory reads `PLEXI_AUDIO`/`PLEXI_VIDEO` env vars (`mock://in.wav,out.wav` and `mock://fixture?duration=5000&w=640&h=360`). `hound = "3"` added.
 - [x] `src/typed_pipes.rs` (435 lines) — `TypedPipeRegistry` with JSON + binary modes. Binary uses `UnixListener` with `u32` BE length-prefixed frames, lock-free ring (`crossbeam-queue`) for realtime-safe write path, separate drain thread per pipe, drop-oldest backpressure returning `WriteResult::DroppedOldest`. Max frame 1 MiB. 3/3 tests passing.
 
-### 🔄 Layer 3b — process_app PGAP v3 + agent wiring
+### ✅ Layer 3b — process_app PGAP v3 + agent wiring
 
-**TODO(layer-3) markers to resolve:**
-- `src/process_app.rs:285` — populate `workspace_root` in Init from actual pane CWD at spawn
-- `src/process_app.rs:286` — populate `capabilities` in Init from AppPermissions
-- `src/process_app.rs:38` — drive frame_counter from host frame clock
-- `src/process_app.rs:259` — route v3 draw commands (VideoPlayer, AudioMeter, etc.) to subsystems
-- `src/app_permissions.rs:142` — remove `check_command` shim; all call sites use `check()` directly
-- `src/app_permissions.rs:152` — RunInTerminal → PipeSend migration
-- `src/app_permissions.rs:241` — delete TrustLevel, FsPermission, GlobalPermissions, PermissionsConfig
+All 7 `TODO(layer-3)` markers resolved (3 in app_permissions.rs re-tagged TODO(layer-4) per spec constraint to keep v2 shims).
 
-- [ ] Update `src/process_app.rs` → PGAP v3 handshake (populate workspace_root + capabilities from manifest + pane CWD), wire `PipeOpen` to `TypedPipeRegistry`, route `VideoPlayer`/`AudioPlay`/`AudioCapture` to `media::` factories, emit `CapabilityRequest` → broker, `SecretGet` → workspace-scoped secrets.
-- [ ] Wire `Pane::Agent` to `PlexiIqInstance`: spawn on pane creation, drive turn loop from UI thread, render streamed tokens via DrawCommands.
-- [ ] Resolve all 7 `TODO(layer-3)` markers above.
+- [x] `src/process_app.rs` fully rewritten: `ProcessApp::launch` takes `workspace_root` + `capabilities`; Init populates both; frame_counter drives Render; all 11 v3 DrawCommands routed (`VideoPlayer`, `AudioPlay`, `AudioCapture`, `AudioMeter`, `CapabilityRequest`, `SecretGet`, `RunGet`, `RunComplete`, `Notify`, `PipeOpen`, `PipeSend`, `StatusSummary`).
+- [x] `src/app_protocol.rs` — added `PlexiEvent::PipeOpened` and `PipeOverrun` variants.
+- [x] `src/runs.rs` — new 80-line in-memory `RunRegistry` (`allocate`, `complete`, `list_runs`).
+- [x] `src/keys.rs` — added `Action::SpawnAgentPane` + `Cmd+Shift+I` binding.
+- [x] `src/pane_ops.rs` — added `spawn_agent_pane()` that creates `Pane::Agent(AgentPane { instance: Some(PlexiIqInstance), label })`.
+- [x] `src/tiling.rs` — Agent panes render placeholder title bar + transcript area.
+- [x] `src/app.rs` — `Action::SpawnAgentPane` wired to `self.spawn_agent_pane()`.
+- [x] `src/app_registry.rs` — updated launch call to pass `workspace_root` + `capabilities`.
 
-### ⏳ Layer 4 — event bus emit sites, runs, notifications
+### 🔄 Layer 4 — event bus emit sites, runs, notifications
+
+**TODO(layer-4) markers added in this layer:**
+- `src/process_app.rs` — VideoPlayer: wire rgba frame → egui TextureHandle (texture plumbing nontrivial)
+- `src/process_app.rs` — AudioCapture forwarding thread: needs TypedPipeRegistry behind Arc<Mutex<>> for Send
+- `src/process_app.rs` — proper Ready handshake: read first stdout line synchronously before draw-command loop
+- `src/process_app.rs` — proper capability/secret modal UI with Grant/Deny buttons (currently auto-grant in debug)
+- `src/process_app.rs` — Notify action dispatch: `resume_run` → run_registry, `open_intent` → intent palette, `run_command` → PTY write
+- `src/process_app.rs` — PipeSend multi-app routing: route PipeMessage to peer apps subscribed on the pipe_id
+- `src/pane_ops.rs` — agent pane turn loop: drive `IqSession::send()` from UI thread, stream tokens via DrawCommands
+- `src/app_permissions.rs` — remove `check_command` shim; migrate remaining call sites to `check()` + `Capability`
+- `src/app_permissions.rs` — remove RunInTerminal; all callers use PipeSend
+- `src/app_permissions.rs` — delete TrustLevel, FsPermission, GlobalPermissions, PermissionsConfig
+
 - [ ] Call `event_log::emit()` at every lifecycle point (app spawn/close, permission decision, run update, agent turn, pipe open/close).
-- [ ] Wire rich notification action dispatch (`resume_run`, `open_intent`, `run_command`) — no TODOs.
+- [ ] Wire rich notification action dispatch (`resume_run`, `open_intent`, `run_command`) — skeleton logs today.
 - [ ] Run palette + `BlockedOnUser` inline prompts.
+- [ ] Proper capability/secret modal UI (replace auto-grant stub).
+- [ ] Wire VideoFrame rgba → egui TextureHandle for VideoPlayer rendering.
 
 ### ⏳ Layer 5 — example apps (the five + quick-note)
 - [ ] `snake` (Rust) — input + draw primitives only.

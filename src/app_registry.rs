@@ -190,6 +190,8 @@ impl AppRegistry {
     /// Launch an app and return a boxed `App` trait object.
     pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
+        let perms = installed.manifest.capabilities.to_permissions();
+        let caps = perms.capabilities.clone();
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -197,6 +199,8 @@ impl AppRegistry {
             &installed.bin_path,
             cwd,
             args,
+            cwd.clone(),
+            caps,
         ) {
             Ok(app) => {
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);

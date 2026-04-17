@@ -738,4 +738,42 @@ impl PlexiApp {
             }
         }
     }
+
+    /// Spawn a new `Pane::Agent` in the active context via a horizontal split.
+    ///
+    /// Creates a `PlexiIqInstance` and wraps it in `AgentPane`. The pane renders
+    /// a placeholder title + empty transcript until the turn loop is wired in Layer 4.
+    /// TODO(layer-4): drive the turn loop from the UI thread — deliver prompts,
+    ///   stream tokens via DrawCommands, and persist to the cost ledger.
+    pub(crate) fn spawn_agent_pane(&mut self) {
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+
+        let instance = crate::plexi_iq::PlexiIqInstance::default();
+        let label = format!("Agent {new_id}");
+
+        let pane = crate::pane::Pane::Agent(crate::pane::AgentPane {
+            id: new_id,
+            instance: Some(instance),
+            label,
+        });
+
+        let ctx = &mut self.contexts[self.active_context];
+        ctx.panes.insert(new_id, pane);
+
+        let new_tile = ctx.tree.tiles.insert_pane(new_id);
+
+        // If there's a focused pane, add the agent as a sibling in a horizontal split.
+        // If the context is empty, set the agent as the sole root.
+        if let Some(root) = ctx.tree.root {
+            // Wrap the existing root and new tile in a horizontal linear container.
+            let container = ctx.tree.tiles.insert_horizontal_tile(vec![root, new_tile]);
+            ctx.tree.root = Some(container);
+        } else {
+            ctx.tree.root = Some(new_tile);
+        }
+
+        ctx.focused_pane = Some(new_tile);
+        log::info!("spawn_agent_pane: created agent pane id={new_id}");
+    }
 }
