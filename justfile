@@ -13,6 +13,160 @@ install:
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
 
+# ── Versions — full lifecycle for parallel .app installs + worktrees ─────────
+#
+# A "version" is a complete isolated instance:
+#   - git worktree at .claude/worktrees/v-<name>/ on branch v-<name>
+#   - /Applications/Plexi <name>.app   (bundled from that worktree)
+#   - /usr/local/bin/plexi-<name>      (CLI)
+#   - ~/.plexi-<name>/                 (config + apps + logs + secrets)
+#
+# Workflow:
+#   just new audio-test       # create worktree + build + install + launch
+#   just open audio-test      # open the installed .app
+#   just ls                   # all versions with status
+#   just rm audio-test        # tear down everything
+
+# Create a new version from the current HEAD. Worktree + .app + CLI + profile.
+new name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{name}}"
+    if [[ ! "$name" =~ ^[a-z0-9-]+$ ]]; then
+      echo "error: name must be lowercase alphanumeric + dashes only"; exit 1
+    fi
+    if [[ "$name" == "alpha" || "$name" == "beta" || "$name" == "v3" || "$name" == "default" ]]; then
+      echo "error: '$name' is reserved"; exit 1
+    fi
+
+    repo_root="$(git rev-parse --show-toplevel)"
+    # Climb out of the current worktree to the main repo dir.
+    main_git_dir="$(git rev-parse --git-common-dir)"
+    main_repo="$(dirname "$main_git_dir")"
+    wt_path="$main_repo/.claude/worktrees/v-$name"
+    app_dest="/Applications/Plexi $name.app"
+
+    if [[ -d "$wt_path" ]]; then echo "worktree already exists: $wt_path"; exit 1; fi
+    if [[ -d "$app_dest" ]]; then echo ".app already exists: $app_dest — use 'just rm $name' first"; exit 1; fi
+
+    echo "→ creating worktree $wt_path on branch v-$name off current HEAD"
+    git worktree add -b "v-$name" "$wt_path" HEAD
+
+    cd "$wt_path"
+    # Rename the binary + bundle identity so it coexists with siblings.
+    sed -i '' "s/^name = \"plexi\"/name = \"plexi-$name\"/" Cargo.toml
+    sed -i '' "s/name = \"Plexi\"/name = \"Plexi $name\"/" Cargo.toml
+    sed -i '' "s/identifier = \"com.ianjamesburke.plexi\"/identifier = \"com.ianjamesburke.plexi-$name\"/" Cargo.toml
+    sed -i '' "s/with_title(\"Plexi\")/with_title(\"Plexi $name\")/" src/main.rs
+    sed -i '' "s/\"plexi\",/\"plexi-$name\",/" src/main.rs
+
+    echo "→ building + bundling"
+    cargo bundle --release
+
+    app_src="target/release/bundle/osx/Plexi $name.app"
+    rm -rf "$app_dest"
+    cp -R "$app_src" "$app_dest"
+    bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
+    sudo cp "$bin" "/usr/local/bin/plexi-$name" 2>/dev/null || cp "$bin" "/usr/local/bin/plexi-$name"
+
+    # Profile seeds itself on first launch via include_dir! bundled apps.
+    echo ""
+    echo "  ✓ worktree:  $wt_path"
+    echo "  ✓ .app:      $app_dest"
+    echo "  ✓ CLI:       /usr/local/bin/plexi-$name"
+    echo "  ✓ profile:   ~/.plexi-$name/ (seeded on first launch)"
+    echo ""
+    echo "→ launching"
+    open "$app_dest"
+
+# Open an installed .app bundle. Usage: just open audio-test
+open name:
+    #!/usr/bin/env bash
+    app="/Applications/Plexi {{name}}.app"
+    if [[ ! -d "$app" ]]; then echo "not installed: $app"; exit 1; fi
+    open "$app"
+
+# List all versions with worktree + .app + profile status.
+ls:
+    #!/usr/bin/env bash
+    echo "┌─ VERSIONS ────────────────────────────────────────────────"
+    printf "  %-15s  %-8s  %-5s  %-5s  %s\n" "NAME" "BRANCH" ".APP" "CLI" "PROFILE"
+    # Collect names from worktrees + .apps + profiles, dedupe.
+    main_git_dir="$(git rev-parse --git-common-dir)"; main_repo="$(dirname "$main_git_dir")"
+    wt_names=$(ls "$main_repo/.claude/worktrees" 2>/dev/null | sed -n 's/^v-//p' | tr '[:upper:]' '[:lower:]')
+    app_names=$(ls -d "/Applications/Plexi "*.app 2>/dev/null | sed -E 's|.*/Plexi (.+)\.app|\1|' | tr '[:upper:]' '[:lower:]')
+    prof_names=$(find ~ -maxdepth 1 -type d -name '.plexi-*' 2>/dev/null | sed 's|.*/\.plexi-||' | tr '[:upper:]' '[:lower:]')
+    all=$(printf "%s\n%s\n%s\n" "$wt_names" "$app_names" "$prof_names" | sort -u | grep -v '^$')
+    for n in $all; do
+      wt="·"; app="·"; cli="·"; prof="·"; branch="·"
+      if [[ -d "$main_repo/.claude/worktrees/v-$n" ]]; then
+        wt="✓"; branch=$(git -C "$main_repo/.claude/worktrees/v-$n" branch --show-current 2>/dev/null)
+      fi
+      # .app match is case-insensitive because macOS .app folder names are capitalized.
+      cap=$(echo "$n" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+      { [[ -d "/Applications/Plexi $n.app" ]] || [[ -d "/Applications/Plexi $cap.app" ]]; } && app="✓"
+      [[ -x "/usr/local/bin/plexi-$n" ]] && cli="✓"
+      if [[ -d "$HOME/.plexi-$n" ]]; then
+        prof=$(du -sh "$HOME/.plexi-$n" 2>/dev/null | awk '{print $1}')
+      fi
+      printf "  %-15s  %-8s  %-5s  %-5s  %s\n" "$n" "${branch:-·}" "$app" "$cli" "$prof"
+    done
+    echo "└─────────────────────────────────────────────────────────"
+
+# Tear down a version. Removes .app, CLI, profile, worktree, branch.
+rm name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{name}}"
+    if [[ "$name" == "alpha" || "$name" == "beta" || "$name" == "v3" ]]; then
+      echo "error: refuse to tear down reserved '$name'"; exit 1
+    fi
+
+    main_git_dir="$(git rev-parse --git-common-dir)"; main_repo="$(dirname "$main_git_dir")"
+    wt_path="$main_repo/.claude/worktrees/v-$name"
+    app_dest="/Applications/Plexi $name.app"
+    cli_bin="/usr/local/bin/plexi-$name"
+    prof="$HOME/.plexi-$name"
+
+    echo "Will remove:"
+    [[ -d "$wt_path" ]] && echo "  - worktree   $wt_path"
+    [[ -d "$app_dest" ]] && echo "  - .app       $app_dest"
+    [[ -x "$cli_bin" ]] && echo "  - CLI        $cli_bin"
+    [[ -d "$prof" ]] && echo "  - profile    $prof"
+    read -p "Proceed? [y/N] " ok
+    [[ "$ok" != "y" && "$ok" != "Y" ]] && { echo "aborted"; exit 0; }
+
+    # Quit running instance if any.
+    osascript -e "tell application \"Plexi $name\" to quit" 2>/dev/null || true
+    sleep 1
+    pkill -f "plexi-$name" 2>/dev/null || true
+
+    [[ -d "$app_dest" ]] && rm -rf "$app_dest"
+    [[ -x "$cli_bin" ]] && (sudo rm -f "$cli_bin" 2>/dev/null || rm -f "$cli_bin")
+    [[ -d "$prof" ]] && rm -rf "$prof"
+    if [[ -d "$wt_path" ]]; then
+      git worktree remove --force "$wt_path"
+      git branch -D "v-$name" 2>/dev/null || true
+    fi
+    echo "✓ torn down $name"
+
+# Rebuild + reinstall a version from its worktree's current state.
+reinstall name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{name}}"
+    main_git_dir="$(git rev-parse --git-common-dir)"; main_repo="$(dirname "$main_git_dir")"
+    wt_path="$main_repo/.claude/worktrees/v-$name"
+    app_dest="/Applications/Plexi $name.app"
+    if [[ ! -d "$wt_path" ]]; then echo "no worktree for $name"; exit 1; fi
+    cd "$wt_path"
+    cargo bundle --release
+    app_src="target/release/bundle/osx/Plexi $name.app"
+    rm -rf "$app_dest"; cp -R "$app_src" "$app_dest"
+    bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
+    sudo cp "$bin" "/usr/local/bin/plexi-$name" 2>/dev/null || cp "$bin" "/usr/local/bin/plexi-$name"
+    echo "✓ reinstalled $name"
+
 # ── Profiles — isolated local dev sandboxes ──────────────────────────────────
 #
 # Each profile lives at ~/.plexi-<name>/ with its own apps/, logs, permissions,
