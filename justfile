@@ -64,6 +64,56 @@ install-alpha:
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
 
+install-v3:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ "$(uname)" != "Darwin" ]]; then
+      echo "install-v3 is macOS-only."
+      exit 1
+    fi
+
+    backup_dir="$(mktemp -d)"
+    cp Cargo.toml "$backup_dir/Cargo.toml"
+    cp src/main.rs "$backup_dir/main.rs"
+
+    cleanup() {
+      cp "$backup_dir/Cargo.toml" Cargo.toml
+      cp "$backup_dir/main.rs" src/main.rs
+      rm -rf "$backup_dir"
+    }
+    trap cleanup EXIT
+
+    sed -i '' 's/^name = "plexi"/name = "plexi-v3"/' Cargo.toml
+    sed -i '' 's/name = "Plexi"/name = "Plexi v3"/' Cargo.toml
+    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-v3"/' Cargo.toml
+    sed -i '' 's/with_title("Plexi")/with_title("Plexi v3")/' src/main.rs
+    sed -i '' 's/"plexi",/"plexi-v3",/' src/main.rs
+
+    cargo bundle --release
+
+    app_src="target/release/bundle/osx/Plexi v3.app"
+    app_dest="/Applications/Plexi v3.app"
+    if [[ ! -d "$app_src" ]]; then
+      echo "Error: bundle not found at $app_src"
+      exit 1
+    fi
+
+    rm -rf "$app_dest"
+    cp -R "$app_src" "$app_dest"
+
+    v3_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
+    cp "$v3_bin" /usr/local/bin/plexi-v3
+
+    mkdir -p ~/.plexi-v3/apps
+    cp -R examples/. ~/.plexi-v3/apps/
+    find ~/.plexi-v3/apps -name '*.py' -exec chmod +x {} \;
+
+    echo "Installed $app_dest"
+    echo "CLI binary: /usr/local/bin/plexi-v3"
+    echo "Config dir: ~/.plexi-v3/"
+    echo "Apps: $(ls ~/.plexi-v3/apps | wc -l | tr -d ' ') installed"
+
 install-beta:
     #!/usr/bin/env bash
     set -euo pipefail
