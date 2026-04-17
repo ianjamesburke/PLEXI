@@ -1,0 +1,9 @@
+[app]
+id = "todo"
+name = "Todo"
+version = "0.1.0"
+description = "Simple todo list persisted to <workspace_root>/.plexi/todos.json."
+entry = "todo.py"
+
+[app.capabilities]
+capabilities = ["fs.read", "fs.write"]

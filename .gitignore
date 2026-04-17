@@ -34,3 +34,8 @@ assets/Info.plist
 here.md
 examples/*/target/
 sdk/*/target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

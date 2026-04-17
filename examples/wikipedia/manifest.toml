@@ -1,0 +1,9 @@
+[app]
+id = "wikipedia"
+name = "Wikipedia"
+version = "0.1.0"
+description = "Search Wikipedia and browse article summaries."
+entry = "wikipedia.py"
+
+[app.capabilities]
+capabilities = ["net.http"]

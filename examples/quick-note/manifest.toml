@@ -1,0 +1,9 @@
+[app]
+id = "quick-note"
+name = "Quick Note"
+version = "0.1.0"
+description = "Markdown note composer and browser. Notes saved to <workspace_root>/.plexi/notes/."
+entry = "quick_note.py"
+
+[app.capabilities]
+capabilities = ["fs.read", "fs.write"]

@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-16 — [CHANGED] Layer 5: Python SDK v3 + six example apps
+
+Rewrote `sdk/python/plexi_sdk.py` from the v2 decorator pattern to a subclass pattern (`class MyApp(App)`). Key changes: `App.run()` now handles the PGAP v3 `Init` handshake (protocol validation, `Ready` reply); `RenderContext` carries `frame_id`, `rect`, `workspace_root`, `capabilities`, `feature_flags`; `FrameDone` is auto-emitted with `frame_id`; `Emitter` gains blocking `capability_request()`/`secret_get()` via `queue.Queue` + background stdin thread dispatch; `Pipe` class covers both binary (unix socket, length-prefixed frames) and JSON-mode pipes.
+
+Six apps shipped: `snake`, `wikipedia`, `todo`, `audio-recorder`, `video-player`, `quick-note`. All tested via stdin Init injection → stdout Ready. SDK copied into each app dir (no symlinks — avoids PYTHONPATH fragility). Cargo check and 18/18 tests unaffected (no Rust touched).
+
+The v2 alpha SDK used decorators (`@app.on_render`). The v3 subclass pattern was chosen for clarity in the spec examples and to make state management natural (instance variables on `self`). The decorator pattern is still possible but adds indirection without benefit in an SDK where apps are typically one class.
+
+**Breaks if:** Any of the six apps fails to print `{"type":"ready",...}` as the first stdout line when fed a PGAP v3 Init event on stdin.
+
 ## 2026-04-11 — [CHANGED] Secrets manager write UI, index-file listing, logging infrastructure
 
 Secrets manager upgraded from read-only viewer to full add/delete UI. Listing fixed by replacing `security dump-keychain` (triggers invisible macOS permission prompt) with a local `secrets-index.json`. Centralized file logging added via `fern` with config-driven log levels and `DrawCommand::Log` forwarding from external apps.

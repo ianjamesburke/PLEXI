@@ -8,7 +8,7 @@
 
 **Branch:** `v3` (off `main` at `060b729`)
 **Worktree:** `.claude/worktrees/v3/`
-**Head:** layer 4 complete — clean compile, ~92 warnings (all pre-existing dead-code/unused-import). 18/18 tests passing (3/3 typed_pipes + 15 others).
+**Head:** layer 5 complete — Python SDK v3, 6 example apps. Clean compile, ~80 warnings (pre-existing). 18/18 tests passing.
 
 ## Layer status
 
@@ -64,15 +64,23 @@ All 7 `TODO(layer-3)` markers resolved (3 in app_permissions.rs re-tagged TODO(l
 - `src/process_app.rs` — Ready handshake: split stdout reader into handshake + draw-command phases.
 - `src/overlays.rs` — Run palette run aggregation: requires `list_runs()` on the `App` trait.
 
-### ⏳ Layer 5 — example apps (the five + quick-note)
-- [ ] `snake` (Rust) — input + draw primitives only.
-- [ ] `wikipedia` (Python) — net.http + text render.
-- [ ] `todo` (Python) — fs.read/write.
-- [ ] `audio-recorder` (Python) — audio.record + binary pipe + mock device proof.
-- [ ] `video-player` (Python) — video.playback + `VideoPlayer` command.
-- [ ] `quick-note` (first-party, Python) — replaces host-internal backlog scanner.
+### ✅ Layer 5 — example apps (the five + quick-note)
 
-### ⏳ Layer 6 — CI gate + release
+- [x] `sdk/python/plexi_sdk.py` rewritten for PGAP v3: `App` subclass model, `RenderContext`, `Emitter`, `Pipe` (binary + JSON), blocking `capability_request`/`secret_get`, `audio_capture`. 290 lines. Covers all PlexiEvent variants and all DrawCommand variants.
+- [x] `snake` (Python) — input + draw primitives. Tick loop via background thread. Arrow/hjkl navigation, game-over screen. 100 lines. Cap: none.
+- [x] `wikipedia` (Python) — net.http + text render + List primitive. Background urllib fetch thread. Search + results + article extract modes. 100 lines. Cap: `net.http`.
+- [x] `todo` (Python) — fs.read + fs.write + persistence to `.plexi/todos.json`. Up/down/space/a/d keys. 80 lines. Cap: `fs.read`, `fs.write`.
+- [x] `audio-recorder` (Python) — audio.record + binary pipe + WAV write via stdlib `wave`. AudioMeter draw command. R/S keys. 105 lines. Cap: `audio.record`, `fs.write`.
+- [x] `video-player` (Python) — video.playback + VideoPlayer draw command. Space play/pause, arrow seek ±5s. 75 lines. Cap: `video.playback`, `fs.read`.
+- [x] `quick-note` (first-party, Python) — compose + browse modes, `.plexi/notes/<timestamp>.md`, Cmd+Enter save, Cmd+K browse, `Notify` on save. 125 lines. Cap: `fs.read`, `fs.write`.
+- [x] SDK copied into each example dir (`plexi_sdk.py`).
+- [x] All 6 apps tested: `echo '{"type":"init",...}' | python app.py` returns `{"type":"ready","sdk":"plexi-sdk-py/0.4.0","features_used":[]}`.
+
+**TODO(layer-6) — protocol test harness needed:**
+- JSON replay tests: feed PlexiEvent sequence → assert DrawCommand sequence for each app.
+- Audio mock device end-to-end: feed WAV fixture through binary pipe → assert output WAV.
+
+### 🔄 Layer 6 — CI gate + release
 - [ ] Protocol test harness: replay `PlexiEvent` JSON → assert on `DrawCommand` JSON.
 - [ ] Headless audio/video tests via mock devices.
 - [ ] `v3` → `beta` → `main`. Tag `v3.0.0`.

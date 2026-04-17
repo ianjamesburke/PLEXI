@@ -1,0 +1,9 @@
+[app]
+id = "audio-recorder"
+name = "Audio Recorder"
+version = "0.1.0"
+description = "Record audio from mic to WAV. Proves binary pipe + AudioMeter."
+entry = "audio_recorder.py"
+
+[app.capabilities]
+capabilities = ["audio.record", "fs.write"]

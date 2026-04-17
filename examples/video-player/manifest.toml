@@ -1,0 +1,9 @@
+[app]
+id = "video-player"
+name = "Video Player"
+version = "0.1.0"
+description = "Host-owned video playback via VideoPlayer draw command."
+entry = "video_player.py"
+
+[app.capabilities]
+capabilities = ["video.playback", "fs.read"]
