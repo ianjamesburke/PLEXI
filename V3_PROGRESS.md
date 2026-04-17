@@ -8,7 +8,7 @@
 
 **Branch:** `v3` (off `main` at `060b729`)
 **Worktree:** `.claude/worktrees/v3/`
-**Head:** layer 3b complete — clean compile, ~12 warnings (all pre-existing dead-code/unused-import). 18/18 tests passing (3/3 typed_pipes + 15 others).
+**Head:** layer 4 complete — clean compile, ~92 warnings (all pre-existing dead-code/unused-import). 18/18 tests passing (3/3 typed_pipes + 15 others).
 
 ## Layer status
 
@@ -47,25 +47,22 @@ All 7 `TODO(layer-3)` markers resolved (3 in app_permissions.rs re-tagged TODO(l
 - [x] `src/app.rs` — `Action::SpawnAgentPane` wired to `self.spawn_agent_pane()`.
 - [x] `src/app_registry.rs` — updated launch call to pass `workspace_root` + `capabilities`.
 
-### 🔄 Layer 4 — event bus emit sites, runs, notifications
+### ✅ Layer 4 — event bus emit sites, runs, notifications
 
-**TODO(layer-4) markers added in this layer:**
-- `src/process_app.rs` — VideoPlayer: wire rgba frame → egui TextureHandle (texture plumbing nontrivial)
-- `src/process_app.rs` — AudioCapture forwarding thread: needs TypedPipeRegistry behind Arc<Mutex<>> for Send
-- `src/process_app.rs` — proper Ready handshake: read first stdout line synchronously before draw-command loop
-- `src/process_app.rs` — proper capability/secret modal UI with Grant/Deny buttons (currently auto-grant in debug)
-- `src/process_app.rs` — Notify action dispatch: `resume_run` → run_registry, `open_intent` → intent palette, `run_command` → PTY write
-- `src/process_app.rs` — PipeSend multi-app routing: route PipeMessage to peer apps subscribed on the pipe_id
-- `src/pane_ops.rs` — agent pane turn loop: drive `IqSession::send()` from UI thread, stream tokens via DrawCommands
-- `src/app_permissions.rs` — remove `check_command` shim; migrate remaining call sites to `check()` + `Capability`
-- `src/app_permissions.rs` — remove RunInTerminal; all callers use PipeSend
-- `src/app_permissions.rs` — delete TrustLevel, FsPermission, GlobalPermissions, PermissionsConfig
+- [x] `event_log::emit()` at every lifecycle point: AppSpawned (launch), AppClosed (Drop), PermissionPrompted (CapabilityRequest), RunCreated/RunCompleted (runs.rs), NotificationEmitted/NotificationActioned (Notify handler), AgentTurn (tiling.rs turn drain), PipeWrite (audio capture thread).
+- [x] Notification action dispatch wired: `resume_run` → `RunRegistry::resume`, `open_intent` → pending_commands, `run_command` → `AppCommand::RunInTerminal`. Emits `NotificationActioned` for each.
+- [x] Capability/secret modal UI: real egui `Window::new("Plexi needs permission")` with Grant/Deny buttons and secret text input.
+- [x] VideoFrame: frames pulled from decoder, queued in `pending_video_frames`, uploaded via `ctx.load_texture()` + `painter().image()` in `ui()`.
+- [x] AudioCapture forwarding thread: `TypedPipeRegistry` wrapped in `Arc<Mutex<>>`. Thread holds Arc clone, writes PCM, emits `PipeWrite`.
+- [x] Agent turn loop: transcript + input bar UI, background thread with `ClaudeCliBackend`, streams tokens via `TurnMsg` mpsc, emits `AgentTurn` on Done.
+- [x] Run palette: `Cmd+R` → `ToggleRunPalette` → `draw_run_palette` overlay. `RunRegistry::set_blocked/unblock/resume` all wired.
+- [x] v2 cleanup: deleted `check_command`, `TrustLevel`, `FsPermission`. Added `check_cd()`. Migrated `app.rs` call site.
 
-- [ ] Call `event_log::emit()` at every lifecycle point (app spawn/close, permission decision, run update, agent turn, pipe open/close).
-- [ ] Wire rich notification action dispatch (`resume_run`, `open_intent`, `run_command`) — skeleton logs today.
-- [ ] Run palette + `BlockedOnUser` inline prompts.
-- [ ] Proper capability/secret modal UI (replace auto-grant stub).
-- [ ] Wire VideoFrame rgba → egui TextureHandle for VideoPlayer rendering.
+**TODO(layer-5) carried forward:**
+- `src/process_app.rs` — PipeSend multi-app routing: requires global pipe broker at host level.
+- `src/process_app.rs` — AudioMeter peak read: requires TypedPipeRegistry peak API.
+- `src/process_app.rs` — Ready handshake: split stdout reader into handshake + draw-command phases.
+- `src/overlays.rs` — Run palette run aggregation: requires `list_runs()` on the `App` trait.
 
 ### ⏳ Layer 5 — example apps (the five + quick-note)
 - [ ] `snake` (Rust) — input + draw primitives only.

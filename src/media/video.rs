@@ -64,7 +64,7 @@ impl std::error::Error for VideoError {}
 // Trait
 // ---------------------------------------------------------------------------
 
-pub trait VideoDecoder {
+pub trait VideoDecoder: Send {
     /// Open a video source. Returns a handle describing the stream geometry.
     fn open(&mut self, source: VideoSource) -> Result<VideoHandle, VideoError>;
 

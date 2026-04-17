@@ -8,6 +8,7 @@
 use crate::app_permissions::{AppPermissions, Capability, PermissionsLog, check};
 use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
+use crate::event_log::{self, HostEvent};
 use crate::media::{audio_device, video_decoder, AudioSource, VideoSource, PlaybackState};
 use crate::runs::RunRegistry;
 use crate::typed_pipes::{PipeDirection, TypedPipeRegistry};
@@ -16,7 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc, Mutex};
 use std::thread;
 
 // ---------------------------------------------------------------------------
@@ -81,8 +82,9 @@ pub struct ProcessApp {
     workspace_root: PathBuf,
     /// Granted capabilities — used to gate media and secret access.
     permissions: AppPermissions,
-    /// Typed pipe registry for this app instance.
-    pipe_registry: TypedPipeRegistry,
+    /// Typed pipe registry for this app instance. Arc<Mutex<>> so the audio
+    /// capture forwarding thread can call write_binary without blocking the UI.
+    pipe_registry: Arc<Mutex<TypedPipeRegistry>>,
     /// Run registry for this app instance.
     run_registry: RunRegistry,
     /// Prompts awaiting user decision (capability + secret grants).
@@ -91,14 +93,23 @@ pub struct ProcessApp {
     status_summary: Option<String>,
     /// Active audio meter configs (rendered each frame).
     audio_meters: Vec<AudioMeterState>,
-    /// Active video handles keyed by source string.
+    /// Video decoder (one per ProcessApp — shared across video sources).
+    video_decoder: Option<Box<dyn crate::media::VideoDecoder>>,
+    /// Active video handles keyed by source string; value is handle_id.
     video_handles: HashMap<String, crate::media::VideoHandle>,
+    /// Pending video frames to upload + render on the next render pass.
+    /// Each entry: (handle_id, frame, rect x, y, w, h).
+    pending_video_frames: Vec<(u64, crate::media::VideoFrame, f32, f32, f32, f32)>,
+    /// Cached egui texture handles keyed by video handle_id, for frame-by-frame upload.
+    video_textures: HashMap<u64, egui::TextureHandle>,
     /// Active audio playback handles keyed by source string.
     audio_playback_handles: HashMap<String, crate::media::AudioPlaybackHandle>,
     /// Active audio capture handles keyed by pipe_id.
     audio_capture_handles: HashMap<String, crate::media::AudioCaptureHandle>,
     /// Pending PlexiEvents queued to be sent to the app on next flush.
     outbound_events: VecDeque<PlexiEvent>,
+    /// Text input buffer for the secret-value modal.
+    secret_input_buf: String,
 }
 
 impl ProcessApp {
@@ -200,6 +211,15 @@ impl ProcessApp {
             is_builtin: false,
         };
 
+        // Emit AppSpawned before returning — pane_id unknown at this point (0 as placeholder;
+        // the caller will have assigned the real pane_id when it inserts into the pane map).
+        event_log::emit(HostEvent::AppSpawned {
+            app_id: type_id.clone(),
+            type_id: type_id.clone(),
+            pane_id: 0,
+            timestamp: event_log::now_timestamp(),
+        });
+
         Ok(Self {
             type_id,
             display_name,
@@ -217,15 +237,19 @@ impl ProcessApp {
             features_used: Vec::new(),
             workspace_root,
             permissions,
-            pipe_registry: TypedPipeRegistry::new(),
+            pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new())),
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             status_summary: None,
             audio_meters: Vec::new(),
+            video_decoder: None,
             video_handles: HashMap::new(),
+            pending_video_frames: Vec::new(),
+            video_textures: HashMap::new(),
             audio_playback_handles: HashMap::new(),
             audio_capture_handles: HashMap::new(),
             outbound_events: VecDeque::new(),
+            secret_input_buf: String::new(),
         })
     }
 
@@ -340,24 +364,29 @@ impl ProcessApp {
             // ── Video ──────────────────────────────────────────────────────
             DrawCommand::VideoPlayer { source, x, y, w, h, state } => {
                 if !self.video_handles.contains_key(&source) {
-                    // Open via media subsystem.
-                    let mut decoder = video_decoder();
-                    match decoder.open(VideoSource::File(PathBuf::from(&source))) {
-                        Ok(handle) => {
-                            log::info!(
-                                "ProcessApp[{}]: opened video '{}' {}x{} {}ms",
-                                self.type_id, source, handle.width, handle.height, handle.duration_ms
-                            );
-                            self.video_handles.insert(source.clone(), handle);
-                        }
-                        Err(e) => {
-                            log::warn!("ProcessApp[{}]: failed to open video '{}': {e}", self.type_id, source);
-                            return;
+                    // Lazily create the decoder on first video open.
+                    if self.video_decoder.is_none() {
+                        self.video_decoder = Some(video_decoder());
+                    }
+                    if let Some(decoder) = self.video_decoder.as_mut() {
+                        match decoder.open(VideoSource::File(PathBuf::from(&source))) {
+                            Ok(handle) => {
+                                log::info!(
+                                    "ProcessApp[{}]: opened video '{}' {}x{} {}ms",
+                                    self.type_id, source, handle.width, handle.height, handle.duration_ms
+                                );
+                                self.video_handles.insert(source.clone(), handle);
+                            }
+                            Err(e) => {
+                                log::warn!("ProcessApp[{}]: failed to open video '{}': {e}", self.type_id, source);
+                                return;
+                            }
                         }
                     }
                 }
 
                 if let Some(handle) = self.video_handles.get(&source) {
+                    let handle_id = handle.id;
                     let playback_state = if state == "play" {
                         Some(PlaybackState::Play)
                     } else if state == "pause" {
@@ -368,13 +397,24 @@ impl ProcessApp {
                         None
                     };
 
-                    // Queue a next-frame render — texture plumbing to egui is Layer 4.
-                    // TODO(layer-4): wire VideoFrame rgba → egui TextureHandle; for now log the PTS.
-                    let _ = (x, y, w, h, handle, playback_state);
-                    log::debug!(
-                        "ProcessApp[{}]: VideoPlayer source={source} state={state} rect=({x},{y},{w}x{h})",
-                        self.type_id
-                    );
+                    if let Some(ps) = playback_state {
+                        if let Some(decoder) = self.video_decoder.as_mut() {
+                            decoder.set_state(handle_id, ps);
+                        }
+                    }
+
+                    // Pull next frame and queue for upload+render in the render pass
+                    // (egui texture upload requires a UI context, not available here).
+                    if let Some(decoder) = self.video_decoder.as_mut() {
+                        if let Some(frame) = decoder.next_frame(handle_id) {
+                            log::debug!(
+                                "ProcessApp[{}]: VideoFrame {}x{} pts={}ms source={source}",
+                                self.type_id, frame.width, frame.height, frame.pts_ms
+                            );
+                            // Queue for texture upload in render_draw_commands.
+                            self.pending_video_frames.push((handle_id, frame, x, y, w, h));
+                        }
+                    }
                 }
             }
 
@@ -421,7 +461,7 @@ impl ProcessApp {
                 }
 
                 // Allocate binary pipe.
-                let alloc = match self.pipe_registry.open_binary(
+                let alloc = match self.pipe_registry.lock().unwrap().open_binary(
                     pipe_id.clone(),
                     PipeDirection::Out,
                 ) {
@@ -439,24 +479,35 @@ impl ProcessApp {
                         let socket_path = alloc.socket_path.clone();
 
                         // Forwarding thread: read PCM frames and write to binary pipe.
-                        // Since TypedPipeRegistry is not Send, we just log frames for now.
-                        // TODO(layer-4): make TypedPipeRegistry arc-mutex wrapped so the
-                        //   forwarding thread can call write_binary safely.
+                        // TypedPipeRegistry is behind Arc<Mutex<>> so this thread can
+                        // call write_binary without blocking the main UI thread.
                         let pipe_id_fwd = pipe_id.clone();
                         let type_id_fwd = self.type_id.clone();
+                        let registry_arc = Arc::clone(&self.pipe_registry);
                         thread::Builder::new()
                             .name(format!("audio-capture-{pipe_id_fwd}"))
                             .spawn(move || {
                                 log::info!("ProcessApp[{type_id_fwd}]: audio capture thread started for pipe '{pipe_id_fwd}'");
-                                // Receive frames from the capture device.
                                 loop {
                                     match capture_handle.receiver.recv() {
                                         Ok(samples) => {
-                                            log::debug!(
-                                                "ProcessApp[{type_id_fwd}]: audio capture frame {} samples (pipe {pipe_id_fwd})",
-                                                samples.len()
-                                            );
-                                            // TODO(layer-4): forward samples to typed pipe via shared registry.
+                                            // Convert f32 PCM to raw bytes (little-endian f32).
+                                            let bytes: Vec<u8> = samples
+                                                .iter()
+                                                .flat_map(|s| s.to_le_bytes())
+                                                .collect();
+                                            let mut reg = registry_arc.lock().unwrap();
+                                            match reg.write_binary(&pipe_id_fwd, &bytes) {
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    log::warn!("ProcessApp[{type_id_fwd}]: audio write failed: {e}");
+                                                }
+                                            }
+                                            event_log::emit(HostEvent::PipeWrite {
+                                                from_app: type_id_fwd.clone(),
+                                                channel: pipe_id_fwd.clone(),
+                                                timestamp: event_log::now_timestamp(),
+                                            });
                                         }
                                         Err(_) => break,
                                     }
@@ -476,7 +527,7 @@ impl ProcessApp {
                     }
                     Err(e) => {
                         log::warn!("ProcessApp[{}]: AudioCapture start_capture failed: {e}", self.type_id);
-                        self.pipe_registry.close(&pipe_id);
+                        self.pipe_registry.lock().unwrap().close(&pipe_id);
                     }
                 }
             }
@@ -505,6 +556,11 @@ impl ProcessApp {
                     });
                 } else {
                     // Queue for user prompt.
+                    event_log::emit(HostEvent::PermissionPrompted {
+                        app_id: self.type_id.clone(),
+                        capability: capability.clone(),
+                        timestamp: event_log::now_timestamp(),
+                    });
                     self.pending_prompts.push_back(PendingPrompt::Capability {
                         request_id,
                         capability,
@@ -552,6 +608,11 @@ impl ProcessApp {
                     "ProcessApp[{}]: RunGet intent='{}' → run_id='{}'",
                     self.type_id, intent, run_id
                 );
+                event_log::emit(HostEvent::RunCreated {
+                    run_id: run_id.clone(),
+                    app_id: self.type_id.clone(),
+                    timestamp: event_log::now_timestamp(),
+                });
                 self.outbound_events.push_back(PlexiEvent::RunUpdate {
                     run_id,
                     status: "pending".to_string(),
@@ -565,25 +626,76 @@ impl ProcessApp {
                     "ProcessApp[{}]: RunComplete run_id='{run_id}' result={result}",
                     self.type_id
                 );
+                // complete() emits RunCompleted internally.
                 self.run_registry.complete(&run_id);
             }
 
             // ── Notify ─────────────────────────────────────────────────────
             DrawCommand::Notify { level, title, body, actions } => {
+                let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
                     "ProcessApp[{}]: Notify [{level}] '{title}': {body}",
                     self.type_id
                 );
+                event_log::emit(HostEvent::NotificationEmitted {
+                    id: notif_id.clone(),
+                    title: title.clone(),
+                    urgency: level.clone(),
+                    timestamp: event_log::now_timestamp(),
+                });
+
                 for action in &actions {
-                    // Log action dispatch — skeleton that doesn't drop actions on the floor.
-                    // TODO(layer-4): wire action_type dispatch: resume_run → run_registry,
-                    //   open_intent → intent palette, run_command → terminal PTY write.
                     log::info!(
                         "ProcessApp[{}]: notify action action_type={} payload={}",
                         self.type_id, action.action_type, action.payload
                     );
+                    match action.action_type.as_str() {
+                        "resume_run" => {
+                            if let Some(run_id) = action.payload.get("run_id").and_then(|v| v.as_str()) {
+                                self.run_registry.resume(run_id);
+                                self.outbound_events.push_back(PlexiEvent::RunUpdate {
+                                    run_id: run_id.to_string(),
+                                    status: "pending".to_string(),
+                                    payload: serde_json::Value::Null,
+                                });
+                                event_log::emit(HostEvent::NotificationActioned {
+                                    id: notif_id.clone(),
+                                    action: "resume_run".to_string(),
+                                    timestamp: event_log::now_timestamp(),
+                                });
+                            }
+                        }
+                        "open_intent" => {
+                            if let Some(intent) = action.payload.get("intent").and_then(|v| v.as_str()) {
+                                // Queue a pending intent — the UI pops this next frame and shows a modal.
+                                self.pending_commands.push(AppCommand::Notify(
+                                    format!("[intent] {intent}")
+                                ));
+                                event_log::emit(HostEvent::NotificationActioned {
+                                    id: notif_id.clone(),
+                                    action: "open_intent".to_string(),
+                                    timestamp: event_log::now_timestamp(),
+                                });
+                            }
+                        }
+                        "run_command" => {
+                            if let Some(command) = action.payload.get("command").and_then(|v| v.as_str()) {
+                                self.pending_commands.push(AppCommand::RunInTerminal(command.to_string()));
+                                event_log::emit(HostEvent::NotificationActioned {
+                                    id: notif_id.clone(),
+                                    action: "run_command".to_string(),
+                                    timestamp: event_log::now_timestamp(),
+                                });
+                            } else {
+                                log::warn!("ProcessApp[{}]: run_command action missing 'command' payload", self.type_id);
+                            }
+                        }
+                        other => {
+                            log::warn!("ProcessApp[{}]: unknown notify action_type='{other}'", self.type_id);
+                        }
+                    }
                 }
-                // Push to host notification system (AppCommand::Notify).
+                // Always push the notification to the host notification system too.
                 self.pending_commands.push(AppCommand::Notify(
                     format!("[{level}] {title}: {body}")
                 ));
@@ -606,7 +718,7 @@ impl ProcessApp {
                 };
 
                 if mode == "binary" {
-                    match self.pipe_registry.open_binary(pipe_id.clone(), dir) {
+                    match self.pipe_registry.lock().unwrap().open_binary(pipe_id.clone(), dir) {
                         Ok(alloc) => {
                             log::info!(
                                 "ProcessApp[{}]: opened binary pipe '{pipe_id}' → {}",
@@ -621,7 +733,7 @@ impl ProcessApp {
                     }
                 } else {
                     // JSON mode.
-                    match self.pipe_registry.open_json(pipe_id.clone(), dir) {
+                    match self.pipe_registry.lock().unwrap().open_json(pipe_id.clone(), dir) {
                         Ok(()) => {
                             log::info!("ProcessApp[{}]: opened JSON pipe '{pipe_id}'", self.type_id);
                         }
@@ -632,12 +744,13 @@ impl ProcessApp {
 
             // ── Pipe send ──────────────────────────────────────────────────
             DrawCommand::PipeSend { pipe_id, payload } => {
-                match self.pipe_registry.send_json(&pipe_id, payload.clone()) {
+                match self.pipe_registry.lock().unwrap().send_json(&pipe_id, payload.clone()) {
                     Ok(()) => {
                         // Broadcast back as PipeMessage to any subscribed peers.
                         // In the single-app case, this echoes back to the same app for
-                        // round-trip testing. Multi-app routing is Layer 4.
-                        // TODO(layer-4): route PipeMessage to peer apps subscribed on this pipe_id.
+                        // round-trip testing.
+                        // TODO(layer-5): route PipeMessage to peer apps subscribed on this pipe_id;
+                        //   requires a global app registry or shared pipe broker visible at the host level.
                         self.outbound_events.push_back(PlexiEvent::PipeMessage {
                             pipe_id,
                             payload,
@@ -765,8 +878,9 @@ impl ProcessApp {
         }
 
         // Render audio meters.
-        // TODO(layer-4): proper meter rendering — read PCM peak from pipe ring and
-        //   draw a bar proportional to amplitude. For now, draw a static placeholder rect.
+        // TODO(layer-5): proper meter rendering — read PCM peak from pipe ring and
+        //   draw a bar proportional to amplitude. Requires exposing a peak-read API
+        //   on TypedPipeRegistry. For now, draw a static placeholder rect.
         for meter in audio_meters {
             let rect = egui::Rect::from_min_size(
                 egui::pos2(origin.x + meter.rect_x, origin.y + meter.rect_y),
@@ -784,40 +898,82 @@ impl ProcessApp {
         }
     }
 
-    /// Show a minimal modal for the first pending prompt (capability or secret).
-    /// Auto-grants in debug builds; auto-denies in release builds.
-    fn show_prompt_modal(ui: &mut egui::Ui, pending_prompts: &mut VecDeque<PendingPrompt>, outbound_events: &mut VecDeque<PlexiEvent>, permissions: &mut AppPermissions, type_id: &str, workspace_root: &PathBuf) {
+    /// Show a modal egui window for the first pending prompt (capability or secret).
+    /// Blocks user interaction with the pane until the user grants or denies.
+    fn show_prompt_modal(
+        ui: &mut egui::Ui,
+        pending_prompts: &mut VecDeque<PendingPrompt>,
+        outbound_events: &mut VecDeque<PlexiEvent>,
+        permissions: &mut AppPermissions,
+        type_id: &str,
+        workspace_root: &PathBuf,
+        secret_input_buf: &mut String,
+    ) {
         let Some(prompt) = pending_prompts.front() else { return };
 
-        // TODO(layer-4): proper modal UI — replace this auto-grant with a real
-        //   egui modal with Grant/Deny buttons wired to resolve_capability/resolve_secret.
-        let auto_grant = cfg!(debug_assertions);
-        log::info!(
-            "ProcessApp[{type_id}]: pending prompt {:?} → auto_{}",
-            prompt, if auto_grant { "grant" } else { "deny" }
-        );
+        let mut granted = false;
+        let mut denied = false;
 
-        match pending_prompts.pop_front() {
-            Some(PendingPrompt::Capability { request_id, capability }) => {
-                if auto_grant {
-                    let cap = Capability::from(capability.as_str());
-                    permissions.capabilities.insert(cap);
+        egui::Window::new("Plexi needs permission")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                match prompt {
+                    PendingPrompt::Capability { capability, .. } => {
+                        ui.label(format!("App \"{}\" is requesting access to:", type_id));
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(capability).monospace().strong());
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(format!(
+                            "Workspace: {}",
+                            workspace_root.display()
+                        )).small());
+                    }
+                    PendingPrompt::Secret { key } => {
+                        ui.label(format!("App \"{}\" needs a secret value for:", type_id));
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(key).monospace().strong());
+                        ui.add_space(8.0);
+                        ui.label("Enter value:");
+                        ui.text_edit_singleline(secret_input_buf);
+                    }
                 }
-                outbound_events.push_back(PlexiEvent::CapabilityDecision {
-                    request_id,
-                    granted: auto_grant,
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Grant").clicked() {
+                        granted = true;
+                    }
+                    if ui.button("Deny").clicked() {
+                        denied = true;
+                    }
                 });
-            }
-            Some(PendingPrompt::Secret { key }) => {
-                outbound_events.push_back(PlexiEvent::SecretValue {
-                    key,
-                    value: if auto_grant { Some("(stub-secret)".to_string()) } else { None },
-                });
-            }
-            None => {}
-        }
+            });
 
-        let _ = (ui, workspace_root); // used via references above
+        if granted || denied {
+            match pending_prompts.pop_front() {
+                Some(PendingPrompt::Capability { request_id, capability }) => {
+                    if granted {
+                        let cap = Capability::from(capability.as_str());
+                        permissions.capabilities.insert(cap);
+                    }
+                    outbound_events.push_back(PlexiEvent::CapabilityDecision {
+                        request_id,
+                        granted,
+                    });
+                }
+                Some(PendingPrompt::Secret { key }) => {
+                    let value = if granted && !secret_input_buf.is_empty() {
+                        Some(secret_input_buf.clone())
+                    } else {
+                        None
+                    };
+                    secret_input_buf.clear();
+                    outbound_events.push_back(PlexiEvent::SecretValue { key, value });
+                }
+                None => {}
+            }
+        }
     }
 }
 
@@ -885,8 +1041,11 @@ impl App for ProcessApp {
         // parse warning for the Ready JSON but keeps running. This is acceptable
         // for Layer 3 — Layer 4 can split the handshake into a dedicated first-line
         // read on the thread before starting the draw-command loop.
-        // TODO(layer-4): proper Ready handshake — read first line synchronously
+        // TODO(layer-5): proper Ready handshake — read first line synchronously
         //   before starting the draw-command loop to capture sdk + features_used.
+        //   Currently the Ready JSON arrives in the draw-command channel and logs
+        //   a parse warning (harmless). Fix requires splitting the stdout reader
+        //   into a handshake phase and a draw-command phase.
 
         for cmd in new_cmds {
             match cmd {
@@ -935,17 +1094,47 @@ impl App for ProcessApp {
             }
         }
 
-        // Handle any pending prompts (auto-grant/deny — proper modal in Layer 4).
+        // Handle any pending prompts — show real egui modal with Grant/Deny buttons.
         if !self.pending_prompts.is_empty() {
             let mut pending_prompts = std::mem::take(&mut self.pending_prompts);
             let mut outbound_events = std::mem::take(&mut self.outbound_events);
             let mut permissions = std::mem::take(&mut self.permissions);
+            let mut secret_input_buf = std::mem::take(&mut self.secret_input_buf);
             let type_id = self.type_id.clone();
             let workspace_root = self.workspace_root.clone();
-            Self::show_prompt_modal(ui, &mut pending_prompts, &mut outbound_events, &mut permissions, &type_id, &workspace_root);
+            Self::show_prompt_modal(ui, &mut pending_prompts, &mut outbound_events, &mut permissions, &type_id, &workspace_root, &mut secret_input_buf);
             self.pending_prompts = pending_prompts;
             self.outbound_events = outbound_events;
             self.permissions = permissions;
+            self.secret_input_buf = secret_input_buf;
+        }
+
+        // Upload + render any pending video frames (requires egui ctx).
+        let pending_frames = std::mem::take(&mut self.pending_video_frames);
+        for (handle_id, frame, vx, vy, vw, vh) in pending_frames {
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                [frame.width as usize, frame.height as usize],
+                &frame.rgba,
+            );
+            let tex_name = format!("video_frame_{handle_id}_{}", frame.pts_ms);
+            let tex = ui.ctx().load_texture(
+                &tex_name,
+                color_image,
+                egui::TextureOptions::LINEAR,
+            );
+            // Render at the requested rect.
+            let origin = ui.min_rect().min;
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(origin.x + vx, origin.y + vy),
+                egui::vec2(vw, vh),
+            );
+            ui.painter().image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            self.video_textures.insert(handle_id, tex);
         }
 
         // Render the current frame.
@@ -1028,6 +1217,13 @@ impl App for ProcessApp {
 impl Drop for ProcessApp {
     fn drop(&mut self) {
         self.send_event(&PlexiEvent::Shutdown);
+        event_log::emit(HostEvent::AppClosed {
+            app_id: self.type_id.clone(),
+            type_id: self.type_id.clone(),
+            pane_id: 0,
+            reason: None,
+            timestamp: event_log::now_timestamp(),
+        });
         if let Some(mut child) = self.process.take() {
             let _ = child.wait();
             let _ = child.kill();

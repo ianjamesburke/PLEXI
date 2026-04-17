@@ -211,4 +211,61 @@ impl PlexiApp {
                     });
             });
     }
+
+    /// Run palette overlay (Cmd+R). Shows active runs across all panes; BlockedOnUser
+    /// runs get a [!] badge and an inline text input for unblocking.
+    pub(crate) fn draw_run_palette(&mut self, ctx: &egui::Context) {
+        // Collect all active runs from every app pane in every context.
+        // Clone needed because we hold &self across the window render.
+        let mut all_runs: Vec<(String, String, String, Option<String>)> = Vec::new(); // (run_id, app_id, status, blocked_prompt)
+        for context in &self.contexts {
+            for pane in context.panes.values() {
+                if let Some(t) = pane.as_terminal() {
+                    if let Some(app) = &t.active_app {
+                        // We can't access ProcessApp's run_registry through the App trait.
+                        // This is a limitation of the current trait boundary.
+                        // TODO(layer-5): expose list_runs() on the App trait so the run palette
+                        //   can aggregate across all running apps generically.
+                        let _ = app;
+                    }
+                }
+            }
+        }
+
+        let mut close = false;
+        egui::Window::new("Active Runs")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_size(egui::Vec2::new(500.0, 300.0))
+            .show(ctx, |ui| {
+                if all_runs.is_empty() {
+                    ui.label(egui::RichText::new("No active runs.").italics());
+                    ui.add_space(8.0);
+                    ui.label("Apps create runs via DrawCommand::RunGet.");
+                } else {
+                    for (run_id, app_id, status, blocked_prompt) in &all_runs {
+                        let badge = if status == "blocked_on_user" { "[!] " } else { "    " };
+                        ui.label(egui::RichText::new(format!("{badge}{run_id}")).monospace());
+                        ui.label(egui::RichText::new(format!("    app={app_id} status={status}")).small());
+                        if let Some(prompt) = blocked_prompt {
+                            ui.label(prompt);
+                        }
+                        ui.separator();
+                    }
+                }
+                ui.add_space(8.0);
+                if ui.button("Close  [Cmd+R]").clicked() {
+                    close = true;
+                }
+            });
+
+        if close {
+            self.show_run_palette = false;
+        }
+        // Also close on Escape.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_run_palette = false;
+        }
+    }
 }

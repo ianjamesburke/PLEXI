@@ -183,11 +183,26 @@ pub struct AppPane {
 // AgentPane — wraps a PlexiIqInstance (Layer 3c wires this)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 pub struct AgentPane {
     pub id: PaneId,
     /// Lazy-initialized; may be None until first turn.
     pub instance: Option<crate::plexi_iq::PlexiIqInstance>,
     /// Human-readable session label for the UI.
     pub label: String,
+    /// Accumulated conversation lines (user messages + assistant chunks).
+    pub transcript: Vec<String>,
+    /// Current user input being typed.
+    pub input_buf: String,
+    /// Streamed token receiver from the background turn thread.
+    /// None when no turn is in progress.
+    pub turn_rx: Option<std::sync::mpsc::Receiver<TurnMsg>>,
+    /// Session ID from the last completed proxied turn (for --resume).
+    pub session_id: Option<String>,
+}
+
+/// Message from the background turn thread to the UI thread.
+pub enum TurnMsg {
+    Token(String),
+    Done { session_id: Option<String>, token_count: usize },
+    Error(String),
 }

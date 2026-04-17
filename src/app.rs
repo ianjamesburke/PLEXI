@@ -36,6 +36,8 @@ pub struct PlexiApp {
     pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
+    /// Whether the Run palette overlay is visible (Cmd+R).
+    pub(crate) show_run_palette: bool,
 }
 
 impl PlexiApp {
@@ -159,6 +161,7 @@ impl PlexiApp {
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
+                    show_run_palette: false,
                 };
             }
         }
@@ -206,6 +209,7 @@ impl PlexiApp {
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
+            show_run_palette: false,
         }
     }
 
@@ -302,11 +306,28 @@ impl PlexiApp {
             if let Some(target_pane) = self.contexts[active].panes.get_mut(&linked_id) {
                 if let Some(t) = target_pane.as_terminal_mut() {
                     for cmd in commands {
-                        match crate::app_permissions::check_command(&cmd, &perms, &scope) {
-                            crate::app_permissions::PermissionCheck::Allowed => {
+                        use crate::app_permissions::PermissionCheck;
+                        use crate::app_trait::AppCommand;
+                        let check = match &cmd {
+                            AppCommand::RunInTerminal(_) => {
+                                // RunInTerminal: allowed if app has FsWrite or is builtin.
+                                // v3 apps should use PipeSend; legacy apps use this path.
+                                if perms.is_builtin || perms.capabilities.contains(&crate::app_permissions::Capability::FsWrite) {
+                                    PermissionCheck::Allowed
+                                } else {
+                                    PermissionCheck::Denied("RunInTerminal requires fs.write capability".to_string())
+                                }
+                            }
+                            AppCommand::Cd(path) => {
+                                crate::app_permissions::check_cd(path, &perms, &scope)
+                            }
+                            AppCommand::Notify(_) => PermissionCheck::Allowed,
+                        };
+                        match check {
+                            PermissionCheck::Allowed => {
                                 Self::execute_app_command(cmd, t);
                             }
-                            crate::app_permissions::PermissionCheck::Denied(reason) => {
+                            PermissionCheck::Denied(reason) => {
                                 log::warn!("App command denied: {reason}");
                             }
                         }
@@ -558,6 +579,9 @@ impl eframe::App for PlexiApp {
                 }
                 Action::SpawnAgentPane => {
                     self.spawn_agent_pane();
+                }
+                Action::ToggleRunPalette => {
+                    self.show_run_palette = !self.show_run_palette;
                 }
             }
         }
@@ -818,6 +842,11 @@ impl eframe::App for PlexiApp {
         // Command palette overlay
         if self.show_command_palette {
             self.draw_command_palette(ctx);
+        }
+
+        // Run palette overlay (Cmd+R)
+        if self.show_run_palette {
+            self.draw_run_palette(ctx);
         }
 
         // Rename pane overlay

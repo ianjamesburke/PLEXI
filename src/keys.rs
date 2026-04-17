@@ -72,6 +72,8 @@ pub enum Action {
     OpenSecretsManager,
     /// Spawn a new Plexi IQ agent pane in the focused context.
     SpawnAgentPane,
+    /// Toggle the Run palette (shows active runs, BlockedOnUser prompts).
+    ToggleRunPalette,
 }
 
 /// Poll global keyboard actions. `app_active` indicates whether the focused
@@ -211,6 +213,11 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Spawn agent pane (Cmd+Shift+I)
         if input.consume_key(cmd_shift, egui::Key::I) {
             actions.push(Action::SpawnAgentPane);
+        }
+
+        // Run palette (Cmd+R — plain, not Cmd+Shift+R which is RenamePane)
+        if !input.modifiers.shift && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R) {
+            actions.push(Action::ToggleRunPalette);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

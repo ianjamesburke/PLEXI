@@ -742,9 +742,7 @@ impl PlexiApp {
     /// Spawn a new `Pane::Agent` in the active context via a horizontal split.
     ///
     /// Creates a `PlexiIqInstance` and wraps it in `AgentPane`. The pane renders
-    /// a placeholder title + empty transcript until the turn loop is wired in Layer 4.
-    /// TODO(layer-4): drive the turn loop from the UI thread — deliver prompts,
-    ///   stream tokens via DrawCommands, and persist to the cost ledger.
+    /// a transcript area + input bar. Turn loop drives via tiling.rs on each frame.
     pub(crate) fn spawn_agent_pane(&mut self) {
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -756,6 +754,10 @@ impl PlexiApp {
             id: new_id,
             instance: Some(instance),
             label,
+            transcript: Vec::new(),
+            input_buf: String::new(),
+            turn_rx: None,
+            session_id: None,
         });
 
         let ctx = &mut self.contexts[self.active_context];

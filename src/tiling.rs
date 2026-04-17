@@ -107,33 +107,157 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 .fill(self.colors.terminal_bg)
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
-                    // Agent panes: render placeholder title + empty transcript.
-                    // Turn loop wiring is Layer 4.
-                    if let Some(agent) = pane.as_agent() {
+                    // Agent panes: full turn loop UI.
+                    if let Some(agent) = pane.as_agent_mut() {
+                        // Drain any streamed tokens from background thread.
+                        if let Some(rx) = &agent.turn_rx {
+                            let mut done = false;
+                            loop {
+                                match rx.try_recv() {
+                                    Ok(crate::pane::TurnMsg::Token(chunk)) => {
+                                        if let Some(last) = agent.transcript.last_mut() {
+                                            last.push_str(&chunk);
+                                        }
+                                    }
+                                    Ok(crate::pane::TurnMsg::Done { session_id, token_count }) => {
+                                        agent.session_id = session_id;
+                                        agent.transcript.push(String::new()); // separator
+                                        crate::event_log::emit(crate::event_log::HostEvent::AgentTurn {
+                                            session_id: agent.session_id.clone(),
+                                            token_count,
+                                            timestamp: crate::event_log::now_timestamp(),
+                                        });
+                                        done = true;
+                                        break;
+                                    }
+                                    Ok(crate::pane::TurnMsg::Error(e)) => {
+                                        agent.transcript.push(format!("[error] {e}"));
+                                        done = true;
+                                        break;
+                                    }
+                                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                        done = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if done {
+                                agent.turn_rx = None;
+                            }
+                        }
+
                         let rect = ui.max_rect();
                         // Title bar.
                         let title_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
                         ui.painter().rect_filled(title_rect, 0.0, self.colors.bg_toolbar);
+                        let status = if agent.turn_rx.is_some() { " ⏳" } else { "" };
                         ui.painter().text(
                             egui::pos2(title_rect.min.x + 8.0, title_rect.center().y),
                             egui::Align2::LEFT_CENTER,
-                            format!("🤖 {}", agent.label),
+                            format!("🤖 {}{status}", agent.label),
                             egui::FontId::proportional(12.0),
                             self.colors.text_primary,
                         );
-                        // Empty transcript area.
-                        let body_rect = egui::Rect::from_min_max(
-                            egui::pos2(rect.min.x, title_rect.max.y),
+
+                        // Input bar at the bottom.
+                        let input_h = 32.0;
+                        let input_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x, rect.max.y - input_h),
                             rect.max,
                         );
-                        ui.painter().rect_filled(body_rect, 0.0, self.colors.terminal_bg);
-                        ui.painter().text(
-                            body_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "Plexi IQ — turn loop wires in Layer 4",
-                            egui::FontId::proportional(11.0),
-                            self.colors.text_dim,
+                        // Transcript area.
+                        let body_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x, title_rect.max.y),
+                            egui::pos2(rect.max.x, input_rect.min.y),
                         );
+                        ui.painter().rect_filled(body_rect, 0.0, self.colors.terminal_bg);
+
+                        // Render transcript.
+                        let mut y = body_rect.min.y + 4.0;
+                        let line_h = 14.0;
+                        for line in &agent.transcript {
+                            if y + line_h > body_rect.max.y { break; }
+                            ui.painter().text(
+                                egui::pos2(body_rect.min.x + 6.0, y),
+                                egui::Align2::LEFT_TOP,
+                                line,
+                                egui::FontId::monospace(11.0),
+                                self.colors.text_primary,
+                            );
+                            y += line_h;
+                        }
+
+                        if agent.transcript.is_empty() && agent.turn_rx.is_none() {
+                            ui.painter().text(
+                                body_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Type a message below and press Enter",
+                                egui::FontId::proportional(11.0),
+                                self.colors.text_dim,
+                            );
+                        }
+
+                        // Input bar.
+                        ui.painter().rect_filled(input_rect, 0.0, self.colors.bg_active);
+                        let input_id = egui::Id::new(("agent_input", agent.id));
+                        let mut te = egui::TextEdit::singleline(&mut agent.input_buf)
+                            .desired_width(input_rect.width() - 12.0)
+                            .font(egui::FontId::monospace(12.0))
+                            .hint_text("Send a message…");
+                        let te_resp = ui.put(
+                            egui::Rect::from_min_size(
+                                egui::pos2(input_rect.min.x + 6.0, input_rect.min.y + 4.0),
+                                egui::vec2(input_rect.width() - 12.0, input_h - 8.0),
+                            ),
+                            te,
+                        );
+
+                        // Submit on Enter.
+                        if te_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            let msg = std::mem::take(&mut agent.input_buf);
+                            if !msg.is_empty() && agent.turn_rx.is_none() {
+                                agent.transcript.push(format!("> {msg}"));
+                                agent.transcript.push(String::new()); // assistant turn accumulates here
+                                let session_id = agent.session_id.clone();
+
+                                // Fire off the turn on a background thread.
+                                let (tx, rx) = std::sync::mpsc::channel::<crate::pane::TurnMsg>();
+                                agent.turn_rx = Some(rx);
+                                std::thread::spawn(move || {
+                                    use crate::plexi_iq::backend::ClaudeCliBackend;
+                                    let backend = ClaudeCliBackend::new();
+                                    let tx_tok = tx.clone();
+                                    let result = crate::plexi_iq::turn_loop::run_turn(
+                                        &backend,
+                                        msg,
+                                        "You are Plexi IQ, a helpful terminal-native assistant.",
+                                        session_id,
+                                        move |chunk| {
+                                            let _ = tx_tok.send(crate::pane::TurnMsg::Token(chunk.to_string()));
+                                        },
+                                    );
+                                    match result {
+                                        Ok(r) => {
+                                            let tok_count = r.output_tokens.unwrap_or(r.text.split_whitespace().count() as u32) as usize;
+                                            let _ = tx.send(crate::pane::TurnMsg::Done {
+                                                session_id: r.session_id,
+                                                token_count: tok_count,
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(crate::pane::TurnMsg::Error(e.to_string()));
+                                        }
+                                    }
+                                });
+                            }
+                        }
+
+                        // Request repaint while a turn is in progress.
+                        if agent.turn_rx.is_some() {
+                            ui.ctx().request_repaint();
+                        }
+
                         return;
                     }
 

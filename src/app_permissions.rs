@@ -7,7 +7,6 @@
 /// by a `HashSet<Capability>`. `check_command` is kept for back-compat with
 /// existing call sites that will be properly migrated in Layer 3.
 
-use crate::app_trait::AppCommand;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -135,55 +134,25 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
     }
 }
 
-// ── v1/v2 back-compat shim ────────────────────────────────────────────────────
+// ── v3 command-level permission helpers ───────────────────────────────────────
 
-/// Check whether an `AppCommand` is allowed given the app's permissions.
-///
-/// **v2 back-compat shim.** Will be removed once all call sites (tiling.rs, overlays.rs)
-/// are migrated to call `check()` directly with a `Capability`.
-/// TODO(layer-4): remove check_command; migrate remaining call sites to check() + Capability.
-pub fn check_command(
-    cmd: &AppCommand,
-    perms: &AppPermissions,
-    scope_root: &Path,
-) -> PermissionCheck {
+/// Check whether a `Cd` app command is allowed (requires FsWrite + path in scope).
+/// Used by app.rs to gate directory changes from apps.
+pub fn check_cd(path: &Path, perms: &AppPermissions, scope_root: &Path) -> PermissionCheck {
     if perms.is_builtin {
         return PermissionCheck::Allowed;
     }
-
-    match cmd {
-        AppCommand::RunInTerminal(_) => {
-            // RunInTerminal is not a v3 capability — it's legacy PTY write.
-            // Allow if app has FsWrite as a rough approximation.
-            // TODO(layer-4): remove RunInTerminal; all callers should use PipeSend instead.
-            if perms.capabilities.contains(&Capability::FsWrite) {
-                PermissionCheck::Allowed
-            } else {
-                PermissionCheck::Denied(
-                    "RunInTerminal requires fs.write capability (legacy shim; v3 uses PipeSend)".to_string(),
-                )
-            }
-        }
-        AppCommand::Cd(path) => {
-            if !perms.capabilities.contains(&Capability::FsWrite) {
-                return PermissionCheck::Denied(
-                    "Cd requires fs.write capability".to_string(),
-                );
-            }
-            if !path_within_scope(path, scope_root) {
-                return PermissionCheck::Denied(format!(
-                    "Path {} is outside app workspace scope {}",
-                    path.display(),
-                    scope_root.display()
-                ));
-            }
-            PermissionCheck::Allowed
-        }
-        AppCommand::Notify(_) => {
-            // Notifications are always allowed — non-destructive.
-            PermissionCheck::Allowed
-        }
+    if !perms.capabilities.contains(&Capability::FsWrite) {
+        return PermissionCheck::Denied("Cd requires fs.write capability".to_string());
     }
+    if !path_within_scope(path, scope_root) {
+        return PermissionCheck::Denied(format!(
+            "Path {} is outside app workspace scope {}",
+            path.display(),
+            scope_root.display()
+        ));
+    }
+    PermissionCheck::Allowed
 }
 
 /// Returns true if `path` is equal to or a descendant of `scope_root`.
@@ -311,36 +280,3 @@ fn permissions_jsonl_path() -> PathBuf {
     crate::config::config_dir().join("permissions.jsonl")
 }
 
-// ── v2 back-compat types ──────────────────────────────────────────────────────
-// These remain so that pane.rs, pane_ops.rs, and app.rs compile without changes
-// until Layer 3 migrates them to the v3 AppPermissions + Capability model.
-// TODO(layer-4): delete TrustLevel, FsPermission, GlobalPermissions, PermissionsConfig
-//   once all remaining v2 call sites are migrated to AppPermissions + Capability.
-
-/// v2 trust level. Kept for back-compat. Do not use in new v3 code.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TrustLevel {
-    Builtin,
-    Trusted,
-    Sandboxed,
-}
-
-impl Default for TrustLevel {
-    fn default() -> Self { Self::Sandboxed }
-}
-
-/// v2 filesystem permission level. Kept for back-compat. Do not use in new v3 code.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FsPermission {
-    None,
-    ReadOnly,
-    ReadWrite,
-}
-
-impl Default for FsPermission {
-    fn default() -> Self { Self::ReadOnly }
-}
