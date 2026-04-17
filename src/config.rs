@@ -73,7 +73,8 @@ pub struct ThemeConfig {
 }
 
 /// Returns the config directory name based on the running binary name.
-/// `plexi-alpha` → `.plexi-alpha`, `plexi-beta` → `.plexi-beta`, anything else → `.plexi`
+/// `plexi-alpha` → `.plexi-alpha`, `plexi-beta` → `.plexi-beta`,
+/// `plexi-v3` → `.plexi-v3`, anything else → `.plexi`
 fn config_dir_name() -> &'static str {
     let binary = std::env::current_exe()
         .ok()
@@ -81,6 +82,7 @@ fn config_dir_name() -> &'static str {
     match binary.as_deref() {
         Some(name) if name.contains("alpha") => ".plexi-alpha",
         Some(name) if name.contains("beta") => ".plexi-beta",
+        Some(name) if name.contains("v3") => ".plexi-v3",
         _ => ".plexi",
     }
 }
