@@ -34,6 +34,8 @@ pub struct ProcessApp {
     /// Size last sent to the subprocess.
     last_size: egui::Vec2,
     initialized: bool,
+    /// Monotonic frame counter for frame_id tagging. TODO(layer-3): drive from host frame clock.
+    frame_counter: u64,
 }
 
 impl ProcessApp {
@@ -116,6 +118,7 @@ impl ProcessApp {
             pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
+            frame_counter: 0,
         })
     }
 
@@ -236,7 +239,24 @@ impl ProcessApp {
                 DrawCommand::RunInTerminal { .. }
                 | DrawCommand::Cd { .. }
                 | DrawCommand::Log { .. }
-                | DrawCommand::FrameDone => {}
+                | DrawCommand::FrameDone { .. } => {}
+
+                // v3 media + control commands — not yet rendered in-process.
+                // TODO(layer-3): wire VideoPlayer to host video subsystem, AudioMeter to pipe.
+                DrawCommand::VideoPlayer { .. }
+                | DrawCommand::AudioMeter { .. }
+                | DrawCommand::CapabilityRequest { .. }
+                | DrawCommand::SecretGet { .. }
+                | DrawCommand::RunGet { .. }
+                | DrawCommand::RunComplete { .. }
+                | DrawCommand::Notify { .. }
+                | DrawCommand::AudioPlay { .. }
+                | DrawCommand::AudioCapture { .. }
+                | DrawCommand::PipeOpen { .. }
+                | DrawCommand::PipeSend { .. }
+                | DrawCommand::StatusSummary { .. } => {
+                    // TODO(layer-3): route to capability broker / media subsystem / event bus
+                }
             }
         }
     }
@@ -262,13 +282,17 @@ impl App for ProcessApp {
         let size = ui.available_size();
 
         // Send Init on first render.
+        // TODO(layer-3): populate workspace_root from actual pane CWD at spawn; wire capabilities
+        //   from AppPermissions. For now use empty defaults so the compile passes.
         if !self.initialized {
             self.initialized = true;
             self.last_size = size;
             self.send_event(&PlexiEvent::Init {
-                width: size.x,
-                height: size.y,
-                pixels_per_point: ui.ctx().pixels_per_point(),
+                protocol: "pgap/3".to_string(),
+                app_id: self.type_id.clone(),
+                workspace_root: std::path::PathBuf::new(), // TODO(layer-3): wire from spawn CWD
+                capabilities: Vec::new(),                  // TODO(layer-3): populate from AppPermissions
+                feature_flags: Vec::new(),
             });
         }
 
@@ -279,7 +303,12 @@ impl App for ProcessApp {
         }
 
         // Request a new frame.
-        self.send_event(&PlexiEvent::Render { width: size.x, height: size.y });
+        self.frame_counter += 1;
+        let frame_id = self.frame_counter;
+        self.send_event(&PlexiEvent::Render {
+            frame_id,
+            rect: crate::app_protocol::Rect { x: 0.0, y: 0.0, w: size.x, h: size.y },
+        });
 
         // Drain all draw commands that arrived since last frame (including response
         // to the Render we just sent — they come async so we take whatever is ready).
@@ -292,7 +321,7 @@ impl App for ProcessApp {
         let new_cmds = self.drain_draw_commands();
         for cmd in new_cmds {
             match cmd {
-                DrawCommand::FrameDone => {
+                DrawCommand::FrameDone { .. } => {
                     // Commit: swap pending into frame, reset pending for next frame.
                     std::mem::swap(&mut self.frame, &mut self.pending_frame);
                     self.pending_frame.clear();

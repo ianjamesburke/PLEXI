@@ -90,6 +90,7 @@ impl SecretsApp {
                 app_id: APP_ID_USER.to_string(),
                 directory: dir,
                 key: key.clone(),
+                workspace_root: None, // v1/v2 legacy path — no workspace scoping
             });
             self.selected = self.entries.len().saturating_sub(1);
             self.mode = Mode::List;

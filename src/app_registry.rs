@@ -57,43 +57,18 @@ pub struct AppCapabilities {
     pub file_types: Vec<String>,
     #[serde(default)]
     pub keybinding: Option<String>,
-    /// Can send commands to the linked terminal PTY.
+    /// v3 capability strings declared in manifest.toml.
+    /// e.g. ["fs.read", "net.http", "audio.record"]
+    /// Valid values: fs.read, fs.write, net.http, secrets.get,
+    ///   audio.record, audio.playback, video.playback, pipe.open, spawn.app
     #[serde(default)]
-    pub terminal_write: bool,
-    /// Filesystem access: "none", "read_only", "read_write". Default: "read_only".
-    #[serde(default = "default_fs_permission")]
-    pub filesystem: String,
-    /// Can read .env / credentials files.
-    #[serde(default)]
-    pub env_file_access: bool,
-    /// Can make network requests.
-    #[serde(default)]
-    pub network: bool,
-    /// Can write secrets to Keychain via the API.
-    #[serde(default)]
-    pub secrets_write: bool,
-}
-
-fn default_fs_permission() -> String {
-    "read_only".to_string()
+    pub capabilities: Vec<String>,
 }
 
 impl AppCapabilities {
     /// Convert manifest-declared capabilities to runtime permissions.
     pub fn to_permissions(&self) -> crate::app_permissions::AppPermissions {
-        use crate::app_permissions::{AppPermissions, FsPermission, TrustLevel};
-        AppPermissions {
-            trust_level: TrustLevel::Sandboxed, // manifest apps are always sandboxed
-            terminal_write: self.terminal_write,
-            filesystem: match self.filesystem.as_str() {
-                "none" => FsPermission::None,
-                "read_write" => FsPermission::ReadWrite,
-                _ => FsPermission::ReadOnly,
-            },
-            env_file_access: self.env_file_access,
-            network: self.network,
-            secrets_write: self.secrets_write,
-        }
+        crate::app_permissions::AppPermissions::from_capability_strings(&self.capabilities)
     }
 }
 
