@@ -1,5 +1,5 @@
 use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPACITY};
-use crate::pane::TerminalPane;
+use crate::pane::Pane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Vec2};
 use egui_term::{BackendCommand, TerminalTheme, TerminalView};
@@ -34,7 +34,7 @@ pub(crate) fn paint_tab_dots(
 }
 
 pub struct PlexiBehavior<'a> {
-    pub panes: &'a mut HashMap<PaneId, TerminalPane>,
+    pub panes: &'a mut HashMap<PaneId, Pane>,
     pub focused_tile: Option<TileId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
@@ -71,19 +71,21 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let dropped = ui.input(|i| i.raw.dropped_files.clone());
             if !dropped.is_empty() {
                 if let Some(pane) = self.panes.get_mut(pane_id) {
-                    for file in dropped {
-                        if let Some(path) = &file.path {
-                            let path_str = path.display().to_string();
-                            let escaped = if path_str.contains(|c: char| {
-                                c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)
-                            }) {
-                                format!("'{}'", path_str.replace('\'', "'\\''"))
-                            } else {
-                                path_str
-                            };
-                            pane.backend.process_command(BackendCommand::Write(
-                                escaped.as_bytes().to_vec(),
-                            ));
+                    if let Some(t) = pane.as_terminal_mut() {
+                        for file in dropped {
+                            if let Some(path) = &file.path {
+                                let path_str = path.display().to_string();
+                                let escaped = if path_str.contains(|c: char| {
+                                    c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)
+                                }) {
+                                    format!("'{}'", path_str.replace('\'', "'\\''"))
+                                } else {
+                                    path_str
+                                };
+                                t.backend.process_command(BackendCommand::Write(
+                                    escaped.as_bytes().to_vec(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -105,7 +107,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 .fill(self.colors.terminal_bg)
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
-                    if pane.exited {
+                    // Only terminal panes are rendered here; App/Agent variants are
+                    // handled by their own subsystems (Layer 3b/3c).
+                    let Some(t) = pane.as_terminal_mut() else { return };
+
+                    if t.exited {
                         // Show exit message centered, auto-close on any key
                         let rect = ui.max_rect();
                         ui.painter().rect_filled(rect, 0.0, self.colors.terminal_bg);
@@ -126,7 +132,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         return;
                     }
 
-                    match pane.surface_mode {
+                    match t.surface_mode {
                         SurfaceMode::FullTerminal => {
                             render_name_bar_and_dots(
                                 ui,
@@ -136,8 +142,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                 &self.pane_names,
                                 &self.colors,
                             );
-                            let font_size = pane.font_size;
-                            let terminal = TerminalView::new(ui, &mut pane.backend)
+                            let font_size = t.font_size;
+                            let terminal = TerminalView::new(ui, &mut t.backend)
                                 .set_focus(is_focused)
                                 .set_theme(self.theme.clone())
                                 .set_font(theme::terminal_font(font_size))
@@ -149,7 +155,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         }
 
                         SurfaceMode::AppActive => {
-                            if let Some(app) = pane.active_app.as_mut() {
+                            if let Some(app) = t.active_app.as_mut() {
                                 // App renders full height — the terminal is a
                                 // separate pane below (created by auto-split).
                                 let app_ctx = AppRenderContext {
@@ -160,8 +166,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                 app.ui(ui, &app_ctx);
                             } else {
                                 // App was dropped — fall back to full terminal.
-                                let font_size = pane.font_size;
-                                let terminal = TerminalView::new(ui, &mut pane.backend)
+                                let font_size = t.font_size;
+                                let terminal = TerminalView::new(ui, &mut t.backend)
                                     .set_focus(is_focused)
                                     .set_theme(self.theme.clone())
                                     .set_font(theme::terminal_font(font_size))

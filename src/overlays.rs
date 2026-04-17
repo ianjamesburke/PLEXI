@@ -176,11 +176,13 @@ impl PlexiApp {
                                 if let Some(pane) =
                                     self.contexts[self.active_context].panes.get_mut(&pane_id)
                                 {
-                                    pane.name = if new_name.is_empty() {
-                                        None
-                                    } else {
-                                        Some(new_name)
-                                    };
+                                    if let Some(t) = pane.as_terminal_mut() {
+                                        t.name = if new_name.is_empty() {
+                                            None
+                                        } else {
+                                            Some(new_name)
+                                        };
+                                    }
                                 }
                                 self.renaming_pane = None;
                             }

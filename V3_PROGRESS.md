@@ -8,7 +8,7 @@
 
 **Branch:** `v3` (off `main` at `060b729`)
 **Worktree:** `.claude/worktrees/v3/`
-**Head:** layer 2 complete — clean compile, 82 warnings (all dead-code on unwired items, no errors).
+**Head:** layer 3a complete — clean compile, 122 warnings (all dead-code on unwired items, no errors). 3/3 typed_pipes tests passing.
 
 ## Layer status
 
@@ -28,7 +28,13 @@
 - [x] Surface-edited `src/secrets.rs` → `SecretEntry` gets `workspace_root: Option<String>`; new `get_secret_scoped()`/`set_secret_scoped()` with hard invariant validation (non-empty absolute path); legacy functions doc-annotated; v1/v2 call sites fixed with `workspace_root: None`.
 - [x] Fixed downstream: `process_app.rs` (Init/Render fields, FrameDone struct arm, frame_counter, v3 stub TODO markers), `secrets_app.rs` (SecretEntry workspace_root field).
 
-### 🔄 Layer 3 — Pane ADT + process_app PGAP v3 + media subsystem
+### ✅ Layer 3a — standalone modules (pane ADT, media, typed pipes)
+Three parallel Sonnet agents, merged cleanly.
+- [x] `src/pane.rs` → `enum Pane { Terminal(TerminalPane), App(AppPane), Agent(AgentPane) }` with accessor helpers (`id()`, `as_terminal[_mut]()`, `as_app[_mut]()`, `as_agent[_mut]()`, `kind_str()`). `AppPane` holds ProcessApp + workspace_root + permissions + pane_group. `AgentPane` holds `Option<PlexiIqInstance>` + label. ~25 call sites migrated across context.rs, tiling.rs, pane_ops.rs, app.rs, overlays.rs, command_palette.rs via `as_terminal*` helpers.
+- [x] `src/media/` (mod.rs, audio.rs, video.rs) — `AudioDevice` + `VideoDecoder` traits. `MockAudioDevice` reads/writes WAV at realtime pace via mpsc. `MockVideoDecoder` generates procedural RGBA at 30fps with full play/pause/seek state machine. Prod impls (`CoreAudioDevice`, `AvfVideoDecoder`) stubbed `todo!()` for Layer 4. Factory reads `PLEXI_AUDIO`/`PLEXI_VIDEO` env vars (`mock://in.wav,out.wav` and `mock://fixture?duration=5000&w=640&h=360`). `hound = "3"` added.
+- [x] `src/typed_pipes.rs` (435 lines) — `TypedPipeRegistry` with JSON + binary modes. Binary uses `UnixListener` with `u32` BE length-prefixed frames, lock-free ring (`crossbeam-queue`) for realtime-safe write path, separate drain thread per pipe, drop-oldest backpressure returning `WriteResult::DroppedOldest`. Max frame 1 MiB. 3/3 tests passing.
+
+### 🔄 Layer 3b — process_app PGAP v3 + agent wiring
 
 **TODO(layer-3) markers to resolve:**
 - `src/process_app.rs:285` — populate `workspace_root` in Init from actual pane CWD at spawn
@@ -39,11 +45,9 @@
 - `src/app_permissions.rs:152` — RunInTerminal → PipeSend migration
 - `src/app_permissions.rs:241` — delete TrustLevel, FsPermission, GlobalPermissions, PermissionsConfig
 
-- [ ] Rewrite `src/pane.rs` → `enum Pane { Terminal, App, Agent }`.
-- [ ] Update `src/process_app.rs` → PGAP v3 handshake, binary pipe support.
-- [ ] Create `src/media/` → `AudioDevice` + `VideoDecoder` traits, CoreAudio/AVFoundation prod impls, mock impls (`PLEXI_AUDIO=mock://`, `PLEXI_VIDEO=mock://`).
-- [ ] Binary-mode typed pipes (unix domain sockets, length-prefixed frames).
-- [ ] Wire `Pane::Agent` to `plexi_iq`.
+- [ ] Update `src/process_app.rs` → PGAP v3 handshake (populate workspace_root + capabilities from manifest + pane CWD), wire `PipeOpen` to `TypedPipeRegistry`, route `VideoPlayer`/`AudioPlay`/`AudioCapture` to `media::` factories, emit `CapabilityRequest` → broker, `SecretGet` → workspace-scoped secrets.
+- [ ] Wire `Pane::Agent` to `PlexiIqInstance`: spawn on pane creation, drive turn loop from UI thread, render streamed tokens via DrawCommands.
+- [ ] Resolve all 7 `TODO(layer-3)` markers above.
 
 ### ⏳ Layer 4 — event bus emit sites, runs, notifications
 - [ ] Call `event_log::emit()` at every lifecycle point (app spawn/close, permission decision, run update, agent turn, pipe open/close).

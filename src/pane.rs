@@ -5,7 +5,83 @@ use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
+// ---------------------------------------------------------------------------
+// Pane ADT (spec §2)
+// ---------------------------------------------------------------------------
+
+pub enum Pane {
+    Terminal(TerminalPane),
+    App(AppPane),
+    Agent(AgentPane),
+}
+
+impl Pane {
+    pub fn id(&self) -> PaneId {
+        match self {
+            Pane::Terminal(t) => t.id,
+            Pane::App(a) => a.id,
+            Pane::Agent(a) => a.id,
+        }
+    }
+
+    pub fn as_terminal(&self) -> Option<&TerminalPane> {
+        match self {
+            Pane::Terminal(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn as_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
+        match self {
+            Pane::Terminal(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn as_app(&self) -> Option<&AppPane> {
+        match self {
+            Pane::App(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_app_mut(&mut self) -> Option<&mut AppPane> {
+        match self {
+            Pane::App(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_agent(&self) -> Option<&AgentPane> {
+        match self {
+            Pane::Agent(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_agent_mut(&mut self) -> Option<&mut AgentPane> {
+        match self {
+            Pane::Agent(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Pane::Terminal(_) => "terminal",
+            Pane::App(_) => "app",
+            Pane::Agent(_) => "agent",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TerminalPane — v2-compatible; overlay model preserved for now
+// ---------------------------------------------------------------------------
+
 pub struct TerminalPane {
+    /// Pane ID — matches the key used in HashMap<PaneId, Pane>.
+    pub id: PaneId,
     pub backend: TerminalBackend,
     pub exited: bool,
     pub name: Option<String>,
@@ -41,6 +117,7 @@ impl TerminalPane {
             }
         };
         Some(Self {
+            id,
             backend,
             exited: false,
             name: None,
@@ -84,4 +161,33 @@ impl TerminalPane {
             };
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// AppPane — wraps an external PGAP v3 child process (Layer 3b wires this)
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+pub struct AppPane {
+    pub id: PaneId,
+    pub process: crate::process_app::ProcessApp,
+    pub workspace_root: PathBuf,
+    pub permissions: AppPermissions,
+    pub manifest_id: String,
+    pub name: String,
+    /// Pane group this app joined at spawn (for PathChanged routing).
+    pub pane_group: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// AgentPane — wraps a PlexiIqInstance (Layer 3c wires this)
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+pub struct AgentPane {
+    pub id: PaneId,
+    /// Lazy-initialized; may be None until first turn.
+    pub instance: Option<crate::plexi_iq::PlexiIqInstance>,
+    /// Human-readable session label for the UI.
+    pub label: String,
 }

@@ -1,6 +1,6 @@
 use crate::context::{replace_child, Context};
 use crate::keys::Direction;
-use crate::pane::TerminalPane;
+use crate::pane::{Pane, TerminalPane};
 use crate::shell;
 use crate::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
@@ -16,7 +16,7 @@ impl PlexiApp {
     fn create_single_pane_tree(
         &mut self,
         cwd: Option<PathBuf>,
-    ) -> Option<(Tree<PaneId>, HashMap<PaneId, TerminalPane>, TileId)> {
+    ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
 
@@ -24,7 +24,7 @@ impl PlexiApp {
         let pane = TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)?;
 
         let mut panes = HashMap::new();
-        panes.insert(new_id, pane);
+        panes.insert(new_id, Pane::Terminal(pane));
 
         let mut tiles = egui_tiles::Tiles::default();
         let root_tile = tiles.insert_pane(new_id);
@@ -51,7 +51,7 @@ impl PlexiApp {
         };
         self.contexts[self.active_context]
             .panes
-            .insert(new_id, pane);
+            .insert(new_id, Pane::Terminal(pane));
 
         let split_target =
             match self.contexts[self.active_context].find_ancestor_tabs(focused) {
@@ -131,7 +131,7 @@ impl PlexiApp {
         };
         self.contexts[self.active_context]
             .panes
-            .insert(new_id, pane);
+            .insert(new_id, Pane::Terminal(pane));
 
         let ctx = &mut self.contexts[self.active_context];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
@@ -372,9 +372,11 @@ impl PlexiApp {
         for context in &self.contexts {
             let mut saved_panes = Vec::new();
             for (&id, pane) in &context.panes {
-                let cwd = shell::get_pid_cwd(pane.backend.child_pid())
+                // Only terminal panes are saved; App/Agent panes are transient.
+                let Some(t) = pane.as_terminal() else { continue };
+                let cwd = shell::get_pid_cwd(t.backend.child_pid())
                     .unwrap_or_else(|| context.path.clone());
-                let (app_type, app_state) = if let Some(app) = &pane.active_app {
+                let (app_type, app_state) = if let Some(app) = &t.active_app {
                     (Some(app.type_id().to_string()), app.serialize_state())
                 } else {
                     (None, None)
@@ -382,10 +384,10 @@ impl PlexiApp {
                 saved_panes.push(crate::workspace::SavedPane {
                     id,
                     cwd,
-                    name: pane.name.clone(),
+                    name: t.name.clone(),
                     active_app_type: app_type,
                     active_app_state: app_state,
-                    linked_terminal_pane: pane.linked_terminal_pane,
+                    linked_terminal_pane: t.linked_terminal_pane,
                 });
             }
             saved_contexts.push(crate::workspace::SavedContext {
@@ -416,7 +418,9 @@ impl PlexiApp {
         let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
         let pane_id = *pane_id;
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-            pane.backend.process_command(BackendCommand::Scroll(lines));
+            if let Some(t) = pane.as_terminal_mut() {
+                t.backend.process_command(BackendCommand::Scroll(lines));
+            }
         }
     }
 
@@ -426,7 +430,9 @@ impl PlexiApp {
         let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
         let pane_id = *pane_id;
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-            pane.font_size = (pane.font_size + delta).clamp(8.0, 32.0);
+            if let Some(t) = pane.as_terminal_mut() {
+                t.font_size = (t.font_size + delta).clamp(8.0, 32.0);
+            }
         }
     }
 
@@ -497,7 +503,7 @@ impl PlexiApp {
         };
         self.contexts[self.active_context]
             .panes
-            .insert(new_term_id, new_pane);
+            .insert(new_term_id, Pane::Terminal(new_pane));
 
         // Split using the exact same logic as split_focused (which works).
         let split_target =
@@ -560,8 +566,10 @@ impl PlexiApp {
         if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
             let pane_id = *pane_id;
             if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                pane.open_app(app, permissions, scope);
-                pane.linked_terminal_pane = Some(new_term_id);
+                if let Some(t) = pane.as_terminal_mut() {
+                    t.open_app(app, permissions, scope);
+                    t.linked_terminal_pane = Some(new_term_id);
+                }
             }
         }
 
@@ -579,11 +587,13 @@ impl PlexiApp {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get(&pane_id) {
-                    if let Some(app) = &pane.active_app {
-                        if app.type_id() == "file_browser" {
-                            // Close the file browser.
-                            self.close_focused_app();
-                            return;
+                    if let Some(t) = pane.as_terminal() {
+                        if let Some(app) = &t.active_app {
+                            if app.type_id() == "file_browser" {
+                                // Close the file browser.
+                                self.close_focused_app();
+                                return;
+                            }
                         }
                     }
                 }
@@ -677,10 +687,12 @@ impl PlexiApp {
         if let Some(focused) = ctx.focused_pane {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 if let Some(pane) = ctx.panes.get(pane_id) {
-                    if let Some(app) = &pane.active_app {
-                        if app.type_id() == "secrets_manager" {
-                            self.close_focused_app();
-                            return;
+                    if let Some(t) = pane.as_terminal() {
+                        if let Some(app) = &t.active_app {
+                            if app.type_id() == "secrets_manager" {
+                                self.close_focused_app();
+                                return;
+                            }
                         }
                     }
                 }

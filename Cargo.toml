@@ -29,6 +29,8 @@ tokio-stream = "0.1"
 toml = "0.8"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 rodio = { version = "0.19", default-features = false, features = ["mp3", "flac", "vorbis", "wav"] }
+crossbeam-queue = "0.3"
+hound = "3"
 zeroize = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]

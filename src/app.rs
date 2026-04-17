@@ -2,7 +2,7 @@ use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
 use crate::keys::{self, Action};
-use crate::pane::TerminalPane;
+use crate::pane::{Pane, TerminalPane};
 use crate::shell;
 use crate::theme::{self, Colors};
 use crate::tiling::{PaneId, PlexiBehavior};
@@ -120,7 +120,7 @@ impl PlexiApp {
                                 pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
                             }
                         }
-                        panes.insert(saved_pane.id, pane);
+                        panes.insert(saved_pane.id, Pane::Terminal(pane));
                     }
                 }
                 if panes.is_empty() {
@@ -168,7 +168,7 @@ impl PlexiApp {
         let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
             .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
-        panes.insert(0u64, pane);
+        panes.insert(0u64, Pane::Terminal(pane));
 
         let mut tiles = egui_tiles::Tiles::default();
         let root_tile = tiles.insert_pane(0u64);
@@ -239,7 +239,9 @@ impl PlexiApp {
                 PtyEvent::Exit => {
                     for context in &mut self.contexts {
                         if let Some(pane) = context.panes.get_mut(&id) {
-                            pane.exited = true;
+                            if let Some(t) = pane.as_terminal_mut() {
+                                t.exited = true;
+                            }
                             break;
                         }
                     }
@@ -280,30 +282,33 @@ impl PlexiApp {
             let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
                 return;
             };
-            if pane.active_app.is_none() {
+            let Some(t) = pane.as_terminal_mut() else { return };
+            if t.active_app.is_none() {
                 return;
             }
-            let app = pane.active_app.as_mut().unwrap();
+            let app = t.active_app.as_mut().unwrap();
             ctx.input(|i| {
                 app.handle_key(i);
             });
             let cmds = app.take_pending_commands();
-            let scope = pane.app_scope.clone().unwrap_or_else(|| PathBuf::from("/"));
-            let perms = pane.app_permissions.clone();
-            let linked = pane.linked_terminal_pane;
+            let scope = t.app_scope.clone().unwrap_or_else(|| PathBuf::from("/"));
+            let perms = t.app_permissions.clone();
+            let linked = t.linked_terminal_pane;
             (cmds, scope, perms, linked)
         };
 
         // Route commands to the linked terminal pane (the one below).
         if let Some(linked_id) = linked_id {
             if let Some(target_pane) = self.contexts[active].panes.get_mut(&linked_id) {
-                for cmd in commands {
-                    match crate::app_permissions::check_command(&cmd, &perms, &scope) {
-                        crate::app_permissions::PermissionCheck::Allowed => {
-                            Self::execute_app_command(cmd, target_pane);
-                        }
-                        crate::app_permissions::PermissionCheck::Denied(reason) => {
-                            log::warn!("App command denied: {reason}");
+                if let Some(t) = target_pane.as_terminal_mut() {
+                    for cmd in commands {
+                        match crate::app_permissions::check_command(&cmd, &perms, &scope) {
+                            crate::app_permissions::PermissionCheck::Allowed => {
+                                Self::execute_app_command(cmd, t);
+                            }
+                            crate::app_permissions::PermissionCheck::Denied(reason) => {
+                                log::warn!("App command denied: {reason}");
+                            }
                         }
                     }
                 }
@@ -344,8 +349,9 @@ impl PlexiApp {
             .panes
             .iter()
             .filter_map(|(&pane_id, pane)| {
-                let linked = pane.linked_terminal_pane?;
-                if pane.active_app.is_some() {
+                let t = pane.as_terminal()?;
+                let linked = t.linked_terminal_pane?;
+                if t.active_app.is_some() {
                     Some((pane_id, linked))
                 } else {
                     None
@@ -356,12 +362,15 @@ impl PlexiApp {
         for (app_pane_id, linked_id) in app_panes {
             // Get the linked terminal's CWD via lsof.
             let cwd = ctx.panes.get(&linked_id).and_then(|linked_pane| {
-                crate::shell::get_pid_cwd(linked_pane.backend.child_pid())
+                let t = linked_pane.as_terminal()?;
+                crate::shell::get_pid_cwd(t.backend.child_pid())
             });
             if let Some(cwd) = cwd {
                 if let Some(app_pane) = ctx.panes.get_mut(&app_pane_id) {
-                    if let Some(app) = app_pane.active_app.as_mut() {
-                        app.sync_cwd(&cwd);
+                    if let Some(t) = app_pane.as_terminal_mut() {
+                        if let Some(app) = t.active_app.as_mut() {
+                            app.sync_cwd(&cwd);
+                        }
                     }
                 }
             }
@@ -392,7 +401,8 @@ impl eframe::App for PlexiApp {
                     if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None }
                 })
                 .and_then(|pid| ctx_ref.panes.get(&pid))
-                .and_then(|pane| pane.active_app.as_ref())
+                .and_then(|pane| pane.as_terminal())
+                .and_then(|t| t.active_app.as_ref())
                 .map(|app| app.wants_close())
                 .unwrap_or(false);
             if should_close {
@@ -406,7 +416,8 @@ impl eframe::App for PlexiApp {
             let pane_name = context.focused_pane
                 .and_then(|tile_id| context.tree.tiles.get(tile_id))
                 .and_then(|tile| if let egui_tiles::Tile::Pane(pane_id) = tile { context.panes.get(pane_id) } else { None })
-                .and_then(|pane| pane.name.clone());
+                .and_then(|pane| pane.as_terminal())
+                .and_then(|t| t.name.clone());
             let title = match pane_name {
                 Some(name) => format!("{} — {}", context.name, name),
                 None => context.name.clone(),
@@ -425,7 +436,7 @@ impl eframe::App for PlexiApp {
                         None
                     }
                 })
-                .map(|pane| pane.active_app.is_some())
+                .map(|pane| pane.as_terminal().map(|t| t.active_app.is_some()).unwrap_or(false))
                 .unwrap_or(false)
         };
 
@@ -492,7 +503,8 @@ impl eframe::App for PlexiApp {
                             self.rename_buffer = active_ctx
                                 .panes
                                 .get(&pane_id)
-                                .and_then(|p| p.name.clone())
+                                .and_then(|p| p.as_terminal())
+                                .and_then(|t| t.name.clone())
                                 .unwrap_or_default();
                             self.renaming_pane = Some(pane_id);
                         }
@@ -626,7 +638,9 @@ impl eframe::App for PlexiApp {
                 let pane_names: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
-                    .filter_map(|(&id, p)| p.name.as_ref().map(|n| (id, n.clone())))
+                    .filter_map(|(&id, p)| {
+                        p.as_terminal()?.name.as_ref().map(|n| (id, n.clone()))
+                    })
                     .collect();
                 let suppress_focus = self.renaming_context.is_some()
                     || self.show_command_palette
@@ -718,50 +732,52 @@ impl eframe::App for PlexiApp {
                             .inner_margin(egui::Margin::same(8))
                             .show(&mut child_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                                    if pane.exited {
-                                        let rect = ui.max_rect();
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            0.0,
-                                            self.colors.terminal_bg,
-                                        );
-                                        ui.allocate_new_ui(
-                                            egui::UiBuilder::new().max_rect(rect),
-                                            |ui| {
-                                                ui.centered_and_justified(|ui| {
-                                                    ui.colored_label(
-                                                        self.colors.text_dim,
-                                                        "[process exited]",
-                                                    );
-                                                });
-                                            },
-                                        );
-                                    } else if pane.surface_mode == crate::app_trait::SurfaceMode::AppActive {
-                                        // Zoomed app: render the app surface full-size.
-                                        if let Some(app) = pane.active_app.as_mut() {
-                                            let app_ctx = crate::app_trait::AppRenderContext {
-                                                colors: &self.colors,
-                                                is_focused: true,
-                                                linked_terminal: pane_id,
-                                            };
-                                            app.ui(ui, &app_ctx);
+                                    if let Some(t) = pane.as_terminal_mut() {
+                                        if t.exited {
+                                            let rect = ui.max_rect();
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                0.0,
+                                                self.colors.terminal_bg,
+                                            );
+                                            ui.allocate_new_ui(
+                                                egui::UiBuilder::new().max_rect(rect),
+                                                |ui| {
+                                                    ui.centered_and_justified(|ui| {
+                                                        ui.colored_label(
+                                                            self.colors.text_dim,
+                                                            "[process exited]",
+                                                        );
+                                                    });
+                                                },
+                                            );
+                                        } else if t.surface_mode == crate::app_trait::SurfaceMode::AppActive {
+                                            // Zoomed app: render the app surface full-size.
+                                            if let Some(app) = t.active_app.as_mut() {
+                                                let app_ctx = crate::app_trait::AppRenderContext {
+                                                    colors: &self.colors,
+                                                    is_focused: true,
+                                                    linked_terminal: pane_id,
+                                                };
+                                                app.ui(ui, &app_ctx);
+                                            }
+                                        } else {
+                                            // Reserve space for tab dots if in a tab group
+                                            if zoomed_tab_info.is_some() {
+                                                ui.add_space(crate::tiling::TAB_DOT_RESERVED_HEIGHT);
+                                            }
+                                            let font_size = t.font_size;
+                                            let terminal =
+                                                TerminalView::new(ui, &mut t.backend)
+                                                    .set_focus(true)
+                                                    .set_theme(self.theme.clone())
+                                                    .set_font(theme::terminal_font(font_size))
+                                                    .set_size(Vec2::new(
+                                                        ui.available_width(),
+                                                        ui.available_height(),
+                                                    ));
+                                            ui.add(terminal);
                                         }
-                                    } else {
-                                        // Reserve space for tab dots if in a tab group
-                                        if zoomed_tab_info.is_some() {
-                                            ui.add_space(crate::tiling::TAB_DOT_RESERVED_HEIGHT);
-                                        }
-                                        let font_size = pane.font_size;
-                                        let terminal =
-                                            TerminalView::new(ui, &mut pane.backend)
-                                                .set_focus(true)
-                                                .set_theme(self.theme.clone())
-                                                .set_font(theme::terminal_font(font_size))
-                                                .set_size(Vec2::new(
-                                                    ui.available_width(),
-                                                    ui.available_height(),
-                                                ));
-                                        ui.add(terminal);
                                     }
                                 }
 

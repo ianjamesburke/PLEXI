@@ -20,6 +20,7 @@ mod features;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+mod media;
 mod overlays;
 mod pane;
 mod pane_ops;
@@ -29,6 +30,7 @@ mod shell;
 mod sidebar;
 mod theme;
 mod tiling;
+mod typed_pipes;
 mod workspace;
 
 fn main() -> eframe::Result {

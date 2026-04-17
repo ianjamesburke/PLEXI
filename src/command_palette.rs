@@ -28,8 +28,9 @@ impl PlexiApp {
 
         for (ci, context) in self.contexts.iter().enumerate() {
             for (&pane_id, pane) in &context.panes {
-                let Some(display_name) = pane.name.clone() else { continue };
-                let cwd = shell::get_pid_cwd(pane.backend.child_pid())
+                let Some(t) = pane.as_terminal() else { continue };
+                let Some(display_name) = t.name.clone() else { continue };
+                let cwd = shell::get_pid_cwd(t.backend.child_pid())
                     .as_deref()
                     .map(crate::app::PlexiApp::abbreviate_home_path)
                     .unwrap_or_else(|| {

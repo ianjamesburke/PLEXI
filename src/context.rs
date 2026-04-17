@@ -1,5 +1,5 @@
 use crate::keys::Direction;
-use crate::pane::TerminalPane;
+use crate::pane::{Pane, TerminalPane};
 use crate::shell;
 use crate::tiling::PaneId;
 use egui_tiles::{Container, Tile, TileId, Tree};
@@ -18,7 +18,7 @@ pub struct Context {
     pub name: String,
     pub path: PathBuf,
     pub tree: Tree<PaneId>,
-    pub panes: HashMap<PaneId, TerminalPane>,
+    pub panes: HashMap<PaneId, Pane>,
     pub focused_pane: Option<TileId>,
     pub zoomed_pane: Option<TileId>,
 }
@@ -184,7 +184,8 @@ impl Context {
             _ => return None,
         };
         let pane = self.panes.get(&pane_id)?;
-        shell::get_pid_cwd(pane.backend.child_pid())
+        let terminal = pane.as_terminal()?;
+        shell::get_pid_cwd(terminal.backend.child_pid())
     }
 
     /// Returns (pane_id, &mut TerminalPane) for the currently focused pane, if any.
@@ -195,7 +196,8 @@ impl Context {
             _ => return None,
         };
         let pane = self.panes.get_mut(&pane_id)?;
-        Some((pane_id, pane))
+        let terminal = pane.as_terminal_mut()?;
+        Some((pane_id, terminal))
     }
 }
 
