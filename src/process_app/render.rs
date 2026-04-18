@@ -20,7 +20,14 @@ pub(super) fn render_draw_commands(
 
     for cmd in commands {
         match cmd {
-            DrawCommand::Rect { x, y, w, h, fill, radius } => {
+            DrawCommand::Rect {
+                x,
+                y,
+                w,
+                h,
+                fill,
+                radius,
+            } => {
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
@@ -29,7 +36,15 @@ pub(super) fn render_draw_commands(
                 ui.painter().rect_filled(rect, *radius, color);
             }
 
-            DrawCommand::Text { x, y, text, size, color, monospace, bold: _ } => {
+            DrawCommand::Text {
+                x,
+                y,
+                text,
+                size,
+                color,
+                monospace,
+                bold: _,
+            } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
                 let font_id = if *monospace {
                     egui::FontId::monospace(*size)
@@ -45,7 +60,14 @@ pub(super) fn render_draw_commands(
                 );
             }
 
-            DrawCommand::Line { x1, y1, x2, y2, color, width } => {
+            DrawCommand::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+                width,
+            } => {
                 let color = parse_color(color).unwrap_or(colors.bg_active);
                 ui.painter().line_segment(
                     [
@@ -56,8 +78,16 @@ pub(super) fn render_draw_commands(
                 );
             }
 
-            DrawCommand::List { items, selected, item_height } => {
-                let row_h = if *item_height > 0.0 { *item_height } else { 20.0 };
+            DrawCommand::List {
+                items,
+                selected,
+                item_height,
+            } => {
+                let row_h = if *item_height > 0.0 {
+                    *item_height
+                } else {
+                    20.0
+                };
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -77,7 +107,11 @@ pub(super) fn render_draw_commands(
                                 egui::Align2::LEFT_CENTER,
                                 &label,
                                 egui::FontId::monospace(12.0),
-                                if is_sel { colors.text_primary } else { colors.text_dim },
+                                if is_sel {
+                                    colors.text_primary
+                                } else {
+                                    colors.text_dim
+                                },
                             );
                             if let Some(sec) = &item.secondary {
                                 ui.painter().text(
@@ -119,13 +153,15 @@ pub(super) fn render_draw_commands(
             egui::pos2(origin.x + meter.rect_x, origin.y + meter.rect_y),
             egui::vec2(meter.rect_w, meter.rect_h),
         );
-        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(30, 30, 46));
+        ui.painter()
+            .rect_filled(rect, 2.0, Color32::from_rgb(30, 30, 46));
         let fill_h = meter.rect_h * 0.3;
         let fill_rect = egui::Rect::from_min_size(
             egui::pos2(rect.min.x, rect.max.y - fill_h),
             egui::vec2(meter.rect_w, fill_h),
         );
-        ui.painter().rect_filled(fill_rect, 2.0, Color32::from_rgb(166, 227, 161));
+        ui.painter()
+            .rect_filled(fill_rect, 2.0, Color32::from_rgb(166, 227, 161));
     }
 }
 

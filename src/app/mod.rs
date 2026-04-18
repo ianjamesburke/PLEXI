@@ -86,21 +86,30 @@ impl PlexiApp {
                         dirs::home_dir()
                     };
                     let settings = Self::make_backend_settings(cwd, &colors);
-                    if let Some(mut pane) =
-                        TerminalPane::new(saved_pane.id, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
-                    {
+                    if let Some(mut pane) = TerminalPane::new(
+                        saved_pane.id,
+                        cc.egui_ctx.clone(),
+                        tx.clone(),
+                        settings,
+                        default_font_size,
+                    ) {
                         pane.name = saved_pane.name.clone();
                         // Restore active app if one was saved.
                         if let Some(app_type) = &saved_pane.active_app_type {
                             let cwd = saved_pane.cwd.clone();
                             let builtin_perms = crate::app_permissions::AppPermissions::builtin();
 
-                            let (app, perms, group): (Option<Box<dyn crate::app_trait::App>>, _, _) = match app_type.as_str() {
+                            let (app, perms, group): (
+                                Option<Box<dyn crate::app_trait::App>>,
+                                _,
+                                _,
+                            ) = match app_type.as_str() {
                                 // Built-ins implicitly join the "cwd" group so they track
                                 // the linked terminal's directory (file browser is the main
                                 // consumer).
                                 "file_browser" => {
-                                    let mut fb = crate::file_browser::FileBrowserApp::new(cwd.clone());
+                                    let mut fb =
+                                        crate::file_browser::FileBrowserApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         fb.restore_state(state);
@@ -108,7 +117,8 @@ impl PlexiApp {
                                     (Some(Box::new(fb)), builtin_perms, Some("cwd".to_string()))
                                 }
                                 "quick_note" => {
-                                    let mut note = crate::quick_note_app::QuickNoteApp::new(cwd.clone());
+                                    let mut note =
+                                        crate::quick_note_app::QuickNoteApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         note.restore_state(state);
@@ -116,7 +126,8 @@ impl PlexiApp {
                                     (Some(Box::new(note)), builtin_perms, None)
                                 }
                                 "secrets_manager" => {
-                                    let mut secrets = crate::secrets_app::SecretsApp::new(cwd.clone());
+                                    let mut secrets =
+                                        crate::secrets_app::SecretsApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         secrets.restore_state(state);
@@ -126,8 +137,8 @@ impl PlexiApp {
                                 // Third-party apps: launch via registry using type_id.
                                 other => {
                                     let app = registry.launch(other, &cwd, &[]);
-                                    let perms = registry.permissions_for(other)
-                                        .unwrap_or(builtin_perms);
+                                    let perms =
+                                        registry.permissions_for(other).unwrap_or(builtin_perms);
                                     let group = registry.group_for(other);
                                     (app, perms, group)
                                 }
@@ -183,8 +194,14 @@ impl PlexiApp {
 
         // Default: single context with single pane
         let settings = Self::make_backend_settings(None, &colors);
-        let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
-            .expect("failed to create initial terminal");
+        let pane = TerminalPane::new(
+            0,
+            cc.egui_ctx.clone(),
+            tx.clone(),
+            settings,
+            default_font_size,
+        )
+        .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
         panes.insert(0u64, Pane::Terminal(Box::new(pane)));
 
@@ -240,7 +257,10 @@ impl PlexiApp {
         user_theme
     }
 
-    pub(crate) fn make_backend_settings(working_directory: Option<PathBuf>, colors: &Colors) -> BackendSettings {
+    pub(crate) fn make_backend_settings(
+        working_directory: Option<PathBuf>,
+        colors: &Colors,
+    ) -> BackendSettings {
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
@@ -281,7 +301,6 @@ impl PlexiApp {
             self.close_pane_by_id(pane_id);
         }
     }
-
 }
 
 impl eframe::App for PlexiApp {
@@ -293,12 +312,24 @@ impl eframe::App for PlexiApp {
         // Handle SpawnApp commands returned from dispatch_app_key_events.
         for cmd in deferred_app_cmds {
             use crate::app_trait::AppCommand;
-            if let AppCommand::SpawnApp { type_id, layout, args } = cmd {
+            if let AppCommand::SpawnApp {
+                type_id,
+                layout,
+                args,
+            } = cmd
+            {
                 // Capture requesting pane before launch changes focused_pane.
                 let active = self.active_context;
-                let requesting_pane_id = self.contexts[active].focused_pane
+                let requesting_pane_id = self.contexts[active]
+                    .focused_pane
                     .and_then(|tile| self.contexts[active].tree.tiles.get(tile))
-                    .and_then(|tile| if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None });
+                    .and_then(|tile| {
+                        if let egui_tiles::Tile::Pane(pid) = tile {
+                            Some(*pid)
+                        } else {
+                            None
+                        }
+                    });
 
                 let new_pane_id = self.next_pane_id;
                 self.launch_app_by_id_with_layout(&type_id, layout, &args);
@@ -309,10 +340,12 @@ impl eframe::App for PlexiApp {
                     if let Some(pane) = self.contexts[active].panes.get_mut(&req_pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {
                             if let Some(app) = t.active_app.as_mut() {
-                                app.queue_outbound_event(crate::app_protocol::PlexiEvent::AppSpawned {
-                                    pane_id: new_pane_id,
-                                    type_id: type_id.clone(),
-                                });
+                                app.queue_outbound_event(
+                                    crate::app_protocol::PlexiEvent::AppSpawned {
+                                        pane_id: new_pane_id,
+                                        type_id: type_id.clone(),
+                                    },
+                                );
                             }
                         }
                     }
@@ -323,10 +356,15 @@ impl eframe::App for PlexiApp {
         // Check if the focused app wants to close itself (e.g. after saving).
         {
             let ctx_ref = &self.contexts[self.active_context];
-            let should_close = ctx_ref.focused_pane
+            let should_close = ctx_ref
+                .focused_pane
                 .and_then(|tile| ctx_ref.tree.tiles.get(tile))
                 .and_then(|tile| {
-                    if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None }
+                    if let egui_tiles::Tile::Pane(pid) = tile {
+                        Some(*pid)
+                    } else {
+                        None
+                    }
                 })
                 .and_then(|pid| ctx_ref.panes.get(&pid))
                 .and_then(|pane| pane.as_terminal())
@@ -341,9 +379,16 @@ impl eframe::App for PlexiApp {
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
             let context = &self.contexts[self.active_context];
-            let pane_name = context.focused_pane
+            let pane_name = context
+                .focused_pane
                 .and_then(|tile_id| context.tree.tiles.get(tile_id))
-                .and_then(|tile| if let egui_tiles::Tile::Pane(pane_id) = tile { context.panes.get(pane_id) } else { None })
+                .and_then(|tile| {
+                    if let egui_tiles::Tile::Pane(pane_id) = tile {
+                        context.panes.get(pane_id)
+                    } else {
+                        None
+                    }
+                })
                 .and_then(|pane| pane.as_terminal())
                 .and_then(|t| t.name.clone());
             let title = match pane_name {
@@ -365,7 +410,11 @@ impl eframe::App for PlexiApp {
                 }
             });
             let active = focused_pane
-                .map(|pane| pane.as_terminal().map(|t| t.active_app.is_some()).unwrap_or(false))
+                .map(|pane| {
+                    pane.as_terminal()
+                        .map(|t| t.active_app.is_some())
+                        .unwrap_or(false)
+                })
                 .unwrap_or(false);
             let capture = if active {
                 focused_pane
@@ -583,9 +632,7 @@ impl eframe::App for PlexiApp {
                 let pane_names: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
-                    .filter_map(|(&id, p)| {
-                        p.as_terminal()?.name.as_ref().map(|n| (id, n.clone()))
-                    })
+                    .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
                     .collect();
                 let suppress_focus = self.renaming_context.is_some()
                     || self.show_command_palette
@@ -597,14 +644,14 @@ impl eframe::App for PlexiApp {
                         !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty()
                     });
                     if has_drag {
-                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16)); // continuous repaints while dragging
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(16)); // continuous repaints while dragging
                         use objc2_app_kit::NSApplication;
                         use objc2_foundation::MainThreadMarker;
                         MainThreadMarker::new()
                             .and_then(|mtm| {
                                 let app = NSApplication::sharedApplication(mtm);
-                                app.keyWindow()
-                                    .or_else(|| unsafe { app.mainWindow() })
+                                app.keyWindow().or_else(|| unsafe { app.mainWindow() })
                             })
                             .map(|w| {
                                 let p = unsafe { w.mouseLocationOutsideOfEventStream() };
@@ -620,7 +667,11 @@ impl eframe::App for PlexiApp {
 
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
-                    focused_tile: if suppress_focus { None } else { ctx.focused_pane },
+                    focused_tile: if suppress_focus {
+                        None
+                    } else {
+                        ctx.focused_pane
+                    },
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
@@ -649,11 +700,8 @@ impl eframe::App for PlexiApp {
                         drop(behavior);
 
                         // Semi-transparent scrim over the entire central panel
-                        ui.painter().rect_filled(
-                            panel_rect,
-                            0.0,
-                            Color32::from_black_alpha(75),
-                        );
+                        ui.painter()
+                            .rect_filled(panel_rect, 0.0, Color32::from_black_alpha(75));
 
                         // Inset rect for the zoomed pane
                         let inset = 5.0;
@@ -669,9 +717,8 @@ impl eframe::App for PlexiApp {
 
                         // Render zoomed terminal in the inset rect
                         let inner_rect = zoom_rect.shrink(2.0); // inside the border
-                        let mut child_ui = ui.new_child(
-                            egui::UiBuilder::new().max_rect(inner_rect),
-                        );
+                        let mut child_ui =
+                            ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
                         egui::Frame::new()
                             .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
@@ -696,7 +743,9 @@ impl eframe::App for PlexiApp {
                                                     });
                                                 },
                                             );
-                                        } else if t.surface_mode == crate::app_trait::SurfaceMode::AppActive {
+                                        } else if t.surface_mode
+                                            == crate::app_trait::SurfaceMode::AppActive
+                                        {
                                             // Zoomed app: render the app surface full-size.
                                             if let Some(app) = t.active_app.as_mut() {
                                                 let app_ctx = crate::app_trait::AppRenderContext {
@@ -709,18 +758,19 @@ impl eframe::App for PlexiApp {
                                         } else {
                                             // Reserve space for tab dots if in a tab group
                                             if zoomed_tab_info.is_some() {
-                                                ui.add_space(crate::tiling::TAB_DOT_RESERVED_HEIGHT);
+                                                ui.add_space(
+                                                    crate::tiling::TAB_DOT_RESERVED_HEIGHT,
+                                                );
                                             }
                                             let font_size = t.font_size;
-                                            let terminal =
-                                                TerminalView::new(ui, &mut t.backend)
-                                                    .set_focus(true)
-                                                    .set_theme(self.theme.clone())
-                                                    .set_font(theme::terminal_font(font_size))
-                                                    .set_size(Vec2::new(
-                                                        ui.available_width(),
-                                                        ui.available_height(),
-                                                    ));
+                                            let terminal = TerminalView::new(ui, &mut t.backend)
+                                                .set_focus(true)
+                                                .set_theme(self.theme.clone())
+                                                .set_font(theme::terminal_font(font_size))
+                                                .set_size(Vec2::new(
+                                                    ui.available_width(),
+                                                    ui.available_height(),
+                                                ));
                                             ui.add(terminal);
                                         }
                                     }
@@ -778,7 +828,8 @@ impl eframe::App for PlexiApp {
 
 impl PlexiApp {
     pub(crate) fn record_pane_visit(&mut self, ctx_idx: usize, tile_id: egui_tiles::TileId) {
-        self.pane_visit_history.retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
+        self.pane_visit_history
+            .retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
         self.pane_visit_history.insert(0, (ctx_idx, tile_id));
         self.pane_visit_history.truncate(100);
     }
@@ -797,11 +848,7 @@ impl PlexiApp {
                     let painter = ui.painter();
 
                     // Green phosphor tint
-                    painter.rect_filled(
-                        screen,
-                        0.0,
-                        Color32::from_rgba_unmultiplied(0, 40, 0, 18),
-                    );
+                    painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0, 40, 0, 18));
 
                     // Scanlines every 3 pixels
                     let mut y = screen.top();

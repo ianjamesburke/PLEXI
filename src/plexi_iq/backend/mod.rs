@@ -51,9 +51,7 @@ pub async fn run_claude_proxy(
             .map_err(|e| format!("stdin newline: {e}"))?;
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("wait: {e}"))?;
+    let output = child.wait_with_output().map_err(|e| format!("wait: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

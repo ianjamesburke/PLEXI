@@ -50,7 +50,10 @@ impl HostHarness {
     }
 
     pub fn assert_focus_kind(&self, expected: PaneRuntimeKind) {
-        assert_eq!(self.model.focused_pane().map(|p| p.kind.clone()), Some(expected));
+        assert_eq!(
+            self.model.focused_pane().map(|p| p.kind.clone()),
+            Some(expected)
+        );
     }
 }
 

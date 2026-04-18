@@ -68,24 +68,15 @@ pub enum PlexiEvent {
     /// Surface was resized. App should re-layout and request a new frame.
     Resize { width: f32, height: f32 },
     /// User input event.
-    Key {
-        key: String,
-        modifiers: Modifiers,
-    },
+    Key { key: String, modifiers: Modifiers },
     /// Mouse click at logical coordinates within the app surface.
     Click { x: f32, y: f32, button: MouseButton },
     /// User submitted a command via the command bar.
     Command { text: String },
     /// Response to a runtime CapabilityRequest.
-    CapabilityDecision {
-        request_id: String,
-        granted: bool,
-    },
+    CapabilityDecision { request_id: String, granted: bool },
     /// Secret broker response. value is None when denied.
-    SecretValue {
-        key: String,
-        value: Option<String>,
-    },
+    SecretValue { key: String, value: Option<String> },
     /// Run lifecycle update from the host.
     RunUpdate {
         run_id: String,
@@ -169,7 +160,6 @@ pub enum AppReply {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DrawCommand {
     // ── Visual primitives (frame-scoped) ─────────────────────────────────
-
     /// Fill a rectangle.
     Rect {
         x: f32,
@@ -236,7 +226,6 @@ pub enum DrawCommand {
     },
 
     // ── Out-of-frame commands ─────────────────────────────────────────────
-
     /// Forward a log message into Plexi's logger (tagged with app_id).
     Log {
         /// One of: "error" | "warn" | "info" | "debug"
@@ -319,7 +308,6 @@ pub enum DrawCommand {
     },
 
     // ── Legacy v1/v2 commands — kept for back-compat, Layer 3 migrates call sites ──
-
     /// Emit a shell command to the linked terminal PTY.
     /// v3: use PipeOpen/PipeSend for structured communication instead.
     RunInTerminal { command: String },

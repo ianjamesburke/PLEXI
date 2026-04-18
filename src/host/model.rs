@@ -93,7 +93,11 @@ impl HostModel {
             return Vec::new();
         };
         self.context_mut().panes.remove(idx);
-        let new_focus = self.context().panes.get(idx.saturating_sub(1)).map(|p| p.id);
+        let new_focus = self
+            .context()
+            .panes
+            .get(idx.saturating_sub(1))
+            .map(|p| p.id);
         self.context_mut().focused_pane = new_focus;
         vec![
             HostEffect::PaneClosed { pane_id: focused },
@@ -151,7 +155,9 @@ impl HostModel {
 
 #[cfg(test)]
 mod tests {
-    use crate::host::command::{HostCommand, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
+    use crate::host::command::{
+        HostCommand, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio,
+    };
     use crate::host::model::HostModel;
     use crate::host::services::HostServices;
 

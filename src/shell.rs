@@ -92,8 +92,7 @@ fn detect_ghostty_terminfo_dir() -> Option<String> {
 
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
-                let terminfo_path =
-                    entry.path().join("share/terminfo/78/xterm-ghostty");
+                let terminfo_path = entry.path().join("share/terminfo/78/xterm-ghostty");
                 if terminfo_path.is_file() {
                     if let Some(dir) = terminfo_path.parent().and_then(Path::parent) {
                         return Some(dir.to_string_lossy().into_owned());
@@ -198,13 +197,19 @@ mod tests {
     #[test]
     fn detect_shell_returns_existing_path() {
         let shell = detect_shell();
-        assert!(Path::new(&shell).exists(), "detect_shell returned non-existent path: {shell}");
+        assert!(
+            Path::new(&shell).exists(),
+            "detect_shell returned non-existent path: {shell}"
+        );
     }
 
     #[test]
     fn detect_shell_returns_absolute_path() {
         let shell = detect_shell();
-        assert!(shell.starts_with('/'), "detect_shell should return absolute path, got: {shell}");
+        assert!(
+            shell.starts_with('/'),
+            "detect_shell should return absolute path, got: {shell}"
+        );
     }
 
     #[test]

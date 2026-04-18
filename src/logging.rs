@@ -41,16 +41,17 @@ pub fn init(level: log::LevelFilter) {
     }
 
     // Build format: [YYYY-MM-DD HH:MM:SS] [LEVEL] [target] message
-    let formatter = |out: fern::FormatCallback, message: &std::fmt::Arguments, record: &log::Record| {
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        out.finish(format_args!(
-            "[{now}] [{level}] [{target}] {message}",
-            now = now,
-            level = record.level(),
-            target = record.target(),
-            message = message,
-        ))
-    };
+    let formatter =
+        |out: fern::FormatCallback, message: &std::fmt::Arguments, record: &log::Record| {
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            out.finish(format_args!(
+                "[{now}] [{level}] [{target}] {message}",
+                now = now,
+                level = record.level(),
+                target = record.target(),
+                message = message,
+            ))
+        };
 
     // Try to open the log file; if it fails, use stderr only.
     let file_result = fern::log_file(&log_file_path);
@@ -62,9 +63,7 @@ pub fn init(level: log::LevelFilter) {
         .level_for("plexi", level);
 
     let dispatch = match file_result {
-        Ok(file) => dispatch
-            .chain(std::io::stderr())
-            .chain(file),
+        Ok(file) => dispatch.chain(std::io::stderr()).chain(file),
         Err(e) => {
             eprintln!("[plexi::logging] could not open log file {log_file_path:?}: {e}; falling back to stderr only");
             dispatch.chain(std::io::stderr())

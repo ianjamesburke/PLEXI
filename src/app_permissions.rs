@@ -71,7 +71,9 @@ impl<'a> From<&'a str> for Capability {
             "pipe.open" => Self::PipeOpen,
             "spawn.app" => Self::SpawnApp,
             _ => {
-                log::warn!("app_permissions: unknown capability string '{s}', defaulting to FsRead");
+                log::warn!(
+                    "app_permissions: unknown capability string '{s}', defaulting to FsRead"
+                );
                 Self::FsRead
             }
         }
@@ -102,7 +104,10 @@ impl AppPermissions {
     /// Create a permissions set from a list of v3 capability strings.
     pub fn from_capability_strings(strings: &[String]) -> Self {
         Self {
-            capabilities: strings.iter().map(|s| Capability::from(s.as_str())).collect(),
+            capabilities: strings
+                .iter()
+                .map(|s| Capability::from(s.as_str()))
+                .collect(),
             is_builtin: false,
         }
     }
@@ -190,23 +195,26 @@ impl PermissionsLog {
     /// Load all decisions from permissions.jsonl.
     pub fn load() -> Self {
         let path = permissions_jsonl_path();
-        let decisions = match std::fs::read_to_string(&path) {
-            Ok(content) => content
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .filter_map(|line| {
-                    serde_json::from_str::<PermissionDecision>(line).map_err(|e| {
+        let decisions =
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    content
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .filter_map(|line| {
+                            serde_json::from_str::<PermissionDecision>(line).map_err(|e| {
                         log::warn!("app_permissions: failed to parse permissions.jsonl line: {e}");
                         e
                     }).ok()
-                })
-                .collect(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => {
-                log::warn!("app_permissions: failed to read permissions.jsonl: {e}");
-                Vec::new()
-            }
-        };
+                        })
+                        .collect()
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => {
+                    log::warn!("app_permissions: failed to read permissions.jsonl: {e}");
+                    Vec::new()
+                }
+            };
         Self { decisions }
     }
 
@@ -247,13 +255,21 @@ impl PermissionsLog {
             Ok(mut line) => {
                 line.push('\n');
                 use std::io::Write;
-                match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
                     Ok(mut f) => {
                         if let Err(e) = f.write_all(line.as_bytes()) {
-                            log::error!("app_permissions: failed to append to permissions.jsonl: {e}");
+                            log::error!(
+                                "app_permissions: failed to append to permissions.jsonl: {e}"
+                            );
                         }
                     }
-                    Err(e) => log::error!("app_permissions: failed to open permissions.jsonl for append: {e}"),
+                    Err(e) => log::error!(
+                        "app_permissions: failed to open permissions.jsonl for append: {e}"
+                    ),
                 }
             }
             Err(e) => log::error!("app_permissions: failed to serialize decision: {e}"),

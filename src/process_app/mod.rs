@@ -11,9 +11,9 @@
 //! - `render.rs`   — `render_draw_commands()`: paint committed frames into egui
 //! - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
 
-mod routing;
-mod render;
 mod prompts;
+mod render;
+mod routing;
 
 use crate::app_permissions::{AppPermissions, Capability, PermissionsLog};
 use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
@@ -25,7 +25,10 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc, Mutex};
+use std::sync::{
+    mpsc::{self, Receiver, TryRecvError},
+    Arc, Mutex,
+};
 use std::thread;
 
 // ---------------------------------------------------------------------------
@@ -130,7 +133,10 @@ impl ProcessApp {
         if !workspace_root.is_absolute() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("workspace_root must be absolute: {}", workspace_root.display()),
+                format!(
+                    "workspace_root must be absolute: {}",
+                    workspace_root.display()
+                ),
             ));
         }
         if !workspace_root.is_dir() {
@@ -287,10 +293,11 @@ impl ProcessApp {
         if granted {
             self.permissions.capabilities.insert(cap);
         }
-        self.outbound_events.push_back(PlexiEvent::CapabilityDecision {
-            request_id: request_id.to_string(),
-            granted,
-        });
+        self.outbound_events
+            .push_back(PlexiEvent::CapabilityDecision {
+                request_id: request_id.to_string(),
+                granted,
+            });
     }
 
     pub fn resolve_secret(&mut self, key: &str, value: Option<String>) {
@@ -301,7 +308,9 @@ impl ProcessApp {
     }
 
     pub(crate) fn send_event(&mut self, event: &PlexiEvent) {
-        let Some(stdin) = self.stdin.as_mut() else { return };
+        let Some(stdin) = self.stdin.as_mut() else {
+            return;
+        };
         match serde_json::to_string(event) {
             Ok(mut line) => {
                 line.push('\n');
@@ -321,7 +330,9 @@ impl ProcessApp {
     }
 
     fn drain_draw_commands(&mut self) -> Vec<DrawCommand> {
-        let Some(rx) = self.draw_rx.as_ref() else { return vec![] };
+        let Some(rx) = self.draw_rx.as_ref() else {
+            return vec![];
+        };
         let mut cmds = Vec::new();
         loop {
             match rx.try_recv() {
@@ -366,7 +377,9 @@ impl App for ProcessApp {
         if !self.initialized {
             self.initialized = true;
             self.last_size = size;
-            let cap_strings: Vec<String> = self.permissions.capabilities
+            let cap_strings: Vec<String> = self
+                .permissions
+                .capabilities
                 .iter()
                 .map(|c| c.to_string())
                 .collect();
@@ -381,14 +394,22 @@ impl App for ProcessApp {
 
         if (size - self.last_size).length() > 1.0 {
             self.last_size = size;
-            self.send_event(&PlexiEvent::Resize { width: size.x, height: size.y });
+            self.send_event(&PlexiEvent::Resize {
+                width: size.x,
+                height: size.y,
+            });
         }
 
         self.frame_counter += 1;
         let frame_id = self.frame_counter;
         self.send_event(&PlexiEvent::Render {
             frame_id,
-            rect: crate::app_protocol::Rect { x: 0.0, y: 0.0, w: size.x, h: size.y },
+            rect: crate::app_protocol::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: size.x,
+                h: size.y,
+            },
         });
 
         let new_cmds = self.drain_draw_commands();
@@ -409,33 +430,35 @@ impl App for ProcessApp {
                     self.pending_frame.clear();
                 }
                 DrawCommand::RunInTerminal { command } => {
-                    self.pending_commands.push(AppCommand::RunInTerminal(command));
+                    self.pending_commands
+                        .push(AppCommand::RunInTerminal(command));
                 }
                 DrawCommand::Cd { path } => {
-                    self.pending_commands.push(AppCommand::Cd(std::path::PathBuf::from(path)));
+                    self.pending_commands
+                        .push(AppCommand::Cd(std::path::PathBuf::from(path)));
                 }
                 DrawCommand::Log { level, message } => {
                     let target = format!("app::{}", self.type_id);
                     match level.as_str() {
                         "error" => log::error!(target: &target, "{message}"),
-                        "warn"  => log::warn!(target: &target, "{message}"),
+                        "warn" => log::warn!(target: &target, "{message}"),
                         "debug" => log::debug!(target: &target, "{message}"),
-                        _       => log::info!(target: &target, "{message}"),
+                        _ => log::info!(target: &target, "{message}"),
                     }
                 }
                 cmd @ (DrawCommand::VideoPlayer { .. }
-                    | DrawCommand::AudioPlay { .. }
-                    | DrawCommand::AudioCapture { .. }
-                    | DrawCommand::AudioMeter { .. }
-                    | DrawCommand::CapabilityRequest { .. }
-                    | DrawCommand::SecretGet { .. }
-                    | DrawCommand::RunGet { .. }
-                    | DrawCommand::RunComplete { .. }
-                    | DrawCommand::Notify { .. }
-                    | DrawCommand::PipeOpen { .. }
-                    | DrawCommand::PipeSend { .. }
-                    | DrawCommand::StatusSummary { .. }
-                    | DrawCommand::SpawnApp { .. }) => {
+                | DrawCommand::AudioPlay { .. }
+                | DrawCommand::AudioCapture { .. }
+                | DrawCommand::AudioMeter { .. }
+                | DrawCommand::CapabilityRequest { .. }
+                | DrawCommand::SecretGet { .. }
+                | DrawCommand::RunGet { .. }
+                | DrawCommand::RunComplete { .. }
+                | DrawCommand::Notify { .. }
+                | DrawCommand::PipeOpen { .. }
+                | DrawCommand::PipeSend { .. }
+                | DrawCommand::StatusSummary { .. }
+                | DrawCommand::SpawnApp { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),
@@ -472,11 +495,9 @@ impl App for ProcessApp {
                 &frame.rgba,
             );
             let tex_name = format!("video_frame_{handle_id}_{}", frame.pts_ms);
-            let tex = ui.ctx().load_texture(
-                &tex_name,
-                color_image,
-                egui::TextureOptions::LINEAR,
-            );
+            let tex = ui
+                .ctx()
+                .load_texture(&tex_name, color_image, egui::TextureOptions::LINEAR);
             let origin = ui.min_rect().min;
             let rect = egui::Rect::from_min_size(
                 egui::pos2(origin.x + vx, origin.y + vy),
@@ -493,32 +514,65 @@ impl App for ProcessApp {
 
         // Render the current committed frame.
         let frame_clone = self.frame.clone();
-        let meters: Vec<_> = self.audio_meters.iter().map(|m| AudioMeterState {
-            rect_x: m.rect_x, rect_y: m.rect_y, rect_w: m.rect_w, rect_h: m.rect_h,
-            pipe_id: m.pipe_id.clone(),
-        }).collect();
+        let meters: Vec<_> = self
+            .audio_meters
+            .iter()
+            .map(|m| AudioMeterState {
+                rect_x: m.rect_x,
+                rect_y: m.rect_y,
+                rect_w: m.rect_w,
+                rect_h: m.rect_h,
+                pipe_id: m.pipe_id.clone(),
+            })
+            .collect();
         egui::Frame::new()
             .fill(ctx.colors.terminal_bg)
             .show(ui, |ui| {
                 render::render_draw_commands(ui, &frame_clone, ctx.colors, &meters);
             });
 
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
         let mut consumed = false;
         for event in &input.events {
             match event {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                    let is_bare_letter = matches!(key,
-                        egui::Key::A | egui::Key::B | egui::Key::C | egui::Key::D |
-                        egui::Key::E | egui::Key::F | egui::Key::G | egui::Key::H |
-                        egui::Key::I | egui::Key::J | egui::Key::K | egui::Key::L |
-                        egui::Key::M | egui::Key::N | egui::Key::O | egui::Key::P |
-                        egui::Key::Q | egui::Key::R | egui::Key::S | egui::Key::T |
-                        egui::Key::U | egui::Key::V | egui::Key::W | egui::Key::X |
-                        egui::Key::Y | egui::Key::Z
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    let is_bare_letter = matches!(
+                        key,
+                        egui::Key::A
+                            | egui::Key::B
+                            | egui::Key::C
+                            | egui::Key::D
+                            | egui::Key::E
+                            | egui::Key::F
+                            | egui::Key::G
+                            | egui::Key::H
+                            | egui::Key::I
+                            | egui::Key::J
+                            | egui::Key::K
+                            | egui::Key::L
+                            | egui::Key::M
+                            | egui::Key::N
+                            | egui::Key::O
+                            | egui::Key::P
+                            | egui::Key::Q
+                            | egui::Key::R
+                            | egui::Key::S
+                            | egui::Key::T
+                            | egui::Key::U
+                            | egui::Key::V
+                            | egui::Key::W
+                            | egui::Key::X
+                            | egui::Key::Y
+                            | egui::Key::Z
                     ) && !modifiers.any();
                     if !is_bare_letter {
                         self.send_event(&PlexiEvent::Key {
@@ -535,7 +589,9 @@ impl App for ProcessApp {
                 }
                 egui::Event::Text(text) => {
                     for ch in text.chars() {
-                        if ch.is_control() { continue; }
+                        if ch.is_control() {
+                            continue;
+                        }
                         self.send_event(&PlexiEvent::Key {
                             key: ch.to_string(),
                             modifiers: Modifiers::default(),
@@ -554,7 +610,9 @@ impl App for ProcessApp {
     }
 
     fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {
-        self.send_event(&PlexiEvent::Command { text: cmd.to_string() });
+        self.send_event(&PlexiEvent::Command {
+            text: cmd.to_string(),
+        });
         None
     }
 

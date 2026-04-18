@@ -57,15 +57,18 @@ impl RunRegistry {
     pub fn allocate(&mut self, app_id: &str, intent: &str, payload: serde_json::Value) -> String {
         let run_id = format!("run-{}-{}", app_id, self.next_id);
         self.next_id += 1;
-        self.runs.insert(run_id.clone(), Run {
-            run_id: run_id.clone(),
-            app_id: app_id.to_string(),
-            intent: intent.to_string(),
-            payload,
-            status: RunStatus::Pending,
-            created_at: SystemTime::now(),
-            blocked_prompt: None,
-        });
+        self.runs.insert(
+            run_id.clone(),
+            Run {
+                run_id: run_id.clone(),
+                app_id: app_id.to_string(),
+                intent: intent.to_string(),
+                payload,
+                status: RunStatus::Pending,
+                created_at: SystemTime::now(),
+                blocked_prompt: None,
+            },
+        );
         run_id
     }
 

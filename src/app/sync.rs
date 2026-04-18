@@ -21,7 +21,12 @@ impl PlexiApp {
                 let t = pane.as_terminal()?;
                 let linked = t.linked_terminal_pane?;
                 if t.active_app.is_some() {
-                    Some((pane_id, linked, t.pane_group.clone(), t.last_synced_cwd.clone()))
+                    Some((
+                        pane_id,
+                        linked,
+                        t.pane_group.clone(),
+                        t.last_synced_cwd.clone(),
+                    ))
                 } else {
                     None
                 }
@@ -60,7 +65,9 @@ impl PlexiApp {
                 .panes
                 .iter()
                 .filter_map(|(&pid, p)| {
-                    if pid == *source_pane_id { return None; }
+                    if pid == *source_pane_id {
+                        return None;
+                    }
                     let t = p.as_terminal()?;
                     t.active_app.as_ref()?;
                     if t.pane_group.as_deref() == Some(group.as_str()) {

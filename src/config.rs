@@ -21,10 +21,10 @@ impl LogConfig {
     pub fn level_filter(&self) -> Option<log::LevelFilter> {
         match self.level.as_deref() {
             Some("error") => Some(log::LevelFilter::Error),
-            Some("warn")  => Some(log::LevelFilter::Warn),
-            Some("info")  => Some(log::LevelFilter::Info),
+            Some("warn") => Some(log::LevelFilter::Warn),
+            Some("info") => Some(log::LevelFilter::Info),
             Some("debug") => Some(log::LevelFilter::Debug),
-            _             => None,
+            _ => None,
         }
     }
 }
@@ -129,8 +129,11 @@ pub fn ensure_profile_initialized() {
             }
         }
     }
-    eprintln!("profile init: seeded {} with {} apps", dir.display(),
-              std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0));
+    eprintln!(
+        "profile init: seeded {} with {} apps",
+        dir.display(),
+        std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0)
+    );
 }
 
 /// Returns the config directory name.

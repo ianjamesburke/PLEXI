@@ -19,7 +19,9 @@ pub(super) fn show_prompt_modal(
     workspace_root: &Path,
     secret_input_buf: &mut String,
 ) {
-    let Some(prompt) = pending_prompts.front() else { return };
+    let Some(prompt) = pending_prompts.front() else {
+        return;
+    };
 
     let mut granted = false;
     let mut denied = false;
@@ -35,10 +37,10 @@ pub(super) fn show_prompt_modal(
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(capability).monospace().strong());
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new(format!(
-                        "Workspace: {}",
-                        workspace_root.display()
-                    )).small());
+                    ui.label(
+                        egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
+                            .small(),
+                    );
                 }
                 PendingPrompt::Secret { key } => {
                     ui.label(format!("App \"{}\" needs a secret value for:", type_id));
@@ -63,7 +65,10 @@ pub(super) fn show_prompt_modal(
     if granted || denied {
         use crate::app_permissions::Capability;
         match pending_prompts.pop_front() {
-            Some(PendingPrompt::Capability { request_id, capability }) => {
+            Some(PendingPrompt::Capability {
+                request_id,
+                capability,
+            }) => {
                 if granted {
                     let cap = Capability::from(capability.as_str());
                     permissions.capabilities.insert(cap);

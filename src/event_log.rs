@@ -305,7 +305,9 @@ pub fn emit_pipe_opened(
     let from_app = from_app.into();
     let channel = channel.into();
     let mode = mode.into();
-    log::debug!("event_log: emitting PipeOpened from '{from_app}' channel '{channel}' mode '{mode}'");
+    log::debug!(
+        "event_log: emitting PipeOpened from '{from_app}' channel '{channel}' mode '{mode}'"
+    );
     emit(HostEvent::PipeOpened {
         from_app,
         channel,
@@ -340,49 +342,119 @@ mod tests {
         let ts = "2026-04-18T00:00:00Z".to_string();
 
         let cases: &[(HostEvent, &str)] = &[
-            (HostEvent::AppSpawned {
-                app_id: "a".into(), type_id: "t".into(), pane_id: 1, timestamp: ts.clone(),
-            }, "app_spawned"),
-            (HostEvent::AppClosed {
-                app_id: "a".into(), type_id: "t".into(), pane_id: 1,
-                timestamp: ts.clone(), reason: None,
-            }, "app_closed"),
-            (HostEvent::PermissionDecision {
-                app_id: "a".into(), capability: "fs.read".into(), granted: true,
-                timestamp: ts.clone(),
-            }, "permission_decision"),
-            (HostEvent::SecretPrompted {
-                app_id: "a".into(), key: "k".into(), timestamp: ts.clone(),
-            }, "secret_prompted"),
-            (HostEvent::SecretDenied {
-                app_id: "a".into(), key: "k".into(), reason: "r".into(), timestamp: ts.clone(),
-            }, "secret_denied"),
-            (HostEvent::RunStarted {
-                run_id: "r".into(), app_id: "a".into(), timestamp: ts.clone(),
-            }, "run_started"),
-            (HostEvent::RunUpdated {
-                run_id: "r".into(), status: "running".into(), timestamp: ts.clone(),
-            }, "run_updated"),
-            (HostEvent::RunCompleted {
-                run_id: "r".into(), status: "completed".into(), timestamp: ts.clone(),
-            }, "run_completed"),
-            (HostEvent::NotificationPosted {
-                id: "n".into(), title: "t".into(), urgency: "info".into(), timestamp: ts.clone(),
-            }, "notification_posted"),
-            (HostEvent::NotificationActionInvoked {
-                id: "n".into(), action: "resume_run".into(), timestamp: ts.clone(),
-            }, "notification_action_invoked"),
-            (HostEvent::AgentTurn {
-                pane_id: Some(1), tokens_in: 10, tokens_out: 20, cost_cents: 3,
-                timestamp: ts.clone(),
-            }, "agent_turn"),
-            (HostEvent::PipeOpened {
-                from_app: "a".into(), channel: "c".into(), mode: "binary".into(),
-                timestamp: ts.clone(),
-            }, "pipe_opened"),
-            (HostEvent::PipeClosed {
-                from_app: "a".into(), channel: "c".into(), timestamp: ts.clone(),
-            }, "pipe_closed"),
+            (
+                HostEvent::AppSpawned {
+                    app_id: "a".into(),
+                    type_id: "t".into(),
+                    pane_id: 1,
+                    timestamp: ts.clone(),
+                },
+                "app_spawned",
+            ),
+            (
+                HostEvent::AppClosed {
+                    app_id: "a".into(),
+                    type_id: "t".into(),
+                    pane_id: 1,
+                    timestamp: ts.clone(),
+                    reason: None,
+                },
+                "app_closed",
+            ),
+            (
+                HostEvent::PermissionDecision {
+                    app_id: "a".into(),
+                    capability: "fs.read".into(),
+                    granted: true,
+                    timestamp: ts.clone(),
+                },
+                "permission_decision",
+            ),
+            (
+                HostEvent::SecretPrompted {
+                    app_id: "a".into(),
+                    key: "k".into(),
+                    timestamp: ts.clone(),
+                },
+                "secret_prompted",
+            ),
+            (
+                HostEvent::SecretDenied {
+                    app_id: "a".into(),
+                    key: "k".into(),
+                    reason: "r".into(),
+                    timestamp: ts.clone(),
+                },
+                "secret_denied",
+            ),
+            (
+                HostEvent::RunStarted {
+                    run_id: "r".into(),
+                    app_id: "a".into(),
+                    timestamp: ts.clone(),
+                },
+                "run_started",
+            ),
+            (
+                HostEvent::RunUpdated {
+                    run_id: "r".into(),
+                    status: "running".into(),
+                    timestamp: ts.clone(),
+                },
+                "run_updated",
+            ),
+            (
+                HostEvent::RunCompleted {
+                    run_id: "r".into(),
+                    status: "completed".into(),
+                    timestamp: ts.clone(),
+                },
+                "run_completed",
+            ),
+            (
+                HostEvent::NotificationPosted {
+                    id: "n".into(),
+                    title: "t".into(),
+                    urgency: "info".into(),
+                    timestamp: ts.clone(),
+                },
+                "notification_posted",
+            ),
+            (
+                HostEvent::NotificationActionInvoked {
+                    id: "n".into(),
+                    action: "resume_run".into(),
+                    timestamp: ts.clone(),
+                },
+                "notification_action_invoked",
+            ),
+            (
+                HostEvent::AgentTurn {
+                    pane_id: Some(1),
+                    tokens_in: 10,
+                    tokens_out: 20,
+                    cost_cents: 3,
+                    timestamp: ts.clone(),
+                },
+                "agent_turn",
+            ),
+            (
+                HostEvent::PipeOpened {
+                    from_app: "a".into(),
+                    channel: "c".into(),
+                    mode: "binary".into(),
+                    timestamp: ts.clone(),
+                },
+                "pipe_opened",
+            ),
+            (
+                HostEvent::PipeClosed {
+                    from_app: "a".into(),
+                    channel: "c".into(),
+                    timestamp: ts.clone(),
+                },
+                "pipe_closed",
+            ),
         ];
 
         for (event, expected_kind) in cases {

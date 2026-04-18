@@ -186,7 +186,10 @@ fn parse_cli_event(line: &str) -> CliEvent {
                     arr.iter()
                         .filter_map(|block| {
                             if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                                block
+                                    .get("text")
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s.to_string())
                             } else {
                                 None
                             }
@@ -224,7 +227,10 @@ fn parse_cli_event(line: &str) -> CliEvent {
 /// so we probe known install paths before falling back to PATH resolution.
 fn find_claude_binary() -> Option<String> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-    let local_bin = home.join(".local/bin/claude").to_string_lossy().into_owned();
+    let local_bin = home
+        .join(".local/bin/claude")
+        .to_string_lossy()
+        .into_owned();
 
     let candidates = [
         local_bin.as_str(),

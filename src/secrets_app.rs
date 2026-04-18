@@ -85,7 +85,8 @@ impl SecretsApp {
             // Optimistic update: push directly instead of re-dumping the keychain
             // (dump-keychain triggers a macOS permission prompt every call).
             // Remove any existing entry with the same key+dir to avoid duplicates.
-            self.entries.retain(|e| !(e.key == key && e.directory == dir && e.app_id == APP_ID_USER));
+            self.entries
+                .retain(|e| !(e.key == key && e.directory == dir && e.app_id == APP_ID_USER));
             self.entries.push(SecretEntry {
                 app_id: APP_ID_USER.to_string(),
                 directory: dir,
@@ -186,10 +187,13 @@ impl App for SecretsApp {
 
         // ── Header ──────────────────────────────────────────────────────────
         let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER_H));
-        ui.painter().rect_filled(header_rect, 0.0, colors.bg_sidebar);
+        ui.painter()
+            .rect_filled(header_rect, 0.0, colors.bg_sidebar);
         ui.painter().line_segment(
-            [egui::pos2(header_rect.left(), header_rect.bottom()),
-             egui::pos2(header_rect.right(), header_rect.bottom())],
+            [
+                egui::pos2(header_rect.left(), header_rect.bottom()),
+                egui::pos2(header_rect.right(), header_rect.bottom()),
+            ],
             egui::Stroke::new(1.0, colors.border),
         );
 
@@ -199,14 +203,22 @@ impl App for SecretsApp {
             "n=new · d=delete · r=refresh · j/k=navigate"
         };
 
-        let mut header_ui = ui.new_child(
-            egui::UiBuilder::new().max_rect(header_rect.shrink2(egui::vec2(16.0, 0.0))),
-        );
+        let mut header_ui = ui
+            .new_child(egui::UiBuilder::new().max_rect(header_rect.shrink2(egui::vec2(16.0, 0.0))));
         header_ui.horizontal_centered(|ui| {
-            ui.label(egui::RichText::new("Secrets").color(colors.accent).size(16.0).strong());
+            ui.label(
+                egui::RichText::new("Secrets")
+                    .color(colors.accent)
+                    .size(16.0)
+                    .strong(),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(hint).color(colors.text_dim).size(11.0)
-                    .family(egui::FontFamily::Monospace));
+                ui.label(
+                    egui::RichText::new(hint)
+                        .color(colors.text_dim)
+                        .size(11.0)
+                        .family(egui::FontFamily::Monospace),
+                );
             });
         });
 
@@ -231,14 +243,14 @@ impl App for SecretsApp {
 
         // ── Add form (when active) ───────────────────────────────────────────
         if self.mode == Mode::Adding {
-            let form_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.left(), rect.bottom() - FORM_H),
-                rect.max,
-            );
+            let form_rect =
+                egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - FORM_H), rect.max);
             ui.painter().rect_filled(form_rect, 0.0, colors.bg_sidebar);
             ui.painter().line_segment(
-                [egui::pos2(form_rect.left(), form_rect.top()),
-                 egui::pos2(form_rect.right(), form_rect.top())],
+                [
+                    egui::pos2(form_rect.left(), form_rect.top()),
+                    egui::pos2(form_rect.right(), form_rect.top()),
+                ],
                 egui::Stroke::new(1.0, colors.border),
             );
 
@@ -247,13 +259,22 @@ impl App for SecretsApp {
             );
 
             form_ui.vertical(|ui| {
-                ui.label(egui::RichText::new("New Secret").color(colors.accent).size(13.0).strong());
+                ui.label(
+                    egui::RichText::new("New Secret")
+                        .color(colors.accent)
+                        .size(13.0)
+                        .strong(),
+                );
                 ui.add_space(10.0);
 
                 // Key field
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Key   ").color(colors.text_dim).size(11.0)
-                        .family(egui::FontFamily::Monospace));
+                    ui.label(
+                        egui::RichText::new("Key   ")
+                            .color(colors.text_dim)
+                            .size(11.0)
+                            .family(egui::FontFamily::Monospace),
+                    );
                     let key_te = egui::TextEdit::singleline(&mut self.new_key)
                         .desired_width(f32::INFINITY)
                         .font(egui::FontId::monospace(12.0))
@@ -266,7 +287,7 @@ impl App for SecretsApp {
                         key_resp.request_focus();
                         self.focus_requested = true;
                     }
-                    if key_resp.has_focus()  {
+                    if key_resp.has_focus() {
                         self.form_focus = FormField::Key;
                     }
                     // Tab advances to value field
@@ -279,8 +300,12 @@ impl App for SecretsApp {
 
                 // Value field (masked)
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Value ").color(colors.text_dim).size(11.0)
-                        .family(egui::FontFamily::Monospace));
+                    ui.label(
+                        egui::RichText::new("Value ")
+                            .color(colors.text_dim)
+                            .size(11.0)
+                            .family(egui::FontFamily::Monospace),
+                    );
                     let val_te = egui::TextEdit::singleline(&mut self.new_value)
                         .desired_width(f32::INFINITY)
                         .font(egui::FontId::monospace(12.0))
@@ -304,8 +329,12 @@ impl App for SecretsApp {
 
                 // Directory field
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Dir   ").color(colors.text_dim).size(11.0)
-                        .family(egui::FontFamily::Monospace));
+                    ui.label(
+                        egui::RichText::new("Dir   ")
+                            .color(colors.text_dim)
+                            .size(11.0)
+                            .family(egui::FontFamily::Monospace),
+                    );
                     let dir_te = egui::TextEdit::singleline(&mut self.new_dir)
                         .desired_width(f32::INFINITY)
                         .font(egui::FontId::monospace(12.0))
@@ -320,7 +349,9 @@ impl App for SecretsApp {
                         self.form_focus = FormField::Dir;
                     }
                     // Enter on Dir field saves
-                    if dir_resp.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+                    if dir_resp.has_focus()
+                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                    {
                         self.commit_add();
                     }
                 });
@@ -335,17 +366,30 @@ impl App for SecretsApp {
                 }
 
                 ui.horizontal(|ui| {
-                    if ui.button(egui::RichText::new("Save").color(colors.accent).size(12.0)).clicked() {
+                    if ui
+                        .button(egui::RichText::new("Save").color(colors.accent).size(12.0))
+                        .clicked()
+                    {
                         self.commit_add();
                     }
                     ui.add_space(8.0);
-                    if ui.button(egui::RichText::new("Cancel").color(colors.text_dim).size(12.0)).clicked() {
+                    if ui
+                        .button(
+                            egui::RichText::new("Cancel")
+                                .color(colors.text_dim)
+                                .size(12.0),
+                        )
+                        .clicked()
+                    {
                         self.cancel_add();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Tab to advance · Enter to save · Esc to cancel")
-                            .color(colors.text_dim.linear_multiply(0.6)).size(10.0)
-                            .family(egui::FontFamily::Monospace));
+                        ui.label(
+                            egui::RichText::new("Tab to advance · Enter to save · Esc to cancel")
+                                .color(colors.text_dim.linear_multiply(0.6))
+                                .size(10.0)
+                                .family(egui::FontFamily::Monospace),
+                        );
                     });
                 });
             });
@@ -358,10 +402,7 @@ impl App for SecretsApp {
             self.draw_list(ui, colors, list_rect, ROW_H);
         } else {
             // Full-height list
-            let list_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.left(), list_top),
-                rect.max,
-            );
+            let list_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), list_top), rect.max);
             self.draw_list(ui, colors, list_rect, ROW_H);
         }
     }
@@ -382,7 +423,13 @@ impl App for SecretsApp {
 }
 
 impl SecretsApp {
-    fn draw_list(&self, ui: &mut egui::Ui, colors: &crate::theme::Colors, rect: egui::Rect, row_h: f32) {
+    fn draw_list(
+        &self,
+        ui: &mut egui::Ui,
+        colors: &crate::theme::Colors,
+        rect: egui::Rect,
+        row_h: f32,
+    ) {
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         egui::ScrollArea::vertical()
             .id_salt("secrets_list")
@@ -390,12 +437,18 @@ impl SecretsApp {
                 if self.entries.is_empty() {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("No secrets stored")
-                            .color(colors.text_dim).size(14.0));
+                        ui.label(
+                            egui::RichText::new("No secrets stored")
+                                .color(colors.text_dim)
+                                .size(14.0),
+                        );
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Press n to add one")
-                            .color(colors.text_dim.linear_multiply(0.6)).size(11.0)
-                            .family(egui::FontFamily::Monospace));
+                        ui.label(
+                            egui::RichText::new("Press n to add one")
+                                .color(colors.text_dim.linear_multiply(0.6))
+                                .size(11.0)
+                                .family(egui::FontFamily::Monospace),
+                        );
                     });
                     return;
                 }
@@ -404,7 +457,10 @@ impl SecretsApp {
                     let is_selected = idx == self.selected;
 
                     let row_resp = ui.allocate_rect(
-                        egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), row_h)),
+                        egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            egui::vec2(ui.available_width(), row_h),
+                        ),
                         egui::Sense::click(),
                     );
 
@@ -417,8 +473,10 @@ impl SecretsApp {
 
                     if idx > 0 {
                         ui.painter().line_segment(
-                            [egui::pos2(row_rect.left() + 16.0, row_rect.top()),
-                             egui::pos2(row_rect.right(), row_rect.top())],
+                            [
+                                egui::pos2(row_rect.left() + 16.0, row_rect.top()),
+                                egui::pos2(row_rect.right(), row_rect.top()),
+                            ],
                             egui::Stroke::new(1.0, colors.border.linear_multiply(0.4)),
                         );
                     }
@@ -426,7 +484,10 @@ impl SecretsApp {
                     // Accent bar
                     if is_selected {
                         ui.painter().rect_filled(
-                            egui::Rect::from_min_size(row_rect.min, egui::vec2(3.0, row_rect.height())),
+                            egui::Rect::from_min_size(
+                                row_rect.min,
+                                egui::vec2(3.0, row_rect.height()),
+                            ),
                             0.0,
                             colors.accent,
                         );

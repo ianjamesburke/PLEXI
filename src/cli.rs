@@ -46,10 +46,7 @@ pub fn run_command(command_name: &str) -> i32 {
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(_) => {
-            eprintln!(
-                "error: no {COMMANDS_FILE} found in {}",
-                cwd.display()
-            );
+            eprintln!("error: no {COMMANDS_FILE} found in {}", cwd.display());
             eprintln!("Create a .plexi/commands.toml to define runnable commands.");
             return 1;
         }
@@ -204,7 +201,10 @@ pub fn list_secrets() -> i32 {
             if let Some(last_slash) = rest.rfind('/') {
                 let dir = &rest[..last_slash];
                 let key = &rest[last_slash + 1..];
-                by_dir.entry(dir.to_string()).or_default().push(key.to_string());
+                by_dir
+                    .entry(dir.to_string())
+                    .or_default()
+                    .push(key.to_string());
             }
         }
     }
@@ -234,7 +234,10 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
 
     let app_dir = cwd.join(".plexi").join("apps").join(name);
@@ -250,7 +253,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 
     let result = match lang {
         "rust" => scaffold_rust_app(&app_dir, name),
-        _      => scaffold_python_app(&app_dir, name),
+        _ => scaffold_python_app(&app_dir, name),
     };
 
     match result {
@@ -332,7 +335,10 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
 
 /// `plexi app install <github-shorthand-or-url>` — clone + build an app from GitHub.
 pub fn app_install(source: &str) -> i32 {
-    let url = if source.starts_with("http://") || source.starts_with("https://") || source.starts_with("git@") {
+    let url = if source.starts_with("http://")
+        || source.starts_with("https://")
+        || source.starts_with("git@")
+    {
         source.to_string()
     } else {
         // Treat as github shorthand: "user/repo"
@@ -355,7 +361,10 @@ pub fn app_install(source: &str) -> i32 {
 
     let dest = apps_dir.join(repo_name);
     if dest.exists() {
-        eprintln!("error: {} already exists. Remove it first to reinstall.", dest.display());
+        eprintln!(
+            "error: {} already exists. Remove it first to reinstall.",
+            dest.display()
+        );
         return 1;
     }
 
@@ -450,14 +459,18 @@ pub fn app_uninstall(id: &str) -> i32 {
 
 /// `plexi app list` — list installed apps.
 pub fn app_list() -> i32 {
-    let registry = crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+    let registry =
+        crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
     let apps = registry.list();
     if apps.is_empty() {
         println!("No apps installed.");
         println!("Install one with: plexi app install <github-user/repo>");
     } else {
         for app in apps {
-            println!("{:20} {}  {}", app.manifest.id, app.manifest.version, app.manifest.description);
+            println!(
+                "{:20} {}  {}",
+                app.manifest.id, app.manifest.version, app.manifest.description
+            );
         }
     }
     0
@@ -491,16 +504,12 @@ fn to_struct_name(s: &str) -> String {
 /// Read a line from stdin with echo disabled (for password-style input).
 fn read_secret_from_stdin() -> io::Result<String> {
     // Disable echo via stty (avoids libc dependency).
-    let _ = std::process::Command::new("stty")
-        .arg("-echo")
-        .status();
+    let _ = std::process::Command::new("stty").arg("-echo").status();
 
     let result = read_line_plain();
 
     // Restore echo.
-    let _ = std::process::Command::new("stty")
-        .arg("echo")
-        .status();
+    let _ = std::process::Command::new("stty").arg("echo").status();
     // Print newline since echo was off during input.
     eprintln!();
 
@@ -510,5 +519,8 @@ fn read_secret_from_stdin() -> io::Result<String> {
 fn read_line_plain() -> io::Result<String> {
     let mut buf = String::new();
     io::stdin().read_line(&mut buf)?;
-    Ok(buf.trim_end_matches('\n').trim_end_matches('\r').to_string())
+    Ok(buf
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string())
 }

@@ -82,7 +82,11 @@ pub enum Action {
 /// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
 ///   When true, all host shortcuts are suppressed *except* Cmd+Q (quit) and Cmd+W (close pane),
 ///   which are structural safety operations that must always work.
-pub fn poll_actions(ctx: &egui::Context, app_active: bool, keyboard_capture_active: bool) -> Vec<Action> {
+pub fn poll_actions(
+    ctx: &egui::Context,
+    app_active: bool,
+    keyboard_capture_active: bool,
+) -> Vec<Action> {
     let mut actions = Vec::new();
     let cmd_shift = egui::Modifiers {
         shift: true,

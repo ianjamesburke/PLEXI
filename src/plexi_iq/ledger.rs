@@ -66,7 +66,10 @@ pub fn append(row: &LedgerRow) {
 
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            log::warn!("plexi_iq ledger: failed to create dir {}: {e}", parent.display());
+            log::warn!(
+                "plexi_iq ledger: failed to create dir {}: {e}",
+                parent.display()
+            );
             return;
         }
     }
@@ -79,7 +82,11 @@ pub fn append(row: &LedgerRow) {
         }
     };
 
-    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         Ok(mut file) => {
             if let Err(e) = writeln!(file, "{line}") {
                 log::warn!("plexi_iq ledger: write error: {e}");

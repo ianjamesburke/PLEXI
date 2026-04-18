@@ -37,17 +37,17 @@ pub struct Colors {
 impl Colors {
     pub fn from_config(cfg: &ThemeConfig) -> Self {
         Self {
-            bg_darkest:   parse_hex_or(&cfg.bg_darkest,   Color32::from_rgb(0x11, 0x11, 0x1b)),
-            bg_sidebar:   parse_hex_or(&cfg.bg_sidebar,   Color32::from_rgb(0x18, 0x18, 0x25)),
-            bg_toolbar:   parse_hex_or(&cfg.bg_toolbar,   Color32::from_rgb(0x18, 0x18, 0x25)),
-            terminal_bg:  parse_hex_or(&cfg.terminal_bg,  Color32::from_rgb(0x29, 0x2a, 0x44)),
-            bg_hover:     parse_hex_or(&cfg.bg_hover,     Color32::from_rgb(0x2a, 0x2a, 0x3c)),
-            bg_active:    parse_hex_or(&cfg.bg_active,    Color32::from_rgb(0x31, 0x31, 0x44)),
+            bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),
+            bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x18, 0x18, 0x25)),
+            bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x18, 0x18, 0x25)),
+            terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x29, 0x2a, 0x44)),
+            bg_hover: parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
+            bg_active: parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x31, 0x31, 0x44)),
             text_primary: parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xcd, 0xd6, 0xf4)),
-            text_dim:     parse_hex_or(&cfg.text_dim,     Color32::from_rgb(0x6c, 0x70, 0x86)),
+            text_dim: parse_hex_or(&cfg.text_dim, Color32::from_rgb(0x6c, 0x70, 0x86)),
             text_section: parse_hex_or(&cfg.text_section, Color32::from_rgb(0x58, 0x5b, 0x70)),
-            accent:       parse_hex_or(&cfg.accent,       Color32::from_rgb(0x89, 0xb4, 0xfa)),
-            border:       parse_hex_or(&cfg.border,       Color32::from_rgb(0x2a, 0x2a, 0x3c)),
+            accent: parse_hex_or(&cfg.accent, Color32::from_rgb(0x89, 0xb4, 0xfa)),
+            border: parse_hex_or(&cfg.border, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
             terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
             terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
         }
@@ -87,7 +87,14 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
 
 /// Returns the list of available preset names.
 pub fn preset_names() -> &'static [&'static str] {
-    &["catppuccin-mocha", "dracula", "tokyo-night", "gruvbox-dark", "nord", "solarized-dark"]
+    &[
+        "catppuccin-mocha",
+        "dracula",
+        "tokyo-night",
+        "gruvbox-dark",
+        "nord",
+        "solarized-dark",
+    ]
 }
 
 /// Returns a fully-populated ThemeConfig for the named preset, or None if unknown.
@@ -348,32 +355,32 @@ pub fn terminal_theme(cfg: &ThemeConfig) -> TerminalTheme {
     TerminalTheme::new(Box::new(ColorPalette {
         foreground: fg.into(),
         background: bg.into(),
-        black:   cfg.black.as_deref().unwrap_or("#12131e").into(),
-        red:     cfg.red.as_deref().unwrap_or("#dd7755").into(),
-        green:   cfg.green.as_deref().unwrap_or("#04dbb5").into(),
-        yellow:  cfg.yellow.as_deref().unwrap_or("#f2e7b7").into(),
-        blue:    cfg.blue.as_deref().unwrap_or("#7aa5ff").into(),
+        black: cfg.black.as_deref().unwrap_or("#12131e").into(),
+        red: cfg.red.as_deref().unwrap_or("#dd7755").into(),
+        green: cfg.green.as_deref().unwrap_or("#04dbb5").into(),
+        yellow: cfg.yellow.as_deref().unwrap_or("#f2e7b7").into(),
+        blue: cfg.blue.as_deref().unwrap_or("#7aa5ff").into(),
         magenta: cfg.magenta.as_deref().unwrap_or("#bf9cf9").into(),
-        cyan:    cfg.cyan.as_deref().unwrap_or("#56d3c2").into(),
-        white:   cfg.white.as_deref().unwrap_or("#e4e3e9").into(),
-        bright_black:   cfg.bright_black.as_deref().unwrap_or("#666699").into(),
-        bright_red:     cfg.bright_red.as_deref().unwrap_or("#ff92cd").into(),
-        bright_green:   cfg.bright_green.as_deref().unwrap_or("#01eac0").into(),
-        bright_yellow:  cfg.bright_yellow.as_deref().unwrap_or("#fffca8").into(),
-        bright_blue:    cfg.bright_blue.as_deref().unwrap_or("#69c0fa").into(),
+        cyan: cfg.cyan.as_deref().unwrap_or("#56d3c2").into(),
+        white: cfg.white.as_deref().unwrap_or("#e4e3e9").into(),
+        bright_black: cfg.bright_black.as_deref().unwrap_or("#666699").into(),
+        bright_red: cfg.bright_red.as_deref().unwrap_or("#ff92cd").into(),
+        bright_green: cfg.bright_green.as_deref().unwrap_or("#01eac0").into(),
+        bright_yellow: cfg.bright_yellow.as_deref().unwrap_or("#fffca8").into(),
+        bright_blue: cfg.bright_blue.as_deref().unwrap_or("#69c0fa").into(),
         bright_magenta: cfg.bright_magenta.as_deref().unwrap_or("#c17ff8").into(),
-        bright_cyan:    cfg.bright_cyan.as_deref().unwrap_or("#8bfde1").into(),
-        bright_white:   cfg.bright_white.as_deref().unwrap_or("#f4f2f9").into(),
+        bright_cyan: cfg.bright_cyan.as_deref().unwrap_or("#8bfde1").into(),
+        bright_white: cfg.bright_white.as_deref().unwrap_or("#f4f2f9").into(),
         bright_foreground: Some(cfg.bright_foreground.as_deref().unwrap_or("#f4f2f9").into()),
         dim_foreground: fg.into(),
-        dim_black:   cfg.black.as_deref().unwrap_or("#12131e").into(),
-        dim_red:     cfg.red.as_deref().unwrap_or("#dd7755").into(),
-        dim_green:   cfg.green.as_deref().unwrap_or("#04dbb5").into(),
-        dim_yellow:  cfg.yellow.as_deref().unwrap_or("#f2e7b7").into(),
-        dim_blue:    cfg.blue.as_deref().unwrap_or("#7aa5ff").into(),
+        dim_black: cfg.black.as_deref().unwrap_or("#12131e").into(),
+        dim_red: cfg.red.as_deref().unwrap_or("#dd7755").into(),
+        dim_green: cfg.green.as_deref().unwrap_or("#04dbb5").into(),
+        dim_yellow: cfg.yellow.as_deref().unwrap_or("#f2e7b7").into(),
+        dim_blue: cfg.blue.as_deref().unwrap_or("#7aa5ff").into(),
         dim_magenta: cfg.magenta.as_deref().unwrap_or("#bf9cf9").into(),
-        dim_cyan:    cfg.cyan.as_deref().unwrap_or("#56d3c2").into(),
-        dim_white:   cfg.white.as_deref().unwrap_or("#e4e3e9").into(),
+        dim_cyan: cfg.cyan.as_deref().unwrap_or("#56d3c2").into(),
+        dim_white: cfg.white.as_deref().unwrap_or("#e4e3e9").into(),
     }))
 }
 
@@ -393,9 +400,8 @@ pub fn terminal_font(size: f32) -> TerminalFont {
 // System fonts tried at runtime as additional fallbacks (macOS only).
 // Apple Symbols covers geometric shapes, Miscellaneous Technical (⌘ ⌥ ⏺ etc.),
 // and Dingbats that CLI tools like Claude Code and Starship commonly use.
-const SYSTEM_FALLBACK_FONTS: &[(&str, &str)] = &[
-    ("Apple Symbols", "/System/Library/Fonts/Apple Symbols.ttf"),
-];
+const SYSTEM_FALLBACK_FONTS: &[(&str, &str)] =
+    &[("Apple Symbols", "/System/Library/Fonts/Apple Symbols.ttf")];
 
 pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
@@ -435,9 +441,10 @@ pub fn font_definitions() -> egui::FontDefinitions {
     // Load system fonts as additional fallbacks after bundled fonts but before egui defaults.
     for (name, path) in SYSTEM_FALLBACK_FONTS {
         if let Ok(data) = std::fs::read(path) {
-            fonts
-                .font_data
-                .insert((*name).to_owned(), Arc::new(egui::FontData::from_owned(data)));
+            fonts.font_data.insert(
+                (*name).to_owned(),
+                Arc::new(egui::FontData::from_owned(data)),
+            );
             fonts
                 .families
                 .entry(egui::FontFamily::Proportional)

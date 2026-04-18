@@ -147,10 +147,15 @@ impl AppRegistry {
 
             match self.load_app(&app_dir) {
                 Ok(installed) => {
-                    log::info!("AppRegistry: loaded app '{}' from {:?}", installed.manifest.id, apps_dir);
+                    log::info!(
+                        "AppRegistry: loaded app '{}' from {:?}",
+                        installed.manifest.id,
+                        apps_dir
+                    );
                     for ext in &installed.manifest.capabilities.file_types {
                         // Plain insert — local apps override global for extension map too.
-                        self.extension_map.insert(ext.to_lowercase(), installed.manifest.id.clone());
+                        self.extension_map
+                            .insert(ext.to_lowercase(), installed.manifest.id.clone());
                     }
                     self.apps.insert(installed.manifest.id.clone(), installed);
                 }
@@ -166,8 +171,8 @@ impl AppRegistry {
         let manifest_str = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("no manifest.toml: {e}"))?;
 
-        let manifest: AppManifest = toml::from_str(&manifest_str)
-            .map_err(|e| format!("invalid manifest: {e}"))?;
+        let manifest: AppManifest =
+            toml::from_str(&manifest_str).map_err(|e| format!("invalid manifest: {e}"))?;
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
@@ -198,22 +203,31 @@ impl AppRegistry {
 
     /// Get the manifest-declared permissions for an app.
     pub fn permissions_for(&self, app_id: &str) -> Option<crate::app_permissions::AppPermissions> {
-        self.apps.get(app_id).map(|app| app.manifest.capabilities.to_permissions())
+        self.apps
+            .get(app_id)
+            .map(|app| app.manifest.capabilities.to_permissions())
     }
 
     /// Get the manifest-declared pane group for an app (None if unset).
     pub fn group_for(&self, app_id: &str) -> Option<String> {
-        self.apps.get(app_id).and_then(|a| a.manifest.capabilities.group.clone())
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.manifest.capabilities.group.clone())
     }
 
     /// Get the manifest-declared keyboard_capture flag for an app.
     pub fn keyboard_capture_for(&self, app_id: &str) -> bool {
-        self.apps.get(app_id).map(|a| a.manifest.capabilities.keyboard_capture).unwrap_or(false)
+        self.apps
+            .get(app_id)
+            .map(|a| a.manifest.capabilities.keyboard_capture)
+            .unwrap_or(false)
     }
 
     /// Get the manifest-declared layout_hint for an app ("split" | "overlay").
     pub fn layout_hint_for(&self, app_id: &str) -> Option<String> {
-        self.apps.get(app_id).and_then(|a| a.manifest.capabilities.layout_hint.clone())
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.manifest.capabilities.layout_hint.clone())
     }
 
     /// Launch an app and return a boxed `App` trait object.
@@ -234,7 +248,11 @@ impl AppRegistry {
             keyboard_capture,
         ) {
             Ok(app) => {
-                log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);
+                log::info!(
+                    "AppRegistry: launched '{}' from {:?}",
+                    id,
+                    installed.bin_path
+                );
                 Some(Box::new(app))
             }
             Err(e) => {
@@ -245,7 +263,11 @@ impl AppRegistry {
     }
 
     /// Launch the app associated with a file extension, passing the file path as argv[1].
-    pub fn launch_for_file(&self, file_path: &std::path::Path, cwd: &std::path::Path) -> Option<Box<dyn App>> {
+    pub fn launch_for_file(
+        &self,
+        file_path: &std::path::Path,
+        cwd: &std::path::Path,
+    ) -> Option<Box<dyn App>> {
         let ext = file_path.extension()?.to_string_lossy().to_lowercase();
         let id = self.extension_map.get(&ext)?.clone();
         let args = vec![file_path.display().to_string()];
@@ -300,7 +322,9 @@ fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
             .map(|m| m.permissions().mode())
             .unwrap_or(0);
         if mode & 0o111 == 0 {
-            return Err(format!("entry '{entry}' exists but is not executable (run: chmod +x {entry})"));
+            return Err(format!(
+                "entry '{entry}' exists but is not executable (run: chmod +x {entry})"
+            ));
         }
     }
 

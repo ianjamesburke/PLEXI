@@ -11,10 +11,7 @@ impl PlexiApp {
     /// Feed keyboard input to the focused pane's active app and dispatch any
     /// resulting AppCommands. Returns SpawnApp requests to the caller (they
     /// need host-level access that this method can't provide mid-borrow).
-    pub(super) fn dispatch_app_key_events(
-        &mut self,
-        ctx: &egui::Context,
-    ) -> Vec<AppCommand> {
+    pub(super) fn dispatch_app_key_events(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         let active = self.active_context;
         let Some(focused_tile) = self.contexts[active].focused_pane else {
             return vec![];
@@ -30,13 +27,20 @@ impl PlexiApp {
             let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
                 return vec![];
             };
-            let Some(t) = pane.as_terminal_mut() else { return vec![] };
+            let Some(t) = pane.as_terminal_mut() else {
+                return vec![];
+            };
             let Some(app) = t.active_app.as_mut() else {
                 return vec![];
             };
-            ctx.input(|i| { app.handle_key(i); });
+            ctx.input(|i| {
+                app.handle_key(i);
+            });
             let cmds = app.take_pending_commands();
-            let scope = t.app_scope.clone().unwrap_or_else(|| std::path::PathBuf::from("/"));
+            let scope = t
+                .app_scope
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from("/"));
             let perms = t.app_permissions.clone();
             let linked = t.linked_terminal_pane;
             (cmds, scope, perms, linked)
@@ -56,7 +60,9 @@ impl PlexiApp {
                         let check = match &cmd {
                             AppCommand::RunInTerminal(_) => {
                                 if perms.is_builtin
-                                    || perms.capabilities.contains(&crate::app_permissions::Capability::FsWrite)
+                                    || perms
+                                        .capabilities
+                                        .contains(&crate::app_permissions::Capability::FsWrite)
                                 {
                                     PermissionCheck::Allowed
                                 } else {
@@ -95,8 +101,12 @@ pub(super) fn execute_app_command(cmd: AppCommand, pane: &mut TerminalPane) {
             pane.backend.process_command(BackendCommand::Write(bytes));
         }
         AppCommand::Cd(path) => {
-            let cmd = format!("clear && cd {}\n", shell_escape(&path.display().to_string()));
-            pane.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
+            let cmd = format!(
+                "clear && cd {}\n",
+                shell_escape(&path.display().to_string())
+            );
+            pane.backend
+                .process_command(BackendCommand::Write(cmd.into_bytes()));
         }
         AppCommand::Notify(_msg) => {
             // Notification system not yet wired — no-op for now.

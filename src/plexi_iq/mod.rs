@@ -18,10 +18,10 @@
 pub mod backend;
 pub mod context;
 pub mod ledger;
-#[path = "loop.rs"]
-pub mod turn_loop;
 pub mod prompt;
 pub mod tools;
+#[path = "loop.rs"]
+pub mod turn_loop;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

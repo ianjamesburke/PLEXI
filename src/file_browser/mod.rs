@@ -102,9 +102,9 @@ impl FileBrowserApp {
                         let path = e.path();
                         let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
                         let meta = e.metadata().ok();
-                        let size_bytes = meta.as_ref().and_then(|m| {
-                            if is_dir { None } else { Some(m.len()) }
-                        });
+                        let size_bytes =
+                            meta.as_ref()
+                                .and_then(|m| if is_dir { None } else { Some(m.len()) });
                         let modified = meta.as_ref().and_then(|m| m.modified().ok());
                         let ext = path
                             .extension()
@@ -112,13 +112,28 @@ impl FileBrowserApp {
                             .map(|e| e.to_ascii_lowercase());
                         let is_image = ext
                             .as_deref()
-                            .map(|e| matches!(e, "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp"))
+                            .map(|e| {
+                                matches!(
+                                    e,
+                                    "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp"
+                                )
+                            })
                             .unwrap_or(false);
                         let is_audio = ext
                             .as_deref()
-                            .map(|e| matches!(e, "mp3" | "wav" | "flac" | "ogg" | "aiff" | "aif" | "m4a"))
+                            .map(|e| {
+                                matches!(e, "mp3" | "wav" | "flac" | "ogg" | "aiff" | "aif" | "m4a")
+                            })
                             .unwrap_or(false);
-                        Some(Entry { name, path, is_dir, is_image, is_audio, size_bytes, modified })
+                        Some(Entry {
+                            name,
+                            path,
+                            is_dir,
+                            is_image,
+                            is_audio,
+                            size_bytes,
+                            modified,
+                        })
                     })
                     .collect();
 
@@ -128,11 +143,9 @@ impl FileBrowserApp {
                     }
                     SortMode::RecentlyTouched => {
                         entries.sort_by(|a, b| {
-                            b.is_dir.cmp(&a.is_dir).then(
-                                b.modified
-                                    .cmp(&a.modified)
-                                    .then(a.name.cmp(&b.name)),
-                            )
+                            b.is_dir
+                                .cmp(&a.is_dir)
+                                .then(b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)))
                         });
                     }
                 }
@@ -159,7 +172,8 @@ impl FileBrowserApp {
 
     fn navigate_up(&mut self) {
         if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
-            let leaving_name = self.cwd
+            let leaving_name = self
+                .cwd
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string());
             self.cwd = parent.clone();
@@ -299,7 +313,12 @@ impl FileBrowserApp {
                 }
             }
         }
-        self.dir_preview_stats = Some(DirStats { file_count, dir_count, total_bytes, truncated });
+        self.dir_preview_stats = Some(DirStats {
+            file_count,
+            dir_count,
+            total_bytes,
+            truncated,
+        });
     }
 
     // ─── Drawing ─────────────────────────────────────────────────────────────
@@ -332,7 +351,11 @@ impl FileBrowserApp {
                 CornerRadius::same(6),
                 Stroke::new(
                     if is_selected { 1.5 } else { 1.0 },
-                    if is_selected { colors.accent } else { colors.border },
+                    if is_selected {
+                        colors.accent
+                    } else {
+                        colors.border
+                    },
                 ),
                 StrokeKind::Inside,
             );
@@ -425,8 +448,17 @@ impl FileBrowserApp {
                 ui.add_space(6.0);
                 let preview_max = egui::vec2(ui.available_width(), 220.0);
                 let (slot_rect, _) = ui.allocate_exact_size(preview_max, egui::Sense::hover());
-                ui.painter().rect_filled(slot_rect, CornerRadius::same(4), colors.bg_darkest.gamma_multiply(0.95));
-                ui.painter().rect_stroke(slot_rect, CornerRadius::same(4), Stroke::new(1.0, colors.border), StrokeKind::Inside);
+                ui.painter().rect_filled(
+                    slot_rect,
+                    CornerRadius::same(4),
+                    colors.bg_darkest.gamma_multiply(0.95),
+                );
+                ui.painter().rect_stroke(
+                    slot_rect,
+                    CornerRadius::same(4),
+                    Stroke::new(1.0, colors.border),
+                    StrokeKind::Inside,
+                );
                 if let Some(texture) = &self.preview_texture {
                     let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
                     let scale = (slot_rect.width() / tex_size.x)
@@ -441,13 +473,29 @@ impl FileBrowserApp {
                         Color32::WHITE,
                     );
                 } else if let Some(err) = &self.preview_error {
-                    ui.painter().text(slot_rect.center(), egui::Align2::CENTER_CENTER, err, egui::FontId::proportional(10.0), Color32::from_rgb(0xff, 0xaf, 0xaf));
+                    ui.painter().text(
+                        slot_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        err,
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(0xff, 0xaf, 0xaf),
+                    );
                 } else {
-                    ui.painter().text(slot_rect.center(), egui::Align2::CENTER_CENTER, "Loading\u{2026}", egui::FontId::proportional(10.0), colors.text_dim);
+                    ui.painter().text(
+                        slot_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Loading\u{2026}",
+                        egui::FontId::proportional(10.0),
+                        colors.text_dim,
+                    );
                 }
                 ui.add_space(6.0);
                 if let Some(size) = entry.size_bytes {
-                    ui.label(egui::RichText::new(format_size(Some(size))).size(9.5).color(colors.text_dim));
+                    ui.label(
+                        egui::RichText::new(format_size(Some(size)))
+                            .size(9.5)
+                            .color(colors.text_dim),
+                    );
                 }
             });
     }
@@ -470,7 +518,11 @@ impl FileBrowserApp {
                         .strong(),
                 );
                 ui.separator();
-                ui.label(egui::RichText::new(format!("Path: {}", entry.path.display())).size(9.5).color(colors.text_dim));
+                ui.label(
+                    egui::RichText::new(format!("Path: {}", entry.path.display()))
+                        .size(9.5)
+                        .color(colors.text_dim),
+                );
                 let truncated = stats.map(|s| s.truncated).unwrap_or(false);
                 let suffix = if truncated { "+" } else { "" };
                 ui.label(
@@ -498,9 +550,7 @@ impl FileBrowserApp {
         self.ensure_text_preview(&path);
 
         // Cmd+S saves the file.
-        let should_save = ui.input_mut(|i| {
-            i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
-        });
+        let should_save = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
         if should_save {
             self.save_text_preview_if_dirty();
         }
@@ -573,7 +623,11 @@ impl FileBrowserApp {
                         .strong(),
                 );
                 if let Some(size) = entry.size_bytes {
-                    ui.label(egui::RichText::new(format_size(Some(size))).size(9.5).color(colors.text_dim));
+                    ui.label(
+                        egui::RichText::new(format_size(Some(size)))
+                            .size(9.5)
+                            .color(colors.text_dim),
+                    );
                 }
                 ui.add_space(8.0);
 
@@ -605,7 +659,11 @@ impl FileBrowserApp {
                     let elapsed = self.audio_elapsed();
                     let mins = (elapsed / 60.0) as u32;
                     let secs = (elapsed % 60.0) as u32;
-                    let state = if self.audio_playing { "Playing" } else { "Paused" };
+                    let state = if self.audio_playing {
+                        "Playing"
+                    } else {
+                        "Paused"
+                    };
                     ui.add_space(6.0);
                     ui.label(
                         egui::RichText::new(format!("{state} \u{2014} {mins}:{secs:02}"))
@@ -639,10 +697,21 @@ impl FileBrowserApp {
                 );
                 ui.separator();
                 if let Some(size) = entry.size_bytes {
-                    ui.label(egui::RichText::new(format_size(Some(size))).size(9.5).color(colors.text_dim));
+                    ui.label(
+                        egui::RichText::new(format_size(Some(size)))
+                            .size(9.5)
+                            .color(colors.text_dim),
+                    );
                 }
                 if let Some(modified) = entry.modified {
-                    ui.label(egui::RichText::new(format!("Modified: {}", format_modified(Some(modified)))).size(9.5).color(colors.text_dim));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Modified: {}",
+                            format_modified(Some(modified))
+                        ))
+                        .size(9.5)
+                        .color(colors.text_dim),
+                    );
                 }
             });
     }
@@ -686,7 +755,8 @@ impl FileBrowserApp {
     }
 
     fn audio_elapsed(&self) -> f32 {
-        let current = self.audio_play_started
+        let current = self
+            .audio_play_started
             .map(|s| s.elapsed().as_secs_f32())
             .unwrap_or(0.0);
         self.audio_elapsed_before_pause + current
@@ -720,8 +790,16 @@ impl App for FileBrowserApp {
                             .monospace(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let name_label = if self.sort_mode == SortMode::Name { "Name \u{2713}" } else { "Name" };
-                        let recent_label = if self.sort_mode == SortMode::RecentlyTouched { "Recent \u{2713}" } else { "Recent" };
+                        let name_label = if self.sort_mode == SortMode::Name {
+                            "Name \u{2713}"
+                        } else {
+                            "Name"
+                        };
+                        let recent_label = if self.sort_mode == SortMode::RecentlyTouched {
+                            "Recent \u{2713}"
+                        } else {
+                            "Recent"
+                        };
                         if ui.small_button(name_label).clicked() {
                             self.sort_mode = SortMode::Name;
                             self.refresh();
@@ -820,7 +898,11 @@ impl App for FileBrowserApp {
             consumed = true;
         }
 
-        if !input.modifiers.command && (input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::L)) {
+        if !input.modifiers.command
+            && (input.key_pressed(egui::Key::Enter)
+                || input.key_pressed(egui::Key::ArrowRight)
+                || input.key_pressed(egui::Key::L))
+        {
             if let Some(entry) = self.selected_entry().cloned() {
                 if entry.is_dir {
                     self.navigate_into(entry.path);
@@ -831,7 +913,11 @@ impl App for FileBrowserApp {
             consumed = true;
         }
 
-        if !input.modifiers.command && (input.key_pressed(egui::Key::Backspace) || input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::H)) {
+        if !input.modifiers.command
+            && (input.key_pressed(egui::Key::Backspace)
+                || input.key_pressed(egui::Key::ArrowLeft)
+                || input.key_pressed(egui::Key::H))
+        {
             self.navigate_up();
             consumed = true;
         }
@@ -878,7 +964,11 @@ impl App for FileBrowserApp {
         match parts.as_slice() {
             ["cd", path] => {
                 let target = PathBuf::from(path);
-                let target = if target.is_absolute() { target } else { self.cwd.join(target) };
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    self.cwd.join(target)
+                };
                 if target.is_dir() {
                     self.navigate_into(target.clone());
                     return Some(AppCommand::Cd(target));

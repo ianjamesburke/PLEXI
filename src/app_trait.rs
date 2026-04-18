@@ -20,7 +20,11 @@ pub enum AppCommand {
     /// Request the host to spawn a new app pane.
     /// `layout`: "split_v" (below, default), "split_h" (right), or "overlay".
     /// `args`: passed as argv to the child process.
-    SpawnApp { type_id: String, layout: Option<String>, args: Vec<String> },
+    SpawnApp {
+        type_id: String,
+        layout: Option<String>,
+        args: Vec<String>,
+    },
 }
 
 /// The trait all Plexi apps implement.

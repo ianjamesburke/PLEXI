@@ -86,8 +86,10 @@ impl AudioDevice for CoreAudioDevice {
         _sample_rate: u32,
         _buffer_size: u32,
     ) -> Result<AudioCaptureHandle, AudioError> {
-        log::warn!("CoreAudioDevice: start_capture not yet implemented (Layer 4). \
-                    Set PLEXI_AUDIO=mock://<in.wav>,<out.wav> to use the mock device.");
+        log::warn!(
+            "CoreAudioDevice: start_capture not yet implemented (Layer 4). \
+                    Set PLEXI_AUDIO=mock://<in.wav>,<out.wav> to use the mock device."
+        );
         Err(AudioError::DeviceUnavailable)
     }
 
@@ -96,8 +98,10 @@ impl AudioDevice for CoreAudioDevice {
         _source: AudioSource,
         _volume: f32,
     ) -> Result<AudioPlaybackHandle, AudioError> {
-        log::warn!("CoreAudioDevice: start_playback not yet implemented (Layer 4). \
-                    Set PLEXI_AUDIO=mock://<in.wav>,<out.wav> to use the mock device.");
+        log::warn!(
+            "CoreAudioDevice: start_playback not yet implemented (Layer 4). \
+                    Set PLEXI_AUDIO=mock://<in.wav>,<out.wav> to use the mock device."
+        );
         Err(AudioError::DeviceUnavailable)
     }
 
@@ -126,7 +130,11 @@ pub struct MockAudioDevice {
 
 impl MockAudioDevice {
     pub fn new(in_wav: PathBuf, out_wav: PathBuf) -> Self {
-        Self { in_wav, out_wav, next_id: 1 }
+        Self {
+            in_wav,
+            out_wav,
+            next_id: 1,
+        }
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -180,7 +188,10 @@ impl AudioDevice for MockAudioDevice {
                             .map(|s| s as f32 / max_val)
                             .collect(),
                         _ => {
-                            log::warn!("MockAudioDevice: unsupported bit depth {}", spec.bits_per_sample);
+                            log::warn!(
+                                "MockAudioDevice: unsupported bit depth {}",
+                                spec.bits_per_sample
+                            );
                             return;
                         }
                     }
@@ -210,8 +221,10 @@ impl AudioDevice for MockAudioDevice {
         let src_path = match source {
             AudioSource::File(p) => p,
             AudioSource::Pipe(id) => {
-                log::warn!("MockAudioDevice: Pipe source mode not yet implemented (Layer 4+) \
-                            — pipe='{id}'");
+                log::warn!(
+                    "MockAudioDevice: Pipe source mode not yet implemented (Layer 4+) \
+                            — pipe='{id}'"
+                );
                 return Err(AudioError::UnsupportedFormat);
             }
         };

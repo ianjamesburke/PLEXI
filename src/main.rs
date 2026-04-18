@@ -7,31 +7,27 @@
 
 mod app;
 #[allow(dead_code)]
+mod app_permissions;
+#[allow(dead_code)]
 mod app_protocol;
 #[allow(dead_code)]
-mod error;
-#[allow(dead_code)]
 mod app_registry;
-#[allow(dead_code)]
-mod app_permissions;
 #[allow(dead_code)]
 mod app_trait;
 mod cli;
 mod command_palette;
-mod file_browser;
-#[allow(dead_code)]
-mod process_app;
-mod quick_note_app;
-mod secrets_app;
-#[allow(dead_code)]
-mod text_editor_app;
 mod config;
 mod context;
-mod logging;
+#[allow(dead_code)]
+mod error;
 #[allow(dead_code)]
 mod event_log;
 mod features;
+mod file_browser;
+#[allow(dead_code)]
+mod host;
 mod keys;
+mod logging;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 #[allow(dead_code)]
@@ -44,19 +40,25 @@ mod pane_ops;
 #[allow(dead_code)]
 mod plexi_iq;
 #[allow(dead_code)]
+mod process_app;
+#[allow(dead_code)]
+mod protocol;
+mod quick_note_app;
+#[allow(dead_code)]
+mod runs;
+#[allow(dead_code)]
 mod secrets;
+mod secrets_app;
 mod shell;
 mod sidebar;
+#[allow(dead_code)]
+mod text_editor_app;
 #[allow(dead_code)]
 mod theme;
 mod tiling;
 #[allow(dead_code)]
-mod runs;
-#[allow(dead_code)]
 mod typed_pipes;
 mod workspace;
-#[allow(dead_code)]
-mod host;
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -82,8 +84,12 @@ fn main() -> eframe::Result {
         .enumerate()
         .filter_map(|(i, a)| {
             // strip --profile and its value from downstream arg parsing
-            if a == "--profile" { return None; }
-            if i > 0 && raw_args.get(i - 1).map(|x| x.as_str()) == Some("--profile") { return None; }
+            if a == "--profile" {
+                return None;
+            }
+            if i > 0 && raw_args.get(i - 1).map(|x| x.as_str()) == Some("--profile") {
+                return None;
+            }
             Some(a.clone())
         })
         .collect();
@@ -184,7 +190,10 @@ fn main() -> eframe::Result {
         let mut dir = cwd.as_path();
         loop {
             if dir.join(".plexi").is_dir() {
-                eprintln!("plexi: already running inside Plexi. Nearest workspace: {}", dir.join(".plexi").display());
+                eprintln!(
+                    "plexi: already running inside Plexi. Nearest workspace: {}",
+                    dir.join(".plexi").display()
+                );
                 std::process::exit(0);
             }
             if dir == home || dir.parent().is_none() {
@@ -196,9 +205,8 @@ fn main() -> eframe::Result {
         std::process::exit(0);
     }
 
-    let icon =
-        eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
-            .expect("failed to load app icon");
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
+        .expect("failed to load app icon");
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

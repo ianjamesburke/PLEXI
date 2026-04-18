@@ -22,20 +22,32 @@ pub(crate) fn audio_thread(rx: mpsc::Receiver<AudioMsg>) {
                 if let Some(s) = sink.take() {
                     s.stop();
                 }
-                let Ok(file) = std::fs::File::open(&path) else { continue };
-                let Ok(source) = rodio::Decoder::new(std::io::BufReader::new(file)) else { continue };
-                let Ok(new_sink) = rodio::Sink::try_new(&handle) else { continue };
+                let Ok(file) = std::fs::File::open(&path) else {
+                    continue;
+                };
+                let Ok(source) = rodio::Decoder::new(std::io::BufReader::new(file)) else {
+                    continue;
+                };
+                let Ok(new_sink) = rodio::Sink::try_new(&handle) else {
+                    continue;
+                };
                 new_sink.append(source);
                 sink = Some(new_sink);
             }
             AudioMsg::Pause => {
-                if let Some(s) = &sink { s.pause(); }
+                if let Some(s) = &sink {
+                    s.pause();
+                }
             }
             AudioMsg::Resume => {
-                if let Some(s) = &sink { s.play(); }
+                if let Some(s) = &sink {
+                    s.play();
+                }
             }
             AudioMsg::Stop => {
-                if let Some(s) = sink.take() { s.stop(); }
+                if let Some(s) = sink.take() {
+                    s.stop();
+                }
             }
         }
     }

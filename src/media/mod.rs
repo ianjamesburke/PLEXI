@@ -15,10 +15,14 @@
 pub mod audio;
 pub mod video;
 
-pub use audio::{AudioCaptureHandle, AudioDevice, AudioPlaybackHandle, AudioSource,
-                CoreAudioDevice, MockAudioDevice};
-pub use video::{AvfVideoDecoder, MockVideoDecoder, PlaybackState, VideoDecoder,
-                VideoFrame, VideoHandle, VideoSource};
+pub use audio::{
+    AudioCaptureHandle, AudioDevice, AudioPlaybackHandle, AudioSource, CoreAudioDevice,
+    MockAudioDevice,
+};
+pub use video::{
+    AvfVideoDecoder, MockVideoDecoder, PlaybackState, VideoDecoder, VideoFrame, VideoHandle,
+    VideoSource,
+};
 
 /// Create an `AudioDevice` appropriate for the current environment.
 ///
@@ -52,7 +56,11 @@ pub fn video_decoder() -> Box<dyn VideoDecoder> {
         Ok(val) if val.starts_with("mock://") => {
             let rest = val.trim_start_matches("mock://");
             // Split path from query string.
-            let query = if let Some(q) = rest.split_once('?') { q.1 } else { "" };
+            let query = if let Some(q) = rest.split_once('?') {
+                q.1
+            } else {
+                ""
+            };
 
             let mut duration_ms: u64 = 5000;
             let mut width: u32 = 640;
@@ -62,13 +70,19 @@ pub fn video_decoder() -> Box<dyn VideoDecoder> {
                 let mut it = kv.splitn(2, '=');
                 match (it.next(), it.next()) {
                     (Some("duration"), Some(v)) => {
-                        if let Ok(n) = v.parse() { duration_ms = n; }
+                        if let Ok(n) = v.parse() {
+                            duration_ms = n;
+                        }
                     }
                     (Some("w"), Some(v)) => {
-                        if let Ok(n) = v.parse() { width = n; }
+                        if let Ok(n) = v.parse() {
+                            width = n;
+                        }
                     }
                     (Some("h"), Some(v)) => {
-                        if let Ok(n) = v.parse() { height = n; }
+                        if let Ok(n) = v.parse() {
+                            height = n;
+                        }
                     }
                     _ => {}
                 }

@@ -29,7 +29,8 @@ impl PlexiApp {
                     } else {
                         self.colors.bg_active
                     };
-                    ui.painter().circle_filled(egui::pos2(cx, y), dot_radius, color);
+                    ui.painter()
+                        .circle_filled(egui::pos2(cx, y), dot_radius, color);
                 }
                 ui.add_space(4.0);
             }
@@ -123,9 +124,7 @@ impl PlexiApp {
                                 );
                                 ui.add_space(8.0);
                                 ui.label(
-                                    RichText::new(desc)
-                                        .size(11.0)
-                                        .color(self.colors.text_dim),
+                                    RichText::new(desc).size(11.0).color(self.colors.text_dim),
                                 );
                             });
                         }
@@ -196,9 +195,7 @@ impl PlexiApp {
                         // Auto-focus and select all
                         if !te.has_focus() {
                             te.request_focus();
-                            if let Some(mut state) =
-                                egui::TextEdit::load_state(ui.ctx(), te_id)
-                            {
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
                                 state
                                     .cursor
                                     .set_char_range(Some(egui::text::CCursorRange::two(
@@ -245,9 +242,16 @@ impl PlexiApp {
                     ui.label("Apps create runs via DrawCommand::RunGet.");
                 } else {
                     for (run_id, app_id, status, blocked_prompt) in &all_runs {
-                        let badge = if status == "blocked_on_user" { "[!] " } else { "    " };
+                        let badge = if status == "blocked_on_user" {
+                            "[!] "
+                        } else {
+                            "    "
+                        };
                         ui.label(egui::RichText::new(format!("{badge}{run_id}")).monospace());
-                        ui.label(egui::RichText::new(format!("    app={app_id} status={status}")).small());
+                        ui.label(
+                            egui::RichText::new(format!("    app={app_id} status={status}"))
+                                .small(),
+                        );
                         if let Some(prompt) = blocked_prompt {
                             ui.label(prompt);
                         }

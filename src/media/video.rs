@@ -2,8 +2,8 @@
 // MockVideoDecoder is a fully working implementation that generates
 // procedural RGBA8 frames with a time-varying gradient.
 
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Public supporting types
@@ -87,9 +87,13 @@ pub struct AvfVideoDecoder;
 
 impl VideoDecoder for AvfVideoDecoder {
     fn open(&mut self, _source: VideoSource) -> Result<VideoHandle, VideoError> {
-        log::warn!("AvfVideoDecoder: open not yet implemented (Layer 4). \
-                    Set PLEXI_VIDEO=mock://... to use the mock decoder.");
-        Err(VideoError::DecodeError("AvfVideoDecoder not implemented".into()))
+        log::warn!(
+            "AvfVideoDecoder: open not yet implemented (Layer 4). \
+                    Set PLEXI_VIDEO=mock://... to use the mock decoder."
+        );
+        Err(VideoError::DecodeError(
+            "AvfVideoDecoder not implemented".into(),
+        ))
     }
 
     fn set_state(&mut self, _handle_id: u64, _state: PlaybackState) {
@@ -251,7 +255,12 @@ impl VideoDecoder for MockVideoDecoder {
         let (w, h) = (stream.width, stream.height);
         let rgba = Self::generate_frame(w, h, pts_ms);
 
-        Some(VideoFrame { width: w, height: h, pts_ms, rgba })
+        Some(VideoFrame {
+            width: w,
+            height: h,
+            pts_ms,
+            rgba,
+        })
     }
 
     fn close(&mut self, handle_id: u64) {
@@ -266,7 +275,11 @@ mod prod_stub_tests {
     #[test]
     fn avf_open_returns_err_not_panic() {
         let mut d = AvfVideoDecoder;
-        assert!(d.open(VideoSource::File(std::path::PathBuf::from("/nonexistent.mp4"))).is_err());
+        assert!(d
+            .open(VideoSource::File(std::path::PathBuf::from(
+                "/nonexistent.mp4"
+            )))
+            .is_err());
     }
 
     #[test]

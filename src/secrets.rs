@@ -37,7 +37,11 @@ fn account_key_scoped(key: &str, workspace_root: &Path) -> String {
 ///
 /// Keychain key format: `plexi/{workspace_root}/{key}`
 #[cfg(target_os = "macos")]
-pub fn get_secret_scoped(key: &str, app_id: &str, workspace_root: &Path) -> Option<Zeroizing<String>> {
+pub fn get_secret_scoped(
+    key: &str,
+    app_id: &str,
+    workspace_root: &Path,
+) -> Option<Zeroizing<String>> {
     use std::process::Command;
 
     if !validate_workspace_root(workspace_root, "get_secret_scoped", app_id, key) {
@@ -46,15 +50,25 @@ pub fn get_secret_scoped(key: &str, app_id: &str, workspace_root: &Path) -> Opti
 
     let account = account_key_scoped(key, workspace_root);
     match Command::new("security")
-        .args(["find-generic-password", "-s", SERVICE_NAME, "-a", &account, "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+            "-w",
+        ])
         .output()
     {
-        Ok(output) if output.status.success() => {
-            Some(Zeroizing::new(String::from_utf8_lossy(&output.stdout).trim().to_string()))
-        }
+        Ok(output) if output.status.success() => Some(Zeroizing::new(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        )),
         Ok(_) => None,
         Err(e) => {
-            error!("secrets::get_secret_scoped failed for app={app_id} workspace={} key={key}: {e}", workspace_root.display());
+            error!(
+                "secrets::get_secret_scoped failed for app={app_id} workspace={} key={key}: {e}",
+                workspace_root.display()
+            );
             None
         }
     }
@@ -75,11 +89,25 @@ pub fn set_secret_scoped(key: &str, value: &str, workspace_root: &Path) -> bool 
 
     // Delete existing entry first (ignore errors if not found)
     let _ = Command::new("security")
-        .args(["delete-generic-password", "-s", SERVICE_NAME, "-a", &account])
+        .args([
+            "delete-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+        ])
         .output();
 
     match Command::new("security")
-        .args(["add-generic-password", "-s", SERVICE_NAME, "-a", &account, "-w", value])
+        .args([
+            "add-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+            "-w",
+            value,
+        ])
         .output()
     {
         Ok(output) if output.status.success() => true,
@@ -99,14 +127,24 @@ pub fn set_secret_scoped(key: &str, value: &str, workspace_root: &Path) -> bool 
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn get_secret_scoped(key: &str, app_id: &str, workspace_root: &Path) -> Option<Zeroizing<String>> {
-    warn!("secrets::get_secret_scoped({key}, {app_id}, {}): Keychain not available on this platform", workspace_root.display());
+pub fn get_secret_scoped(
+    key: &str,
+    app_id: &str,
+    workspace_root: &Path,
+) -> Option<Zeroizing<String>> {
+    warn!(
+        "secrets::get_secret_scoped({key}, {app_id}, {}): Keychain not available on this platform",
+        workspace_root.display()
+    );
     None
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_secret_scoped(key: &str, _value: &str, workspace_root: &Path) -> bool {
-    warn!("secrets::set_secret_scoped({key}, {}): Keychain not available on this platform", workspace_root.display());
+    warn!(
+        "secrets::set_secret_scoped({key}, {}): Keychain not available on this platform",
+        workspace_root.display()
+    );
     false
 }
 
@@ -200,15 +238,24 @@ pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bo
 
     // Delete existing entry first (ignore errors if it doesn't exist)
     let _ = Command::new("security")
-        .args(["delete-generic-password", "-s", SERVICE_NAME, "-a", &account])
+        .args([
+            "delete-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+        ])
         .output();
 
     match Command::new("security")
         .args([
             "add-generic-password",
-            "-s", SERVICE_NAME,
-            "-a", &account,
-            "-w", value,
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+            "-w",
+            value,
         ])
         .output()
     {
@@ -239,15 +286,17 @@ pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroi
     match Command::new("security")
         .args([
             "find-generic-password",
-            "-s", SERVICE_NAME,
-            "-a", &account,
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
             "-w",
         ])
         .output()
     {
-        Ok(output) if output.status.success() => {
-            Some(Zeroizing::new(String::from_utf8_lossy(&output.stdout).trim().to_string()))
-        }
+        Ok(output) if output.status.success() => Some(Zeroizing::new(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        )),
         Ok(_) => None, // not found is normal, not an error
         Err(e) => {
             error!("secrets::retrieve_secret failed to run security CLI: {e}");
@@ -263,7 +312,13 @@ pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
     let account = account_key(key, app_id, directory);
 
     match Command::new("security")
-        .args(["delete-generic-password", "-s", SERVICE_NAME, "-a", &account])
+        .args([
+            "delete-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+        ])
         .output()
     {
         Ok(output) if output.status.success() => {

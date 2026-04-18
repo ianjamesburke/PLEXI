@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::io::{Read, Write};
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
 /// Binary pipes use unix domain sockets with u32-BE length-prefixed frames.
@@ -6,10 +8,11 @@
 /// JSON pipes are metadata-only registrations; routing is handled by the PGAP wire.
 use std::os::fd::RawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::io::{Read, Write};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
-use std::collections::HashMap;
 
 use crossbeam_queue::ArrayQueue;
 
@@ -112,7 +115,9 @@ pub struct TypedPipeRegistry {
 
 impl TypedPipeRegistry {
     pub fn new() -> Self {
-        Self { pipes: HashMap::new() }
+        Self {
+            pipes: HashMap::new(),
+        }
     }
 
     /// Allocate a binary pipe backed by a unix domain socket.
@@ -143,15 +148,14 @@ impl TypedPipeRegistry {
         // Remove stale socket file if present.
         let _ = std::fs::remove_file(&socket_path);
 
-        let listener = UnixListener::bind(&socket_path).map_err(|e| {
-            PipeError::BindFailed(format!("{socket_path}: {e}"))
-        })?;
+        let listener = UnixListener::bind(&socket_path)
+            .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
         // Non-blocking so the drain thread's accept loop can observe `shutdown`
         // and exit if the app never connects (e.g. start_capture failed and no
         // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
-        listener.set_nonblocking(true).map_err(|e| {
-            PipeError::BindFailed(format!("set_nonblocking: {e}"))
-        })?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| PipeError::BindFailed(format!("set_nonblocking: {e}")))?;
 
         let host_end_fd: RawFd = {
             use std::os::unix::io::AsRawFd;
@@ -239,7 +243,8 @@ impl TypedPipeRegistry {
         if self.pipes.contains_key(&pipe_id) {
             return Err(PipeError::AlreadyOpen(pipe_id));
         }
-        self.pipes.insert(pipe_id, PipeEntry::Json(JsonPipeEntry { direction }));
+        self.pipes
+            .insert(pipe_id, PipeEntry::Json(JsonPipeEntry { direction }));
         Ok(())
     }
 
@@ -272,7 +277,10 @@ impl TypedPipeRegistry {
                 payload.len()
             )));
         }
-        let entry = self.pipes.get(pipe_id).ok_or_else(|| PipeError::NotFound(pipe_id.to_owned()))?;
+        let entry = self
+            .pipes
+            .get(pipe_id)
+            .ok_or_else(|| PipeError::NotFound(pipe_id.to_owned()))?;
         let ring = match entry {
             PipeEntry::Binary(b) => &b.ring,
             PipeEntry::Json(_) => {
@@ -290,7 +298,9 @@ impl TypedPipeRegistry {
             // log and return an error.
             let frame2 = payload.to_vec();
             if ring.push(frame2).is_err() {
-                return Err(PipeError::WriteFailed("ring push failed after evict".to_owned()));
+                return Err(PipeError::WriteFailed(
+                    "ring push failed after evict".to_owned(),
+                ));
             }
         }
         if dropped {
@@ -303,11 +313,16 @@ impl TypedPipeRegistry {
     /// Read one length-prefixed frame from a binary pipe's host-side stream.
     /// Blocks until a frame is available or the pipe is closed / EOS.
     pub fn read_binary(&mut self, pipe_id: &str) -> Result<Option<Vec<u8>>, PipeError> {
-        let entry = self.pipes.get_mut(pipe_id).ok_or_else(|| PipeError::NotFound(pipe_id.to_owned()))?;
+        let entry = self
+            .pipes
+            .get_mut(pipe_id)
+            .ok_or_else(|| PipeError::NotFound(pipe_id.to_owned()))?;
         match entry {
             PipeEntry::Binary(b) => {
                 let stream = b.host_stream.as_mut().ok_or_else(|| {
-                    PipeError::ReadFailed("no host stream (use open_binary for in/duplex)".to_owned())
+                    PipeError::ReadFailed(
+                        "no host stream (use open_binary for in/duplex)".to_owned(),
+                    )
                 })?;
                 read_frame(stream).map_err(|e| PipeError::ReadFailed(e.to_string()))
             }
@@ -323,22 +338,21 @@ impl TypedPipeRegistry {
     ) -> Result<(), PipeError> {
         match self.pipes.get(pipe_id) {
             Some(PipeEntry::Json(_)) => Ok(()),
-            Some(PipeEntry::Binary(_)) => Err(PipeError::WriteFailed("pipe is binary mode".to_owned())),
+            Some(PipeEntry::Binary(_)) => {
+                Err(PipeError::WriteFailed("pipe is binary mode".to_owned()))
+            }
             None => Err(PipeError::NotFound(pipe_id.to_owned())),
         }
     }
 
     pub fn list(&self) -> Vec<(String, PipeMode, PipeDirection)> {
-        self.pipes.iter().map(|(id, entry)| {
-            match entry {
-                PipeEntry::Binary(b) => {
-                    (id.clone(), PipeMode::Binary, b.direction)
-                }
-                PipeEntry::Json(j) => {
-                    (id.clone(), PipeMode::Json, j.direction)
-                }
-            }
-        }).collect()
+        self.pipes
+            .iter()
+            .map(|(id, entry)| match entry {
+                PipeEntry::Binary(b) => (id.clone(), PipeMode::Binary, b.direction),
+                PipeEntry::Json(j) => (id.clone(), PipeMode::Json, j.direction),
+            })
+            .collect()
     }
 }
 
@@ -427,7 +441,9 @@ mod tests {
 
         let frames: &[&[u8]] = &[b"a", b"bb", b"ccc"];
         for f in frames {
-            registry.write_binary("test-pipe", f).expect("write_binary failed");
+            registry
+                .write_binary("test-pipe", f)
+                .expect("write_binary failed");
         }
 
         // Brief pause so drain thread can flush before we close.
@@ -455,7 +471,8 @@ mod tests {
             if ring.push(frame).is_err() {
                 ring.pop();
                 dropped_count += 1;
-                ring.push(payload.to_vec()).expect("push after evict failed");
+                ring.push(payload.to_vec())
+                    .expect("push after evict failed");
             }
         }
 
@@ -473,8 +490,12 @@ mod tests {
     fn json_pipe_register_close() {
         let mut registry = TypedPipeRegistry::new();
 
-        registry.open_json("json-a".to_owned(), PipeDirection::In).unwrap();
-        registry.open_json("json-b".to_owned(), PipeDirection::Out).unwrap();
+        registry
+            .open_json("json-a".to_owned(), PipeDirection::In)
+            .unwrap();
+        registry
+            .open_json("json-b".to_owned(), PipeDirection::Out)
+            .unwrap();
 
         let list = registry.list();
         assert_eq!(list.len(), 2);

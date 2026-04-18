@@ -25,7 +25,11 @@ pub(crate) fn paint_tab_dots(
     let start_x = left_x + DOT_LEFT_MARGIN;
     for i in 0..count {
         let cx = start_x + (i as f32) * DOT_SPACING + DOT_RADIUS;
-        let color = if i == active_idx { active_color } else { inactive_color };
+        let color = if i == active_idx {
+            active_color
+        } else {
+            inactive_color
+        };
         painter.circle_filled(egui::pos2(cx, center_y), DOT_RADIUS, color);
     }
 }
@@ -44,17 +48,16 @@ pub struct PlexiBehavior<'a> {
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
-    fn pane_ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        tile_id: TileId,
-        pane_id: &mut PaneId,
-    ) -> UiResponse {
+    fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
         // Detect clicks or file drags for focus (skip when a pane is zoomed — input belongs to the overlay)
-        let is_click = ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect());
+        let is_click =
+            ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect());
         let is_drag_hovering = match self.drag_cursor_pos {
             Some(pos) => ui.max_rect().contains(pos),
-            None => ui.input(|i| !i.raw.hovered_files.is_empty()) && ui.rect_contains_pointer(ui.max_rect()),
+            None => {
+                ui.input(|i| !i.raw.hovered_files.is_empty())
+                    && ui.rect_contains_pointer(ui.max_rect())
+            }
         };
         if self.zoomed_pane.is_none() && (is_click || is_drag_hovering) {
             self.new_focused = Some(tile_id);
@@ -124,13 +127,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     }) => {
                                         agent.session_id = session_id;
                                         agent.transcript.push(String::new()); // separator
-                                        crate::event_log::emit(crate::event_log::HostEvent::AgentTurn {
-                                            pane_id: Some(*pane_id),
-                                            tokens_in,
-                                            tokens_out,
-                                            cost_cents,
-                                            timestamp: crate::event_log::now_timestamp(),
-                                        });
+                                        crate::event_log::emit(
+                                            crate::event_log::HostEvent::AgentTurn {
+                                                pane_id: Some(*pane_id),
+                                                tokens_in,
+                                                tokens_out,
+                                                cost_cents,
+                                                timestamp: crate::event_log::now_timestamp(),
+                                            },
+                                        );
                                         done = true;
                                         break;
                                     }
@@ -153,8 +158,10 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
                         let rect = ui.max_rect();
                         // Title bar.
-                        let title_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
-                        ui.painter().rect_filled(title_rect, 0.0, self.colors.bg_toolbar);
+                        let title_rect =
+                            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 24.0));
+                        ui.painter()
+                            .rect_filled(title_rect, 0.0, self.colors.bg_toolbar);
                         let status = if agent.turn_rx.is_some() { " ⏳" } else { "" };
                         ui.painter().text(
                             egui::pos2(title_rect.min.x + 8.0, title_rect.center().y),
@@ -175,13 +182,16 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             egui::pos2(rect.min.x, title_rect.max.y),
                             egui::pos2(rect.max.x, input_rect.min.y),
                         );
-                        ui.painter().rect_filled(body_rect, 0.0, self.colors.terminal_bg);
+                        ui.painter()
+                            .rect_filled(body_rect, 0.0, self.colors.terminal_bg);
 
                         // Render transcript.
                         let mut y = body_rect.min.y + 4.0;
                         let line_h = 14.0;
                         for line in &agent.transcript {
-                            if y + line_h > body_rect.max.y { break; }
+                            if y + line_h > body_rect.max.y {
+                                break;
+                            }
                             ui.painter().text(
                                 egui::pos2(body_rect.min.x + 6.0, y),
                                 egui::Align2::LEFT_TOP,
@@ -203,7 +213,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         }
 
                         // Input bar.
-                        ui.painter().rect_filled(input_rect, 0.0, self.colors.bg_active);
+                        ui.painter()
+                            .rect_filled(input_rect, 0.0, self.colors.bg_active);
                         let te = egui::TextEdit::singleline(&mut agent.input_buf)
                             .desired_width(input_rect.width() - 12.0)
                             .font(egui::FontId::monospace(12.0))
@@ -237,15 +248,17 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                         "You are Plexi IQ, a helpful terminal-native assistant.",
                                         session_id,
                                         move |chunk| {
-                                            let _ = tx_tok.send(crate::pane::TurnMsg::Token(chunk.to_string()));
+                                            let _ = tx_tok.send(crate::pane::TurnMsg::Token(
+                                                chunk.to_string(),
+                                            ));
                                         },
                                     );
                                     match result {
                                         Ok(r) => {
                                             let tokens_in = r.input_tokens.unwrap_or(0);
-                                            let tokens_out = r
-                                                .output_tokens
-                                                .unwrap_or_else(|| r.text.split_whitespace().count() as u32);
+                                            let tokens_out = r.output_tokens.unwrap_or_else(|| {
+                                                r.text.split_whitespace().count() as u32
+                                            });
                                             let _ = tx.send(crate::pane::TurnMsg::Done {
                                                 session_id: r.session_id,
                                                 tokens_in,
@@ -254,7 +267,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                             });
                                         }
                                         Err(e) => {
-                                            let _ = tx.send(crate::pane::TurnMsg::Error(e.to_string()));
+                                            let _ =
+                                                tx.send(crate::pane::TurnMsg::Error(e.to_string()));
                                         }
                                     }
                                 });
@@ -270,7 +284,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     }
 
                     // App panes: handled by their own subsystems (Layer 3b).
-                    let Some(t) = pane.as_terminal_mut() else { return };
+                    let Some(t) = pane.as_terminal_mut() else {
+                        return;
+                    };
 
                     if t.exited {
                         // Show exit message centered, auto-close on any key
@@ -283,9 +299,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         });
                         if is_focused
                             && ui.input(|i| {
-                                i.events.iter().any(|e| {
-                                    matches!(e, egui::Event::Key { pressed: true, .. })
-                                })
+                                i.events
+                                    .iter()
+                                    .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
                             })
                         {
                             self.close_exited = Some(tile_id);
@@ -308,10 +324,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                 .set_focus(is_focused)
                                 .set_theme(self.theme.clone())
                                 .set_font(theme::terminal_font(font_size))
-                                .set_size(Vec2::new(
-                                    ui.available_width(),
-                                    ui.available_height(),
-                                ));
+                                .set_size(Vec2::new(ui.available_width(), ui.available_height()));
                             ui.add(terminal);
                         }
 

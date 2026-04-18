@@ -21,7 +21,13 @@ impl PlexiApp {
         self.next_pane_id += 1;
 
         let settings = Self::make_backend_settings(cwd, &self.colors);
-        let pane = TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)?;
+        let pane = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        )?;
 
         let mut panes = HashMap::new();
         panes.insert(new_id, Pane::Terminal(Box::new(pane)));
@@ -43,9 +49,13 @@ impl PlexiApp {
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
-        let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)
-        else {
+        let Some(pane) = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
             log::error!("Failed to create new terminal pane");
             return;
         };
@@ -53,11 +63,10 @@ impl PlexiApp {
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
 
-        let split_target =
-            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
-                Some((tabs_id, _)) => tabs_id,
-                None => focused,
-            };
+        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+            Some((tabs_id, _)) => tabs_id,
+            None => focused,
+        };
 
         let ctx = &mut self.contexts[self.active_context];
         let parent = ctx.tree.tiles.parent_of(split_target);
@@ -123,9 +132,13 @@ impl PlexiApp {
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
-        let Some(pane) =
-            TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)
-        else {
+        let Some(pane) = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
             log::error!("Failed to create new terminal pane");
             return;
         };
@@ -137,9 +150,7 @@ impl PlexiApp {
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
 
         if let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) {
-            if let Some(Tile::Container(Container::Tabs(tabs))) =
-                ctx.tree.tiles.get_mut(tabs_id)
-            {
+            if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tabs_id) {
                 tabs.add_child(new_tile);
                 tabs.set_active(new_tile);
             }
@@ -373,7 +384,9 @@ impl PlexiApp {
             let mut saved_panes = Vec::new();
             for (&id, pane) in &context.panes {
                 // Only terminal panes are saved; App/Agent panes are transient.
-                let Some(t) = pane.as_terminal() else { continue };
+                let Some(t) = pane.as_terminal() else {
+                    continue;
+                };
                 let cwd = shell::get_pid_cwd(t.backend.child_pid())
                     .unwrap_or_else(|| context.path.clone());
                 let (app_type, app_state) = if let Some(app) = &t.active_app {
@@ -414,8 +427,12 @@ impl PlexiApp {
 
     pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
         let ctx = &mut self.contexts[self.active_context];
-        let Some(focused_tile) = ctx.focused_pane else { return };
-        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
+        let Some(focused_tile) = ctx.focused_pane else {
+            return;
+        };
+        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else {
+            return;
+        };
         let pane_id = *pane_id;
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             if let Some(t) = pane.as_terminal_mut() {
@@ -426,8 +443,12 @@ impl PlexiApp {
 
     pub(crate) fn adjust_focused_pane_font_size(&mut self, delta: f32) {
         let ctx = &mut self.contexts[self.active_context];
-        let Some(focused_tile) = ctx.focused_pane else { return };
-        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else { return };
+        let Some(focused_tile) = ctx.focused_pane else {
+            return;
+        };
+        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else {
+            return;
+        };
         let pane_id = *pane_id;
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             if let Some(t) = pane.as_terminal_mut() {
@@ -508,11 +529,10 @@ impl PlexiApp {
             .insert(new_term_id, Pane::Terminal(Box::new(new_pane)));
 
         // Split using the exact same logic as split_focused (which works).
-        let split_target =
-            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
-                Some((tabs_id, _)) => tabs_id,
-                None => focused,
-            };
+        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+            Some((tabs_id, _)) => tabs_id,
+            None => focused,
+        };
 
         let ctx = &mut self.contexts[self.active_context];
         let parent = ctx.tree.tiles.parent_of(split_target);
@@ -554,9 +574,7 @@ impl PlexiApp {
             }
 
             if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent_container)) =
-                    ctx.tree.tiles.get_mut(parent_id)
-                {
+                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
                     replace_child(parent_container, split_target, container_tile);
                 }
             } else {
@@ -656,11 +674,10 @@ impl PlexiApp {
             .panes
             .insert(new_term_id, Pane::Terminal(Box::new(new_pane)));
 
-        let split_target =
-            match self.contexts[self.active_context].find_ancestor_tabs(focused) {
-                Some((tabs_id, _)) => tabs_id,
-                None => focused,
-            };
+        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+            Some((tabs_id, _)) => tabs_id,
+            None => focused,
+        };
 
         let ctx = &mut self.contexts[self.active_context];
         let parent = ctx.tree.tiles.parent_of(split_target);
@@ -701,9 +718,7 @@ impl PlexiApp {
             }
 
             if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent_container)) =
-                    ctx.tree.tiles.get_mut(parent_id)
-                {
+                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
                     replace_child(parent_container, split_target, container_tile);
                 }
             } else {
@@ -763,9 +778,13 @@ impl PlexiApp {
             if let Some(parent) = config_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(&config_path, "# Plexi configuration\n# See docs for options\n");
+            let _ = std::fs::write(
+                &config_path,
+                "# Plexi configuration\n# See docs for options\n",
+            );
         }
-        let scope = config_path.parent()
+        let scope = config_path
+            .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let editor = crate::text_editor_app::TextEditorApp::from_file(config_path);
@@ -784,7 +803,12 @@ impl PlexiApp {
     ///   "split_v" (default) — vertical split, new pane below
     ///   "split_h"           — horizontal split, new pane to the right
     ///   "overlay"           — full pane, no terminal split
-    pub(crate) fn launch_app_by_id_with_layout(&mut self, id: &str, layout: Option<String>, args: &[String]) {
+    pub(crate) fn launch_app_by_id_with_layout(
+        &mut self,
+        id: &str,
+        layout: Option<String>,
+        args: &[String],
+    ) {
         let cwd = self.contexts[self.active_context]
             .focused_pane
             .and_then(|fp| self.contexts[self.active_context].get_focused_pane_cwd(fp))
@@ -849,7 +873,9 @@ impl PlexiApp {
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase());
         let app_id = ext.as_deref().and_then(|e| {
-            self.registry.app_for_extension(e).map(|a| a.manifest.id.clone())
+            self.registry
+                .app_for_extension(e)
+                .map(|a| a.manifest.id.clone())
         });
         let group = app_id.as_deref().and_then(|id| self.registry.group_for(id));
 
@@ -865,7 +891,9 @@ impl PlexiApp {
             let ctx = &mut self.contexts[self.active_context];
             if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
                 let path_str = file_path.display().to_string();
-                let escaped = if path_str.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
+                let escaped = if path_str
+                    .contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c))
+                {
                     format!("'{}'", path_str.replace('\'', "'\\''"))
                 } else {
                     path_str
