@@ -76,9 +76,13 @@ pub enum Action {
     ToggleRunPalette,
 }
 
-/// Poll global keyboard actions. `app_active` indicates whether the focused
-/// pane currently has an app surface open (affects Escape and Tab handling).
-pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
+/// Poll global keyboard actions.
+///
+/// `app_active` — focused pane has an active app surface (affects Escape/Tab).
+/// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
+///   When true, all host shortcuts are suppressed *except* Cmd+Q (quit) and Cmd+W (close pane),
+///   which are structural safety operations that must always work.
+pub fn poll_actions(ctx: &egui::Context, app_active: bool, keyboard_capture_active: bool) -> Vec<Action> {
     let mut actions = Vec::new();
     let cmd_shift = egui::Modifiers {
         shift: true,
@@ -86,16 +90,26 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
     };
 
     ctx.input_mut(|input| {
+        // Quit (Cmd+Q) — always active, even in keyboard capture mode.
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q) {
+            actions.push(Action::Quit);
+        }
+
+        // Close pane (Cmd+W) — always active, even in keyboard capture mode.
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
+            actions.push(Action::ClosePane);
+        }
+
+        // All remaining shortcuts are suppressed when an app has declared keyboard capture.
+        if keyboard_capture_active {
+            return;
+        }
+
         // Check Cmd+Shift+D before Cmd+D (more specific first)
         if input.consume_key(cmd_shift, egui::Key::D) {
             actions.push(Action::SplitVertical);
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
             actions.push(Action::SplitHorizontal);
-        }
-
-        // Close pane (Ctrl+W on Linux; on macOS, Cmd+W goes through close_requested)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
-            actions.push(Action::ClosePane);
         }
 
         // Focus navigation (Cmd+HJKL)
@@ -123,11 +137,6 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         }
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
             actions.push(Action::PrevTab);
-        }
-
-        // Quit (Cmd+Q)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q) {
-            actions.push(Action::Quit);
         }
 
         // Toggle sidebar (Cmd+B)
@@ -169,7 +178,6 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         }
 
         // Per-pane font size (Cmd+= / Cmd+-)
-        // Use exact modifier checks to avoid matching Cmd+Shift variants.
         let cmd_only = egui::Modifiers::COMMAND;
         if !input.modifiers.shift && input.consume_key(cmd_only, egui::Key::Equals) {
             actions.push(Action::IncreasePaneFontSize);
@@ -179,8 +187,7 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         }
 
         // App surface: Escape closes app, Tab toggles terminal split.
-        // These are only intercepted at the global level when an app is active,
-        // so that Escape and Tab work normally in a plain terminal.
+        // Only intercepted when an app is active so Escape/Tab work normally in plain terminals.
         if app_active {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 actions.push(Action::CloseApp);

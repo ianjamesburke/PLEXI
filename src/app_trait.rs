@@ -17,6 +17,10 @@ pub enum AppCommand {
     Cd(PathBuf),
     /// Post an ephemeral notification.
     Notify(String),
+    /// Request the host to spawn a new app pane.
+    /// `layout`: "split_v" (below, default), "split_h" (right), or "overlay".
+    /// `args`: passed as argv to the child process.
+    SpawnApp { type_id: String, layout: Option<String>, args: Vec<String> },
 }
 
 /// The trait all Plexi apps implement.
@@ -60,6 +64,13 @@ pub trait App: Send {
         &[]
     }
 
+    /// Returns true if this app wants to capture all keyboard input, preventing
+    /// host shortcuts (Cmd+HJKL, Cmd+Enter, etc.) from firing while it is focused.
+    /// Only `Cmd+Q` and `Cmd+W` remain active when capture is true.
+    fn keyboard_capture(&self) -> bool {
+        false
+    }
+
     /// Returns true if the app wants to close itself (e.g. after saving).
     fn wants_close(&self) -> bool {
         false
@@ -68,6 +79,11 @@ pub trait App: Send {
     /// Called when the linked terminal's CWD changes.
     /// Apps that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
+
+    /// Queue a PlexiEvent to be sent to the app on the next flush.
+    /// Used to deliver host-originated events (e.g. AppSpawned) back to
+    /// external process apps. Built-in apps ignore this by default.
+    fn queue_outbound_event(&mut self, _event: crate::app_protocol::PlexiEvent) {}
 
     /// Serialise app state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {

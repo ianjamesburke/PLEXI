@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Todo — fs.read + fs.write + persistence example for PGAP v3."""
 from __future__ import annotations
 
@@ -18,10 +19,25 @@ class TodoApp(App):
         self._selected = 0
         self._adding = False
         self._input = ""
+        # The pane group "cwd" lets the todo list follow the linked terminal.
+        # Starts at workspace_root; PathChanged updates it when the terminal cds.
+        self._cwd = pathlib.Path(self.workspace_root)
         self._load()
 
+    def on_path_changed(self, ctx: RenderContext, cwd: str) -> None:
+        if not cwd:
+            return
+        new_cwd = pathlib.Path(cwd)
+        if new_cwd == self._cwd:
+            return
+        self._cwd = new_cwd
+        self._selected = 0
+        self._items = []
+        self._load()
+        self.emit.info(f"todo: cwd -> {cwd}")
+
     def _path(self) -> pathlib.Path:
-        return pathlib.Path(self.workspace_root) / TODO_FILE
+        return self._cwd / TODO_FILE
 
     def _load(self) -> None:
         try:
@@ -73,6 +89,7 @@ class TodoApp(App):
         ctx.rect(0, 0, ctx.w, ctx.h, fill=BG)
         ctx.rect(0, 0, ctx.w, 44, fill=SURFACE)
         ctx.text(16, 14, "Todo", size=18.0, color=ACCENT, bold=True)
+        ctx.text(72, 18, str(self._cwd), size=CAPTION, color=MUTED, monospace=True)
         items = []
         for it in self._items:
             check = "✓" if it["done"] else "○"

@@ -107,6 +107,12 @@ pub enum PlexiEvent {
     Resume,
     /// App is being closed. Process must exit within a short timeout.
     Shutdown,
+    /// Confirmation that a SpawnApp request succeeded.
+    AppSpawned {
+        /// The pane_id of the newly spawned app pane.
+        pane_id: u64,
+        type_id: String,
+    },
     /// Binary pipe opened — app connects to `socket_path` as a unix socket client.
     PipeOpened {
         pipe_id: String,
@@ -298,6 +304,19 @@ pub enum DrawCommand {
     },
     /// Update the status text shown in the parent pane chrome.
     StatusSummary { text: String },
+
+    /// Request the host to spawn a new app pane. Requires `spawn.app` capability.
+    /// `layout`: "split_v" (default, new pane below), "split_h" (new pane right),
+    ///           or "overlay" (full pane, no split).
+    /// `args`: argv passed to the child process (appended after the binary path).
+    /// Host responds with `PlexiEvent::AppSpawned { pane_id }` on success.
+    SpawnApp {
+        type_id: String,
+        #[serde(default)]
+        layout: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
 
     // ── Legacy v1/v2 commands — kept for back-compat, Layer 3 migrates call sites ──
 

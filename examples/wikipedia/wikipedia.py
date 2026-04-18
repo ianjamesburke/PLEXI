@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Wikipedia — net.http + text render example for PGAP v3."""
 from __future__ import annotations
 

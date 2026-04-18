@@ -139,8 +139,14 @@ class Emitter:
     # Audio / video helpers
     def audio_capture(self, pipe_id: str, sample_rate: int = 48000,
                       buffer_size: int = 512) -> "Pipe":
-        """Open an audio capture pipe. Returns a Pipe handle."""
-        p = self.pipe_open(pipe_id, mode="binary", direction="in")
+        """Open an audio capture pipe. Returns a Pipe handle.
+
+        The host-side AudioCapture handler allocates the binary pipe itself
+        and emits PipeOpened back to the app — we must NOT send a separate
+        pipe_open command (would collide on pipe_id).
+        """
+        p = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
+        self._app._pipes[pipe_id] = p
         _emit({"type": "audio_capture", "pipe_id": pipe_id,
                "sample_rate": sample_rate, "buffer_size": buffer_size})
         return p

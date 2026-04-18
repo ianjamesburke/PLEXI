@@ -24,12 +24,10 @@ use std::sync::{mpsc, Arc, OnceLock};
 
 /// All events the host can emit to the event log.
 ///
-/// Variants marked "v3 stubs" are forward-declared so the protocol is complete
-/// but are not yet emitted by the host. They will be wired up in later PRs.
+/// Variant set matches spec §6.1 exactly. Any addition must land in both.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostEvent {
-    // ── Currently emitted ────────────────────────────────────────────────────
     /// A ProcessApp was successfully spawned.
     AppSpawned {
         app_id: String,
@@ -45,69 +43,77 @@ pub enum HostEvent {
         timestamp: String,
         reason: Option<String>,
     },
-    /// An app emitted a `DrawCommand::PipeWrite`. No payload — summary only.
-    PipeWrite {
-        from_app: String,
-        channel: String,
-        timestamp: String,
-    },
-    /// An agent-mode LLM turn completed.
-    AgentTurn {
-        session_id: Option<String>,
-        /// Response length used as a token-count proxy until real token counts
-        /// are threaded through from the LLM response.
-        token_count: usize,
-        timestamp: String,
-    },
-
-    // ── v3 stubs — forward-complete protocol, not yet emitted ────────────────
-    /// A notification was raised by an app.
-    NotificationEmitted {
-        id: String,
-        title: String,
-        urgency: String,
-        timestamp: String,
-    },
-    /// The user acted on a notification.
-    NotificationActioned {
-        id: String,
-        action: String,
-        timestamp: String,
-    },
-    /// An app called an external API endpoint.
-    ApiCall {
+    /// A capability request was decided by the user (granted or denied).
+    PermissionDecision {
         app_id: String,
-        endpoint: String,
+        capability: String,
+        granted: bool,
+        timestamp: String,
+    },
+    /// The user was prompted for a secret value (key not in Keychain).
+    SecretPrompted {
+        app_id: String,
+        key: String,
+        timestamp: String,
+    },
+    /// A secret request was denied — capability gate, scope mismatch, or
+    /// user denial at the prompt.
+    SecretDenied {
+        app_id: String,
+        key: String,
+        reason: String,
         timestamp: String,
     },
     /// A Run was created.
-    RunCreated {
+    RunStarted {
         run_id: String,
         app_id: String,
         timestamp: String,
     },
-    /// A Run's status changed.
+    /// A Run's status changed (Running, BlockedOnUser, etc.).
     RunUpdated {
         run_id: String,
         status: String,
         timestamp: String,
     },
-    /// A Run completed.
+    /// A Run terminated (Completed or Failed).
     RunCompleted {
         run_id: String,
         status: String,
         timestamp: String,
     },
-    /// The user was prompted to grant a capability to an app.
-    PermissionPrompted {
-        app_id: String,
-        capability: String,
+    /// A notification was raised by an app.
+    NotificationPosted {
+        id: String,
+        title: String,
+        urgency: String,
         timestamp: String,
     },
-    /// LLM cost accrued by an app in a session.
-    CostReport {
-        app_id: String,
-        session_usd: f64,
+    /// The user invoked a notification action.
+    NotificationActionInvoked {
+        id: String,
+        action: String,
+        timestamp: String,
+    },
+    /// An agent-mode LLM turn completed.
+    AgentTurn {
+        pane_id: Option<u64>,
+        tokens_in: u32,
+        tokens_out: u32,
+        cost_cents: u64,
+        timestamp: String,
+    },
+    /// A typed pipe was opened.
+    PipeOpened {
+        from_app: String,
+        channel: String,
+        mode: String,
+        timestamp: String,
+    },
+    /// A typed pipe was closed.
+    PipeClosed {
+        from_app: String,
+        channel: String,
         timestamp: String,
     },
 }
@@ -290,14 +296,99 @@ pub fn emit_app_closed(
     });
 }
 
-/// Emit a `PipeWrite` event with a host-stamped timestamp.
-pub fn emit_pipe_write(from_app: impl Into<String>, channel: impl Into<String>) {
+/// Emit a `PipeOpened` event with a host-stamped timestamp.
+pub fn emit_pipe_opened(
+    from_app: impl Into<String>,
+    channel: impl Into<String>,
+    mode: impl Into<String>,
+) {
     let from_app = from_app.into();
     let channel = channel.into();
-    log::debug!("event_log: emitting PipeWrite from '{from_app}' on channel '{channel}'");
-    emit(HostEvent::PipeWrite {
+    let mode = mode.into();
+    log::debug!("event_log: emitting PipeOpened from '{from_app}' channel '{channel}' mode '{mode}'");
+    emit(HostEvent::PipeOpened {
+        from_app,
+        channel,
+        mode,
+        timestamp: now_timestamp(),
+    });
+}
+
+/// Emit a `PipeClosed` event with a host-stamped timestamp.
+pub fn emit_pipe_closed(from_app: impl Into<String>, channel: impl Into<String>) {
+    let from_app = from_app.into();
+    let channel = channel.into();
+    log::debug!("event_log: emitting PipeClosed from '{from_app}' on channel '{channel}'");
+    emit(HostEvent::PipeClosed {
         from_app,
         channel,
         timestamp: now_timestamp(),
     });
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `HostEvent` variant set (and JSON wire tag) is part of the v3.0
+    /// spec §6.1. This test locks the full set — any rename, addition, or
+    /// field change must update the spec first, then this test.
+    #[test]
+    fn host_event_wire_shape_matches_spec() {
+        let ts = "2026-04-18T00:00:00Z".to_string();
+
+        let cases: &[(HostEvent, &str)] = &[
+            (HostEvent::AppSpawned {
+                app_id: "a".into(), type_id: "t".into(), pane_id: 1, timestamp: ts.clone(),
+            }, "app_spawned"),
+            (HostEvent::AppClosed {
+                app_id: "a".into(), type_id: "t".into(), pane_id: 1,
+                timestamp: ts.clone(), reason: None,
+            }, "app_closed"),
+            (HostEvent::PermissionDecision {
+                app_id: "a".into(), capability: "fs.read".into(), granted: true,
+                timestamp: ts.clone(),
+            }, "permission_decision"),
+            (HostEvent::SecretPrompted {
+                app_id: "a".into(), key: "k".into(), timestamp: ts.clone(),
+            }, "secret_prompted"),
+            (HostEvent::SecretDenied {
+                app_id: "a".into(), key: "k".into(), reason: "r".into(), timestamp: ts.clone(),
+            }, "secret_denied"),
+            (HostEvent::RunStarted {
+                run_id: "r".into(), app_id: "a".into(), timestamp: ts.clone(),
+            }, "run_started"),
+            (HostEvent::RunUpdated {
+                run_id: "r".into(), status: "running".into(), timestamp: ts.clone(),
+            }, "run_updated"),
+            (HostEvent::RunCompleted {
+                run_id: "r".into(), status: "completed".into(), timestamp: ts.clone(),
+            }, "run_completed"),
+            (HostEvent::NotificationPosted {
+                id: "n".into(), title: "t".into(), urgency: "info".into(), timestamp: ts.clone(),
+            }, "notification_posted"),
+            (HostEvent::NotificationActionInvoked {
+                id: "n".into(), action: "resume_run".into(), timestamp: ts.clone(),
+            }, "notification_action_invoked"),
+            (HostEvent::AgentTurn {
+                pane_id: Some(1), tokens_in: 10, tokens_out: 20, cost_cents: 3,
+                timestamp: ts.clone(),
+            }, "agent_turn"),
+            (HostEvent::PipeOpened {
+                from_app: "a".into(), channel: "c".into(), mode: "binary".into(),
+                timestamp: ts.clone(),
+            }, "pipe_opened"),
+            (HostEvent::PipeClosed {
+                from_app: "a".into(), channel: "c".into(), timestamp: ts.clone(),
+            }, "pipe_closed"),
+        ];
+
+        for (event, expected_kind) in cases {
+            let json = serde_json::to_value(event).expect("serialize");
+            let kind = json.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            assert_eq!(kind, *expected_kind, "tag mismatch for {event:?}");
+        }
+    }
 }

@@ -1,3 +1,6 @@
+mod dispatch;
+mod sync;
+
 use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
@@ -61,6 +64,14 @@ impl PlexiApp {
         let cwd = std::env::current_dir().unwrap_or_default();
         let registry = AppRegistry::load(&cwd);
 
+        // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl;
+        // workspace log goes to .plexi/events.jsonl if we're inside a workspace.
+        {
+            let global_path = crate::config::config_dir().join("events.jsonl");
+            let workspace_path = crate::event_log::find_workspace_events_path(&cwd);
+            crate::event_log::init_global(global_path, workspace_path);
+        }
+
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut contexts = Vec::new();
@@ -84,14 +95,17 @@ impl PlexiApp {
                             let cwd = saved_pane.cwd.clone();
                             let builtin_perms = crate::app_permissions::AppPermissions::builtin();
 
-                            let (app, perms): (Option<Box<dyn crate::app_trait::App>>, _) = match app_type.as_str() {
+                            let (app, perms, group): (Option<Box<dyn crate::app_trait::App>>, _, _) = match app_type.as_str() {
+                                // Built-ins implicitly join the "cwd" group so they track
+                                // the linked terminal's directory (file browser is the main
+                                // consumer).
                                 "file_browser" => {
                                     let mut fb = crate::file_browser::FileBrowserApp::new(cwd.clone());
                                     if let Some(state) = &saved_pane.active_app_state {
                                         use crate::app_trait::App;
                                         fb.restore_state(state);
                                     }
-                                    (Some(Box::new(fb)), builtin_perms)
+                                    (Some(Box::new(fb)), builtin_perms, Some("cwd".to_string()))
                                 }
                                 "quick_note" => {
                                     let mut note = crate::quick_note_app::QuickNoteApp::new(cwd.clone());
@@ -99,7 +113,7 @@ impl PlexiApp {
                                         use crate::app_trait::App;
                                         note.restore_state(state);
                                     }
-                                    (Some(Box::new(note)), builtin_perms)
+                                    (Some(Box::new(note)), builtin_perms, None)
                                 }
                                 "secrets_manager" => {
                                     let mut secrets = crate::secrets_app::SecretsApp::new(cwd.clone());
@@ -107,18 +121,19 @@ impl PlexiApp {
                                         use crate::app_trait::App;
                                         secrets.restore_state(state);
                                     }
-                                    (Some(Box::new(secrets)), builtin_perms)
+                                    (Some(Box::new(secrets)), builtin_perms, None)
                                 }
                                 // Third-party apps: launch via registry using type_id.
                                 other => {
                                     let app = registry.launch(other, &cwd, &[]);
                                     let perms = registry.permissions_for(other)
                                         .unwrap_or(builtin_perms);
-                                    (app, perms)
+                                    let group = registry.group_for(other);
+                                    (app, perms, group)
                                 }
                             };
                             if let Some(app) = app {
-                                pane.open_app(app, perms, cwd);
+                                pane.open_app(app, perms, cwd, group);
                                 pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
                             }
                         }
@@ -267,151 +282,43 @@ impl PlexiApp {
         }
     }
 
-    /// Feed keyboard input to the focused pane's active app and dispatch any
-    /// resulting AppCommands to the linked terminal pane.
-    fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
-        let active = self.active_context;
-        let Some(focused_tile) = self.contexts[active].focused_pane else {
-            return;
-        };
-        let Some(egui_tiles::Tile::Pane(pane_id)) =
-            self.contexts[active].tree.tiles.get(focused_tile)
-        else {
-            return;
-        };
-        let pane_id = *pane_id;
-
-        // Gather commands from the app.
-        let (commands, scope, perms, linked_id) = {
-            let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
-                return;
-            };
-            let Some(t) = pane.as_terminal_mut() else { return };
-            if t.active_app.is_none() {
-                return;
-            }
-            let app = t.active_app.as_mut().unwrap();
-            ctx.input(|i| {
-                app.handle_key(i);
-            });
-            let cmds = app.take_pending_commands();
-            let scope = t.app_scope.clone().unwrap_or_else(|| PathBuf::from("/"));
-            let perms = t.app_permissions.clone();
-            let linked = t.linked_terminal_pane;
-            (cmds, scope, perms, linked)
-        };
-
-        // Route commands to the linked terminal pane (the one below).
-        if let Some(linked_id) = linked_id {
-            if let Some(target_pane) = self.contexts[active].panes.get_mut(&linked_id) {
-                if let Some(t) = target_pane.as_terminal_mut() {
-                    for cmd in commands {
-                        use crate::app_permissions::PermissionCheck;
-                        use crate::app_trait::AppCommand;
-                        let check = match &cmd {
-                            AppCommand::RunInTerminal(_) => {
-                                // RunInTerminal: allowed if app has FsWrite or is builtin.
-                                // v3 apps should use PipeSend; legacy apps use this path.
-                                if perms.is_builtin || perms.capabilities.contains(&crate::app_permissions::Capability::FsWrite) {
-                                    PermissionCheck::Allowed
-                                } else {
-                                    PermissionCheck::Denied("RunInTerminal requires fs.write capability".to_string())
-                                }
-                            }
-                            AppCommand::Cd(path) => {
-                                crate::app_permissions::check_cd(path, &perms, &scope)
-                            }
-                            AppCommand::Notify(_) => PermissionCheck::Allowed,
-                        };
-                        match check {
-                            PermissionCheck::Allowed => {
-                                Self::execute_app_command(cmd, t);
-                            }
-                            PermissionCheck::Denied(reason) => {
-                                log::warn!("App command denied: {reason}");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn execute_app_command(cmd: crate::app_trait::AppCommand, pane: &mut crate::pane::TerminalPane) {
-        use crate::app_trait::AppCommand;
-        use egui_term::BackendCommand;
-
-        match cmd {
-            AppCommand::RunInTerminal(command) => {
-                let mut bytes = command.into_bytes();
-                bytes.push(b'\n');
-                pane.backend.process_command(BackendCommand::Write(bytes));
-            }
-            AppCommand::Cd(path) => {
-                // Clear the terminal then cd, so the user doesn't see the raw
-                // `cd` command printing and reflowing. The next prompt appears
-                // clean in the new directory.
-                let cmd = format!("clear && cd {}\n", shell_escape(&path.display().to_string()));
-                pane.backend
-                    .process_command(BackendCommand::Write(cmd.into_bytes()));
-            }
-            AppCommand::Notify(_msg) => {
-                // Notification system not yet wired — no-op for now.
-            }
-        }
-    }
-
-    /// Poll the linked terminal's CWD and sync it to the active app.
-    /// This enables two-way directory sync: terminal cd → file browser updates.
-    fn sync_app_cwd(&mut self) {
-        let ctx = &mut self.contexts[self.active_context];
-        // Collect pane IDs that have an active app with a linked terminal.
-        let app_panes: Vec<(PaneId, PaneId)> = ctx
-            .panes
-            .iter()
-            .filter_map(|(&pane_id, pane)| {
-                let t = pane.as_terminal()?;
-                let linked = t.linked_terminal_pane?;
-                if t.active_app.is_some() {
-                    Some((pane_id, linked))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for (app_pane_id, linked_id) in app_panes {
-            // Get the linked terminal's CWD via lsof.
-            let cwd = ctx.panes.get(&linked_id).and_then(|linked_pane| {
-                let t = linked_pane.as_terminal()?;
-                crate::shell::get_pid_cwd(t.backend.child_pid())
-            });
-            if let Some(cwd) = cwd {
-                if let Some(app_pane) = ctx.panes.get_mut(&app_pane_id) {
-                    if let Some(t) = app_pane.as_terminal_mut() {
-                        if let Some(app) = t.active_app.as_mut() {
-                            app.sync_cwd(&cwd);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn shell_escape(s: &str) -> String {
-    if s.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    } else {
-        s.to_string()
-    }
 }
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_pty_events();
-        self.dispatch_app_key_events(ctx);
+        let deferred_app_cmds = self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
+
+        // Handle SpawnApp commands returned from dispatch_app_key_events.
+        for cmd in deferred_app_cmds {
+            use crate::app_trait::AppCommand;
+            if let AppCommand::SpawnApp { type_id, layout, args } = cmd {
+                // Capture requesting pane before launch changes focused_pane.
+                let active = self.active_context;
+                let requesting_pane_id = self.contexts[active].focused_pane
+                    .and_then(|tile| self.contexts[active].tree.tiles.get(tile))
+                    .and_then(|tile| if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None });
+
+                let new_pane_id = self.next_pane_id;
+                self.launch_app_by_id_with_layout(&type_id, layout, &args);
+
+                // Confirm back to the requesting app.
+                if let Some(req_pane_id) = requesting_pane_id {
+                    let active = self.active_context;
+                    if let Some(pane) = self.contexts[active].panes.get_mut(&req_pane_id) {
+                        if let Some(t) = pane.as_terminal_mut() {
+                            if let Some(app) = t.active_app.as_mut() {
+                                app.queue_outbound_event(crate::app_protocol::PlexiEvent::AppSpawned {
+                                    pane_id: new_pane_id,
+                                    type_id: type_id.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Check if the focused app wants to close itself (e.g. after saving).
         {
@@ -446,23 +353,34 @@ impl eframe::App for PlexiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
 
-        // Determine if the focused pane has an active app surface.
-        let app_active = {
+        // Determine if the focused pane has an active app surface, and whether
+        // that app has declared keyboard_capture mode.
+        let (app_active, keyboard_capture_active) = {
             let context = &self.contexts[self.active_context];
-            context.focused_pane
-                .and_then(|tile_id| {
-                    if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
-                        context.panes.get(pane_id)
-                    } else {
-                        None
-                    }
-                })
+            let focused_pane = context.focused_pane.and_then(|tile_id| {
+                if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
+                    context.panes.get(pane_id)
+                } else {
+                    None
+                }
+            });
+            let active = focused_pane
                 .map(|pane| pane.as_terminal().map(|t| t.active_app.is_some()).unwrap_or(false))
-                .unwrap_or(false)
+                .unwrap_or(false);
+            let capture = if active {
+                focused_pane
+                    .and_then(|p| p.as_terminal())
+                    .and_then(|t| t.active_app.as_ref())
+                    .map(|app| app.keyboard_capture())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            (active, capture)
         };
 
         // Handle keyboard shortcuts
-        for action in keys::poll_actions(ctx, app_active) {
+        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active) {
             match action {
                 Action::SplitHorizontal => {
                     self.contexts[self.active_context].zoomed_pane = None;

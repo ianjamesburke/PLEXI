@@ -99,6 +99,13 @@ pub struct TerminalPane {
     /// pane created below. Used to route AppCommands and to collapse the split
     /// on close.
     pub linked_terminal_pane: Option<PaneId>,
+    /// Pane group the active app joined at spawn (for `PathChanged` routing).
+    /// None when no app is active or the app didn't declare a group.
+    pub pane_group: Option<String>,
+    /// Last CWD pushed to the active app via `sync_cwd` — used to debounce
+    /// PathChanged broadcasts to only fire when the linked terminal actually
+    /// changed directory.
+    pub last_synced_cwd: Option<PathBuf>,
 }
 
 impl TerminalPane {
@@ -128,16 +135,28 @@ impl TerminalPane {
             app_permissions: AppPermissions::default(),
             app_scope: None,
             linked_terminal_pane: None,
+            pane_group: None,
+            last_synced_cwd: None,
         })
     }
 
     /// Open an app — app gets focus immediately.
-    pub fn open_app(&mut self, app: Box<dyn App>, permissions: AppPermissions, scope: PathBuf) {
+    /// `group` is the pane group the app joins (from its manifest); used for
+    /// `PathChanged` broadcast routing.
+    pub fn open_app(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: AppPermissions,
+        scope: PathBuf,
+        group: Option<String>,
+    ) {
         self.active_app = Some(app);
         self.surface_mode = SurfaceMode::AppActive;
         self.focused_surface = SurfaceLayer::App;
         self.app_permissions = permissions;
         self.app_scope = Some(scope);
+        self.pane_group = group;
+        self.last_synced_cwd = None;
     }
 
     /// Close the active app and return to full terminal mode.
@@ -148,6 +167,8 @@ impl TerminalPane {
         self.focused_surface = SurfaceLayer::App;
         self.app_permissions = AppPermissions::default();
         self.app_scope = None;
+        self.pane_group = None;
+        self.last_synced_cwd = None;
         self.linked_terminal_pane.take()
     }
 
@@ -203,6 +224,11 @@ pub struct AgentPane {
 /// Message from the background turn thread to the UI thread.
 pub enum TurnMsg {
     Token(String),
-    Done { session_id: Option<String>, token_count: usize },
+    Done {
+        session_id: Option<String>,
+        tokens_in: u32,
+        tokens_out: u32,
+        cost_cents: u64,
+    },
     Error(String),
 }

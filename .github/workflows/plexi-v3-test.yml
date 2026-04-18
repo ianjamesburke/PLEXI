@@ -1,0 +1,28 @@
+name: v3 protocol test harness
+
+on:
+  push:
+    branches: [v3]
+  pull_request:
+    branches: [v3]
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run PGAP protocol harness (mocked audio + video)
+        env:
+          PLEXI_AUDIO: "mock://"
+          PLEXI_VIDEO: "mock://"
+        run: cargo test pgap_test_harness -- --nocapture

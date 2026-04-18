@@ -167,7 +167,7 @@ Fractal PGAP (all of it), `Pane::Embedded`, `plexi --embedded` mode, `DepthTrans
 6. Port event bus; wire all `HostEvent` variants with actual emit sites.
 7. Port Plexi IQ (backend + loop + ledger) into `Pane::Agent` live, not dead-code.
 8. Port typed pipes; add binary-mode side channel over unix socket.
-9. Build media subsystem: `AudioDevice` / `VideoDecoder` traits, CoreAudio + AVFoundation prod impls, mock impls for CI.
+9. Build media subsystem: `AudioDevice` / `VideoDecoder` traits, mock impls for CI. **CoreAudio + AVFoundation prod impls deferred to v3.1** (issues #277, #278) — the traits and mocks are wired, example apps run headless through mocks, and the prod stubs are clean `Err(NotImplemented)` returns behind the `PLEXI_AUDIO` / `PLEXI_VIDEO` env toggle. No real mic/decoder in v3.0.
 10. Build pane groups + `PathChanged` broadcast.
 11. Build five example apps: `snake`, `wikipedia`, `todo`, `audio-recorder`, `video-player`.
 12. Build `quick-note` first-party app; delete host-internal backlog scanner.

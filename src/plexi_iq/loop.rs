@@ -34,6 +34,9 @@ pub struct TurnResult {
     pub input_tokens: Option<u32>,
     /// Output token count — `Some` only for metered (native API) backend.
     pub output_tokens: Option<u32>,
+    /// Turn cost in USD cents. Zero for subscription billing; rounded from
+    /// LedgerRow.cost_usd for metered.
+    pub cost_cents: u64,
 }
 
 /// Error variants for a failed turn.
@@ -131,6 +134,10 @@ pub fn run_turn(
         input_tokens,
         output_tokens,
     );
+    let cost_cents = row
+        .cost_usd
+        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
+        .unwrap_or(0);
     ledger::append(&row);
 
     Ok(TurnResult {
@@ -138,5 +145,6 @@ pub fn run_turn(
         session_id: result_session_id,
         input_tokens,
         output_tokens,
+        cost_cents,
     })
 }

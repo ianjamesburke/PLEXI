@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Audio Recorder — audio.record + binary pipe proof for PGAP v3.
 
 R to start recording, S to stop and save as recording.wav in workspace_root.
@@ -42,11 +43,10 @@ class AudioRecorderApp(App):
         self._stop_flag.clear()
         self._state = "RECORDING"
         self._start_time = time.time()
-        # Open a binary pipe for audio capture
-        self._pipe = self.emit.pipe_open(PIPE_ID, mode="binary", direction="in")
-        # Send the AudioCapture command to host
-        self.emit.audio_capture(PIPE_ID, sample_rate=SAMPLE_RATE,
-                                buffer_size=BUFFER_SIZE)
+        # AudioCapture allocates the binary pipe host-side and emits PipeOpened
+        # back to us — don't call pipe_open separately (would collide on pipe_id).
+        self._pipe = self.emit.audio_capture(PIPE_ID, sample_rate=SAMPLE_RATE,
+                                             buffer_size=BUFFER_SIZE)
         self._record_thread = threading.Thread(
             target=self._capture_loop, daemon=True
         )

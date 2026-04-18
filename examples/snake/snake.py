@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Snake — input + draw primitives proof for PGAP v3.
 
 Written in Python (not Rust) to keep the example self-contained and avoid a

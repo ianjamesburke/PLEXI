@@ -144,6 +144,12 @@ impl TypedPipeRegistry {
         let listener = UnixListener::bind(&socket_path).map_err(|e| {
             PipeError::BindFailed(format!("{socket_path}: {e}"))
         })?;
+        // Non-blocking so the drain thread's accept loop can observe `shutdown`
+        // and exit if the app never connects (e.g. start_capture failed and no
+        // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
+        listener.set_nonblocking(true).map_err(|e| {
+            PipeError::BindFailed(format!("set_nonblocking: {e}"))
+        })?;
 
         let host_end_fd: RawFd = {
             use std::os::unix::io::AsRawFd;
@@ -162,14 +168,28 @@ impl TypedPipeRegistry {
         let drain_handle = thread::Builder::new()
             .name(format!("pipe-drain-{pipe_id}"))
             .spawn(move || {
-                // Accept exactly one client connection.
-                let stream = match listener.accept() {
-                    Ok((s, _)) => s,
-                    Err(e) => {
-                        log::error!("typed_pipes: accept failed on {socket_path_drain}: {e}");
-                        return;
+                // Poll for a client connection. Listener is non-blocking so we
+                // can observe `shutdown` and exit if the app never connects
+                // (e.g. start_capture failed before PipeOpened was sent).
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((s, _)) => break s,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if shutdown_drain.load(Ordering::Acquire) {
+                                let _ = std::fs::remove_file(&socket_path_drain);
+                                return;
+                            }
+                            thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                        Err(e) => {
+                            log::error!("typed_pipes: accept failed on {socket_path_drain}: {e}");
+                            let _ = std::fs::remove_file(&socket_path_drain);
+                            return;
+                        }
                     }
                 };
+                // Switch to blocking mode for the write loop.
+                let _ = stream.set_nonblocking(false);
                 let mut writer = stream;
                 loop {
                     if let Some(frame) = ring_drain.pop() {
@@ -482,6 +502,29 @@ mod tests {
         assert_eq!(registry.list().len(), 1);
 
         registry.close("json-b");
+        assert!(registry.list().is_empty());
+    }
+
+    /// Regression: if the app never connects (e.g. start_capture failed before
+    /// PipeOpened was sent), close() must not deadlock waiting for accept().
+    /// The drain thread must observe the shutdown flag and exit on its own.
+    #[test]
+    fn close_without_client_does_not_deadlock() {
+        let mut registry = TypedPipeRegistry::new();
+        registry
+            .open_binary("orphan".to_owned(), PipeDirection::Out)
+            .expect("open_binary failed");
+
+        // Close immediately — no client ever connected. If the drain thread
+        // were stuck in a blocking accept(), close() would hang forever.
+        let start = std::time::Instant::now();
+        registry.close("orphan");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "close() took {elapsed:?} — drain thread is deadlocked on accept()"
+        );
         assert!(registry.list().is_empty());
     }
 }

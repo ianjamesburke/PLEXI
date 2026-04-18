@@ -1,5 +1,77 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] Codebase refactor: module splits, unified error type, PGAP reference doc
+
+Split the two largest files into focused module directories. `process_app.rs` (1319 LOC) → `process_app/mod.rs` (590) + `routing.rs` (420) + `render.rs` (149) + `prompts.rs` (102). `app.rs` (1062 LOC) → `app/mod.rs` (864) + `dispatch.rs` (118) + `sync.rs` (85). Each sub-file has a single responsibility: routing dispatches DrawCommands to subsystems; render translates committed frames into egui calls; prompts owns the capability/secret modal UI; dispatch owns keyboard routing + AppCommand execution; sync owns CWD polling + PathChanged broadcast.
+
+Added `src/error.rs` with a `PlexiError` thiserror enum covering Io, Protocol, Permission, AppLaunch, Media, Pipe, Registry, NotImplemented — establishes a single error vocabulary for future refactoring of fragmented return types (currently `std::io::Error`, `String`, `Option<>` scattered across modules).
+
+Added `docs/pgap-reference.md` — canonical PGAP protocol reference covering all PlexiEvent and DrawCommand variants, handshake sequence, typed-pipe binary format, capability flow, manifest.toml schema, and SDK quick-start. No developer should need to read Rust source to build a Plexi app.
+
+All 39 tests pass; all 7 smoke-test app handshakes green post-install.
+
+**Breaks if:** `cargo test` fails any of the 39 tests. OR: `just install-v3` smoke test fails any handshake.
+
+## 2026-04-18 — [CHANGED] Keyboard ownership, pane management, spawn.app, events.jsonl init
+
+**Keyboard ownership**: Apps now declare `keyboard_capture = true` in `manifest.toml`. When set, all host shortcuts except Cmd+Q (quit) and Cmd+W (close pane) are suppressed while that app is focused. The `keyboard_capture()` method is on the `App` trait (default false); `ProcessApp` reads from manifest and returns it. `poll_actions` now takes `keyboard_capture_active: bool` as second param and gates via early return inside `input_mut()`.
+
+**Pane management**: Added `layout_hint: Option<String>` to `AppCapabilities` manifest schema. Values: `"split"` (default, linked terminal) or `"overlay"` (full pane, no terminal). `launch_app_by_id` now routes through `launch_app_by_id_with_layout` which reads this hint. `close_focused_app` was bypassing `close_tile` for the linked terminal pane — fixed to route through `close_tile` so sibling focus transfer runs correctly.
+
+**spawn.app DrawCommand**: `DrawCommand::SpawnApp { type_id, layout }` added to protocol. `PlexiEvent::AppSpawned { pane_id, type_id }` added as confirmation. `ProcessApp` pushes `AppCommand::SpawnApp` to pending_commands; `dispatch_app_key_events` returns these deferred (since they need host-level access); `update()` handles them and sends `AppSpawned` back via `queue_outbound_event()` on the `App` trait.
+
+**events.jsonl**: `event_log::init_global` now called in `PlexiApp::new`. Events are written to `~/.plexi-v3/events.jsonl` (and `.plexi/events.jsonl` if inside a workspace).
+
+**Fibonacci POC**: Example app at `~/.plexi-v3/apps/fibonacci/`. Declares `keyboard_capture = true` and `spawn.app` capability. On first render, auto-spawns the next Fibonacci pane via `SpawnApp`. Chain stops at index 10. Passes PGAP handshake smoke test.
+
+**Breaks if:** Focused app with `keyboard_capture = true` in manifest still lets Cmd+HJKL fire (keyboard ownership not working). events.jsonl file not created in `~/.plexi-v3/` after first launch. `close_focused_app` leaves zombie linked terminal pane after close (focus doesn't transfer to sibling).
+
+## 2026-04-18 — [CHANGED] HostEvent enum aligned to spec §6.1
+
+The event bus was implemented with variant names that drifted from the spec (NotificationEmitted vs NotificationPosted, RunCreated vs RunStarted, PermissionPrompted vs PermissionDecision) and two non-spec variants (ApiCall, CostReport) were forward-declared but never emitted. The spec §6.1 is SSoT per CLAUDE.md, so the code is the thing that moves.
+
+Renames: NotificationEmitted → NotificationPosted, NotificationActioned → NotificationActionInvoked, RunCreated → RunStarted, PermissionPrompted → PermissionDecision (also moved from before-prompt to after-decision so it carries `granted: bool`). Added SecretPrompted / SecretDenied / PipeOpened / PipeClosed. Dropped ApiCall (no host-side HTTP broker exists) and CostReport (redundant with AgentTurn's new cost_cents field). AgentTurn now carries `pane_id, tokens_in, tokens_out, cost_cents` per spec, with cost derived from LedgerRow rounding to whole cents. PipeWrite removed — the write path was firing one event per audio frame, which would have flooded the log during captures; PipeOpened at allocation + PipeClosed at teardown is sufficient.
+
+Guard test in `event_log::tests::host_event_wire_shape_matches_spec` locks the full variant set and JSON kind tags. Any future rename has to land in the spec first, then this test.
+
+**Breaks if:** `grep -E 'NotificationEmitted|NotificationActioned|RunCreated|PermissionPrompted|PipeWrite|ApiCall|CostReport' src/` returns a hit outside a comment or migration note. OR: `cargo test host_event_wire_shape_matches_spec` fails.
+
+## 2026-04-18 — [FIX] Drain thread blocking accept() deadlocked close() on failed start_capture
+
+After the `todo!()` fixes landed, pressing R in the audio recorder still froze the host. Root cause: when `start_capture` returns `Err`, the host calls `pipe_registry.close("pipe-id")`, which sets `shutdown=true` and joins the drain thread. But the drain thread was sitting in a blocking `listener.accept()` waiting for the app to connect — and the app never does, because `PipeOpened` was never emitted. `accept()` doesn't observe `shutdown` → `join()` blocks forever → UI thread freezes.
+
+**Fix:** `listener.set_nonblocking(true)` in `open_binary`, then rewrite the drain thread's accept as a 50ms poll loop that checks `shutdown` on `WouldBlock` and exits cleanly. On successful connect, switch the returned stream back to blocking mode for the write loop.
+
+**Regression test:** `typed_pipes::tests::close_without_client_does_not_deadlock` opens a binary pipe, closes immediately, asserts `close()` completes in <2s.
+
+**Breaks if:** a failed `AudioCapture` / `VideoCapture` DrawCommand (or any path that calls `pipe_registry.close()` on a pipe the app never connected to) freezes the UI for more than a second. OR: `cargo test typed_pipes::tests::close_without_client_does_not_deadlock` takes >2s or times out.
+
+## 2026-04-18 — [GOTCHA] `todo!()` in a prod factory froze the host GUI
+
+`CoreAudioDevice::start_capture` was `todo!("Layer 4")`. Compiled clean, passed every test (harness tests set `PLEXI_AUDIO=mock://`), then panicked the UI thread the first time the user pressed R in the audio recorder — freeze → force quit. Same pattern in `AvfVideoDecoder` (four `todo!()` methods).
+
+**Root cause:** factory functions can return an impl whose trait methods panic. Tests that go through mock variants never touch the panicking path.
+
+**Permanent fixes:**
+
+1. `#![deny(clippy::todo, clippy::unimplemented)]` in `src/main.rs` — clippy gate blocks new `todo!()` in non-test code.
+2. `prod_stub_tests` modules in `src/media/audio.rs` and `src/media/video.rs` — call every trait method on the prod impl, assert no panic. Catches the bug even without clippy.
+3. `scripts/smoke-test.sh` (wired into `just install-v3`): feeds PGAP Init to each installed app and asserts `ready` within 3s, then launches host for 2s and scans the log for panics. First post-install gate that exercises the real built bundle.
+
+**Do NOT:** leave `todo!()` or `unimplemented!()` in any factory-returned impl. A stub returns `Err(NotImplemented)`, `None`, or a noop — never a panic.
+
+**Breaks if:** `scripts/smoke-test.sh` after `just install-v3` reports anything other than green for all 6 apps and the host-launch check. OR: `cargo clippy --all-targets -- -D clippy::todo -D clippy::unimplemented` finds a violation in non-test code.
+
+## 2026-04-18 — [CHANGED] Pane groups + PathChanged broadcast + PGAP test harness (v3 critical-path #10 + #13)
+
+Added an opt-in `group` field to app manifests (`[app.capabilities] group = "cwd"`). At launch, an app inherits its group on the host `TerminalPane`. `App::sync_app_cwd` now polls each linked terminal's CWD via lsof, diffs against `last_synced_cwd`, and on change (a) sends `PlexiEvent::PathChanged { cwd }` to the source pane's app and (b) broadcasts the same event to every OTHER pane sharing the group. Todo app opts into `"cwd"` and reloads `./.plexi/todos.json` on PathChanged so its list tracks the focused terminal.
+
+PGAP protocol test harness lives at `src/pgap_test_harness.rs` (inline `#[cfg(test)]` module — egui binary crate has no lib target). Spawns each example app as a subprocess, drives NDJSON over stdin/stdout, asserts handshake + render. Nine tests: six app handshakes, snake frame render, todo PathChanged reload, MockAudioDevice WAV round-trip, MockVideoDecoder RGBA frames. CI gate at `.github/workflows/plexi-v3-test.yml` runs on push/PR to `v3` with `PLEXI_AUDIO=mock://` + `PLEXI_VIDEO=mock://`.
+
+Secrets scope (`workspace_root`) is unchanged by PathChanged — only the app's tracked cwd moves. `last_synced_cwd` on TerminalPane guards against per-frame PathChanged spam.
+
+**Breaks if:** Launching the Todo app in v3, then `cd`-ing in a linked terminal, does NOT update the path displayed in the Todo header and does NOT reload `.plexi/todos.json` from the new directory. OR: `cargo test pgap_test_harness` fails any of the 9 tests on a host with `python3` on PATH.
+
 ## 2026-04-16 — [CHANGED] Layer 5: Python SDK v3 + six example apps
 
 Rewrote `sdk/python/plexi_sdk.py` from the v2 decorator pattern to a subclass pattern (`class MyApp(App)`). Key changes: `App.run()` now handles the PGAP v3 `Init` handshake (protocol validation, `Ready` reply); `RenderContext` carries `frame_id`, `rect`, `workspace_root`, `capabilities`, `feature_flags`; `FrameDone` is auto-emitted with `frame_id`; `Emitter` gains blocking `capability_request()`/`secret_get()` via `queue.Queue` + background stdin thread dispatch; `Pipe` class covers both binary (unix socket, length-prefixed frames) and JSON-mode pipes.

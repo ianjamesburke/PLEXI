@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Quick Note — first-party note composer for PGAP v3.
 
 Opens to blank composer. Enter saves note (first line = title).

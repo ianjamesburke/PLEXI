@@ -1,7 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Ship-time panic-path protection. `todo!()` / `unimplemented!()` compile clean
+// but panic at runtime — e.g. 2026-04-18, CoreAudioDevice::start_capture was
+// `todo!()` and froze the GUI when a recorder app sent AudioCapture without
+// PLEXI_AUDIO=mock://. Stubs must return `Err(NotImplemented)` instead.
+#![deny(clippy::todo, clippy::unimplemented)]
 
 mod app;
 mod app_protocol;
+mod error;
 mod app_registry;
 mod app_permissions;
 mod app_trait;
@@ -33,6 +39,9 @@ mod tiling;
 mod runs;
 mod typed_pipes;
 mod workspace;
+
+#[cfg(test)]
+mod pgap_test_harness;
 
 fn main() -> eframe::Result {
     // Parse --profile <name> early so config_dir() resolves correctly for

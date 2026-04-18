@@ -63,6 +63,20 @@ pub struct AppCapabilities {
     ///   audio.record, audio.playback, video.playback, pipe.open, spawn.app
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Pane group this app joins at spawn. When any pane in the group reports a
+    /// CWD change, every member receives `PlexiEvent::PathChanged { cwd }`.
+    /// Convention: "cwd" for generic directory-synced apps.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// If true, this app captures all keyboard input when focused. Host shortcuts
+    /// (Cmd+HJKL, Cmd+Enter, etc.) are suppressed. Only Cmd+Q and Cmd+W remain.
+    /// Declare in manifest as `keyboard_capture = true`.
+    #[serde(default)]
+    pub keyboard_capture: bool,
+    /// Preferred pane layout: "split" (default, creates linked terminal) or "overlay"
+    /// (takes the full pane, no terminal split). Declare as `layout_hint = "overlay"`.
+    #[serde(default)]
+    pub layout_hint: Option<String>,
 }
 
 impl AppCapabilities {
@@ -187,11 +201,27 @@ impl AppRegistry {
         self.apps.get(app_id).map(|app| app.manifest.capabilities.to_permissions())
     }
 
+    /// Get the manifest-declared pane group for an app (None if unset).
+    pub fn group_for(&self, app_id: &str) -> Option<String> {
+        self.apps.get(app_id).and_then(|a| a.manifest.capabilities.group.clone())
+    }
+
+    /// Get the manifest-declared keyboard_capture flag for an app.
+    pub fn keyboard_capture_for(&self, app_id: &str) -> bool {
+        self.apps.get(app_id).map(|a| a.manifest.capabilities.keyboard_capture).unwrap_or(false)
+    }
+
+    /// Get the manifest-declared layout_hint for an app ("split" | "overlay").
+    pub fn layout_hint_for(&self, app_id: &str) -> Option<String> {
+        self.apps.get(app_id).and_then(|a| a.manifest.capabilities.layout_hint.clone())
+    }
+
     /// Launch an app and return a boxed `App` trait object.
     pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
         let installed = self.apps.get(id)?;
         let perms = installed.manifest.capabilities.to_permissions();
         let caps = perms.capabilities.clone();
+        let keyboard_capture = installed.manifest.capabilities.keyboard_capture;
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -201,6 +231,7 @@ impl AppRegistry {
             args,
             cwd.clone(),
             caps,
+            keyboard_capture,
         ) {
             Ok(app) => {
                 log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);
@@ -274,4 +305,40 @@ fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
     }
 
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_group_parses() {
+        let toml = r#"
+[app]
+id = "todo"
+name = "Todo"
+entry = "todo.py"
+
+[app.capabilities]
+capabilities = ["fs.read", "fs.write"]
+group = "cwd"
+"#;
+        let parsed: AppManifest = toml::from_str(toml).expect("parse");
+        assert_eq!(parsed.app.capabilities.group.as_deref(), Some("cwd"));
+    }
+
+    #[test]
+    fn manifest_group_defaults_to_none() {
+        let toml = r#"
+[app]
+id = "snake"
+name = "Snake"
+entry = "snake.py"
+
+[app.capabilities]
+capabilities = []
+"#;
+        let parsed: AppManifest = toml::from_str(toml).expect("parse");
+        assert_eq!(parsed.app.capabilities.group, None);
+    }
 }

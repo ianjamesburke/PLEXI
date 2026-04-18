@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Video Player — video.playback + VideoPlayer draw command for PGAP v3.
 
 Usage: python video_player.py [/path/to/video.mp4]

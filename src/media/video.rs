@@ -87,19 +87,21 @@ pub struct AvfVideoDecoder;
 
 impl VideoDecoder for AvfVideoDecoder {
     fn open(&mut self, _source: VideoSource) -> Result<VideoHandle, VideoError> {
-        todo!("AVFoundation prod impl - Layer 4")
+        log::warn!("AvfVideoDecoder: open not yet implemented (Layer 4). \
+                    Set PLEXI_VIDEO=mock://... to use the mock decoder.");
+        Err(VideoError::DecodeError("AvfVideoDecoder not implemented".into()))
     }
 
     fn set_state(&mut self, _handle_id: u64, _state: PlaybackState) {
-        todo!("AVFoundation prod impl - Layer 4")
+        log::warn!("AvfVideoDecoder: set_state not yet implemented (Layer 4) — no-op");
     }
 
     fn next_frame(&mut self, _handle_id: u64) -> Option<VideoFrame> {
-        todo!("AVFoundation prod impl - Layer 4")
+        None
     }
 
     fn close(&mut self, _handle_id: u64) {
-        todo!("AVFoundation prod impl - Layer 4")
+        log::warn!("AvfVideoDecoder: close not yet implemented (Layer 4) — no-op");
     }
 }
 
@@ -254,5 +256,34 @@ impl VideoDecoder for MockVideoDecoder {
 
     fn close(&mut self, handle_id: u64) {
         self.streams.remove(&handle_id);
+    }
+}
+
+#[cfg(test)]
+mod prod_stub_tests {
+    use super::*;
+
+    #[test]
+    fn avf_open_returns_err_not_panic() {
+        let mut d = AvfVideoDecoder;
+        assert!(d.open(VideoSource::File(std::path::PathBuf::from("/nonexistent.mp4"))).is_err());
+    }
+
+    #[test]
+    fn avf_set_state_is_noop_not_panic() {
+        let mut d = AvfVideoDecoder;
+        d.set_state(0, PlaybackState::Play);
+    }
+
+    #[test]
+    fn avf_next_frame_returns_none_not_panic() {
+        let mut d = AvfVideoDecoder;
+        assert!(d.next_frame(0).is_none());
+    }
+
+    #[test]
+    fn avf_close_is_noop_not_panic() {
+        let mut d = AvfVideoDecoder;
+        d.close(0);
     }
 }

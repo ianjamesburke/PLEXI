@@ -119,12 +119,19 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                             last.push_str(&chunk);
                                         }
                                     }
-                                    Ok(crate::pane::TurnMsg::Done { session_id, token_count }) => {
+                                    Ok(crate::pane::TurnMsg::Done {
+                                        session_id,
+                                        tokens_in,
+                                        tokens_out,
+                                        cost_cents,
+                                    }) => {
                                         agent.session_id = session_id;
                                         agent.transcript.push(String::new()); // separator
                                         crate::event_log::emit(crate::event_log::HostEvent::AgentTurn {
-                                            session_id: agent.session_id.clone(),
-                                            token_count,
+                                            pane_id: Some(*pane_id),
+                                            tokens_in,
+                                            tokens_out,
+                                            cost_cents,
                                             timestamp: crate::event_log::now_timestamp(),
                                         });
                                         done = true;
@@ -239,10 +246,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                                     );
                                     match result {
                                         Ok(r) => {
-                                            let tok_count = r.output_tokens.unwrap_or(r.text.split_whitespace().count() as u32) as usize;
+                                            let tokens_in = r.input_tokens.unwrap_or(0);
+                                            let tokens_out = r
+                                                .output_tokens
+                                                .unwrap_or_else(|| r.text.split_whitespace().count() as u32);
                                             let _ = tx.send(crate::pane::TurnMsg::Done {
                                                 session_id: r.session_id,
-                                                token_count: tok_count,
+                                                tokens_in,
+                                                tokens_out,
+                                                cost_cents: r.cost_cents,
                                             });
                                         }
                                         Err(e) => {

@@ -6,4 +6,4 @@ description = "Record audio from mic to WAV. Proves binary pipe + AudioMeter."
 entry = "audio_recorder.py"
 
 [app.capabilities]
-capabilities = ["audio.record", "fs.write"]
+capabilities = ["audio.record", "fs.write", "pipe.open"]

@@ -86,7 +86,9 @@ impl AudioDevice for CoreAudioDevice {
         _sample_rate: u32,
         _buffer_size: u32,
     ) -> Result<AudioCaptureHandle, AudioError> {
-        todo!("CoreAudio prod impl - Layer 4")
+        log::warn!("CoreAudioDevice: start_capture not yet implemented (Layer 4). \
+                    Set PLEXI_AUDIO=mock://<in.wav>,<out.wav> to use the mock device.");
+        Err(AudioError::DeviceUnavailable)
     }
 
     fn start_playback(
@@ -94,11 +96,13 @@ impl AudioDevice for CoreAudioDevice {
         _source: AudioSource,
         _volume: f32,
     ) -> Result<AudioPlaybackHandle, AudioError> {
-        todo!("CoreAudio prod impl - Layer 4")
+        log::warn!("CoreAudioDevice: start_playback not yet implemented (Layer 4). \
+                    Set PLEXI_AUDIO=mock://<in.wav>,<out.wav> to use the mock device.");
+        Err(AudioError::DeviceUnavailable)
     }
 
     fn stop(&mut self, _handle_id: u64) {
-        todo!("CoreAudio prod impl - Layer 4")
+        log::warn!("CoreAudioDevice: stop not yet implemented (Layer 4) — no-op");
     }
 }
 
@@ -205,8 +209,10 @@ impl AudioDevice for MockAudioDevice {
 
         let src_path = match source {
             AudioSource::File(p) => p,
-            AudioSource::Pipe(_) => {
-                todo!("Pipe source mode for MockAudioDevice playback - Layer 4+")
+            AudioSource::Pipe(id) => {
+                log::warn!("MockAudioDevice: Pipe source mode not yet implemented (Layer 4+) \
+                            — pipe='{id}'");
+                return Err(AudioError::UnsupportedFormat);
             }
         };
 
@@ -286,5 +292,45 @@ impl AudioDevice for MockAudioDevice {
         // Stopping is signalled via the handle's stop_tx channel.
         // Callers should send on the handle before dropping it.
         // No registry of active handles is kept in the mock.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Panic-path protection for prod stubs.
+// Any method the host calls on a factory-returned impl must return an error
+// instead of panicking — a panic here freezes the UI thread.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod prod_stub_tests {
+    use super::*;
+
+    #[test]
+    fn core_audio_start_capture_returns_err_not_panic() {
+        let mut d = CoreAudioDevice;
+        assert!(d.start_capture(48000, 512).is_err());
+    }
+
+    #[test]
+    fn core_audio_start_playback_returns_err_not_panic() {
+        let mut d = CoreAudioDevice;
+        let src = AudioSource::File(PathBuf::from("/nonexistent.wav"));
+        assert!(d.start_playback(src, 1.0).is_err());
+    }
+
+    #[test]
+    fn core_audio_stop_is_noop_not_panic() {
+        let mut d = CoreAudioDevice;
+        d.stop(0); // must not panic
+    }
+
+    #[test]
+    fn mock_audio_pipe_playback_returns_err_not_panic() {
+        let mut d = MockAudioDevice::new(
+            PathBuf::from("/tmp/nonexistent_in.wav"),
+            PathBuf::from("/tmp/nonexistent_out.wav"),
+        );
+        let src = AudioSource::Pipe("rec".into());
+        assert!(d.start_playback(src, 1.0).is_err());
     }
 }

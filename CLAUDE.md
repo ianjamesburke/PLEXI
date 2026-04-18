@@ -75,6 +75,14 @@ Use `uv` for all Python projects. `pyproject.toml` with `requires-python = ">=3.
 
 Try-catch on all I/O, network, external API calls, and anything that can reasonably fail. Every catch logs where + what failed with enough context to diagnose. Never swallow errors silently. If a failure can't be meaningfully recovered from, propagate or re-throw.
 
+## Panic Discipline (stubs must not crash the host)
+
+`todo!()` and `unimplemented!()` are **banned outside `#[cfg(test)]`** — enforced by `#![deny(clippy::todo, clippy::unimplemented)]` in `src/main.rs`. They compile clean but panic at runtime, and a panic on the UI thread freezes the whole GUI.
+
+**Factory rule:** any impl returned from a factory function (e.g. `audio_device()`, `video_decoder()`) must never panic in a trait method. Unimplemented methods return `Err(NotImplemented)` / `None` / noop — never `todo!()`. When you add a new prod stub, add a `prod_stub_tests` unit test that calls every trait method and asserts no panic.
+
+**Post-install smoke test:** `just install-v3` runs `scripts/smoke-test.sh`, which (1) feeds a PGAP Init to every installed app and asserts `ready` appears within 3s, (2) launches the host for 2s and scans the log for panics. If the smoke test fails, the install is broken — do not report the task complete.
+
 ## Lessons Carried Into v3
 
 - **Python version in GUI app bundles:** macOS GUI bundles do NOT inherit shell PATH. `#!/usr/bin/env python3` → Apple's frozen `/usr/bin/python3` 3.9.6. Always add `from __future__ import annotations` as the first line of every app Python file so `str | None` is safe on 3.7+.
