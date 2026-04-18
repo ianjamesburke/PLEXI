@@ -1,20 +1,13 @@
 use crate::theme::Colors;
-use crate::tiling::PaneId;
-use std::path::PathBuf;
 
 /// Context passed to an app during rendering.
 pub struct AppRenderContext<'a> {
     pub colors: &'a Colors,
     pub is_focused: bool,
-    pub linked_terminal: PaneId,
 }
 
 /// Commands an app can issue back to the system.
 pub enum AppCommand {
-    /// Write a shell command to the linked terminal.
-    RunInTerminal(String),
-    /// Change the terminal's working directory.
-    Cd(PathBuf),
     /// Post an ephemeral notification.
     Notify(String),
     /// Request the host to spawn a new app pane.
@@ -51,19 +44,6 @@ pub trait App: Send {
     /// so the host can act on them each frame without changing the trait signature.
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         vec![]
-    }
-
-    /// Called when the user submits a command via the terminal command bar.
-    /// The app may interpret it and return a command to execute, or return `None`
-    /// to let it pass through to the terminal as a normal shell command.
-    fn on_command(&mut self, _cmd: &str) -> Option<AppCommand> {
-        None
-    }
-
-    /// File extensions this app handles (lowercase, no dot). Used for file-type
-    /// routing from the file browser. Empty slice means not file-driven.
-    fn accepted_extensions(&self) -> &[&str] {
-        &[]
     }
 
     /// Returns true if this app wants to capture all keyboard input, preventing

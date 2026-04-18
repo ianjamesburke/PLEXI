@@ -167,7 +167,6 @@ impl FileBrowserApp {
         self.selected = 0;
         self.refresh();
         self.pending_scroll = true;
-        self.pending_cmds.push(AppCommand::Cd(path));
     }
 
     fn navigate_up(&mut self) {
@@ -189,7 +188,6 @@ impl FileBrowserApp {
                 }
             }
             self.pending_scroll = true;
-            self.pending_cmds.push(AppCommand::Cd(parent));
         }
     }
 
@@ -959,32 +957,8 @@ impl App for FileBrowserApp {
         std::mem::take(&mut self.pending_cmds)
     }
 
-    fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {
-        let parts: Vec<&str> = cmd.trim().splitn(2, ' ').collect();
-        match parts.as_slice() {
-            ["cd", path] => {
-                let target = PathBuf::from(path);
-                let target = if target.is_absolute() {
-                    target
-                } else {
-                    self.cwd.join(target)
-                };
-                if target.is_dir() {
-                    self.navigate_into(target.clone());
-                    return Some(AppCommand::Cd(target));
-                }
-                None
-            }
-            _ => Some(AppCommand::RunInTerminal(cmd.to_string())),
-        }
-    }
-
     fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
         self.sync_cwd(new_cwd.to_path_buf());
-    }
-
-    fn accepted_extensions(&self) -> &[&str] {
-        &[]
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {

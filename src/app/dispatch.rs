@@ -37,9 +37,6 @@ impl PlexiApp {
         for cmd in commands {
             match cmd {
                 AppCommand::SpawnApp { .. } => deferred.push(cmd),
-                AppCommand::RunInTerminal(_) | AppCommand::Cd(_) => {
-                    log::warn!("Ignoring terminal command from app pane: no linked terminal");
-                }
                 AppCommand::Notify(msg) => {
                     log::info!("app notify: {msg}");
                 }

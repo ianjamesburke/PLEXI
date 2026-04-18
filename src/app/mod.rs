@@ -86,11 +86,8 @@ impl PlexiApp {
                         dirs::home_dir()
                     };
                     let mut pane_entry: Option<Pane> = None;
-                    if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::App)
-                        || (matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Terminal)
-                            && saved_pane.active_app_type.is_some())
-                    {
-                        let Some(app_type) = &saved_pane.active_app_type else {
+                    if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::App) {
+                        let Some(app_type) = &saved_pane.app_id else {
                             continue;
                         };
                         let app_cwd = saved_pane.cwd.clone();
@@ -99,7 +96,7 @@ impl PlexiApp {
                             "file_browser" => {
                                 let mut app =
                                     crate::file_browser::FileBrowserApp::new(app_cwd.clone());
-                                if let Some(state) = &saved_pane.active_app_state {
+                                if let Some(state) = &saved_pane.app_state {
                                     use crate::app_trait::App;
                                     app.restore_state(state);
                                 }
@@ -116,7 +113,7 @@ impl PlexiApp {
                             "quick_note" => {
                                 let mut app =
                                     crate::quick_note_app::QuickNoteApp::new(app_cwd.clone());
-                                if let Some(state) = &saved_pane.active_app_state {
+                                if let Some(state) = &saved_pane.app_state {
                                     use crate::app_trait::App;
                                     app.restore_state(state);
                                 }
@@ -132,7 +129,7 @@ impl PlexiApp {
                             }
                             "secrets_manager" => {
                                 let mut app = crate::secrets_app::SecretsApp::new(app_cwd.clone());
-                                if let Some(state) = &saved_pane.active_app_state {
+                                if let Some(state) = &saved_pane.app_state {
                                     use crate::app_trait::App;
                                     app.restore_state(state);
                                 }
@@ -811,7 +808,6 @@ impl eframe::App for PlexiApp {
                                         let app_ctx = crate::app_trait::AppRenderContext {
                                             colors: &self.colors,
                                             is_focused: true,
-                                            linked_terminal: pane_id,
                                         };
                                         a.runtime.ui(ui, &app_ctx);
                                     }

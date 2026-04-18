@@ -559,6 +559,7 @@ impl PlexiApp {
         for context in &self.contexts {
             let mut saved_panes = Vec::new();
             for (&id, pane) in &context.panes {
+                debug_assert_eq!(pane.id(), id);
                 if let Some(t) = pane.as_terminal() {
                     let cwd = shell::get_pid_cwd(t.backend.child_pid())
                         .unwrap_or_else(|| context.path.clone());
@@ -567,8 +568,8 @@ impl PlexiApp {
                         kind: crate::workspace::SavedPaneKind::Terminal,
                         cwd,
                         name: t.name.clone(),
-                        active_app_type: None,
-                        active_app_state: None,
+                        app_id: None,
+                        app_state: None,
                     });
                 } else if let Some(a) = pane.as_app() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -576,8 +577,8 @@ impl PlexiApp {
                         kind: crate::workspace::SavedPaneKind::App,
                         cwd: a.workspace_root.clone(),
                         name: Some(a.name.clone()),
-                        active_app_type: Some(a.runtime.type_id().to_string()),
-                        active_app_state: a.runtime.serialize_state(),
+                        app_id: Some(a.runtime.type_id().to_string()),
+                        app_state: a.runtime.serialize_state(),
                     });
                 } else if let Some(agent) = pane.as_agent() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -585,8 +586,8 @@ impl PlexiApp {
                         kind: crate::workspace::SavedPaneKind::Agent,
                         cwd: context.path.clone(),
                         name: Some(agent.label.clone()),
-                        active_app_type: None,
-                        active_app_state: None,
+                        app_id: None,
+                        app_state: None,
                     });
                 }
             }
@@ -663,25 +664,6 @@ impl PlexiApp {
         }
     }
 
-    /// App-pane mode has no terminal-overlay focus toggle.
-    pub(crate) fn toggle_focused_surface(&mut self) {
-        let _ = self;
-    }
-
-    /// Open an app on the focused pane: auto-splits vertically, app on top,
-    /// fresh linked terminal on bottom.
-    ///
-    /// `group` is the pane group the app joins (for `PathChanged` broadcast).
-    pub(crate) fn open_app_on_focused(
-        &mut self,
-        app: Box<dyn App>,
-        permissions: crate::app_permissions::AppPermissions,
-        scope: PathBuf,
-        group: Option<String>,
-    ) {
-        self.open_builtin_app_pane(app, permissions, scope, group, Some("split_v"));
-    }
-
     /// Toggle the file browser: if the focused pane has a file browser open,
     /// close it. Otherwise, open one.
     pub(crate) fn open_file_browser(&mut self) {
@@ -717,33 +699,7 @@ impl PlexiApp {
         // Built-in file browser gets full permissions, joins the "cwd" group so
         // it follows linked-terminal directory changes.
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_app_on_focused(app, perms, cwd, Some("cwd".to_string()));
-    }
-
-    /// Open an app on the focused pane: splits HORIZONTALLY — app on the left,
-    /// fresh linked terminal on the right. Mirrors `open_app_on_focused` but uses
-    /// a horizontal container instead of vertical (for Fibonacci spiral layout).
-    pub(crate) fn open_app_on_focused_horizontal(
-        &mut self,
-        app: Box<dyn App>,
-        permissions: crate::app_permissions::AppPermissions,
-        scope: PathBuf,
-        group: Option<String>,
-    ) {
-        self.open_builtin_app_pane(app, permissions, scope, group, Some("split_h"));
-    }
-
-    /// Open an app on the focused pane WITHOUT creating a linked terminal split.
-    /// The app takes the full pane. Used for apps like Quick Note that don't
-    /// need a terminal.
-    pub(crate) fn open_app_fullscreen(
-        &mut self,
-        app: Box<dyn App>,
-        permissions: crate::app_permissions::AppPermissions,
-        scope: PathBuf,
-        group: Option<String>,
-    ) {
-        self.open_builtin_app_pane(app, permissions, scope, group, Some("overlay"));
+        self.open_builtin_app_pane(app, perms, cwd, Some("cwd".to_string()), Some("split_v"));
     }
 
     /// Open the quick note app (full pane, no terminal split).
@@ -757,7 +713,7 @@ impl PlexiApp {
 
         let app = Box::new(crate::quick_note_app::QuickNoteApp::new(cwd.clone()));
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_app_fullscreen(app, perms, cwd, None);
+        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"));
     }
 
     /// Open the Plexi config file in the text editor app.
@@ -779,7 +735,7 @@ impl PlexiApp {
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let editor = crate::text_editor_app::TextEditorApp::from_file(config_path);
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_app_fullscreen(Box::new(editor), perms, scope, None);
+        self.open_builtin_app_pane(Box::new(editor), perms, scope, None, Some("overlay"));
     }
 
     /// Launch an installed app by id in the focused pane.
@@ -840,49 +796,7 @@ impl PlexiApp {
 
         let app = Box::new(crate::secrets_app::SecretsApp::new(cwd.clone()));
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_app_fullscreen(app, perms, cwd, None);
-    }
-
-    /// Open the appropriate app for a file, based on its extension.
-    /// Falls back to opening the file path in the terminal if no app is registered.
-    pub(crate) fn open_file_with_app(&mut self, file_path: PathBuf) {
-        let cwd = file_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-
-        let ext = file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase());
-        let app_id = ext.as_deref().and_then(|e| {
-            self.registry
-                .app_for_extension(e)
-                .map(|a| a.manifest.id.clone())
-        });
-        let group = app_id.as_deref().and_then(|id| self.registry.group_for(id));
-
-        if let Some((resolved_app_id, process)) =
-            self.registry.launch_process_for_file(&file_path, &cwd)
-        {
-            let requested_id = app_id.unwrap_or(resolved_app_id);
-            self.open_process_app_pane(&requested_id, process, cwd.clone(), group, Some("split_v"));
-        } else {
-            // No registered app — fall back to writing the path into the terminal.
-            let ctx = &mut self.contexts[self.active_context];
-            if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
-                let path_str = file_path.display().to_string();
-                let escaped = if path_str
-                    .contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c))
-                {
-                    format!("'{}'", path_str.replace('\'', "'\\''"))
-                } else {
-                    path_str
-                };
-                pane.backend
-                    .process_command(egui_term::BackendCommand::Write(escaped.into_bytes()));
-            }
-        }
+        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"));
     }
 
     /// Spawn a new `Pane::Agent` in the active context via a horizontal split.

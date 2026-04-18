@@ -307,12 +307,6 @@ pub enum DrawCommand {
         args: Vec<String>,
     },
 
-    // ── Legacy v1/v2 commands — kept for back-compat, Layer 3 migrates call sites ──
-    /// Emit a shell command to the linked terminal PTY.
-    /// v3: use PipeOpen/PipeSend for structured communication instead.
-    RunInTerminal { command: String },
-    /// Tell the linked terminal to cd to this path.
-    Cd { path: String },
 }
 
 /// An action attached to a Notify command.

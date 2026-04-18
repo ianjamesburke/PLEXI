@@ -109,6 +109,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 .show(ui, |ui| {
                     // Agent panes: full turn loop UI.
                     if let Some(agent) = pane.as_agent_mut() {
+                        let _has_instance = agent.instance.is_some();
                         // Drain any streamed tokens from background thread.
                         if let Some(rx) = &agent.turn_rx {
                             let mut done = false;
@@ -287,7 +288,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         let app_ctx = AppRenderContext {
                             colors: &self.colors,
                             is_focused,
-                            linked_terminal: *pane_id,
                         };
                         app_pane.runtime.ui(ui, &app_ctx);
                         return;

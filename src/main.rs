@@ -12,7 +12,6 @@ mod app_permissions;
 mod app_protocol;
 #[allow(dead_code)]
 mod app_registry;
-#[allow(dead_code)]
 mod app_trait;
 mod cli;
 mod command_palette;
@@ -35,9 +34,7 @@ mod macos_menu;
 #[allow(dead_code)]
 mod media;
 mod overlays;
-#[allow(dead_code)]
 mod pane;
-#[allow(dead_code)]
 mod pane_ops;
 #[allow(dead_code)]
 mod plexi_iq;

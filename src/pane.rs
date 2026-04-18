@@ -66,13 +66,6 @@ impl Pane {
         }
     }
 
-    pub fn kind_str(&self) -> &'static str {
-        match self {
-            Pane::Terminal(_) => "terminal",
-            Pane::App(_) => "app",
-            Pane::Agent(_) => "agent",
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

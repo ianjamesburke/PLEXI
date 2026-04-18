@@ -127,9 +127,7 @@ pub(super) fn render_draw_commands(
             }
 
             // These are handled at the App trait level or routed upstream — never rendered.
-            DrawCommand::RunInTerminal { .. }
-            | DrawCommand::Cd { .. }
-            | DrawCommand::Log { .. }
+            DrawCommand::Log { .. }
             | DrawCommand::FrameDone { .. }
             | DrawCommand::VideoPlayer { .. }
             | DrawCommand::AudioMeter { .. }

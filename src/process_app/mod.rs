@@ -74,7 +74,7 @@ pub struct ProcessApp {
     pub(crate) frame: Vec<DrawCommand>,
     /// Accumulates draw commands for the frame currently being received.
     pending_frame: Vec<DrawCommand>,
-    /// Pending RunInTerminal / Cd commands collected from the subprocess.
+    /// Pending host app commands collected from the subprocess.
     pub(crate) pending_commands: Vec<AppCommand>,
     last_size: egui::Vec2,
     initialized: bool,
@@ -357,10 +357,6 @@ impl App for ProcessApp {
         self.display_name.clone()
     }
 
-    fn accepted_extensions(&self) -> &[&str] {
-        &[]
-    }
-
     fn keyboard_capture(&self) -> bool {
         self.keyboard_capture
     }
@@ -428,14 +424,6 @@ impl App for ProcessApp {
                     }
                     std::mem::swap(&mut self.frame, &mut self.pending_frame);
                     self.pending_frame.clear();
-                }
-                DrawCommand::RunInTerminal { command } => {
-                    self.pending_commands
-                        .push(AppCommand::RunInTerminal(command));
-                }
-                DrawCommand::Cd { path } => {
-                    self.pending_commands
-                        .push(AppCommand::Cd(std::path::PathBuf::from(path)));
                 }
                 DrawCommand::Log { level, message } => {
                     let target = format!("app::{}", self.type_id);
@@ -607,13 +595,6 @@ impl App for ProcessApp {
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_commands)
-    }
-
-    fn on_command(&mut self, cmd: &str) -> Option<AppCommand> {
-        self.send_event(&PlexiEvent::Command {
-            text: cmd.to_string(),
-        });
-        None
     }
 
     fn sync_cwd(&mut self, new_cwd: &std::path::Path) {

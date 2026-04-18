@@ -418,7 +418,7 @@ impl ProcessApp {
                                 action.payload.get("command").and_then(|v| v.as_str())
                             {
                                 self.pending_commands
-                                    .push(AppCommand::RunInTerminal(command.to_string()));
+                                    .push(AppCommand::Notify(format!("[run_command] {command}")));
                                 event_log::emit(HostEvent::NotificationActionInvoked {
                                     id: notif_id.clone(),
                                     action: "run_command".to_string(),

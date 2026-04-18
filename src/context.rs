@@ -1,5 +1,5 @@
 use crate::keys::Direction;
-use crate::pane::{Pane, TerminalPane};
+use crate::pane::Pane;
 use crate::shell;
 use crate::tiling::PaneId;
 use egui_tiles::{Container, Tile, TileId, Tree};
@@ -193,18 +193,6 @@ impl Context {
         } else {
             pane.as_app().map(|app| app.workspace_root.clone())
         }
-    }
-
-    /// Returns (pane_id, &mut TerminalPane) for the currently focused pane, if any.
-    pub(crate) fn focused_pane_mut(&mut self) -> Option<(PaneId, &mut TerminalPane)> {
-        let tile_id = self.focused_pane?;
-        let pane_id = match self.tree.tiles.get(tile_id)? {
-            Tile::Pane(id) => *id,
-            _ => return None,
-        };
-        let pane = self.panes.get_mut(&pane_id)?;
-        let terminal = pane.as_terminal_mut()?;
-        Some((pane_id, terminal))
     }
 }
 

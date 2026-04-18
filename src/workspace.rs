@@ -30,12 +30,10 @@ pub struct SavedPane {
     pub cwd: PathBuf,
     #[serde(default)]
     pub name: Option<String>,
-    /// If this pane had an active app, its type_id (e.g. "file_browser").
     #[serde(default)]
-    pub active_app_type: Option<String>,
-    /// Serialised app state for restoration.
+    pub app_id: Option<String>,
     #[serde(default)]
-    pub active_app_state: Option<serde_json::Value>,
+    pub app_state: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
@@ -112,16 +110,16 @@ mod tests {
                         kind: SavedPaneKind::Terminal,
                         cwd: PathBuf::from("/tmp"),
                         name: Some("my-pane".into()),
-                        active_app_type: None,
-                        active_app_state: None,
+                        app_id: None,
+                        app_state: None,
                     },
                     SavedPane {
                         id: 2,
                         kind: SavedPaneKind::Terminal,
                         cwd: PathBuf::from("/home"),
                         name: None,
-                        active_app_type: None,
-                        active_app_state: None,
+                        app_id: None,
+                        app_state: None,
                     },
                 ],
                 focused_pane: None,
