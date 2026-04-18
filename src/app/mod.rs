@@ -85,70 +85,115 @@ impl PlexiApp {
                     } else {
                         dirs::home_dir()
                     };
-                    let settings = Self::make_backend_settings(cwd, &colors);
-                    if let Some(mut pane) = TerminalPane::new(
-                        saved_pane.id,
-                        cc.egui_ctx.clone(),
-                        tx.clone(),
-                        settings,
-                        default_font_size,
-                    ) {
-                        pane.name = saved_pane.name.clone();
-                        // Restore active app if one was saved.
-                        if let Some(app_type) = &saved_pane.active_app_type {
-                            let cwd = saved_pane.cwd.clone();
-                            let builtin_perms = crate::app_permissions::AppPermissions::builtin();
-
-                            let (app, perms, group): (
-                                Option<Box<dyn crate::app_trait::App>>,
-                                _,
-                                _,
-                            ) = match app_type.as_str() {
-                                // Built-ins implicitly join the "cwd" group so they track
-                                // the linked terminal's directory (file browser is the main
-                                // consumer).
-                                "file_browser" => {
-                                    let mut fb =
-                                        crate::file_browser::FileBrowserApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        fb.restore_state(state);
-                                    }
-                                    (Some(Box::new(fb)), builtin_perms, Some("cwd".to_string()))
+                    let mut pane_entry: Option<Pane> = None;
+                    if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::App)
+                        || (matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Terminal)
+                            && saved_pane.active_app_type.is_some())
+                    {
+                        let Some(app_type) = &saved_pane.active_app_type else {
+                            continue;
+                        };
+                        let app_cwd = saved_pane.cwd.clone();
+                        let builtin_perms = crate::app_permissions::AppPermissions::builtin();
+                        match app_type.as_str() {
+                            "file_browser" => {
+                                let mut app =
+                                    crate::file_browser::FileBrowserApp::new(app_cwd.clone());
+                                if let Some(state) = &saved_pane.active_app_state {
+                                    use crate::app_trait::App;
+                                    app.restore_state(state);
                                 }
-                                "quick_note" => {
-                                    let mut note =
-                                        crate::quick_note_app::QuickNoteApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        note.restore_state(state);
-                                    }
-                                    (Some(Box::new(note)), builtin_perms, None)
+                                pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
+                                    id: saved_pane.id,
+                                    runtime: crate::pane::AppRuntime::Builtin(Box::new(app)),
+                                    workspace_root: app_cwd,
+                                    permissions: builtin_perms,
+                                    manifest_id: "file_browser".to_string(),
+                                    name: "File Browser".to_string(),
+                                    pane_group: Some("cwd".to_string()),
+                                })));
+                            }
+                            "quick_note" => {
+                                let mut app =
+                                    crate::quick_note_app::QuickNoteApp::new(app_cwd.clone());
+                                if let Some(state) = &saved_pane.active_app_state {
+                                    use crate::app_trait::App;
+                                    app.restore_state(state);
                                 }
-                                "secrets_manager" => {
-                                    let mut secrets =
-                                        crate::secrets_app::SecretsApp::new(cwd.clone());
-                                    if let Some(state) = &saved_pane.active_app_state {
-                                        use crate::app_trait::App;
-                                        secrets.restore_state(state);
-                                    }
-                                    (Some(Box::new(secrets)), builtin_perms, None)
+                                pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
+                                    id: saved_pane.id,
+                                    runtime: crate::pane::AppRuntime::Builtin(Box::new(app)),
+                                    workspace_root: app_cwd,
+                                    permissions: builtin_perms,
+                                    manifest_id: "quick_note".to_string(),
+                                    name: "Quick Note".to_string(),
+                                    pane_group: None,
+                                })));
+                            }
+                            "secrets_manager" => {
+                                let mut app = crate::secrets_app::SecretsApp::new(app_cwd.clone());
+                                if let Some(state) = &saved_pane.active_app_state {
+                                    use crate::app_trait::App;
+                                    app.restore_state(state);
                                 }
-                                // Third-party apps: launch via registry using type_id.
-                                other => {
-                                    let app = registry.launch(other, &cwd, &[]);
-                                    let perms =
-                                        registry.permissions_for(other).unwrap_or(builtin_perms);
-                                    let group = registry.group_for(other);
-                                    (app, perms, group)
+                                pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
+                                    id: saved_pane.id,
+                                    runtime: crate::pane::AppRuntime::Builtin(Box::new(app)),
+                                    workspace_root: app_cwd,
+                                    permissions: builtin_perms,
+                                    manifest_id: "secrets_manager".to_string(),
+                                    name: "Secrets Manager".to_string(),
+                                    pane_group: None,
+                                })));
+                            }
+                            other => {
+                                if let Some(process) = registry.launch_process(other, &app_cwd, &[])
+                                {
+                                    pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
+                                        id: saved_pane.id,
+                                        permissions: process.permissions.clone(),
+                                        runtime: crate::pane::AppRuntime::Process(Box::new(
+                                            process,
+                                        )),
+                                        workspace_root: app_cwd,
+                                        manifest_id: other.to_string(),
+                                        name: other.to_string(),
+                                        pane_group: registry.group_for(other),
+                                    })));
                                 }
-                            };
-                            if let Some(app) = app {
-                                pane.open_app(app, perms, cwd, group);
-                                pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
                             }
                         }
-                        panes.insert(saved_pane.id, Pane::Terminal(Box::new(pane)));
+                    } else if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Agent) {
+                        pane_entry = Some(Pane::Agent(Box::new(crate::pane::AgentPane {
+                            id: saved_pane.id,
+                            instance: Some(crate::plexi_iq::PlexiIqInstance::default()),
+                            label: saved_pane
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| format!("Agent {}", saved_pane.id)),
+                            transcript: Vec::new(),
+                            input_buf: String::new(),
+                            turn_rx: None,
+                            session_id: None,
+                        })));
+                    }
+
+                    if pane_entry.is_none() {
+                        let settings = Self::make_backend_settings(cwd, &colors);
+                        if let Some(mut pane) = TerminalPane::new(
+                            saved_pane.id,
+                            cc.egui_ctx.clone(),
+                            tx.clone(),
+                            settings,
+                            default_font_size,
+                        ) {
+                            pane.name = saved_pane.name.clone();
+                            pane_entry = Some(Pane::Terminal(Box::new(pane)));
+                        }
+                    }
+
+                    if let Some(pane) = pane_entry {
+                        panes.insert(saved_pane.id, pane);
                     }
                 }
                 if panes.is_empty() {
@@ -338,15 +383,12 @@ impl eframe::App for PlexiApp {
                 if let Some(req_pane_id) = requesting_pane_id {
                     let active = self.active_context;
                     if let Some(pane) = self.contexts[active].panes.get_mut(&req_pane_id) {
-                        if let Some(t) = pane.as_terminal_mut() {
-                            if let Some(app) = t.active_app.as_mut() {
-                                app.queue_outbound_event(
-                                    crate::app_protocol::PlexiEvent::AppSpawned {
-                                        pane_id: new_pane_id,
-                                        type_id: type_id.clone(),
-                                    },
-                                );
-                            }
+                        let event = crate::app_protocol::PlexiEvent::AppSpawned {
+                            pane_id: new_pane_id,
+                            type_id: type_id.clone(),
+                        };
+                        if let Some(a) = pane.as_app_mut() {
+                            a.runtime.queue_outbound_event(event);
                         }
                     }
                 }
@@ -367,9 +409,11 @@ impl eframe::App for PlexiApp {
                     }
                 })
                 .and_then(|pid| ctx_ref.panes.get(&pid))
-                .and_then(|pane| pane.as_terminal())
-                .and_then(|t| t.active_app.as_ref())
-                .map(|app| app.wants_close())
+                .map(|pane| {
+                    pane.as_app()
+                        .map(|a| a.runtime.wants_close())
+                        .unwrap_or(false)
+                })
                 .unwrap_or(false);
             if should_close {
                 self.close_focused_app();
@@ -389,8 +433,15 @@ impl eframe::App for PlexiApp {
                         None
                     }
                 })
-                .and_then(|pane| pane.as_terminal())
-                .and_then(|t| t.name.clone());
+                .and_then(|pane| {
+                    if let Some(t) = pane.as_terminal() {
+                        t.name.clone()
+                    } else if let Some(a) = pane.as_app() {
+                        Some(a.name.clone())
+                    } else {
+                        pane.as_agent().map(|a| a.label.clone())
+                    }
+                });
             let title = match pane_name {
                 Some(name) => format!("{} — {}", context.name, name),
                 None => context.name.clone(),
@@ -410,17 +461,12 @@ impl eframe::App for PlexiApp {
                 }
             });
             let active = focused_pane
-                .map(|pane| {
-                    pane.as_terminal()
-                        .map(|t| t.active_app.is_some())
-                        .unwrap_or(false)
-                })
+                .map(|pane| pane.as_app().is_some())
                 .unwrap_or(false);
             let capture = if active {
                 focused_pane
-                    .and_then(|p| p.as_terminal())
-                    .and_then(|t| t.active_app.as_ref())
-                    .map(|app| app.keyboard_capture())
+                    .and_then(|p| p.as_app())
+                    .map(|a| a.runtime.keyboard_capture())
                     .unwrap_or(false)
             } else {
                 false
@@ -743,18 +789,6 @@ impl eframe::App for PlexiApp {
                                                     });
                                                 },
                                             );
-                                        } else if t.surface_mode
-                                            == crate::app_trait::SurfaceMode::AppActive
-                                        {
-                                            // Zoomed app: render the app surface full-size.
-                                            if let Some(app) = t.active_app.as_mut() {
-                                                let app_ctx = crate::app_trait::AppRenderContext {
-                                                    colors: &self.colors,
-                                                    is_focused: true,
-                                                    linked_terminal: pane_id,
-                                                };
-                                                app.ui(ui, &app_ctx);
-                                            }
                                         } else {
                                             // Reserve space for tab dots if in a tab group
                                             if zoomed_tab_info.is_some() {
@@ -773,6 +807,13 @@ impl eframe::App for PlexiApp {
                                                 ));
                                             ui.add(terminal);
                                         }
+                                    } else if let Some(a) = pane.as_app_mut() {
+                                        let app_ctx = crate::app_trait::AppRenderContext {
+                                            colors: &self.colors,
+                                            is_focused: true,
+                                            linked_terminal: pane_id,
+                                        };
+                                        a.runtime.ui(ui, &app_ctx);
                                     }
                                 }
 

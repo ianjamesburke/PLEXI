@@ -25,6 +25,8 @@ pub struct SavedContext {
 #[derive(Serialize, Deserialize)]
 pub struct SavedPane {
     pub id: u64,
+    #[serde(default)]
+    pub kind: SavedPaneKind,
     pub cwd: PathBuf,
     #[serde(default)]
     pub name: Option<String>,
@@ -34,9 +36,15 @@ pub struct SavedPane {
     /// Serialised app state for restoration.
     #[serde(default)]
     pub active_app_state: Option<serde_json::Value>,
-    /// PaneId of the linked terminal (for split restoration).
-    #[serde(default)]
-    pub linked_terminal_pane: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedPaneKind {
+    #[default]
+    Terminal,
+    App,
+    Agent,
 }
 
 fn workspace_path() -> PathBuf {
@@ -101,19 +109,19 @@ mod tests {
                 panes: vec![
                     SavedPane {
                         id: 1,
+                        kind: SavedPaneKind::Terminal,
                         cwd: PathBuf::from("/tmp"),
                         name: Some("my-pane".into()),
                         active_app_type: None,
                         active_app_state: None,
-                        linked_terminal_pane: None,
                     },
                     SavedPane {
                         id: 2,
+                        kind: SavedPaneKind::Terminal,
                         cwd: PathBuf::from("/home"),
                         name: None,
                         active_app_type: None,
                         active_app_state: None,
-                        linked_terminal_pane: None,
                     },
                 ],
                 focused_pane: None,

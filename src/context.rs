@@ -188,8 +188,11 @@ impl Context {
             _ => return None,
         };
         let pane = self.panes.get(&pane_id)?;
-        let terminal = pane.as_terminal()?;
-        shell::get_pid_cwd(terminal.backend.child_pid())
+        if let Some(terminal) = pane.as_terminal() {
+            shell::get_pid_cwd(terminal.backend.child_pid())
+        } else {
+            pane.as_app().map(|app| app.workspace_root.clone())
+        }
     }
 
     /// Returns (pane_id, &mut TerminalPane) for the currently focused pane, if any.

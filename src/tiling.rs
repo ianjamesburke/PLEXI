@@ -1,4 +1,4 @@
-use crate::app_trait::{AppRenderContext, SurfaceMode};
+use crate::app_trait::AppRenderContext;
 use crate::pane::Pane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Vec2};
@@ -283,7 +283,17 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         return;
                     }
 
-                    // App panes: handled by their own subsystems (Layer 3b).
+                    if let Some(app_pane) = pane.as_app_mut() {
+                        let app_ctx = AppRenderContext {
+                            colors: &self.colors,
+                            is_focused,
+                            linked_terminal: *pane_id,
+                        };
+                        app_pane.runtime.ui(ui, &app_ctx);
+                        return;
+                    }
+
+                    // Terminal panes.
                     let Some(t) = pane.as_terminal_mut() else {
                         return;
                     };
@@ -309,50 +319,21 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         return;
                     }
 
-                    match t.surface_mode {
-                        SurfaceMode::FullTerminal => {
-                            render_name_bar_and_dots(
-                                ui,
-                                tile_id,
-                                pane_id,
-                                &self.tab_info,
-                                &self.pane_names,
-                                &self.colors,
-                            );
-                            let font_size = t.font_size;
-                            let terminal = TerminalView::new(ui, &mut t.backend)
-                                .set_focus(is_focused)
-                                .set_theme(self.theme.clone())
-                                .set_font(theme::terminal_font(font_size))
-                                .set_size(Vec2::new(ui.available_width(), ui.available_height()));
-                            ui.add(terminal);
-                        }
-
-                        SurfaceMode::AppActive => {
-                            if let Some(app) = t.active_app.as_mut() {
-                                // App renders full height — the terminal is a
-                                // separate pane below (created by auto-split).
-                                let app_ctx = AppRenderContext {
-                                    colors: &self.colors,
-                                    is_focused,
-                                    linked_terminal: *pane_id,
-                                };
-                                app.ui(ui, &app_ctx);
-                            } else {
-                                // App was dropped — fall back to full terminal.
-                                let font_size = t.font_size;
-                                let terminal = TerminalView::new(ui, &mut t.backend)
-                                    .set_focus(is_focused)
-                                    .set_theme(self.theme.clone())
-                                    .set_font(theme::terminal_font(font_size))
-                                    .set_size(Vec2::new(
-                                        ui.available_width(),
-                                        ui.available_height(),
-                                    ));
-                                ui.add(terminal);
-                            }
-                        }
-                    }
+                    render_name_bar_and_dots(
+                        ui,
+                        tile_id,
+                        pane_id,
+                        &self.tab_info,
+                        &self.pane_names,
+                        &self.colors,
+                    );
+                    let font_size = t.font_size;
+                    let terminal = TerminalView::new(ui, &mut t.backend)
+                        .set_focus(is_focused)
+                        .set_theme(self.theme.clone())
+                        .set_font(theme::terminal_font(font_size))
+                        .set_size(Vec2::new(ui.available_width(), ui.available_height()));
+                    ui.add(terminal);
 
                     // Draw tab indicator dots (top-left) when 2+ tabs and NO name bar
                     if !self.pane_names.contains_key(pane_id) {

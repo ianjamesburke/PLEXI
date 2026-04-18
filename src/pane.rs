@@ -1,5 +1,5 @@
 use crate::app_permissions::AppPermissions;
-use crate::app_trait::{App, SurfaceLayer, SurfaceMode};
+use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::path::PathBuf;
@@ -76,7 +76,7 @@ impl Pane {
 }
 
 // ---------------------------------------------------------------------------
-// TerminalPane — v2-compatible; overlay model preserved for now
+// TerminalPane — PTY-only state
 // ---------------------------------------------------------------------------
 
 pub struct TerminalPane {
@@ -86,26 +86,6 @@ pub struct TerminalPane {
     pub exited: bool,
     pub name: Option<String>,
     pub font_size: f32,
-    /// Active app surface overlaid on this terminal, if any.
-    pub active_app: Option<Box<dyn App>>,
-    pub surface_mode: SurfaceMode,
-    /// Which surface has keyboard focus when an app is active.
-    pub focused_surface: SurfaceLayer,
-    /// Effective permissions for the active app. Reset when app closes.
-    pub app_permissions: AppPermissions,
-    /// Directory the app was launched from. Commands are scoped to this.
-    pub app_scope: Option<PathBuf>,
-    /// When an app opens via auto-split, this is the PaneId of the terminal
-    /// pane created below. Used to route AppCommands and to collapse the split
-    /// on close.
-    pub linked_terminal_pane: Option<PaneId>,
-    /// Pane group the active app joined at spawn (for `PathChanged` routing).
-    /// None when no app is active or the app didn't declare a group.
-    pub pane_group: Option<String>,
-    /// Last CWD pushed to the active app via `sync_cwd` — used to debounce
-    /// PathChanged broadcasts to only fire when the linked terminal actually
-    /// changed directory.
-    pub last_synced_cwd: Option<PathBuf>,
 }
 
 impl TerminalPane {
@@ -129,69 +109,88 @@ impl TerminalPane {
             exited: false,
             name: None,
             font_size: default_font_size,
-            active_app: None,
-            surface_mode: SurfaceMode::FullTerminal,
-            focused_surface: SurfaceLayer::App,
-            app_permissions: AppPermissions::default(),
-            app_scope: None,
-            linked_terminal_pane: None,
-            pane_group: None,
-            last_synced_cwd: None,
         })
-    }
-
-    /// Open an app — app gets focus immediately.
-    /// `group` is the pane group the app joins (from its manifest); used for
-    /// `PathChanged` broadcast routing.
-    pub fn open_app(
-        &mut self,
-        app: Box<dyn App>,
-        permissions: AppPermissions,
-        scope: PathBuf,
-        group: Option<String>,
-    ) {
-        self.active_app = Some(app);
-        self.surface_mode = SurfaceMode::AppActive;
-        self.focused_surface = SurfaceLayer::App;
-        self.app_permissions = permissions;
-        self.app_scope = Some(scope);
-        self.pane_group = group;
-        self.last_synced_cwd = None;
-    }
-
-    /// Close the active app and return to full terminal mode.
-    /// Returns the linked terminal pane ID if there was one (caller should close it).
-    pub fn close_app(&mut self) -> Option<PaneId> {
-        self.active_app = None;
-        self.surface_mode = SurfaceMode::FullTerminal;
-        self.focused_surface = SurfaceLayer::App;
-        self.app_permissions = AppPermissions::default();
-        self.app_scope = None;
-        self.pane_group = None;
-        self.last_synced_cwd = None;
-        self.linked_terminal_pane.take()
-    }
-
-    /// Toggle keyboard focus between the app and the terminal command bar.
-    /// No-op if no app is active.
-    pub fn toggle_surface_focus(&mut self) {
-        if self.surface_mode == SurfaceMode::AppActive {
-            self.focused_surface = match self.focused_surface {
-                SurfaceLayer::App => SurfaceLayer::Terminal,
-                SurfaceLayer::Terminal => SurfaceLayer::App,
-            };
-        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// AppPane — wraps an external PGAP v3 child process (Layer 3b wires this)
+// AppPane — dedicated app runtime (process or in-process builtin)
 // ---------------------------------------------------------------------------
+
+pub enum AppRuntime {
+    Process(Box<crate::process_app::ProcessApp>),
+    Builtin(Box<dyn App>),
+}
+
+impl AppRuntime {
+    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+        match self {
+            AppRuntime::Process(app) => app.ui(ui, ctx),
+            AppRuntime::Builtin(app) => app.ui(ui, ctx),
+        }
+    }
+
+    pub fn handle_key(&mut self, input: &egui::InputState) -> bool {
+        match self {
+            AppRuntime::Process(app) => app.handle_key(input),
+            AppRuntime::Builtin(app) => app.handle_key(input),
+        }
+    }
+
+    pub fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+        match self {
+            AppRuntime::Process(app) => app.take_pending_commands(),
+            AppRuntime::Builtin(app) => app.take_pending_commands(),
+        }
+    }
+
+    pub fn keyboard_capture(&self) -> bool {
+        match self {
+            AppRuntime::Process(app) => app.keyboard_capture(),
+            AppRuntime::Builtin(app) => app.keyboard_capture(),
+        }
+    }
+
+    pub fn wants_close(&self) -> bool {
+        match self {
+            AppRuntime::Process(app) => app.wants_close(),
+            AppRuntime::Builtin(app) => app.wants_close(),
+        }
+    }
+
+    pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+        match self {
+            AppRuntime::Process(app) => app.queue_outbound_event(event),
+            AppRuntime::Builtin(app) => app.queue_outbound_event(event),
+        }
+    }
+
+    pub fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
+        match self {
+            AppRuntime::Process(app) => app.sync_cwd(new_cwd),
+            AppRuntime::Builtin(app) => app.sync_cwd(new_cwd),
+        }
+    }
+
+    pub fn type_id(&self) -> &'static str {
+        match self {
+            AppRuntime::Process(app) => app.type_id(),
+            AppRuntime::Builtin(app) => app.type_id(),
+        }
+    }
+
+    pub fn serialize_state(&self) -> Option<serde_json::Value> {
+        match self {
+            AppRuntime::Process(app) => app.serialize_state(),
+            AppRuntime::Builtin(app) => app.serialize_state(),
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub struct AppPane {
     pub id: PaneId,
-    pub process: crate::process_app::ProcessApp,
+    pub runtime: AppRuntime,
     pub workspace_root: PathBuf,
     pub permissions: AppPermissions,
     pub manifest_id: String,

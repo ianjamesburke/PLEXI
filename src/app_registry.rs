@@ -230,8 +230,8 @@ impl AppRegistry {
             .and_then(|a| a.manifest.capabilities.layout_hint.clone())
     }
 
-    /// Launch an app and return a boxed `App` trait object.
-    pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
+    /// Launch an app process for the given id.
+    pub fn launch_process(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<ProcessApp> {
         let installed = self.apps.get(id)?;
         let perms = installed.manifest.capabilities.to_permissions();
         let caps = perms.capabilities.clone();
@@ -253,13 +253,19 @@ impl AppRegistry {
                     id,
                     installed.bin_path
                 );
-                Some(Box::new(app))
+                Some(app)
             }
             Err(e) => {
                 log::error!("AppRegistry: failed to launch '{}': {e}", id);
                 None
             }
         }
+    }
+
+    /// Launch an app and return a boxed `App` trait object.
+    pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
+        self.launch_process(id, cwd, args)
+            .map(|app| Box::new(app) as Box<dyn App>)
     }
 
     /// Launch the app associated with a file extension, passing the file path as argv[1].
@@ -272,6 +278,19 @@ impl AppRegistry {
         let id = self.extension_map.get(&ext)?.clone();
         let args = vec![file_path.display().to_string()];
         self.launch(&id, &cwd.to_path_buf(), &args)
+    }
+
+    /// Launch a process app by file extension, passing file path as argv[1].
+    pub fn launch_process_for_file(
+        &self,
+        file_path: &std::path::Path,
+        cwd: &std::path::Path,
+    ) -> Option<(String, ProcessApp)> {
+        let ext = file_path.extension()?.to_string_lossy().to_lowercase();
+        let id = self.extension_map.get(&ext)?.clone();
+        let args = vec![file_path.display().to_string()];
+        self.launch_process(&id, &cwd.to_path_buf(), &args)
+            .map(|app| (id, app))
     }
 }
 

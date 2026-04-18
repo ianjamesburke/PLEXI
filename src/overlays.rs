@@ -215,19 +215,7 @@ impl PlexiApp {
         // Collect all active runs from every app pane in every context.
         // Clone needed because we hold &self across the window render.
         let all_runs: Vec<(String, String, String, Option<String>)> = Vec::new(); // (run_id, app_id, status, blocked_prompt)
-        for context in &self.contexts {
-            for pane in context.panes.values() {
-                if let Some(t) = pane.as_terminal() {
-                    if let Some(app) = &t.active_app {
-                        // We can't access ProcessApp's run_registry through the App trait.
-                        // This is a limitation of the current trait boundary.
-                        // TODO(layer-5): expose list_runs() on the App trait so the run palette
-                        //   can aggregate across all running apps generically.
-                        let _ = app;
-                    }
-                }
-            }
-        }
+        for _context in &self.contexts {}
 
         let mut close = false;
         egui::Window::new("Active Runs")

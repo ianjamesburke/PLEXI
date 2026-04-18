@@ -13,6 +13,182 @@ use crate::app::PlexiApp;
 use crate::app_trait::App;
 
 impl PlexiApp {
+    fn split_with_new_pane(
+        &mut self,
+        new_pane_id: PaneId,
+        vertical: bool,
+    ) -> Option<egui_tiles::TileId> {
+        let focused = self.contexts[self.active_context].focused_pane?;
+        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+            Some((tabs_id, _)) => tabs_id,
+            None => focused,
+        };
+
+        let ctx = &mut self.contexts[self.active_context];
+        let parent = ctx.tree.tiles.parent_of(split_target);
+        let new_tile = ctx.tree.tiles.insert_pane(new_pane_id);
+
+        let split_dir = if vertical {
+            egui_tiles::LinearDir::Vertical
+        } else {
+            egui_tiles::LinearDir::Horizontal
+        };
+
+        let inserted_as_sibling = if let Some(parent_id) = parent {
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                ctx.tree.tiles.get_mut(parent_id)
+            {
+                if linear.dir == split_dir {
+                    if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
+                        linear.children.insert(pos + 1, new_tile);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !inserted_as_sibling {
+            let container_tile = if vertical {
+                ctx.tree
+                    .tiles
+                    .insert_vertical_tile(vec![split_target, new_tile])
+            } else {
+                ctx.tree
+                    .tiles
+                    .insert_horizontal_tile(vec![split_target, new_tile])
+            };
+
+            if let Some(Tile::Container(Container::Linear(ref mut lin))) =
+                ctx.tree.tiles.get_mut(container_tile)
+            {
+                lin.shares.set_share(split_target, 3.0);
+                lin.shares.set_share(new_tile, 1.0);
+            }
+
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
+                    replace_child(parent_container, split_target, container_tile);
+                }
+            } else {
+                ctx.tree.root = Some(container_tile);
+            }
+        }
+
+        ctx.focused_pane = Some(new_tile);
+        Some(new_tile)
+    }
+
+    fn open_process_app_pane(
+        &mut self,
+        app_id: &str,
+        process: crate::process_app::ProcessApp,
+        workspace_root: PathBuf,
+        group: Option<String>,
+        hint: Option<&str>,
+    ) {
+        let active = self.active_context;
+        let new_app_pane = |id: PaneId,
+                            process: crate::process_app::ProcessApp,
+                            workspace_root: PathBuf,
+                            group: Option<String>| {
+            Pane::App(Box::new(crate::pane::AppPane {
+                id,
+                permissions: process.permissions.clone(),
+                runtime: crate::pane::AppRuntime::Process(Box::new(process)),
+                workspace_root,
+                manifest_id: app_id.to_string(),
+                name: app_id.to_string(),
+                pane_group: group,
+            }))
+        };
+
+        if matches!(hint, Some("overlay")) {
+            let Some(focused_tile) = self.contexts[active].focused_pane else {
+                return;
+            };
+            let Some(Tile::Pane(focused_pane_id)) =
+                self.contexts[active].tree.tiles.get(focused_tile)
+            else {
+                return;
+            };
+            let pane_id = *focused_pane_id;
+            self.contexts[active].panes.insert(
+                pane_id,
+                new_app_pane(pane_id, process, workspace_root, group),
+            );
+            self.contexts[active].focused_pane = Some(focused_tile);
+            return;
+        }
+
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+        self.contexts[active]
+            .panes
+            .insert(new_id, new_app_pane(new_id, process, workspace_root, group));
+
+        let vertical = !matches!(hint, Some("split_h"));
+        let _ = self.split_with_new_pane(new_id, vertical);
+    }
+
+    fn open_builtin_app_pane(
+        &mut self,
+        app: Box<dyn App>,
+        permissions: crate::app_permissions::AppPermissions,
+        workspace_root: PathBuf,
+        group: Option<String>,
+        hint: Option<&str>,
+    ) {
+        let active = self.active_context;
+        let app_type_id = app.type_id().to_string();
+        let app_name = app.display_name();
+        let new_app_pane =
+            |id: PaneId, app: Box<dyn App>, workspace_root: PathBuf, group: Option<String>| {
+                Pane::App(Box::new(crate::pane::AppPane {
+                    id,
+                    runtime: crate::pane::AppRuntime::Builtin(app),
+                    workspace_root,
+                    permissions,
+                    manifest_id: app_type_id.clone(),
+                    name: app_name.clone(),
+                    pane_group: group,
+                }))
+            };
+
+        if matches!(hint, Some("overlay")) {
+            let Some(focused_tile) = self.contexts[active].focused_pane else {
+                return;
+            };
+            let Some(Tile::Pane(focused_pane_id)) =
+                self.contexts[active].tree.tiles.get(focused_tile)
+            else {
+                return;
+            };
+            let pane_id = *focused_pane_id;
+            self.contexts[active]
+                .panes
+                .insert(pane_id, new_app_pane(pane_id, app, workspace_root, group));
+            self.contexts[active].focused_pane = Some(focused_tile);
+            return;
+        }
+
+        let new_id = self.next_pane_id;
+        self.next_pane_id += 1;
+        self.contexts[active]
+            .panes
+            .insert(new_id, new_app_pane(new_id, app, workspace_root, group));
+
+        let vertical = !matches!(hint, Some("split_h"));
+        let _ = self.split_with_new_pane(new_id, vertical);
+    }
+
     fn create_single_pane_tree(
         &mut self,
         cwd: Option<PathBuf>,
@@ -383,25 +559,36 @@ impl PlexiApp {
         for context in &self.contexts {
             let mut saved_panes = Vec::new();
             for (&id, pane) in &context.panes {
-                // Only terminal panes are saved; App/Agent panes are transient.
-                let Some(t) = pane.as_terminal() else {
-                    continue;
-                };
-                let cwd = shell::get_pid_cwd(t.backend.child_pid())
-                    .unwrap_or_else(|| context.path.clone());
-                let (app_type, app_state) = if let Some(app) = &t.active_app {
-                    (Some(app.type_id().to_string()), app.serialize_state())
-                } else {
-                    (None, None)
-                };
-                saved_panes.push(crate::workspace::SavedPane {
-                    id,
-                    cwd,
-                    name: t.name.clone(),
-                    active_app_type: app_type,
-                    active_app_state: app_state,
-                    linked_terminal_pane: t.linked_terminal_pane,
-                });
+                if let Some(t) = pane.as_terminal() {
+                    let cwd = shell::get_pid_cwd(t.backend.child_pid())
+                        .unwrap_or_else(|| context.path.clone());
+                    saved_panes.push(crate::workspace::SavedPane {
+                        id,
+                        kind: crate::workspace::SavedPaneKind::Terminal,
+                        cwd,
+                        name: t.name.clone(),
+                        active_app_type: None,
+                        active_app_state: None,
+                    });
+                } else if let Some(a) = pane.as_app() {
+                    saved_panes.push(crate::workspace::SavedPane {
+                        id,
+                        kind: crate::workspace::SavedPaneKind::App,
+                        cwd: a.workspace_root.clone(),
+                        name: Some(a.name.clone()),
+                        active_app_type: Some(a.runtime.type_id().to_string()),
+                        active_app_state: a.runtime.serialize_state(),
+                    });
+                } else if let Some(agent) = pane.as_agent() {
+                    saved_panes.push(crate::workspace::SavedPane {
+                        id,
+                        kind: crate::workspace::SavedPaneKind::Agent,
+                        cwd: context.path.clone(),
+                        name: Some(agent.label.clone()),
+                        active_app_type: None,
+                        active_app_state: None,
+                    });
+                }
             }
             saved_contexts.push(crate::workspace::SavedContext {
                 name: context.name.clone(),
@@ -457,37 +644,28 @@ impl PlexiApp {
         }
     }
 
-    /// Close the active app on the focused terminal pane, returning to full terminal.
-    /// Also closes the linked terminal pane through close_tile so focus transfers correctly.
+    /// Close the focused app pane.
     pub(crate) fn close_focused_app(&mut self) {
         let active = self.active_context;
-        let linked = if let Some((_pane_id, pane)) = self.contexts[active].focused_pane_mut() {
-            pane.close_app()
-        } else {
-            None
+        let Some(focused_tile) = self.contexts[active].focused_pane else {
+            return;
         };
-
-        // Close the linked terminal pane through close_tile so container cleanup
-        // and sibling focus transfer run properly (was previously bypassing close_tile).
-        if let Some(linked_id) = linked {
-            let tile_to_close = self.contexts[active]
-                .tree
-                .tiles
-                .iter()
-                .find(|(_, tile)| matches!(tile, Tile::Pane(id) if *id == linked_id))
-                .map(|(tile_id, _)| *tile_id);
-            if let Some(tile_id) = tile_to_close {
-                self.close_tile(active, tile_id);
-            }
+        let Some(Tile::Pane(pane_id)) = self.contexts[active].tree.tiles.get(focused_tile) else {
+            return;
+        };
+        let is_app = self.contexts[active]
+            .panes
+            .get(pane_id)
+            .and_then(|p| p.as_app())
+            .is_some();
+        if is_app {
+            self.close_tile(active, focused_tile);
         }
     }
 
-    /// Toggle keyboard focus between app surface and terminal command bar.
+    /// App-pane mode has no terminal-overlay focus toggle.
     pub(crate) fn toggle_focused_surface(&mut self) {
-        let ctx = &mut self.contexts[self.active_context];
-        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
-            pane.toggle_surface_focus();
-        }
+        let _ = self;
     }
 
     /// Open an app on the focused pane: auto-splits vertically, app on top,
@@ -501,100 +679,7 @@ impl PlexiApp {
         scope: PathBuf,
         group: Option<String>,
     ) {
-        let Some(focused) = self.contexts[self.active_context].focused_pane else {
-            return;
-        };
-
-        // Create a new terminal pane for the bottom split (same as split_focused).
-        let new_term_id = self.next_pane_id;
-        self.next_pane_id += 1;
-
-        let cwd = self.contexts[self.active_context]
-            .get_focused_pane_cwd(focused)
-            .unwrap_or_else(|| scope.clone());
-
-        let settings = Self::make_backend_settings(Some(cwd), &self.colors);
-        let Some(new_pane) = TerminalPane::new(
-            new_term_id,
-            self.ctx.clone(),
-            self.pty_event_tx.clone(),
-            settings,
-            self.default_font_size,
-        ) else {
-            log::error!("Failed to create linked terminal pane for app");
-            return;
-        };
-        self.contexts[self.active_context]
-            .panes
-            .insert(new_term_id, Pane::Terminal(Box::new(new_pane)));
-
-        // Split using the exact same logic as split_focused (which works).
-        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
-            Some((tabs_id, _)) => tabs_id,
-            None => focused,
-        };
-
-        let ctx = &mut self.contexts[self.active_context];
-        let parent = ctx.tree.tiles.parent_of(split_target);
-        let new_tile = ctx.tree.tiles.insert_pane(new_term_id);
-
-        let inserted_as_sibling = if let Some(parent_id) = parent {
-            if let Some(Tile::Container(Container::Linear(linear))) =
-                ctx.tree.tiles.get_mut(parent_id)
-            {
-                if linear.dir == egui_tiles::LinearDir::Vertical {
-                    if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
-                        linear.children.insert(pos + 1, new_tile);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !inserted_as_sibling {
-            let container_tile = ctx
-                .tree
-                .tiles
-                .insert_vertical_tile(vec![split_target, new_tile]);
-
-            // Set 75/25 ratio for app (top) vs terminal (bottom).
-            if let Some(Tile::Container(Container::Linear(ref mut lin))) =
-                ctx.tree.tiles.get_mut(container_tile)
-            {
-                lin.shares.set_share(split_target, 3.0);
-                lin.shares.set_share(new_tile, 1.0);
-            }
-
-            if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
-                    replace_child(parent_container, split_target, container_tile);
-                }
-            } else {
-                ctx.tree.root = Some(container_tile);
-            }
-        }
-
-        // Set the app on the focused (top) pane and link to the bottom terminal.
-        if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
-            let pane_id = *pane_id;
-            if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                if let Some(t) = pane.as_terminal_mut() {
-                    t.open_app(app, permissions, scope, group);
-                    t.linked_terminal_pane = Some(new_term_id);
-                }
-            }
-        }
-
-        // Focus stays on the app pane (not the new terminal).
-        ctx.focused_pane = Some(focused);
+        self.open_builtin_app_pane(app, permissions, scope, group, Some("split_v"));
     }
 
     /// Toggle the file browser: if the focused pane has a file browser open,
@@ -607,13 +692,10 @@ impl PlexiApp {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get(&pane_id) {
-                    if let Some(t) = pane.as_terminal() {
-                        if let Some(app) = &t.active_app {
-                            if app.type_id() == "file_browser" {
-                                // Close the file browser.
-                                self.close_focused_app();
-                                return;
-                            }
+                    if let Some(a) = pane.as_app() {
+                        if a.runtime.type_id() == "file_browser" {
+                            self.close_focused_app();
+                            return;
                         }
                     }
                 }
@@ -648,95 +730,7 @@ impl PlexiApp {
         scope: PathBuf,
         group: Option<String>,
     ) {
-        let Some(focused) = self.contexts[self.active_context].focused_pane else {
-            return;
-        };
-
-        let new_term_id = self.next_pane_id;
-        self.next_pane_id += 1;
-
-        let cwd = self.contexts[self.active_context]
-            .get_focused_pane_cwd(focused)
-            .unwrap_or_else(|| scope.clone());
-
-        let settings = Self::make_backend_settings(Some(cwd), &self.colors);
-        let Some(new_pane) = TerminalPane::new(
-            new_term_id,
-            self.ctx.clone(),
-            self.pty_event_tx.clone(),
-            settings,
-            self.default_font_size,
-        ) else {
-            log::error!("Failed to create linked terminal pane for app (horizontal)");
-            return;
-        };
-        self.contexts[self.active_context]
-            .panes
-            .insert(new_term_id, Pane::Terminal(Box::new(new_pane)));
-
-        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
-            Some((tabs_id, _)) => tabs_id,
-            None => focused,
-        };
-
-        let ctx = &mut self.contexts[self.active_context];
-        let parent = ctx.tree.tiles.parent_of(split_target);
-        let new_tile = ctx.tree.tiles.insert_pane(new_term_id);
-
-        let inserted_as_sibling = if let Some(parent_id) = parent {
-            if let Some(Tile::Container(Container::Linear(linear))) =
-                ctx.tree.tiles.get_mut(parent_id)
-            {
-                if linear.dir == egui_tiles::LinearDir::Horizontal {
-                    if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
-                        linear.children.insert(pos + 1, new_tile);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !inserted_as_sibling {
-            let container_tile = ctx
-                .tree
-                .tiles
-                .insert_horizontal_tile(vec![split_target, new_tile]);
-
-            if let Some(Tile::Container(Container::Linear(ref mut lin))) =
-                ctx.tree.tiles.get_mut(container_tile)
-            {
-                lin.shares.set_share(split_target, 3.0);
-                lin.shares.set_share(new_tile, 1.0);
-            }
-
-            if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
-                    replace_child(parent_container, split_target, container_tile);
-                }
-            } else {
-                ctx.tree.root = Some(container_tile);
-            }
-        }
-
-        if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
-            let pane_id = *pane_id;
-            if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                if let Some(t) = pane.as_terminal_mut() {
-                    t.open_app(app, permissions, scope, group);
-                    t.linked_terminal_pane = Some(new_term_id);
-                }
-            }
-        }
-
-        ctx.focused_pane = Some(focused);
+        self.open_builtin_app_pane(app, permissions, scope, group, Some("split_h"));
     }
 
     /// Open an app on the focused pane WITHOUT creating a linked terminal split.
@@ -749,11 +743,7 @@ impl PlexiApp {
         scope: PathBuf,
         group: Option<String>,
     ) {
-        let ctx = &mut self.contexts[self.active_context];
-        if let Some((_pane_id, pane)) = ctx.focused_pane_mut() {
-            pane.open_app(app, permissions, scope, group);
-            // No linked terminal — app takes the full pane.
-        }
+        self.open_builtin_app_pane(app, permissions, scope, group, Some("overlay"));
     }
 
     /// Open the quick note app (full pane, no terminal split).
@@ -817,13 +807,8 @@ impl PlexiApp {
         let group = self.registry.group_for(id);
         let hint = layout.or_else(|| self.registry.layout_hint_for(id));
 
-        if let Some(app) = self.registry.launch(id, &cwd, args) {
-            let perms = self.registry.permissions_for(id).unwrap_or_default();
-            match hint.as_deref() {
-                Some("overlay") => self.open_app_fullscreen(app, perms, cwd, group),
-                Some("split_h") => self.open_app_on_focused_horizontal(app, perms, cwd, group),
-                _ => self.open_app_on_focused(app, perms, cwd, group),
-            }
+        if let Some(process) = self.registry.launch_process(id, &cwd, args) {
+            self.open_process_app_pane(id, process, cwd, group, hint.as_deref());
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
         }
@@ -836,12 +821,10 @@ impl PlexiApp {
         if let Some(focused) = ctx.focused_pane {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 if let Some(pane) = ctx.panes.get(pane_id) {
-                    if let Some(t) = pane.as_terminal() {
-                        if let Some(app) = &t.active_app {
-                            if app.type_id() == "secrets_manager" {
-                                self.close_focused_app();
-                                return;
-                            }
+                    if let Some(a) = pane.as_app() {
+                        if a.runtime.type_id() == "secrets_manager" {
+                            self.close_focused_app();
+                            return;
                         }
                     }
                 }
@@ -879,13 +862,11 @@ impl PlexiApp {
         });
         let group = app_id.as_deref().and_then(|id| self.registry.group_for(id));
 
-        if let Some(app) = self.registry.launch_for_file(&file_path, &cwd) {
-            // Third-party app — capability set from the manifest.
-            let perms = app_id
-                .as_deref()
-                .and_then(|id| self.registry.permissions_for(id))
-                .unwrap_or_default();
-            self.open_app_on_focused(app, perms, cwd.clone(), group);
+        if let Some((resolved_app_id, process)) =
+            self.registry.launch_process_for_file(&file_path, &cwd)
+        {
+            let requested_id = app_id.unwrap_or(resolved_app_id);
+            self.open_process_app_pane(&requested_id, process, cwd.clone(), group, Some("split_v"));
         } else {
             // No registered app — fall back to writing the path into the terminal.
             let ctx = &mut self.contexts[self.active_context];

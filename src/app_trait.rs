@@ -29,9 +29,7 @@ pub enum AppCommand {
 
 /// The trait all Plexi apps implement.
 ///
-/// Apps live inside a TerminalPane. The terminal shrinks to a command bar at the
-/// bottom of the pane while the app occupies the main area. Escape dismisses the
-/// app entirely; Tab toggles the terminal between a command bar and a 50% split.
+/// Apps live inside `Pane::App` runtimes.
 pub trait App: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
@@ -97,26 +95,3 @@ pub trait App: Send {
     /// Restore app state from a previously serialised value.
     fn restore_state(&mut self, _state: &serde_json::Value) {}
 }
-
-/// Whether the app surface or the terminal command bar has keyboard focus.
-/// Only relevant when `SurfaceMode::AppActive`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceLayer {
-    /// App receives keyboard input. App is fully opaque.
-    App,
-    /// Terminal command bar receives keyboard input. App dims to signal background state.
-    Terminal,
-}
-
-/// Whether an app surface is active on this pane.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceMode {
-    /// No app active — terminal fills the whole pane.
-    FullTerminal,
-    /// App active — occupies pane minus a fixed command bar at the bottom.
-    /// `SurfaceLayer` controls which surface has keyboard focus.
-    AppActive,
-}
-
-/// Opacity applied to the app region when the terminal command bar has focus.
-pub const APP_DIM_OPACITY: f32 = 0.45;

@@ -26,6 +26,8 @@ mod features;
 mod file_browser;
 #[allow(dead_code)]
 mod host;
+#[allow(dead_code)]
+mod input;
 mod keys;
 mod logging;
 #[cfg(target_os = "macos")]
