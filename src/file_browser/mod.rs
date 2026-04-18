@@ -9,7 +9,6 @@ use image::imageops::FilterType;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::SystemTime;
 
 use audio::AudioMsg;
 use helpers::{format_modified, format_size, is_text_file, DirStats, Entry, SortMode};
@@ -595,10 +594,11 @@ impl FileBrowserApp {
                     }
                 }
 
-                if is_this_playing && (self.audio_playing || self.audio_paused) {
-                    if ui.button("\u{23f9} Stop").clicked() {
-                        self.audio_stop();
-                    }
+                if is_this_playing
+                    && (self.audio_playing || self.audio_paused)
+                    && ui.button("\u{23f9} Stop").clicked()
+                {
+                    self.audio_stop();
                 }
 
                 if is_this_playing {

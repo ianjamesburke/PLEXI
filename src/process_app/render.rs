@@ -1,4 +1,4 @@
-/// Frame rendering — translates committed DrawCommands into egui paint calls.
+//! Frame rendering — translates committed DrawCommands into egui paint calls.
 
 use crate::app_protocol::DrawCommand;
 use crate::theme::Colors;

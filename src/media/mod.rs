@@ -15,9 +15,9 @@
 pub mod audio;
 pub mod video;
 
-pub use audio::{AudioCaptureHandle, AudioDevice, AudioError, AudioPlaybackHandle, AudioSource,
+pub use audio::{AudioCaptureHandle, AudioDevice, AudioPlaybackHandle, AudioSource,
                 CoreAudioDevice, MockAudioDevice};
-pub use video::{AvfVideoDecoder, MockVideoDecoder, PlaybackState, VideoDecoder, VideoError,
+pub use video::{AvfVideoDecoder, MockVideoDecoder, PlaybackState, VideoDecoder,
                 VideoFrame, VideoHandle, VideoSource};
 
 /// Create an `AudioDevice` appropriate for the current environment.

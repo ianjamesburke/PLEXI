@@ -1,31 +1,31 @@
-/// App registry — discovers and loads Plexi apps from `~/.plexi/apps/`.
-///
-/// # App directory layout
-///
-/// ```
-/// ~/.plexi/apps/
-///   my-pdf-viewer/
-///     manifest.toml
-///     bin/              # or just an executable named after the app id
-///       plexi-app       # the app binary (must be executable)
-///   file-browser/
-///     manifest.toml
-///     bin/plexi-app
-/// ```
-///
-/// # manifest.toml
-///
-/// ```toml
-/// [app]
-/// id = "my-pdf-viewer"
-/// name = "PDF Viewer"
-/// version = "0.1.0"
-/// description = "View PDF files inline"
-///
-/// [app.capabilities]
-/// file_types = ["pdf"]       # file extensions this app opens
-/// keybinding = "cmd+shift+p" # optional global keybinding (not yet wired)
-/// ```
+//! App registry — discovers and loads Plexi apps from `~/.plexi/apps/`.
+//!
+//! # App directory layout
+//!
+//! ```
+//! ~/.plexi/apps/
+//!   my-pdf-viewer/
+//!     manifest.toml
+//!     bin/              # or just an executable named after the app id
+//!       plexi-app       # the app binary (must be executable)
+//!   file-browser/
+//!     manifest.toml
+//!     bin/plexi-app
+//! ```
+//!
+//! # manifest.toml
+//!
+//! ```toml
+//! [app]
+//! id = "my-pdf-viewer"
+//! name = "PDF Viewer"
+//! version = "0.1.0"
+//! description = "View PDF files inline"
+//!
+//! [app.capabilities]
+//! file_types = ["pdf"]       # file extensions this app opens
+//! keybinding = "cmd+shift+p" # optional global keybinding (not yet wired)
+//! ```
 
 use crate::app_trait::App;
 use crate::process_app::ProcessApp;
@@ -225,7 +225,7 @@ impl AppRegistry {
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
-            installed.manifest.capabilities.file_types.iter().cloned().collect(),
+            installed.manifest.capabilities.file_types.to_vec(),
             &installed.bin_path,
             cwd,
             args,
@@ -245,11 +245,11 @@ impl AppRegistry {
     }
 
     /// Launch the app associated with a file extension, passing the file path as argv[1].
-    pub fn launch_for_file(&self, file_path: &PathBuf, cwd: &PathBuf) -> Option<Box<dyn App>> {
+    pub fn launch_for_file(&self, file_path: &std::path::Path, cwd: &std::path::Path) -> Option<Box<dyn App>> {
         let ext = file_path.extension()?.to_string_lossy().to_lowercase();
         let id = self.extension_map.get(&ext)?.clone();
         let args = vec![file_path.display().to_string()];
-        self.launch(&id, cwd, &args)
+        self.launch(&id, &cwd.to_path_buf(), &args)
     }
 }
 

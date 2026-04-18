@@ -1,7 +1,7 @@
-/// In-memory run registry for PGAP v3 `RunGet` / `RunComplete` wiring.
-///
-/// Runs are short-lived host-side records that track an in-flight app operation.
-/// They surface in the Run palette (Cmd+R) and emit `RunUpdate` events back to the app.
+//! In-memory run registry for PGAP v3 `RunGet` / `RunComplete` wiring.
+//!
+//! Runs are short-lived host-side records that track an in-flight app operation.
+//! They surface in the Run palette (Cmd+R) and emit `RunUpdate` events back to the app.
 
 use std::collections::HashMap;
 use std::time::SystemTime;

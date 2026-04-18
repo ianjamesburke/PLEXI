@@ -1,13 +1,10 @@
-use crate::app_trait::{AppRenderContext, SurfaceLayer, SurfaceMode, APP_DIM_OPACITY};
+use crate::app_trait::{AppRenderContext, SurfaceMode};
 use crate::pane::Pane;
 use crate::theme::{self, Colors};
 use egui::{Color32, Vec2};
 use egui_term::{BackendCommand, TerminalTheme, TerminalView};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
-
-/// Default height in logical pixels for the terminal command bar when an app is active.
-const COMMAND_BAR_HEIGHT: f32 = 140.0;
 
 pub type PaneId = u64;
 
@@ -207,8 +204,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
                         // Input bar.
                         ui.painter().rect_filled(input_rect, 0.0, self.colors.bg_active);
-                        let input_id = egui::Id::new(("agent_input", agent.id));
-                        let mut te = egui::TextEdit::singleline(&mut agent.input_buf)
+                        let te = egui::TextEdit::singleline(&mut agent.input_buf)
                             .desired_width(input_rect.width() - 12.0)
                             .font(egui::FontId::monospace(12.0))
                             .hint_text("Send a message…");

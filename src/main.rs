@@ -6,41 +6,60 @@
 #![deny(clippy::todo, clippy::unimplemented)]
 
 mod app;
+#[allow(dead_code)]
 mod app_protocol;
+#[allow(dead_code)]
 mod error;
+#[allow(dead_code)]
 mod app_registry;
+#[allow(dead_code)]
 mod app_permissions;
+#[allow(dead_code)]
 mod app_trait;
 mod cli;
 mod command_palette;
 mod file_browser;
+#[allow(dead_code)]
 mod process_app;
 mod quick_note_app;
 mod secrets_app;
+#[allow(dead_code)]
 mod text_editor_app;
 mod config;
 mod context;
 mod logging;
+#[allow(dead_code)]
 mod event_log;
 mod features;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+#[allow(dead_code)]
 mod media;
 mod overlays;
+#[allow(dead_code)]
 mod pane;
+#[allow(dead_code)]
 mod pane_ops;
+#[allow(dead_code)]
 mod plexi_iq;
+#[allow(dead_code)]
 mod secrets;
 mod shell;
 mod sidebar;
+#[allow(dead_code)]
 mod theme;
 mod tiling;
+#[allow(dead_code)]
 mod runs;
+#[allow(dead_code)]
 mod typed_pipes;
 mod workspace;
+#[allow(dead_code)]
+mod host;
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod pgap_test_harness;
 
 fn main() -> eframe::Result {

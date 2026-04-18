@@ -24,7 +24,7 @@ impl PlexiApp {
         let pane = TerminalPane::new(new_id, self.ctx.clone(), self.pty_event_tx.clone(), settings, self.default_font_size)?;
 
         let mut panes = HashMap::new();
-        panes.insert(new_id, Pane::Terminal(pane));
+        panes.insert(new_id, Pane::Terminal(Box::new(pane)));
 
         let mut tiles = egui_tiles::Tiles::default();
         let root_tile = tiles.insert_pane(new_id);
@@ -51,7 +51,7 @@ impl PlexiApp {
         };
         self.contexts[self.active_context]
             .panes
-            .insert(new_id, Pane::Terminal(pane));
+            .insert(new_id, Pane::Terminal(Box::new(pane)));
 
         let split_target =
             match self.contexts[self.active_context].find_ancestor_tabs(focused) {
@@ -131,7 +131,7 @@ impl PlexiApp {
         };
         self.contexts[self.active_context]
             .panes
-            .insert(new_id, Pane::Terminal(pane));
+            .insert(new_id, Pane::Terminal(Box::new(pane)));
 
         let ctx = &mut self.contexts[self.active_context];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
@@ -505,7 +505,7 @@ impl PlexiApp {
         };
         self.contexts[self.active_context]
             .panes
-            .insert(new_term_id, Pane::Terminal(new_pane));
+            .insert(new_term_id, Pane::Terminal(Box::new(new_pane)));
 
         // Split using the exact same logic as split_focused (which works).
         let split_target =
@@ -654,7 +654,7 @@ impl PlexiApp {
         };
         self.contexts[self.active_context]
             .panes
-            .insert(new_term_id, Pane::Terminal(new_pane));
+            .insert(new_term_id, Pane::Terminal(Box::new(new_pane)));
 
         let split_target =
             match self.contexts[self.active_context].find_ancestor_tabs(focused) {
@@ -887,7 +887,7 @@ impl PlexiApp {
         let instance = crate::plexi_iq::PlexiIqInstance::default();
         let label = format!("Agent {new_id}");
 
-        let pane = crate::pane::Pane::Agent(crate::pane::AgentPane {
+        let pane = crate::pane::Pane::Agent(Box::new(crate::pane::AgentPane {
             id: new_id,
             instance: Some(instance),
             label,
@@ -895,7 +895,7 @@ impl PlexiApp {
             input_buf: String::new(),
             turn_rx: None,
             session_id: None,
-        });
+        }));
 
         let ctx = &mut self.contexts[self.active_context];
         ctx.panes.insert(new_id, pane);

@@ -103,7 +103,7 @@ fn stream_worker(claude_bin: String, request: LlmRequest, tx: mpsc::Sender<Strea
     if let Some(stderr) = child.stderr.take() {
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if !line.trim().is_empty() {
                     log::warn!("plexi_iq claude-cli stderr: {line}");
                 }

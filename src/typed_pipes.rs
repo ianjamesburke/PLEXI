@@ -17,11 +17,13 @@ use crossbeam_queue::ArrayQueue;
 // Public types
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
 pub enum PipeMode {
     Json,
     Binary,
 }
 
+#[derive(Clone, Copy)]
 pub enum PipeDirection {
     In,
     Out,
@@ -244,14 +246,12 @@ impl TypedPipeRegistry {
     /// Close a pipe by id. Signals the drain thread to flush and exit (binary),
     /// then joins it. Cleans up the socket file.
     pub fn close(&mut self, pipe_id: &str) {
-        if let Some(entry) = self.pipes.remove(pipe_id) {
-            if let PipeEntry::Binary(mut b) = entry {
-                b.shutdown.store(true, Ordering::Release);
-                if let Some(handle) = b.drain_handle.take() {
-                    let _ = handle.join();
-                }
-                let _ = std::fs::remove_file(&b.socket_path);
+        if let Some(PipeEntry::Binary(mut b)) = self.pipes.remove(pipe_id) {
+            b.shutdown.store(true, Ordering::Release);
+            if let Some(handle) = b.drain_handle.take() {
+                let _ = handle.join();
             }
+            let _ = std::fs::remove_file(&b.socket_path);
         }
     }
 
@@ -332,20 +332,10 @@ impl TypedPipeRegistry {
         self.pipes.iter().map(|(id, entry)| {
             match entry {
                 PipeEntry::Binary(b) => {
-                    let dir = match b.direction {
-                        PipeDirection::In => PipeDirection::In,
-                        PipeDirection::Out => PipeDirection::Out,
-                        PipeDirection::Duplex => PipeDirection::Duplex,
-                    };
-                    (id.clone(), PipeMode::Binary, dir)
+                    (id.clone(), PipeMode::Binary, b.direction)
                 }
                 PipeEntry::Json(j) => {
-                    let dir = match j.direction {
-                        PipeDirection::In => PipeDirection::In,
-                        PipeDirection::Out => PipeDirection::Out,
-                        PipeDirection::Duplex => PipeDirection::Duplex,
-                    };
-                    (id.clone(), PipeMode::Json, dir)
+                    (id.clone(), PipeMode::Json, j.direction)
                 }
             }
         }).collect()
@@ -423,11 +413,8 @@ mod tests {
             let mut stream = UnixStream::connect(&socket_path).expect("client connect failed");
 
             let mut received = Vec::new();
-            loop {
-                match read_frame(&mut stream).expect("client read_frame failed") {
-                    Some(frame) => received.push(frame),
-                    None => break,
-                }
+            while let Some(frame) = read_frame(&mut stream).expect("client read_frame failed") {
+                received.push(frame);
                 if received.len() == 3 {
                     break;
                 }

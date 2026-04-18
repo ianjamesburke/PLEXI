@@ -16,7 +16,6 @@
 pub mod anthropic_api;
 pub mod claude_cli;
 
-pub use anthropic_api::AnthropicApiBackend;
 pub use claude_cli::ClaudeCliBackend;
 
 use std::sync::mpsc;

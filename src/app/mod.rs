@@ -137,7 +137,7 @@ impl PlexiApp {
                                 pane.linked_terminal_pane = saved_pane.linked_terminal_pane;
                             }
                         }
-                        panes.insert(saved_pane.id, Pane::Terminal(pane));
+                        panes.insert(saved_pane.id, Pane::Terminal(Box::new(pane)));
                     }
                 }
                 if panes.is_empty() {
@@ -186,7 +186,7 @@ impl PlexiApp {
         let pane = TerminalPane::new(0, cc.egui_ctx.clone(), tx.clone(), settings, default_font_size)
             .expect("failed to create initial terminal");
         let mut panes = HashMap::new();
-        panes.insert(0u64, Pane::Terminal(pane));
+        panes.insert(0u64, Pane::Terminal(Box::new(pane)));
 
         let mut tiles = egui_tiles::Tiles::default();
         let root_tile = tiles.insert_pane(0u64);

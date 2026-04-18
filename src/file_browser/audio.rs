@@ -16,11 +16,7 @@ pub(crate) fn audio_thread(rx: mpsc::Receiver<AudioMsg>) {
     };
     let mut sink: Option<rodio::Sink> = None;
 
-    loop {
-        let msg = match rx.recv() {
-            Ok(m) => m,
-            Err(_) => break,
-        };
+    while let Ok(msg) = rx.recv() {
         match msg {
             AudioMsg::Play(path) => {
                 if let Some(s) = sink.take() {

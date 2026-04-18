@@ -10,9 +10,9 @@ use std::sync::mpsc::Sender;
 // ---------------------------------------------------------------------------
 
 pub enum Pane {
-    Terminal(TerminalPane),
-    App(AppPane),
-    Agent(AgentPane),
+    Terminal(Box<TerminalPane>),
+    App(Box<AppPane>),
+    Agent(Box<AgentPane>),
 }
 
 impl Pane {

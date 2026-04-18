@@ -23,10 +23,6 @@ pub mod turn_loop;
 pub mod prompt;
 pub mod tools;
 
-pub use backend::{BillingModel, LlmBackend};
-pub use context::ToolContext;
-pub use tools::{Tool, ToolRegistry, ToolResult};
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

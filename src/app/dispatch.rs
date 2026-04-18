@@ -1,4 +1,4 @@
-/// App command dispatch — keyboard routing from focused pane to linked terminal.
+//! App command dispatch — keyboard routing from focused pane to linked terminal.
 
 use crate::app_permissions::PermissionCheck;
 use crate::app_trait::AppCommand;
@@ -31,10 +31,9 @@ impl PlexiApp {
                 return vec![];
             };
             let Some(t) = pane.as_terminal_mut() else { return vec![] };
-            if t.active_app.is_none() {
+            let Some(app) = t.active_app.as_mut() else {
                 return vec![];
-            }
-            let app = t.active_app.as_mut().unwrap();
+            };
             ctx.input(|i| { app.handle_key(i); });
             let cmds = app.take_pending_commands();
             let scope = t.app_scope.clone().unwrap_or_else(|| std::path::PathBuf::from("/"));

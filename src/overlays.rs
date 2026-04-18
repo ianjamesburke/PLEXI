@@ -217,7 +217,7 @@ impl PlexiApp {
     pub(crate) fn draw_run_palette(&mut self, ctx: &egui::Context) {
         // Collect all active runs from every app pane in every context.
         // Clone needed because we hold &self across the window render.
-        let mut all_runs: Vec<(String, String, String, Option<String>)> = Vec::new(); // (run_id, app_id, status, blocked_prompt)
+        let all_runs: Vec<(String, String, String, Option<String>)> = Vec::new(); // (run_id, app_id, status, blocked_prompt)
         for context in &self.contexts {
             for pane in context.panes.values() {
                 if let Some(t) = pane.as_terminal() {

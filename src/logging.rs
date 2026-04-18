@@ -1,13 +1,13 @@
-/// Centralized file logger for Plexi.
-///
-/// Writes to `~/.plexi-alpha/plexi.log` (or the appropriate config dir) and
-/// also mirrors output to stderr so `cargo run` / CLI invocations stay usable.
-///
-/// Rolling on startup: if `plexi.log` exists and is over 10 MB, it is renamed
-/// to `plexi.log.1` (overwriting any previous backup) before the new log is opened.
-///
-/// Third-party crates (egui, wgpu, winit, etc.) are clamped to `warn` to avoid
-/// noise; everything under `plexi::` logs at the caller-supplied level.
+//! Centralized file logger for Plexi.
+//!
+//! Writes to `~/.plexi-alpha/plexi.log` (or the appropriate config dir) and
+//! also mirrors output to stderr so `cargo run` / CLI invocations stay usable.
+//!
+//! Rolling on startup: if `plexi.log` exists and is over 10 MB, it is renamed
+//! to `plexi.log.1` (overwriting any previous backup) before the new log is opened.
+//!
+//! Third-party crates (egui, wgpu, winit, etc.) are clamped to `warn` to avoid
+//! noise; everything under `plexi::` logs at the caller-supplied level.
 
 use std::path::PathBuf;
 

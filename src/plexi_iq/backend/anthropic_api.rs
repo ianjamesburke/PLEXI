@@ -164,11 +164,10 @@ async fn stream_native(
                         }
                     }
                 }
-                MessagesStreamEvent::MessageStart { usage, .. } => {
-                    if let Some(u) = usage {
-                        input_tokens = u.input_tokens;
-                    }
+                MessagesStreamEvent::MessageStart { usage: Some(u), .. } => {
+                    input_tokens = u.input_tokens;
                 }
+                MessagesStreamEvent::MessageStart { usage: None, .. } => {}
                 MessagesStreamEvent::MessageDelta { usage, .. } => {
                     output_tokens = usage.and_then(|u| u.output_tokens);
                 }

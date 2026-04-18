@@ -1,7 +1,7 @@
-/// DrawCommand routing — dispatches out-of-frame commands to subsystems.
-///
-/// All visual draw commands stay in the frame pipeline; only control commands
-/// (media, pipes, capabilities, secrets, runs, notifications) are routed here.
+//! DrawCommand routing — dispatches out-of-frame commands to subsystems.
+//!
+//! All visual draw commands stay in the frame pipeline; only control commands
+//! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
 use crate::app_permissions::{Capability, PermissionCheck, check};
 use crate::app_protocol::{DrawCommand, PlexiEvent};
@@ -137,19 +137,14 @@ impl ProcessApp {
                             .name(format!("audio-capture-{pipe_id_fwd}"))
                             .spawn(move || {
                                 log::info!("ProcessApp[{type_id_fwd}]: audio capture thread started for pipe '{pipe_id_fwd}'");
-                                loop {
-                                    match capture_handle.receiver.recv() {
-                                        Ok(samples) => {
-                                            let bytes: Vec<u8> = samples
-                                                .iter()
-                                                .flat_map(|s| s.to_le_bytes())
-                                                .collect();
-                                            let mut reg = registry_arc.lock().unwrap();
-                                            if let Err(e) = reg.write_binary(&pipe_id_fwd, &bytes) {
-                                                log::warn!("ProcessApp[{type_id_fwd}]: audio write failed: {e}");
-                                            }
-                                        }
-                                        Err(_) => break,
+                                while let Ok(samples) = capture_handle.receiver.recv() {
+                                    let bytes: Vec<u8> = samples
+                                        .iter()
+                                        .flat_map(|s| s.to_le_bytes())
+                                        .collect();
+                                    let mut reg = registry_arc.lock().unwrap();
+                                    if let Err(e) = reg.write_binary(&pipe_id_fwd, &bytes) {
+                                        log::warn!("ProcessApp[{type_id_fwd}]: audio write failed: {e}");
                                     }
                                 }
                                 log::info!("ProcessApp[{type_id_fwd}]: audio capture thread exiting for pipe '{pipe_id_fwd}'");

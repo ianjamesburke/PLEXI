@@ -27,8 +27,6 @@
 //! The example apps are Python 3. If `python3` is not resolvable on PATH, tests
 //! skip with a logged warning instead of failing.
 
-#![cfg(test)]
-
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

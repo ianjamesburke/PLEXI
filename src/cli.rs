@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::io::{self, Write};
 use std::process::Command;
 
 const APP_ID: &str = "plexi-run";
@@ -276,7 +275,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
     }
 }
 
-fn scaffold_python_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
+fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     // manifest.toml
@@ -305,7 +304,7 @@ fn scaffold_python_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn scaffold_rust_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
+fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
         "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",

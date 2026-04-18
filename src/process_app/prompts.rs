@@ -1,10 +1,10 @@
-/// Capability and secret prompt modals — shown when an app requests access.
+//! Capability and secret prompt modals — shown when an app requests access.
 
 use crate::app_permissions::AppPermissions;
 use crate::app_protocol::PlexiEvent;
 use crate::event_log::{self, HostEvent};
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::Path;
 
 use super::PendingPrompt;
 
@@ -16,7 +16,7 @@ pub(super) fn show_prompt_modal(
     outbound_events: &mut VecDeque<PlexiEvent>,
     permissions: &mut AppPermissions,
     type_id: &str,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     secret_input_buf: &mut String,
 ) {
     let Some(prompt) = pending_prompts.front() else { return };

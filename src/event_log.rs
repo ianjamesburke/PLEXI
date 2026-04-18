@@ -1,19 +1,19 @@
-/// Plexi host event bus — append-only JSONL event log.
-///
-/// The `EventLog` struct owns a background writer thread that receives
-/// `HostEvent` values via a bounded mpsc channel and appends them as
-/// newline-delimited JSON to one or two log files:
-///
-///   - Global:    `~/.plexi/events.jsonl`
-///   - Workspace: `.plexi/events.jsonl` relative to the workspace root,
-///                when Plexi is running inside a `.plexi/` workspace.
-///
-/// The host stamps every event with a `source` field before enqueueing;
-/// apps cannot forge provenance.
-///
-/// Drop-on-full policy: if the channel is at capacity (4096 events), the
-/// event is silently discarded and `dropped_count` is incremented. No retry,
-/// no blocking, no rotation.
+//! Plexi host event bus — append-only JSONL event log.
+//!
+//! The `EventLog` struct owns a background writer thread that receives
+//! `HostEvent` values via a bounded mpsc channel and appends them as
+//! newline-delimited JSON to one or two log files:
+//!
+//! - Global:    `~/.plexi/events.jsonl`
+//! - Workspace: `.plexi/events.jsonl` relative to the workspace root,
+//!   when Plexi is running inside a `.plexi/` workspace.
+//!
+//! The host stamps every event with a `source` field before enqueueing;
+//! apps cannot forge provenance.
+//!
+//! Drop-on-full policy: if the channel is at capacity (4096 events), the
+//! event is silently discarded and `dropped_count` is incremented. No retry,
+//! no blocking, no rotation.
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;

@@ -1,39 +1,39 @@
-/// Plexi external app protocol — PGAP v3 (newline-delimited JSON over stdin/stdout).
-///
-/// # Protocol overview
-///
-/// Binary data (audio PCM, video frames, raw bytes) travels on typed pipes — not stdio.
-/// The PGAP wire carries only JSON control/draw messages.
-///
-/// # Handshake
-///
-/// 1. Host spawns the app binary.
-/// 2. Host sends exactly one `Init` event.
-/// 3. App replies with exactly one `Ready` (via `AppReply`).
-/// 4. Each frame: host sends `Render`; app replies with `DrawCommand`s + `FrameDone`.
-/// 5. Input events (`Key`, `Click`, `Command`) arrive between frames as they occur.
-/// 6. Out-of-frame draw commands (`CapabilityRequest`, `SecretGet`, `Notify`, etc.)
-///    may arrive at any time, including mid-frame; host processes them immediately.
-/// 7. On close: host sends `Shutdown`; app must exit cleanly within a short timeout.
-///
-/// # Example app (pseudocode)
-///
-/// ```
-/// let init = read_json_line(stdin);  // PlexiEvent::Init
-/// write_json(AppReply::Ready { sdk: "my-sdk/1.0.0", features_used: vec![] });
-/// loop {
-///   let event = read_json_line(stdin);
-///   match event {
-///     PlexiEvent::Render { frame_id, .. } => {
-///       write_json(DrawCommand::Rect { x:0, y:0, w:800, h:600, fill:"#1e1e2e", radius:0.0 });
-///       write_json(DrawCommand::Text { x:20, y:20, text:"Hello v3!", size:14.0, color:"#cdd6f4", monospace:false, bold:false });
-///       write_json(DrawCommand::FrameDone { frame_id });
-///     }
-///     PlexiEvent::Key { key, .. } => { /* navigate */ }
-///     _ => {}
-///   }
-/// }
-/// ```
+//! Plexi external app protocol — PGAP v3 (newline-delimited JSON over stdin/stdout).
+//!
+//! # Protocol overview
+//!
+//! Binary data (audio PCM, video frames, raw bytes) travels on typed pipes — not stdio.
+//! The PGAP wire carries only JSON control/draw messages.
+//!
+//! # Handshake
+//!
+//! 1. Host spawns the app binary.
+//! 2. Host sends exactly one `Init` event.
+//! 3. App replies with exactly one `Ready` (via `AppReply`).
+//! 4. Each frame: host sends `Render`; app replies with `DrawCommand`s + `FrameDone`.
+//! 5. Input events (`Key`, `Click`, `Command`) arrive between frames as they occur.
+//! 6. Out-of-frame draw commands (`CapabilityRequest`, `SecretGet`, `Notify`, etc.)
+//!    may arrive at any time, including mid-frame; host processes them immediately.
+//! 7. On close: host sends `Shutdown`; app must exit cleanly within a short timeout.
+//!
+//! # Example app (pseudocode)
+//!
+//! ```
+//! let init = read_json_line(stdin);  // PlexiEvent::Init
+//! write_json(AppReply::Ready { sdk: "my-sdk/1.0.0", features_used: vec![] });
+//! loop {
+//!   let event = read_json_line(stdin);
+//!   match event {
+//!     PlexiEvent::Render { frame_id, .. } => {
+//!       write_json(DrawCommand::Rect { x:0, y:0, w:800, h:600, fill:"#1e1e2e", radius:0.0 });
+//!       write_json(DrawCommand::Text { x:20, y:20, text:"Hello v3!", size:14.0, color:"#cdd6f4", monospace:false, bold:false });
+//!       write_json(DrawCommand::FrameDone { frame_id });
+//!     }
+//!     PlexiEvent::Key { key, .. } => { /* navigate */ }
+//!     _ => {}
+//!   }
+//! }
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

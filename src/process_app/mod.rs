@@ -1,28 +1,26 @@
-/// ProcessApp — runs an external app binary as a subprocess and renders it
-/// using the Plexi draw protocol.
-///
-/// The subprocess speaks the app protocol over stdin/stdout (newline-delimited JSON).
-/// ProcessApp implements the `App` trait so it drops in wherever a built-in app
-/// would — the rest of Plexi doesn't know or care that it's an external process.
-///
-/// Internal layout:
-/// - `mod.rs`      — struct, lifecycle (launch/drop), App trait impl
-/// - `routing.rs`  — `route_command()`: dispatch DrawCommands to subsystems
-/// - `render.rs`   — `render_draw_commands()`: paint committed frames into egui
-/// - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
+//! ProcessApp — runs an external app binary as a subprocess and renders it
+//! using the Plexi draw protocol.
+//!
+//! The subprocess speaks the app protocol over stdin/stdout (newline-delimited JSON).
+//! ProcessApp implements the `App` trait so it drops in wherever a built-in app
+//! would — the rest of Plexi doesn't know or care that it's an external process.
+//!
+//! Internal layout:
+//! - `mod.rs`      — struct, lifecycle (launch/drop), App trait impl
+//! - `routing.rs`  — `route_command()`: dispatch DrawCommands to subsystems
+//! - `render.rs`   — `render_draw_commands()`: paint committed frames into egui
+//! - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
 
 mod routing;
 mod render;
 mod prompts;
 
-use crate::app_permissions::{AppPermissions, Capability, PermissionsLog, check};
+use crate::app_permissions::{AppPermissions, Capability, PermissionsLog};
 use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::event_log::{self, HostEvent};
-use crate::media::{audio_device, video_decoder, AudioSource, VideoSource, PlaybackState};
 use crate::runs::RunRegistry;
-use crate::typed_pipes::{PipeDirection, TypedPipeRegistry};
-use egui::Color32;
+use crate::typed_pipes::TypedPipeRegistry;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -108,6 +106,7 @@ impl ProcessApp {
     /// Spawn an app binary at `bin_path`.
     ///
     /// `workspace_root` must be an absolute existing directory — validated here.
+    #[allow(clippy::too_many_arguments)]
     pub fn launch(
         type_id: impl Into<String>,
         display_name: impl Into<String>,

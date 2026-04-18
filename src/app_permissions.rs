@@ -1,11 +1,11 @@
-/// App permission enforcement — PGAP v3 capability-based model.
-///
-/// Permissions are keyed by `(app_id, workspace_root, capability)` triple and
-/// persisted to `permissions.jsonl` (append-only, one decision per line).
-///
-/// The v2 boolean-field model (`terminal_write`, `filesystem`, etc.) is replaced
-/// by a `HashSet<Capability>`. `check_command` is kept for back-compat with
-/// existing call sites that will be properly migrated in Layer 3.
+//! App permission enforcement — PGAP v3 capability-based model.
+//!
+//! Permissions are keyed by `(app_id, workspace_root, capability)` triple and
+//! persisted to `permissions.jsonl` (append-only, one decision per line).
+//!
+//! The v2 boolean-field model (`terminal_write`, `filesystem`, etc.) is replaced
+//! by a `HashSet<Capability>`. `check_command` is kept for back-compat with
+//! existing call sites that will be properly migrated in Layer 3.
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -279,4 +279,3 @@ impl PermissionsLog {
 fn permissions_jsonl_path() -> PathBuf {
     crate::config::config_dir().join("permissions.jsonl")
 }
-

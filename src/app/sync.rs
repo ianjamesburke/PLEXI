@@ -1,4 +1,4 @@
-/// CWD synchronization — polls linked terminals and broadcasts PathChanged to pane groups.
+//! CWD synchronization — polls linked terminals and broadcasts PathChanged to pane groups.
 
 use crate::tiling::PaneId;
 use std::path::PathBuf;
@@ -62,7 +62,7 @@ impl PlexiApp {
                 .filter_map(|(&pid, p)| {
                     if pid == *source_pane_id { return None; }
                     let t = p.as_terminal()?;
-                    if t.active_app.is_none() { return None; }
+                    t.active_app.as_ref()?;
                     if t.pane_group.as_deref() == Some(group.as_str()) {
                         Some(pid)
                     } else {

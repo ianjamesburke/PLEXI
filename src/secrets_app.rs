@@ -322,18 +322,16 @@ impl App for SecretsApp {
                     // Enter on Dir field saves
                     if dir_resp.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
                         self.commit_add();
-                        return;
                     }
                 });
 
                 ui.add_space(10.0);
 
                 // Enter from value field also saves (common shortcut)
-                if self.form_focus == FormField::Value {
-                    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-                        self.commit_add();
-                        return;
-                    }
+                if self.form_focus == FormField::Value
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                {
+                    self.commit_add();
                 }
 
                 ui.horizontal(|ui| {
@@ -443,7 +441,7 @@ impl SecretsApp {
                     );
 
                     let subtitle = if entry.directory.is_empty() || entry.directory == "/" {
-                        format!("{}", entry.app_id)
+                        entry.app_id.to_string()
                     } else {
                         format!("{} · {}", entry.app_id, entry.directory)
                     };
