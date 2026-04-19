@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 5: HostServices gains fs/secrets/net/spawn seams (→ v3)
+`HostServices` grows from 1 field (`event_sink`) to 5: `fs` (`RealFsService` / `MockFsService`), `secrets` (`KeychainSecretsService` wrapping `crate::secrets::get_secret_scoped` / `MockSecretsService`), `net` (`StubNetService` returning 501 until STEP-9 ships the real broker / `MockNetService`), `spawn` (`LoggingSpawnService` / `MockSpawnService`). `HostServices::new()` wires production; `HostServices::mock()` wires in-memory fakes for Layer-2 tests. NOT yet wired: production `ProcessApp::routing::SecretGet` still calls `crate::secrets::get_secret_scoped` directly — STEP-9 will pipe it through `services.secrets` when the broker threading is done. Three new tests lock the mock behavior.
+
+**Breaks if:** a Layer-2 test that constructs `HostServices::mock()` still hits a real keychain/network call; `cargo test` depends on network connectivity; the production `event_sink` regresses from `NoopEventSink` before STEP-6 lands.
+
 ## 2026-04-18 — [CHANGED] V3 refactor step 4: pane-ID reconciliation (→ v3)
 `HostModel` is now the sole pane-ID allocator. `PlexiApp::next_pane_id` field deleted; every `new_id = self.next_pane_id; self.next_pane_id += 1;` site in `pane_ops.rs` (8 sites) routes through either (a) consuming the returned `PaneOpened.pane_id` / `SplitOpened.pane_id` from the effect or (b) calling `HostModel::alloc_pane_id()` directly (for paths like `create_single_pane_tree`, `new_tab`, `spawn_agent_pane` that don't submit a `HostCommand`). `open_pane_layout` now returns `(PaneId, ShareRatio, bool)`. Workspace restore seeds `HostModel::next_pane_id` via `seed_next_pane_id(..)`; workspace save persists `host.next_pane_id()`. Two new tests: `ids_synchronize_across_commands` (3 OpenPane + 2 SplitVertical → every effect ID lives in `ctx.panes`) and `seed_next_pane_id_resumes_allocator`.
 

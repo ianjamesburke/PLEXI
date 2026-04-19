@@ -478,6 +478,43 @@ mod tests {
     }
 
     #[test]
+    fn mock_secrets_service_returns_injected_values() {
+        // Layer-2 seam: tests inject MockSecretsService; HostServices resolves
+        // through it without touching the real keychain. STEP-9 wires the
+        // same trait into ProcessApp::routing::SecretGet so end-to-end flows
+        // can mock credentials the same way.
+        use crate::host::services::{MockSecretsService, SecretsService};
+        use std::path::Path;
+        let mock = MockSecretsService::new().with("api_key", "shh-it-is-a-secret");
+        let got = mock.get("api_key", "todo", Path::new("/tmp/ws"));
+        assert_eq!(got.as_deref(), Some("shh-it-is-a-secret"));
+        assert!(mock.get("missing", "todo", Path::new("/tmp/ws")).is_none());
+    }
+
+    #[test]
+    fn mock_net_service_matches_urls_literally() {
+        use crate::host::services::{MockNetService, NetService};
+        let mock = MockNetService::new().with("https://example.test/", "hello");
+        let hit = mock.http_get("https://example.test/");
+        assert_eq!(hit.status, 200);
+        assert_eq!(hit.body, "hello");
+        let miss = mock.http_get("https://other.test/");
+        assert_eq!(miss.status, 404);
+        assert!(miss.error.is_some());
+    }
+
+    #[test]
+    fn mock_fs_service_roundtrips_bytes() {
+        use crate::host::services::{FsService, MockFsService};
+        use std::path::PathBuf;
+        let mut fs = MockFsService::new();
+        let p = PathBuf::from("/virtual/hello.txt");
+        fs.write(&p, b"hi").unwrap();
+        assert!(fs.exists(&p));
+        assert_eq!(fs.read(&p).unwrap(), b"hi");
+    }
+
+    #[test]
     fn seed_next_pane_id_resumes_allocator() {
         // Simulates workspace-restore: seed past a high-water mark and verify
         // next alloc comes out above the seeded value. Lowering is a no-op.

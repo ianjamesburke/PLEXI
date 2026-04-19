@@ -16,7 +16,7 @@ Always confirm best practices by researching the docs.
 - [x] **Step 2 — Unify dual types** (single Direction, 9-cap Capability, TryFrom errors, InjectState/HttpResponse/Image/media variants added)
 - [x] **Step 3 — Finish or delete stubs** (plexi_iq prompt/tools deleted, context simplified, video-player removed from ship set)
 - [x] **Step 4 — Pane ID reconciliation** (HostModel owns alloc; PlexiApp::next_pane_id deleted; workspace seed/restore)
-- [ ] Step 5 — HostServices trait objects (fs, secrets, net, spawn)
+- [x] **Step 5 — HostServices trait objects** (fs/secrets/net/spawn + mocks; `HostServices::mock()` for Layer-2 tests; STEP-9 still owns production wiring of routing.rs through services.secrets)
 - [ ] Step 6 — Event sink + effect consumption
 - [ ] Step 7 — Capability enforcement complete
 - [ ] Step 8 — Manifest schema freeze
