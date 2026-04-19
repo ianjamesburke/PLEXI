@@ -15,7 +15,7 @@ Always confirm best practices by researching the docs.
 - [x] **Step 1 — Dead code sweep** (582 LOC deleted, scaffolder migrated, module allows annotated)
 - [x] **Step 2 — Unify dual types** (single Direction, 9-cap Capability, TryFrom errors, InjectState/HttpResponse/Image/media variants added)
 - [x] **Step 3 — Finish or delete stubs** (plexi_iq prompt/tools deleted, context simplified, video-player removed from ship set)
-- [ ] Step 4 — Pane ID reconciliation (HostModel owns alloc)
+- [x] **Step 4 — Pane ID reconciliation** (HostModel owns alloc; PlexiApp::next_pane_id deleted; workspace seed/restore)
 - [ ] Step 5 — HostServices trait objects (fs, secrets, net, spawn)
 - [ ] Step 6 — Event sink + effect consumption
 - [ ] Step 7 — Capability enforcement complete

@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 4: pane-ID reconciliation (→ v3)
+`HostModel` is now the sole pane-ID allocator. `PlexiApp::next_pane_id` field deleted; every `new_id = self.next_pane_id; self.next_pane_id += 1;` site in `pane_ops.rs` (8 sites) routes through either (a) consuming the returned `PaneOpened.pane_id` / `SplitOpened.pane_id` from the effect or (b) calling `HostModel::alloc_pane_id()` directly (for paths like `create_single_pane_tree`, `new_tab`, `spawn_agent_pane` that don't submit a `HostCommand`). `open_pane_layout` now returns `(PaneId, ShareRatio, bool)`. Workspace restore seeds `HostModel::next_pane_id` via `seed_next_pane_id(..)`; workspace save persists `host.next_pane_id()`. Two new tests: `ids_synchronize_across_commands` (3 OpenPane + 2 SplitVertical → every effect ID lives in `ctx.panes`) and `seed_next_pane_id_resumes_allocator`.
+
+**Breaks if:** restarting Plexi with a saved workspace re-allocates pane IDs from 1 instead of resuming past the saved high-water mark. `egui_tiles::Tile::Pane(pid)` references a `pid` that doesn't exist in `HostModel::ctx().panes`. A new `OpenPane` returns `PaneOpened { pane_id: N }` but `ctx.panes.insert(M, ...)` with `M != N` (the old double-alloc bug).
+
 ## 2026-04-18 — [CHANGED] V3 refactor step 3: finish or delete stubs (→ v3)
 Delete `src/plexi_iq/prompt.rs` (Stage-0 tombstone — v3.0 IQ operates without a templated system prompt; re-add when the turn loop actually needs one). Delete `src/plexi_iq/tools/mod.rs` (empty `ToolRegistry` with zero registrations — re-add when a real tool lands). Simplify `src/plexi_iq/context.rs` to the 2 fields the backends actually read (`pane_id`, `directory_scope`); replace its vestigial `PaneId(pub u64)` newtype with the canonical `tiling::PaneId` alias established in step 2. Remove `examples/video-player/` from the ship set — depends on a host video broker that step 9 may not land in the v3.0 window.
 

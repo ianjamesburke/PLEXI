@@ -431,4 +431,63 @@ mod tests {
         assert_eq!(opened.numerator, 0.4);
         assert_eq!(opened.denominator, 0.6);
     }
+
+    #[test]
+    fn ids_synchronize_across_commands() {
+        // Three OpenPane + two SplitVertical: every pane_id HostModel returns
+        // via effects must match the panes it actually tracks.
+        use crate::host::command::OpenPaneRequest;
+        use crate::tiling::PaneId;
+        let mut h = HostHarness::new();
+
+        let mut seen: Vec<PaneId> = Vec::new();
+        for _ in 0..3 {
+            let fx = h.send(HostCommand::OpenPane(OpenPaneRequest::app("todo")));
+            let id = fx
+                .iter()
+                .find_map(|e| match e {
+                    HostEffect::PaneOpened { pane_id, .. } => Some(*pane_id),
+                    _ => None,
+                })
+                .expect("OpenPane must emit PaneOpened");
+            seen.push(id);
+        }
+        for _ in 0..2 {
+            let fx = h.send(HostCommand::SplitVertical);
+            let id = fx
+                .iter()
+                .find_map(|e| match e {
+                    HostEffect::SplitOpened { pane_id, .. } => Some(*pane_id),
+                    _ => None,
+                })
+                .expect("SplitVertical must emit SplitOpened");
+            seen.push(id);
+        }
+
+        for id in &seen {
+            assert!(
+                h.model.pane_by_id(*id).is_some(),
+                "effect pane_id {id} must exist in ctx.panes"
+            );
+        }
+        // IDs are monotonic and unique.
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seen.len(), "duplicate IDs across effects");
+    }
+
+    #[test]
+    fn seed_next_pane_id_resumes_allocator() {
+        // Simulates workspace-restore: seed past a high-water mark and verify
+        // next alloc comes out above the seeded value. Lowering is a no-op.
+        use crate::host::model::HostModel;
+        let mut model = HostModel::new();
+        model.seed_next_pane_id(100);
+        assert_eq!(model.alloc_pane_id(), 100);
+        assert_eq!(model.alloc_pane_id(), 101);
+        // Below-current seed is clamped (logged as warn).
+        model.seed_next_pane_id(50);
+        assert_eq!(model.alloc_pane_id(), 102);
+    }
 }

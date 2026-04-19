@@ -23,7 +23,6 @@ pub struct PlexiApp {
     pub(crate) theme: TerminalTheme,
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
-    pub(crate) next_pane_id: u64,
     pub(crate) ctx: egui::Context,
     pub(crate) contexts: Vec<Context>,
     pub(crate) active_context: usize,
@@ -209,13 +208,14 @@ impl PlexiApp {
             }
             if !contexts.is_empty() {
                 let active = ws.active_context.min(contexts.len() - 1);
+                let mut host = crate::host::model::HostModel::new();
+                host.seed_next_pane_id(ws.next_pane_id);
                 return Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
                     theme: theme::terminal_theme(&theme_cfg),
                     colors,
                     default_font_size,
-                    next_pane_id: ws.next_pane_id,
                     ctx: cc.egui_ctx.clone(),
                     contexts,
                     active_context: active,
@@ -232,7 +232,7 @@ impl PlexiApp {
                     registry,
                     features: features.clone(),
                     show_run_palette: false,
-                    host: crate::host::model::HostModel::new(),
+                    host,
                     host_services: crate::host::services::HostServices::new(),
                 };
             }
@@ -264,7 +264,6 @@ impl PlexiApp {
             theme: theme::terminal_theme(&theme_cfg),
             colors,
             default_font_size,
-            next_pane_id: 1,
             ctx: cc.egui_ctx.clone(),
             contexts: vec![Context {
                 name: "Default".into(),
@@ -379,7 +378,7 @@ impl eframe::App for PlexiApp {
                         }
                     });
 
-                let new_pane_id = self.next_pane_id;
+                let new_pane_id = self.host.next_pane_id();
                 self.launch_app_by_id_with_layout(&type_id, layout, &args);
 
                 // Confirm back to the requesting app.

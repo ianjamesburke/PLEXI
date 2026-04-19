@@ -307,10 +307,35 @@ impl HostModel {
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
-    fn alloc_pane_id(&mut self) -> PaneId {
+    /// Allocate a new pane ID. `HostModel` is the single source of truth —
+    /// `PlexiApp` and `pane_ops` call this directly for any pane creation that
+    /// does not already flow through `handle_command` (e.g. the egui-tiles
+    /// bookkeeping in `new_tab` / `create_single_pane_tree`).
+    pub fn alloc_pane_id(&mut self) -> PaneId {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
         id
+    }
+
+    /// Next pane ID that `alloc_pane_id` will return. Used by workspace restore
+    /// to persist and resume the allocation counter without double-allocating.
+    pub fn next_pane_id(&self) -> PaneId {
+        self.next_pane_id
+    }
+
+    /// Seed the counter from a persisted workspace. Only safe to call before
+    /// any panes have been opened, because lowering the counter would collide
+    /// with existing IDs. A warning is logged if the caller asks for a value
+    /// below the current high-water mark.
+    pub fn seed_next_pane_id(&mut self, id: PaneId) {
+        if id < self.next_pane_id {
+            log::warn!(
+                "HostModel::seed_next_pane_id({id}) below current {}; clamping",
+                self.next_pane_id
+            );
+            return;
+        }
+        self.next_pane_id = id;
     }
 
     fn context(&self) -> &HostContext {

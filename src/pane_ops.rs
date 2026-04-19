@@ -36,16 +36,17 @@ impl PlexiApp {
         }
     }
 
-    /// Submit an `OpenPane` request to HostModel and extract `(share, vertical)`
-    /// from the resulting `PaneOpened` effect. Falls back to 1:1 vertical split
-    /// if no effect is returned (should not happen in practice).
+    /// Submit an `OpenPane` request to HostModel and extract
+    /// `(pane_id, share, vertical)` from the resulting `PaneOpened` effect.
+    /// Falls back to `alloc_pane_id()` + 1:1 vertical split if no effect is
+    /// returned (should not happen in practice).
     fn open_pane_layout(
         &mut self,
         app_id: &str,
         group: Option<String>,
         hint: Option<&str>,
         share: ShareRatio,
-    ) -> (ShareRatio, bool) {
+    ) -> (PaneId, ShareRatio, bool) {
         let vertical = !matches!(hint, Some("split_h"));
         let placement = if vertical { Placement::Right } else { Placement::Below };
         let req = OpenPaneRequest {
@@ -60,14 +61,24 @@ impl PlexiApp {
         effects
             .iter()
             .find_map(|e| {
-                if let HostEffect::PaneOpened { share, placement, .. } = e {
+                if let HostEffect::PaneOpened { pane_id, share, placement, .. } = e {
                     let vert = !matches!(placement, Placement::Below);
-                    Some((*share, vert))
+                    Some((*pane_id, *share, vert))
                 } else {
                     None
                 }
             })
-            .unwrap_or((ShareRatio::new(1.0, 1.0).expect("1:1 is valid"), vertical))
+            .unwrap_or_else(|| {
+                let fallback = self.host.alloc_pane_id();
+                log::warn!(
+                    "open_pane_layout({app_id}): no PaneOpened effect — allocating fallback id={fallback}"
+                );
+                (
+                    fallback,
+                    ShareRatio::new(1.0, 1.0).expect("1:1 is valid"),
+                    vertical,
+                )
+            })
     }
 
     fn split_with_new_pane(
@@ -187,10 +198,8 @@ impl PlexiApp {
         }
 
         let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
-        let (share, vertical) = self.open_pane_layout(app_id, group.clone(), hint, share);
-
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
+        let (new_id, share, vertical) =
+            self.open_pane_layout(app_id, group.clone(), hint, share);
         self.contexts[active]
             .panes
             .insert(new_id, new_app_pane(new_id, process, workspace_root, group));
@@ -241,10 +250,8 @@ impl PlexiApp {
 
         let share =
             Self::share_ratio_from_fraction(&app_type_id, self.registry.share_for(&app_type_id));
-        let (share, vertical) = self.open_pane_layout(&app_type_id, group.clone(), hint, share);
-
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
+        let (new_id, share, vertical) =
+            self.open_pane_layout(&app_type_id, group.clone(), hint, share);
         self.contexts[active]
             .panes
             .insert(new_id, new_app_pane(new_id, app, workspace_root, group));
@@ -256,8 +263,7 @@ impl PlexiApp {
         &mut self,
         cwd: Option<PathBuf>,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
+        let new_id = self.host.alloc_pane_id();
 
         let settings = Self::make_backend_settings(cwd, &self.colors);
         let pane = TerminalPane::new(
@@ -290,18 +296,15 @@ impl PlexiApp {
         };
         let effects = self.submit(cmd);
         log::debug!("split_focused(vertical={vertical}) effects: {:?}", effects);
-        let vertical = effects
+        let (new_id, vertical) = effects
             .iter()
             .find_map(|e| match e {
-                HostEffect::SplitOpened { placement, .. } => {
-                    Some(!matches!(placement, Placement::Below))
+                HostEffect::SplitOpened { pane_id, placement, .. } => {
+                    Some((*pane_id, !matches!(placement, Placement::Below)))
                 }
                 _ => None,
             })
-            .unwrap_or(vertical);
-
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
+            .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
@@ -383,8 +386,7 @@ impl PlexiApp {
             return;
         };
 
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
+        let new_id = self.host.alloc_pane_id();
 
         let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
@@ -689,7 +691,7 @@ impl PlexiApp {
             version: 1,
             active_context: self.active_context,
             sidebar_visible: self.sidebar_visible,
-            next_pane_id: self.next_pane_id,
+            next_pane_id: self.host.next_pane_id(),
             contexts: saved_contexts,
         };
 
@@ -889,8 +891,7 @@ impl PlexiApp {
     /// Creates a `PlexiIqInstance` and wraps it in `AgentPane`. The pane renders
     /// a transcript area + input bar. Turn loop drives via tiling.rs on each frame.
     pub(crate) fn spawn_agent_pane(&mut self) {
-        let new_id = self.next_pane_id;
-        self.next_pane_id += 1;
+        let new_id = self.host.alloc_pane_id();
 
         let instance = crate::plexi_iq::PlexiIqInstance::default();
         let label = format!("Agent {new_id}");
