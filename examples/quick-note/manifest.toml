@@ -7,4 +7,6 @@ entry = "quick_note.py"
 
 [app.capabilities]
 capabilities = ["fs.read", "fs.write"]
-initial_share = 0.3
+
+[launch]
+layout_hint = { side = "right", split = 0.3 }

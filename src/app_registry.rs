@@ -36,6 +36,8 @@ use std::path::PathBuf;
 #[derive(Deserialize, Debug, Clone)]
 pub struct AppManifest {
     pub app: AppManifestApp,
+    #[serde(default)]
+    pub launch: LaunchSection,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -51,36 +53,51 @@ pub struct AppManifestApp {
     pub capabilities: AppCapabilities,
 }
 
+/// v3 capability section — `[app.capabilities]`. Holds only the capability
+/// string list and the optional `file_types` extension map. Launch-time
+/// layout + grouping moved to `[launch]` (see `LaunchSection`).
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct AppCapabilities {
     #[serde(default)]
     pub file_types: Vec<String>,
-    #[serde(default)]
-    pub keybinding: Option<String>,
-    /// v3 capability strings declared in manifest.toml.
-    /// e.g. ["fs.read", "net.http", "audio.record"]
-    /// Valid values: fs.read, fs.write, net.http, secrets.get,
-    ///   audio.record, audio.playback, video.playback, pipe.open, spawn.app
+    /// v3 capability strings. Valid values: fs.read, fs.write, net.http,
+    /// secrets.get, pipe.open, spawn.app, audio.record, audio.playback,
+    /// video.playback. Unknown values cause install to fail (STEP-7).
     #[serde(default)]
     pub capabilities: Vec<String>,
-    /// Pane group this app joins at spawn. When any pane in the group reports a
-    /// CWD change, every member receives `PlexiEvent::PathChanged { cwd }`.
+}
+
+/// v3 launch section — `[launch]`. Controls pane placement, share, grouping,
+/// and keyboard capture when the host spawns this app. All fields optional.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct LaunchSection {
+    /// Pane group this app joins at spawn. When any pane in the group reports
+    /// a CWD change, every member receives `PlexiEvent::PathChanged { cwd }`.
     /// Convention: "cwd" for generic directory-synced apps.
     #[serde(default)]
-    pub group: Option<String>,
-    /// If true, this app captures all keyboard input when focused. Host shortcuts
-    /// (Cmd+HJKL, Cmd+Enter, etc.) are suppressed. Only Cmd+Q and Cmd+W remain.
-    /// Declare in manifest as `keyboard_capture = true`.
+    pub join_group: Option<String>,
+    /// Preferred pane layout. Default: `LayoutHint { side: "right", split: 0.5 }`.
+    #[serde(default)]
+    pub layout_hint: Option<LayoutHint>,
+    /// If true, this app captures all keyboard input when focused. Host
+    /// shortcuts (Cmd+HJKL, Cmd+Enter, etc.) are suppressed; only Cmd+Q and
+    /// Cmd+W remain.
     #[serde(default)]
     pub keyboard_capture: bool,
-    /// Preferred pane layout: "split" (default, creates linked terminal) or "overlay"
-    /// (takes the full pane, no terminal split). Declare as `layout_hint = "overlay"`.
-    #[serde(default)]
-    pub layout_hint: Option<String>,
-    /// Fraction of parent container given to the new pane when opened. Must be in (0.0, 1.0).
-    /// Defaults to 0.5 (50/50) when omitted. Declare as `initial_share = 0.4`.
-    #[serde(default)]
-    pub initial_share: Option<f32>,
+}
+
+/// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
+/// `split` is the fraction of the parent container given to the new pane
+/// on open — must be in (0.0, 1.0). Default: 0.5.
+#[derive(Deserialize, Debug, Clone)]
+pub struct LayoutHint {
+    pub side: String,
+    #[serde(default = "default_split")]
+    pub split: f32,
+}
+
+fn default_split() -> f32 {
+    0.5
 }
 
 impl AppCapabilities {
@@ -94,6 +111,7 @@ impl AppCapabilities {
 #[derive(Debug, Clone)]
 pub struct InstalledApp {
     pub manifest: AppManifestApp,
+    pub launch: LaunchSection,
     pub bin_path: PathBuf,
     pub app_dir: PathBuf,
 }
@@ -191,10 +209,30 @@ impl AppRegistry {
             ));
         }
 
+        // STEP-8: validate layout_hint.side now so bad manifests fail at
+        // install rather than at first pane open.
+        if let Some(hint) = &manifest.launch.layout_hint {
+            match hint.side.as_str() {
+                "right" | "below" | "overlay" => {}
+                other => {
+                    return Err(format!(
+                        "layout_hint.side must be 'right', 'below', or 'overlay'; got '{other}'"
+                    ));
+                }
+            }
+            if !(0.0 < hint.split && hint.split < 1.0) {
+                return Err(format!(
+                    "layout_hint.split must be in (0.0, 1.0); got {}",
+                    hint.split
+                ));
+            }
+        }
+
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
         Ok(InstalledApp {
             manifest: manifest.app,
+            launch: manifest.launch,
             bin_path,
             app_dir: app_dir.clone(),
         })
@@ -225,33 +263,38 @@ impl AppRegistry {
             .map(|app| app.manifest.capabilities.to_permissions())
     }
 
-    /// Get the manifest-declared pane group for an app (None if unset).
+    /// Get the manifest-declared pane group (`[launch].join_group`).
     pub fn group_for(&self, app_id: &str) -> Option<String> {
-        self.apps
-            .get(app_id)
-            .and_then(|a| a.manifest.capabilities.group.clone())
+        self.apps.get(app_id).and_then(|a| a.launch.join_group.clone())
     }
 
-    /// Get the manifest-declared keyboard_capture flag for an app.
+    /// Get the manifest-declared keyboard_capture flag (`[launch].keyboard_capture`).
     pub fn keyboard_capture_for(&self, app_id: &str) -> bool {
         self.apps
             .get(app_id)
-            .map(|a| a.manifest.capabilities.keyboard_capture)
+            .map(|a| a.launch.keyboard_capture)
             .unwrap_or(false)
     }
 
-    /// Get the manifest-declared layout_hint for an app ("split" | "overlay").
+    /// Get the launch-time layout side hint: "right" | "below" | "overlay".
+    /// Internally mapped to the `split_v` / `split_h` strings pane_ops uses.
     pub fn layout_hint_for(&self, app_id: &str) -> Option<String> {
         self.apps
             .get(app_id)
-            .and_then(|a| a.manifest.capabilities.layout_hint.clone())
+            .and_then(|a| a.launch.layout_hint.as_ref())
+            .map(|h| match h.side.as_str() {
+                "below" => "split_h".to_string(),
+                "overlay" => "overlay".to_string(),
+                _ => "split_v".to_string(),
+            })
     }
 
-    /// Get the manifest-declared initial_share fraction for an app (None if unset).
+    /// Get the manifest-declared layout_hint.split fraction (None if unset).
     pub fn share_for(&self, app_id: &str) -> Option<f32> {
         self.apps
             .get(app_id)
-            .and_then(|a| a.manifest.capabilities.initial_share)
+            .and_then(|a| a.launch.layout_hint.as_ref())
+            .map(|h| h.split)
     }
 
     /// Launch an app process for the given id.
@@ -259,7 +302,7 @@ impl AppRegistry {
         let installed = self.apps.get(id)?;
         let perms = installed.manifest.capabilities.to_permissions();
         let caps = perms.capabilities.clone();
-        let keyboard_capture = installed.manifest.capabilities.keyboard_capture;
+        let keyboard_capture = installed.launch.keyboard_capture;
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -379,7 +422,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manifest_group_parses() {
+    fn manifest_launch_join_group_parses() {
+        // STEP-8: join_group lives under [launch] now, not [app.capabilities].
         let toml = r#"
 [app]
 id = "todo"
@@ -388,14 +432,16 @@ entry = "todo.py"
 
 [app.capabilities]
 capabilities = ["fs.read", "fs.write"]
-group = "cwd"
+
+[launch]
+join_group = "cwd"
 "#;
         let parsed: AppManifest = toml::from_str(toml).expect("parse");
-        assert_eq!(parsed.app.capabilities.group.as_deref(), Some("cwd"));
+        assert_eq!(parsed.launch.join_group.as_deref(), Some("cwd"));
     }
 
     #[test]
-    fn manifest_group_defaults_to_none() {
+    fn manifest_launch_join_group_defaults_to_none() {
         let toml = r#"
 [app]
 id = "snake"
@@ -406,7 +452,28 @@ entry = "snake.py"
 capabilities = []
 "#;
         let parsed: AppManifest = toml::from_str(toml).expect("parse");
-        assert_eq!(parsed.app.capabilities.group, None);
+        assert_eq!(parsed.launch.join_group, None);
+    }
+
+    #[test]
+    fn manifest_layout_hint_parses_structured() {
+        // STEP-8: layout_hint is structured { side, split } under [launch].
+        let toml = r#"
+[app]
+id = "todo"
+name = "Todo"
+entry = "todo.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.4 }
+"#;
+        let parsed: AppManifest = toml::from_str(toml).expect("parse");
+        let hint = parsed.launch.layout_hint.expect("layout_hint present");
+        assert_eq!(hint.side, "right");
+        assert_eq!(hint.split, 0.4);
     }
 
     #[test]

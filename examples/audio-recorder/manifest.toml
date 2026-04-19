@@ -7,4 +7,6 @@ entry = "audio_recorder.py"
 
 [app.capabilities]
 capabilities = ["audio.record", "fs.write", "pipe.open"]
-initial_share = 0.3
+
+[launch]
+layout_hint = { side = "right", split = 0.3 }

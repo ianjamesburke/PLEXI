@@ -19,7 +19,7 @@ Always confirm best practices by researching the docs.
 - [x] **Step 5 — HostServices trait objects** (fs/secrets/net/spawn + mocks; `HostServices::mock()` for Layer-2 tests; STEP-9 still owns production wiring of routing.rs through services.secrets)
 - [x] **Step 6 — FileEventSink live** (`effects.jsonl` append-only per-effect log wired into `HostServices::new()`; consumer-side nav/close rewiring deferred to STEP-9)
 - [x] **Step 7 — Capability enforcement complete** (install-time manifest validation; runtime checks on HttpRequest/PipeSend/AudioPlay/AudioCapture; 403 HttpResponse on net.http denial)
-- [ ] Step 8 — Manifest schema freeze
+- [x] **Step 8 — Manifest schema freeze** (new `[launch]` section with structured `layout_hint = { side, split }`; install-time validator; 5 examples + scaffolders migrated)
 - [ ] Step 9 — PGAP protocol surface completion
 - [ ] Step 10 — Real Rust Layer 1 tests + uv Python runner
 - [ ] Step 11 — CI gate that enforces
