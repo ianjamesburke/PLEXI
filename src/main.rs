@@ -19,6 +19,7 @@ mod config;
 mod context;
 #[allow(dead_code)] // STEP-6: emit_* wired when FileEventSink consumes all effects
 mod event_log;
+mod fd_util;
 mod features;
 mod file_browser;
 #[allow(dead_code)] // STEP-4/6: HostHarness + VecEventSink used by unit tests; kept alongside prod
