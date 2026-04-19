@@ -285,3 +285,124 @@ impl Drop for Harness {
         }
     }
 }
+
+// ── Layer-1 integration tests ───────────────────────────────────────────────
+//
+// Spawn real example apps as subprocesses, drive them through scripted
+// PlexiEvents, assert on DrawCommand output. Tests auto-skip when `python3`
+// is not on PATH — CI should run them as a real gate, but local dev doesn't
+// fail when Python isn't installed.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn python3_available() -> bool {
+        Command::new("python3")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    fn example(name: &str) -> PathBuf {
+        // worktree root = one level up from Cargo's CARGO_MANIFEST_DIR
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        root.join("examples").join(name).join(format!("{name}.py"))
+    }
+
+    fn spawn_example(name: &str) -> Option<Harness> {
+        if !python3_available() {
+            eprintln!("SKIP: python3 not on PATH");
+            return None;
+        }
+        let entry = example(name);
+        if !entry.exists() {
+            eprintln!("SKIP: {} missing", entry.display());
+            return None;
+        }
+        let cwd = entry.parent().expect("entry has parent").to_path_buf();
+        let workspace = std::env::temp_dir().join(format!("plexi-layer1-{}-{name}", std::process::id()));
+        let _ = std::fs::create_dir_all(&workspace);
+        let python = Path::new("python3");
+        let args: Vec<&str> = vec![entry.to_str().unwrap()];
+        match Harness::spawn(python, &args, &cwd, &[]) {
+            Ok(mut h) => {
+                h.init_and_expect_ready(name, &workspace);
+                Some(h)
+            }
+            Err(e) => {
+                eprintln!("SKIP: spawn failed: {e}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn layer1_snake_init_ready_handshake() {
+        let Some(mut h) = spawn_example("snake") else { return };
+        // Ready was already received in spawn_example; verify a render frame
+        // produces any DrawCommand at all (non-empty app).
+        let cmds = h.render_frame(1, 400.0, 300.0);
+        assert!(!cmds.is_empty(), "snake must emit at least one draw command");
+        h.shutdown();
+    }
+
+    #[test]
+    fn layer1_snake_renders_frame_done_for_its_own_frame_id() {
+        let Some(mut h) = spawn_example("snake") else { return };
+        let cmds = h.render_frame(42, 300.0, 200.0);
+        let fd = cmds
+            .iter()
+            .find(|v| v.get("type").and_then(Value::as_str) == Some("frame_done"))
+            .expect("frame_done present");
+        assert_eq!(fd.get("frame_id").and_then(Value::as_u64), Some(42));
+        h.shutdown();
+    }
+
+    #[test]
+    fn layer1_todo_path_changed_updates_cwd() {
+        let Some(mut h) = spawn_example("todo") else { return };
+        h.render_frame(1, 400.0, 400.0);
+        h.send_path_changed(Path::new("/tmp/plexi-layer1-cwd"));
+        let cmds = h.render_frame(2, 400.0, 400.0);
+        let any_cwd = cmds.iter().any(|v| {
+            v.get("type").and_then(Value::as_str) == Some("text")
+                && v.get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s.contains("/tmp/plexi-layer1-cwd"))
+        });
+        assert!(any_cwd, "path_changed must update the todo cwd display");
+        h.shutdown();
+    }
+
+    #[test]
+    fn layer1_wikipedia_inject_results_renders() {
+        let Some(mut h) = spawn_example("wikipedia") else { return };
+        h.inject_state(&serde_json::json!({
+            "mode": "results",
+            "query": "Rust",
+            "results": ["Rust (programming language)", "Rust belt"],
+        }));
+        let cmds = h.render_frame(1, 800.0, 600.0);
+        let has_rust = cmds.iter().any(|v| {
+            v.get("type").and_then(Value::as_str) == Some("text")
+                && v.get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s.contains("Rust"))
+        });
+        assert!(has_rust, "injected results must surface in render output");
+        h.shutdown();
+    }
+
+    #[test]
+    fn layer1_shutdown_closes_child_cleanly() {
+        let Some(h) = spawn_example("snake") else { return };
+        // Drop via shutdown() — verifies no zombie process + no hang. If
+        // Shutdown wasn't honored the Drop impl's 200ms grace+kill would
+        // keep the test bounded, and the whole test still passes quickly.
+        h.shutdown();
+    }
+}

@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 10: real Rust Layer-1 tests + uv runner (→ v3)
+`pgap_test_harness` grows from zero `#[test]` fns to five: init/ready handshake, render + frame_done round-trip, shutdown lifecycle, todo `path_changed` cwd update, wikipedia inject-state render. Tests auto-skip when `python3` is not on PATH so local dev without Python doesn't fail — CI should fail when a real gate is missing. `pyproject.toml` at repo root: `requires-python = ">=3.11"`, `pytest` as a dev dep, `testpaths` covering `sdk/python/tests` + every example's `tests/` dir, `pythonpath = ["sdk/python"]` so `from plexi_sdk import ...` resolves under `uv run pytest`. 72/72 Rust tests green.
+
+**Breaks if:** `cargo test layer1` returns zero tests (STEP-10 regressed). `uv sync && uv run pytest` can't resolve the `plexi_sdk` import. A ci job runs `cargo test pgap_test_harness` and matches zero tests (old shape).
+
 ## 2026-04-18 — [CHANGED] V3 refactor step 9: PGAP surface — env isolation + bold + AppSpawned SDK hook (→ v3)
 Scoped-down step 9 — landed the three high-leverage items, explicitly deferred the rest. (1) **Env isolation** (spec I-6): `ProcessApp::launch` now calls `.env_clear()` and whitelists `HOME`/`PATH`/`LANG`/`LC_ALL`/`TERM`/`USER`/`SHELL` plus every `PLEXI_*` var. `ANTHROPIC_API_KEY` and similar host credentials can no longer leak to subprocess apps. (2) **Bold text rendering**: `process_app/render.rs` stops destructuring `bold: _` and routes it into an `egui::FontFamily::Name("bold")` that painter falls back to Proportional on if not registered — bold is now readable from app code without breaking rendering. (3) **AppSpawned SDK handler**: `sdk/python/plexi_sdk/__init__.py` adds `elif t == "app_spawned"` and calls `on_app_spawned(pane_id, type_id)`; default is no-op.
 
