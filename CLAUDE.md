@@ -9,11 +9,10 @@ Always confirm best practices by researching the docs.
 - [x] **Wire harness** — Done: `Harness::render_to_png` wired. `agent_dev_loop_produces_png` test spawns snake, renders frame, asserts valid PNG with visible pixels.
 - [x] **inject_state + net.http brokering** — Done: 79 tests green. `PlexiEvent::InjectState`, `http_request`/`http_response` PGAP channel, `Harness::inject_state` + `mock_http` + pre-drain race fix, `emit.http_get()` in SDK. Wikipedia testable via inject_state (no key-pushing) and via mock_http (no network).
 - [x] **Cutover slice 1: launch_app_by_id → HostModel** — Done: `PlexiApp` holds `host: HostModel`, launch path routes `HostCommand::OpenPane` through `HostModel` and reads `(share, placement)` from the returned `PaneOpened` effect. `pane_ops::split_with_new_pane` drops the 3:1 hardcode, takes a `ShareRatio`. Manifest `initial_share` field wired with per-app defaults. 58 Rust tests green.
+- [x] **Cutover slices 2/3/4: split + close + navigate → HostModel** — Done: every user-facing pane op (launch, split, close, navigate) now flows through `HostCommand`. Slice 2 consumes `SplitOpened.placement`; slices 3/4 are observation-only until ID reconciliation is done.
 
-**Next cutover slices** (each follows the `launch_app_by_id` pattern — submit a HostCommand, consume effects):
-- [ ] `split_focused` (terminal split) — the 3:1 hardcode still lives inline here; migrate to HostModel `SplitHorizontal`/`SplitVertical` effects.
-- [ ] `close_pane` → `HostCommand::CloseFocusedPane`.
-- [ ] `focus_next` / directional nav → `HostCommand::Navigate`.
+**Next cutover step — ID reconciliation**:
+- [ ] Reconcile `HostModel`'s internal pane counter with `PlexiApp::next_pane_id` so effects can drive egui focus transitions directly. Simplest approach: `PlexiApp` asks `HostModel` for the next pane ID instead of allocating its own, and `HostModel` tracks real tile IDs. Once done, `close_focused` and `navigate` can drive focus from the `FocusChanged` effect instead of PlexiApp's directional search.
 
 ## North Star
 

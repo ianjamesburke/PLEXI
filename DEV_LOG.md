@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] Cutover slices 2/3/4: split_focused + close_focused + navigate route through HostModel (e444d04, f601842 → v3)
+Slice 2 (`split_focused`) consumes the returned `SplitOpened.placement` to derive the split direction — same shape as the Phase B app-launch path, so it's behaviorally integrated, not purely observational. Slices 3/4 (`close_focused`, `navigate`) submit commands and log effects but do NOT yet consume them to drive focus, because `HostModel` allocates its own pane IDs independent of the egui tile IDs `PlexiApp` tracks — so `PaneClosed`/`FocusChanged` effects currently reference HostModel's private pane list, not the real tiles. This is honest tech debt: the observation layer exists, but ID reconciliation is required before effects can drive real focus transitions. Every user-facing pane op (launch, split, close, navigate) now flows through `HostCommand`.
+
+**Breaks if:** the debug log for `.plexi-v3/plexi.log` stops showing "split_focused effects", "close_focused effects", or "navigate effects" lines when the user triggers the corresponding keybindings. The `Direction` → `crate::host::command::Direction` mapping in `navigate()` drops or reorders a variant.
+
 ## 2026-04-18 — [CHANGED] Cutover slice 1: launch_app_by_id routes through HostModel (PRs 3e162f2, 27e0ece, 621fe79 → v3)
 First vertical slice of the `PlexiApp` → `HostModel` cutover. `PlexiApp` now holds `host: HostModel` + `host_services: HostServices`. App launches submit a `HostCommand::OpenPane` to `HostModel`, observe the returned `PaneOpened` effect, and use its `share` + `placement` fields to drive `egui_tiles` insertion. The legacy 3:1 hardcode in `pane_ops::split_with_new_pane` is gone — the function now takes a `ShareRatio` parameter. App-launch default is 1:1 (50/50). Terminal `split_focused` retains its own inline layout (migrates next session).
 
