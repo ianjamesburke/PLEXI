@@ -1,4 +1,8 @@
 use crate::context::{replace_child, Context};
+use crate::host::command::{
+    HostCommand, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio,
+};
+use crate::host::effect::HostEffect;
 use crate::keys::Direction;
 use crate::pane::{Pane, TerminalPane};
 use crate::shell;
@@ -13,10 +17,49 @@ use crate::app::PlexiApp;
 use crate::app_trait::App;
 
 impl PlexiApp {
+    /// Route a HostCommand through HostModel and return the resulting effects.
+    fn submit(&mut self, cmd: HostCommand) -> Vec<HostEffect> {
+        self.host.handle_command(cmd, &mut self.host_services)
+    }
+
+    /// Submit an `OpenPane` request to HostModel and extract `(share, vertical)`
+    /// from the resulting `PaneOpened` effect. Falls back to 1:1 vertical split
+    /// if no effect is returned (should not happen in practice).
+    fn open_pane_layout(
+        &mut self,
+        app_id: &str,
+        group: Option<String>,
+        hint: Option<&str>,
+    ) -> (ShareRatio, bool) {
+        let vertical = !matches!(hint, Some("split_h"));
+        let placement = if vertical { Placement::Right } else { Placement::Below };
+        let req = OpenPaneRequest {
+            runtime: PaneRuntimeKind::App { app_id: app_id.to_string() },
+            placement,
+            share: ShareRatio::new(1.0, 1.0).expect("1:1 is valid"),
+            group,
+            declared_capabilities: vec![],
+        };
+        let effects = self.submit(HostCommand::OpenPane(req));
+        log::debug!("open_pane_layout({app_id}) effects: {:?}", effects);
+        effects
+            .iter()
+            .find_map(|e| {
+                if let HostEffect::PaneOpened { share, placement, .. } = e {
+                    let vert = !matches!(placement, Placement::Below);
+                    Some((*share, vert))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((ShareRatio::new(1.0, 1.0).expect("1:1 is valid"), vertical))
+    }
+
     fn split_with_new_pane(
         &mut self,
         new_pane_id: PaneId,
         vertical: bool,
+        share: ShareRatio,
     ) -> Option<egui_tiles::TileId> {
         let focused = self.contexts[self.active_context].focused_pane?;
         let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
@@ -69,8 +112,8 @@ impl PlexiApp {
             if let Some(Tile::Container(Container::Linear(ref mut lin))) =
                 ctx.tree.tiles.get_mut(container_tile)
             {
-                lin.shares.set_share(split_target, 3.0);
-                lin.shares.set_share(new_tile, 1.0);
+                lin.shares.set_share(split_target, share.denominator);
+                lin.shares.set_share(new_tile, share.numerator);
             }
 
             if let Some(parent_id) = parent {
@@ -128,14 +171,15 @@ impl PlexiApp {
             return;
         }
 
+        let (share, vertical) = self.open_pane_layout(app_id, group.clone(), hint);
+
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
         self.contexts[active]
             .panes
             .insert(new_id, new_app_pane(new_id, process, workspace_root, group));
 
-        let vertical = !matches!(hint, Some("split_h"));
-        let _ = self.split_with_new_pane(new_id, vertical);
+        let _ = self.split_with_new_pane(new_id, vertical, share);
     }
 
     fn open_builtin_app_pane(
@@ -179,14 +223,15 @@ impl PlexiApp {
             return;
         }
 
+        let (share, vertical) = self.open_pane_layout(&app_type_id, group.clone(), hint);
+
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
         self.contexts[active]
             .panes
             .insert(new_id, new_app_pane(new_id, app, workspace_root, group));
 
-        let vertical = !matches!(hint, Some("split_h"));
-        let _ = self.split_with_new_pane(new_id, vertical);
+        let _ = self.split_with_new_pane(new_id, vertical, share);
     }
 
     fn create_single_pane_tree(

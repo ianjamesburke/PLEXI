@@ -43,6 +43,7 @@ pub struct PlexiApp {
     pub(crate) show_run_palette: bool,
     // TODO Phase B: consume host model to replace legacy pane_ops command paths
     pub(crate) host: crate::host::model::HostModel,
+    pub(crate) host_services: crate::host::services::HostServices,
 }
 
 impl PlexiApp {
@@ -233,6 +234,7 @@ impl PlexiApp {
                     features: features.clone(),
                     show_run_palette: false,
                     host: crate::host::model::HostModel::new(),
+                    host_services: crate::host::services::HostServices::new(),
                 };
             }
         }
@@ -288,6 +290,7 @@ impl PlexiApp {
             features,
             show_run_palette: false,
             host: crate::host::model::HostModel::new(),
+            host_services: crate::host::services::HostServices::new(),
         }
     }
 
