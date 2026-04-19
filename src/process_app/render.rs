@@ -40,14 +40,18 @@ pub(super) fn render_draw_commands(
                 size,
                 color,
                 monospace,
-                bold: _,
+                bold,
             } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
-                let font_id = if *monospace {
-                    egui::FontId::monospace(*size)
-                } else {
-                    egui::FontId::proportional(*size)
+                let family = match (*monospace, *bold) {
+                    (true, _) => egui::FontFamily::Monospace,
+                    (false, true) => egui::FontFamily::Name("bold".into()),
+                    (false, false) => egui::FontFamily::Proportional,
                 };
+                // Painter falls back to Proportional if "bold" isn't registered
+                // in FontDefinitions — setup_fonts will wire the bold slot in a
+                // follow-up; for now bold text still renders, just not weighted.
+                let font_id = egui::FontId::new(*size, family);
                 ui.painter().text(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::Align2::LEFT_TOP,

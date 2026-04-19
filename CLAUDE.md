@@ -20,7 +20,7 @@ Always confirm best practices by researching the docs.
 - [x] **Step 6 — FileEventSink live** (`effects.jsonl` append-only per-effect log wired into `HostServices::new()`; consumer-side nav/close rewiring deferred to STEP-9)
 - [x] **Step 7 — Capability enforcement complete** (install-time manifest validation; runtime checks on HttpRequest/PipeSend/AudioPlay/AudioCapture; 403 HttpResponse on net.http denial)
 - [x] **Step 8 — Manifest schema freeze** (new `[launch]` section with structured `layout_hint = { side, split }`; install-time validator; 5 examples + scaffolders migrated)
-- [ ] Step 9 — PGAP protocol surface completion
+- [x] **Step 9 (partial) — env isolation + bold text + AppSpawned SDK hook**; HTTP broker, PipeSend peer routing, RunUpdate round-trip, media brokers, FD CLOEXEC audit all deferred to a follow-up session
 - [ ] Step 10 — Real Rust Layer 1 tests + uv Python runner
 - [ ] Step 11 — CI gate that enforces
 - [ ] Step 12 — Invariant enforcement

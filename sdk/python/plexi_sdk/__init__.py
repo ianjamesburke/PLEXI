@@ -323,6 +323,7 @@ class App:
     def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> None: pass
     def on_path_changed(self, ctx: RenderContext, cwd: str) -> None: pass
     def on_inject(self, ctx: "RenderContext", payload: Any) -> None: pass
+    def on_app_spawned(self, pane_id: int, type_id: str) -> None: pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
@@ -458,6 +459,17 @@ class App:
 
             elif t in ("run_update",):
                 pass  # apps can override on_run_update if needed
+
+            elif t == "app_spawned":
+                # Confirmation that a SpawnApp request succeeded. Apps that
+                # want to track the spawned pane can override on_app_spawned.
+                try:
+                    self.on_app_spawned(
+                        int(ev.get("pane_id", 0)),
+                        str(ev.get("type_id", "")),
+                    )
+                except Exception as e:
+                    sys.stderr.write(f"on_app_spawned handler raised: {e}\n")
 
         # Ensure all pipes are closed cleanly
         for p in self._pipes.values():

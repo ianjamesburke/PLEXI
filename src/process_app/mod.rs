@@ -124,13 +124,30 @@ impl ProcessApp {
             );
         }
 
-        let mut child = std::process::Command::new(bin_path)
-            .args(args)
+        // STEP-9: environment isolation (spec invariant I-6).
+        // Clear the inherited environment and whitelist only vars the app
+        // legitimately needs. Strips ANTHROPIC_API_KEY and every other
+        // host credential — apps must go through the secret broker.
+        const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
+        let mut cmd = std::process::Command::new(bin_path);
+        cmd.args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .env_clear();
+        for var in ENV_WHITELIST {
+            if let Ok(v) = std::env::var(var) {
+                cmd.env(var, v);
+            }
+        }
+        // Pass through every PLEXI_* var (harness knobs, mock-device selectors).
+        for (k, v) in std::env::vars() {
+            if k.starts_with("PLEXI_") {
+                cmd.env(k, v);
+            }
+        }
+        let mut child = cmd.spawn()?;
 
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
