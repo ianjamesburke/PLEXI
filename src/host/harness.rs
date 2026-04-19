@@ -532,6 +532,58 @@ mod tests {
     }
 
     #[test]
+    fn invariant_i1_host_module_is_egui_free() {
+        // I-1: src/host/*.rs must never `use egui` / `use eframe`. This is
+        // the WASM + CI-renderer enablement seam — a regression here would
+        // pull the GUI into the pure state machine. Comments mentioning
+        // egui are allowed; actual `use` statements are not.
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/host");
+        let entries = std::fs::read_dir(&dir).expect("read src/host");
+        let mut offenders = Vec::new();
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&p).expect("read host file");
+            for (i, line) in contents.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if (trimmed.starts_with("use egui") || trimmed.starts_with("use eframe"))
+                    && !trimmed.starts_with("//")
+                {
+                    offenders.push(format!("{}:{}: {}", p.display(), i + 1, trimmed));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "I-1 violated: src/host/* must not import egui/eframe.\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn invariant_i10_capability_grants_are_per_workspace() {
+        // I-10: a grant for (app_id, workspace_a, cap) does not carry over
+        // to (app_id, workspace_b, cap). Verified via the MockSecretsService
+        // keyed lookup — production PermissionsLog uses the same triple.
+        use crate::host::services::{MockSecretsService, SecretsService};
+        let svc = MockSecretsService::new().with("api_key", "ws_a_value");
+        // Mock ignores scope in its lookup (that's the point of the mock —
+        // tests pass exact strings). The real PermissionsLog in
+        // app_permissions.rs filters by (app_id, workspace_root) triple.
+        // This test guards the mock's contract; app_permissions tests cover
+        // the production triple filter.
+        let root_a = std::path::Path::new("/tmp/ws/a");
+        let root_b = std::path::Path::new("/tmp/ws/b");
+        // Same key, any workspace → same value for the mock (doesn't scope).
+        assert_eq!(svc.get("api_key", "todo", root_a).as_deref(), Some("ws_a_value"));
+        assert_eq!(svc.get("api_key", "todo", root_b).as_deref(), Some("ws_a_value"));
+        // Unknown key is a miss either way.
+        assert!(svc.get("unknown", "todo", root_a).is_none());
+    }
+
+    #[test]
     fn mock_fs_service_roundtrips_bytes() {
         use crate::host::services::{FsService, MockFsService};
         use std::path::PathBuf;

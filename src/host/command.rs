@@ -29,6 +29,9 @@ pub enum Placement {
     ReplaceFocused,
 }
 
+/// I-5 (`docs/specs/releases/plexi-v3.0.md §2`): the pane ADT is frozen
+/// at these 3 variants for v3.0. New pane-shaped things are PGAP apps,
+/// not new variants. Changing this enum requires a spec amendment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PaneRuntimeKind {
