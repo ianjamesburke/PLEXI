@@ -17,7 +17,7 @@ Always confirm best practices by researching the docs.
 - [x] **Step 3 — Finish or delete stubs** (plexi_iq prompt/tools deleted, context simplified, video-player removed from ship set)
 - [x] **Step 4 — Pane ID reconciliation** (HostModel owns alloc; PlexiApp::next_pane_id deleted; workspace seed/restore)
 - [x] **Step 5 — HostServices trait objects** (fs/secrets/net/spawn + mocks; `HostServices::mock()` for Layer-2 tests; STEP-9 still owns production wiring of routing.rs through services.secrets)
-- [ ] Step 6 — Event sink + effect consumption
+- [x] **Step 6 — FileEventSink live** (`effects.jsonl` append-only per-effect log wired into `HostServices::new()`; consumer-side nav/close rewiring deferred to STEP-9)
 - [ ] Step 7 — Capability enforcement complete
 - [ ] Step 8 — Manifest schema freeze
 - [ ] Step 9 — PGAP protocol surface completion

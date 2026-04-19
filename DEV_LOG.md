@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 6: FileEventSink wired as production event bus (→ v3)
+Every `HostEffect` is now durable. `FileEventSink` opens `<config_dir>/effects.jsonl` in append mode at startup and writes one JSONL line per effect. `HostServices::new()` installs it as the production `event_sink` (was `NoopEventSink`). `HostEffect` + `HostEvent` + `PaneRuntimeKind` + `Placement` + `ShareRatio` all derive `Serialize`. Uses a separate file from `events.jsonl` (app-event bus via `crate::event_log`) to keep the host-state stream distinct from app-initiated events. FULL consumer rewiring (navigate/close driven by `FocusChanged`/`PaneClosed` effects instead of `PlexiApp`'s geometric search) was deferred — the observation layer is now durable; the consumer side ships with STEP-9 once pane-ID reconciliation has one more integration pass.
+
+**Breaks if:** `<config_dir>/effects.jsonl` stops growing when user actions fire. `FileEventSink::new()` panics on IO error instead of logging + falling back to no-op. Re-opening Plexi discards the effects file (not append mode).
+
 ## 2026-04-18 — [CHANGED] V3 refactor step 5: HostServices gains fs/secrets/net/spawn seams (→ v3)
 `HostServices` grows from 1 field (`event_sink`) to 5: `fs` (`RealFsService` / `MockFsService`), `secrets` (`KeychainSecretsService` wrapping `crate::secrets::get_secret_scoped` / `MockSecretsService`), `net` (`StubNetService` returning 501 until STEP-9 ships the real broker / `MockNetService`), `spawn` (`LoggingSpawnService` / `MockSpawnService`). `HostServices::new()` wires production; `HostServices::mock()` wires in-memory fakes for Layer-2 tests. NOT yet wired: production `ProcessApp::routing::SecretGet` still calls `crate::secrets::get_secret_scoped` directly — STEP-9 will pipe it through `services.secrets` when the broker threading is done. Three new tests lock the mock behavior.
 

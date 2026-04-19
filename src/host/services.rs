@@ -17,11 +17,59 @@ pub trait EventSink: Send {
     fn emit(&mut self, effect: &HostEffect);
 }
 
-/// No-op sink — used before the real `FileEventSink` is wired (STEP-6).
+/// No-op sink — used in Layer-2 tests that don't care about event observation.
 pub struct NoopEventSink;
 
 impl EventSink for NoopEventSink {
     fn emit(&mut self, _effect: &HostEffect) {}
+}
+
+/// Append-only JSONL sink. One line per `HostEffect` written to the configured
+/// path. Production wires this to `~/.plexi-v3/events.jsonl` so every command
+/// path leaves a durable audit trail and the Runs palette + future agent
+/// consumers have a single source of truth.
+pub struct FileEventSink {
+    path: std::path::PathBuf,
+    writer: Option<std::io::BufWriter<std::fs::File>>,
+}
+
+impl FileEventSink {
+    pub fn new(path: std::path::PathBuf) -> Self {
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("FileEventSink: create_dir_all({}) failed: {e}", parent.display());
+            }
+        }
+        let writer = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            Ok(f) => Some(std::io::BufWriter::new(f)),
+            Err(e) => {
+                log::error!("FileEventSink: open({}) failed: {e}", path.display());
+                None
+            }
+        };
+        Self { path, writer }
+    }
+}
+
+impl EventSink for FileEventSink {
+    fn emit(&mut self, effect: &HostEffect) {
+        use std::io::Write;
+        let Some(writer) = self.writer.as_mut() else { return };
+        match serde_json::to_string(effect) {
+            Ok(mut line) => {
+                line.push('\n');
+                if let Err(e) = writer.write_all(line.as_bytes()) {
+                    log::warn!("FileEventSink write({}) failed: {e}", self.path.display());
+                }
+                let _ = writer.flush();
+            }
+            Err(e) => log::warn!("FileEventSink serialize failed: {e}"),
+        }
+    }
 }
 
 /// Accumulates all emitted effects into a vec. Tests only.
@@ -309,11 +357,15 @@ pub struct HostServices {
 }
 
 impl HostServices {
-    /// Production wiring — real keychain, real filesystem, real HTTP.
-    /// `event_sink` starts as `NoopEventSink`; STEP-6 swaps in `FileEventSink`.
+    /// Production wiring — real keychain, real filesystem, real event bus.
+    /// `event_sink` appends to `<config_dir>/effects.jsonl` so every HostEffect
+    /// leaves a durable audit trail. Uses a separate file from
+    /// `events.jsonl` (written by `crate::event_log`) to avoid format drift
+    /// between the host-level effect stream and the app-level event stream.
     pub fn new() -> Self {
+        let effects_path = crate::config::config_dir().join("effects.jsonl");
         Self {
-            event_sink: Box::new(NoopEventSink),
+            event_sink: Box::new(FileEventSink::new(effects_path)),
             fs: Box::new(RealFsService),
             secrets: Box::new(KeychainSecretsService),
             net: Box::new(StubNetService),

@@ -504,6 +504,34 @@ mod tests {
     }
 
     #[test]
+    fn file_event_sink_appends_one_line_per_effect() {
+        // FileEventSink is the STEP-6 production event bus — every HostEffect
+        // becomes one JSONL line so crash-time inspection + future consumers
+        // (Plexi Teams sync, agent memory) have a single source of truth.
+        use crate::host::effect::HostEffect;
+        use crate::host::services::{EventSink, FileEventSink};
+        use crate::tiling::PaneId;
+
+        let tmp = std::env::temp_dir()
+            .join(format!("plexi-effects-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        {
+            let mut sink = FileEventSink::new(tmp.clone());
+            sink.emit(&HostEffect::FocusChanged { pane_id: Some(7 as PaneId) });
+            sink.emit(&HostEffect::PaneClosed { pane_id: 7 });
+        }
+
+        let contents = std::fs::read_to_string(&tmp).expect("events.jsonl readable");
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 2, "two effects → two lines");
+        assert!(lines[0].contains("focus_changed"), "first line: {}", lines[0]);
+        assert!(lines[1].contains("pane_closed"), "second line: {}", lines[1]);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
     fn mock_fs_service_roundtrips_bytes() {
         use crate::host::services::{FsService, MockFsService};
         use std::path::PathBuf;

@@ -1,10 +1,11 @@
 use crate::tiling::PaneId;
+use serde::Serialize;
 
 pub use crate::keys::Direction;
 
 pub type Capability = String;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ShareRatio {
     pub numerator: f32,
     pub denominator: f32,
@@ -20,14 +21,16 @@ impl ShareRatio {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Placement {
     Below,
     Right,
     ReplaceFocused,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PaneRuntimeKind {
     Terminal,
     App { app_id: String },
