@@ -23,7 +23,6 @@ mod error;
 mod event_log;
 mod features;
 mod file_browser;
-#[allow(dead_code)]
 mod host;
 #[allow(dead_code)]
 mod input;

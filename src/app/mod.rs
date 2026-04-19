@@ -41,6 +41,8 @@ pub struct PlexiApp {
     pub(crate) features: crate::features::FeatureFlags,
     /// Whether the Run palette overlay is visible (Cmd+R).
     pub(crate) show_run_palette: bool,
+    // TODO Phase B: consume host model to replace legacy pane_ops command paths
+    pub(crate) host: crate::host::model::HostModel,
 }
 
 impl PlexiApp {
@@ -230,6 +232,7 @@ impl PlexiApp {
                     registry,
                     features: features.clone(),
                     show_run_palette: false,
+                    host: crate::host::model::HostModel::new(),
                 };
             }
         }
@@ -284,6 +287,7 @@ impl PlexiApp {
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
             show_run_palette: false,
+            host: crate::host::model::HostModel::new(),
         }
     }
 
