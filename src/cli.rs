@@ -7,7 +7,9 @@ const APP_ID: &str = "plexi-run";
 const COMMANDS_FILE: &str = ".plexi/commands.toml";
 
 // Embed the Python SDK at compile time so `plexi app init` can write it out.
-const PYTHON_SDK: &str = include_str!("../sdk/python/plexi_sdk.py");
+// Source is now sdk/python/plexi_sdk/__init__.py (package layout); the file
+// written into scaffolded apps remains plexi_sdk.py for flat single-file import.
+const PYTHON_SDK: &str = include_str!("../sdk/python/plexi_sdk/__init__.py");
 
 /// Parsed .plexi/commands.toml
 #[derive(Deserialize)]

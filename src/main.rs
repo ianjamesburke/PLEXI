@@ -40,7 +40,7 @@ mod pane_ops;
 mod plexi_iq;
 #[allow(dead_code)]
 mod process_app;
-#[allow(dead_code)]
+mod headless_renderer;
 mod protocol;
 mod quick_note_app;
 #[allow(dead_code)]
@@ -64,6 +64,10 @@ mod workspace;
 mod pgap_test_harness;
 
 fn main() -> eframe::Result {
+    if std::env::args().nth(1).as_deref() == Some("--render") {
+        render_cli();
+        std::process::exit(0);
+    }
     // Parse --profile <name> early so config_dir() resolves correctly for
     // both logging and all downstream I/O.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -235,4 +239,51 @@ fn parse_profile_flag(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Headless render subcommand: reads `{viewport, draw_commands}` JSON from stdin,
+/// writes PNG bytes to stdout. Used by the Python snapshot test harness.
+/// Invoked via `plexi --render`. Zero GUI init cost.
+fn render_cli() {
+    use std::io::{Read, Write};
+    let mut input = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("plexi --render: failed to read stdin: {e}");
+        std::process::exit(1);
+    }
+    let req: serde_json::Value = match serde_json::from_str(&input) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("plexi --render: invalid JSON: {e}");
+            std::process::exit(1);
+        }
+    };
+    let viewport = &req["viewport"];
+    let width = viewport["width"].as_u64().unwrap_or(800) as u32;
+    let height = viewport["height"].as_u64().unwrap_or(600) as u32;
+    let background = viewport["background"].as_str().unwrap_or("#000000");
+    let commands: Vec<serde_json::Value> = match req["draw_commands"].as_array() {
+        Some(arr) => arr.clone(),
+        None => {
+            eprintln!("plexi --render: 'draw_commands' must be a JSON array");
+            std::process::exit(1);
+        }
+    };
+    let mut all_commands = Vec::with_capacity(commands.len() + 1);
+    all_commands.push(serde_json::json!({
+        "type": "rect",
+        "x": 0.0,
+        "y": 0.0,
+        "w": width as f64,
+        "h": height as f64,
+        "fill": background,
+        "radius": 0.0,
+    }));
+    all_commands.extend(commands);
+    let renderer = crate::headless_renderer::HeadlessRenderer::new();
+    let png_bytes = renderer.render_pgap_frame(&all_commands, width, height);
+    if let Err(e) = std::io::stdout().write_all(&png_bytes) {
+        eprintln!("plexi --render: failed to write PNG to stdout: {e}");
+        std::process::exit(1);
+    }
 }

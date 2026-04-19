@@ -8,10 +8,9 @@ Protocol: newline-delimited JSON over stdin/stdout.
   PlexiEvent  (host → app): Init, Render, Key, Click, Command, CapabilityDecision,
               SecretValue, RunUpdate, PipeMessage, PathChanged, Suspend, Resume,
               Shutdown, PipeOpened, PipeOverrun
-  DrawCommand (app → host): Rect, Text, Line, List, VideoPlayer, AudioMeter,
-              FrameDone, Log, CapabilityRequest, SecretGet, RunGet, RunComplete,
-              Notify, AudioPlay, AudioCapture, PipeOpen, PipeSend, StatusSummary,
-              RunInTerminal, Cd
+  DrawCommand (app → host): Rect, Text, Line, List, FrameDone, Log,
+              CapabilityRequest, SecretGet, RunGet, RunComplete, Notify,
+              PipeOpen, PipeSend, StatusSummary, RunInTerminal, Cd
 
 Usage:
 
@@ -126,6 +125,19 @@ class Emitter:
         _emit({"type": "secret_get", "key": key})
         return q.get()
 
+    def http_get(self, url: str) -> str:
+        """Blocking HTTP GET brokered through the host. Requires net.http capability.
+        Call from any thread (background threads included). Raises RuntimeError on failure."""
+        import uuid
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self._app._pending_http[req_id] = q
+        _emit({"type": "http_request", "request_id": req_id, "method": "GET", "url": url})
+        status, value = q.get()
+        if status == "error":
+            raise RuntimeError(f"http_get {url!r}: {value}")
+        return value
+
     # Binary pipe
     def pipe_open(self, pipe_id: str, mode: str = "binary",
                   direction: str = "in") -> "Pipe":
@@ -135,26 +147,6 @@ class Emitter:
         _emit({"type": "pipe_open", "pipe_id": pipe_id,
                "mode": mode, "direction": direction})
         return p
-
-    # Audio / video helpers
-    def audio_capture(self, pipe_id: str, sample_rate: int = 48000,
-                      buffer_size: int = 512) -> "Pipe":
-        """Open an audio capture pipe. Returns a Pipe handle.
-
-        The host-side AudioCapture handler allocates the binary pipe itself
-        and emits PipeOpened back to the app — we must NOT send a separate
-        pipe_open command (would collide on pipe_id).
-        """
-        p = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
-        self._app._pipes[pipe_id] = p
-        _emit({"type": "audio_capture", "pipe_id": pipe_id,
-               "sample_rate": sample_rate, "buffer_size": buffer_size})
-        return p
-
-    def audio_play(self, source: str, volume: float = 1.0,
-                   state: str = "play") -> None:
-        _emit({"type": "audio_play", "source": source,
-               "volume": volume, "state": state})
 
 
 # ── Pipe ──────────────────────────────────────────────────────────────────────
@@ -271,16 +263,6 @@ class RenderContext:
         _emit({"type": "list", "items": items, "selected": selected,
                "item_height": item_height})
 
-    def video_player(self, source: str, x: float, y: float,
-                     w: float, h: float, state: str = "pause") -> None:
-        _emit({"type": "video_player", "source": source,
-               "x": x, "y": y, "w": w, "h": h, "state": state})
-
-    def audio_meter(self, x: float, y: float, w: float, h: float,
-                    pipe_id: str) -> None:
-        _emit({"type": "audio_meter", "x": x, "y": y, "w": w, "h": h,
-               "pipe_id": pipe_id})
-
     # Logging helpers (in-frame, forwarded to host logger)
     def log(self, level: str, message: str) -> None:
         _emit({"type": "log", "level": level, "message": message})
@@ -328,6 +310,7 @@ class App:
         self._rect: dict = {"x": 0.0, "y": 0.0, "w": 800.0, "h": 600.0}
         self._pending_capability: dict[str, queue.Queue] = {}
         self._pending_secret: dict[str, queue.Queue] = {}
+        self._pending_http: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self.emit = Emitter(self)
 
@@ -339,6 +322,7 @@ class App:
     def on_command(self, ctx: RenderContext, text: str) -> None: pass
     def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> None: pass
     def on_path_changed(self, ctx: RenderContext, cwd: str) -> None: pass
+    def on_inject(self, ctx: "RenderContext", payload: Any) -> None: pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
@@ -382,7 +366,7 @@ class App:
                 self.feature_flags = ev.get("feature_flags", [])
                 # Send Ready
                 features_used = [f for f in self.feature_flags
-                                  if f in ("media_v1", "pane_groups_v1")]
+                                  if f in ("pane_groups_v1",)]
                 _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
                 self.on_init(self._make_ctx())
 
@@ -458,6 +442,19 @@ class App:
             elif t == "shutdown":
                 self.on_shutdown()
                 break
+
+            elif t == "inject_state":
+                ctx = self._make_ctx()
+                self.on_inject(ctx, ev.get("payload", {}))
+
+            elif t == "http_response":
+                req_id = ev.get("request_id", "")
+                q = self._pending_http.pop(req_id, None)
+                if q:
+                    if ev.get("error"):
+                        q.put(("error", ev["error"]))
+                    else:
+                        q.put(("ok", ev.get("body", "")))
 
             elif t in ("run_update",):
                 pass  # apps can override on_run_update if needed

@@ -14,13 +14,6 @@
 //!    up to the matching `FrameDone`.
 //! 6. `shutdown()` sends Shutdown and waits for the child to exit.
 //!
-//! # Mock media
-//!
-//! Tests set `PLEXI_AUDIO=mock://...` and `PLEXI_VIDEO=mock://...` on the child
-//! env so the media subsystem inside the Plexi host (if exercised) uses the
-//! mock devices. The example apps themselves don't decode media — the host does
-//! — but the env is propagated so any future app that does open media stays
-//! deterministic.
 //!
 //! # Python requirement
 //!
@@ -42,6 +35,8 @@ pub(crate) struct Harness {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     rx: Receiver<String>,
+    /// Mock HTTP responses: url → body. Matched exactly against `http_request` url fields.
+    http_mocks: HashMap<String, String>,
 }
 
 impl Harness {
@@ -105,6 +100,7 @@ impl Harness {
             child: Some(child),
             stdin: Some(stdin),
             rx,
+            http_mocks: HashMap::new(),
         })
     }
 
@@ -168,9 +164,42 @@ impl Harness {
         panic!("did not receive Ready within timeout");
     }
 
+    fn reply_http_request(&mut self, v: &Value) {
+        let req_id = v.get("request_id").and_then(Value::as_str).unwrap_or("");
+        let url = v.get("url").and_then(Value::as_str).unwrap_or("");
+        let resp = if let Some(body) = self.http_mocks.get(url) {
+            serde_json::json!({"type":"http_response","request_id":req_id,"status":200,"body":body})
+        } else {
+            serde_json::json!({"type":"http_response","request_id":req_id,"status":404,"body":"","error":format!("no mock for {url}")})
+        };
+        self.send(&resp);
+    }
+
+    fn pre_drain_http(&mut self) {
+        loop {
+            match self.rx.try_recv() {
+                Ok(line) => {
+                    if line.starts_with("__stderr__") || line.trim().is_empty() { continue; }
+                    if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                        if v.get("type").and_then(Value::as_str) == Some("http_request") {
+                            let vc = v.clone();
+                            self.reply_http_request(&vc);
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
     /// Render one frame at the given rect and collect every command up to and
     /// including the matching `FrameDone`. Returns the draw commands in order.
+    /// Pre-drains buffered `http_request`s before sending render to avoid races
+    /// with background threads that call `emit.http_get()`.
     pub fn render_frame(&mut self, frame_id: u64, w: f32, h: f32) -> Vec<Value> {
+        self.pre_drain_http();
+
         self.send(&serde_json::json!({
             "type": "render",
             "frame_id": frame_id,
@@ -184,6 +213,11 @@ impl Harness {
                 break;
             };
             let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
+            if kind == "http_request" {
+                let vc = v.clone();
+                self.reply_http_request(&vc);
+                continue;
+            }
             cmds.push(v.clone());
             if kind == "frame_done" {
                 let got = v.get("frame_id").and_then(Value::as_u64).unwrap_or(0);
@@ -195,6 +229,21 @@ impl Harness {
             "did not receive FrameDone({frame_id}) within timeout; got {} cmds",
             cmds.len()
         );
+    }
+
+    pub fn inject_state(&mut self, payload: &Value) {
+        self.send(&serde_json::json!({"type":"inject_state","payload":payload}));
+        thread::sleep(Duration::from_millis(30));
+    }
+
+    pub fn mock_http(&mut self, url: &str, body: &str) {
+        self.http_mocks.insert(url.to_string(), body.to_string());
+    }
+
+    pub fn render_to_png(&mut self, frame_id: u64, w: f32, h: f32) -> Vec<u8> {
+        let cmds = self.render_frame(frame_id, w, h);
+        crate::headless_renderer::HeadlessRenderer::new()
+            .render_pgap_frame(&cmds, w as u32, h as u32)
     }
 
     /// Send a Key event.
@@ -234,328 +283,5 @@ impl Drop for Harness {
             let _ = child.kill();
             let _ = child.wait();
         }
-    }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn python_available() -> bool {
-    Command::new("python3").arg("--version").output().is_ok()
-}
-
-fn examples_dir() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).join("examples")
-}
-
-fn mock_env() -> HashMap<String, String> {
-    // Use absolute paths inside the OS temp dir so the child's CWD doesn't
-    // matter and cleanup is automatic.
-    let tmp = std::env::temp_dir();
-    let in_wav = tmp.join("plexi-harness-in.wav").display().to_string();
-    let out_wav = tmp.join("plexi-harness-out.wav").display().to_string();
-    let mut m = HashMap::new();
-    m.insert(
-        "PLEXI_AUDIO".to_string(),
-        format!("mock://{in_wav},{out_wav}"),
-    );
-    m.insert(
-        "PLEXI_VIDEO".to_string(),
-        "mock://fixture.mp4?duration=5000&w=320&h=180".to_string(),
-    );
-    m
-}
-
-fn python_harness(app_dir: &Path, entry: &str) -> Option<Harness> {
-    if !python_available() {
-        eprintln!("SKIP: python3 not on PATH");
-        return None;
-    }
-    let bin = PathBuf::from("python3");
-    let entry_path = app_dir.join(entry);
-    let entry_str = entry_path.display().to_string();
-    let args = [entry_str.as_str()];
-    let env_map = mock_env();
-    let env: Vec<(&str, &str)> = env_map
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    match Harness::spawn(&bin, &args, app_dir, &env) {
-        Ok(h) => Some(h),
-        Err(e) => {
-            eprintln!("SKIP: failed to spawn {}: {e}", entry_path.display());
-            None
-        }
-    }
-}
-
-fn extract_types(cmds: &[Value]) -> Vec<String> {
-    cmds.iter()
-        .filter_map(|v| v.get("type").and_then(Value::as_str).map(str::to_string))
-        .collect()
-}
-
-// ── Tests ────────────────────────────────────────────────────────────────────
-
-#[test]
-fn snake_handshake_and_frame() {
-    let Some(mut h) = python_harness(&examples_dir().join("snake"), "snake.py") else {
-        return;
-    };
-    let workspace_root = std::env::temp_dir();
-    let ready = h.init_and_expect_ready("snake", &workspace_root);
-    assert_eq!(ready["type"], "ready");
-    assert!(ready["sdk"]
-        .as_str()
-        .unwrap_or("")
-        .starts_with("plexi-sdk-py/"));
-
-    let cmds = h.render_frame(1, 640.0, 480.0);
-    let types = extract_types(&cmds);
-    assert!(
-        types.contains(&"rect".to_string()),
-        "snake should draw at least one rect, got: {types:?}"
-    );
-    assert_eq!(types.last().map(String::as_str), Some("frame_done"));
-    h.shutdown();
-}
-
-#[test]
-fn todo_handshake_renders_cwd_in_header() {
-    let Some(mut h) = python_harness(&examples_dir().join("todo"), "todo.py") else {
-        return;
-    };
-    let workspace_root = std::env::temp_dir();
-    h.init_and_expect_ready("todo", &workspace_root);
-
-    let cmds = h.render_frame(1, 800.0, 600.0);
-    let has_todo_header = cmds.iter().any(|v| {
-        v.get("type").and_then(Value::as_str) == Some("text")
-            && v.get("text").and_then(Value::as_str) == Some("Todo")
-    });
-    assert!(
-        has_todo_header,
-        "todo app should draw its 'Todo' header text"
-    );
-    h.shutdown();
-}
-
-#[test]
-fn todo_reacts_to_path_changed() {
-    let Some(mut h) = python_harness(&examples_dir().join("todo"), "todo.py") else {
-        return;
-    };
-    let workspace_root = std::env::temp_dir();
-    h.init_and_expect_ready("todo", &workspace_root);
-
-    // Baseline render — header should contain the workspace_root path.
-    let first = h.render_frame(1, 800.0, 600.0);
-    let baseline_cwd_text = first.iter().find_map(|v| {
-        if v.get("type").and_then(Value::as_str) != Some("text") {
-            return None;
-        }
-        // Second text cmd in the header is the cwd display (monospace=true).
-        if v.get("monospace").and_then(Value::as_bool) == Some(true)
-            && v.get("y")
-                .and_then(Value::as_f64)
-                .map(|y| (y - 18.0).abs() < 0.5)
-                .unwrap_or(false)
-        {
-            v.get("text").and_then(Value::as_str).map(str::to_string)
-        } else {
-            None
-        }
-    });
-    assert!(
-        baseline_cwd_text.is_some(),
-        "todo should render the cwd in its header"
-    );
-
-    // Push a PathChanged → a different directory under temp.
-    let new_cwd = std::env::temp_dir().join("plexi-harness-pathchanged");
-    std::fs::create_dir_all(&new_cwd).expect("mkdir new_cwd");
-    h.send_path_changed(&new_cwd);
-
-    // Next frame — header should now reflect the new cwd.
-    let second = h.render_frame(2, 800.0, 600.0);
-    let new_cwd_str = new_cwd.display().to_string();
-    let shows_new_cwd = second.iter().any(|v| {
-        v.get("type").and_then(Value::as_str) == Some("text")
-            && v.get("text").and_then(Value::as_str) == Some(new_cwd_str.as_str())
-    });
-    assert!(
-        shows_new_cwd,
-        "after PathChanged, todo header should show {new_cwd_str:?}. \
-         saw text cmds: {:?}",
-        second
-            .iter()
-            .filter(|v| v.get("type").and_then(Value::as_str) == Some("text"))
-            .map(|v| v.get("text").and_then(Value::as_str).unwrap_or(""))
-            .collect::<Vec<_>>()
-    );
-    h.shutdown();
-}
-
-#[test]
-fn wikipedia_handshake() {
-    let Some(mut h) = python_harness(&examples_dir().join("wikipedia"), "wikipedia.py") else {
-        return;
-    };
-    let workspace_root = std::env::temp_dir();
-    h.init_and_expect_ready("wikipedia", &workspace_root);
-    let cmds = h.render_frame(1, 800.0, 600.0);
-    let types = extract_types(&cmds);
-    assert!(types.contains(&"frame_done".to_string()));
-    h.shutdown();
-}
-
-#[test]
-fn quick_note_handshake() {
-    let Some(mut h) = python_harness(&examples_dir().join("quick-note"), "quick_note.py") else {
-        return;
-    };
-    let workspace_root = std::env::temp_dir();
-    h.init_and_expect_ready("quick-note", &workspace_root);
-    let cmds = h.render_frame(1, 800.0, 600.0);
-    let types = extract_types(&cmds);
-    assert!(types.contains(&"frame_done".to_string()));
-    h.shutdown();
-}
-
-#[test]
-fn audio_recorder_handshake() {
-    let Some(mut h) = python_harness(&examples_dir().join("audio-recorder"), "audio_recorder.py")
-    else {
-        return;
-    };
-    let workspace_root = std::env::temp_dir();
-    h.init_and_expect_ready("audio-recorder", &workspace_root);
-    let cmds = h.render_frame(1, 800.0, 600.0);
-    let types = extract_types(&cmds);
-    assert!(types.contains(&"frame_done".to_string()));
-    h.shutdown();
-}
-
-#[test]
-fn video_player_handshake() {
-    let Some(mut h) = python_harness(&examples_dir().join("video-player"), "video_player.py")
-    else {
-        return;
-    };
-    let workspace_root = std::env::temp_dir();
-    h.init_and_expect_ready("video-player", &workspace_root);
-    let cmds = h.render_frame(1, 800.0, 600.0);
-    let types = extract_types(&cmds);
-    assert!(types.contains(&"frame_done".to_string()));
-    h.shutdown();
-}
-
-// ── Media subsystem: exercise mock audio + mock video directly ───────────────
-
-/// Write a tiny WAV file suitable for MockAudioDevice capture input.
-fn write_minimal_wav(path: &Path, sample_count: usize) -> std::io::Result<()> {
-    use hound::{SampleFormat, WavSpec, WavWriter};
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate: 48000,
-        bits_per_sample: 16,
-        sample_format: SampleFormat::Int,
-    };
-    let mut writer = WavWriter::create(path, spec).map_err(std::io::Error::other)?;
-    for i in 0..sample_count {
-        let v: i16 = ((i as i32 * 123) % i16::MAX as i32) as i16;
-        writer.write_sample(v).map_err(std::io::Error::other)?;
-    }
-    writer.finalize().map_err(std::io::Error::other)?;
-    Ok(())
-}
-
-#[test]
-fn mock_audio_device_captures_wav_file() {
-    use crate::media::{audio_device, AudioSource};
-    let tmp = std::env::temp_dir();
-    let in_wav = tmp.join("plexi-harness-mock-in.wav");
-    let out_wav = tmp.join("plexi-harness-mock-out.wav");
-    write_minimal_wav(&in_wav, 4800).expect("write mock capture wav");
-
-    let prev_audio = std::env::var("PLEXI_AUDIO").ok();
-    std::env::set_var(
-        "PLEXI_AUDIO",
-        format!("mock://{},{}", in_wav.display(), out_wav.display()),
-    );
-
-    let mut dev = audio_device();
-
-    // Capture: pull at least one buffer off the channel.
-    let handle = dev.start_capture(48000, 512).expect("mock start_capture");
-    let buf = handle
-        .receiver
-        .recv_timeout(Duration::from_secs(2))
-        .expect("mock capture produced a buffer");
-    assert!(!buf.is_empty(), "mock capture buffer should be non-empty");
-
-    // Playback: write the source WAV into out_wav via the mock device.
-    let play = dev
-        .start_playback(AudioSource::File(in_wav.clone()), 1.0)
-        .expect("mock start_playback");
-    // Give the background thread time to finalize the WAV file.
-    thread::sleep(Duration::from_millis(500));
-    drop(play);
-    thread::sleep(Duration::from_millis(200));
-
-    assert!(out_wav.exists(), "mock playback should create {out_wav:?}");
-    let meta = std::fs::metadata(&out_wav).expect("stat out_wav");
-    assert!(
-        meta.len() > 44,
-        "output WAV should have more than just a header"
-    );
-
-    match prev_audio {
-        Some(v) => std::env::set_var("PLEXI_AUDIO", v),
-        None => std::env::remove_var("PLEXI_AUDIO"),
-    }
-}
-
-#[test]
-fn mock_video_decoder_yields_frames() {
-    use crate::media::{video_decoder, PlaybackState, VideoSource};
-
-    let prev = std::env::var("PLEXI_VIDEO").ok();
-    std::env::set_var("PLEXI_VIDEO", "mock://fixture.mp4?duration=1000&w=32&h=32");
-
-    let mut dec = video_decoder();
-    let handle = dec
-        .open(VideoSource::File(PathBuf::from("fixture.mp4")))
-        .expect("mock open");
-    assert_eq!(handle.width, 32);
-    assert_eq!(handle.height, 32);
-
-    dec.set_state(handle.id, PlaybackState::Play);
-
-    // MockVideoDecoder emits a frame roughly every 33ms; wait > one frame.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut frames = 0;
-    while Instant::now() < deadline {
-        if let Some(frame) = dec.next_frame(handle.id) {
-            assert_eq!(frame.width, 32);
-            assert_eq!(frame.height, 32);
-            assert_eq!(frame.rgba.len(), 32 * 32 * 4);
-            frames += 1;
-            if frames >= 3 {
-                break;
-            }
-        }
-        thread::sleep(Duration::from_millis(40));
-    }
-    assert!(
-        frames >= 3,
-        "mock decoder should yield ≥3 frames, got {frames}"
-    );
-
-    dec.close(handle.id);
-
-    match prev {
-        Some(v) => std::env::set_var("PLEXI_VIDEO", v),
-        None => std::env::remove_var("PLEXI_VIDEO"),
     }
 }
