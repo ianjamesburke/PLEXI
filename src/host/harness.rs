@@ -413,4 +413,22 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, HostEffect::PaneOpened { .. })));
         assert!(fx.iter().any(|e| matches!(e, HostEffect::FocusChanged { .. })));
     }
+
+    #[test]
+    fn open_pane_carries_share_to_effect() {
+        use crate::host::command::{OpenPaneRequest, ShareRatio};
+        let mut h = HostHarness::new();
+        let mut req = OpenPaneRequest::app("todo");
+        req.share = ShareRatio::new(0.4, 0.6).expect("valid fraction");
+        let fx = h.send(HostCommand::OpenPane(req));
+        let opened = fx
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::PaneOpened { share, .. } => Some(*share),
+                _ => None,
+            })
+            .expect("PaneOpened effect required");
+        assert_eq!(opened.numerator, 0.4);
+        assert_eq!(opened.denominator, 0.6);
+    }
 }

@@ -1,10 +1,30 @@
 Always confirm best practices by researching the docs.
 
+## Current Queue
+
+> This section is live. Items are added when scoped, deleted when shipped. Nothing here is permanent — it's just what's next. When an item ships, remove it and log the decision in DEV_LOG.
+
+- [x] **Headless PNG renderer** — `src/headless_renderer.rs`. Done: 3 tests pass (rect pixel assertion, text no-panic, document blank frame). No egui dependency.
+- [x] **HostModel rebuild** — Done: 26 host tests green (13 harness, 5 model, 8 pre-existing). Full command/effect set. No `todo!()`. Groups, capabilities, contexts, navigation all covered.
+- [x] **Wire harness** — Done: `Harness::render_to_png` wired. `agent_dev_loop_produces_png` test spawns snake, renders frame, asserts valid PNG with visible pixels.
+- [x] **inject_state + net.http brokering** — Done: 79 tests green. `PlexiEvent::InjectState`, `http_request`/`http_response` PGAP channel, `Harness::inject_state` + `mock_http` + pre-drain race fix, `emit.http_get()` in SDK. Wikipedia testable via inject_state (no key-pushing) and via mock_http (no network).
+- [x] **Cutover slice 1: launch_app_by_id → HostModel** — Done: `PlexiApp` holds `host: HostModel`, launch path routes `HostCommand::OpenPane` through `HostModel` and reads `(share, placement)` from the returned `PaneOpened` effect. `pane_ops::split_with_new_pane` drops the 3:1 hardcode, takes a `ShareRatio`. Manifest `initial_share` field wired with per-app defaults. 58 Rust tests green.
+
+**Next cutover slices** (each follows the `launch_app_by_id` pattern — submit a HostCommand, consume effects):
+- [ ] `split_focused` (terminal split) — the 3:1 hardcode still lives inline here; migrate to HostModel `SplitHorizontal`/`SplitVertical` effects.
+- [ ] `close_pane` → `HostCommand::CloseFocusedPane`.
+- [ ] `focus_next` / directional nav → `HostCommand::Navigate`.
+
 ## North Star
 
-- [`STATE_OF_PLEXI.md`](STATE_OF_PLEXI.md) — current architecture, reality check, critical path. Read first.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — vision, target architecture diagram, key invariants. Read first.
 - [`docs/specs/releases/plexi-v3.0.md`](docs/specs/releases/plexi-v3.0.md) — the v3 spec. Single source of truth for the protocol, pane ADT, secrets invariant, media, Plexi IQ, example apps.
 - [`docs/specs/README.md`](docs/specs/README.md) — spec index.
+- [`docs/specs/subsystems/host-architecture.md`](docs/specs/subsystems/host-architecture.md) — HostModel state machine, renderer layer, security model, WASM path, multi-agent.
+- [`docs/specs/subsystems/testing-infrastructure.md`](docs/specs/subsystems/testing-infrastructure.md) — three-layer test strategy: app protocol, host state machine, headless PNG renderer.
+- [`docs/AGENTS.md`](docs/AGENTS.md) — agent development guide: build, test, install, commit rules.
+
+Vision (why we're building this, long-term direction) lives in `ARCHITECTURE.md §0`.
 
 If a doc outside these contradicts them, the doc is wrong. Fix or delete it.
 
@@ -75,6 +95,14 @@ Use `uv` for all Python projects. `pyproject.toml` with `requires-python = ">=3.
 
 Try-catch on all I/O, network, external API calls, and anything that can reasonably fail. Every catch logs where + what failed with enough context to diagnose. Never swallow errors silently. If a failure can't be meaningfully recovered from, propagate or re-throw.
 
+## Implementation Discipline (no half-refactors)
+
+**Define done by the test, not the code.** Before writing any new module or refactoring an existing one, write the test that must pass when the work is complete. A PR is done when `cargo test` is green — not when the code looks right.
+
+**Test-first for host logic.** Any new `HostCommand` or `HostEffect` gets a `HostHarness` test written before the implementation. The test failing is the starting state; making it pass is the work. This prevents stubs: a stub that makes the test pass is an implementation.
+
+**No partial merges.** A PR that adds a new capability, module, or feature must be complete end-to-end. If it's too large to complete in one pass, scope it down — don't merge half of it. Split at natural seams where each piece is independently testable and independently useful.
+
 ## Panic Discipline (stubs must not crash the host)
 
 `todo!()` and `unimplemented!()` are **banned outside `#[cfg(test)]`** — enforced by `#![deny(clippy::todo, clippy::unimplemented)]` in `src/main.rs`. They compile clean but panic at runtime, and a panic on the UI thread freezes the whole GUI.
@@ -96,3 +124,6 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 - Before SSH/networking setup, ask if machines are on the same LAN or remote. Before any multi-step infra task, clarify topology first.
 - When the user reports a bug, fix what they asked for first. Don't pivot to QA, refactoring, or tangential improvements until the primary request is resolved.
 - When the user provides multiple distinct ideas, file them separately. Don't combine unrelated concepts.
+- never write allow dead of code. alway do the work to clean the code base.
+- always run cargo build after work to make sure it passes.
+
