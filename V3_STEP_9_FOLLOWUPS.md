@@ -19,6 +19,8 @@ Ordered by blast radius. Do them in order; each step's ship gate is `cargo test 
 
 ### 9a — Real HTTP broker
 
+**SHIPPED** — PR #281, merged 2026-04-19 into `v3`.
+
 **Goal.** Replace the `StubNetService` in `src/host/services.rs` with a real blocking HTTP client. Route `DrawCommand::HttpRequest` in `src/process_app/routing.rs` through `services.net.http_*` and reply with `PlexiEvent::HttpResponse`. Kill the custom `http_mocks` machinery in `src/pgap_test_harness.rs` — tests move to `MockNetService` (already built in step 5).
 
 **Touches.**
@@ -118,6 +120,8 @@ Ordered by blast radius. Do them in order; each step's ship gate is `cargo test 
 ---
 
 ### 9e — FD CLOEXEC audit
+
+**SHIPPED** — PR #280, merged 2026-04-19 into `v3`.
 
 **Goal.** Spec I-7: subprocess apps must not inherit any FD other than stdio. Today `ProcessApp::launch` calls `.env_clear()` (step 9) but doesn't audit FDs. Every `UnixListener::bind` in the host must close-on-exec; subprocesses must see `/proc/self/fd` (or `lsof -p`) = {0, 1, 2}.
 
