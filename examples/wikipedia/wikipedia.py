@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import json
 import threading
-import urllib.request
 import urllib.parse
 from plexi_sdk import App, RenderContext, BG, FG, MUTED, ACCENT, SURFACE, HIGHLIGHT, BODY, CAPTION, HINT
 
@@ -24,6 +23,19 @@ class WikiApp(App):
         self._extract = ""
         self._loading = False
         self._mode = "search"  # search | results | article
+
+    def on_inject(self, ctx: RenderContext, payload: dict) -> None:
+        """Layer-1 test seam — seed mode/query/results/extract without network."""
+        if isinstance(payload, dict):
+            if "mode" in payload:
+                self._mode = payload["mode"]
+            if "query" in payload:
+                self._query = payload["query"]
+            if "results" in payload:
+                self._results = list(payload["results"])
+                self._selected = 0
+            if "extract" in payload:
+                self._extract = payload["extract"]
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if self._mode == "search":
@@ -57,8 +69,8 @@ class WikiApp(App):
                     "action": "opensearch", "search": query,
                     "limit": 10, "format": "json",
                 })
-                with urllib.request.urlopen(f"{API}?{params}", timeout=8) as r:
-                    data = json.loads(r.read().decode())
+                body = self.emit.http_get(f"{API}?{params}")
+                data = json.loads(body)
                 self._results = data[1] if len(data) > 1 else []
                 self._selected = 0
                 self._mode = "results"
@@ -76,8 +88,8 @@ class WikiApp(App):
         def run() -> None:
             try:
                 url = EXTRACT_API + urllib.parse.quote(title)
-                with urllib.request.urlopen(url, timeout=8) as r:
-                    data = json.loads(r.read().decode())
+                body = self.emit.http_get(url)
+                data = json.loads(body)
                 self._extract = data.get("extract", "No extract available.")
                 self._mode = "article"
             except Exception as e:

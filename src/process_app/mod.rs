@@ -19,6 +19,7 @@ use crate::app_permissions::{AppPermissions, Capability, PermissionsLog};
 use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::event_log::{self, HostEvent};
+use crate::host::services::{NetService, UreqNetService};
 use crate::runs::RunRegistry;
 use crate::typed_pipes::TypedPipeRegistry;
 use std::collections::VecDeque;
@@ -81,6 +82,9 @@ pub struct ProcessApp {
     pub(crate) outbound_events: VecDeque<PlexiEvent>,
     pub(crate) secret_input_buf: String,
     keyboard_capture: bool,
+    /// Shared HTTP broker. `Arc<dyn NetService>` so production panes all point
+    /// at the same `UreqNetService` while tests can inject `MockNetService`.
+    pub(crate) net: Arc<dyn NetService>,
 }
 
 impl ProcessApp {
@@ -232,7 +236,15 @@ impl ProcessApp {
             outbound_events: VecDeque::new(),
             secret_input_buf: String::new(),
             keyboard_capture,
+            net: Arc::new(UreqNetService::new()),
         })
+    }
+
+    /// Swap the HTTP broker — tests only. Production callers leave the
+    /// `UreqNetService` default wired in `launch`.
+    #[cfg(test)]
+    pub fn set_net(&mut self, net: Arc<dyn NetService>) {
+        self.net = net;
     }
 
     /// Spawn with minimal args — workspace_root defaults to cwd.
