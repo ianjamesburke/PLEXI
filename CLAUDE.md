@@ -14,7 +14,7 @@ Always confirm best practices by researching the docs.
 **V3 refactor plan** (`V3_REFACTOR_PLAN.md`) — 12 steps across 5 phases. Progress:
 - [x] **Step 1 — Dead code sweep** (582 LOC deleted, scaffolder migrated, module allows annotated)
 - [x] **Step 2 — Unify dual types** (single Direction, 9-cap Capability, TryFrom errors, InjectState/HttpResponse/Image/media variants added)
-- [ ] Step 3 — Finish or delete stubs (plexi_iq, video-player)
+- [x] **Step 3 — Finish or delete stubs** (plexi_iq prompt/tools deleted, context simplified, video-player removed from ship set)
 - [ ] Step 4 — Pane ID reconciliation (HostModel owns alloc)
 - [ ] Step 5 — HostServices trait objects (fs, secrets, net, spawn)
 - [ ] Step 6 — Event sink + effect consumption

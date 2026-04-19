@@ -10,16 +10,15 @@
 //!   (native Messages API, metered).
 //! - A **cost ledger** (`ledger`) that appends JSONL rows to the build-specific
 //!   config dir on every completed turn.
-//! - A **tool registry** and **tool context** surface ready for Stage 2 wiring
-//!   into `Pane::Agent`.
+//! - A **tool context** (`context.rs`) — minimal `pane_id` + `directory_scope`
+//!   pair every tool receives. Stage 2 fields (session, app bus) land with
+//!   the first tool that needs them.
 //!
 //! Call sites into `Pane::Agent` are wired in Layer 3 — not here.
 
 pub mod backend;
 pub mod context;
 pub mod ledger;
-pub mod prompt;
-pub mod tools;
 #[path = "loop.rs"]
 pub mod turn_loop;
 

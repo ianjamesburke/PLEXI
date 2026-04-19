@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 3: finish or delete stubs (→ v3)
+Delete `src/plexi_iq/prompt.rs` (Stage-0 tombstone — v3.0 IQ operates without a templated system prompt; re-add when the turn loop actually needs one). Delete `src/plexi_iq/tools/mod.rs` (empty `ToolRegistry` with zero registrations — re-add when a real tool lands). Simplify `src/plexi_iq/context.rs` to the 2 fields the backends actually read (`pane_id`, `directory_scope`); replace its vestigial `PaneId(pub u64)` newtype with the canonical `tiling::PaneId` alias established in step 2. Remove `examples/video-player/` from the ship set — depends on a host video broker that step 9 may not land in the v3.0 window.
+
+**Breaks if:** any module imports `crate::plexi_iq::prompt` / `tools` (step would not compile) or the IQ pane fails to spawn because `PlexiIqInstance` lost a field it actually used.
+
 ## 2026-04-18 — [CHANGED] V3 refactor step 2: unify dual types (→ v3)
 One canonical representation per concept: `keys::Direction` re-exported from `host::command`, `tiling::PaneId = u64` alias kept, `app_permissions::Capability` extended with `AudioRecord`/`AudioPlayback`/`VideoPlayback` (9 spec caps), `app_protocol::PlexiEvent` gains `InjectState` + `HttpResponse`, `app_protocol::DrawCommand` gains `HttpRequest` + `Image` + `VideoPlayer` + `AudioMeter` + `AudioPlay` + `AudioCapture`. Silent `From<&str> → FsRead` fallback replaced with `TryFrom<&str>` that returns `UnknownCapability`; callers log + drop/deny instead of surfacing as an inert `FsRead`. Added `parse_capability_strings(...)` for manifest loaders (step 7/8 consume). 4 new tests lock the roundtrip + rejection behavior.
 
