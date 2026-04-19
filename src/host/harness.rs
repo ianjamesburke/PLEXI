@@ -1,5 +1,5 @@
 use crate::host::command::{
-    Capability, Direction, HostCommand, OpenPaneRequest, PaneRuntimeKind,
+    Direction, HostCommand, OpenPaneRequest, PaneRuntimeKind,
 };
 use crate::host::effect::HostEffect;
 use crate::host::model::HostModel;

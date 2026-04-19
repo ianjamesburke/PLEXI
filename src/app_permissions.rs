@@ -4,8 +4,7 @@
 //! persisted to `permissions.jsonl` (append-only, one decision per line).
 //!
 //! The v2 boolean-field model (`terminal_write`, `filesystem`, etc.) is replaced
-//! by a `HashSet<Capability>`. `check_command` is kept for back-compat with
-//! existing call sites that will be properly migrated in Layer 3.
+//! by a `HashSet<Capability>`.
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -27,12 +26,6 @@ pub enum Capability {
     NetHttp,
     /// Call SecretGet (scoped to workspace_root).
     SecretsGet,
-    /// Record from host audio device.
-    AudioRecord,
-    /// Play audio via host audio device.
-    AudioPlayback,
-    /// Decode and display video via host video subsystem.
-    VideoPlayback,
     /// Open typed pipes (JSON or binary mode).
     PipeOpen,
     /// Launch another app in a new pane.
@@ -46,9 +39,6 @@ impl fmt::Display for Capability {
             Self::FsWrite => "fs.write",
             Self::NetHttp => "net.http",
             Self::SecretsGet => "secrets.get",
-            Self::AudioRecord => "audio.record",
-            Self::AudioPlayback => "audio.playback",
-            Self::VideoPlayback => "video.playback",
             Self::PipeOpen => "pipe.open",
             Self::SpawnApp => "spawn.app",
         };
@@ -65,9 +55,6 @@ impl<'a> From<&'a str> for Capability {
             "fs.write" => Self::FsWrite,
             "net.http" => Self::NetHttp,
             "secrets.get" => Self::SecretsGet,
-            "audio.record" => Self::AudioRecord,
-            "audio.playback" => Self::AudioPlayback,
-            "video.playback" => Self::VideoPlayback,
             "pipe.open" => Self::PipeOpen,
             "spawn.app" => Self::SpawnApp,
             _ => {

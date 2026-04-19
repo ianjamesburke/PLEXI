@@ -1,3 +1,9 @@
+//! Typed view AST. Intentionally dormant at runtime: `HeadlessRenderer` currently
+//! consumes raw PGAP DrawCommand JSON directly. This AST is the seam for the
+//! reference-PNG snapshot test path described in
+//! `docs/specs/subsystems/testing-infrastructure.md`.
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

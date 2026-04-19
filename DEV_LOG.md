@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 1: dead-code sweep (→ v3)
+Deleted `src/protocol/{effect,event,output,schema}.rs`, `src/input/` (entire), `src/error.rs`, `src/media/mod.rs` — 582 LOC of tombstone modules with zero external callers. Only `protocol::view` kept (used by `HeadlessRenderer`). Scaffolder templates in `src/cli.rs` migrated from v2 capability names (`terminal_write`, `filesystem = "read_only"`) to v3 `capabilities = ["fs.read"]`. Module-level `#[allow(dead_code)]` scrubbed from `src/main.rs`: 16 → 10, with each remaining one annotated `// STEP-N: <reason>` so future steps know which ones they unlock. 54/54 tests green, zero warnings.
+
+**Breaks if:** `cargo build` re-introduces warnings (dead-code sweep regressed) or `plexi-v3 app new foo` emits a manifest whose capabilities fail validation.
+
 ## 2026-04-18 — [CHANGED] Cutover slices 2/3/4: split_focused + close_focused + navigate route through HostModel (e444d04, f601842 → v3)
 Slice 2 (`split_focused`) consumes the returned `SplitOpened.placement` to derive the split direction — same shape as the Phase B app-launch path, so it's behaviorally integrated, not purely observational. Slices 3/4 (`close_focused`, `navigate`) submit commands and log effects but do NOT yet consume them to drive focus, because `HostModel` allocates its own pane IDs independent of the egui tile IDs `PlexiApp` tracks — so `PaneClosed`/`FocusChanged` effects currently reference HostModel's private pane list, not the real tiles. This is honest tech debt: the observation layer exists, but ID reconciliation is required before effects can drive real focus transitions. Every user-facing pane op (launch, split, close, navigate) now flows through `HostCommand`.
 

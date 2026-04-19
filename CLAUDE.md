@@ -11,8 +11,19 @@ Always confirm best practices by researching the docs.
 - [x] **Cutover slice 1: launch_app_by_id → HostModel** — Done: `PlexiApp` holds `host: HostModel`, launch path routes `HostCommand::OpenPane` through `HostModel` and reads `(share, placement)` from the returned `PaneOpened` effect. `pane_ops::split_with_new_pane` drops the 3:1 hardcode, takes a `ShareRatio`. Manifest `initial_share` field wired with per-app defaults. 58 Rust tests green.
 - [x] **Cutover slices 2/3/4: split + close + navigate → HostModel** — Done: every user-facing pane op (launch, split, close, navigate) now flows through `HostCommand`. Slice 2 consumes `SplitOpened.placement`; slices 3/4 are observation-only until ID reconciliation is done.
 
-**Next cutover step — ID reconciliation**:
-- [ ] Reconcile `HostModel`'s internal pane counter with `PlexiApp::next_pane_id` so effects can drive egui focus transitions directly. Simplest approach: `PlexiApp` asks `HostModel` for the next pane ID instead of allocating its own, and `HostModel` tracks real tile IDs. Once done, `close_focused` and `navigate` can drive focus from the `FocusChanged` effect instead of PlexiApp's directional search.
+**V3 refactor plan** (`V3_REFACTOR_PLAN.md`) — 12 steps across 5 phases. Progress:
+- [x] **Step 1 — Dead code sweep** (582 LOC deleted, scaffolder migrated, module allows annotated)
+- [ ] Step 2 — Unify dual types (Direction, PaneId, Capability, PlexiEvent, DrawCommand)
+- [ ] Step 3 — Finish or delete stubs (plexi_iq, video-player)
+- [ ] Step 4 — Pane ID reconciliation (HostModel owns alloc)
+- [ ] Step 5 — HostServices trait objects (fs, secrets, net, spawn)
+- [ ] Step 6 — Event sink + effect consumption
+- [ ] Step 7 — Capability enforcement complete
+- [ ] Step 8 — Manifest schema freeze
+- [ ] Step 9 — PGAP protocol surface completion
+- [ ] Step 10 — Real Rust Layer 1 tests + uv Python runner
+- [ ] Step 11 — CI gate that enforces
+- [ ] Step 12 — Invariant enforcement
 
 ## North Star
 

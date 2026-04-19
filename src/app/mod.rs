@@ -41,7 +41,6 @@ pub struct PlexiApp {
     pub(crate) features: crate::features::FeatureFlags,
     /// Whether the Run palette overlay is visible (Cmd+R).
     pub(crate) show_run_palette: bool,
-    // TODO Phase B: consume host model to replace legacy pane_ops command paths
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
 }

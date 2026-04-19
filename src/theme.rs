@@ -86,6 +86,7 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
 }
 
 /// Returns the list of available preset names.
+#[allow(dead_code)] // theme-picker palette is future; preset list stays ready
 pub fn preset_names() -> &'static [&'static str] {
     &[
         "catppuccin-mocha",
