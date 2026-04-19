@@ -293,6 +293,12 @@ impl ProcessApp {
 
             // ── Pipe send ──────────────────────────────────────────────────
             DrawCommand::PipeSend { pipe_id, payload } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::PipeOpen)
+                {
+                    log::warn!("ProcessApp[{}]: PipeSend denied — {reason}", self.type_id);
+                    return;
+                }
                 match self
                     .pipe_registry
                     .lock()
@@ -338,15 +344,54 @@ impl ProcessApp {
 
             // ── Media + HTTP placeholders (STEP-9 wires these) ────────────
             DrawCommand::HttpRequest { request_id, url, .. } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::NetHttp)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: HttpRequest {request_id} denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events
+                        .push_back(PlexiEvent::HttpResponse {
+                            request_id,
+                            status: 403,
+                            body: String::new(),
+                            error: Some(format!("capability_denied: {reason}")),
+                        });
+                    return;
+                }
                 log::warn!(
                     "ProcessApp[{}]: HttpRequest {request_id} for {url} — broker not wired yet (STEP-9)",
                     self.type_id
                 );
             }
-            DrawCommand::AudioPlay { .. }
-            | DrawCommand::AudioCapture { .. } => {
+            DrawCommand::AudioPlay { .. } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::AudioPlayback)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: AudioPlay denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
                 log::warn!(
-                    "ProcessApp[{}]: audio command received — broker not wired yet (STEP-9)",
+                    "ProcessApp[{}]: AudioPlay received — broker not wired yet (STEP-9)",
+                    self.type_id
+                );
+            }
+            DrawCommand::AudioCapture { .. } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::AudioRecord)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: AudioCapture denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
+                log::warn!(
+                    "ProcessApp[{}]: AudioCapture received — broker not wired yet (STEP-9)",
                     self.type_id
                 );
             }

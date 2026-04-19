@@ -178,6 +178,19 @@ impl AppRegistry {
         let manifest: AppManifest =
             toml::from_str(&manifest_str).map_err(|e| format!("invalid manifest: {e}"))?;
 
+        // STEP-7: refuse to install an app whose declared capabilities include
+        // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
+        // this replaces it with a loud install-time failure.
+        if let Err(e) = crate::app_permissions::parse_capability_strings(
+            &manifest.app.capabilities.capabilities,
+        ) {
+            return Err(format!(
+                "manifest lists {e}; valid values: fs.read, fs.write, net.http, \
+                 secrets.get, pipe.open, spawn.app, audio.record, audio.playback, \
+                 video.playback"
+            ));
+        }
+
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
         Ok(InstalledApp {
@@ -394,5 +407,92 @@ capabilities = []
 "#;
         let parsed: AppManifest = toml::from_str(toml).expect("parse");
         assert_eq!(parsed.app.capabilities.group, None);
+    }
+
+    #[test]
+    fn app_registry_rejects_unknown_capability_in_manifest() {
+        // STEP-7: install-time validation replaces the old silent
+        // `unknown string → FsRead` fallback. A typo must fail loudly.
+        use std::io::Write;
+        let tmp = std::env::temp_dir().join(format!(
+            "plexi-reg-{}-bogus",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let manifest_path = tmp.join("manifest.toml");
+        let mut f = std::fs::File::create(&manifest_path).unwrap();
+        writeln!(
+            f,
+            r#"[app]
+id = "typo"
+name = "Typo"
+entry = "typo.py"
+
+[app.capabilities]
+capabilities = ["net.http_"]
+"#
+        )
+        .unwrap();
+        // Touch entry so resolve_entry doesn't fail first.
+        let _ = std::fs::File::create(tmp.join("typo.py")).unwrap();
+
+        let registry = AppRegistry {
+            apps: HashMap::new(),
+            extension_map: HashMap::new(),
+        };
+        let err = registry.load_app(&tmp).expect_err("bogus capability must fail");
+        assert!(
+            err.contains("net.http_"),
+            "error must name the offending capability: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn app_registry_accepts_all_nine_spec_capabilities() {
+        use std::io::Write;
+        let tmp = std::env::temp_dir().join(format!(
+            "plexi-reg-{}-nine",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let manifest_path = tmp.join("manifest.toml");
+        let mut f = std::fs::File::create(&manifest_path).unwrap();
+        writeln!(
+            f,
+            r#"[app]
+id = "greedy"
+name = "Greedy"
+entry = "g.py"
+
+[app.capabilities]
+capabilities = [
+    "fs.read", "fs.write", "net.http", "secrets.get", "pipe.open",
+    "spawn.app", "audio.record", "audio.playback", "video.playback",
+]
+"#
+        )
+        .unwrap();
+        let entry_path = tmp.join("g.py");
+        let _ = std::fs::File::create(&entry_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&entry_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&entry_path, perms).unwrap();
+        }
+
+        let registry = AppRegistry {
+            apps: HashMap::new(),
+            extension_map: HashMap::new(),
+        };
+        let installed = registry.load_app(&tmp).expect("nine valid caps parse");
+        assert_eq!(installed.manifest.capabilities.capabilities.len(), 9);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

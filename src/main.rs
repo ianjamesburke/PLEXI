@@ -6,7 +6,7 @@
 #![deny(clippy::todo, clippy::unimplemented)]
 
 mod app;
-#[allow(dead_code)] // STEP-7: PermissionsLog, check_cd wired when capability enforcement lands
+#[allow(dead_code)] // PermissionsLog used via load()/resolve() at permission-prompt sites
 mod app_permissions;
 #[allow(dead_code)] // STEP-9: AppReply, emit_* wired when PGAP surface completes
 mod app_protocol;

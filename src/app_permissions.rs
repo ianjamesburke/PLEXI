@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
+use std::convert::TryFrom;
 
 // ── Capability enum ───────────────────────────────────────────────────────────
 
@@ -183,41 +185,6 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
             cap
         ))
     }
-}
-
-// ── v3 command-level permission helpers ───────────────────────────────────────
-
-/// Check whether a `Cd` app command is allowed (requires FsWrite + path in scope).
-/// Used by app.rs to gate directory changes from apps.
-pub fn check_cd(path: &Path, perms: &AppPermissions, scope_root: &Path) -> PermissionCheck {
-    if perms.is_builtin {
-        return PermissionCheck::Allowed;
-    }
-    if !perms.capabilities.contains(&Capability::FsWrite) {
-        return PermissionCheck::Denied("Cd requires fs.write capability".to_string());
-    }
-    if !path_within_scope(path, scope_root) {
-        return PermissionCheck::Denied(format!(
-            "Path {} is outside app workspace scope {}",
-            path.display(),
-            scope_root.display()
-        ));
-    }
-    PermissionCheck::Allowed
-}
-
-/// Returns true if `path` is equal to or a descendant of `scope_root`.
-fn path_within_scope(path: &Path, scope_root: &Path) -> bool {
-    let Ok(canonical_path) = std::fs::canonicalize(path) else {
-        return path
-            .parent()
-            .map(|p| path_within_scope(p, scope_root))
-            .unwrap_or(false);
-    };
-    let Ok(canonical_root) = std::fs::canonicalize(scope_root) else {
-        return false;
-    };
-    canonical_path.starts_with(&canonical_root)
 }
 
 // ── permissions.jsonl persistence ────────────────────────────────────────────
