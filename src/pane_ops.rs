@@ -481,6 +481,8 @@ impl PlexiApp {
             Some(f) => f,
             None => return,
         };
+        let effects = self.submit(HostCommand::CloseFocusedPane);
+        log::debug!("close_focused effects: {:?}", effects);
         self.close_tile(self.active_context, focused);
     }
 
@@ -573,6 +575,15 @@ impl PlexiApp {
     }
 
     pub(crate) fn navigate(&mut self, dir: Direction) {
+        let host_dir = match dir {
+            Direction::Left => crate::host::command::Direction::Left,
+            Direction::Right => crate::host::command::Direction::Right,
+            Direction::Up => crate::host::command::Direction::Up,
+            Direction::Down => crate::host::command::Direction::Down,
+        };
+        let effects = self.submit(HostCommand::Navigate(host_dir));
+        log::debug!("navigate({:?}) effects: {:?}", dir, effects);
+
         let ctx = &self.contexts[self.active_context];
         if let Some(focused) = ctx.focused_pane {
             if let Some(target) = ctx.find_pane_in_direction_from(focused, dir) {
