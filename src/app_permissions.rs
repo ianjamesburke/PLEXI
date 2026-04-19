@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 // ── Capability enum ───────────────────────────────────────────────────────────
 
 /// v3 capability set. Matches the strings in manifest.toml / Init handshake.
+/// Nine spec capabilities (`docs/specs/releases/plexi-v3.0.md §4`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
@@ -30,39 +31,77 @@ pub enum Capability {
     PipeOpen,
     /// Launch another app in a new pane.
     SpawnApp,
+    /// Capture microphone audio via host broker.
+    AudioRecord,
+    /// Play audio via host `rodio` broker.
+    AudioPlayback,
+    /// Decode and display video via host broker.
+    VideoPlayback,
 }
 
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Capability {
+    pub const ALL: &'static [Capability] = &[
+        Self::FsRead,
+        Self::FsWrite,
+        Self::NetHttp,
+        Self::SecretsGet,
+        Self::PipeOpen,
+        Self::SpawnApp,
+        Self::AudioRecord,
+        Self::AudioPlayback,
+        Self::VideoPlayback,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
             Self::FsRead => "fs.read",
             Self::FsWrite => "fs.write",
             Self::NetHttp => "net.http",
             Self::SecretsGet => "secrets.get",
             Self::PipeOpen => "pipe.open",
             Self::SpawnApp => "spawn.app",
-        };
-        write!(f, "{s}")
+            Self::AudioRecord => "audio.record",
+            Self::AudioPlayback => "audio.playback",
+            Self::VideoPlayback => "video.playback",
+        }
     }
 }
 
-impl<'a> From<&'a str> for Capability {
-    /// Parses a manifest capability string. Unknown strings silently map to `FsRead`
-    /// as a safe no-op default — callers should validate manifest strings at load time.
-    fn from(s: &'a str) -> Self {
+/// Error produced when a manifest or decision log names a capability that is not
+/// in the `Capability` enum. This is the replacement for the old `From<&str>`
+/// silent fallback to `FsRead`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownCapability(pub String);
+
+impl fmt::Display for UnknownCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown capability: '{}'", self.0)
+    }
+}
+
+impl std::error::Error for UnknownCapability {}
+
+impl<'a> TryFrom<&'a str> for Capability {
+    type Error = UnknownCapability;
+
+    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
         match s {
-            "fs.read" => Self::FsRead,
-            "fs.write" => Self::FsWrite,
-            "net.http" => Self::NetHttp,
-            "secrets.get" => Self::SecretsGet,
-            "pipe.open" => Self::PipeOpen,
-            "spawn.app" => Self::SpawnApp,
-            _ => {
-                log::warn!(
-                    "app_permissions: unknown capability string '{s}', defaulting to FsRead"
-                );
-                Self::FsRead
-            }
+            "fs.read" => Ok(Self::FsRead),
+            "fs.write" => Ok(Self::FsWrite),
+            "net.http" => Ok(Self::NetHttp),
+            "secrets.get" => Ok(Self::SecretsGet),
+            "pipe.open" => Ok(Self::PipeOpen),
+            "spawn.app" => Ok(Self::SpawnApp),
+            "audio.record" => Ok(Self::AudioRecord),
+            "audio.playback" => Ok(Self::AudioPlayback),
+            "video.playback" => Ok(Self::VideoPlayback),
+            other => Err(UnknownCapability(other.to_string())),
         }
     }
 }
@@ -89,15 +128,35 @@ impl AppPermissions {
     }
 
     /// Create a permissions set from a list of v3 capability strings.
+    /// Unknown capability strings are logged and dropped — manifest loaders
+    /// should validate with `parse_capability_strings` first and refuse to
+    /// install an app that names an unknown capability.
     pub fn from_capability_strings(strings: &[String]) -> Self {
+        let mut capabilities = HashSet::new();
+        for s in strings {
+            match Capability::try_from(s.as_str()) {
+                Ok(cap) => {
+                    capabilities.insert(cap);
+                }
+                Err(e) => {
+                    log::warn!("app_permissions: {e}; dropped");
+                }
+            }
+        }
         Self {
-            capabilities: strings
-                .iter()
-                .map(|s| Capability::from(s.as_str()))
-                .collect(),
+            capabilities,
             is_builtin: false,
         }
     }
+}
+
+/// Parse a list of capability strings, returning an error on the first unknown
+/// entry. Manifest loaders should call this before installing an app.
+pub fn parse_capability_strings(strings: &[String]) -> Result<HashSet<Capability>, UnknownCapability> {
+    strings
+        .iter()
+        .map(|s| Capability::try_from(s.as_str()))
+        .collect()
 }
 
 // ── PermissionCheck result ────────────────────────────────────────────────────
@@ -270,7 +329,13 @@ impl PermissionsLog {
             .decisions
             .iter()
             .filter(|d| d.app_id == app_id && d.workspace_root == root_str && d.granted)
-            .map(|d| Capability::from(d.capability.as_str()))
+            .filter_map(|d| match Capability::try_from(d.capability.as_str()) {
+                Ok(cap) => Some(cap),
+                Err(e) => {
+                    log::warn!("app_permissions: decision log {e}; skipped");
+                    None
+                }
+            })
             .collect();
         AppPermissions {
             capabilities,
@@ -281,4 +346,39 @@ impl PermissionsLog {
 
 fn permissions_jsonl_path() -> PathBuf {
     crate::config::config_dir().join("permissions.jsonl")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_from_parses_all_nine_spec_capabilities() {
+        for cap in Capability::ALL {
+            let s = cap.as_str();
+            let parsed = Capability::try_from(s).expect("canonical string roundtrips");
+            assert_eq!(&parsed, cap, "roundtrip mismatch for '{s}'");
+        }
+    }
+
+    #[test]
+    fn try_from_rejects_unknown_capability() {
+        let err = Capability::try_from("net.http_").expect_err("typo should not parse");
+        assert_eq!(err.0, "net.http_");
+    }
+
+    #[test]
+    fn parse_capability_strings_fails_on_first_unknown() {
+        let strings = vec!["fs.read".to_string(), "bogus".to_string()];
+        let err = parse_capability_strings(&strings).expect_err("bogus rejects the set");
+        assert_eq!(err.0, "bogus");
+    }
+
+    #[test]
+    fn parse_capability_strings_accepts_valid_set() {
+        let strings = vec!["fs.read".to_string(), "net.http".to_string()];
+        let caps = parse_capability_strings(&strings).expect("valid set parses");
+        assert!(caps.contains(&Capability::FsRead));
+        assert!(caps.contains(&Capability::NetHttp));
+    }
 }

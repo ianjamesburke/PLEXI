@@ -4,8 +4,6 @@ use crate::app_protocol::DrawCommand;
 use crate::theme::Colors;
 use egui::Color32;
 
-use super::AudioMeterState;
-
 /// Render a committed frame's draw commands into the given egui Ui.
 ///
 /// Only visual primitives reach this function — control commands are routed
@@ -14,7 +12,6 @@ pub(super) fn render_draw_commands(
     ui: &mut egui::Ui,
     commands: &[DrawCommand],
     colors: &Colors,
-    audio_meters: &[AudioMeterState],
 ) {
     let origin = ui.min_rect().min;
 
@@ -129,37 +126,22 @@ pub(super) fn render_draw_commands(
             // These are handled at the App trait level or routed upstream — never rendered.
             DrawCommand::Log { .. }
             | DrawCommand::FrameDone { .. }
-            | DrawCommand::VideoPlayer { .. }
-            | DrawCommand::AudioMeter { .. }
             | DrawCommand::CapabilityRequest { .. }
             | DrawCommand::SecretGet { .. }
             | DrawCommand::RunGet { .. }
             | DrawCommand::RunComplete { .. }
             | DrawCommand::Notify { .. }
-            | DrawCommand::AudioPlay { .. }
-            | DrawCommand::AudioCapture { .. }
             | DrawCommand::PipeOpen { .. }
             | DrawCommand::PipeSend { .. }
             | DrawCommand::StatusSummary { .. }
-            | DrawCommand::SpawnApp { .. } => {}
+            | DrawCommand::SpawnApp { .. }
+            | DrawCommand::HttpRequest { .. }
+            | DrawCommand::Image { .. }
+            | DrawCommand::VideoPlayer { .. }
+            | DrawCommand::AudioMeter { .. }
+            | DrawCommand::AudioPlay { .. }
+            | DrawCommand::AudioCapture { .. } => {}
         }
-    }
-
-    // Audio meters: placeholder bar at 30% until Layer 4 exposes a peak-read API.
-    for meter in audio_meters {
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(origin.x + meter.rect_x, origin.y + meter.rect_y),
-            egui::vec2(meter.rect_w, meter.rect_h),
-        );
-        ui.painter()
-            .rect_filled(rect, 2.0, Color32::from_rgb(30, 30, 46));
-        let fill_h = meter.rect_h * 0.3;
-        let fill_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.min.x, rect.max.y - fill_h),
-            egui::vec2(meter.rect_w, fill_h),
-        );
-        ui.painter()
-            .rect_filled(fill_rect, 2.0, Color32::from_rgb(166, 227, 161));
     }
 }
 

@@ -575,13 +575,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn navigate(&mut self, dir: Direction) {
-        let host_dir = match dir {
-            Direction::Left => crate::host::command::Direction::Left,
-            Direction::Right => crate::host::command::Direction::Right,
-            Direction::Up => crate::host::command::Direction::Up,
-            Direction::Down => crate::host::command::Direction::Down,
-        };
-        let effects = self.submit(HostCommand::Navigate(host_dir));
+        let effects = self.submit(HostCommand::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
 
         let ctx = &self.contexts[self.active_context];

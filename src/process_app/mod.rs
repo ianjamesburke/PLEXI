@@ -21,7 +21,7 @@ use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::event_log::{self, HostEvent};
 use crate::runs::RunRegistry;
 use crate::typed_pipes::TypedPipeRegistry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -44,18 +44,6 @@ pub enum PendingPrompt {
     Secret {
         key: String,
     },
-}
-
-// ---------------------------------------------------------------------------
-// AudioMeterState — display rect for each active audio meter widget
-// ---------------------------------------------------------------------------
-
-pub(crate) struct AudioMeterState {
-    pub rect_x: f32,
-    pub rect_y: f32,
-    pub rect_w: f32,
-    pub rect_h: f32,
-    pub pipe_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -85,21 +73,11 @@ pub struct ProcessApp {
     pub(crate) workspace_root: PathBuf,
     /// Granted capabilities for this app instance.
     pub(crate) permissions: AppPermissions,
-    /// Typed pipe registry. Arc<Mutex<>> so the audio capture thread can write
-    /// without blocking the UI thread.
+    /// Typed pipe registry.
     pub(crate) pipe_registry: Arc<Mutex<TypedPipeRegistry>>,
     pub(crate) run_registry: RunRegistry,
     pub(crate) pending_prompts: VecDeque<PendingPrompt>,
     pub(crate) status_summary: Option<String>,
-    /// Active audio meter configs (rendered each frame by render.rs).
-    pub(crate) audio_meters: Vec<AudioMeterState>,
-    pub(crate) video_decoder: Option<Box<dyn crate::media::VideoDecoder>>,
-    pub(crate) video_handles: HashMap<String, crate::media::VideoHandle>,
-    /// Pending video frames to upload + render on the next render pass.
-    pub(crate) pending_video_frames: Vec<(u64, crate::media::VideoFrame, f32, f32, f32, f32)>,
-    pub(crate) video_textures: HashMap<u64, egui::TextureHandle>,
-    pub(crate) audio_playback_handles: HashMap<String, crate::media::AudioPlaybackHandle>,
-    pub(crate) audio_capture_handles: HashMap<String, crate::media::AudioCaptureHandle>,
     pub(crate) outbound_events: VecDeque<PlexiEvent>,
     pub(crate) secret_input_buf: String,
     keyboard_capture: bool,
@@ -234,13 +212,6 @@ impl ProcessApp {
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             status_summary: None,
-            audio_meters: Vec::new(),
-            video_decoder: None,
-            video_handles: HashMap::new(),
-            pending_video_frames: Vec::new(),
-            video_textures: HashMap::new(),
-            audio_playback_handles: HashMap::new(),
-            audio_capture_handles: HashMap::new(),
             outbound_events: VecDeque::new(),
             secret_input_buf: String::new(),
             keyboard_capture,
@@ -288,10 +259,16 @@ impl ProcessApp {
         granted: bool,
         perms_log: &mut PermissionsLog,
     ) {
-        let cap = Capability::from(capability_str);
-        perms_log.record(&self.type_id, &self.workspace_root, cap, granted);
-        if granted {
-            self.permissions.capabilities.insert(cap);
+        match Capability::try_from(capability_str) {
+            Ok(cap) => {
+                perms_log.record(&self.type_id, &self.workspace_root, cap, granted);
+                if granted {
+                    self.permissions.capabilities.insert(cap);
+                }
+            }
+            Err(e) => {
+                log::warn!("ProcessApp[{}]: resolve_capability: {e}", self.type_id);
+            }
         }
         self.outbound_events
             .push_back(PlexiEvent::CapabilityDecision {
@@ -384,7 +361,7 @@ impl App for ProcessApp {
                 app_id: self.type_id.clone(),
                 workspace_root: self.workspace_root.clone(),
                 capabilities: cap_strings,
-                feature_flags: vec!["media_v1".into(), "pane_groups_v1".into()],
+                feature_flags: vec!["pane_groups_v1".into()],
             });
         }
 
@@ -434,11 +411,7 @@ impl App for ProcessApp {
                         _ => log::info!(target: &target, "{message}"),
                     }
                 }
-                cmd @ (DrawCommand::VideoPlayer { .. }
-                | DrawCommand::AudioPlay { .. }
-                | DrawCommand::AudioCapture { .. }
-                | DrawCommand::AudioMeter { .. }
-                | DrawCommand::CapabilityRequest { .. }
+                cmd @ (DrawCommand::CapabilityRequest { .. }
                 | DrawCommand::SecretGet { .. }
                 | DrawCommand::RunGet { .. }
                 | DrawCommand::RunComplete { .. }
@@ -446,7 +419,10 @@ impl App for ProcessApp {
                 | DrawCommand::PipeOpen { .. }
                 | DrawCommand::PipeSend { .. }
                 | DrawCommand::StatusSummary { .. }
-                | DrawCommand::SpawnApp { .. }) => {
+                | DrawCommand::SpawnApp { .. }
+                | DrawCommand::HttpRequest { .. }
+                | DrawCommand::AudioPlay { .. }
+                | DrawCommand::AudioCapture { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),
@@ -475,48 +451,12 @@ impl App for ProcessApp {
             self.secret_input_buf = secret_input_buf;
         }
 
-        // Upload + render any pending video frames (requires egui ctx).
-        let pending_frames = std::mem::take(&mut self.pending_video_frames);
-        for (handle_id, frame, vx, vy, vw, vh) in pending_frames {
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                [frame.width as usize, frame.height as usize],
-                &frame.rgba,
-            );
-            let tex_name = format!("video_frame_{handle_id}_{}", frame.pts_ms);
-            let tex = ui
-                .ctx()
-                .load_texture(&tex_name, color_image, egui::TextureOptions::LINEAR);
-            let origin = ui.min_rect().min;
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(origin.x + vx, origin.y + vy),
-                egui::vec2(vw, vh),
-            );
-            ui.painter().image(
-                tex.id(),
-                rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-            self.video_textures.insert(handle_id, tex);
-        }
-
         // Render the current committed frame.
         let frame_clone = self.frame.clone();
-        let meters: Vec<_> = self
-            .audio_meters
-            .iter()
-            .map(|m| AudioMeterState {
-                rect_x: m.rect_x,
-                rect_y: m.rect_y,
-                rect_w: m.rect_w,
-                rect_h: m.rect_h,
-                pipe_id: m.pipe_id.clone(),
-            })
-            .collect();
         egui::Frame::new()
             .fill(ctx.colors.terminal_bg)
             .show(ui, |ui| {
-                render::render_draw_commands(ui, &frame_clone, ctx.colors, &meters);
+                render::render_draw_commands(ui, &frame_clone, ctx.colors);
             });
 
         ui.ctx()

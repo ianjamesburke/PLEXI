@@ -7,11 +7,7 @@ use crate::app_permissions::{check, Capability, PermissionCheck};
 use crate::app_protocol::{DrawCommand, PlexiEvent};
 use crate::app_trait::AppCommand;
 use crate::event_log::{self, HostEvent};
-use crate::media::{audio_device, video_decoder, AudioSource, PlaybackState, VideoSource};
 use crate::typed_pipes::PipeDirection;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread;
 
 use super::ProcessApp;
 
@@ -20,249 +16,38 @@ impl ProcessApp {
     /// Visual primitives must not reach this method — callers filter them upstream.
     pub(super) fn route_command(&mut self, cmd: DrawCommand) {
         match cmd {
-            // ── Video ──────────────────────────────────────────────────────
-            DrawCommand::VideoPlayer {
-                source,
-                x,
-                y,
-                w,
-                h,
-                state,
-            } => {
-                if !self.video_handles.contains_key(&source) {
-                    // Lazily create the decoder on first video open.
-                    if self.video_decoder.is_none() {
-                        self.video_decoder = Some(video_decoder());
-                    }
-                    if let Some(decoder) = self.video_decoder.as_mut() {
-                        match decoder.open(VideoSource::File(PathBuf::from(&source))) {
-                            Ok(handle) => {
-                                log::info!(
-                                    "ProcessApp[{}]: opened video '{}' {}x{} {}ms",
-                                    self.type_id,
-                                    source,
-                                    handle.width,
-                                    handle.height,
-                                    handle.duration_ms
-                                );
-                                self.video_handles.insert(source.clone(), handle);
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "ProcessApp[{}]: failed to open video '{}': {e}",
-                                    self.type_id,
-                                    source
-                                );
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                if let Some(handle) = self.video_handles.get(&source) {
-                    let handle_id = handle.id;
-                    let playback_state = if state == "play" {
-                        Some(PlaybackState::Play)
-                    } else if state == "pause" {
-                        Some(PlaybackState::Pause)
-                    } else if let Some(ms_str) = state.strip_prefix("seek:") {
-                        ms_str.parse::<u64>().ok().map(PlaybackState::Seek)
-                    } else {
-                        None
-                    };
-
-                    if let Some(ps) = playback_state {
-                        if let Some(decoder) = self.video_decoder.as_mut() {
-                            decoder.set_state(handle_id, ps);
-                        }
-                    }
-
-                    // Pull next frame and queue for upload+render in the render pass
-                    // (egui texture upload requires a UI context, not available here).
-                    if let Some(decoder) = self.video_decoder.as_mut() {
-                        if let Some(frame) = decoder.next_frame(handle_id) {
-                            log::debug!(
-                                "ProcessApp[{}]: VideoFrame {}x{} pts={}ms source={source}",
-                                self.type_id,
-                                frame.width,
-                                frame.height,
-                                frame.pts_ms
-                            );
-                            self.pending_video_frames
-                                .push((handle_id, frame, x, y, w, h));
-                        }
-                    }
-                }
-            }
-
-            // ── Audio playback ─────────────────────────────────────────────
-            DrawCommand::AudioPlay {
-                source,
-                volume,
-                state,
-            } => {
-                if state == "stop" {
-                    if self.audio_playback_handles.remove(&source).is_some() {
-                        log::info!("ProcessApp[{}]: stopped audio '{source}'", self.type_id);
-                    }
-                    return;
-                }
-
-                if !self.audio_playback_handles.contains_key(&source) && state == "play" {
-                    let mut device = audio_device();
-                    match device.start_playback(AudioSource::File(PathBuf::from(&source)), volume) {
-                        Ok(handle) => {
-                            log::info!(
-                                "ProcessApp[{}]: started audio playback '{source}' vol={volume}",
-                                self.type_id
-                            );
-                            self.audio_playback_handles.insert(source.clone(), handle);
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "ProcessApp[{}]: audio start_playback failed: {e}",
-                                self.type_id
-                            );
-                        }
-                    }
-                }
-            }
-
-            // ── Audio capture ──────────────────────────────────────────────
-            DrawCommand::AudioCapture {
-                pipe_id,
-                sample_rate,
-                buffer_size,
-            } => {
-                if let PermissionCheck::Denied(reason) =
-                    check(&self.permissions, Capability::AudioRecord)
-                {
-                    log::warn!(
-                        "ProcessApp[{}]: AudioCapture denied — {reason}",
-                        self.type_id
-                    );
-                    return;
-                }
-
-                if self.audio_capture_handles.contains_key(&pipe_id) {
-                    log::warn!(
-                        "ProcessApp[{}]: AudioCapture pipe '{}' already open",
-                        self.type_id,
-                        pipe_id
-                    );
-                    return;
-                }
-
-                let alloc = match self
-                    .pipe_registry
-                    .lock()
-                    .unwrap()
-                    .open_binary(pipe_id.clone(), PipeDirection::Out)
-                {
-                    Ok(a) => a,
-                    Err(e) => {
-                        log::warn!(
-                            "ProcessApp[{}]: AudioCapture pipe alloc failed: {e}",
-                            self.type_id
-                        );
-                        return;
-                    }
-                };
-
-                let mut device = audio_device();
-                match device.start_capture(sample_rate, buffer_size) {
-                    Ok(capture_handle) => {
-                        let socket_path = alloc.socket_path.clone();
-
-                        // Forwarding thread: read PCM frames and write to binary pipe.
-                        // TypedPipeRegistry is behind Arc<Mutex<>> so this thread can
-                        // call write_binary without blocking the main UI thread.
-                        let pipe_id_fwd = pipe_id.clone();
-                        let type_id_fwd = self.type_id.clone();
-                        let registry_arc = Arc::clone(&self.pipe_registry);
-                        thread::Builder::new()
-                            .name(format!("audio-capture-{pipe_id_fwd}"))
-                            .spawn(move || {
-                                log::info!("ProcessApp[{type_id_fwd}]: audio capture thread started for pipe '{pipe_id_fwd}'");
-                                while let Ok(samples) = capture_handle.receiver.recv() {
-                                    let bytes: Vec<u8> = samples
-                                        .iter()
-                                        .flat_map(|s| s.to_le_bytes())
-                                        .collect();
-                                    let mut reg = registry_arc.lock().unwrap();
-                                    if let Err(e) = reg.write_binary(&pipe_id_fwd, &bytes) {
-                                        log::warn!("ProcessApp[{type_id_fwd}]: audio write failed: {e}");
-                                    }
-                                }
-                                log::info!("ProcessApp[{type_id_fwd}]: audio capture thread exiting for pipe '{pipe_id_fwd}'");
-                            })
-                            .ok();
-
-                        event_log::emit_pipe_opened(&self.type_id, &pipe_id, "binary");
-                        self.outbound_events.push_back(PlexiEvent::PipeOpened {
-                            pipe_id: pipe_id.clone(),
-                            socket_path,
-                        });
-                        log::info!(
-                            "ProcessApp[{}]: AudioCapture started on pipe '{pipe_id}' {}hz buf={}",
-                            self.type_id,
-                            sample_rate,
-                            buffer_size
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "ProcessApp[{}]: AudioCapture start_capture failed: {e}",
-                            self.type_id
-                        );
-                        self.pipe_registry.lock().unwrap().close(&pipe_id);
-                    }
-                }
-            }
-
-            // ── Audio meter ────────────────────────────────────────────────
-            DrawCommand::AudioMeter {
-                x,
-                y,
-                w,
-                h,
-                pipe_id,
-            } => {
-                if let Some(existing) = self.audio_meters.iter_mut().find(|m| m.pipe_id == pipe_id)
-                {
-                    existing.rect_x = x;
-                    existing.rect_y = y;
-                    existing.rect_w = w;
-                    existing.rect_h = h;
-                } else {
-                    self.audio_meters.push(super::AudioMeterState {
-                        rect_x: x,
-                        rect_y: y,
-                        rect_w: w,
-                        rect_h: h,
-                        pipe_id,
-                    });
-                }
-            }
-
             // ── Capability request ─────────────────────────────────────────
             DrawCommand::CapabilityRequest {
                 request_id,
                 capability,
             } => {
-                let cap = Capability::from(capability.as_str());
-                if let PermissionCheck::Allowed = check(&self.permissions, cap) {
-                    self.outbound_events
-                        .push_back(PlexiEvent::CapabilityDecision {
-                            request_id,
-                            granted: true,
-                        });
-                } else {
-                    self.pending_prompts
-                        .push_back(super::PendingPrompt::Capability {
-                            request_id,
-                            capability,
-                        });
+                match Capability::try_from(capability.as_str()) {
+                    Ok(cap) => {
+                        if let PermissionCheck::Allowed = check(&self.permissions, cap) {
+                            self.outbound_events
+                                .push_back(PlexiEvent::CapabilityDecision {
+                                    request_id,
+                                    granted: true,
+                                });
+                        } else {
+                            self.pending_prompts
+                                .push_back(super::PendingPrompt::Capability {
+                                    request_id,
+                                    capability,
+                                });
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "ProcessApp[{}]: CapabilityRequest with {e}; auto-denying",
+                            self.type_id
+                        );
+                        self.outbound_events
+                            .push_back(PlexiEvent::CapabilityDecision {
+                                request_id,
+                                granted: false,
+                            });
+                    }
                 }
             }
 
@@ -549,6 +334,21 @@ impl ProcessApp {
                     layout,
                     args,
                 });
+            }
+
+            // ── Media + HTTP placeholders (STEP-9 wires these) ────────────
+            DrawCommand::HttpRequest { request_id, url, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: HttpRequest {request_id} for {url} — broker not wired yet (STEP-9)",
+                    self.type_id
+                );
+            }
+            DrawCommand::AudioPlay { .. }
+            | DrawCommand::AudioCapture { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: audio command received — broker not wired yet (STEP-9)",
+                    self.type_id
+                );
             }
 
             _ => unreachable!("route_command called with non-control command"),

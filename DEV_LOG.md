@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 2: unify dual types (→ v3)
+One canonical representation per concept: `keys::Direction` re-exported from `host::command`, `tiling::PaneId = u64` alias kept, `app_permissions::Capability` extended with `AudioRecord`/`AudioPlayback`/`VideoPlayback` (9 spec caps), `app_protocol::PlexiEvent` gains `InjectState` + `HttpResponse`, `app_protocol::DrawCommand` gains `HttpRequest` + `Image` + `VideoPlayer` + `AudioMeter` + `AudioPlay` + `AudioCapture`. Silent `From<&str> → FsRead` fallback replaced with `TryFrom<&str>` that returns `UnknownCapability`; callers log + drop/deny instead of surfacing as an inert `FsRead`. Added `parse_capability_strings(...)` for manifest loaders (step 7/8 consume). 4 new tests lock the roundtrip + rejection behavior.
+
+**Breaks if:** a manifest with `capabilities = ["bogus"]` silently maps to `FsRead` instead of logging a warning. Any `PlexiEvent::InjectState` or `DrawCommand::HttpRequest` wire payload fails to deserialize.
+
 ## 2026-04-18 — [CHANGED] V3 refactor step 1: dead-code sweep (→ v3)
 Deleted `src/protocol/{effect,event,output,schema}.rs`, `src/input/` (entire), `src/error.rs`, `src/media/mod.rs` — 582 LOC of tombstone modules with zero external callers. Only `protocol::view` kept (used by `HeadlessRenderer`). Scaffolder templates in `src/cli.rs` migrated from v2 capability names (`terminal_write`, `filesystem = "read_only"`) to v3 `capabilities = ["fs.read"]`. Module-level `#[allow(dead_code)]` scrubbed from `src/main.rs`: 16 → 10, with each remaining one annotated `// STEP-N: <reason>` so future steps know which ones they unlock. 54/54 tests green, zero warnings.
 

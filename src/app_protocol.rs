@@ -114,6 +114,19 @@ pub enum PlexiEvent {
         pipe_id: String,
         dropped_frames: u64,
     },
+    /// Harness-only: drop a JSON payload into the app's `on_inject` hook.
+    /// Used by `pgap_test_harness` to seed deterministic state without
+    /// round-tripping through real inputs.
+    InjectState { payload: serde_json::Value },
+    /// Host broker response to a `DrawCommand::HttpRequest`. `error` is present
+    /// when the request failed; `body` may still carry a partial response.
+    HttpResponse {
+        request_id: String,
+        status: u16,
+        body: String,
+        #[serde(default)]
+        error: Option<String>,
+    },
 }
 
 /// A simple rectangle (logical coordinates).
@@ -199,26 +212,6 @@ pub enum DrawCommand {
         #[serde(default)]
         item_height: f32,
     },
-    /// Host-owned video player. Host decodes and renders; app just declares position.
-    /// state: "play" | "pause" | "seek:<ms>"
-    VideoPlayer {
-        source: String,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        /// One of: "play" | "pause" | "seek:<ms>"
-        state: String,
-    },
-    /// Bind an audio pipe to a level meter widget. Host draws the meter.
-    AudioMeter {
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        /// The binary-mode pipe_id that supplies PCM data.
-        pipe_id: String,
-    },
     /// End of frame. Host renders everything queued since last FrameDone.
     FrameDone {
         /// Must match the frame_id from the triggering Render event.
@@ -259,23 +252,6 @@ pub enum DrawCommand {
         #[serde(default)]
         actions: Vec<NotificationAction>,
     },
-    /// Start host audio playback. Host owns the audio device.
-    /// state: "play" | "pause" | "stop"
-    AudioPlay {
-        /// File path or pipe_id for binary-mode audio.
-        source: String,
-        volume: f32,
-        /// One of: "play" | "pause" | "stop"
-        state: String,
-    },
-    /// Open an audio capture session. Host streams PCM to the named binary pipe.
-    AudioCapture {
-        pipe_id: String,
-        #[serde(default = "default_sample_rate")]
-        sample_rate: u32,
-        #[serde(default = "default_buffer_size")]
-        buffer_size: u32,
-    },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
     /// direction: "in" | "out" | "duplex"
@@ -307,6 +283,58 @@ pub enum DrawCommand {
         args: Vec<String>,
     },
 
+    // ── Media + HTTP primitives (STEP-9 routes them) ─────────────────────
+    /// Host-brokered HTTP request. Requires `net.http` capability.
+    /// Host replies with `PlexiEvent::HttpResponse { request_id, ... }`.
+    HttpRequest {
+        request_id: String,
+        url: String,
+        #[serde(default = "default_http_method")]
+        method: String,
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+        #[serde(default)]
+        body: Option<String>,
+    },
+    /// Draw an image from a workspace-scoped path or data URL.
+    Image {
+        src: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        /// One of: "contain" | "cover" | "fill". Default: "contain".
+        #[serde(default = "default_image_fit")]
+        fit: String,
+    },
+    /// Host-owned video decoder: emits frames on a binary pipe.
+    VideoPlayer {
+        source: String,
+        rect: Rect,
+        /// One of: "playing" | "paused" | "stopped".
+        state: String,
+    },
+    /// Render an amplitude meter reading from a binary pipe.
+    AudioMeter { rect: Rect, pipe_id: String },
+    /// Host-owned audio playback via `rodio`.
+    AudioPlay {
+        #[serde(default)]
+        source: Option<String>,
+        #[serde(default)]
+        pipe_id: Option<String>,
+        #[serde(default = "default_volume")]
+        volume: f32,
+        /// One of: "playing" | "paused" | "stopped".
+        state: String,
+    },
+    /// Host-owned audio capture: mic PCM delivered on a binary pipe.
+    AudioCapture {
+        pipe_id: String,
+        #[serde(default = "default_sample_rate")]
+        sample_rate: u32,
+        #[serde(default = "default_buffer_size")]
+        buffer_size: u32,
+    },
 }
 
 /// An action attached to a Notify command.
@@ -333,10 +361,22 @@ fn default_stroke_width() -> f32 {
     1.0
 }
 
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+
+fn default_image_fit() -> String {
+    "contain".to_string()
+}
+
+fn default_volume() -> f32 {
+    1.0
+}
+
 fn default_sample_rate() -> u32 {
-    48000
+    48_000
 }
 
 fn default_buffer_size() -> u32 {
-    512
+    1024
 }

@@ -70,8 +70,16 @@ pub(super) fn show_prompt_modal(
                 capability,
             }) => {
                 if granted {
-                    let cap = Capability::from(capability.as_str());
-                    permissions.capabilities.insert(cap);
+                    match Capability::try_from(capability.as_str()) {
+                        Ok(cap) => {
+                            permissions.capabilities.insert(cap);
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "prompts: cannot grant {e}; capability string not recognized"
+                            );
+                        }
+                    }
                 }
                 event_log::emit(HostEvent::PermissionDecision {
                     app_id: type_id.to_string(),

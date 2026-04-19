@@ -1,14 +1,8 @@
 use crate::tiling::PaneId;
 
-pub type Capability = String;
+pub use crate::keys::Direction;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
+pub type Capability = String;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShareRatio {
