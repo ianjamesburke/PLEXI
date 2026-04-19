@@ -1,5 +1,71 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] Plexi SDK: widgets foundation + headless snapshot testing
+Converted `sdk/python/plexi_sdk.py` into a package (`plexi_sdk/__init__.py` holds the original content byte-identical). Added `plexi_sdk.widgets.{ScrollState, TextBuffer, TextArea, TextAreaTheme}` — pure-Python reusable text editor primitives with zero deps. Added `plexi_sdk.testing` + new Rust bin `plexi_render` for headless PNG snapshot tests (stdlib-only PNG decode, pixel assertions). Added `pyrightconfig.json` at repo root so IDEs resolve `plexi_sdk` imports. 81 Python tests pass (25 scroll + 44 text_buffer + 5 snapshot + 7 text_area); all 49 Rust unit/integration tests still green (pre-existing doctest failure in headless_renderer.rs docstring untouched). This work sits above the PGAP protocol and survives the `PlexiApp` → `HostModel` cutover untouched. Text-editor and file-explorer as apps both build on these primitives.
+**Breaks if:** `from plexi_sdk import App, RenderContext, BG` fails in any example app. `cargo build --bin plexi_render --release` fails. `python3 -m pytest sdk/python/tests/` has any failing test.
+
+## 2026-04-18 — [CHANGED] Remove audio/video subsystems; keep typed pipes
+
+Deleted `src/media/audio.rs` and `src/media/video.rs`. Replaced `src/media/mod.rs` with a stub comment pointing to `typed_pipes.rs`. Removed `AudioPlay`, `AudioCapture`, `VideoPlayer`, `AudioMeter` from `DrawCommand` and all routing/render code in `ProcessApp`. Removed `AudioRecord`, `AudioPlayback`, `VideoPlayback` capabilities from `Capability` enum. Stripped `audio_capture`, `audio_play`, `video_player`, `audio_meter` methods from all `plexi_sdk.py` copies. Typed pipes infrastructure (`src/typed_pipes.rs`) untouched.
+
+**Breaks if:** `cargo test` drops below 57 passing (was 57 after this change), or `PipeOpen`/`PipeSend` stop routing correctly in `ProcessApp`.
+
+## 2026-04-18 — [CHANGED] inject_state + net.http brokering (PGAP v3)
+
+Added `PlexiEvent::InjectState { payload: Value }` to the protocol. SDK calls `on_inject(ctx, payload)` synchronously on the PGAP loop thread — no key-pushing needed to drive app state in tests.
+
+Added `http_request` / `http_response` PGAP channel. Apps call `emit.http_get(url)` from any thread (emits `http_request`, blocks on a queue). SDK handles `http_response` by unblocking the caller. Wikipedia app migrated from inline `urllib.request` to this channel.
+
+`Harness` gains `inject_state(payload)` and `mock_http(url, body)`. `render_frame` pre-drains buffered `http_request` commands before sending the render event — this eliminates the timing race where `on_render` would see stale state if the render arrived before the http_response.
+
+**Breaks if:** `wikipedia_inject_state_shows_results` fails to find "Rust" in rendered text, or `wikipedia_http_mock_intercept` panics waiting for `frame_done`.
+
+## 2026-04-18 — [CHANGED] Wire harness — agent dev loop produces PNG end-to-end (Layer 3)
+
+Added `render_pgap_frame(&[Value], width, height) -> Vec<u8>` to `HeadlessRenderer`. Parses PGAP wire format (CSS hex colors, flat JSON) directly — `rect`, `text`, `line`. `frame_done` and unsupported commands silently skipped.
+
+Added `Harness::render_to_png` in `pgap_test_harness.rs` — wraps `render_frame` + `render_pgap_frame` in one call. This is the agent dev loop API: spawn app → `render_to_png` → inspect/assert → iterate.
+
+`agent_dev_loop_produces_png` test: spawns snake subprocess, renders a frame, asserts output is valid PNG with visible pixels. 75/75 tests pass.
+
+**Breaks if:** `agent_dev_loop_produces_png` fails, or `Harness::render_to_png` is removed, or the headless renderer drops PGAP command support.
+
+## 2026-04-18 — [CHANGED] HostModel rebuild — full command/effect set (Layer 2)
+
+Rewrote all five `src/host/` files test-first. 26 tests covering every command and effect.
+
+New commands vs the stub: `Navigate(Direction)`, `SplitHorizontal`, `SplitVertical`, `NewContext`, `SwitchContext`, `SendKeyToFocusedApp`, `SimulatePathChanged`, `CheckCapability`, `GrantCapability`, `DenyCapability`. New effects: `SplitOpened`, `ContextCreated`, `ContextSwitched`, `AppKeyDispatched`, `PathBroadcasted`, `CapabilityGranted`, `CapabilityDenied`, `CapabilityPromptRequired`, `EventEmitted`.
+
+`HostServices` now has a `Box<dyn EventSink>` trait object (`NoopEventSink` default, `VecEventSink` for tests). `HostPane` tracks `declared_capabilities` and `group`. `HostContext` tracks `groups` and `permissions`.
+
+**Breaks if:** `cargo test host` drops below 26 passing tests, or any host file imports egui.
+
+## 2026-04-18 — [CHANGED] Headless PNG renderer shipped (Layer 3)
+
+`src/headless_renderer.rs` — `View::Canvas` → PNG via `tiny-skia` + `fontdue`. `HeadlessRenderer::render_to_pixmap` and `render_to_png`. Three tests: rect pixel assertion at exact coordinates, text rendering without panic, Document view → blank frame. No egui dependency. 50/50 tests pass.
+
+Added `tiny-skia = "0.11"` and `fontdue = "0.9"` to Cargo.toml. Bundled `fonts/DejaVuSans.ttf` used for text rasterization via `include_bytes!`.
+
+**Breaks if:** `cargo test headless` fails, or `src/headless_renderer.rs` gains an egui import.
+
+## 2026-04-18 — [DECISION] Doc overhaul + E2E testing architecture
+
+Rewrote doc layer to match the real north star. Key decisions:
+
+- `STATE_OF_PLEXI.md` → `ARCHITECTURE.md`. Removed temporal sections (port reality check, critical path checklist) — those belong in git log and DEV_LOG. Architecture doc should be timeless.
+- Deleted `VISION.md`, `V3_PROGRESS.md`, `docs/PRD-mvp.md`, `docs/PRD-future.md`, `docs/architecture-audit.md`, `docs/mvp-interaction-spec.md`, `docs/future-enhancements/` (6 files). All were pre-PGAP era or tracking docs with no permanent value.
+- Created `docs/specs/subsystems/host-architecture.md` and `testing-infrastructure.md` — these are the missing specs for the HostModel pure state machine, renderer layer, three-layer test strategy, and agent dev loop.
+- Rewrote `docs/AGENTS.md` completely — old version described Tauri + Playwright + TypeScript (pre-egui era).
+
+**E2E testing architecture decided:**
+1. **Headless PNG renderer** (`src/headless_renderer.rs`, tiny-skia) — draw commands → PNG, no egui. Unblocks agent dev loop.
+2. **HostModel rebuild** (`src/host/` gutted and rebuilt) — pure state machine, test-first via HostHarness, mocked HostServices at every real-system boundary. Existing `src/host/` is a stub with 5 commands; needs full command/effect set.
+3. **Wire harness** — extend `pgap_test_harness` to call headless renderer, producing PNGs after `render_frame()`.
+
+**WASM decision:** Python subprocess (honor-system capabilities) for v3.0. WASM v3.1+ for Rust apps when toolchain is ready. Protocol interface already maps cleanly to WASM component exports (init/render/on_key as typed functions) — transport change only, no protocol redesign.
+
+**Anti-stub rule added to CLAUDE.md:** define done by the test, not the code. No partial merges. HostHarness tests written before HostModel implementation.
+
 ## 2026-04-18 — [CHANGED] Codebase refactor: module splits, unified error type, PGAP reference doc
 
 Split the two largest files into focused module directories. `process_app.rs` (1319 LOC) → `process_app/mod.rs` (590) + `routing.rs` (420) + `render.rs` (149) + `prompts.rs` (102). `app.rs` (1062 LOC) → `app/mod.rs` (864) + `dispatch.rs` (118) + `sync.rs` (85). Each sub-file has a single responsibility: routing dispatches DrawCommands to subsystems; render translates committed frames into egui calls; prompts owns the capability/secret modal UI; dispatch owns keyboard routing + AppCommand execution; sync owns CWD polling + PathChanged broadcast.
