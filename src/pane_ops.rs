@@ -283,6 +283,23 @@ impl PlexiApp {
             return;
         };
 
+        let cmd = if vertical {
+            HostCommand::SplitVertical
+        } else {
+            HostCommand::SplitHorizontal
+        };
+        let effects = self.submit(cmd);
+        log::debug!("split_focused(vertical={vertical}) effects: {:?}", effects);
+        let vertical = effects
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::SplitOpened { placement, .. } => {
+                    Some(!matches!(placement, Placement::Below))
+                }
+                _ => None,
+            })
+            .unwrap_or(vertical);
+
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
 
