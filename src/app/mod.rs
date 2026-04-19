@@ -356,44 +356,65 @@ impl eframe::App for PlexiApp {
         let deferred_app_cmds = self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
 
-        // Handle SpawnApp commands returned from dispatch_app_key_events.
+        // Handle deferred app commands returned from dispatch_app_key_events.
         for cmd in deferred_app_cmds {
             use crate::app_trait::AppCommand;
-            if let AppCommand::SpawnApp {
-                type_id,
-                layout,
-                args,
-            } = cmd
-            {
-                // Capture requesting pane before launch changes focused_pane.
-                let active = self.active_context;
-                let requesting_pane_id = self.contexts[active]
-                    .focused_pane
-                    .and_then(|tile| self.contexts[active].tree.tiles.get(tile))
-                    .and_then(|tile| {
-                        if let egui_tiles::Tile::Pane(pid) = tile {
-                            Some(*pid)
-                        } else {
-                            None
-                        }
-                    });
-
-                let new_pane_id = self.host.next_pane_id();
-                self.launch_app_by_id_with_layout(&type_id, layout, &args);
-
-                // Confirm back to the requesting app.
-                if let Some(req_pane_id) = requesting_pane_id {
+            match cmd {
+                AppCommand::SpawnApp {
+                    type_id,
+                    layout,
+                    args,
+                } => {
+                    // Capture requesting pane before launch changes focused_pane.
                     let active = self.active_context;
-                    if let Some(pane) = self.contexts[active].panes.get_mut(&req_pane_id) {
-                        let event = crate::app_protocol::PlexiEvent::AppSpawned {
-                            pane_id: new_pane_id,
-                            type_id: type_id.clone(),
-                        };
-                        if let Some(a) = pane.as_app_mut() {
-                            a.runtime.queue_outbound_event(event);
+                    let requesting_pane_id = self.contexts[active]
+                        .focused_pane
+                        .and_then(|tile| self.contexts[active].tree.tiles.get(tile))
+                        .and_then(|tile| {
+                            if let egui_tiles::Tile::Pane(pid) = tile {
+                                Some(*pid)
+                            } else {
+                                None
+                            }
+                        });
+
+                    let new_pane_id = self.host.next_pane_id();
+                    self.launch_app_by_id_with_layout(&type_id, layout, &args);
+
+                    // Confirm back to the requesting app.
+                    if let Some(req_pane_id) = requesting_pane_id {
+                        let active = self.active_context;
+                        if let Some(pane) = self.contexts[active].panes.get_mut(&req_pane_id) {
+                            let event = crate::app_protocol::PlexiEvent::AppSpawned {
+                                pane_id: new_pane_id,
+                                type_id: type_id.clone(),
+                            };
+                            if let Some(a) = pane.as_app_mut() {
+                                a.runtime.queue_outbound_event(event);
+                            }
                         }
                     }
                 }
+                AppCommand::CdRequest { cwd } => {
+                    // Write `cd '<cwd>'\n` to every terminal. Single-quote the path
+                    // and escape any embedded single quotes so paths with spaces work.
+                    let active = self.active_context;
+                    let escaped = cwd.replace('\'', "'\\''");
+                    let cd_cmd = format!("cd '{}'\n", escaped);
+                    let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
+                    for pid in pane_ids {
+                        if let Some(t) = self.contexts[active]
+                            .panes
+                            .get_mut(&pid)
+                            .and_then(|p| p.as_terminal_mut())
+                        {
+                            t.backend.process_command(
+                                egui_term::BackendCommand::Write(cd_cmd.as_bytes().to_vec()),
+                            );
+                        }
+                    }
+                }
+                AppCommand::Notify(_) => {}
             }
         }
 

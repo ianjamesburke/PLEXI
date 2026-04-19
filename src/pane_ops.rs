@@ -37,7 +37,7 @@ impl PlexiApp {
     }
 
     /// Submit an `OpenPane` request to HostModel and extract
-    /// `(pane_id, share, vertical)` from the resulting `PaneOpened` effect.
+    /// `(pane_id, share, vertical, new_pane_first)` from the resulting `PaneOpened` effect.
     /// Falls back to `alloc_pane_id()` + 1:1 vertical split if no effect is
     /// returned (should not happen in practice).
     fn open_pane_layout(
@@ -46,8 +46,9 @@ impl PlexiApp {
         group: Option<String>,
         hint: Option<&str>,
         share: ShareRatio,
-    ) -> (PaneId, ShareRatio, bool) {
-        let vertical = !matches!(hint, Some("split_h"));
+    ) -> (PaneId, ShareRatio, bool, bool) {
+        let new_pane_first = matches!(hint, Some("split_above"));
+        let vertical = !matches!(hint, Some("split_h") | Some("split_above"));
         let placement = if vertical { Placement::Right } else { Placement::Below };
         let req = OpenPaneRequest {
             runtime: PaneRuntimeKind::App { app_id: app_id.to_string() },
@@ -63,7 +64,7 @@ impl PlexiApp {
             .find_map(|e| {
                 if let HostEffect::PaneOpened { pane_id, share, placement, .. } = e {
                     let vert = !matches!(placement, Placement::Below);
-                    Some((*pane_id, *share, vert))
+                    Some((*pane_id, *share, vert, new_pane_first))
                 } else {
                     None
                 }
@@ -77,6 +78,7 @@ impl PlexiApp {
                     fallback,
                     ShareRatio::new(1.0, 1.0).expect("1:1 is valid"),
                     vertical,
+                    new_pane_first,
                 )
             })
     }
@@ -86,6 +88,7 @@ impl PlexiApp {
         new_pane_id: PaneId,
         vertical: bool,
         share: ShareRatio,
+        new_pane_first: bool,
     ) -> Option<egui_tiles::TileId> {
         let focused = self.contexts[self.active_context].focused_pane?;
         let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
@@ -97,10 +100,12 @@ impl PlexiApp {
         let parent = ctx.tree.tiles.parent_of(split_target);
         let new_tile = ctx.tree.tiles.insert_pane(new_pane_id);
 
+        // LinearDir::Horizontal = side-by-side (left/right); Vertical = stacked (top/bottom).
+        // `vertical` here means "split vertically" (new pane to the right), so we need Horizontal.
         let split_dir = if vertical {
-            egui_tiles::LinearDir::Vertical
-        } else {
             egui_tiles::LinearDir::Horizontal
+        } else {
+            egui_tiles::LinearDir::Vertical
         };
 
         let inserted_as_sibling = if let Some(parent_id) = parent {
@@ -125,14 +130,15 @@ impl PlexiApp {
         };
 
         if !inserted_as_sibling {
-            let container_tile = if vertical {
-                ctx.tree
-                    .tiles
-                    .insert_vertical_tile(vec![split_target, new_tile])
+            let ordered = if new_pane_first {
+                vec![new_tile, split_target]
             } else {
-                ctx.tree
-                    .tiles
-                    .insert_horizontal_tile(vec![split_target, new_tile])
+                vec![split_target, new_tile]
+            };
+            let container_tile = if vertical {
+                ctx.tree.tiles.insert_horizontal_tile(ordered)
+            } else {
+                ctx.tree.tiles.insert_vertical_tile(ordered)
             };
 
             if let Some(Tile::Container(Container::Linear(ref mut lin))) =
@@ -198,13 +204,13 @@ impl PlexiApp {
         }
 
         let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
-        let (new_id, share, vertical) =
+        let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, group.clone(), hint, share);
         self.contexts[active]
             .panes
             .insert(new_id, new_app_pane(new_id, process, workspace_root, group));
 
-        let _ = self.split_with_new_pane(new_id, vertical, share);
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
     }
 
     fn open_builtin_app_pane(
@@ -214,6 +220,7 @@ impl PlexiApp {
         workspace_root: PathBuf,
         group: Option<String>,
         hint: Option<&str>,
+        share: Option<f32>,
     ) {
         let active = self.active_context;
         let app_type_id = app.type_id().to_string();
@@ -248,15 +255,17 @@ impl PlexiApp {
             return;
         }
 
-        let share =
-            Self::share_ratio_from_fraction(&app_type_id, self.registry.share_for(&app_type_id));
-        let (new_id, share, vertical) =
+        let share = Self::share_ratio_from_fraction(
+            &app_type_id,
+            share.or_else(|| self.registry.share_for(&app_type_id)),
+        );
+        let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(&app_type_id, group.clone(), hint, share);
         self.contexts[active]
             .panes
             .insert(new_id, new_app_pane(new_id, app, workspace_root, group));
 
-        let _ = self.split_with_new_pane(new_id, vertical, share);
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
     }
 
     fn create_single_pane_tree(
@@ -786,7 +795,7 @@ impl PlexiApp {
         // Built-in file browser gets full permissions, joins the "cwd" group so
         // it follows linked-terminal directory changes.
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, cwd, Some("cwd".to_string()), Some("split_v"));
+        self.open_builtin_app_pane(app, perms, cwd, Some("cwd".to_string()), Some("split_above"), Some(0.75));
     }
 
     /// Open the quick note app (full pane, no terminal split).
@@ -800,7 +809,7 @@ impl PlexiApp {
 
         let app = Box::new(crate::quick_note_app::QuickNoteApp::new(cwd.clone()));
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"));
+        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
     /// Open the Plexi config file in the text editor app.
@@ -822,7 +831,7 @@ impl PlexiApp {
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let editor = crate::text_editor_app::TextEditorApp::from_file(config_path);
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(Box::new(editor), perms, scope, None, Some("overlay"));
+        self.open_builtin_app_pane(Box::new(editor), perms, scope, None, Some("overlay"), None);
     }
 
     /// Launch an installed app by id in the focused pane.
@@ -883,7 +892,7 @@ impl PlexiApp {
 
         let app = Box::new(crate::secrets_app::SecretsApp::new(cwd.clone()));
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"));
+        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
     /// Spawn a new `Pane::Agent` in the active context via a horizontal split.

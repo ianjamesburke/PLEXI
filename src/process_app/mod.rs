@@ -27,7 +27,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{
-    mpsc::{self, Receiver, TryRecvError},
+    mpsc::{self, Receiver, Sender, TryRecvError},
     Arc, Mutex,
 };
 use std::thread;
@@ -85,6 +85,11 @@ pub struct ProcessApp {
     /// Shared HTTP broker. `Arc<dyn NetService>` so production panes all point
     /// at the same `UreqNetService` while tests can inject `MockNetService`.
     pub(crate) net: Arc<dyn NetService>,
+    /// Channel for async HTTP responses from background request threads.
+    /// `route_command` spawns one thread per `HttpRequest`; threads send their
+    /// result here so the UI thread never blocks on network I/O.
+    pub(crate) http_tx: Sender<PlexiEvent>,
+    http_rx: Receiver<PlexiEvent>,
 }
 
 impl ProcessApp {
@@ -204,6 +209,7 @@ impl ProcessApp {
             capabilities,
             is_builtin: false,
         };
+        let (http_tx, http_rx) = mpsc::channel::<PlexiEvent>();
 
         event_log::emit(HostEvent::AppSpawned {
             app_id: type_id.clone(),
@@ -237,6 +243,8 @@ impl ProcessApp {
             secret_input_buf: String::new(),
             keyboard_capture,
             net: Arc::new(UreqNetService::new()),
+            http_tx,
+            http_rx,
         })
     }
 
@@ -414,16 +422,25 @@ impl App for ProcessApp {
             },
         });
 
-        let new_cmds = self.drain_draw_commands();
+        // Drain async HTTP responses from background request threads.
+        loop {
+            match self.http_rx.try_recv() {
+                Ok(event) => self.outbound_events.push_back(event),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
 
-        // TODO(layer-5): proper Ready handshake — read first line synchronously
-        // before starting the draw-command loop to capture sdk + features_used.
+        let new_cmds = self.drain_draw_commands();
 
         for cmd in new_cmds {
             match cmd {
+                DrawCommand::Ready { sdk, features_used } => {
+                    self.sdk = Some(sdk);
+                    self.features_used = features_used;
+                }
                 DrawCommand::FrameDone { frame_id: done_id } => {
                     if done_id != frame_id {
-                        log::warn!(
+                        log::debug!(
                             "ProcessApp[{}]: FrameDone frame_id={done_id} expected={frame_id}",
                             self.type_id
                         );
@@ -451,7 +468,8 @@ impl App for ProcessApp {
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
                 | DrawCommand::AudioPlay { .. }
-                | DrawCommand::AudioCapture { .. }) => {
+                | DrawCommand::AudioCapture { .. }
+                | DrawCommand::CdRequest { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),

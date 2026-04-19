@@ -375,12 +375,19 @@ impl ProcessApp {
                     "ProcessApp[{}]: HttpRequest {request_id} {method} {url}",
                     self.type_id
                 );
-                let resp = self.net.http(&method, &url, &headers, body.as_deref());
-                self.outbound_events.push_back(PlexiEvent::HttpResponse {
-                    request_id,
-                    status: resp.status,
-                    body: resp.body,
-                    error: resp.error,
+                // Spawn a background thread so the HTTP call never blocks the UI thread.
+                let net = std::sync::Arc::clone(&self.net);
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    let resp = net.http(&method, &url, &headers, body.as_deref());
+                    log::debug!("ProcessApp[{type_id}]: HttpRequest {request_id} → {}", resp.status);
+                    let _ = tx.send(PlexiEvent::HttpResponse {
+                        request_id,
+                        status: resp.status,
+                        body: resp.body,
+                        error: resp.error,
+                    });
                 });
             }
             DrawCommand::AudioPlay { .. } => {
@@ -430,6 +437,12 @@ impl ProcessApp {
                     "ProcessApp[{}]: AudioMeter not yet implemented (v3.1)",
                     self.type_id
                 );
+            }
+
+            // ── Cd request ─────────────────────────────────────────────────
+            DrawCommand::CdRequest { cwd } => {
+                log::info!("ProcessApp[{}]: CdRequest cwd='{cwd}'", self.type_id);
+                self.pending_commands.push(AppCommand::CdRequest { cwd });
             }
 
             _ => unreachable!("route_command called with non-control command"),

@@ -213,10 +213,10 @@ impl AppRegistry {
         // install rather than at first pane open.
         if let Some(hint) = &manifest.launch.layout_hint {
             match hint.side.as_str() {
-                "right" | "below" | "overlay" => {}
+                "right" | "below" | "above" | "overlay" => {}
                 other => {
                     return Err(format!(
-                        "layout_hint.side must be 'right', 'below', or 'overlay'; got '{other}'"
+                        "layout_hint.side must be 'right', 'below', 'above', or 'overlay'; got '{other}'"
                     ));
                 }
             }
@@ -276,14 +276,15 @@ impl AppRegistry {
             .unwrap_or(false)
     }
 
-    /// Get the launch-time layout side hint: "right" | "below" | "overlay".
-    /// Internally mapped to the `split_v` / `split_h` strings pane_ops uses.
+    /// Get the launch-time layout side hint: "right" | "below" | "above" | "overlay".
+    /// Internally mapped to the `split_v` / `split_h` / `split_above` strings pane_ops uses.
     pub fn layout_hint_for(&self, app_id: &str) -> Option<String> {
         self.apps
             .get(app_id)
             .and_then(|a| a.launch.layout_hint.as_ref())
             .map(|h| match h.side.as_str() {
                 "below" => "split_h".to_string(),
+                "above" => "split_above".to_string(),
                 "overlay" => "overlay".to_string(),
                 _ => "split_v".to_string(),
             })

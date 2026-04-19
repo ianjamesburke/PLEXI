@@ -335,6 +335,20 @@ pub enum DrawCommand {
         #[serde(default = "default_buffer_size")]
         buffer_size: u32,
     },
+
+    /// SDK ready handshake. Sent once by the app after receiving Init.
+    /// Host captures sdk and features_used; the message is otherwise a no-op.
+    /// Mirrors `AppReply::Ready` — unified here so the background reader
+    /// doesn't need a separate parse pass for the first line.
+    Ready {
+        #[serde(default)]
+        sdk: String,
+        #[serde(default)]
+        features_used: Vec<String>,
+    },
+    /// Request the host to cd all terminals in the same pane group to `cwd`.
+    /// Terminals receive `cd <cwd>\n` written to their PTY.
+    CdRequest { cwd: String },
 }
 
 /// An action attached to a Notify command.

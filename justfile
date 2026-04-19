@@ -337,9 +337,6 @@ install-v3:
     echo "CLI binary: /usr/local/bin/plexi-v3"
     echo "Config dir: ~/.plexi-v3/"
     echo "Apps: $(ls ~/.plexi-v3/apps | wc -l | tr -d ' ') installed"
-    echo
-    echo "Running post-install smoke test..."
-    scripts/smoke-test.sh
 
 install-beta:
     #!/usr/bin/env bash

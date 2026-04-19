@@ -18,6 +18,8 @@ pub enum AppCommand {
         layout: Option<String>,
         args: Vec<String>,
     },
+    /// Request the host to cd all terminals in the same pane group to `cwd`.
+    CdRequest { cwd: String },
 }
 
 /// The trait all Plexi apps implement.

@@ -140,11 +140,13 @@ pub(super) fn render_draw_commands(
             | DrawCommand::StatusSummary { .. }
             | DrawCommand::SpawnApp { .. }
             | DrawCommand::HttpRequest { .. }
+            | DrawCommand::CdRequest { .. }
             | DrawCommand::Image { .. }
             | DrawCommand::VideoPlayer { .. }
             | DrawCommand::AudioMeter { .. }
             | DrawCommand::AudioPlay { .. }
-            | DrawCommand::AudioCapture { .. } => {}
+            | DrawCommand::AudioCapture { .. }
+            | DrawCommand::Ready { .. } => {}
         }
     }
 }

@@ -43,6 +43,10 @@ pub struct FileBrowserApp {
     /// Remembers which entry was selected when leaving a directory,
     /// so navigating back restores the selection.
     directory_selection_memory: std::collections::HashMap<PathBuf, String>,
+    // Fuzzy search
+    in_search: bool,
+    search_query: String,
+    search_indices: Vec<usize>, // indices into `entries` that match the query
     // Audio preview
     audio_tx: mpsc::Sender<AudioMsg>,
     audio_playing_path: Option<PathBuf>,
@@ -76,6 +80,9 @@ impl FileBrowserApp {
             pending_cmds: Vec::new(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
+            in_search: false,
+            search_query: String::new(),
+            search_indices: Vec::new(),
             audio_tx: tx,
             audio_playing_path: None,
             audio_playing: false,
@@ -167,6 +174,9 @@ impl FileBrowserApp {
         self.selected = 0;
         self.refresh();
         self.pending_scroll = true;
+        self.pending_cmds.push(AppCommand::CdRequest {
+            cwd: self.cwd.to_string_lossy().to_string(),
+        });
     }
 
     fn navigate_up(&mut self) {
@@ -178,6 +188,9 @@ impl FileBrowserApp {
             self.cwd = parent.clone();
             self.selected = 0;
             self.refresh();
+            self.pending_cmds.push(AppCommand::CdRequest {
+                cwd: self.cwd.to_string_lossy().to_string(),
+            });
             let restore_name = self
                 .directory_selection_memory
                 .remove(&self.cwd)
@@ -192,7 +205,40 @@ impl FileBrowserApp {
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
-        self.entries.get(self.selected)
+        if self.in_search {
+            self.search_indices.get(self.selected).and_then(|&i| self.entries.get(i))
+        } else {
+            self.entries.get(self.selected)
+        }
+    }
+
+    fn refilter(&mut self) {
+        let q = self.search_query.to_lowercase();
+        self.search_indices = (0..self.entries.len())
+            .filter(|&i| {
+                if q.is_empty() {
+                    return true;
+                }
+                let name = self.entries[i].name.to_lowercase();
+                let mut qi = q.chars().peekable();
+                for c in name.chars() {
+                    if qi.peek() == Some(&c) {
+                        qi.next();
+                    }
+                }
+                qi.peek().is_none()
+            })
+            .collect();
+        self.selected = 0;
+        self.pending_scroll = true;
+    }
+
+    fn exit_search(&mut self) {
+        self.in_search = false;
+        self.search_query.clear();
+        self.search_indices.clear();
+        self.selected = 0;
+        self.pending_scroll = true;
     }
 
     /// Called by the host when the linked terminal's CWD changes.
@@ -325,9 +371,10 @@ impl FileBrowserApp {
         let mut navigate_to: Option<(PathBuf, bool)> = None;
         let should_scroll = self.pending_scroll;
         self.pending_scroll = false;
-        let entry_count = self.entries.len();
-        for idx in 0..entry_count {
-            let entry = self.entries[idx].clone();
+        let display_count = if self.in_search { self.search_indices.len() } else { self.entries.len() };
+        for idx in 0..display_count {
+            let actual_idx = if self.in_search { self.search_indices[idx] } else { idx };
+            let entry = self.entries[actual_idx].clone();
             let (rect, resp) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), ROW_HEIGHT),
                 egui::Sense::click(),
@@ -810,6 +857,20 @@ impl App for FileBrowserApp {
                 });
 
                 ui.add_space(4.0);
+
+                if self.in_search {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(colors.accent, "/");
+                        ui.colored_label(colors.text_primary,
+                            if self.search_query.is_empty() { "type to filter…" } else { &self.search_query });
+                        let count = self.search_indices.len();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.colored_label(colors.text_dim,
+                                format!("{count} match{}", if count == 1 { "" } else { "es" }));
+                        });
+                    });
+                }
+
                 ui.separator();
                 ui.add_space(4.0);
 
@@ -854,12 +915,64 @@ impl App for FileBrowserApp {
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
+        // Search mode: handle all input here and return.
+        if self.in_search {
+            if input.key_pressed(egui::Key::Escape) {
+                self.exit_search();
+                return true;
+            }
+            if input.key_pressed(egui::Key::Backspace) {
+                self.search_query.pop();
+                self.refilter();
+                return true;
+            }
+            if input.key_pressed(egui::Key::Enter) {
+                if let Some(&entry_idx) = self.search_indices.get(self.selected) {
+                    let entry = self.entries[entry_idx].clone();
+                    if entry.is_dir {
+                        self.exit_search();
+                        self.navigate_into(entry.path);
+                    } else {
+                        let _ = std::process::Command::new("open").arg(&entry.path).spawn();
+                        self.exit_search();
+                    }
+                }
+                return true;
+            }
+            let last_filtered = self.search_indices.len().saturating_sub(1);
+            if input.key_pressed(egui::Key::ArrowDown) || input.key_pressed(egui::Key::J) {
+                self.selected = (self.selected + 1).min(last_filtered);
+                self.pending_scroll = true;
+                return true;
+            }
+            if input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::K) {
+                self.selected = self.selected.saturating_sub(1);
+                self.pending_scroll = true;
+                return true;
+            }
+            for event in &input.events {
+                if let egui::Event::Text(text) = event {
+                    self.search_query.push_str(text);
+                    self.refilter();
+                }
+            }
+            return true;
+        }
+
         if self.entries.is_empty() {
             if input.key_pressed(egui::Key::Backspace) {
                 self.navigate_up();
                 return true;
             }
             return false;
+        }
+
+        // '/' enters search mode.
+        if input.key_pressed(egui::Key::Slash) && !input.modifiers.command {
+            self.in_search = true;
+            self.search_query.clear();
+            self.refilter();
+            return true;
         }
 
         let last = self.entries.len().saturating_sub(1);
