@@ -162,6 +162,16 @@ impl TypedPipeRegistry {
             listener.as_raw_fd()
         };
 
+        // Spec I-7: every long-lived host FD must be close-on-exec so it
+        // disappears across any subsequent child `exec()`. On macOS the
+        // stdlib does NOT set `SOCK_CLOEXEC` on UnixListener::bind, so set
+        // FD_CLOEXEC explicitly here. Idempotent; harmless on Linux.
+        if let Err(e) = crate::fd_util::set_cloexec(host_end_fd) {
+            return Err(PipeError::BindFailed(format!(
+                "set_cloexec({socket_path}): {e}"
+            )));
+        }
+
         let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
         let shutdown = Arc::new(AtomicBool::new(false));
 

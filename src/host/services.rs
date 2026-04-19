@@ -45,7 +45,20 @@ impl FileEventSink {
             .append(true)
             .open(&path)
         {
-            Ok(f) => Some(std::io::BufWriter::new(f)),
+            Ok(f) => {
+                // Spec I-7: long-lived host FD — must not be inherited by
+                // any subprocess app spawned after this point. Non-fatal
+                // on failure: log and proceed so a fcntl quirk doesn't
+                // brick event logging.
+                use std::os::unix::io::AsRawFd;
+                if let Err(e) = crate::fd_util::set_cloexec(f.as_raw_fd()) {
+                    log::warn!(
+                        "FileEventSink: set_cloexec({}) failed: {e}",
+                        path.display()
+                    );
+                }
+                Some(std::io::BufWriter::new(f))
+            }
             Err(e) => {
                 log::error!("FileEventSink: open({}) failed: {e}", path.display());
                 None

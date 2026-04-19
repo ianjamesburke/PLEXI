@@ -286,6 +286,11 @@ impl Harness {
         }));
     }
 
+    /// Child process PID — used by the FD-inheritance test to poke `lsof`.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(|c| c.id())
+    }
+
     pub fn shutdown(mut self) {
         if let Some(mut stdin) = self.stdin.take() {
             let _ = writeln!(stdin, "{}", serde_json::json!({ "type": "shutdown" }));
@@ -483,5 +488,114 @@ mod tests {
             "mocked broker search must surface 'Rust (programming language)' in render output"
         );
         h.shutdown();
+    }
+
+    // ── FD inheritance test (spec I-7) ─────────────────────────────────────
+    //
+    // Subprocess apps must NOT inherit any host-owned FD other than stdio.
+    // The test opens the same two kinds of long-lived FDs that real Plexi
+    // holds in production — a UnixListener (like `typed_pipes::open_binary`)
+    // and a log File (like `event_log::open_log_file` / `FileEventSink`) —
+    // then spawns snake through the same Harness path and verifies via
+    // `lsof -p <pid>` that neither FD is visible in the child's FD table.
+    //
+    // macOS-only: `lsof` is universally available on macOS (the dev
+    // platform) and parsing its output is dramatically simpler than
+    // shelling out to `/proc/<pid>/fd` inside the child. Linux CI covers
+    // Layer-1 integration without this specific FD check; a
+    // target_os-gated Linux variant can follow if CI ever runs on Linux.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fd_inheritance_test() {
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::net::UnixListener;
+
+        if !python3_available() {
+            eprintln!("SKIP: python3 not on PATH");
+            return;
+        }
+
+        // 1. Bind a host-style UnixListener in THIS process and mark it
+        //    CLOEXEC via the production helper. Mirrors what
+        //    `typed_pipes::open_binary` does on every binary pipe open.
+        let sock_path = std::env::temp_dir().join(format!(
+            "plexi-fd-audit-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).expect("bind audit listener");
+        crate::fd_util::set_cloexec(listener.as_raw_fd())
+            .expect("set_cloexec on audit listener");
+
+        // 2. Open a long-lived log file and mark CLOEXEC. Mirrors
+        //    `event_log::open_log_file` + `FileEventSink::new`.
+        let log_path = std::env::temp_dir().join(format!(
+            "plexi-fd-audit-{}.jsonl",
+            std::process::id()
+        ));
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .expect("open audit log file");
+        crate::fd_util::set_cloexec(log_file.as_raw_fd())
+            .expect("set_cloexec on audit log file");
+
+        // 3. Now spawn snake *after* both FDs are open. If set_cloexec
+        //    regressed, the fork-exec inside Command::spawn would leak both
+        //    into the child's FD table.
+        let Some(h) = spawn_example("snake") else {
+            let _ = std::fs::remove_file(&sock_path);
+            let _ = std::fs::remove_file(&log_path);
+            return;
+        };
+        let pid = h.pid().expect("child pid");
+
+        // Give the child a beat to fully `exec` before we poke lsof.
+        thread::sleep(Duration::from_millis(200));
+
+        let out = Command::new("lsof")
+            .args(["-p", &pid.to_string(), "-Fn"])
+            .stderr(Stdio::null())
+            .output()
+            .expect("run lsof");
+        assert!(
+            out.status.success(),
+            "lsof -p {pid} exited non-zero; stdout={}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let listing = String::from_utf8_lossy(&out.stdout);
+
+        // Diagnostic on failure: print the whole lsof dump so a regression
+        // is easy to see.
+        let sock_leaked = listing.contains(
+            sock_path
+                .to_str()
+                .expect("sock path is valid UTF-8"),
+        );
+        let log_leaked = listing.contains(
+            log_path
+                .to_str()
+                .expect("log path is valid UTF-8"),
+        );
+
+        // Drop our side of the listener + log BEFORE kill()/wait() so
+        // cleanup order is predictable.
+        drop(listener);
+        drop(log_file);
+        h.shutdown();
+        let _ = std::fs::remove_file(&sock_path);
+        let _ = std::fs::remove_file(&log_path);
+
+        assert!(
+            !sock_leaked,
+            "snake inherited host UnixListener FD ({}):\n{listing}",
+            sock_path.display()
+        );
+        assert!(
+            !log_leaked,
+            "snake inherited host log FD ({}):\n{listing}",
+            log_path.display()
+        );
     }
 }

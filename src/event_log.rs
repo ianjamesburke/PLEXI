@@ -209,7 +209,17 @@ fn open_log_file(path: &std::path::Path) -> Option<std::fs::File> {
         .append(true)
         .open(path)
     {
-        Ok(f) => Some(f),
+        Ok(f) => {
+            // Spec I-7: this FD lives on the writer thread for the life of
+            // the process — it MUST NOT be inherited across any future
+            // subprocess exec. Rust stdlib sets O_CLOEXEC on Linux but not
+            // on macOS — set it explicitly for portability.
+            use std::os::unix::io::AsRawFd;
+            if let Err(e) = crate::fd_util::set_cloexec(f.as_raw_fd()) {
+                log::warn!("event_log: set_cloexec({:?}) failed: {e}", path);
+            }
+            Some(f)
+        }
         Err(e) => {
             log::warn!("event_log: failed to open {:?}: {e}", path);
             None
