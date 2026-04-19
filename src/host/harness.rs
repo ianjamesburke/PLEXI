@@ -524,9 +524,16 @@ mod tests {
 
         let contents = std::fs::read_to_string(&tmp).expect("events.jsonl readable");
         let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(lines.len(), 2, "two effects → two lines");
-        assert!(lines[0].contains("focus_changed"), "first line: {}", lines[0]);
-        assert!(lines[1].contains("pane_closed"), "second line: {}", lines[1]);
+        // Line 0 is the `sink_opened` startup heartbeat (post-install smoke
+        // gate). Lines 1 + 2 are the two emitted effects.
+        assert_eq!(lines.len(), 3, "sink_opened + two effects → three lines");
+        assert!(
+            lines[0].contains("sink_opened"),
+            "first line is startup heartbeat: {}",
+            lines[0]
+        );
+        assert!(lines[1].contains("focus_changed"), "second line: {}", lines[1]);
+        assert!(lines[2].contains("pane_closed"), "third line: {}", lines[2]);
 
         let _ = std::fs::remove_file(&tmp);
     }

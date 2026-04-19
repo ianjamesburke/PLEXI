@@ -19,7 +19,9 @@ fail() { printf '\033[31m✗\033[0m %s\n' "$*"; FAIL=1; }
 
 if [[ -x "$BINARY" ]]; then
   [[ -f "$LOG_FILE" ]] && log_start=$(wc -l < "$LOG_FILE") || log_start=0
-  PLEXI_AUDIO="mock://" PLEXI_VIDEO="mock://" "$BINARY" >/dev/null 2>&1 &
+  # Unset PLEXI_RUNNING so the binary doesn't short-circuit the smoke run
+  # when the installer is triggered from inside a Plexi terminal.
+  PLEXI_RUNNING= PLEXI_AUDIO="mock://" PLEXI_VIDEO="mock://" "$BINARY" >/dev/null 2>&1 &
   pid=$!
   sleep 2
   kill "$pid" 2>/dev/null

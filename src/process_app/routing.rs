@@ -342,8 +342,14 @@ impl ProcessApp {
                 });
             }
 
-            // ── Media + HTTP placeholders (STEP-9 wires these) ────────────
-            DrawCommand::HttpRequest { request_id, url, .. } => {
+            // ── HTTP request (broker via HostServices::net) ───────────────
+            DrawCommand::HttpRequest {
+                request_id,
+                url,
+                method,
+                headers,
+                body,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::NetHttp)
                 {
@@ -360,10 +366,17 @@ impl ProcessApp {
                         });
                     return;
                 }
-                log::warn!(
-                    "ProcessApp[{}]: HttpRequest {request_id} for {url} — broker not wired yet (STEP-9)",
+                log::debug!(
+                    "ProcessApp[{}]: HttpRequest {request_id} {method} {url}",
                     self.type_id
                 );
+                let resp = self.net.http(&method, &url, &headers, body.as_deref());
+                self.outbound_events.push_back(PlexiEvent::HttpResponse {
+                    request_id,
+                    status: resp.status,
+                    body: resp.body,
+                    error: resp.error,
+                });
             }
             DrawCommand::AudioPlay { .. } => {
                 if let PermissionCheck::Denied(reason) =

@@ -4,7 +4,7 @@
 //! `HostModel` with `HostServices::mock()` and the state machine never
 //! touches the real keychain, filesystem, or network. Production uses
 //! `HostServices::new()` which wires the concrete implementations in
-//! `secrets.rs`, `std::fs`, `reqwest`, and `AppRegistry`.
+//! `secrets.rs`, `std::fs`, `ureq`, and `AppRegistry`.
 
 use crate::host::effect::HostEffect;
 use std::collections::HashMap;
@@ -51,7 +51,21 @@ impl FileEventSink {
                 None
             }
         };
-        Self { path, writer }
+        let mut sink = Self { path, writer };
+        // Startup heartbeat so the post-install smoke test can assert the
+        // sink opened the file for write (non-empty file means the wiring
+        // is live, even before the first HostCommand fires).
+        if let Some(writer) = sink.writer.as_mut() {
+            use std::io::Write;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let line = format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now}}}\n");
+            let _ = writer.write_all(line.as_bytes());
+            let _ = writer.flush();
+        }
+        sink
     }
 }
 
@@ -219,25 +233,95 @@ pub struct HttpResponse {
     pub error: Option<String>,
 }
 
-pub trait NetService: Send {
-    fn http_get(&self, url: &str) -> HttpResponse;
+/// Host-side HTTP broker. `Send + Sync` so a single handle can be shared across
+/// per-pane `ProcessApp` instances that all call out concurrently.
+pub trait NetService: Send + Sync {
+    /// Issue a synchronous HTTP request. Implementations must never panic;
+    /// transport errors are returned as `HttpResponse { status: 0, error: Some(..) }`.
+    fn http(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        body: Option<&str>,
+    ) -> HttpResponse;
+
+    /// Convenience wrapper — GET with no custom headers.
+    fn http_get(&self, url: &str) -> HttpResponse {
+        self.http("GET", url, &HashMap::new(), None)
+    }
 }
 
-/// Production impl — stub until STEP-9 wires the real HTTP broker.
-/// Returns 501 so apps see a clean error rather than silent blocking.
-/// STEP-9 replaces this with a blocking reqwest (or ureq) call that
-/// takes the structured HttpRequest { method, headers, body } variant.
-pub struct StubNetService;
+/// Production impl — blocking HTTP via `ureq`. Pure-Rust, no tokio.
+/// 10s connect timeout, 30s total timeout so apps cannot wedge the host
+/// forever on a hung peer.
+pub struct UreqNetService {
+    agent: ureq::Agent,
+}
 
-impl NetService for StubNetService {
-    fn http_get(&self, url: &str) -> HttpResponse {
-        log::warn!(
-            "StubNetService::http_get({url}) — net.http broker not wired yet (STEP-9)"
-        );
-        HttpResponse {
-            status: 501,
-            body: String::new(),
-            error: Some("net.http broker not implemented (STEP-9)".to_string()),
+impl UreqNetService {
+    pub fn new() -> Self {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build();
+        Self { agent }
+    }
+}
+
+impl Default for UreqNetService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NetService for UreqNetService {
+    fn http(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        body: Option<&str>,
+    ) -> HttpResponse {
+        let mut req = self.agent.request(method, url);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        let response = match body {
+            Some(b) => req.send_string(b),
+            None => req.call(),
+        };
+        match response {
+            Ok(resp) => {
+                let status = resp.status();
+                let body_text = resp.into_string().unwrap_or_default();
+                HttpResponse {
+                    status,
+                    body: body_text,
+                    error: None,
+                }
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                // Non-2xx — ureq returns this as Err, but the caller still
+                // wants the body + status for real diagnostics (e.g. 429
+                // Retry-After bodies or GitHub's JSON error payloads).
+                let body_text = resp.into_string().unwrap_or_default();
+                HttpResponse {
+                    status,
+                    body: body_text,
+                    error: None,
+                }
+            }
+            Err(ureq::Error::Transport(t)) => {
+                log::warn!(
+                    "UreqNetService: transport error for {method} {url}: {t}"
+                );
+                HttpResponse {
+                    status: 0,
+                    body: String::new(),
+                    error: Some(format!("transport: {t}")),
+                }
+            }
         }
     }
 }
@@ -265,9 +349,19 @@ impl Default for MockNetService {
 }
 
 impl NetService for MockNetService {
-    fn http_get(&self, url: &str) -> HttpResponse {
+    fn http(
+        &self,
+        _method: &str,
+        url: &str,
+        _headers: &HashMap<String, String>,
+        _body: Option<&str>,
+    ) -> HttpResponse {
         match self.responses.get(url) {
-            Some(body) => HttpResponse { status: 200, body: body.clone(), error: None },
+            Some(body) => HttpResponse {
+                status: 200,
+                body: body.clone(),
+                error: None,
+            },
             None => HttpResponse {
                 status: 404,
                 body: String::new(),
@@ -352,7 +446,9 @@ pub struct HostServices {
     pub event_sink: Box<dyn EventSink>,
     pub fs: Box<dyn FsService>,
     pub secrets: Box<dyn SecretsService>,
-    pub net: Box<dyn NetService>,
+    /// Arc rather than Box so every `ProcessApp` can hold a cheap clone and
+    /// issue HTTP calls without going back through `HostServices`.
+    pub net: std::sync::Arc<dyn NetService>,
     pub spawn: Box<dyn SpawnService>,
 }
 
@@ -368,7 +464,7 @@ impl HostServices {
             event_sink: Box::new(FileEventSink::new(effects_path)),
             fs: Box::new(RealFsService),
             secrets: Box::new(KeychainSecretsService),
-            net: Box::new(StubNetService),
+            net: std::sync::Arc::new(UreqNetService::new()),
             spawn: Box::new(LoggingSpawnService),
         }
     }
@@ -379,7 +475,7 @@ impl HostServices {
             event_sink: Box::new(VecEventSink::new()),
             fs: Box::new(MockFsService::new()),
             secrets: Box::new(MockSecretsService::new()),
-            net: Box::new(MockNetService::new()),
+            net: std::sync::Arc::new(MockNetService::new()),
             spawn: Box::new(MockSpawnService::new()),
         }
     }

@@ -20,23 +20,27 @@
 //! The example apps are Python 3. If `python3` is not resolvable on PATH, tests
 //! skip with a logged warning instead of failing.
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+use crate::host::services::{MockNetService, NetService, UreqNetService};
 
 /// Thin PGAP v3 subprocess driver.
 pub(crate) struct Harness {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     rx: Receiver<String>,
-    /// Mock HTTP responses: url → body. Matched exactly against `http_request` url fields.
-    http_mocks: HashMap<String, String>,
+    /// HTTP broker used to satisfy `http_request` draw commands. Defaults to
+    /// `UreqNetService` for parity with production; tests swap in
+    /// `MockNetService` via `set_net(..)`.
+    net: Arc<dyn NetService>,
 }
 
 impl Harness {
@@ -100,8 +104,15 @@ impl Harness {
             child: Some(child),
             stdin: Some(stdin),
             rx,
-            http_mocks: HashMap::new(),
+            net: Arc::new(UreqNetService::new()),
         })
+    }
+
+    /// Install a `NetService` (mock or real) for the harness. Every
+    /// `http_request` draw command emitted by the subprocess is satisfied
+    /// by calling `net.http(..)` and replying with `http_response`.
+    pub fn set_net(&mut self, net: Arc<dyn NetService>) {
+        self.net = net;
     }
 
     /// Send a raw JSON value as one NDJSON line.
@@ -167,12 +178,28 @@ impl Harness {
     fn reply_http_request(&mut self, v: &Value) {
         let req_id = v.get("request_id").and_then(Value::as_str).unwrap_or("");
         let url = v.get("url").and_then(Value::as_str).unwrap_or("");
-        let resp = if let Some(body) = self.http_mocks.get(url) {
-            serde_json::json!({"type":"http_response","request_id":req_id,"status":200,"body":body})
-        } else {
-            serde_json::json!({"type":"http_response","request_id":req_id,"status":404,"body":"","error":format!("no mock for {url}")})
-        };
-        self.send(&resp);
+        let method = v.get("method").and_then(Value::as_str).unwrap_or("GET");
+        let body = v.get("body").and_then(Value::as_str).map(str::to_string);
+        let headers: std::collections::HashMap<String, String> = v
+            .get("headers")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let resp = self.net.http(method, url, &headers, body.as_deref());
+        let mut payload = serde_json::json!({
+            "type": "http_response",
+            "request_id": req_id,
+            "status": resp.status,
+            "body": resp.body,
+        });
+        if let Some(err) = resp.error {
+            payload["error"] = Value::String(err);
+        }
+        self.send(&payload);
     }
 
     fn pre_drain_http(&mut self) {
@@ -234,10 +261,6 @@ impl Harness {
     pub fn inject_state(&mut self, payload: &Value) {
         self.send(&serde_json::json!({"type":"inject_state","payload":payload}));
         thread::sleep(Duration::from_millis(30));
-    }
-
-    pub fn mock_http(&mut self, url: &str, body: &str) {
-        self.http_mocks.insert(url.to_string(), body.to_string());
     }
 
     pub fn render_to_png(&mut self, frame_id: u64, w: f32, h: f32) -> Vec<u8> {
@@ -328,7 +351,13 @@ mod tests {
         let _ = std::fs::create_dir_all(&workspace);
         let python = Path::new("python3");
         let args: Vec<&str> = vec![entry.to_str().unwrap()];
-        match Harness::spawn(python, &args, &cwd, &[]) {
+        // Point at the canonical SDK so examples pick up the current package
+        // instead of any stale per-example copy.
+        let sdk_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sdk")
+            .join("python");
+        let env: Vec<(&str, &str)> = vec![("PYTHONPATH", sdk_root.to_str().unwrap())];
+        match Harness::spawn(python, &args, &cwd, &env) {
             Ok(mut h) => {
                 h.init_and_expect_ready(name, &workspace);
                 Some(h)
@@ -403,6 +432,56 @@ mod tests {
         // Drop via shutdown() — verifies no zombie process + no hang. If
         // Shutdown wasn't honored the Drop impl's 200ms grace+kill would
         // keep the test bounded, and the whole test still passes quickly.
+        h.shutdown();
+    }
+
+    /// End-to-end proof that the real HTTP broker pathway (routing.rs →
+    /// NetService → http_response round-trip) drives wikipedia through a
+    /// search. The previous `http_mocks` dict is gone; this test uses the
+    /// same `MockNetService::with(..)` seam that production panes will use
+    /// when tests swap the broker.
+    #[test]
+    fn layer1_wikipedia_http_broker_end_to_end() {
+        let Some(mut h) = spawn_example("wikipedia") else { return };
+
+        // Canonical opensearch response the wikipedia example expects to
+        // parse. Position [0] is the query echo, [1] is the match list.
+        let search_url = "https://en.wikipedia.org/w/api.php?action=opensearch&search=Rust&limit=10&format=json";
+        let search_body = r#"["Rust",["Rust (programming language)","Rust belt","Rust Belt"],["",""," "],[]]"#;
+
+        let mock = MockNetService::new().with(search_url, search_body);
+        h.set_net(Arc::new(mock));
+
+        // Type "Rust" then Enter. Each letter is delivered as a Key event;
+        // the SDK fans out on_key for every char.
+        h.render_frame(1, 800.0, 600.0);
+        for ch in ["R", "u", "s", "t"] {
+            h.send_key(ch);
+        }
+        h.send_key("Enter");
+
+        // Search runs on a background thread; give it a few render cycles
+        // to round-trip through the broker and update `_mode = "results"`.
+        let mut found_rust = false;
+        for frame_id in 2..20 {
+            let cmds = h.render_frame(frame_id, 800.0, 600.0);
+            let has_rust = cmds.iter().any(|v| {
+                let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
+                (kind == "text" || kind == "list")
+                    && serde_json::to_string(v)
+                        .unwrap_or_default()
+                        .contains("Rust (programming language)")
+            });
+            if has_rust {
+                found_rust = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            found_rust,
+            "mocked broker search must surface 'Rust (programming language)' in render output"
+        );
         h.shutdown();
     }
 }
