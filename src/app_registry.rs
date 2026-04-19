@@ -77,6 +77,10 @@ pub struct AppCapabilities {
     /// (takes the full pane, no terminal split). Declare as `layout_hint = "overlay"`.
     #[serde(default)]
     pub layout_hint: Option<String>,
+    /// Fraction of parent container given to the new pane when opened. Must be in (0.0, 1.0).
+    /// Defaults to 0.5 (50/50) when omitted. Declare as `initial_share = 0.4`.
+    #[serde(default)]
+    pub initial_share: Option<f32>,
 }
 
 impl AppCapabilities {
@@ -228,6 +232,13 @@ impl AppRegistry {
         self.apps
             .get(app_id)
             .and_then(|a| a.manifest.capabilities.layout_hint.clone())
+    }
+
+    /// Get the manifest-declared initial_share fraction for an app (None if unset).
+    pub fn share_for(&self, app_id: &str) -> Option<f32> {
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.manifest.capabilities.initial_share)
     }
 
     /// Launch an app process for the given id.

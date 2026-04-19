@@ -7,3 +7,4 @@ entry = "video_player.py"
 
 [app.capabilities]
 capabilities = ["video.playback", "fs.read"]
+initial_share = 0.7

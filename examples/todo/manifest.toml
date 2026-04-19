@@ -10,3 +10,4 @@ capabilities = ["fs.read", "fs.write"]
 # Opt into the "cwd" pane group: receives PathChanged when any linked terminal
 # in the same group moves directories. Lets the todo list track the focused cwd.
 group = "cwd"
+initial_share = 0.4

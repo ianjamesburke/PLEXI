@@ -7,3 +7,4 @@ entry = "wikipedia.py"
 
 [app.capabilities]
 capabilities = ["net.http"]
+initial_share = 0.6

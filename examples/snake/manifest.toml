@@ -7,3 +7,4 @@ entry = "snake.py"
 
 [app.capabilities]
 capabilities = []
+initial_share = 0.5

@@ -22,6 +22,20 @@ impl PlexiApp {
         self.host.handle_command(cmd, &mut self.host_services)
     }
 
+    /// Convert a manifest-declared share fraction (0.0..1.0 exclusive) to a `ShareRatio`.
+    /// Validates the range and falls back to 0.5 (1:1) on invalid input, logging a warning.
+    fn share_ratio_from_fraction(app_id: &str, fraction: Option<f32>) -> ShareRatio {
+        let f = fraction.unwrap_or(0.5);
+        if f <= 0.0 || f >= 1.0 {
+            log::warn!(
+                "open_pane_layout({app_id}): initial_share {f} out of range (0.0, 1.0); defaulting to 0.5"
+            );
+            ShareRatio::new(1.0, 1.0).expect("1:1 is valid")
+        } else {
+            ShareRatio::new(f, 1.0 - f).expect("validated fraction in (0, 1)")
+        }
+    }
+
     /// Submit an `OpenPane` request to HostModel and extract `(share, vertical)`
     /// from the resulting `PaneOpened` effect. Falls back to 1:1 vertical split
     /// if no effect is returned (should not happen in practice).
@@ -30,13 +44,14 @@ impl PlexiApp {
         app_id: &str,
         group: Option<String>,
         hint: Option<&str>,
+        share: ShareRatio,
     ) -> (ShareRatio, bool) {
         let vertical = !matches!(hint, Some("split_h"));
         let placement = if vertical { Placement::Right } else { Placement::Below };
         let req = OpenPaneRequest {
             runtime: PaneRuntimeKind::App { app_id: app_id.to_string() },
             placement,
-            share: ShareRatio::new(1.0, 1.0).expect("1:1 is valid"),
+            share,
             group,
             declared_capabilities: vec![],
         };
@@ -171,7 +186,8 @@ impl PlexiApp {
             return;
         }
 
-        let (share, vertical) = self.open_pane_layout(app_id, group.clone(), hint);
+        let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
+        let (share, vertical) = self.open_pane_layout(app_id, group.clone(), hint, share);
 
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -223,7 +239,9 @@ impl PlexiApp {
             return;
         }
 
-        let (share, vertical) = self.open_pane_layout(&app_type_id, group.clone(), hint);
+        let share =
+            Self::share_ratio_from_fraction(&app_type_id, self.registry.share_for(&app_type_id));
+        let (share, vertical) = self.open_pane_layout(&app_type_id, group.clone(), hint, share);
 
         let new_id = self.next_pane_id;
         self.next_pane_id += 1;

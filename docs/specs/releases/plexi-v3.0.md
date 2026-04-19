@@ -108,6 +108,13 @@ Defined capabilities (v3):
 
 Undeclared capabilities block at first use and surface a modal prompt.
 
+### Manifest layout fields
+
+Apps can declare pane layout preferences in `[app.capabilities]`:
+
+- `layout_hint` — `"split"` (default, opens beside the focused pane) or `"overlay"` (replaces the focused pane, no terminal split).
+- `initial_share` — fraction of the parent container assigned to the **new pane** when opened. Must be in `(0.0, 1.0)` exclusive. Omitting it defaults to `0.5` (50/50 split). Example: `initial_share = 0.4` gives 40% to the new pane and 60% to the existing one. Values outside `(0.0, 1.0)` are rejected at launch time with a `warn` log and fall back to `0.5`.
+
 ---
 
 ## 5. Directory-Scoped Secrets — Hard Invariant
@@ -216,7 +223,27 @@ PLEXI_VIDEO=mock://fixtures/test.mp4 plexi
 Entire media subsystem becomes deterministic and headless.
 
 ### 10.3 Protocol test harness
-Existing pattern: replay `PlexiEvent` JSON into an app, assert on emitted `DrawCommand` JSON. Combined with mock devices, CI runs the full example app suite end-to-end with zero real hardware.
+Replay `PlexiEvent` JSON into an app subprocess, assert on emitted `DrawCommand` JSON. Combined with mock devices, CI runs the full example app suite end-to-end with zero real hardware.
+
+### 10.4 HostModel — the pure state machine
+All host business logic (pane routing, focus, splits, pane groups, capability decisions) lives in `HostModel` with zero egui dependency. Commands in, effects out. The `HostHarness` drives it in `cargo test` — no GUI, no subprocess spawning. `HostServices` trait objects are swapped for mocks to inject test data at every real-system boundary (filesystem, network, secrets, event log).
+
+### 10.5 Headless PNG renderer
+`src/headless_renderer.rs` — built on `tiny-skia`. Input: `Vec<DrawCommand>` + viewport size. Output: PNG bytes. Activated by `PLEXI_RENDER=headless`. Used in the agent dev loop: agent builds app, harness renders a frame, agent inspects the PNG, iterates. No egui, no GPU, no display required.
+
+**Determinism requirement:** Apps must use the `frame_timestamp` field from the `Render` event for any time-dependent rendering. Never call `time.time()` or `random` inside a render function — this breaks reproducibility and makes visual regression tests meaningless.
+
+### 10.6 Three-layer CI gate
+All three layers run as `cargo test`. No test may require a GUI, a browser, or real hardware.
+
+```
+Layer 1: cargo test --lib pgap_test_harness   — app protocol behavior
+Layer 2: cargo test --lib host                — host state machine
+Layer 3: PLEXI_RENDER=headless cargo test     — headless visual assertions
+Smoke:   scripts/smoke-test.sh                — real binary + installed apps
+```
+
+See [`docs/specs/subsystems/testing-infrastructure.md`](../../specs/subsystems/testing-infrastructure.md) for the full spec.
 
 ---
 
@@ -263,7 +290,8 @@ The v2.x backlog-scanning code in `notification_palette.rs` is deleted. The pale
 - **In-process DSP plugin surface** (v4+) — required for live synthesis, real-time effects, <5 ms analog-modeling instruments. Needs shared memory ring buffers and a plugin sandbox. Conceptually VST/AU/CLAP-shaped.
 - **MIDI subsystem** — trivial protocol-wise (capabilities + events + optional typed pipe for SysEx). Skipped in v3 to keep example app count at five.
 - **Collaboration / sync** — SpacetimeDB-shaped future work.
-- **Spatial canvas / WASM target** — parked v2.3 ideas.
+- **Spatial canvas** — parked v2.3 idea.
+- **WASM app sandbox** — v3.1+ for Rust apps (Rust-to-WASM toolchain is ready; wires cleanly to PGAP's Init/Render/OnKey interface as typed WASM component exports). Python WASM deferred until the Python WASM runtime matures. v3.0 uses Python subprocess with honor-system capability enforcement, which is correct for the curated app set shipping with Plexi.
 - **Rich text / clip regions / IME / multiline input** — parked v2.2 ideas. Re-evaluate after v3 ships.
 
 ---
@@ -277,7 +305,7 @@ v3 is a clean break. There is no in-place upgrade from v2.x on alpha. Plan:
 3. Port the solid pieces forward: Pane ADT (finished, not PR1-of-3), capability broker, event bus skeleton, runs, notifications, secret broker (with directory-scoped invariant), typed pipes, Plexi IQ (wired).
 4. Build media subsystem (audio device trait, video decoder trait, binary pipes, mock impls).
 5. Build the five example apps.
-6. CI gate: full protocol test harness green with mocked devices.
+6. CI gate green: `cargo test --lib host` (HostModel) + `cargo test --lib` (all, with mocked devices) + `scripts/smoke-test.sh` (real binary). No GUI, no browser, no real hardware.
 7. `v3` → `beta` → `main`. Tag `v3.0.0`.
 
 Breaking changes expected: manifest format changes, PGAP version bump, capability list changes, example app removal. All documented in `CHANGELOG.md` at release time.
