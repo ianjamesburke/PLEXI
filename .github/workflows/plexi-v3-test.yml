@@ -1,4 +1,4 @@
-name: v3 protocol test harness
+name: v3 test matrix
 
 on:
   push:
@@ -9,6 +9,9 @@ on:
 jobs:
   test:
     runs-on: macos-latest
+    env:
+      PLEXI_AUDIO: "mock://"
+      PLEXI_VIDEO: "mock://"
     steps:
       - uses: actions/checkout@v4
 
@@ -21,8 +24,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run PGAP protocol harness (mocked audio + video)
-        env:
-          PLEXI_AUDIO: "mock://"
-          PLEXI_VIDEO: "mock://"
-        run: cargo test pgap_test_harness -- --nocapture
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Cargo test (lib + Layer-1 integration + Layer-2 host)
+        run: cargo test --release -- --nocapture
+
+      - name: uv sync + pytest (SDK widgets + example Layer-1 Python harness)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv sync --all-groups
+          uv run pytest -q
+
+      - name: Post-install smoke test (host starts + renders without panic)
+        run: bash scripts/smoke-test.sh

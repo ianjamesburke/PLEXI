@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-18 — [CHANGED] V3 refactor step 11: CI gate that actually enforces (→ v3)
+`.github/workflows/plexi-v3-test.yml` replaces the vacuous `cargo test pgap_test_harness` step with a real matrix: `cargo test --release` (all 72 tests including host + harness + Layer-1), `uv sync --all-groups && uv run pytest -q` (SDK widget + example Python tests), `scripts/smoke-test.sh` (host launch + effects.jsonl growth check). `uv` is bootstrapped via the official astral installer. `scripts/smoke-test.sh` grows a new assertion: `effects.jsonl` must be non-empty after launch — catches a FileEventSink regression that the old "no panic in log" check would miss. `justfile::install-v3` now actually runs `lsregister -f` + `pbs -update`; CLAUDE.md's claim is no longer a lie.
+
+**Breaks if:** CI is green while `cargo test --release` fails, `uv run pytest` fails, the smoke test fails, or `effects.jsonl` stays empty. Right-click → Services doesn't show Plexi v3 after `just install-v3`.
+
 ## 2026-04-18 — [CHANGED] V3 refactor step 10: real Rust Layer-1 tests + uv runner (→ v3)
 `pgap_test_harness` grows from zero `#[test]` fns to five: init/ready handshake, render + frame_done round-trip, shutdown lifecycle, todo `path_changed` cwd update, wikipedia inject-state render. Tests auto-skip when `python3` is not on PATH so local dev without Python doesn't fail — CI should fail when a real gate is missing. `pyproject.toml` at repo root: `requires-python = ">=3.11"`, `pytest` as a dev dep, `testpaths` covering `sdk/python/tests` + every example's `tests/` dir, `pythonpath = ["sdk/python"]` so `from plexi_sdk import ...` resolves under `uv run pytest`. 72/72 Rust tests green.
 

@@ -22,7 +22,7 @@ Always confirm best practices by researching the docs.
 - [x] **Step 8 — Manifest schema freeze** (new `[launch]` section with structured `layout_hint = { side, split }`; install-time validator; 5 examples + scaffolders migrated)
 - [x] **Step 9 (partial) — env isolation + bold text + AppSpawned SDK hook**; HTTP broker, PipeSend peer routing, RunUpdate round-trip, media brokers, FD CLOEXEC audit all deferred to a follow-up session
 - [x] **Step 10 — Real Rust Layer-1 tests + uv runner** (5 `#[test]` fns in pgap_test_harness; pyproject.toml wires `uv run pytest`)
-- [ ] Step 11 — CI gate that enforces
+- [x] **Step 11 — CI gate that enforces** (workflow runs cargo+pytest+smoke; smoke asserts effects.jsonl grows; `just install-v3` runs `lsregister -f` + `pbs -update`)
 - [ ] Step 12 — Invariant enforcement
 
 ## North Star

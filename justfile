@@ -324,6 +324,15 @@ install-v3:
     cp -R examples/. ~/.plexi-v3/apps/
     find ~/.plexi-v3/apps -name '*.py' -exec chmod +x {} \;
 
+    # STEP-11: refresh macOS Services registration so right-click → Services
+    # shows Plexi v3 entries. CLAUDE.md used to claim these ran; now they
+    # actually do.
+    lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+    if [[ -x "$lsregister_bin" ]]; then
+      "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
+    fi
+    /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
+
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-v3"
     echo "Config dir: ~/.plexi-v3/"
