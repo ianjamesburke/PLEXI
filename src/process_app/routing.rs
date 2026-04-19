@@ -139,6 +139,11 @@ impl ProcessApp {
                     self.type_id
                 );
                 self.run_registry.complete(&run_id);
+                self.outbound_events.push_back(PlexiEvent::RunUpdate {
+                    run_id,
+                    status: "completed".to_string(),
+                    payload: serde_json::Value::Null,
+                });
             }
 
             // ── Notify ─────────────────────────────────────────────────────
@@ -389,7 +394,7 @@ impl ProcessApp {
                     return;
                 }
                 log::warn!(
-                    "ProcessApp[{}]: AudioPlay received — broker not wired yet (STEP-9)",
+                    "ProcessApp[{}]: AudioPlay not yet implemented (v3.1)",
                     self.type_id
                 );
             }
@@ -404,7 +409,25 @@ impl ProcessApp {
                     return;
                 }
                 log::warn!(
-                    "ProcessApp[{}]: AudioCapture received — broker not wired yet (STEP-9)",
+                    "ProcessApp[{}]: AudioCapture not yet implemented (v3.1)",
+                    self.type_id
+                );
+            }
+            DrawCommand::Image { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: Image not yet implemented (v3.1)",
+                    self.type_id
+                );
+            }
+            DrawCommand::VideoPlayer { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: VideoPlayer not yet implemented (v3.1)",
+                    self.type_id
+                );
+            }
+            DrawCommand::AudioMeter { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: AudioMeter not yet implemented (v3.1)",
                     self.type_id
                 );
             }

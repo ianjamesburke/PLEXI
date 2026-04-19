@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+extern crate libc;
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
 /// Binary pipes use unix domain sockets with u32-BE length-prefixed frames.
@@ -150,6 +151,11 @@ impl TypedPipeRegistry {
 
         let listener = UnixListener::bind(&socket_path)
             .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
+        // Prevent child processes (app subprocesses) from inheriting this socket FD.
+        unsafe {
+            use std::os::unix::io::AsRawFd;
+            libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
+        }
         // Non-blocking so the drain thread's accept loop can observe `shutdown`
         // and exit if the app never connects (e.g. start_capture failed and no
         // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
