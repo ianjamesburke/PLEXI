@@ -49,6 +49,7 @@ pub struct FileBrowserApp {
     audio_play_started: Option<std::time::Instant>,
     audio_elapsed_before_pause: f32,
     audio_paused: bool,
+    should_close: bool,
 }
 
 impl FileBrowserApp {
@@ -80,6 +81,7 @@ impl FileBrowserApp {
             audio_play_started: None,
             audio_elapsed_before_pause: 0.0,
             audio_paused: false,
+            should_close: false,
         };
         app.refresh();
         app
@@ -866,6 +868,12 @@ impl App for FileBrowserApp {
             return false;
         }
 
+        // Escape closes the file browser.
+        if input.key_pressed(egui::Key::Escape) {
+            self.should_close = true;
+            return true;
+        }
+
         // '/' enters search mode.
         if input.key_pressed(egui::Key::Slash) && !input.modifiers.command {
             self.in_search = true;
@@ -971,6 +979,10 @@ impl App for FileBrowserApp {
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_cmds)
+    }
+
+    fn wants_close(&self) -> bool {
+        self.should_close
     }
 
     fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
