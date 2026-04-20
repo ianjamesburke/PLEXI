@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::SystemTime;
 
 #[derive(Clone)]
@@ -57,54 +56,4 @@ pub(crate) fn format_modified(modified: Option<SystemTime>) -> String {
     } else {
         format!("{}mo ago", secs / (86400 * 30))
     }
-}
-
-pub(crate) fn is_text_file(path: &Path) -> bool {
-    let Some(ext) = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-    else {
-        return false;
-    };
-    matches!(
-        ext.as_str(),
-        "txt"
-            | "md"
-            | "markdown"
-            | "rs"
-            | "py"
-            | "js"
-            | "jsx"
-            | "ts"
-            | "tsx"
-            | "go"
-            | "java"
-            | "swift"
-            | "kt"
-            | "c"
-            | "h"
-            | "cpp"
-            | "hpp"
-            | "sh"
-            | "zsh"
-            | "bash"
-            | "fish"
-            | "lua"
-            | "rb"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "json"
-            | "jsonc"
-            | "json5"
-            | "ini"
-            | "cfg"
-            | "conf"
-            | "env"
-            | "log"
-            | "rtf"
-            | "rst"
-            | "mdx"
-    )
 }

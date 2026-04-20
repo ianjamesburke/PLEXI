@@ -460,7 +460,7 @@ impl ProcessApp {
             // ── Cd request ─────────────────────────────────────────────────
             DrawCommand::CdRequest { cwd } => {
                 log::info!("ProcessApp[{}]: CdRequest cwd='{cwd}'", self.type_id);
-                self.pending_commands.push(AppCommand::CdRequest { cwd });
+                self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
             }
 
             _ => unreachable!("route_command called with non-control command"),

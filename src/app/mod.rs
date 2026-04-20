@@ -399,14 +399,45 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
-                AppCommand::CdRequest { cwd } => {
-                    // Write `cd '<cwd>'\n` to every terminal. Single-quote the path
-                    // and escape any embedded single quotes so paths with spaces work.
+                AppCommand::CdRequest { cwd, sender_pane_id } => {
                     let active = self.active_context;
                     let escaped = cwd.replace('\'', "'\\''");
                     let cd_cmd = format!("cd '{}'\n", escaped);
-                    let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
-                    for pid in pane_ids {
+
+                    // Find the tile for the sender, walk up to its immediate parent
+                    // container, then collect sibling pane IDs (terminals only).
+                    let siblings: Vec<PaneId> = {
+                        use egui_tiles::Tile;
+                        let ctx = &self.contexts[active];
+                        let sender_tile = ctx
+                            .tree
+                            .tiles
+                            .iter()
+                            .find(|(_, t)| matches!(t, Tile::Pane(id) if *id == sender_pane_id))
+                            .map(|(tid, _)| tid);
+                        let sibling_tiles: Vec<PaneId> = sender_tile
+                            .and_then(|st| ctx.tree.tiles.parent_of(*st))
+                            .and_then(|parent_id| ctx.tree.tiles.get(parent_id))
+                            .map(|tile| match tile {
+                                Tile::Container(c) => c
+                                    .children()
+                                    .filter_map(|child_tid| {
+                                        if let Some(Tile::Pane(pid)) =
+                                            ctx.tree.tiles.get(*child_tid)
+                                        {
+                                            Some(*pid)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .filter(|pid| *pid != sender_pane_id)
+                                    .collect(),
+                                _ => vec![],
+                            })
+                            .unwrap_or_default();
+                        sibling_tiles
+                    };
+                    for pid in siblings {
                         if let Some(t) = self.contexts[active]
                             .panes
                             .get_mut(&pid)

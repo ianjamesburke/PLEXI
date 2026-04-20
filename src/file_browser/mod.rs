@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use audio::AudioMsg;
-use helpers::{format_modified, format_size, is_text_file, DirStats, Entry, SortMode};
+use helpers::{format_modified, format_size, DirStats, Entry, SortMode};
 use icons::paint_entry_icon;
 
 const ROW_HEIGHT: f32 = 58.0;
@@ -29,11 +29,6 @@ pub struct FileBrowserApp {
     preview_texture_path: Option<PathBuf>,
     preview_size: Option<[usize; 2]>,
     preview_error: Option<String>,
-    // Text preview / inline editor
-    text_preview_path: Option<PathBuf>,
-    text_preview_body: Option<String>,
-    text_preview_dirty: bool,
-    text_preview_saved_body: Option<String>,
     // Dir preview
     dir_preview_path: Option<PathBuf>,
     dir_preview_stats: Option<DirStats>,
@@ -71,10 +66,6 @@ impl FileBrowserApp {
             preview_texture_path: None,
             preview_size: None,
             preview_error: None,
-            text_preview_path: None,
-            text_preview_body: None,
-            text_preview_dirty: false,
-            text_preview_saved_body: None,
             dir_preview_path: None,
             dir_preview_stats: None,
             pending_cmds: Vec::new(),
@@ -176,6 +167,7 @@ impl FileBrowserApp {
         self.pending_scroll = true;
         self.pending_cmds.push(AppCommand::CdRequest {
             cwd: self.cwd.to_string_lossy().to_string(),
+            sender_pane_id: 0, // dispatch.rs stamps the real pane_id
         });
     }
 
@@ -190,6 +182,7 @@ impl FileBrowserApp {
             self.refresh();
             self.pending_cmds.push(AppCommand::CdRequest {
                 cwd: self.cwd.to_string_lossy().to_string(),
+                sender_pane_id: 0, // dispatch.rs stamps the real pane_id
             });
             let restore_name = self
                 .directory_selection_memory
@@ -295,40 +288,6 @@ impl FileBrowserApp {
         );
         self.preview_size = Some(size);
         self.preview_texture = Some(texture);
-    }
-
-    fn ensure_text_preview(&mut self, path: &Path) {
-        if self.text_preview_path.as_deref() == Some(path) {
-            return;
-        }
-        // Save any dirty content before switching files.
-        self.save_text_preview_if_dirty();
-        self.text_preview_path = Some(path.to_path_buf());
-        self.text_preview_dirty = false;
-        match fs::read_to_string(path) {
-            Ok(text) => {
-                self.text_preview_saved_body = Some(text.clone());
-                self.text_preview_body = Some(text);
-            }
-            Err(e) => {
-                self.text_preview_body = Some(format!("Error: {e}"));
-                self.text_preview_saved_body = None;
-            }
-        }
-    }
-
-    fn save_text_preview_if_dirty(&mut self) {
-        if !self.text_preview_dirty {
-            return;
-        }
-        if let (Some(path), Some(content)) = (&self.text_preview_path, &self.text_preview_body) {
-            if let Err(e) = fs::write(path, content) {
-                log::error!("FileBrowser: failed to save {}: {e}", path.display());
-            } else {
-                self.text_preview_saved_body = Some(content.clone());
-                self.text_preview_dirty = false;
-            }
-        }
     }
 
     fn ensure_dir_preview(&mut self, path: &Path) {
@@ -460,8 +419,6 @@ impl FileBrowserApp {
             self.draw_audio_sidebar(ui, colors, &entry);
         } else if entry.is_dir {
             self.draw_dir_sidebar(ui, colors, &entry);
-        } else if is_text_file(&entry.path) {
-            self.draw_text_sidebar(ui, colors, &entry);
         } else {
             self.draw_generic_sidebar(ui, colors, &entry);
         }
@@ -587,64 +544,6 @@ impl FileBrowserApp {
                     .size(9.5)
                     .color(colors.text_primary),
                 );
-            });
-    }
-
-    fn draw_text_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
-        let path = entry.path.clone();
-        self.ensure_text_preview(&path);
-
-        // Cmd+S saves the file.
-        let should_save = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
-        if should_save {
-            self.save_text_preview_if_dirty();
-        }
-
-        egui::Frame::new()
-            .fill(colors.bg_sidebar)
-            .stroke(Stroke::new(1.0, colors.border))
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::same(8))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(entry.name.clone())
-                            .size(10.5)
-                            .color(colors.text_primary)
-                            .strong(),
-                    );
-                    if self.text_preview_dirty {
-                        ui.label(
-                            egui::RichText::new("modified")
-                                .size(9.0)
-                                .color(colors.accent),
-                        );
-                    }
-                });
-                ui.label(
-                    egui::RichText::new("Cmd+S to save")
-                        .size(9.0)
-                        .color(colors.text_dim.linear_multiply(0.5)),
-                );
-                ui.add_space(4.0);
-
-                if let Some(body) = &mut self.text_preview_body {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let response = ui.add(
-                                egui::TextEdit::multiline(body)
-                                    .font(egui::FontId::monospace(11.0))
-                                    .text_color(colors.text_primary)
-                                    .desired_width(f32::INFINITY)
-                                    .frame(false)
-                                    .code_editor(),
-                            );
-                            if response.changed() {
-                                self.text_preview_dirty = true;
-                            }
-                        });
-                }
             });
     }
 

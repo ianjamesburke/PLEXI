@@ -18,8 +18,8 @@ pub enum AppCommand {
         layout: Option<String>,
         args: Vec<String>,
     },
-    /// Request the host to cd all terminals in the same pane group to `cwd`.
-    CdRequest { cwd: String },
+    /// Request the host to cd sibling terminals (same split container) to `cwd`.
+    CdRequest { cwd: String, sender_pane_id: u64 },
     /// Deliver a JSON pipe message to all peer panes that have the given
     /// pipe_id open with direction In or Duplex. The sender pane is excluded.
     DeliverPipeMessage {

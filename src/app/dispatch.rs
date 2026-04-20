@@ -37,9 +37,12 @@ impl PlexiApp {
         for cmd in commands {
             match cmd {
                 AppCommand::SpawnApp { .. }
-                | AppCommand::CdRequest { .. }
                 | AppCommand::DeliverPipeMessage { .. }
                 | AppCommand::DeliverRunUpdate { .. } => deferred.push(cmd),
+                // Always stamp the focused pane's ID — builtins don't know their own pane_id.
+                AppCommand::CdRequest { cwd, .. } => {
+                    deferred.push(AppCommand::CdRequest { cwd, sender_pane_id: pane_id });
+                }
                 AppCommand::Notify(msg) => {
                     log::info!("app notify: {msg}");
                 }
