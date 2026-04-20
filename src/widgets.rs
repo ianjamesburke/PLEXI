@@ -1,4 +1,4 @@
-use egui::{Color32, CornerRadius, Margin};
+use egui::{Color32, CornerRadius};
 
 use crate::theme::Colors;
 
@@ -32,12 +32,17 @@ pub(crate) fn selectable_row<R>(
 
     let scope = ui.scope(|ui| {
         ui.set_width(ui.available_width());
-        // Use a transparent Frame purely for its inner_margin so callers
-        // never have to think about row padding.
-        egui::Frame::new()
-            .inner_margin(Margin::symmetric(ROW_PAD_H as i8, ROW_PAD_V as i8))
-            .show(ui, |ui| content(ui))
-            .inner
+        ui.add_space(ROW_PAD_V);
+        // Left-indent the content without using Frame (Frame inner_margin
+        // interferes with ScrollArea height measurement).
+        let inner = ui
+            .horizontal(|ui| {
+                ui.add_space(ROW_PAD_H);
+                ui.vertical(|ui| content(ui)).inner
+            })
+            .inner;
+        ui.add_space(ROW_PAD_V);
+        inner
     });
 
     let row_rect = scope.response.rect;
