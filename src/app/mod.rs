@@ -109,6 +109,7 @@ impl PlexiApp {
                                     manifest_id: "file_browser".to_string(),
                                     name: "File Browser".to_string(),
                                     pane_group: Some("cwd".to_string()),
+                                    linked_pane_id: None,
                                     overlay_replaced: None,
                                 })));
                             }
@@ -127,6 +128,7 @@ impl PlexiApp {
                                     manifest_id: "quick_note".to_string(),
                                     name: "Quick Note".to_string(),
                                     pane_group: None,
+                                    linked_pane_id: None,
                                     overlay_replaced: None,
                                 })));
                             }
@@ -144,6 +146,7 @@ impl PlexiApp {
                                     manifest_id: "secrets_manager".to_string(),
                                     name: "Secrets Manager".to_string(),
                                     pane_group: None,
+                                    linked_pane_id: None,
                                     overlay_replaced: None,
                                 })));
                             }
@@ -160,6 +163,7 @@ impl PlexiApp {
                                         manifest_id: other.to_string(),
                                         name: other.to_string(),
                                         pane_group: registry.group_for(other),
+                                        linked_pane_id: None,
                                         overlay_replaced: None,
                                     })));
                                 }
@@ -403,51 +407,15 @@ impl eframe::App for PlexiApp {
                     let active = self.active_context;
                     let escaped = cwd.replace('\'', "'\\''");
                     let cd_cmd = format!("cd '{}'\n", escaped);
-
-                    // Find the sender's tile, walk to its parent container, then
-                    // collect all pane IDs in each sibling — recursing into nested
-                    // containers (e.g. Tabs holding a terminal) so we don't miss
-                    // terminals that aren't direct children of the split.
-                    let siblings: Vec<PaneId> = {
-                        use egui_tiles::Tile;
-                        let tiles = &self.contexts[active].tree.tiles;
-
-                        fn panes_in_tile(
-                            tiles: &egui_tiles::Tiles<PaneId>,
-                            tile_id: egui_tiles::TileId,
-                        ) -> Vec<PaneId> {
-                            match tiles.get(tile_id) {
-                                Some(Tile::Pane(pid)) => vec![*pid],
-                                Some(Tile::Container(c)) => c
-                                    .children()
-                                    .flat_map(|child| panes_in_tile(tiles, *child))
-                                    .collect(),
-                                None => vec![],
-                            }
-                        }
-
-                        let sender_tile = tiles
-                            .iter()
-                            .find(|(_, t)| matches!(t, Tile::Pane(id) if *id == sender_pane_id))
-                            .map(|(tid, _)| tid);
-
-                        sender_tile
-                            .and_then(|st| tiles.parent_of(*st))
-                            .and_then(|parent_id| tiles.get(parent_id).map(|t| (parent_id, t)))
-                            .map(|(_, tile)| match tile {
-                                Tile::Container(c) => c
-                                    .children()
-                                    .flat_map(|child_tid| panes_in_tile(tiles, *child_tid))
-                                    .filter(|pid| *pid != sender_pane_id)
-                                    .collect(),
-                                _ => vec![],
-                            })
-                            .unwrap_or_default()
-                    };
-                    for pid in siblings {
+                    let linked_id = self.contexts[active]
+                        .panes
+                        .get(&sender_pane_id)
+                        .and_then(|p| p.as_app())
+                        .and_then(|a| a.linked_pane_id);
+                    if let Some(tid) = linked_id {
                         if let Some(t) = self.contexts[active]
                             .panes
-                            .get_mut(&pid)
+                            .get_mut(&tid)
                             .and_then(|p| p.as_terminal_mut())
                         {
                             t.backend.process_command(egui_term::BackendCommand::Write(

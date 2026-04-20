@@ -56,6 +56,23 @@ impl PlexiApp {
         }
     }
 
+    /// Return the focused terminal's PaneId, if the currently focused pane is a terminal.
+    /// Used to record which terminal an app was spawned alongside, so CdRequest can
+    /// route directly to it without a tile-tree walk.
+    fn focused_terminal_id(&self, active: usize) -> Option<PaneId> {
+        let ctx = &self.contexts[active];
+        let tile_id = ctx.focused_pane?;
+        let pane_id = match ctx.tree.tiles.get(tile_id) {
+            Some(egui_tiles::Tile::Pane(id)) => *id,
+            _ => return None,
+        };
+        if ctx.panes.get(&pane_id)?.as_terminal().is_some() {
+            Some(pane_id)
+        } else {
+            None
+        }
+    }
+
     /// Submit an `OpenPane` request to HostModel and extract
     /// `(pane_id, share, vertical, new_pane_first)` from the resulting `PaneOpened` effect.
     /// Falls back to `alloc_pane_id()` + 1:1 vertical split if no effect is
@@ -200,6 +217,7 @@ impl PlexiApp {
                             process: crate::process_app::ProcessApp,
                             workspace_root: PathBuf,
                             group: Option<String>,
+                            linked_pane_id: Option<PaneId>,
                             overlay_replaced: Option<Box<Pane>>| {
             Pane::App(Box::new(crate::pane::AppPane {
                 id,
@@ -209,6 +227,7 @@ impl PlexiApp {
                 manifest_id: app_id.to_string(),
                 name: app_id.to_string(),
                 pane_group: group,
+                linked_pane_id,
                 overlay_replaced,
             }))
         };
@@ -229,25 +248,21 @@ impl PlexiApp {
             process.set_pane_id(pane_id);
             self.contexts[active].panes.insert(
                 pane_id,
-                new_app_pane(
-                    pane_id,
-                    process,
-                    workspace_root,
-                    group,
-                    Some(Box::new(replaced_pane)),
-                ),
+                new_app_pane(pane_id, process, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
             self.contexts[active].focused_pane = Some(focused_tile);
             return;
         }
 
+        // Record which terminal we're splitting from before focus moves.
+        let linked_pane_id = self.focused_terminal_id(active);
         let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, group.clone(), hint, share);
         process.set_pane_id(new_id);
         self.contexts[active].panes.insert(
             new_id,
-            new_app_pane(new_id, process, workspace_root, group, None),
+            new_app_pane(new_id, process, workspace_root, group, linked_pane_id, None),
         );
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
@@ -269,6 +284,7 @@ impl PlexiApp {
                             app: Box<dyn App>,
                             workspace_root: PathBuf,
                             group: Option<String>,
+                            linked_pane_id: Option<PaneId>,
                             overlay_replaced: Option<Box<Pane>>| {
             Pane::App(Box::new(crate::pane::AppPane {
                 id,
@@ -278,6 +294,7 @@ impl PlexiApp {
                 manifest_id: app_type_id.clone(),
                 name: app_name.clone(),
                 pane_group: group,
+                linked_pane_id,
                 overlay_replaced,
             }))
         };
@@ -297,18 +314,14 @@ impl PlexiApp {
             };
             self.contexts[active].panes.insert(
                 pane_id,
-                new_app_pane(
-                    pane_id,
-                    app,
-                    workspace_root,
-                    group,
-                    Some(Box::new(replaced_pane)),
-                ),
+                new_app_pane(pane_id, app, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
             self.contexts[active].focused_pane = Some(focused_tile);
             return;
         }
 
+        // Record which terminal we're splitting from before focus moves.
+        let linked_pane_id = self.focused_terminal_id(active);
         let share = Self::share_ratio_from_fraction(
             &app_type_id,
             share.or_else(|| self.registry.share_for(&app_type_id)),
@@ -317,7 +330,7 @@ impl PlexiApp {
             self.open_pane_layout(&app_type_id, group.clone(), hint, share);
         self.contexts[active].panes.insert(
             new_id,
-            new_app_pane(new_id, app, workspace_root, group, None),
+            new_app_pane(new_id, app, workspace_root, group, linked_pane_id, None),
         );
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);

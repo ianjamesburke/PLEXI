@@ -877,12 +877,16 @@ impl App for FileBrowserApp {
         let last = self.entries.len().saturating_sub(1);
         let mut consumed = false;
 
-        if input.key_pressed(egui::Key::ArrowDown) || input.key_pressed(egui::Key::J) {
+        if input.key_pressed(egui::Key::ArrowDown)
+            || (input.key_pressed(egui::Key::J) && !input.modifiers.any())
+        {
             self.selected = (self.selected + 1).min(last);
             self.pending_scroll = true;
             consumed = true;
         }
-        if input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::K) {
+        if input.key_pressed(egui::Key::ArrowUp)
+            || (input.key_pressed(egui::Key::K) && !input.modifiers.any())
+        {
             self.selected = self.selected.saturating_sub(1);
             self.pending_scroll = true;
             consumed = true;
@@ -932,7 +936,7 @@ impl App for FileBrowserApp {
             consumed = true;
         }
 
-        if input.key_pressed(egui::Key::S) {
+        if input.key_pressed(egui::Key::S) && !input.modifiers.any() {
             self.sort_mode = match self.sort_mode {
                 SortMode::RecentlyTouched => SortMode::Name,
                 SortMode::Name => SortMode::RecentlyTouched,
@@ -941,7 +945,7 @@ impl App for FileBrowserApp {
             consumed = true;
         }
 
-        if input.key_pressed(egui::Key::R) {
+        if input.key_pressed(egui::Key::R) && !input.modifiers.any() {
             self.refresh();
             consumed = true;
         }

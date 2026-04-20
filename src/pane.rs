@@ -189,6 +189,9 @@ pub struct AppPane {
     pub name: String,
     /// Pane group this app joined at spawn (for PathChanged routing).
     pub pane_group: Option<String>,
+    /// The terminal pane this app was spawned alongside. CdRequest routes here
+    /// directly — no tile-tree walk needed.
+    pub linked_pane_id: Option<PaneId>,
     /// Pane hidden by an overlay app. Closing the app restores this pane instead
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
