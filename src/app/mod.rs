@@ -404,38 +404,45 @@ impl eframe::App for PlexiApp {
                     let escaped = cwd.replace('\'', "'\\''");
                     let cd_cmd = format!("cd '{}'\n", escaped);
 
-                    // Find the tile for the sender, walk up to its immediate parent
-                    // container, then collect sibling pane IDs (terminals only).
+                    // Find the sender's tile, walk to its parent container, then
+                    // collect all pane IDs in each sibling — recursing into nested
+                    // containers (e.g. Tabs holding a terminal) so we don't miss
+                    // terminals that aren't direct children of the split.
                     let siblings: Vec<PaneId> = {
                         use egui_tiles::Tile;
-                        let ctx = &self.contexts[active];
-                        let sender_tile = ctx
-                            .tree
-                            .tiles
+                        let tiles = &self.contexts[active].tree.tiles;
+
+                        fn panes_in_tile(
+                            tiles: &egui_tiles::Tiles<PaneId>,
+                            tile_id: egui_tiles::TileId,
+                        ) -> Vec<PaneId> {
+                            match tiles.get(tile_id) {
+                                Some(Tile::Pane(pid)) => vec![*pid],
+                                Some(Tile::Container(c)) => c
+                                    .children()
+                                    .flat_map(|child| panes_in_tile(tiles, *child))
+                                    .collect(),
+                                None => vec![],
+                            }
+                        }
+
+                        let sender_tile = tiles
                             .iter()
                             .find(|(_, t)| matches!(t, Tile::Pane(id) if *id == sender_pane_id))
                             .map(|(tid, _)| tid);
-                        let sibling_tiles: Vec<PaneId> = sender_tile
-                            .and_then(|st| ctx.tree.tiles.parent_of(*st))
-                            .and_then(|parent_id| ctx.tree.tiles.get(parent_id))
-                            .map(|tile| match tile {
+
+                        sender_tile
+                            .and_then(|st| tiles.parent_of(*st))
+                            .and_then(|parent_id| tiles.get(parent_id).map(|t| (parent_id, t)))
+                            .map(|(_, tile)| match tile {
                                 Tile::Container(c) => c
                                     .children()
-                                    .filter_map(|child_tid| {
-                                        if let Some(Tile::Pane(pid)) =
-                                            ctx.tree.tiles.get(*child_tid)
-                                        {
-                                            Some(*pid)
-                                        } else {
-                                            None
-                                        }
-                                    })
+                                    .flat_map(|child_tid| panes_in_tile(tiles, *child_tid))
                                     .filter(|pid| *pid != sender_pane_id)
                                     .collect(),
                                 _ => vec![],
                             })
-                            .unwrap_or_default();
-                        sibling_tiles
+                            .unwrap_or_default()
                     };
                     for pid in siblings {
                         if let Some(t) = self.contexts[active]
