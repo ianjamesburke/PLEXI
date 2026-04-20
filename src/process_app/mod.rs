@@ -53,6 +53,7 @@ pub enum PendingPrompt {
 
 pub struct ProcessApp {
     pub(crate) type_id: String,
+    pub pane_id: u64,
     display_name: String,
     accepted_exts: Vec<String>,
     process: Option<Child>,
@@ -223,6 +224,7 @@ impl ProcessApp {
 
         Ok(Self {
             type_id,
+            pane_id: 0,
             display_name,
             accepted_exts,
             process: Some(child),
@@ -251,11 +253,11 @@ impl ProcessApp {
         })
     }
 
-    /// Swap the HTTP broker — tests only. Production callers leave the
-    /// `UreqNetService` default wired in `launch`.
-    #[cfg(test)]
-    pub fn set_net(&mut self, net: Arc<dyn NetService>) {
-        self.net = net;
+    /// Set the pane ID for this app instance. Called by `open_process_app_pane`
+    /// before the process is moved into the pane so that pipe peer routing can
+    /// exclude the sending pane.
+    pub fn set_pane_id(&mut self, id: u64) {
+        self.pane_id = id;
     }
 
     /// Spawn with minimal args — workspace_root defaults to cwd.

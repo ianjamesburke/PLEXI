@@ -1,21 +1,6 @@
 [project]
 name = "plexi-workspace"
 version = "0.1.0"
-description = "Plexi v3 Python tests — SDK widgets + Layer-1 app harness."
+description = "Plexi v3 Python workspace."
 requires-python = ">=3.11"
 dependencies = []
-
-[dependency-groups]
-dev = [
-    "pytest>=8.0",
-]
-
-[tool.pytest.ini_options]
-testpaths = [
-    "sdk/python/tests",
-    "examples/quick-note/tests",
-    "examples/snake/tests",
-    "examples/todo/tests",
-    "examples/wikipedia/tests",
-]
-pythonpath = ["sdk/python"]

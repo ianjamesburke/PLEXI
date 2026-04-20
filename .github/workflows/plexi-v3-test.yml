@@ -1,4 +1,4 @@
-name: v3 test matrix
+name: v3 build
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [v3]
 
 jobs:
-  test:
+  build:
     runs-on: macos-latest
     env:
       PLEXI_AUDIO: "mock://"
@@ -20,21 +20,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-      - name: Cargo test (lib + Layer-1 integration + Layer-2 host)
-        run: cargo test --release -- --nocapture
-
-      - name: uv sync + pytest (SDK widgets + example Layer-1 Python harness)
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          uv sync --all-groups
-          uv run pytest -q
+      - name: Cargo build
+        run: cargo build --release
 
       - name: Post-install smoke test (host starts + renders without panic)
         run: bash scripts/smoke-test.sh

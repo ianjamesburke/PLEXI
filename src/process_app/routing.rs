@@ -138,12 +138,28 @@ impl ProcessApp {
                     "ProcessApp[{}]: RunComplete run_id='{run_id}' result={result}",
                     self.type_id
                 );
+                let originator = self.run_registry.originator_of(&run_id).map(|s| s.to_string());
                 self.run_registry.complete(&run_id);
-                self.outbound_events.push_back(PlexiEvent::RunUpdate {
+                let update = PlexiEvent::RunUpdate {
                     run_id,
                     status: "completed".to_string(),
-                    payload: serde_json::Value::Null,
-                });
+                    payload: result,
+                };
+                match originator.as_deref() {
+                    Some(orig) if orig == self.type_id => {
+                        self.outbound_events.push_back(update);
+                    }
+                    Some(orig_type_id) => {
+                        self.pending_commands.push(AppCommand::DeliverRunUpdate {
+                            originator_type_id: orig_type_id.to_string(),
+                            event: update,
+                        });
+                    }
+                    None => {
+                        // No originator found (run already removed or never registered).
+                        self.outbound_events.push_back(update);
+                    }
+                }
             }
 
             // ── Notify ─────────────────────────────────────────────────────
@@ -311,9 +327,11 @@ impl ProcessApp {
                     .send_json(&pipe_id, payload.clone())
                 {
                     Ok(()) => {
-                        // TODO(layer-5): route PipeMessage to peer apps subscribed on this pipe_id
-                        self.outbound_events
-                            .push_back(PlexiEvent::PipeMessage { pipe_id, payload });
+                        self.pending_commands.push(AppCommand::DeliverPipeMessage {
+                            sender_pane_id: self.pane_id,
+                            pipe_id,
+                            payload,
+                        });
                     }
                     Err(e) => log::warn!("ProcessApp[{}]: PipeSend failed: {e}", self.type_id),
                 }

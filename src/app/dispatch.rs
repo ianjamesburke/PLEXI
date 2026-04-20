@@ -36,7 +36,10 @@ impl PlexiApp {
 
         for cmd in commands {
             match cmd {
-                AppCommand::SpawnApp { .. } | AppCommand::CdRequest { .. } => deferred.push(cmd),
+                AppCommand::SpawnApp { .. }
+                | AppCommand::CdRequest { .. }
+                | AppCommand::DeliverPipeMessage { .. }
+                | AppCommand::DeliverRunUpdate { .. } => deferred.push(cmd),
                 AppCommand::Notify(msg) => {
                     log::info!("app notify: {msg}");
                 }

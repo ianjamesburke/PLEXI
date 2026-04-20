@@ -72,6 +72,13 @@ impl RunRegistry {
         run_id
     }
 
+    /// Return the `app_id` of the app that originated `run_id`, or `None`
+    /// if the run does not exist (already completed or never registered).
+    /// Must be called BEFORE `complete()` since complete removes the entry.
+    pub fn originator_of(&self, run_id: &str) -> Option<&str> {
+        self.runs.get(run_id).map(|r| r.app_id.as_str())
+    }
+
     /// Mark a run as complete and remove it from the registry.
     /// Emits RunCompleted to the event log.
     pub fn complete(&mut self, run_id: &str) {

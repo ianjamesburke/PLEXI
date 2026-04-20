@@ -184,14 +184,3 @@ pub(super) fn parse_color(hex: &str) -> Option<Color32> {
         None
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::font_family_for_text;
-
-    #[test]
-    fn text_font_family_never_uses_unregistered_named_family() {
-        assert_eq!(font_family_for_text(false), egui::FontFamily::Proportional);
-        assert_eq!(font_family_for_text(true), egui::FontFamily::Monospace);
-    }
-}

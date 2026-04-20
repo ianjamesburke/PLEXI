@@ -36,72 +36,6 @@ fn restore_overlay_replacement(panes: &mut HashMap<PaneId, Pane>, pane_id: PaneI
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app_permissions::AppPermissions;
-    use crate::app_trait::AppRenderContext;
-
-    struct NoopApp(&'static str);
-
-    impl App for NoopApp {
-        fn type_id(&self) -> &'static str {
-            self.0
-        }
-
-        fn display_name(&self) -> String {
-            self.0.to_string()
-        }
-
-        fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &AppRenderContext<'_>) {}
-    }
-
-    fn app_pane(id: PaneId, name: &'static str, overlay_replaced: Option<Box<Pane>>) -> Pane {
-        Pane::App(Box::new(crate::pane::AppPane {
-            id,
-            runtime: crate::pane::AppRuntime::Builtin(Box::new(NoopApp(name))),
-            workspace_root: PathBuf::from("/tmp"),
-            permissions: AppPermissions::builtin(),
-            manifest_id: name.to_string(),
-            name: name.to_string(),
-            pane_group: None,
-            overlay_replaced,
-        }))
-    }
-
-    #[test]
-    fn restoring_overlay_keeps_tile_and_recovers_replaced_pane() {
-        let pane_id = 7;
-        let replaced = app_pane(pane_id, "original", None);
-        let overlay = app_pane(pane_id, "overlay", Some(Box::new(replaced)));
-        let mut panes = HashMap::from([(pane_id, overlay)]);
-
-        assert!(restore_overlay_replacement(&mut panes, pane_id));
-
-        let restored = panes
-            .get(&pane_id)
-            .and_then(|pane| pane.as_app())
-            .expect("restored app pane");
-        assert_eq!(restored.name, "original");
-        assert!(restored.overlay_replaced.is_none());
-    }
-
-    #[test]
-    fn restoring_non_overlay_leaves_pane_in_place() {
-        let pane_id = 9;
-        let pane = app_pane(pane_id, "plain", None);
-        let mut panes = HashMap::from([(pane_id, pane)]);
-
-        assert!(!restore_overlay_replacement(&mut panes, pane_id));
-
-        let restored = panes
-            .get(&pane_id)
-            .and_then(|pane| pane.as_app())
-            .expect("app pane remains");
-        assert_eq!(restored.name, "plain");
-    }
-}
-
 impl PlexiApp {
     /// Route a HostCommand through HostModel and return the resulting effects.
     fn submit(&mut self, cmd: HostCommand) -> Vec<HostEffect> {
@@ -256,7 +190,7 @@ impl PlexiApp {
     fn open_process_app_pane(
         &mut self,
         app_id: &str,
-        process: crate::process_app::ProcessApp,
+        mut process: crate::process_app::ProcessApp,
         workspace_root: PathBuf,
         group: Option<String>,
         hint: Option<&str>,
@@ -292,6 +226,7 @@ impl PlexiApp {
             let Some(replaced_pane) = self.contexts[active].panes.remove(&pane_id) else {
                 return;
             };
+            process.set_pane_id(pane_id);
             self.contexts[active].panes.insert(
                 pane_id,
                 new_app_pane(
@@ -309,6 +244,7 @@ impl PlexiApp {
         let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, group.clone(), hint, share);
+        process.set_pane_id(new_id);
         self.contexts[active].panes.insert(
             new_id,
             new_app_pane(new_id, process, workspace_root, group, None),

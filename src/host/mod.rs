@@ -5,6 +5,5 @@
 
 pub mod command;
 pub mod effect;
-pub mod harness;
 pub mod model;
 pub mod services;

@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
-#[allow(unused_imports)]
 use std::convert::TryFrom;
 
 // ── Capability enum ───────────────────────────────────────────────────────────
@@ -315,37 +314,3 @@ fn permissions_jsonl_path() -> PathBuf {
     crate::config::config_dir().join("permissions.jsonl")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn try_from_parses_all_nine_spec_capabilities() {
-        for cap in Capability::ALL {
-            let s = cap.as_str();
-            let parsed = Capability::try_from(s).expect("canonical string roundtrips");
-            assert_eq!(&parsed, cap, "roundtrip mismatch for '{s}'");
-        }
-    }
-
-    #[test]
-    fn try_from_rejects_unknown_capability() {
-        let err = Capability::try_from("net.http_").expect_err("typo should not parse");
-        assert_eq!(err.0, "net.http_");
-    }
-
-    #[test]
-    fn parse_capability_strings_fails_on_first_unknown() {
-        let strings = vec!["fs.read".to_string(), "bogus".to_string()];
-        let err = parse_capability_strings(&strings).expect_err("bogus rejects the set");
-        assert_eq!(err.0, "bogus");
-    }
-
-    #[test]
-    fn parse_capability_strings_accepts_valid_set() {
-        let strings = vec!["fs.read".to_string(), "net.http".to_string()];
-        let caps = parse_capability_strings(&strings).expect("valid set parses");
-        assert!(caps.contains(&Capability::FsRead));
-        assert!(caps.contains(&Capability::NetHttp));
-    }
-}

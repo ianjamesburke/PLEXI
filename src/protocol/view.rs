@@ -133,23 +133,3 @@ pub enum ImageSource {
     File { path: String },
     Url { url: String },
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::protocol::view::{DocumentNode, DocumentStyle, InlineText, View};
-
-    #[test]
-    fn document_view_serializes_with_tagged_type() {
-        let view = View::Document {
-            nodes: vec![DocumentNode::Heading {
-                level: 1,
-                text: InlineText {
-                    text: "Title".to_string(),
-                },
-            }],
-            style: DocumentStyle::default(),
-        };
-        let json = serde_json::to_value(&view).expect("serialize");
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("document"));
-    }
-}

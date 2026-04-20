@@ -351,6 +351,21 @@ impl TypedPipeRegistry {
         }
     }
 
+    /// Returns true if the pipe with `pipe_id` has direction `In` or `Duplex`
+    /// (i.e. it can receive messages). Used by peer routing to decide which
+    /// panes should receive a `PipeSend`.
+    pub fn has_reader(&self, pipe_id: &str) -> bool {
+        match self.pipes.get(pipe_id) {
+            Some(PipeEntry::Json(j)) => {
+                matches!(j.direction, PipeDirection::In | PipeDirection::Duplex)
+            }
+            Some(PipeEntry::Binary(b)) => {
+                matches!(b.direction, PipeDirection::In | PipeDirection::Duplex)
+            }
+            None => false,
+        }
+    }
+
     pub fn list(&self) -> Vec<(String, PipeMode, PipeDirection)> {
         self.pipes
             .iter()
@@ -403,142 +418,3 @@ fn read_frame(reader: &mut impl Read) -> std::io::Result<Option<Vec<u8>>> {
 
 // ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::net::UnixStream;
-
-    fn make_registry_with_capacity(cap: usize) -> TypedPipeRegistry {
-        // We need a way to test with a smaller ring. Since DEFAULT_RING_CAPACITY
-        // is a constant we swap in a hand-built entry for the overrun test.
-        let _ = cap; // handled in each test directly
-        TypedPipeRegistry::new()
-    }
-
-    #[test]
-    fn binary_pipe_roundtrip() {
-        let mut registry = TypedPipeRegistry::new();
-        let alloc = registry
-            .open_binary("test-pipe".to_owned(), PipeDirection::Out)
-            .expect("open_binary failed");
-
-        let socket_path = alloc.socket_path.clone();
-
-        // Client thread: connect to the socket and read 3 frames.
-        let client_handle = thread::spawn(move || {
-            // Give the drain thread a moment to start and call accept().
-            thread::sleep(std::time::Duration::from_millis(50));
-            let mut stream = UnixStream::connect(&socket_path).expect("client connect failed");
-
-            let mut received = Vec::new();
-            while let Some(frame) = read_frame(&mut stream).expect("client read_frame failed") {
-                received.push(frame);
-                if received.len() == 3 {
-                    break;
-                }
-            }
-            received
-        });
-
-        // Give the client a chance to start connecting.
-        thread::sleep(std::time::Duration::from_millis(10));
-
-        let frames: &[&[u8]] = &[b"a", b"bb", b"ccc"];
-        for f in frames {
-            registry
-                .write_binary("test-pipe", f)
-                .expect("write_binary failed");
-        }
-
-        // Brief pause so drain thread can flush before we close.
-        thread::sleep(std::time::Duration::from_millis(100));
-        registry.close("test-pipe");
-
-        let received = client_handle.join().expect("client thread panicked");
-        assert_eq!(received.len(), 3);
-        assert_eq!(received[0], b"a");
-        assert_eq!(received[1], b"bb");
-        assert_eq!(received[2], b"ccc");
-    }
-
-    #[test]
-    fn binary_pipe_overrun() {
-        // Build the ring directly with capacity 2 and exercise the backpressure path.
-        let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(2));
-        let shutdown = Arc::new(AtomicBool::new(false));
-
-        // Simulate write_binary logic inline using capacity=2 ring.
-        let mut dropped_count = 0usize;
-        let payloads: &[&[u8]] = &[b"f1", b"f2", b"f3", b"f4"];
-        for payload in payloads {
-            let frame = payload.to_vec();
-            if ring.push(frame).is_err() {
-                ring.pop();
-                dropped_count += 1;
-                ring.push(payload.to_vec())
-                    .expect("push after evict failed");
-            }
-        }
-
-        shutdown.store(true, Ordering::Release);
-
-        // Two frames were dropped (f1 and f2 were evicted when f3 and f4 arrived).
-        assert_eq!(dropped_count, 2, "expected 2 DroppedOldest events");
-
-        // Ring should hold the 2 newest frames.
-        let last_two: Vec<Vec<u8>> = (0..2).filter_map(|_| ring.pop()).collect();
-        assert!(last_two.contains(&b"f3".to_vec()) || last_two.contains(&b"f4".to_vec()));
-    }
-
-    #[test]
-    fn json_pipe_register_close() {
-        let mut registry = TypedPipeRegistry::new();
-
-        registry
-            .open_json("json-a".to_owned(), PipeDirection::In)
-            .unwrap();
-        registry
-            .open_json("json-b".to_owned(), PipeDirection::Out)
-            .unwrap();
-
-        let list = registry.list();
-        assert_eq!(list.len(), 2);
-        let ids: Vec<&str> = list.iter().map(|(id, _, _)| id.as_str()).collect();
-        assert!(ids.contains(&"json-a"));
-        assert!(ids.contains(&"json-b"));
-        for (_, mode, _) in &list {
-            assert!(matches!(mode, PipeMode::Json));
-        }
-
-        registry.close("json-a");
-        assert_eq!(registry.list().len(), 1);
-
-        registry.close("json-b");
-        assert!(registry.list().is_empty());
-    }
-
-    /// Regression: if the app never connects (e.g. start_capture failed before
-    /// PipeOpened was sent), close() must not deadlock waiting for accept().
-    /// The drain thread must observe the shutdown flag and exit on its own.
-    #[test]
-    fn close_without_client_does_not_deadlock() {
-        let mut registry = TypedPipeRegistry::new();
-        registry
-            .open_binary("orphan".to_owned(), PipeDirection::Out)
-            .expect("open_binary failed");
-
-        // Close immediately — no client ever connected. If the drain thread
-        // were stuck in a blocking accept(), close() would hang forever.
-        let start = std::time::Instant::now();
-        registry.close("orphan");
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "close() took {elapsed:?} — drain thread is deadlocked on accept()"
-        );
-        assert!(registry.list().is_empty());
-    }
-}

@@ -419,6 +419,70 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::Notify(_) => {}
+                AppCommand::DeliverPipeMessage { sender_pane_id, pipe_id, payload } => {
+                    let active = self.active_context;
+                    let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
+                    for pid in pane_ids {
+                        if pid == sender_pane_id {
+                            continue; // don't echo back to sender
+                        }
+                        let is_reader = self.contexts[active]
+                            .panes
+                            .get(&pid)
+                            .and_then(|p| p.as_app())
+                            .map(|a| match &a.runtime {
+                                crate::pane::AppRuntime::Process(pa) => {
+                                    pa.pipe_registry.lock().unwrap().has_reader(&pipe_id)
+                                }
+                                crate::pane::AppRuntime::Builtin(_) => false,
+                            })
+                            .unwrap_or(false);
+                        if is_reader {
+                            if let Some(pane) = self.contexts[active].panes.get_mut(&pid) {
+                                if let Some(app) = pane.as_app_mut() {
+                                    app.runtime.queue_outbound_event(
+                                        crate::app_protocol::PlexiEvent::PipeMessage {
+                                            pipe_id: pipe_id.clone(),
+                                            payload: payload.clone(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                AppCommand::DeliverRunUpdate { originator_type_id, event } => {
+                    let active = self.active_context;
+                    let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
+                    let mut delivered = false;
+                    for pid in pane_ids {
+                        let matches = self.contexts[active]
+                            .panes
+                            .get(&pid)
+                            .and_then(|p| p.as_app())
+                            .map(|a| match &a.runtime {
+                                crate::pane::AppRuntime::Process(pa) => {
+                                    pa.type_id == originator_type_id
+                                }
+                                crate::pane::AppRuntime::Builtin(_) => false,
+                            })
+                            .unwrap_or(false);
+                        if matches {
+                            if let Some(pane) = self.contexts[active].panes.get_mut(&pid) {
+                                if let Some(app) = pane.as_app_mut() {
+                                    app.runtime.queue_outbound_event(event.clone());
+                                    delivered = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if !delivered {
+                        log::warn!(
+                            "DeliverRunUpdate: no pane found for type_id='{originator_type_id}'"
+                        );
+                    }
+                }
             }
         }
 

@@ -21,7 +21,6 @@ mod context;
 mod event_log;
 mod features;
 mod file_browser;
-#[allow(dead_code)] // STEP-4/6: HostHarness + VecEventSink used by unit tests; kept alongside prod
 mod host;
 mod keys;
 mod logging;
@@ -51,10 +50,6 @@ mod tiling;
 #[allow(dead_code)] // STEP-9: PipeSend peer routing + binary pipe surface finish the protocol
 mod typed_pipes;
 mod workspace;
-
-#[cfg(test)]
-#[allow(dead_code)] // STEP-10: harness helpers are test-only; real #[test] fns land next
-mod pgap_test_harness;
 
 fn main() -> eframe::Result {
     if std::env::args().nth(1).as_deref() == Some("--render") {

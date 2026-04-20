@@ -20,6 +20,19 @@ pub enum AppCommand {
     },
     /// Request the host to cd all terminals in the same pane group to `cwd`.
     CdRequest { cwd: String },
+    /// Deliver a JSON pipe message to all peer panes that have the given
+    /// pipe_id open with direction In or Duplex. The sender pane is excluded.
+    DeliverPipeMessage {
+        sender_pane_id: u64,
+        pipe_id: String,
+        payload: serde_json::Value,
+    },
+    /// Deliver a RunUpdate event to the pane that originally issued the run,
+    /// identified by its type_id.
+    DeliverRunUpdate {
+        originator_type_id: String,
+        event: crate::app_protocol::PlexiEvent,
+    },
 }
 
 /// The trait all Plexi apps implement.
