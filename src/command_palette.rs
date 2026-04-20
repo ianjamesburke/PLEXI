@@ -114,6 +114,7 @@ impl PlexiApp {
             LaunchApp(String),
         }
         let mut action: Option<Action> = None;
+        let prev_selected = self.palette_selected;
 
         ctx.input_mut(|input| {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
@@ -229,6 +230,8 @@ impl PlexiApp {
                         // Only let hover drive selection when the pointer moved this frame.
                         // A stationary mouse means keyboard navigation owns the index.
                         let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
+                        // Scroll the selected row into view when keyboard navigation moved it.
+                        let should_scroll = self.palette_selected != prev_selected;
 
                         egui::ScrollArea::vertical()
                             .max_height(400.0)
@@ -287,6 +290,9 @@ impl PlexiApp {
                                                 },
                                             );
 
+                                            if is_selected && should_scroll {
+                                                r.scroll_to_me(None);
+                                            }
                                             if r.clicked() {
                                                 click_action =
                                                     Some(Action::JumpPane(*ctx_idx, *tile_id));
@@ -340,6 +346,9 @@ impl PlexiApp {
                                                 },
                                             );
 
+                                            if is_selected && should_scroll {
+                                                r.scroll_to_me(None);
+                                            }
                                             if r.clicked() {
                                                 click_action =
                                                     Some(Action::LaunchApp(id.clone()));
