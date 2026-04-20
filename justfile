@@ -320,8 +320,11 @@ install-v3:
     v3_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
     cp "$v3_bin" /usr/local/bin/plexi-v3
 
-    mkdir -p ~/.plexi-v3/apps
+    mkdir -p ~/.plexi-v3/apps ~/.plexi-v3/sdk
+    cp sdk/python/plexi_sdk/__init__.py ~/.plexi-v3/sdk/plexi_sdk.py
     cp -R examples/. ~/.plexi-v3/apps/
+    # Remove any stale per-app SDK copies; apps import from ~/.plexi-v3/sdk/ via PYTHONPATH.
+    find ~/.plexi-v3/apps -maxdepth 2 -name 'plexi_sdk.py' -delete
     find ~/.plexi-v3/apps -name '*.py' -exec chmod +x {} \;
 
     # STEP-11: refresh macOS Services registration so right-click → Services

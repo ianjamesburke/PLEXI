@@ -74,6 +74,28 @@ fn main() -> eframe::Result {
         .unwrap_or(log::LevelFilter::Info);
     crate::logging::init(log_level);
 
+    // Capture Rust panics into the log file so they survive process death.
+    // Without this, panics on the UI thread only appear in Console.app and are
+    // invisible to the Plexi log (the log writer thread is killed mid-write).
+    {
+        let panic_log = crate::logging::log_path();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = info.to_string();
+            // Best-effort append to the log file directly (logger may be dead).
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&panic_log)
+            {
+                use std::io::Write;
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                let _ = writeln!(f, "[{now}] [ERROR] [plexi::panic] PANIC: {msg}");
+            }
+            // Also print to stderr so crash logs / Console.app capture it.
+            eprintln!("PLEXI PANIC: {msg}");
+        }));
+    }
+
     // Handle CLI subcommands before launching the GUI.
     let args: Vec<String> = raw_args
         .iter()

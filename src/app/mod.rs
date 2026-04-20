@@ -109,6 +109,7 @@ impl PlexiApp {
                                     manifest_id: "file_browser".to_string(),
                                     name: "File Browser".to_string(),
                                     pane_group: Some("cwd".to_string()),
+                                    overlay_replaced: None,
                                 })));
                             }
                             "quick_note" => {
@@ -126,6 +127,7 @@ impl PlexiApp {
                                     manifest_id: "quick_note".to_string(),
                                     name: "Quick Note".to_string(),
                                     pane_group: None,
+                                    overlay_replaced: None,
                                 })));
                             }
                             "secrets_manager" => {
@@ -142,6 +144,7 @@ impl PlexiApp {
                                     manifest_id: "secrets_manager".to_string(),
                                     name: "Secrets Manager".to_string(),
                                     pane_group: None,
+                                    overlay_replaced: None,
                                 })));
                             }
                             other => {
@@ -157,6 +160,7 @@ impl PlexiApp {
                                         manifest_id: other.to_string(),
                                         name: other.to_string(),
                                         pane_group: registry.group_for(other),
+                                        overlay_replaced: None,
                                     })));
                                 }
                             }
@@ -408,9 +412,9 @@ impl eframe::App for PlexiApp {
                             .get_mut(&pid)
                             .and_then(|p| p.as_terminal_mut())
                         {
-                            t.backend.process_command(
-                                egui_term::BackendCommand::Write(cd_cmd.as_bytes().to_vec()),
-                            );
+                            t.backend.process_command(egui_term::BackendCommand::Write(
+                                cd_cmd.as_bytes().to_vec(),
+                            ));
                         }
                     }
                 }

@@ -207,6 +207,14 @@ pub enum DrawCommand {
     },
     /// High-level scrollable list — host handles layout and scrolling.
     List {
+        #[serde(default)]
+        x: f32,
+        #[serde(default)]
+        y: f32,
+        #[serde(default)]
+        w: f32,
+        #[serde(default)]
+        h: f32,
         items: Vec<ListItem>,
         selected: usize,
         #[serde(default)]

@@ -263,8 +263,12 @@ class RenderContext:
                "color": color, "width": width})
 
     def list(self, items: list[dict], selected: int = 0,
-             item_height: float = 40.0) -> None:
-        _emit({"type": "list", "items": items, "selected": selected,
+             item_height: float = 40.0, x: float = 0.0, y: float = 0.0,
+             w: float | None = None, h: float | None = None) -> None:
+        _emit({"type": "list", "x": x, "y": y,
+               "w": self.w if w is None else w,
+               "h": self.h - y if h is None else h,
+               "items": items, "selected": selected,
                "item_height": item_height})
 
     # Logging helpers (in-frame, forwarded to host logger)

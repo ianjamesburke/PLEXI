@@ -58,9 +58,10 @@ pub fn init(level: log::LevelFilter) {
 
     let dispatch = fern::Dispatch::new()
         .format(formatter)
-        // plexi::* at the configured level
+        // plexi::* and plexi_v3::* (renamed crate) at the configured level
         .level(log::LevelFilter::Warn) // default for third-party
-        .level_for("plexi", level);
+        .level_for("plexi", level)
+        .level_for("plexi_v3", level);
 
     let dispatch = match file_result {
         Ok(file) => dispatch.chain(std::io::stderr()).chain(file),

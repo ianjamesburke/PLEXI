@@ -8,11 +8,7 @@ use egui::Color32;
 ///
 /// Only visual primitives reach this function — control commands are routed
 /// upstream in `process_app/mod.rs` before commands enter the frame pipeline.
-pub(super) fn render_draw_commands(
-    ui: &mut egui::Ui,
-    commands: &[DrawCommand],
-    colors: &Colors,
-) {
+pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], colors: &Colors) {
     let origin = ui.min_rect().min;
 
     for cmd in commands {
@@ -43,22 +39,21 @@ pub(super) fn render_draw_commands(
                 bold,
             } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
-                let family = match (*monospace, *bold) {
-                    (true, _) => egui::FontFamily::Monospace,
-                    (false, true) => egui::FontFamily::Name("bold".into()),
-                    (false, false) => egui::FontFamily::Proportional,
-                };
-                // Painter falls back to Proportional if "bold" isn't registered
-                // in FontDefinitions — setup_fonts will wire the bold slot in a
-                // follow-up; for now bold text still renders, just not weighted.
+                let family = font_family_for_text(*monospace);
                 let font_id = egui::FontId::new(*size, family);
-                ui.painter().text(
-                    egui::pos2(origin.x + x, origin.y + y),
-                    egui::Align2::LEFT_TOP,
-                    text,
-                    font_id,
-                    color,
-                );
+                let pos = egui::pos2(origin.x + x, origin.y + y);
+                ui.painter()
+                    .text(pos, egui::Align2::LEFT_TOP, text, font_id, color);
+                if *bold {
+                    let font_id = egui::FontId::new(*size, font_family_for_text(*monospace));
+                    ui.painter().text(
+                        pos + egui::vec2(0.45, 0.0),
+                        egui::Align2::LEFT_TOP,
+                        text,
+                        font_id,
+                        color,
+                    );
+                }
             }
 
             DrawCommand::Line {
@@ -80,6 +75,10 @@ pub(super) fn render_draw_commands(
             }
 
             DrawCommand::List {
+                x,
+                y,
+                w,
+                h,
                 items,
                 selected,
                 item_height,
@@ -89,42 +88,50 @@ pub(super) fn render_draw_commands(
                 } else {
                     20.0
                 };
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (i, item) in items.iter().enumerate() {
-                            let is_sel = i == *selected;
-                            let (row_rect, _) = ui.allocate_exact_size(
-                                egui::vec2(ui.available_width(), row_h),
-                                egui::Sense::hover(),
-                            );
-                            if is_sel {
-                                ui.painter().rect_filled(row_rect, 2.0, colors.bg_active);
-                            }
-                            let icon = if item.is_dir { "▶ " } else { "  " };
-                            let label = format!("{}{}", icon, item.label);
-                            ui.painter().text(
-                                egui::pos2(row_rect.min.x + 8.0, row_rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &label,
-                                egui::FontId::monospace(12.0),
-                                if is_sel {
-                                    colors.text_primary
-                                } else {
-                                    colors.text_dim
-                                },
-                            );
-                            if let Some(sec) = &item.secondary {
-                                ui.painter().text(
-                                    egui::pos2(row_rect.max.x - 8.0, row_rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    sec,
-                                    egui::FontId::proportional(10.0),
-                                    colors.text_dim,
-                                );
-                            }
-                        }
-                    });
+                let list_w = if *w > 0.0 { *w } else { ui.available_width() };
+                let list_h = if *h > 0.0 { *h } else { ui.available_height() };
+                let clip_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x + x, origin.y + y),
+                    egui::vec2(list_w, list_h),
+                );
+                let painter = ui.painter().with_clip_rect(clip_rect);
+
+                for (i, item) in items.iter().enumerate() {
+                    let row_y = origin.y + y + i as f32 * row_h;
+                    let row_rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, row_y),
+                        egui::vec2(list_w, row_h),
+                    );
+                    if !clip_rect.intersects(row_rect) {
+                        continue;
+                    }
+                    let is_sel = i == *selected;
+                    if is_sel {
+                        painter.rect_filled(row_rect, 2.0, colors.bg_active);
+                    }
+                    let icon = if item.is_dir { "▶ " } else { "  " };
+                    let label = format!("{}{}", icon, item.label);
+                    painter.text(
+                        egui::pos2(row_rect.min.x + 8.0, row_rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        &label,
+                        egui::FontId::monospace(12.0),
+                        if is_sel {
+                            colors.text_primary
+                        } else {
+                            colors.text_dim
+                        },
+                    );
+                    if let Some(sec) = &item.secondary {
+                        painter.text(
+                            egui::pos2(row_rect.max.x - 8.0, row_rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            sec,
+                            egui::FontId::proportional(10.0),
+                            colors.text_dim,
+                        );
+                    }
+                }
             }
 
             // These are handled at the App trait level or routed upstream — never rendered.
@@ -151,6 +158,14 @@ pub(super) fn render_draw_commands(
     }
 }
 
+fn font_family_for_text(monospace: bool) -> egui::FontFamily {
+    if monospace {
+        egui::FontFamily::Monospace
+    } else {
+        egui::FontFamily::Proportional
+    }
+}
+
 /// Parse a hex color string like `"#1e1e2e"` into Color32.
 pub(super) fn parse_color(hex: &str) -> Option<Color32> {
     let hex = hex.trim_start_matches('#');
@@ -167,5 +182,16 @@ pub(super) fn parse_color(hex: &str) -> Option<Color32> {
         Some(Color32::from_rgba_premultiplied(r, g, b, a))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::font_family_for_text;
+
+    #[test]
+    fn text_font_family_never_uses_unregistered_named_family() {
+        assert_eq!(font_family_for_text(false), egui::FontFamily::Proportional);
+        assert_eq!(font_family_for_text(true), egui::FontFamily::Monospace);
     }
 }

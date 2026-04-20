@@ -423,6 +423,13 @@ mod tests {
                     .is_some_and(|s| s.contains("Rust"))
         });
         assert!(has_rust, "injected results must surface in render output");
+        let list_y = cmds
+            .iter()
+            .find(|v| v.get("type").and_then(Value::as_str) == Some("list"))
+            .and_then(|v| v.get("y"))
+            .and_then(Value::as_f64)
+            .expect("results render must position its list below the heading");
+        assert!(list_y > 80.0, "list must not overlap the results heading");
         h.shutdown();
     }
 

@@ -156,6 +156,9 @@ impl ProcessApp {
                 cmd.env(k, v);
             }
         }
+        // Make the shared Plexi SDK importable by Python apps without per-app copies.
+        let sdk_dir = crate::config::config_dir().join("sdk");
+        cmd.env("PYTHONPATH", sdk_dir);
         let mut child = cmd.spawn()?;
 
         let stdin = child.stdin.take().expect("stdin piped");
@@ -329,7 +332,7 @@ impl ProcessApp {
             Ok(mut line) => {
                 line.push('\n');
                 if let Err(e) = stdin.write_all(line.as_bytes()) {
-                    log::warn!("ProcessApp: failed to write event: {e}");
+                    log::error!("ProcessApp[{}]: failed to write event to stdin — process died: {e}", self.type_id);
                     self.stdin = None;
                 }
             }
@@ -353,6 +356,10 @@ impl ProcessApp {
                 Ok(cmd) => cmds.push(cmd),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
+                    log::error!(
+                        "ProcessApp[{}]: subprocess stdout closed — process crashed or exited",
+                        self.type_id
+                    );
                     self.draw_rx = None;
                     break;
                 }

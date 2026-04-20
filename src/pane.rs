@@ -65,7 +65,6 @@ impl Pane {
             _ => None,
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +189,9 @@ pub struct AppPane {
     pub name: String,
     /// Pane group this app joined at spawn (for PathChanged routing).
     pub pane_group: Option<String>,
+    /// Pane hidden by an overlay app. Closing the app restores this pane instead
+    /// of deleting the tile.
+    pub overlay_replaced: Option<Box<Pane>>,
 }
 
 // ---------------------------------------------------------------------------

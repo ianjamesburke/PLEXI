@@ -1,7 +1,5 @@
 use crate::context::{replace_child, Context};
-use crate::host::command::{
-    HostCommand, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio,
-};
+use crate::host::command::{HostCommand, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
 use crate::host::effect::HostEffect;
 use crate::keys::Direction;
 use crate::pane::{Pane, TerminalPane};
@@ -15,6 +13,94 @@ use std::path::PathBuf;
 
 use crate::app::PlexiApp;
 use crate::app_trait::App;
+
+fn restore_overlay_replacement(panes: &mut HashMap<PaneId, Pane>, pane_id: PaneId) -> bool {
+    let Some(pane) = panes.remove(&pane_id) else {
+        return false;
+    };
+
+    match pane {
+        Pane::App(mut app) => {
+            if let Some(replaced) = app.overlay_replaced.take() {
+                panes.insert(pane_id, *replaced);
+                true
+            } else {
+                panes.insert(pane_id, Pane::App(app));
+                false
+            }
+        }
+        other => {
+            panes.insert(pane_id, other);
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_permissions::AppPermissions;
+    use crate::app_trait::AppRenderContext;
+
+    struct NoopApp(&'static str);
+
+    impl App for NoopApp {
+        fn type_id(&self) -> &'static str {
+            self.0
+        }
+
+        fn display_name(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &AppRenderContext<'_>) {}
+    }
+
+    fn app_pane(id: PaneId, name: &'static str, overlay_replaced: Option<Box<Pane>>) -> Pane {
+        Pane::App(Box::new(crate::pane::AppPane {
+            id,
+            runtime: crate::pane::AppRuntime::Builtin(Box::new(NoopApp(name))),
+            workspace_root: PathBuf::from("/tmp"),
+            permissions: AppPermissions::builtin(),
+            manifest_id: name.to_string(),
+            name: name.to_string(),
+            pane_group: None,
+            overlay_replaced,
+        }))
+    }
+
+    #[test]
+    fn restoring_overlay_keeps_tile_and_recovers_replaced_pane() {
+        let pane_id = 7;
+        let replaced = app_pane(pane_id, "original", None);
+        let overlay = app_pane(pane_id, "overlay", Some(Box::new(replaced)));
+        let mut panes = HashMap::from([(pane_id, overlay)]);
+
+        assert!(restore_overlay_replacement(&mut panes, pane_id));
+
+        let restored = panes
+            .get(&pane_id)
+            .and_then(|pane| pane.as_app())
+            .expect("restored app pane");
+        assert_eq!(restored.name, "original");
+        assert!(restored.overlay_replaced.is_none());
+    }
+
+    #[test]
+    fn restoring_non_overlay_leaves_pane_in_place() {
+        let pane_id = 9;
+        let pane = app_pane(pane_id, "plain", None);
+        let mut panes = HashMap::from([(pane_id, pane)]);
+
+        assert!(!restore_overlay_replacement(&mut panes, pane_id));
+
+        let restored = panes
+            .get(&pane_id)
+            .and_then(|pane| pane.as_app())
+            .expect("app pane remains");
+        assert_eq!(restored.name, "plain");
+    }
+}
 
 impl PlexiApp {
     /// Route a HostCommand through HostModel and return the resulting effects.
@@ -49,9 +135,15 @@ impl PlexiApp {
     ) -> (PaneId, ShareRatio, bool, bool) {
         let new_pane_first = matches!(hint, Some("split_above"));
         let vertical = !matches!(hint, Some("split_h") | Some("split_above"));
-        let placement = if vertical { Placement::Right } else { Placement::Below };
+        let placement = if vertical {
+            Placement::Right
+        } else {
+            Placement::Below
+        };
         let req = OpenPaneRequest {
-            runtime: PaneRuntimeKind::App { app_id: app_id.to_string() },
+            runtime: PaneRuntimeKind::App {
+                app_id: app_id.to_string(),
+            },
             placement,
             share,
             group,
@@ -173,7 +265,8 @@ impl PlexiApp {
         let new_app_pane = |id: PaneId,
                             process: crate::process_app::ProcessApp,
                             workspace_root: PathBuf,
-                            group: Option<String>| {
+                            group: Option<String>,
+                            overlay_replaced: Option<Box<Pane>>| {
             Pane::App(Box::new(crate::pane::AppPane {
                 id,
                 permissions: process.permissions.clone(),
@@ -182,6 +275,7 @@ impl PlexiApp {
                 manifest_id: app_id.to_string(),
                 name: app_id.to_string(),
                 pane_group: group,
+                overlay_replaced,
             }))
         };
 
@@ -195,9 +289,18 @@ impl PlexiApp {
                 return;
             };
             let pane_id = *focused_pane_id;
+            let Some(replaced_pane) = self.contexts[active].panes.remove(&pane_id) else {
+                return;
+            };
             self.contexts[active].panes.insert(
                 pane_id,
-                new_app_pane(pane_id, process, workspace_root, group),
+                new_app_pane(
+                    pane_id,
+                    process,
+                    workspace_root,
+                    group,
+                    Some(Box::new(replaced_pane)),
+                ),
             );
             self.contexts[active].focused_pane = Some(focused_tile);
             return;
@@ -206,9 +309,10 @@ impl PlexiApp {
         let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, group.clone(), hint, share);
-        self.contexts[active]
-            .panes
-            .insert(new_id, new_app_pane(new_id, process, workspace_root, group));
+        self.contexts[active].panes.insert(
+            new_id,
+            new_app_pane(new_id, process, workspace_root, group, None),
+        );
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
     }
@@ -225,18 +329,22 @@ impl PlexiApp {
         let active = self.active_context;
         let app_type_id = app.type_id().to_string();
         let app_name = app.display_name();
-        let new_app_pane =
-            |id: PaneId, app: Box<dyn App>, workspace_root: PathBuf, group: Option<String>| {
-                Pane::App(Box::new(crate::pane::AppPane {
-                    id,
-                    runtime: crate::pane::AppRuntime::Builtin(app),
-                    workspace_root,
-                    permissions,
-                    manifest_id: app_type_id.clone(),
-                    name: app_name.clone(),
-                    pane_group: group,
-                }))
-            };
+        let new_app_pane = |id: PaneId,
+                            app: Box<dyn App>,
+                            workspace_root: PathBuf,
+                            group: Option<String>,
+                            overlay_replaced: Option<Box<Pane>>| {
+            Pane::App(Box::new(crate::pane::AppPane {
+                id,
+                runtime: crate::pane::AppRuntime::Builtin(app),
+                workspace_root,
+                permissions,
+                manifest_id: app_type_id.clone(),
+                name: app_name.clone(),
+                pane_group: group,
+                overlay_replaced,
+            }))
+        };
 
         if matches!(hint, Some("overlay")) {
             let Some(focused_tile) = self.contexts[active].focused_pane else {
@@ -248,9 +356,19 @@ impl PlexiApp {
                 return;
             };
             let pane_id = *focused_pane_id;
-            self.contexts[active]
-                .panes
-                .insert(pane_id, new_app_pane(pane_id, app, workspace_root, group));
+            let Some(replaced_pane) = self.contexts[active].panes.remove(&pane_id) else {
+                return;
+            };
+            self.contexts[active].panes.insert(
+                pane_id,
+                new_app_pane(
+                    pane_id,
+                    app,
+                    workspace_root,
+                    group,
+                    Some(Box::new(replaced_pane)),
+                ),
+            );
             self.contexts[active].focused_pane = Some(focused_tile);
             return;
         }
@@ -261,9 +379,10 @@ impl PlexiApp {
         );
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(&app_type_id, group.clone(), hint, share);
-        self.contexts[active]
-            .panes
-            .insert(new_id, new_app_pane(new_id, app, workspace_root, group));
+        self.contexts[active].panes.insert(
+            new_id,
+            new_app_pane(new_id, app, workspace_root, group, None),
+        );
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
     }
@@ -308,9 +427,9 @@ impl PlexiApp {
         let (new_id, vertical) = effects
             .iter()
             .find_map(|e| match e {
-                HostEffect::SplitOpened { pane_id, placement, .. } => {
-                    Some((*pane_id, !matches!(placement, Placement::Below)))
-                }
+                HostEffect::SplitOpened {
+                    pane_id, placement, ..
+                } => Some((*pane_id, !matches!(placement, Placement::Below))),
                 _ => None,
             })
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
@@ -492,6 +611,20 @@ impl PlexiApp {
             Some(f) => f,
             None => return,
         };
+        let focused_pane_id = self.contexts[self.active_context]
+            .tree
+            .tiles
+            .get(focused)
+            .and_then(|tile| match tile {
+                Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            });
+        if let Some(pane_id) = focused_pane_id {
+            if restore_overlay_replacement(&mut self.contexts[self.active_context].panes, pane_id) {
+                return;
+            }
+        }
+
         let effects = self.submit(HostCommand::CloseFocusedPane);
         log::debug!("close_focused effects: {:?}", effects);
         self.close_tile(self.active_context, focused);
@@ -747,12 +880,24 @@ impl PlexiApp {
         let Some(focused_tile) = self.contexts[active].focused_pane else {
             return;
         };
-        let Some(Tile::Pane(pane_id)) = self.contexts[active].tree.tiles.get(focused_tile) else {
+        let Some(pane_id) = self.contexts[active]
+            .tree
+            .tiles
+            .get(focused_tile)
+            .and_then(|tile| match tile {
+                Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            })
+        else {
             return;
         };
+        if restore_overlay_replacement(&mut self.contexts[active].panes, pane_id) {
+            return;
+        }
+
         let is_app = self.contexts[active]
             .panes
-            .get(pane_id)
+            .get(&pane_id)
             .and_then(|p| p.as_app())
             .is_some();
         if is_app {
@@ -795,7 +940,14 @@ impl PlexiApp {
         // Built-in file browser gets full permissions, joins the "cwd" group so
         // it follows linked-terminal directory changes.
         let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, cwd, Some("cwd".to_string()), Some("split_above"), Some(0.75));
+        self.open_builtin_app_pane(
+            app,
+            perms,
+            cwd,
+            Some("cwd".to_string()),
+            Some("split_above"),
+            Some(0.75),
+        );
     }
 
     /// Open the quick note app (full pane, no terminal split).

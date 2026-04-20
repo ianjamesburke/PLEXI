@@ -271,24 +271,36 @@ impl HeadlessRenderer {
         };
         let selected = cmd["selected"].as_u64().unwrap_or(0) as usize;
         let item_h = cmd["item_height"].as_f64().unwrap_or(40.0) as f32;
+        let x = cmd["x"].as_f64().unwrap_or(0.0) as f32;
+        let mut y = cmd["y"].as_f64().unwrap_or(88.0) as f32;
+        let w = cmd["w"].as_f64().unwrap_or(frame_width as f64) as f32;
+        let h = cmd["h"].as_f64().unwrap_or(f64::INFINITY) as f32;
+        let bottom = y + h;
 
         let surface_color = parse_hex_color("#313244");
         let fg = parse_hex_color("#cdd6f4");
         let muted = parse_hex_color("#6c7086");
 
-        // Items start just below the header area — match wikipedia.py layout.
-        let mut y = 88.0_f32;
         for (i, item) in items.iter().enumerate() {
+            if y >= bottom {
+                break;
+            }
             let label = item["label"].as_str().unwrap_or("");
             let is_sel = i == selected;
             if is_sel {
-                if let Some(path) = rounded_rect_path(0.0, y, frame_width as f32, item_h, 0.0) {
-                    pixmap.fill_path(&path, &solid_paint(&surface_color), tiny_skia::FillRule::Winding, Transform::identity(), None);
+                if let Some(path) = rounded_rect_path(x, y, w, item_h, 0.0) {
+                    pixmap.fill_path(
+                        &path,
+                        &solid_paint(&surface_color),
+                        tiny_skia::FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
             let color = if is_sel { fg } else { muted };
             let style = TextStyle { size: 15.0, color, bold: false, italic: false };
-            self.blit_text(pixmap, &Point { x: 24.0, y: y + 12.0 }, label, &style);
+            self.blit_text(pixmap, &Point { x: x + 24.0, y: y + 12.0 }, label, &style);
             y += item_h;
         }
     }

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
 
 import pathlib
 from plexi_sdk import App, RenderContext, BG, MUTED, ACCENT, SURFACE, HINT
@@ -104,7 +102,8 @@ class FileExplorer(App):
         list_top = HEADER_H
         list_h = ctx.h - HEADER_H - STATUS_H
         ctx.rect(0, list_top, ctx.w, list_h, fill=BG)
-        ctx.list(items, selected=self._selected, item_height=24.0)
+        ctx.list(items, selected=self._selected, item_height=24.0,
+                 y=list_top, h=list_h)
 
         # Footer
         ctx.rect(0, ctx.h - STATUS_H, ctx.w, STATUS_H, fill=SURFACE)

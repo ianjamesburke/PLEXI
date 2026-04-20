@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
 
 import json
 import threading
@@ -117,7 +115,8 @@ class WikiApp(App):
         elif self._mode == "results":
             ctx.text(16, y, f'Results for "{self._query}":', size=BODY, color=FG)
             items = [{"label": r, "secondary": None} for r in self._results]
-            ctx.list(items, selected=self._selected, item_height=40.0)
+            ctx.list(items, selected=self._selected, item_height=40.0,
+                     y=y + 28, h=ctx.h - y - 68)
             ctx.text(16, ctx.h - 28, "↑↓ navigate · Enter open · Esc back", size=HINT, color=MUTED)
         elif self._mode == "article":
             title = self._results[self._selected] if self._results else ""

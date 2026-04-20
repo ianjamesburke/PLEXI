@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(__file__))
 
 import json
 import pathlib
@@ -95,7 +94,8 @@ class TodoApp(App):
             check = "✓" if it["done"] else "○"
             items.append({"label": f"{check} {it['text']}", "secondary": None})
         if items:
-            ctx.list(items, selected=self._selected, item_height=40.0)
+            ctx.list(items, selected=self._selected, item_height=40.0,
+                     y=52, h=max(0, ctx.h - 112))
         else:
             ctx.text(16, 80, "No items. Press 'a' to add.", size=BODY, color=MUTED)
         # Input bar

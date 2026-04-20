@@ -19,16 +19,19 @@ impl PlexiApp {
                     egui_tiles::Tile::Pane(id) => *id,
                     _ => return None,
                 };
-                ctx.panes.get(&pane_id)?.as_terminal()
+                ctx.panes
+                    .get(&pane_id)?
+                    .as_terminal()
                     .and_then(|t| shell::get_pid_cwd(t.backend.child_pid()))
             });
             if focused_terminal_cwd.is_some() {
                 focused_terminal_cwd
             } else {
                 // Fallback: any terminal in the context.
-                ctx.panes.values()
-                    .find_map(|p| p.as_terminal()
-                        .and_then(|t| shell::get_pid_cwd(t.backend.child_pid())))
+                ctx.panes.values().find_map(|p| {
+                    p.as_terminal()
+                        .and_then(|t| shell::get_pid_cwd(t.backend.child_pid()))
+                })
             }
         };
         let Some(new_cwd) = terminal_cwd else {
