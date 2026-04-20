@@ -1,0 +1,12 @@
+[app]
+id = "backlog"
+name = "Backlog"
+version = "0.1.0"
+description = "Browse, preview, open, archive, and delete .plexi/backlog items."
+entry = "backlog.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.45 }
