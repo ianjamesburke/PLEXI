@@ -1,10 +1,14 @@
-use egui::{Color32, CornerRadius};
+use egui::{Color32, CornerRadius, Margin};
 
 use crate::theme::Colors;
 
+/// Consistent inner padding applied to every selectable row.
+const ROW_PAD_H: f32 = 10.0;
+const ROW_PAD_V: f32 = 6.0;
+
 /// Renders a highlighted selectable row whose height is determined by its
-/// content. Callers pass a closure that renders the row interior; this
-/// function handles the background highlight, hover cursor, and hit-test.
+/// content. The widget owns horizontal and vertical padding so callers
+/// render only raw content without spacing boilerplate.
 ///
 /// Returns `(response, content_return_value)`. Check `response.clicked()` to
 /// detect activation and `response.hovered()` to drive keyboard selection.
@@ -28,7 +32,12 @@ pub(crate) fn selectable_row<R>(
 
     let scope = ui.scope(|ui| {
         ui.set_width(ui.available_width());
-        content(ui)
+        // Use a transparent Frame purely for its inner_margin so callers
+        // never have to think about row padding.
+        egui::Frame::new()
+            .inner_margin(Margin::symmetric(ROW_PAD_H as i8, ROW_PAD_V as i8))
+            .show(ui, |ui| content(ui))
+            .inner
     });
 
     let row_rect = scope.response.rect;

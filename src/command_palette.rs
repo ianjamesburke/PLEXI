@@ -226,6 +226,9 @@ impl PlexiApp {
                         let mut click_action: Option<Action> = None;
                         let mut hover_select: Option<usize> = None;
                         let colors = self.colors;
+                        // Only let hover drive selection when the pointer moved this frame.
+                        // A stationary mouse means keyboard navigation owns the index.
+                        let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
 
                         egui::ScrollArea::vertical()
                             .max_height(400.0)
@@ -257,35 +260,30 @@ impl PlexiApp {
                                                 is_selected,
                                                 &colors,
                                                 |ui| {
-                                                    ui.add_space(8.0);
-                                                    ui.vertical(|ui| {
-                                                        ui.add_space(5.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                RichText::new(ctx_name.as_str())
-                                                                    .size(10.0)
-                                                                    .color(colors.text_dim),
-                                                            );
-                                                            ui.label(
-                                                                RichText::new("\u{203A}")
-                                                                    .size(10.0)
-                                                                    .color(colors.text_dim),
-                                                            );
-                                                            ui.label(
-                                                                RichText::new(name.as_str())
-                                                                    .size(12.0)
-                                                                    .color(name_color),
-                                                            );
-                                                        });
-                                                        if !cwd.is_empty() {
-                                                            ui.label(
-                                                                RichText::new(cwd.as_str())
-                                                                    .size(9.0)
-                                                                    .color(colors.text_dim),
-                                                            );
-                                                        }
-                                                        ui.add_space(5.0);
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new(ctx_name.as_str())
+                                                                .size(10.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new("\u{203A}")
+                                                                .size(10.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(name.as_str())
+                                                                .size(12.0)
+                                                                .color(name_color),
+                                                        );
                                                     });
+                                                    if !cwd.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(cwd.as_str())
+                                                                .size(9.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                    }
                                                 },
                                             );
 
@@ -319,31 +317,26 @@ impl PlexiApp {
                                                 is_selected,
                                                 &colors,
                                                 |ui| {
-                                                    ui.add_space(8.0);
-                                                    ui.vertical(|ui| {
-                                                        ui.add_space(5.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                RichText::new("⬡")
-                                                                    .size(10.0)
-                                                                    .color(colors.accent),
-                                                            );
-                                                            ui.add_space(4.0);
-                                                            ui.label(
-                                                                RichText::new(name.as_str())
-                                                                    .size(12.0)
-                                                                    .color(colors.text_primary),
-                                                            );
-                                                        });
-                                                        if !description.is_empty() {
-                                                            ui.label(
-                                                                RichText::new(description.as_str())
-                                                                    .size(9.0)
-                                                                    .color(colors.text_dim),
-                                                            );
-                                                        }
-                                                        ui.add_space(5.0);
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new("⬡")
+                                                                .size(10.0)
+                                                                .color(colors.accent),
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        ui.label(
+                                                            RichText::new(name.as_str())
+                                                                .size(12.0)
+                                                                .color(colors.text_primary),
+                                                        );
                                                     });
+                                                    if !description.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(description.as_str())
+                                                                .size(9.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                    }
                                                 },
                                             );
 
@@ -360,7 +353,9 @@ impl PlexiApp {
                             });
 
                         if let Some(i) = hover_select {
-                            self.palette_selected = i;
+                            if mouse_moved {
+                                self.palette_selected = i;
+                            }
                         }
 
                         if let Some(act) = click_action {
