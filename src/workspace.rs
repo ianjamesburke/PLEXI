@@ -42,7 +42,6 @@ pub enum SavedPaneKind {
     #[default]
     Terminal,
     App,
-    Agent,
 }
 
 fn workspace_path() -> PathBuf {

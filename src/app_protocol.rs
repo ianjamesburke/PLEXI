@@ -9,7 +9,7 @@
 //!
 //! 1. Host spawns the app binary.
 //! 2. Host sends exactly one `Init` event.
-//! 3. App replies with exactly one `Ready` (via `AppReply`).
+//! 3. App sends `DrawCommand::Ready` once after receiving `Init`.
 //! 4. Each frame: host sends `Render`; app replies with `DrawCommand`s + `FrameDone`.
 //! 5. Input events (`Key`, `Click`, `Command`) arrive between frames as they occur.
 //! 6. Out-of-frame draw commands (`CapabilityRequest`, `SecretGet`, `Notify`, etc.)
@@ -20,7 +20,7 @@
 //!
 //! ```
 //! let init = read_json_line(stdin);  // PlexiEvent::Init
-//! write_json(AppReply::Ready { sdk: "my-sdk/1.0.0", features_used: vec![] });
+//! write_json(DrawCommand::Ready { sdk: "my-sdk/1.0.0".into(), features_used: vec![] });
 //! loop {
 //!   let event = read_json_line(stdin);
 //!   match event {
@@ -43,7 +43,7 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlexiEvent {
-    /// Sent exactly once on startup. App must reply with AppReply::Ready.
+    /// Sent exactly once on startup. App must reply with DrawCommand::Ready.
     Init {
         /// Protocol version string, e.g. "pgap/3". App must refuse unknown versions.
         protocol: String,
@@ -151,20 +151,6 @@ pub struct Modifiers {
 pub enum MouseButton {
     Primary,
     Secondary,
-}
-
-// ── One-shot reply FROM the app back TO Plexi ────────────────────────────────
-
-/// Sent by the app in response to `PlexiEvent::Init`. One message only.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum AppReply {
-    Ready {
-        /// SDK identifier and version, e.g. "plexi-sdk-py/0.4.0".
-        sdk: String,
-        /// Feature flags from Init that this app will actually use.
-        features_used: Vec<String>,
-    },
 }
 
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
@@ -291,7 +277,7 @@ pub enum DrawCommand {
         args: Vec<String>,
     },
 
-    // ── Media + HTTP primitives (STEP-9 routes them) ─────────────────────
+    // ── Media + HTTP primitives ──────────────────────────────────────────
     /// Host-brokered HTTP request. Requires `net.http` capability.
     /// Host replies with `PlexiEvent::HttpResponse { request_id, ... }`.
     HttpRequest {
@@ -346,8 +332,6 @@ pub enum DrawCommand {
 
     /// SDK ready handshake. Sent once by the app after receiving Init.
     /// Host captures sdk and features_used; the message is otherwise a no-op.
-    /// Mirrors `AppReply::Ready` — unified here so the background reader
-    /// doesn't need a separate parse pass for the first line.
     Ready {
         #[serde(default)]
         sdk: String,

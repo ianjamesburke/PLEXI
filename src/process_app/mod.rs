@@ -15,7 +15,7 @@ mod prompts;
 mod render;
 mod routing;
 
-use crate::app_permissions::{AppPermissions, Capability, PermissionsLog};
+use crate::app_permissions::{AppPermissions, Capability};
 use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::event_log::{self, HostEvent};
@@ -55,7 +55,6 @@ pub struct ProcessApp {
     pub(crate) type_id: String,
     pub pane_id: u64,
     display_name: String,
-    accepted_exts: Vec<String>,
     process: Option<Child>,
     pub(crate) stdin: Option<ChildStdin>,
     /// Receives draw commands from the subprocess on a background thread.
@@ -101,7 +100,6 @@ impl ProcessApp {
     pub fn launch(
         type_id: impl Into<String>,
         display_name: impl Into<String>,
-        accepted_exts: Vec<String>,
         bin_path: &PathBuf,
         cwd: &PathBuf,
         args: &[String],
@@ -226,7 +224,6 @@ impl ProcessApp {
             type_id,
             pane_id: 0,
             display_name,
-            accepted_exts,
             process: Some(child),
             stdin: Some(stdin),
             draw_rx: Some(draw_rx),
@@ -258,72 +255,6 @@ impl ProcessApp {
     /// exclude the sending pane.
     pub fn set_pane_id(&mut self, id: u64) {
         self.pane_id = id;
-    }
-
-    /// Spawn with minimal args — workspace_root defaults to cwd.
-    pub fn launch_simple(
-        type_id: impl Into<String>,
-        display_name: impl Into<String>,
-        accepted_exts: Vec<String>,
-        bin_path: &PathBuf,
-        cwd: &PathBuf,
-        args: &[String],
-    ) -> Result<Self, std::io::Error> {
-        Self::launch(
-            type_id,
-            display_name,
-            accepted_exts,
-            bin_path,
-            cwd,
-            args,
-            cwd.clone(),
-            std::collections::HashSet::new(),
-            false,
-        )
-    }
-
-    pub fn status_summary(&self) -> Option<&str> {
-        self.status_summary.as_deref()
-    }
-
-    pub fn list_runs(&self) -> Vec<&crate::runs::Run> {
-        self.run_registry.list_runs()
-    }
-
-    pub fn drain_pending_prompts(&mut self) -> Option<PendingPrompt> {
-        self.pending_prompts.pop_front()
-    }
-
-    pub fn resolve_capability(
-        &mut self,
-        request_id: &str,
-        capability_str: &str,
-        granted: bool,
-        perms_log: &mut PermissionsLog,
-    ) {
-        match Capability::try_from(capability_str) {
-            Ok(cap) => {
-                perms_log.record(&self.type_id, &self.workspace_root, cap, granted);
-                if granted {
-                    self.permissions.capabilities.insert(cap);
-                }
-            }
-            Err(e) => {
-                log::warn!("ProcessApp[{}]: resolve_capability: {e}", self.type_id);
-            }
-        }
-        self.outbound_events
-            .push_back(PlexiEvent::CapabilityDecision {
-                request_id: request_id.to_string(),
-                granted,
-            });
-    }
-
-    pub fn resolve_secret(&mut self, key: &str, value: Option<String>) {
-        self.outbound_events.push_back(PlexiEvent::SecretValue {
-            key: key.to_string(),
-            value,
-        });
     }
 
     pub(crate) fn send_event(&mut self, event: &PlexiEvent) {

@@ -758,15 +758,6 @@ impl PlexiApp {
                         app_id: Some(a.runtime.type_id().to_string()),
                         app_state: a.runtime.serialize_state(),
                     });
-                } else if let Some(agent) = pane.as_agent() {
-                    saved_panes.push(crate::workspace::SavedPane {
-                        id,
-                        kind: crate::workspace::SavedPaneKind::Agent,
-                        cwd: context.path.clone(),
-                        name: Some(agent.label.clone()),
-                        app_id: None,
-                        app_state: None,
-                    });
                 }
             }
             saved_contexts.push(crate::workspace::SavedContext {
@@ -996,42 +987,4 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
-    /// Spawn a new `Pane::Agent` in the active context via a horizontal split.
-    ///
-    /// Creates a `PlexiIqInstance` and wraps it in `AgentPane`. The pane renders
-    /// a transcript area + input bar. Turn loop drives via tiling.rs on each frame.
-    pub(crate) fn spawn_agent_pane(&mut self) {
-        let new_id = self.host.alloc_pane_id();
-
-        let instance = crate::plexi_iq::PlexiIqInstance::default();
-        let label = format!("Agent {new_id}");
-
-        let pane = crate::pane::Pane::Agent(Box::new(crate::pane::AgentPane {
-            id: new_id,
-            instance: Some(instance),
-            label,
-            transcript: Vec::new(),
-            input_buf: String::new(),
-            turn_rx: None,
-            session_id: None,
-        }));
-
-        let ctx = &mut self.contexts[self.active_context];
-        ctx.panes.insert(new_id, pane);
-
-        let new_tile = ctx.tree.tiles.insert_pane(new_id);
-
-        // If there's a focused pane, add the agent as a sibling in a horizontal split.
-        // If the context is empty, set the agent as the sole root.
-        if let Some(root) = ctx.tree.root {
-            // Wrap the existing root and new tile in a horizontal linear container.
-            let container = ctx.tree.tiles.insert_horizontal_tile(vec![root, new_tile]);
-            ctx.tree.root = Some(container);
-        } else {
-            ctx.tree.root = Some(new_tile);
-        }
-
-        ctx.focused_pane = Some(new_tile);
-        log::info!("spawn_agent_pane: created agent pane id={new_id}");
-    }
 }

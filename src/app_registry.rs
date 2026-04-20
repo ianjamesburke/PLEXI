@@ -113,7 +113,6 @@ pub struct InstalledApp {
     pub manifest: AppManifestApp,
     pub launch: LaunchSection,
     pub bin_path: PathBuf,
-    pub app_dir: PathBuf,
 }
 
 pub struct AppRegistry {
@@ -234,7 +233,6 @@ impl AppRegistry {
             manifest: manifest.app,
             launch: manifest.launch,
             bin_path,
-            app_dir: app_dir.clone(),
         })
     }
 
@@ -245,35 +243,9 @@ impl AppRegistry {
         apps
     }
 
-    /// Find the app registered for a file extension.
-    pub fn app_for_extension(&self, ext: &str) -> Option<&InstalledApp> {
-        let id = self.extension_map.get(&ext.to_lowercase())?;
-        self.apps.get(id)
-    }
-
-    /// Look up an app by id.
-    pub fn app_by_id(&self, id: &str) -> Option<&InstalledApp> {
-        self.apps.get(id)
-    }
-
-    /// Get the manifest-declared permissions for an app.
-    pub fn permissions_for(&self, app_id: &str) -> Option<crate::app_permissions::AppPermissions> {
-        self.apps
-            .get(app_id)
-            .map(|app| app.manifest.capabilities.to_permissions())
-    }
-
     /// Get the manifest-declared pane group (`[launch].join_group`).
     pub fn group_for(&self, app_id: &str) -> Option<String> {
         self.apps.get(app_id).and_then(|a| a.launch.join_group.clone())
-    }
-
-    /// Get the manifest-declared keyboard_capture flag (`[launch].keyboard_capture`).
-    pub fn keyboard_capture_for(&self, app_id: &str) -> bool {
-        self.apps
-            .get(app_id)
-            .map(|a| a.launch.keyboard_capture)
-            .unwrap_or(false)
     }
 
     /// Get the launch-time layout side hint: "right" | "below" | "above" | "overlay".
@@ -307,7 +279,6 @@ impl AppRegistry {
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
-            installed.manifest.capabilities.file_types.to_vec(),
             &installed.bin_path,
             cwd,
             args,
@@ -334,31 +305,6 @@ impl AppRegistry {
     pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
         self.launch_process(id, cwd, args)
             .map(|app| Box::new(app) as Box<dyn App>)
-    }
-
-    /// Launch the app associated with a file extension, passing the file path as argv[1].
-    pub fn launch_for_file(
-        &self,
-        file_path: &std::path::Path,
-        cwd: &std::path::Path,
-    ) -> Option<Box<dyn App>> {
-        let ext = file_path.extension()?.to_string_lossy().to_lowercase();
-        let id = self.extension_map.get(&ext)?.clone();
-        let args = vec![file_path.display().to_string()];
-        self.launch(&id, &cwd.to_path_buf(), &args)
-    }
-
-    /// Launch a process app by file extension, passing file path as argv[1].
-    pub fn launch_process_for_file(
-        &self,
-        file_path: &std::path::Path,
-        cwd: &std::path::Path,
-    ) -> Option<(String, ProcessApp)> {
-        let ext = file_path.extension()?.to_string_lossy().to_lowercase();
-        let id = self.extension_map.get(&ext)?.clone();
-        let args = vec![file_path.display().to_string()];
-        self.launch_process(&id, &cwd.to_path_buf(), &args)
-            .map(|app| (id, app))
     }
 }
 

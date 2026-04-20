@@ -6,11 +6,9 @@
 //! The v2 boolean-field model (`terminal_write`, `filesystem`, etc.) is replaced
 //! by a `HashSet<Capability>`.
 
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
-use std::path::{Path, PathBuf};
 use std::convert::TryFrom;
 
 // ── Capability enum ───────────────────────────────────────────────────────────
@@ -47,18 +45,6 @@ impl fmt::Display for Capability {
 }
 
 impl Capability {
-    pub const ALL: &'static [Capability] = &[
-        Self::FsRead,
-        Self::FsWrite,
-        Self::NetHttp,
-        Self::SecretsGet,
-        Self::PipeOpen,
-        Self::SpawnApp,
-        Self::AudioRecord,
-        Self::AudioPlayback,
-        Self::VideoPlayback,
-    ];
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FsRead => "fs.read",
@@ -186,131 +172,5 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
     }
 }
 
-// ── permissions.jsonl persistence ────────────────────────────────────────────
 
-/// One persisted decision (one line in permissions.jsonl).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PermissionDecision {
-    pub app_id: String,
-    pub workspace_root: String,
-    pub capability: String,
-    pub granted: bool,
-    pub at: String, // RFC3339
-}
-
-/// Append-only permissions log at `~/.plexi/permissions.jsonl`.
-pub struct PermissionsLog {
-    decisions: Vec<PermissionDecision>,
-}
-
-impl PermissionsLog {
-    /// Load all decisions from permissions.jsonl.
-    pub fn load() -> Self {
-        let path = permissions_jsonl_path();
-        let decisions =
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    content
-                        .lines()
-                        .filter(|l| !l.trim().is_empty())
-                        .filter_map(|line| {
-                            serde_json::from_str::<PermissionDecision>(line).map_err(|e| {
-                        log::warn!("app_permissions: failed to parse permissions.jsonl line: {e}");
-                        e
-                    }).ok()
-                        })
-                        .collect()
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => {
-                    log::warn!("app_permissions: failed to read permissions.jsonl: {e}");
-                    Vec::new()
-                }
-            };
-        Self { decisions }
-    }
-
-    /// Check whether a specific (app_id, workspace_root, capability) triple has a recorded decision.
-    pub fn check(&self, app_id: &str, workspace_root: &Path, cap: Capability) -> Option<bool> {
-        let root_str = workspace_root.to_string_lossy();
-        let cap_str = cap.to_string();
-        // Last recorded decision for this triple wins (append-only log; latest = authoritative).
-        self.decisions
-            .iter()
-            .rev()
-            .find(|d| d.app_id == app_id && d.workspace_root == root_str && d.capability == cap_str)
-            .map(|d| d.granted)
-    }
-
-    /// Record a new decision and append it to the log file.
-    pub fn record(&mut self, app_id: &str, workspace_root: &Path, cap: Capability, granted: bool) {
-        let decision = PermissionDecision {
-            app_id: app_id.to_string(),
-            workspace_root: workspace_root.to_string_lossy().to_string(),
-            capability: cap.to_string(),
-            granted,
-            at: Utc::now().to_rfc3339(),
-        };
-        self.decisions.push(decision.clone());
-        self.append_to_file(&decision);
-    }
-
-    fn append_to_file(&self, decision: &PermissionDecision) {
-        let path = permissions_jsonl_path();
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::error!("app_permissions: failed to create config dir: {e}");
-                return;
-            }
-        }
-        match serde_json::to_string(decision) {
-            Ok(mut line) => {
-                line.push('\n');
-                use std::io::Write;
-                match std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                {
-                    Ok(mut f) => {
-                        if let Err(e) = f.write_all(line.as_bytes()) {
-                            log::error!(
-                                "app_permissions: failed to append to permissions.jsonl: {e}"
-                            );
-                        }
-                    }
-                    Err(e) => log::error!(
-                        "app_permissions: failed to open permissions.jsonl for append: {e}"
-                    ),
-                }
-            }
-            Err(e) => log::error!("app_permissions: failed to serialize decision: {e}"),
-        }
-    }
-
-    /// Build an `AppPermissions` set from persisted decisions for a given (app_id, workspace_root).
-    pub fn resolve(&self, app_id: &str, workspace_root: &Path) -> AppPermissions {
-        let root_str = workspace_root.to_string_lossy();
-        let capabilities = self
-            .decisions
-            .iter()
-            .filter(|d| d.app_id == app_id && d.workspace_root == root_str && d.granted)
-            .filter_map(|d| match Capability::try_from(d.capability.as_str()) {
-                Ok(cap) => Some(cap),
-                Err(e) => {
-                    log::warn!("app_permissions: decision log {e}; skipped");
-                    None
-                }
-            })
-            .collect();
-        AppPermissions {
-            capabilities,
-            is_builtin: false,
-        }
-    }
-}
-
-fn permissions_jsonl_path() -> PathBuf {
-    crate::config::config_dir().join("permissions.jsonl")
-}
 

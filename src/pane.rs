@@ -12,7 +12,6 @@ use std::sync::mpsc::Sender;
 pub enum Pane {
     Terminal(Box<TerminalPane>),
     App(Box<AppPane>),
-    Agent(Box<AgentPane>),
 }
 
 impl Pane {
@@ -20,7 +19,6 @@ impl Pane {
         match self {
             Pane::Terminal(t) => t.id,
             Pane::App(a) => a.id,
-            Pane::Agent(a) => a.id,
         }
     }
 
@@ -48,20 +46,6 @@ impl Pane {
     pub fn as_app_mut(&mut self) -> Option<&mut AppPane> {
         match self {
             Pane::App(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn as_agent(&self) -> Option<&AgentPane> {
-        match self {
-            Pane::Agent(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn as_agent_mut(&mut self) -> Option<&mut AgentPane> {
-        match self {
-            Pane::Agent(a) => Some(a),
             _ => None,
         }
     }
@@ -197,35 +181,3 @@ pub struct AppPane {
     pub overlay_replaced: Option<Box<Pane>>,
 }
 
-// ---------------------------------------------------------------------------
-// AgentPane — wraps a PlexiIqInstance (Layer 3c wires this)
-// ---------------------------------------------------------------------------
-
-pub struct AgentPane {
-    pub id: PaneId,
-    /// Lazy-initialized; may be None until first turn.
-    pub instance: Option<crate::plexi_iq::PlexiIqInstance>,
-    /// Human-readable session label for the UI.
-    pub label: String,
-    /// Accumulated conversation lines (user messages + assistant chunks).
-    pub transcript: Vec<String>,
-    /// Current user input being typed.
-    pub input_buf: String,
-    /// Streamed token receiver from the background turn thread.
-    /// None when no turn is in progress.
-    pub turn_rx: Option<std::sync::mpsc::Receiver<TurnMsg>>,
-    /// Session ID from the last completed proxied turn (for --resume).
-    pub session_id: Option<String>,
-}
-
-/// Message from the background turn thread to the UI thread.
-pub enum TurnMsg {
-    Token(String),
-    Done {
-        session_id: Option<String>,
-        tokens_in: u32,
-        tokens_out: u32,
-        cost_cents: u64,
-    },
-    Error(String),
-}

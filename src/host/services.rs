@@ -1,15 +1,11 @@
-//! HostServices — trait-object seam for every host side effect.
+//! HostServices — host side-effect plumbing.
 //!
-//! Split out so tests can inject mocks: a Layer-2 harness instantiates
-//! `HostModel` with `HostServices::mock()` and the state machine never
-//! touches the real keychain, filesystem, or network. Production uses
-//! `HostServices::new()` which wires the concrete implementations in
-//! `secrets.rs`, `std::fs`, `ureq`, and `AppRegistry`.
+//! `EventSink` is the only production field right now; fs/secrets/net/spawn
+//! trait seams live in `process_app` and `app_registry` until HostModel
+//! owns their routing.
 
 use crate::host::effect::HostEffect;
 use std::collections::HashMap;
-use std::io;
-use std::path::{Path, PathBuf};
 
 // ── EventSink ──────────────────────────────────────────────────────────────
 
@@ -18,8 +14,10 @@ pub trait EventSink: Send {
 }
 
 /// No-op sink — used in Layer-2 tests that don't care about event observation.
+#[cfg(test)]
 pub struct NoopEventSink;
 
+#[cfg(test)]
 impl EventSink for NoopEventSink {
     fn emit(&mut self, _effect: &HostEffect) {}
 }
@@ -87,140 +85,29 @@ impl EventSink for FileEventSink {
 }
 
 /// Accumulates all emitted effects into a vec. Tests only.
+#[cfg(test)]
 pub struct VecEventSink {
     pub events: Vec<HostEffect>,
 }
 
+#[cfg(test)]
 impl VecEventSink {
     pub fn new() -> Self {
         Self { events: Vec::new() }
     }
 }
 
+#[cfg(test)]
 impl Default for VecEventSink {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl EventSink for VecEventSink {
     fn emit(&mut self, effect: &HostEffect) {
         self.events.push(effect.clone());
-    }
-}
-
-// ── FsService ──────────────────────────────────────────────────────────────
-
-pub trait FsService: Send {
-    fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
-    fn write(&mut self, path: &Path, bytes: &[u8]) -> io::Result<()>;
-    fn exists(&self, path: &Path) -> bool;
-}
-
-pub struct RealFsService;
-
-impl FsService for RealFsService {
-    fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        std::fs::read(path)
-    }
-
-    fn write(&mut self, path: &Path, bytes: &[u8]) -> io::Result<()> {
-        std::fs::write(path, bytes)
-    }
-
-    fn exists(&self, path: &Path) -> bool {
-        path.exists()
-    }
-}
-
-/// Tests only — in-memory fake filesystem.
-pub struct MockFsService {
-    pub files: HashMap<PathBuf, Vec<u8>>,
-}
-
-impl MockFsService {
-    pub fn new() -> Self {
-        Self { files: HashMap::new() }
-    }
-}
-
-impl Default for MockFsService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FsService for MockFsService {
-    fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        self.files
-            .get(path)
-            .cloned()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("mock fs miss: {}", path.display())))
-    }
-
-    fn write(&mut self, path: &Path, bytes: &[u8]) -> io::Result<()> {
-        self.files.insert(path.to_path_buf(), bytes.to_vec());
-        Ok(())
-    }
-
-    fn exists(&self, path: &Path) -> bool {
-        self.files.contains_key(path)
-    }
-}
-
-// ── SecretsService ─────────────────────────────────────────────────────────
-
-pub trait SecretsService: Send {
-    /// Look up a workspace-scoped secret. Returns None when not found or
-    /// when the scope is invalid (implementations log + refuse).
-    fn get(&self, key: &str, app_id: &str, workspace_root: &Path) -> Option<String>;
-}
-
-/// Production impl — thin wrapper over `crate::secrets::get_secret_scoped`.
-/// Keeps the production behavior (macOS Keychain, v3 scoped account key)
-/// while routing through the trait so tests can substitute mocks.
-pub struct KeychainSecretsService;
-
-impl SecretsService for KeychainSecretsService {
-    fn get(&self, key: &str, app_id: &str, workspace_root: &Path) -> Option<String> {
-        #[cfg(target_os = "macos")]
-        {
-            crate::secrets::get_secret_scoped(key, app_id, workspace_root)
-                .map(|z| z.to_string())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (key, app_id, workspace_root);
-            None
-        }
-    }
-}
-
-/// Tests only — key → value lookup, ignores scope.
-pub struct MockSecretsService {
-    pub values: HashMap<String, String>,
-}
-
-impl MockSecretsService {
-    pub fn new() -> Self {
-        Self { values: HashMap::new() }
-    }
-
-    pub fn with(mut self, key: &str, value: &str) -> Self {
-        self.values.insert(key.to_string(), value.to_string());
-        self
-    }
-}
-
-impl Default for MockSecretsService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SecretsService for MockSecretsService {
-    fn get(&self, key: &str, _app_id: &str, _workspace_root: &Path) -> Option<String> {
-        self.values.get(key).cloned()
     }
 }
 
@@ -245,11 +132,6 @@ pub trait NetService: Send + Sync {
         headers: &HashMap<String, String>,
         body: Option<&str>,
     ) -> HttpResponse;
-
-    /// Convenience wrapper — GET with no custom headers.
-    fn http_get(&self, url: &str) -> HttpResponse {
-        self.http("GET", url, &HashMap::new(), None)
-    }
 }
 
 /// Production impl — blocking HTTP via `ureq`. Pure-Rust, no tokio.
@@ -327,10 +209,12 @@ impl NetService for UreqNetService {
 }
 
 /// Tests only — URL → body map. Unknown URLs return 404.
+#[cfg(test)]
 pub struct MockNetService {
     pub responses: HashMap<String, String>,
 }
 
+#[cfg(test)]
 impl MockNetService {
     pub fn new() -> Self {
         Self { responses: HashMap::new() }
@@ -342,12 +226,14 @@ impl MockNetService {
     }
 }
 
+#[cfg(test)]
 impl Default for MockNetService {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl NetService for MockNetService {
     fn http(
         &self,
@@ -371,112 +257,28 @@ impl NetService for MockNetService {
     }
 }
 
-// ── SpawnService ───────────────────────────────────────────────────────────
-
-/// Test seam for app spawn. Production implementation lives in
-/// `process_app` / `app_registry`; kept here as a trait so Layer-2 tests
-/// can observe spawn requests without touching subprocesses.
-pub trait SpawnService: Send {
-    /// Record that the host would spawn `app_id` with the given args.
-    /// Returns `Ok(pane_id)` when the spawn is accepted.
-    fn spawn(
-        &mut self,
-        app_id: &str,
-        workspace_root: &Path,
-        args: &[String],
-    ) -> io::Result<u64>;
-}
-
-/// Default production stub — just logs. The real process_app::ProcessApp
-/// spawning is driven from PlexiApp, not from HostModel, so this trait is
-/// currently only exercised by tests.
-pub struct LoggingSpawnService;
-
-impl SpawnService for LoggingSpawnService {
-    fn spawn(
-        &mut self,
-        app_id: &str,
-        workspace_root: &Path,
-        args: &[String],
-    ) -> io::Result<u64> {
-        log::debug!(
-            "LoggingSpawnService::spawn app_id={app_id} root={} args={args:?}",
-            workspace_root.display()
-        );
-        Ok(0)
-    }
-}
-
-/// Tests only — records every call in-memory.
-pub struct MockSpawnService {
-    pub calls: Vec<(String, PathBuf, Vec<String>)>,
-    pub next_pane_id: u64,
-}
-
-impl MockSpawnService {
-    pub fn new() -> Self {
-        Self { calls: Vec::new(), next_pane_id: 1 }
-    }
-}
-
-impl Default for MockSpawnService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SpawnService for MockSpawnService {
-    fn spawn(
-        &mut self,
-        app_id: &str,
-        workspace_root: &Path,
-        args: &[String],
-    ) -> io::Result<u64> {
-        self.calls
-            .push((app_id.to_string(), workspace_root.to_path_buf(), args.to_vec()));
-        let id = self.next_pane_id;
-        self.next_pane_id += 1;
-        Ok(id)
-    }
-}
-
 // ── HostServices aggregate ─────────────────────────────────────────────────
 
 pub struct HostServices {
     pub event_sink: Box<dyn EventSink>,
-    pub fs: Box<dyn FsService>,
-    pub secrets: Box<dyn SecretsService>,
-    /// Arc rather than Box so every `ProcessApp` can hold a cheap clone and
-    /// issue HTTP calls without going back through `HostServices`.
-    pub net: std::sync::Arc<dyn NetService>,
-    pub spawn: Box<dyn SpawnService>,
 }
 
 impl HostServices {
-    /// Production wiring — real keychain, real filesystem, real event bus.
+    /// Production wiring — real event bus.
     /// `event_sink` appends to `<config_dir>/effects.jsonl` so every HostEffect
-    /// leaves a durable audit trail. Uses a separate file from
-    /// `events.jsonl` (written by `crate::event_log`) to avoid format drift
-    /// between the host-level effect stream and the app-level event stream.
+    /// leaves a durable audit trail.
     pub fn new() -> Self {
         let effects_path = crate::config::config_dir().join("effects.jsonl");
         Self {
             event_sink: Box::new(FileEventSink::new(effects_path)),
-            fs: Box::new(RealFsService),
-            secrets: Box::new(KeychainSecretsService),
-            net: std::sync::Arc::new(UreqNetService::new()),
-            spawn: Box::new(LoggingSpawnService),
         }
     }
 
-    /// Test wiring — every side effect is a mock the caller controls.
+    /// Test wiring — accumulates effects for assertion.
+    #[cfg(test)]
     pub fn mock() -> Self {
         Self {
             event_sink: Box::new(VecEventSink::new()),
-            fs: Box::new(MockFsService::new()),
-            secrets: Box::new(MockSecretsService::new()),
-            net: std::sync::Arc::new(MockNetService::new()),
-            spawn: Box::new(MockSpawnService::new()),
         }
     }
 }

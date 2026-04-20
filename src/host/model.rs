@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::host::command::{
-    Capability, Direction, HostCommand, OpenPaneRequest, Placement, PaneRuntimeKind,
+    Direction, HostCommand, OpenPaneRequest, Placement, PaneRuntimeKind,
 };
 use crate::host::effect::{HostEffect, HostEvent};
 use crate::host::services::HostServices;
@@ -10,8 +10,6 @@ use crate::tiling::PaneId;
 #[derive(Debug, Clone)]
 pub struct HostPane {
     pub id: PaneId,
-    pub kind: PaneRuntimeKind,
-    pub declared_capabilities: Vec<Capability>,
     pub group: Option<String>,
 }
 
@@ -21,8 +19,6 @@ pub struct HostContext {
     pub focused_pane: Option<PaneId>,
     /// group name → member pane IDs
     pub groups: HashMap<String, Vec<PaneId>>,
-    /// pane ID → set of granted capabilities
-    pub permissions: HashMap<PaneId, HashSet<Capability>>,
 }
 
 #[derive(Debug, Default)]
@@ -41,34 +37,11 @@ impl HostModel {
         };
         let initial = HostPane {
             id: 0,
-            kind: PaneRuntimeKind::Terminal,
-            declared_capabilities: Vec::new(),
             group: None,
         };
         model.context_mut().panes.push(initial);
         model.context_mut().focused_pane = Some(0);
         model
-    }
-
-    pub fn active_context_index(&self) -> usize {
-        self.active_context
-    }
-
-    pub fn context_count(&self) -> usize {
-        self.contexts.len()
-    }
-
-    pub fn pane_count(&self) -> usize {
-        self.context().panes.len()
-    }
-
-    pub fn focused_pane(&self) -> Option<&HostPane> {
-        let focused = self.context().focused_pane?;
-        self.context().panes.iter().find(|p| p.id == focused)
-    }
-
-    pub fn pane_by_id(&self, id: PaneId) -> Option<&HostPane> {
-        self.context().panes.iter().find(|p| p.id == id)
     }
 
     pub fn handle_command(
@@ -79,25 +52,9 @@ impl HostModel {
         let effects = match command {
             HostCommand::OpenPane(req) => self.open_pane(req),
             HostCommand::CloseFocusedPane => self.close_focused_pane(),
-            HostCommand::FocusPane(id) => self.focus_pane(id),
             HostCommand::Navigate(dir) => self.navigate(dir),
             HostCommand::SplitHorizontal => self.split(Placement::Below),
             HostCommand::SplitVertical => self.split(Placement::Right),
-            HostCommand::NewContext => self.new_context(),
-            HostCommand::SwitchContext(idx) => self.switch_context(idx),
-            HostCommand::SendKeyToFocusedApp { key } => self.send_key(key),
-            HostCommand::SimulatePathChanged { pane_id, cwd } => {
-                self.simulate_path_changed(pane_id, cwd)
-            }
-            HostCommand::CheckCapability { pane_id, capability } => {
-                self.check_capability(pane_id, capability)
-            }
-            HostCommand::GrantCapability { pane_id, capability } => {
-                self.grant_capability(pane_id, capability)
-            }
-            HostCommand::DenyCapability { pane_id, capability } => {
-                self.deny_capability(pane_id, capability)
-            }
         };
         for e in &effects {
             services.event_sink.emit(e);
@@ -111,8 +68,6 @@ impl HostModel {
         let new_id = self.alloc_pane_id();
         let pane = HostPane {
             id: new_id,
-            kind: req.runtime.clone(),
-            declared_capabilities: req.declared_capabilities,
             group: req.group.clone(),
         };
         if let Some(ref group) = req.group {
@@ -166,15 +121,6 @@ impl HostModel {
         ]
     }
 
-    fn focus_pane(&mut self, pane_id: PaneId) -> Vec<HostEffect> {
-        if self.context().panes.iter().any(|p| p.id == pane_id) {
-            self.context_mut().focused_pane = Some(pane_id);
-            vec![HostEffect::FocusChanged { pane_id: Some(pane_id) }]
-        } else {
-            Vec::new()
-        }
-    }
-
     fn navigate(&mut self, dir: Direction) -> Vec<HostEffect> {
         let panes = &self.context().panes;
         if panes.is_empty() {
@@ -195,8 +141,6 @@ impl HostModel {
         let new_id = self.alloc_pane_id();
         let pane = HostPane {
             id: new_id,
-            kind: PaneRuntimeKind::Terminal,
-            declared_capabilities: Vec::new(),
             group: None,
         };
         self.context_mut().panes.push(pane);
@@ -208,100 +152,6 @@ impl HostModel {
                 placement,
             },
             HostEffect::FocusChanged { pane_id: Some(new_id) },
-        ]
-    }
-
-    fn new_context(&mut self) -> Vec<HostEffect> {
-        let mut ctx = HostContext::default();
-        let pane_id = self.alloc_pane_id();
-        ctx.panes.push(HostPane {
-            id: pane_id,
-            kind: PaneRuntimeKind::Terminal,
-            declared_capabilities: Vec::new(),
-            group: None,
-        });
-        ctx.focused_pane = Some(pane_id);
-        self.contexts.push(ctx);
-        let new_index = self.contexts.len() - 1;
-        vec![ContextCreated { index: new_index }]
-    }
-
-    fn switch_context(&mut self, idx: usize) -> Vec<HostEffect> {
-        if idx < self.contexts.len() {
-            self.active_context = idx;
-            vec![HostEffect::ContextSwitched { index: idx }]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn send_key(&self, key: String) -> Vec<HostEffect> {
-        let Some(pane) = self.focused_pane() else { return Vec::new() };
-        if matches!(pane.kind, PaneRuntimeKind::App { .. }) {
-            vec![HostEffect::AppKeyDispatched { pane_id: pane.id, key }]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn simulate_path_changed(&self, pane_id: PaneId, cwd: String) -> Vec<HostEffect> {
-        let Some(pane) = self.pane_by_id(pane_id) else { return Vec::new() };
-        let Some(ref group) = pane.group.clone() else { return Vec::new() };
-        let Some(members) = self.context().groups.get(group) else { return Vec::new() };
-        let recipients: Vec<PaneId> =
-            members.iter().copied().filter(|&id| id != pane_id).collect();
-        if recipients.is_empty() {
-            return Vec::new();
-        }
-        vec![HostEffect::PathBroadcasted {
-            group: group.clone(),
-            cwd,
-            recipient_pane_ids: recipients,
-        }]
-    }
-
-    fn check_capability(&self, pane_id: PaneId, capability: Capability) -> Vec<HostEffect> {
-        let Some(pane) = self.pane_by_id(pane_id) else { return Vec::new() };
-        if !pane.declared_capabilities.contains(&capability) {
-            return vec![HostEffect::CapabilityDenied { pane_id, capability }];
-        }
-        let granted = self
-            .context()
-            .permissions
-            .get(&pane_id)
-            .map(|set| set.contains(&capability))
-            .unwrap_or(false);
-        if granted {
-            vec![HostEffect::CapabilityGranted { pane_id, capability }]
-        } else {
-            vec![HostEffect::CapabilityPromptRequired { pane_id, capability }]
-        }
-    }
-
-    fn grant_capability(&mut self, pane_id: PaneId, capability: Capability) -> Vec<HostEffect> {
-        self.context_mut()
-            .permissions
-            .entry(pane_id)
-            .or_default()
-            .insert(capability.clone());
-        vec![
-            HostEffect::CapabilityGranted { pane_id, capability: capability.clone() },
-            HostEffect::EventEmitted(HostEvent::CapabilityDecided {
-                pane_id,
-                capability,
-                granted: true,
-            }),
-        ]
-    }
-
-    fn deny_capability(&mut self, pane_id: PaneId, capability: Capability) -> Vec<HostEffect> {
-        vec![
-            HostEffect::CapabilityDenied { pane_id, capability: capability.clone() },
-            HostEffect::EventEmitted(HostEvent::CapabilityDecided {
-                pane_id,
-                capability,
-                granted: false,
-            }),
         ]
     }
 
@@ -348,4 +198,3 @@ impl HostModel {
 }
 
 // Shorthand to avoid repeating the long path in new_context().
-use HostEffect::ContextCreated;

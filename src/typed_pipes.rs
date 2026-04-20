@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 extern crate libc;
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
@@ -7,8 +7,7 @@ extern crate libc;
 /// A lock-free ring (ArrayQueue) decouples the write path from the socket drain
 /// thread so the audio callback can enqueue frames without blocking or allocating.
 /// JSON pipes are metadata-only registrations; routing is handled by the PGAP wire.
-use std::os::fd::RawFd;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -20,12 +19,6 @@ use crossbeam_queue::ArrayQueue;
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy)]
-pub enum PipeMode {
-    Json,
-    Binary,
-}
 
 #[derive(Clone, Copy)]
 pub enum PipeDirection {
@@ -40,7 +33,6 @@ pub enum PipeError {
     NotFound(String),
     BindFailed(String),
     WriteFailed(String),
-    ReadFailed(String),
 }
 
 impl std::fmt::Display for PipeError {
@@ -50,23 +42,13 @@ impl std::fmt::Display for PipeError {
             PipeError::NotFound(id) => write!(f, "pipe not found: {id}"),
             PipeError::BindFailed(msg) => write!(f, "bind failed: {msg}"),
             PipeError::WriteFailed(msg) => write!(f, "write failed: {msg}"),
-            PipeError::ReadFailed(msg) => write!(f, "read failed: {msg}"),
         }
     }
 }
 
 pub struct BinaryPipeAllocation {
-    pub pipe_id: String,
     /// Unix socket path the app connects to as a client.
     pub socket_path: String,
-    /// Host's connected end file descriptor (internal; wrapped by the pipe entry).
-    pub host_end_fd: RawFd,
-}
-
-pub enum WriteResult {
-    Written,
-    /// Oldest buffered frame was dropped to make room (backpressure event).
-    DroppedOldest,
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +56,6 @@ pub enum WriteResult {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_RING_CAPACITY: usize = 32;
-const MAX_FRAME_BYTES: usize = 1024 * 1024; // 1 MiB
 
 // ---------------------------------------------------------------------------
 // Internal pipe entries
@@ -84,16 +65,8 @@ struct BinaryPipeEntry {
     #[allow(dead_code)]
     direction: PipeDirection,
     socket_path: String,
-    /// Lock-free ring: write path enqueues, drain thread dequeues and writes.
-    ///
-    /// REALTIME-SAFETY INVARIANT: `write_binary` must not block or allocate.
-    /// It calls `ArrayQueue::push` (lock-free, bounded) and returns immediately.
-    /// The actual socket write happens on the drain thread.
-    ring: Arc<ArrayQueue<Vec<u8>>>,
     shutdown: Arc<AtomicBool>,
     drain_handle: Option<thread::JoinHandle<()>>,
-    /// Host's connected UnixStream — kept alive for reading (In/Duplex pipes).
-    host_stream: Option<UnixStream>,
 }
 
 struct JsonPipeEntry {
@@ -163,11 +136,6 @@ impl TypedPipeRegistry {
             .set_nonblocking(true)
             .map_err(|e| PipeError::BindFailed(format!("set_nonblocking: {e}")))?;
 
-        let host_end_fd: RawFd = {
-            use std::os::unix::io::AsRawFd;
-            listener.as_raw_fd()
-        };
-
         let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
         let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -225,19 +193,14 @@ impl TypedPipeRegistry {
         let entry = BinaryPipeEntry {
             direction,
             socket_path: socket_path.clone(),
-            ring,
             shutdown,
             drain_handle: Some(drain_handle),
-            host_stream: None,
         };
+        let _ = ring; // ring lives in the drain thread via ring_drain
 
         self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
 
-        Ok(BinaryPipeAllocation {
-            pipe_id,
-            socket_path,
-            host_end_fd,
-        })
+        Ok(BinaryPipeAllocation { socket_path })
     }
 
     /// Register a JSON pipe. No socket — routing is handled by the PGAP wire.
@@ -263,76 +226,6 @@ impl TypedPipeRegistry {
                 let _ = handle.join();
             }
             let _ = std::fs::remove_file(&b.socket_path);
-        }
-    }
-
-    /// Enqueue a length-prefixed frame for delivery to the app.
-    ///
-    /// REALTIME-SAFETY: This method does NOT block or allocate on the hot path
-    /// (assuming the ring has space). If the ring is full it pops the oldest
-    /// frame (O(1), lock-free) before pushing, and returns `DroppedOldest`.
-    /// The actual socket write happens on the drain thread.
-    pub fn write_binary(
-        &mut self,
-        pipe_id: &str,
-        payload: &[u8],
-    ) -> Result<WriteResult, PipeError> {
-        if payload.len() > MAX_FRAME_BYTES {
-            return Err(PipeError::WriteFailed(format!(
-                "frame too large: {} bytes (max {MAX_FRAME_BYTES})",
-                payload.len()
-            )));
-        }
-        let entry = self
-            .pipes
-            .get(pipe_id)
-            .ok_or_else(|| PipeError::NotFound(pipe_id.to_owned()))?;
-        let ring = match entry {
-            PipeEntry::Binary(b) => &b.ring,
-            PipeEntry::Json(_) => {
-                return Err(PipeError::WriteFailed("pipe is JSON mode".to_owned()));
-            }
-        };
-
-        let frame = payload.to_vec();
-        let mut dropped = false;
-        if ring.push(frame).is_err() {
-            // Ring full — drop oldest, then push new.
-            ring.pop();
-            dropped = true;
-            // If push still fails (shouldn't with a single producer popping one),
-            // log and return an error.
-            let frame2 = payload.to_vec();
-            if ring.push(frame2).is_err() {
-                return Err(PipeError::WriteFailed(
-                    "ring push failed after evict".to_owned(),
-                ));
-            }
-        }
-        if dropped {
-            Ok(WriteResult::DroppedOldest)
-        } else {
-            Ok(WriteResult::Written)
-        }
-    }
-
-    /// Read one length-prefixed frame from a binary pipe's host-side stream.
-    /// Blocks until a frame is available or the pipe is closed / EOS.
-    pub fn read_binary(&mut self, pipe_id: &str) -> Result<Option<Vec<u8>>, PipeError> {
-        let entry = self
-            .pipes
-            .get_mut(pipe_id)
-            .ok_or_else(|| PipeError::NotFound(pipe_id.to_owned()))?;
-        match entry {
-            PipeEntry::Binary(b) => {
-                let stream = b.host_stream.as_mut().ok_or_else(|| {
-                    PipeError::ReadFailed(
-                        "no host stream (use open_binary for in/duplex)".to_owned(),
-                    )
-                })?;
-                read_frame(stream).map_err(|e| PipeError::ReadFailed(e.to_string()))
-            }
-            PipeEntry::Json(_) => Err(PipeError::ReadFailed("pipe is JSON mode".to_owned())),
         }
     }
 
@@ -366,15 +259,6 @@ impl TypedPipeRegistry {
         }
     }
 
-    pub fn list(&self) -> Vec<(String, PipeMode, PipeDirection)> {
-        self.pipes
-            .iter()
-            .map(|(id, entry)| match entry {
-                PipeEntry::Binary(b) => (id.clone(), PipeMode::Binary, b.direction),
-                PipeEntry::Json(j) => (id.clone(), PipeMode::Json, j.direction),
-            })
-            .collect()
-    }
 }
 
 impl Drop for TypedPipeRegistry {
@@ -401,19 +285,6 @@ fn write_frame(writer: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
 /// Write a length-0 EOS sentinel.
 fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
     writer.write_all(&0u32.to_be_bytes())
-}
-
-/// Read one length-prefixed frame. Returns `None` on EOS (length == 0).
-fn read_frame(reader: &mut impl Read) -> std::io::Result<Option<Vec<u8>>> {
-    let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len == 0 {
-        return Ok(None);
-    }
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf)?;
-    Ok(Some(buf))
 }
 
 // ---------------------------------------------------------------------------

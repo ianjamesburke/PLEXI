@@ -110,10 +110,8 @@ impl ProcessApp {
             }
 
             // ── Run get ────────────────────────────────────────────────────
-            DrawCommand::RunGet { intent, payload } => {
-                let run_id = self
-                    .run_registry
-                    .allocate(&self.type_id, &intent, payload.clone());
+            DrawCommand::RunGet { intent, .. } => {
+                let run_id = self.run_registry.allocate(&self.type_id);
                 log::info!(
                     "ProcessApp[{}]: RunGet intent='{}' → run_id='{}'",
                     self.type_id,

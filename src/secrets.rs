@@ -74,58 +74,6 @@ pub fn get_secret_scoped(
     }
 }
 
-/// Store a workspace-scoped secret.
-///
-/// **Hard invariant:** `workspace_root` must be a non-empty, absolute path.
-#[cfg(target_os = "macos")]
-pub fn set_secret_scoped(key: &str, value: &str, workspace_root: &Path) -> bool {
-    use std::process::Command;
-
-    if !validate_workspace_root(workspace_root, "set_secret_scoped", "—", key) {
-        return false;
-    }
-
-    let account = account_key_scoped(key, workspace_root);
-
-    // Delete existing entry first (ignore errors if not found)
-    let _ = Command::new("security")
-        .args([
-            "delete-generic-password",
-            "-s",
-            SERVICE_NAME,
-            "-a",
-            &account,
-        ])
-        .output();
-
-    match Command::new("security")
-        .args([
-            "add-generic-password",
-            "-s",
-            SERVICE_NAME,
-            "-a",
-            &account,
-            "-w",
-            value,
-        ])
-        .output()
-    {
-        Ok(output) if output.status.success() => true,
-        Ok(output) => {
-            error!(
-                "secrets::set_secret_scoped failed for workspace={} key={key}: {}",
-                workspace_root.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            false
-        }
-        Err(e) => {
-            error!("secrets::set_secret_scoped failed to run security CLI: {e}");
-            false
-        }
-    }
-}
-
 #[cfg(not(target_os = "macos"))]
 pub fn get_secret_scoped(
     key: &str,
@@ -137,15 +85,6 @@ pub fn get_secret_scoped(
         workspace_root.display()
     );
     None
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn set_secret_scoped(key: &str, _value: &str, workspace_root: &Path) -> bool {
-    warn!(
-        "secrets::set_secret_scoped({key}, {}): Keychain not available on this platform",
-        workspace_root.display()
-    );
-    false
 }
 
 /// Validate workspace_root for secret operations. Returns false and logs an error on failure.

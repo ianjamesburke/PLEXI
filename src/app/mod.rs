@@ -169,19 +169,6 @@ impl PlexiApp {
                                 }
                             }
                         }
-                    } else if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Agent) {
-                        pane_entry = Some(Pane::Agent(Box::new(crate::pane::AgentPane {
-                            id: saved_pane.id,
-                            instance: Some(crate::plexi_iq::PlexiIqInstance::default()),
-                            label: saved_pane
-                                .name
-                                .clone()
-                                .unwrap_or_else(|| format!("Agent {}", saved_pane.id)),
-                            transcript: Vec::new(),
-                            input_buf: String::new(),
-                            turn_rx: None,
-                            session_id: None,
-                        })));
                     }
 
                     if pane_entry.is_none() {
@@ -536,7 +523,7 @@ impl eframe::App for PlexiApp {
                     } else if let Some(a) = pane.as_app() {
                         Some(a.name.clone())
                     } else {
-                        pane.as_agent().map(|a| a.label.clone())
+                        None
                     }
                 });
             let title = match pane_name {
@@ -686,9 +673,6 @@ impl eframe::App for PlexiApp {
                 }
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
-                }
-                Action::SpawnAgentPane => {
-                    self.spawn_agent_pane();
                 }
                 Action::ToggleRunPalette => {
                     self.show_run_palette = !self.show_run_palette;

@@ -1,4 +1,4 @@
-use crate::host::command::{Capability, Placement, PaneRuntimeKind, ShareRatio};
+use crate::host::command::{Placement, PaneRuntimeKind, ShareRatio};
 use crate::tiling::PaneId;
 use serde::Serialize;
 
@@ -8,7 +8,6 @@ use serde::Serialize;
 pub enum HostEvent {
     PaneOpened { pane_id: PaneId },
     PaneClosed { pane_id: PaneId },
-    CapabilityDecided { pane_id: PaneId, capability: Capability, granted: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -18,12 +17,5 @@ pub enum HostEffect {
     PaneClosed { pane_id: PaneId },
     FocusChanged { pane_id: Option<PaneId> },
     SplitOpened { pane_id: PaneId, kind: PaneRuntimeKind, placement: Placement },
-    ContextCreated { index: usize },
-    ContextSwitched { index: usize },
-    AppKeyDispatched { pane_id: PaneId, key: String },
-    PathBroadcasted { group: String, cwd: String, recipient_pane_ids: Vec<PaneId> },
-    CapabilityGranted { pane_id: PaneId, capability: Capability },
-    CapabilityDenied { pane_id: PaneId, capability: Capability },
-    CapabilityPromptRequired { pane_id: PaneId, capability: Capability },
     EventEmitted(HostEvent),
 }

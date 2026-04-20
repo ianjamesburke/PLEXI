@@ -264,38 +264,6 @@ pub fn emit(event: HostEvent) {
 
 // ── Typed emit helpers ────────────────────────────────────────────────────────
 
-/// Emit an `AppSpawned` event with a host-stamped timestamp.
-pub fn emit_app_spawned(app_id: impl Into<String>, type_id: impl Into<String>, pane_id: u64) {
-    let app_id = app_id.into();
-    let type_id = type_id.into();
-    log::debug!("event_log: emitting AppSpawned for '{type_id}' on pane {pane_id}");
-    emit(HostEvent::AppSpawned {
-        app_id,
-        type_id,
-        pane_id,
-        timestamp: now_timestamp(),
-    });
-}
-
-/// Emit an `AppClosed` event with a host-stamped timestamp.
-pub fn emit_app_closed(
-    app_id: impl Into<String>,
-    type_id: impl Into<String>,
-    pane_id: u64,
-    reason: Option<String>,
-) {
-    let app_id = app_id.into();
-    let type_id = type_id.into();
-    log::debug!("event_log: emitting AppClosed for '{type_id}' on pane {pane_id}");
-    emit(HostEvent::AppClosed {
-        app_id,
-        type_id,
-        pane_id,
-        reason,
-        timestamp: now_timestamp(),
-    });
-}
-
 /// Emit a `PipeOpened` event with a host-stamped timestamp.
 pub fn emit_pipe_opened(
     from_app: impl Into<String>,
@@ -316,15 +284,5 @@ pub fn emit_pipe_opened(
     });
 }
 
-/// Emit a `PipeClosed` event with a host-stamped timestamp.
-pub fn emit_pipe_closed(from_app: impl Into<String>, channel: impl Into<String>) {
-    let from_app = from_app.into();
-    let channel = channel.into();
-    log::debug!("event_log: emitting PipeClosed from '{from_app}' on channel '{channel}'");
-    emit(HostEvent::PipeClosed {
-        from_app,
-        channel,
-        timestamp: now_timestamp(),
-    });
-}
+
 

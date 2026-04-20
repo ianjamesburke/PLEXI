@@ -6,18 +6,14 @@
 #![deny(clippy::todo, clippy::unimplemented)]
 
 mod app;
-#[allow(dead_code)] // PermissionsLog used via load()/resolve() at permission-prompt sites
 mod app_permissions;
-#[allow(dead_code)] // STEP-9: AppReply, emit_* wired when PGAP surface completes
 mod app_protocol;
-#[allow(dead_code)] // STEP-5: app_by_id / permissions_for wired via SpawnService
 mod app_registry;
 mod app_trait;
 mod cli;
 mod command_palette;
 mod config;
 mod context;
-#[allow(dead_code)] // STEP-6: emit_* wired when FileEventSink consumes all effects
 mod event_log;
 mod features;
 mod file_browser;
@@ -29,25 +25,18 @@ mod macos_menu;
 mod overlays;
 mod pane;
 mod pane_ops;
-#[allow(dead_code)] // STEP-3: plexi_iq simplified/trimmed when stubs resolved
-mod plexi_iq;
-#[allow(dead_code)] // STEP-5/9: SpawnService + PipeSend routing complete the surface
 mod process_app;
 mod headless_renderer;
 mod protocol;
 mod quick_note_app;
-#[allow(dead_code)] // STEP-6: Runs palette consumes run state via FileEventSink
 mod runs;
-#[allow(dead_code)] // STEP-5: secrets flow through SecretsService trait object
 mod secrets;
 mod secrets_app;
 mod shell;
 mod sidebar;
-#[allow(dead_code)] // text-editor builtin; kept until file_browser refactor
 mod text_editor_app;
 mod theme;
 mod tiling;
-#[allow(dead_code)] // STEP-9: PipeSend peer routing + binary pipe surface finish the protocol
 mod typed_pipes;
 mod workspace;
 
