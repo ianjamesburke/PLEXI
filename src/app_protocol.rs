@@ -363,6 +363,14 @@ pub enum DrawCommand {
     /// tick rate without relying on egui's unconditional repaint cadence.
     /// Apps that do not emit this will still repaint on keyboard/inject events.
     ScheduleRender { after_ms: u32 },
+
+    /// Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).
+    Circle {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        fill: String,
+    },
 }
 
 /// An action attached to a Notify command.

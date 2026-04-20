@@ -1,16 +1,16 @@
 """
-plexi_sdk.py — Plexi external app SDK (Python), PGAP v3
+plexi_sdk — Plexi external app SDK (Python), PGAP v3
 
 Spec: docs/specs/releases/plexi-v3.0.md §3 (PGAP v3), §7 (typed pipes).
-Zero dependencies, pure stdlib. Copy into your app directory and import.
+Zero dependencies, pure stdlib.
 
 Protocol: newline-delimited JSON over stdin/stdout.
   PlexiEvent  (host → app): Init, Render, Key, Click, Command, CapabilityDecision,
               SecretValue, RunUpdate, PipeMessage, PathChanged, Suspend, Resume,
               Shutdown, PipeOpened, PipeOverrun
-  DrawCommand (app → host): Rect, Text, Line, List, FrameDone, Log,
+  DrawCommand (app → host): Rect, Text, Line, List, Circle, FrameDone, Log,
               CapabilityRequest, SecretGet, RunGet, RunComplete, Notify,
-              PipeOpen, PipeSend, StatusSummary, RunInTerminal, Cd
+              PipeOpen, PipeSend, StatusSummary, ScheduleRender
 
 Usage:
 
@@ -19,8 +19,8 @@ Usage:
             pass  # called after Init handshake completes
 
         def on_render(self, ctx):
-            ctx.rect(0, 0, ctx.w, ctx.h, fill="#1e1e2e")
-            ctx.text(20, 20, "Hello v3!", size=14, color="#cdd6f4")
+            ctx.clear("#1e1e2e")
+            ctx.text(20, 20, f"Hello v3! dt={ctx.elapsed:.3f}s", size=14, color="#cdd6f4")
 
         def on_key(self, ctx, key, mods):
             if key == "q":
@@ -55,6 +55,17 @@ FG        = "#cdd6f4"
 RED       = "#f38ba8"
 GREEN     = "#a6e3a1"
 YELLOW    = "#f9e2af"
+
+# ── Color helpers ─────────────────────────────────────────────────────────────
+
+def rgba(r: int, g: int, b: int, a: int = 255) -> str:
+    """Return an 8-digit hex color string #rrggbbaa."""
+    return f"#{r:02x}{g:02x}{b:02x}{a:02x}"
+
+def dim(hex_color: str, alpha: int) -> str:
+    """Return hex_color with the given alpha (0-255). Strips existing alpha."""
+    h = hex_color.lstrip("#")[:6]
+    return f"#{h}{alpha:02x}"
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _LOCK = threading.Lock()
@@ -239,7 +250,8 @@ class RenderContext:
     """Passed to on_render. Accumulate draw commands; FrameDone is auto-emitted."""
 
     def __init__(self, frame_id: int, rect: dict, workspace_root: str,
-                 capabilities: list[str], feature_flags: list[str], app: "App"):
+                 capabilities: list[str], feature_flags: list[str], app: "App",
+                 elapsed: float = 0.0):
         self.frame_id = frame_id
         self.x: float = rect.get("x", 0.0)
         self.y: float = rect.get("y", 0.0)
@@ -249,14 +261,25 @@ class RenderContext:
         self.capabilities = capabilities
         self.feature_flags = feature_flags
         self._app = app
-        # Convenience alias
         self.emit = app.emit
+        # Seconds elapsed since the previous on_render call. 0.0 on first frame.
+        # Use this for time-based game logic instead of calling time.time() yourself.
+        self.elapsed: float = elapsed
 
     # ── Visual primitives ──
+    def clear(self, fill: str) -> None:
+        """Fill the entire pane with a single color. Shorthand for a full-size rect."""
+        _emit({"type": "rect", "x": 0.0, "y": 0.0, "w": self.w, "h": self.h,
+               "fill": fill, "radius": 0.0})
+
     def rect(self, x: float, y: float, w: float, h: float, fill: str,
              radius: float = 0.0) -> None:
         _emit({"type": "rect", "x": x, "y": y, "w": w, "h": h,
                "fill": fill, "radius": radius})
+
+    def circle(self, cx: float, cy: float, r: float, fill: str) -> None:
+        """Draw a filled circle. Alpha supported via 8-digit hex (#rrggbbaa) or dim()."""
+        _emit({"type": "circle", "cx": cx, "cy": cy, "r": r, "fill": fill})
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False) -> None:
@@ -326,6 +349,7 @@ class App:
         self._pending_secret: dict[str, queue.Queue] = {}
         self._pending_http: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
+        self._last_render_time: float | None = None
         self.emit = Emitter(self)
 
     # ── Override these ──────────────────────────────────────────────────────
@@ -343,7 +367,7 @@ class App:
     def on_shutdown(self) -> None: pass
 
     # ── Internal ────────────────────────────────────────────────────────────
-    def _make_ctx(self, frame_id: int = 0) -> RenderContext:
+    def _make_ctx(self, frame_id: int = 0, elapsed: float = 0.0) -> RenderContext:
         return RenderContext(
             frame_id=frame_id,
             rect=self._rect,
@@ -351,6 +375,7 @@ class App:
             capabilities=self.capabilities,
             feature_flags=self.feature_flags,
             app=self,
+            elapsed=elapsed,
         )
 
     def run(self) -> None:
@@ -386,6 +411,10 @@ class App:
                 self.on_init(self._make_ctx())
 
             elif t == "render":
+                import time as _time
+                now = _time.monotonic()
+                elapsed = (now - self._last_render_time) if self._last_render_time is not None else 0.0
+                self._last_render_time = now
                 frame_id = ev.get("frame_id", 0)
                 if "rect" in ev:
                     self._rect = ev["rect"]
@@ -393,7 +422,7 @@ class App:
                     # legacy compat
                     self._rect = {"x": 0.0, "y": 0.0,
                                   "w": ev["width"], "h": ev["height"]}
-                ctx = self._make_ctx(frame_id)
+                ctx = self._make_ctx(frame_id, elapsed=elapsed)
                 try:
                     self.on_render(ctx)
                 except Exception as e:

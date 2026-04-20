@@ -74,6 +74,12 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 );
             }
 
+            DrawCommand::Circle { cx, cy, r, fill } => {
+                let center = egui::pos2(origin.x + cx, origin.y + cy);
+                let color = parse_color(fill).unwrap_or(colors.accent);
+                ui.painter().circle_filled(center, *r, color);
+            }
+
             DrawCommand::List {
                 x,
                 y,

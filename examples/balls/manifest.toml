@@ -1,0 +1,12 @@
+[app]
+id = "balls"
+name = "Balls"
+version = "0.1.0"
+description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."
+entry = "balls.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
