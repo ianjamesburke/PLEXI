@@ -18,9 +18,6 @@ pub(crate) fn file_icon_kind(entry: &Entry) -> FileIconKind {
     if entry.is_image {
         return FileIconKind::Image;
     }
-    if entry.is_audio {
-        return FileIconKind::Audio;
-    }
     let Some(ext) = entry
         .path
         .extension()
@@ -30,6 +27,7 @@ pub(crate) fn file_icon_kind(entry: &Entry) -> FileIconKind {
         return FileIconKind::Generic;
     };
     match ext.as_str() {
+        "mp3" | "wav" | "flac" | "ogg" | "aiff" | "aif" | "m4a" => return FileIconKind::Audio,
         "md" | "markdown" | "mdx" | "rst" => FileIconKind::Markdown,
         "txt" | "rtf" | "log" => FileIconKind::Text,
         "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "go" | "java" | "swift" | "kt" | "c" | "h"

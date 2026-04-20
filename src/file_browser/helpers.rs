@@ -6,7 +6,6 @@ pub(crate) struct Entry {
     pub path: std::path::PathBuf,
     pub is_dir: bool,
     pub is_image: bool,
-    pub is_audio: bool,
     pub size_bytes: Option<u64>,
     pub modified: Option<SystemTime>,
 }

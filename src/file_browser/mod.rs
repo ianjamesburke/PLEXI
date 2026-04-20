@@ -1,4 +1,3 @@
-mod audio;
 mod helpers;
 mod icons;
 
@@ -8,9 +7,7 @@ use egui::{Color32, CornerRadius, Stroke, StrokeKind};
 use image::imageops::FilterType;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 
-use audio::AudioMsg;
 use helpers::{format_modified, format_size, DirStats, Entry, SortMode};
 use icons::paint_entry_icon;
 
@@ -42,21 +39,11 @@ pub struct FileBrowserApp {
     in_search: bool,
     search_query: String,
     search_indices: Vec<usize>, // indices into `entries` that match the query
-    // Audio preview
-    audio_tx: mpsc::Sender<AudioMsg>,
-    audio_playing_path: Option<PathBuf>,
-    audio_playing: bool,
-    audio_play_started: Option<std::time::Instant>,
-    audio_elapsed_before_pause: f32,
-    audio_paused: bool,
     should_close: bool,
 }
 
 impl FileBrowserApp {
     pub fn new(cwd: PathBuf) -> Self {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || audio::audio_thread(rx));
-
         let mut app = Self {
             cwd,
             entries: Vec::new(),
@@ -75,12 +62,6 @@ impl FileBrowserApp {
             in_search: false,
             search_query: String::new(),
             search_indices: Vec::new(),
-            audio_tx: tx,
-            audio_playing_path: None,
-            audio_playing: false,
-            audio_play_started: None,
-            audio_elapsed_before_pause: 0.0,
-            audio_paused: false,
             should_close: false,
         };
         app.refresh();
@@ -119,18 +100,11 @@ impl FileBrowserApp {
                                 )
                             })
                             .unwrap_or(false);
-                        let is_audio = ext
-                            .as_deref()
-                            .map(|e| {
-                                matches!(e, "mp3" | "wav" | "flac" | "ogg" | "aiff" | "aif" | "m4a")
-                            })
-                            .unwrap_or(false);
                         Some(Entry {
                             name,
                             path,
                             is_dir,
                             is_image,
-                            is_audio,
                             size_bytes,
                             modified,
                         })
@@ -417,8 +391,6 @@ impl FileBrowserApp {
 
         if entry.is_image {
             self.draw_image_sidebar(ui, colors, &entry);
-        } else if entry.is_audio {
-            self.draw_audio_sidebar(ui, colors, &entry);
         } else if entry.is_dir {
             self.draw_dir_sidebar(ui, colors, &entry);
         } else {
@@ -549,85 +521,6 @@ impl FileBrowserApp {
             });
     }
 
-    fn draw_audio_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
-        let is_this_playing = self.audio_playing_path.as_ref() == Some(&entry.path);
-
-        if is_this_playing && self.audio_playing {
-            ui.ctx().request_repaint();
-        }
-
-        egui::Frame::new()
-            .fill(colors.bg_sidebar)
-            .stroke(Stroke::new(1.0, colors.border))
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::same(8))
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(format!("Audio \u{00b7} {}", entry.name))
-                        .size(10.5)
-                        .color(colors.text_primary)
-                        .strong(),
-                );
-                if let Some(size) = entry.size_bytes {
-                    ui.label(
-                        egui::RichText::new(format_size(Some(size)))
-                            .size(9.5)
-                            .color(colors.text_dim),
-                    );
-                }
-                ui.add_space(8.0);
-
-                let button_label = if is_this_playing && self.audio_playing {
-                    "\u{23f8} Pause"
-                } else if is_this_playing && self.audio_paused {
-                    "\u{25b6} Resume"
-                } else {
-                    "\u{25b6} Play"
-                };
-                if ui.button(button_label).clicked() {
-                    if is_this_playing && self.audio_playing {
-                        self.audio_pause();
-                    } else if is_this_playing && self.audio_paused {
-                        self.audio_resume();
-                    } else {
-                        self.audio_play(&entry.path);
-                    }
-                }
-
-                if is_this_playing
-                    && (self.audio_playing || self.audio_paused)
-                    && ui.button("\u{23f9} Stop").clicked()
-                {
-                    self.audio_stop();
-                }
-
-                if is_this_playing {
-                    let elapsed = self.audio_elapsed();
-                    let mins = (elapsed / 60.0) as u32;
-                    let secs = (elapsed % 60.0) as u32;
-                    let state = if self.audio_playing {
-                        "Playing"
-                    } else {
-                        "Paused"
-                    };
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(format!("{state} \u{2014} {mins}:{secs:02}"))
-                            .size(11.0)
-                            .color(colors.accent)
-                            .monospace(),
-                    );
-                }
-
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new("Space to play/pause")
-                        .size(9.0)
-                        .color(colors.text_dim),
-                );
-            });
-    }
-
     fn draw_generic_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
@@ -662,51 +555,6 @@ impl FileBrowserApp {
             });
     }
 
-    // ─── Audio control ───────────────────────────────────────────────────────
-
-    fn audio_play(&mut self, path: &Path) {
-        let _ = self.audio_tx.send(AudioMsg::Stop);
-        let _ = self.audio_tx.send(AudioMsg::Play(path.to_path_buf()));
-        self.audio_playing_path = Some(path.to_path_buf());
-        self.audio_playing = true;
-        self.audio_paused = false;
-        self.audio_play_started = Some(std::time::Instant::now());
-        self.audio_elapsed_before_pause = 0.0;
-    }
-
-    fn audio_pause(&mut self) {
-        let _ = self.audio_tx.send(AudioMsg::Pause);
-        self.audio_playing = false;
-        self.audio_paused = true;
-        if let Some(started) = self.audio_play_started {
-            self.audio_elapsed_before_pause += started.elapsed().as_secs_f32();
-        }
-        self.audio_play_started = None;
-    }
-
-    fn audio_resume(&mut self) {
-        let _ = self.audio_tx.send(AudioMsg::Resume);
-        self.audio_playing = true;
-        self.audio_paused = false;
-        self.audio_play_started = Some(std::time::Instant::now());
-    }
-
-    fn audio_stop(&mut self) {
-        let _ = self.audio_tx.send(AudioMsg::Stop);
-        self.audio_playing = false;
-        self.audio_paused = false;
-        self.audio_playing_path = None;
-        self.audio_play_started = None;
-        self.audio_elapsed_before_pause = 0.0;
-    }
-
-    fn audio_elapsed(&self) -> f32 {
-        let current = self
-            .audio_play_started
-            .map(|s| s.elapsed().as_secs_f32())
-            .unwrap_or(0.0);
-        self.audio_elapsed_before_pause + current
-    }
 }
 
 impl App for FileBrowserApp {
@@ -956,22 +804,6 @@ impl App for FileBrowserApp {
         if input.key_pressed(egui::Key::R) && !input.modifiers.any() {
             self.refresh();
             consumed = true;
-        }
-
-        if input.key_pressed(egui::Key::Space) {
-            if let Some(entry) = self.selected_entry().cloned() {
-                if entry.is_audio {
-                    let is_this = self.audio_playing_path.as_ref() == Some(&entry.path);
-                    if is_this && self.audio_playing {
-                        self.audio_pause();
-                    } else if is_this && self.audio_paused {
-                        self.audio_resume();
-                    } else {
-                        self.audio_play(&entry.path);
-                    }
-                    consumed = true;
-                }
-            }
         }
 
         consumed
