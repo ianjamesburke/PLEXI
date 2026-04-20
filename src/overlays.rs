@@ -209,6 +209,46 @@ impl PlexiApp {
             });
     }
 
+    pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
+        let count = self.quit_press_count;
+        egui::Area::new(egui::Id::new("quit_confirm_overlay"))
+            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "\u{2318}Q pressed {} of 3 — press again to quit",
+                                    count
+                                ))
+                                .size(12.0)
+                                .color(self.colors.text_dim),
+                            );
+                            ui.add_space(8.0);
+                            for i in 1u8..=3 {
+                                let color = if i <= count {
+                                    self.colors.accent
+                                } else {
+                                    self.colors.bg_active
+                                };
+                                let (rect, _) = ui.allocate_exact_size(
+                                    Vec2::new(8.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter()
+                                    .circle_filled(rect.center(), 4.0, color);
+                            }
+                        });
+                    });
+            });
+    }
+
     /// Run palette overlay (Cmd+R). Shows active runs across all panes; BlockedOnUser
     /// runs get a [!] badge and an inline text input for unblocking.
     pub(crate) fn draw_run_palette(&mut self, ctx: &egui::Context) {

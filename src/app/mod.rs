@@ -29,6 +29,9 @@ pub struct PlexiApp {
     pub(crate) sidebar_visible: bool,
     pub(crate) show_shortcuts: bool,
     pub(crate) quitting: bool,
+    pub(crate) quit_press_count: u8,
+    pub(crate) quit_last_press: Option<std::time::Instant>,
+    pub(crate) quit_confirm_required: bool,
     pub(crate) renaming_context: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) registry: AppRegistry,
@@ -55,6 +58,11 @@ impl PlexiApp {
 
         let config = config::PlexiConfig::load();
         let features = crate::features::FeatureFlags::from_config(&config);
+        let quit_confirm_required = config
+            .beta
+            .as_ref()
+            .and_then(|b| b.quit_confirm)
+            .unwrap_or(true);
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -217,6 +225,9 @@ impl PlexiApp {
                     sidebar_visible: ws.sidebar_visible,
                     show_shortcuts: false,
                     quitting: false,
+                    quit_press_count: 0,
+                    quit_last_press: None,
+                    quit_confirm_required,
                     renaming_context: None,
                     rename_buffer: String::new(),
                     show_command_palette: false,
@@ -272,6 +283,9 @@ impl PlexiApp {
             sidebar_visible: true,
             show_shortcuts: false,
             quitting: false,
+            quit_press_count: 0,
+            quit_last_press: None,
+            quit_confirm_required,
             renaming_context: None,
             rename_buffer: String::new(),
             show_command_palette: false,
@@ -600,9 +614,29 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::Quit => {
-                    self.quitting = true;
-                    self.save_workspace();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    if !self.quit_confirm_required {
+                        self.quitting = true;
+                        self.save_workspace();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    } else {
+                        let now = std::time::Instant::now();
+                        let elapsed = self
+                            .quit_last_press
+                            .map(|t| now.duration_since(t))
+                            .unwrap_or(std::time::Duration::MAX);
+                        if elapsed > std::time::Duration::from_millis(1500) {
+                            self.quit_press_count = 0;
+                        }
+                        self.quit_press_count += 1;
+                        self.quit_last_press = Some(now);
+                        if self.quit_press_count >= 3 {
+                            self.quit_press_count = 0;
+                            self.quit_last_press = None;
+                            self.quitting = true;
+                            self.save_workspace();
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
                 }
                 Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
                 Action::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
@@ -941,6 +975,23 @@ impl eframe::App for PlexiApp {
         // Rename pane overlay
         if self.renaming_pane.is_some() {
             self.draw_rename_pane_overlay(ctx);
+        }
+
+        // Quit confirmation overlay
+        if self.quit_confirm_required && self.quit_press_count > 0 {
+            // Reset on Escape or timeout
+            let timed_out = self
+                .quit_last_press
+                .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
+                .unwrap_or(false);
+            if timed_out || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.quit_press_count = 0;
+                self.quit_last_press = None;
+            } else {
+                self.draw_quit_confirm_overlay(ctx);
+                // Keep repainting so the timeout dismissal fires promptly
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
         }
 
         self.draw_feature_effects(ctx);

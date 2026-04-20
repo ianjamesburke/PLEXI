@@ -34,6 +34,8 @@ pub struct BetaConfig {
     pub crt: Option<bool>,
     pub pulse: Option<bool>,
     pub ghost: Option<bool>,
+    /// Set to false to disable triple-Cmd+Q confirmation (default: true).
+    pub quit_confirm: Option<bool>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -216,6 +218,7 @@ accent = "#89b4fa"
 # crt = false     # Retro CRT scanlines + green phosphor tint
 # pulse = false   # Focused pane border gently breathes
 # ghost = false   # Unfocused panes render at reduced opacity
+# quit_confirm = false  # Require triple Cmd+Q to quit (default: true)
 
 # [log]
 # level = "info"  # error | warn | info | debug  (default: info)
