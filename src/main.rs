@@ -38,6 +38,7 @@ mod text_editor_app;
 mod theme;
 mod tiling;
 mod typed_pipes;
+mod widgets;
 mod workspace;
 
 fn main() -> eframe::Result {
