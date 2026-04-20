@@ -357,6 +357,12 @@ pub enum DrawCommand {
     /// Request the host to cd all terminals in the same pane group to `cwd`.
     /// Terminals receive `cd <cwd>\n` written to their PTY.
     CdRequest { cwd: String },
+
+    /// Ask the host to trigger a new Render event after `after_ms` milliseconds.
+    /// Intended for game loops and animations — emit once per frame to sustain a
+    /// tick rate without relying on egui's unconditional repaint cadence.
+    /// Apps that do not emit this will still repaint on keyboard/inject events.
+    ScheduleRender { after_ms: u32 },
 }
 
 /// An action attached to a Notify command.

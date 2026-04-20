@@ -103,6 +103,12 @@ class Emitter:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
         _emit({"type": "cd_request", "cwd": cwd})
 
+    def schedule_render(self, after_ms: int = 16) -> None:
+        """Ask the host to send a new Render event after `after_ms` milliseconds.
+        Call at the end of on_render to sustain a game/animation loop.
+        16 ms ≈ 60 fps.  32 ms ≈ 30 fps."""
+        _emit({"type": "schedule_render", "after_ms": after_ms})
+
     # Runs
     def run_get(self, intent: str, payload: Any = None) -> str:
         import uuid

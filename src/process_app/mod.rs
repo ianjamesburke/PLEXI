@@ -466,6 +466,11 @@ impl App for ProcessApp {
                         _ => log::info!(target: &target, "{message}"),
                     }
                 }
+                DrawCommand::ScheduleRender { after_ms } => {
+                    ui.ctx().request_repaint_after(
+                        std::time::Duration::from_millis(after_ms as u64),
+                    );
+                }
                 cmd @ (DrawCommand::CapabilityRequest { .. }
                 | DrawCommand::SecretGet { .. }
                 | DrawCommand::RunGet { .. }
@@ -515,8 +520,10 @@ impl App for ProcessApp {
                 render::render_draw_commands(ui, &frame_clone, ctx.colors);
             });
 
+        // Idle polling for async HTTP responses. Apps that need faster repaints
+        // (games, animations) emit DrawCommand::ScheduleRender { after_ms } each frame.
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(16));
+            .request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {

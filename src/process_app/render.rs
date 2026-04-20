@@ -153,7 +153,8 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::AudioMeter { .. }
             | DrawCommand::AudioPlay { .. }
             | DrawCommand::AudioCapture { .. }
-            | DrawCommand::Ready { .. } => {}
+            | DrawCommand::Ready { .. }
+            | DrawCommand::ScheduleRender { .. } => {}
         }
     }
 }
