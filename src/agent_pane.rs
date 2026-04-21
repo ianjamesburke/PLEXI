@@ -307,6 +307,10 @@ impl AgentPane {
 
                     match result {
                         Ok(turn) => {
+                            log::info!(
+                                "agent_pane {}: turn ok, session={:?}",
+                                self.id, turn.session_id
+                            );
                             if !turn.session_id.is_empty() && self.session_id != turn.session_id {
                                 self.session_id = turn.session_id.clone();
                             }
@@ -324,8 +328,10 @@ impl AgentPane {
                             }
                         }
                         Err(e) => {
-                            // Suppress error display when we killed the turn intentionally.
-                            if !was_interrupting {
+                            if was_interrupting {
+                                log::info!("agent_pane {}: turn interrupted", self.id);
+                            } else {
+                                log::warn!("agent_pane {}: turn error: {e}", self.id);
                                 self.transcript.push(format!("Error: {e}"));
                             }
                         }
