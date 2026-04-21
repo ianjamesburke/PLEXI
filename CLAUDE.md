@@ -20,13 +20,17 @@ Every issue gets exactly one **type** and one **priority**. Optionally add a **s
 - **ready** — fully researched, can be picked up immediately
 - **blocked** — waiting on an external dependency or upstream fix
 
-## Worktrees
+## Branch Workflow
 
-Two worktrees are set up:
-- `/Users/ianburke/Documents/GitHub/PLEXI` — `main` (stable)
-- `/Users/ianburke/Documents/GitHub/PLEXI-dev` — `dev` (active development)
+- `alpha` — active development. All PRs land here. Use `just install-alpha` to test.
+- `beta` — staging/release channel. Promoted from alpha when ready. Use `just install-beta` to test.
+- `main` — stable releases only.
 
-Iterate on `dev`, merge to `main` when stable.
+Feature branches are cut from `alpha`, worked in `worktrees/`, and merged back to `alpha` via PR. Never commit directly to `main` or `beta`.
+
+Worktrees:
+- `worktrees/alpha` — alpha branch
+- `worktrees/beta` — beta branch
 
 ## Releases
 
