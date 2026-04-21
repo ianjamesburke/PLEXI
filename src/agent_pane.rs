@@ -426,44 +426,53 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
             ui.add_space(4.0);
 
             // ── Input ────────────────────────────────────────────────────────
+            // Right-to-left so the button claims its space first, then the
+            // TextEdit expands into whatever remains.
+            let prompt_color = if pane.in_flight { error_color } else { accent };
+            let mut enter_pressed = false;
+            let mut resp_opt: Option<egui::Response> = None;
+            let mut button_clicked = false;
+
             ui.horizontal(|ui| {
-                let prompt_label = if pane.in_flight { "↯" } else { ">" };
-                let prompt_color = if pane.in_flight { error_color } else { accent };
-                ui.label(egui::RichText::new(prompt_label).size(12.0).color(prompt_color));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let send_label = if pane.in_flight { "⊘" } else { "↑" };
+                    button_clicked = ui
+                        .add_enabled(
+                            !pane.input_buf.trim().is_empty(),
+                            egui::Button::new(
+                                egui::RichText::new(send_label).size(13.0).color(prompt_color),
+                            ),
+                        )
+                        .clicked();
 
-                let input = egui::TextEdit::multiline(&mut pane.input_buf)
-                    .desired_rows(2)
-                    .desired_width(ui.available_width() - 50.0)
-                    .hint_text("Message…  (Shift+Enter for newline)")
-                    .font(egui::FontId::monospace(pane.font_size))
-                    .text_color(text_color)
-                    .frame(false);
-                let resp = ui.add(input);
+                    let prompt_label = if pane.in_flight { "↯" } else { ">" };
+                    ui.label(egui::RichText::new(prompt_label).size(12.0).color(prompt_color));
 
+                    let input = egui::TextEdit::multiline(&mut pane.input_buf)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Message…  (Shift+Enter for newline)")
+                        .font(egui::FontId::monospace(pane.font_size))
+                        .text_color(text_color)
+                        .frame(false);
+                    let resp = ui.add(input);
+                    enter_pressed = resp.has_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+                    resp_opt = Some(resp);
+                });
+            });
+
+            if let Some(resp) = resp_opt {
                 if pane.needs_focus {
                     resp.request_focus();
                     pane.needs_focus = false;
                 }
+            }
 
-                // Enter without Shift = send/interrupt. Shift+Enter inserts newline.
-                let enter_pressed = resp.has_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-
-                let send_label = if pane.in_flight { "Interrupt" } else { "Send" };
-                let button_clicked = ui
-                    .add_enabled(
-                        !pane.input_buf.trim().is_empty(),
-                        egui::Button::new(
-                            egui::RichText::new(send_label).size(11.0).color(prompt_color),
-                        ),
-                    )
-                    .clicked();
-
-                if enter_pressed || button_clicked {
-                    pane.submit_input();
-                    pane.needs_focus = true;
-                }
-            });
+            if enter_pressed || button_clicked {
+                pane.submit_input();
+                pane.needs_focus = true;
+            }
         });
 }
 
