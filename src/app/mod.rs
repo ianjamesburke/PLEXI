@@ -709,6 +709,9 @@ impl eframe::App for PlexiApp {
                 Action::ToggleRunPalette => {
                     self.show_run_palette = !self.show_run_palette;
                 }
+                Action::OpenAgentPane => {
+                    self.open_agent_pane();
+                }
             }
         }
 

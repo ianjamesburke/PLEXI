@@ -958,6 +958,24 @@ impl PlexiApp {
         }
     }
 
+    /// Open a new agent (Plexi IQ) pane alongside the focused terminal (Cmd+I).
+    pub(crate) fn open_agent_pane(&mut self) {
+        let active = self.active_context;
+        let cwd = {
+            let ctx = &self.contexts[active];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+        let new_id = self.host.alloc_pane_id();
+        let pane = crate::agent_pane::AgentPane::new(new_id, cwd);
+        self.contexts[active]
+            .panes
+            .insert(new_id, Pane::Agent(Box::new(pane)));
+        let share = crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
+        let _ = self.split_with_new_pane(new_id, true, share, false);
+    }
+
     /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
     pub(crate) fn open_secrets_manager(&mut self) {
         // Toggle: if already open, close it.

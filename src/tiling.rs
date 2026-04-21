@@ -116,6 +116,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         return;
                     }
 
+                    if let Some(agent_pane) = pane.as_agent_mut() {
+                        if crate::agent_pane::render_and_drain(ui, agent_pane, &self.colors) {
+                            ui.ctx().request_repaint();
+                        }
+                        return;
+                    }
+
                     // Terminal panes.
                     let Some(t) = pane.as_terminal_mut() else {
                         return;

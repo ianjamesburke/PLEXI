@@ -52,13 +52,6 @@ impl Pane {
         }
     }
 
-    pub fn as_agent(&self) -> Option<&AgentPane> {
-        match self {
-            Pane::Agent(a) => Some(a),
-            _ => None,
-        }
-    }
-
     pub fn as_agent_mut(&mut self) -> Option<&mut AgentPane> {
         match self {
             Pane::Agent(a) => Some(a),
@@ -197,15 +190,6 @@ pub struct AppPane {
     pub overlay_replaced: Option<Box<Pane>>,
 }
 
-// ---------------------------------------------------------------------------
-// AgentPane — Plexi IQ conversation pane (spec §9)
-// Transcript uses Vec<String> as a placeholder; TurnMsg wired in the next issue.
-// ---------------------------------------------------------------------------
-
-pub struct AgentPane {
-    pub id: PaneId,
-    pub session_id: String,
-    pub transcript: Vec<String>,
-    pub input_buf: String,
-}
+// AgentPane is defined in agent_pane.rs — re-exported here so Pane variants compile.
+pub use crate::agent_pane::AgentPane;
 
