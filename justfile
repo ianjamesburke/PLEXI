@@ -114,21 +114,35 @@ bump:
     set -e
     current=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     echo "Current version: $current"
-    echo "1) patch"
-    echo "2) minor"
-    echo "3) major"
-    read -p "Bump type [1-3]: " choice
-    IFS='.' read -r major minor patch <<< "$current"
+    echo "1) prerelease (increment beta number)"
+    echo "2) patch"
+    echo "3) minor"
+    echo "4) major"
+    read -p "Bump type [1-4]: " choice
+    # Strip prerelease suffix to get base version
+    base=$(echo "$current" | sed 's/-.*//')
+    IFS='.' read -r major minor patch <<< "$base"
     case $choice in
-      1) patch=$((patch + 1)) ;;
-      2) minor=$((minor + 1)); patch=0 ;;
-      3) major=$((major + 1)); minor=0; patch=0 ;;
+      1)
+        # Increment prerelease counter, e.g. 3.0.0-beta.1 -> 3.0.0-beta.2
+        pre=$(echo "$current" | grep -oE '\-[a-z]+\.[0-9]+$' | head -1)
+        if [[ -z "$pre" ]]; then
+          echo "Error: current version has no prerelease suffix to increment"
+          exit 1
+        fi
+        pre_label=$(echo "$pre" | sed 's/-//;s/\.[0-9]*//')
+        pre_num=$(echo "$pre" | grep -oE '[0-9]+$')
+        new="$base-$pre_label.$((pre_num + 1))"
+        ;;
+      2) new="$major.$minor.$((patch + 1))" ;;
+      3) new="$major.$((minor + 1)).0" ;;
+      4) new="$((major + 1)).0.0" ;;
       *) echo "Invalid choice"; exit 1 ;;
     esac
-    new="$major.$minor.$patch"
     sed -i '' "s/^version = \"$current\"/version = \"$new\"/" Cargo.toml
+    cargo generate-lockfile
     echo "Bumped to $new"
-    git add Cargo.toml
+    git add Cargo.toml Cargo.lock
     git commit -m "chore: bump version to $new"
     git tag "v$new"
     echo "Tagged v$new"
@@ -136,6 +150,7 @@ bump:
 release:
     #!/usr/bin/env bash
     set -e
+    branch=$(git rev-parse --abbrev-ref HEAD)
     version=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     tag="v$version"
     if git ls-remote --tags origin "$tag" | grep -q "$tag"; then
@@ -146,5 +161,5 @@ release:
       echo "Error: local tag $tag not found. Run 'just bump' first."
       exit 1
     fi
-    git push origin main "$tag"
-    echo "Pushed $tag — release workflow will run on GitHub Actions"
+    git push origin "$branch" "$tag"
+    echo "Pushed $tag from $branch — release workflow will run on GitHub Actions"
