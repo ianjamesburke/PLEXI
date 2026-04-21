@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 // ---------------------------------------------------------------------------
-// Pane ADT (spec §2)
+// Pane ADT (spec §2) — Terminal | App | Agent. Adding a variant requires a spec amendment.
 // ---------------------------------------------------------------------------
 
 pub enum Pane {
     Terminal(Box<TerminalPane>),
     App(Box<AppPane>),
+    Agent(Box<AgentPane>),
 }
 
 impl Pane {
@@ -19,6 +20,7 @@ impl Pane {
         match self {
             Pane::Terminal(t) => t.id,
             Pane::App(a) => a.id,
+            Pane::Agent(a) => a.id,
         }
     }
 
@@ -46,6 +48,20 @@ impl Pane {
     pub fn as_app_mut(&mut self) -> Option<&mut AppPane> {
         match self {
             Pane::App(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_agent(&self) -> Option<&AgentPane> {
+        match self {
+            Pane::Agent(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_agent_mut(&mut self) -> Option<&mut AgentPane> {
+        match self {
+            Pane::Agent(a) => Some(a),
             _ => None,
         }
     }
@@ -179,5 +195,17 @@ pub struct AppPane {
     /// Pane hidden by an overlay app. Closing the app restores this pane instead
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
+}
+
+// ---------------------------------------------------------------------------
+// AgentPane — Plexi IQ conversation pane (spec §9)
+// Transcript uses Vec<String> as a placeholder; TurnMsg wired in the next issue.
+// ---------------------------------------------------------------------------
+
+pub struct AgentPane {
+    pub id: PaneId,
+    pub session_id: String,
+    pub transcript: Vec<String>,
+    pub input_buf: String,
 }
 

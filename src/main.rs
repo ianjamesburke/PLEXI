@@ -25,6 +25,7 @@ mod macos_menu;
 mod overlays;
 mod pane;
 mod pane_ops;
+mod render;
 mod process_app;
 mod headless_renderer;
 mod protocol;
