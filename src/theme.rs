@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub const FONT_SIZE: f32 = 14.0;
 const FONT_NAME: &str = "JetBrainsMono Nerd Font";
 const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
+const UNICODE_FALLBACK_FONT_NAME: &str = "Noto Sans";
 
 fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
     let [r, g, b] = hex_to_bytes(s.as_deref(), [default.r(), default.g(), default.b()]);
@@ -418,6 +419,12 @@ pub fn font_definitions() -> egui::FontDefinitions {
             "../fonts/DejaVuSans.ttf"
         ))),
     );
+    fonts.font_data.insert(
+        UNICODE_FALLBACK_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../fonts/NotoSans-Regular.ttf"
+        ))),
+    );
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
@@ -430,6 +437,11 @@ pub fn font_definitions() -> egui::FontDefinitions {
         .insert(1, FALLBACK_FONT_NAME.to_owned());
     fonts
         .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(2, UNICODE_FALLBACK_FONT_NAME.to_owned());
+    fonts
+        .families
         .entry(egui::FontFamily::Monospace)
         .or_default()
         .insert(0, FONT_NAME.to_owned());
@@ -438,6 +450,11 @@ pub fn font_definitions() -> egui::FontDefinitions {
         .entry(egui::FontFamily::Monospace)
         .or_default()
         .insert(1, FALLBACK_FONT_NAME.to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(2, UNICODE_FALLBACK_FONT_NAME.to_owned());
 
     // Load system fonts as additional fallbacks after bundled fonts but before egui defaults.
     for (name, path) in SYSTEM_FALLBACK_FONTS {
