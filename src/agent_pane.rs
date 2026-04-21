@@ -469,7 +469,8 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
             });
 
             if let Some(resp) = resp_opt {
-                if pane.needs_focus {
+                let nothing_focused = ui.ctx().memory(|m| m.focused().is_none());
+                if pane.needs_focus || nothing_focused {
                     resp.request_focus();
                     pane.needs_focus = false;
                 }
