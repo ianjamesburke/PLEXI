@@ -22,14 +22,38 @@ pub struct TurnResult {
 /// - `cwd`: working directory for the subprocess.
 ///
 /// Returns `Ok(TurnResult)` on success, `Err(String)` on failure.
+/// Build an augmented PATH that includes common Claude CLI install locations.
+/// macOS GUI bundles inherit a minimal PATH (/usr/bin:/bin) that misses
+/// user-local installs like ~/.local/bin and /usr/local/bin.
+fn augmented_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extras = format!(
+        "{home}/.local/bin:{home}/.claude/local/bin:/usr/local/bin:/opt/homebrew/bin"
+    );
+    match std::env::var("PATH") {
+        Ok(p) => format!("{extras}:{p}"),
+        Err(_) => format!("{extras}:/usr/bin:/bin"),
+    }
+}
+
 pub fn run_turn(session_id: &str, message: &str, cwd: &Path) -> Result<TurnResult, String> {
-    // Verify claude is on PATH before we try to run it.
-    let which = Command::new("which").arg("claude").output();
-    if which.map(|o| !o.status.success()).unwrap_or(true) {
-        return Err("claude not found — install Claude Code CLI".into());
+    let path = augmented_path();
+
+    // Locate claude before spawning so we give a clear error if absent.
+    let found = Command::new("which")
+        .arg("claude")
+        .env("PATH", &path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !found {
+        return Err(format!(
+            "claude not found on PATH ({path}) — install Claude Code CLI"
+        ));
     }
 
     let mut cmd = Command::new("claude");
+    cmd.env("PATH", &path);
     cmd.arg("-p");
     if !session_id.is_empty() {
         cmd.arg("--resume");

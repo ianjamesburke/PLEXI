@@ -204,7 +204,10 @@ impl AgentPane {
                 }
             }
         }
-        got_any
+        // Keep requesting repaints while a turn is in flight so the result
+        // surfaces as soon as the background thread delivers it, without
+        // requiring a mouse/keyboard event to trigger a frame.
+        got_any || self.in_flight
     }
 }
 
