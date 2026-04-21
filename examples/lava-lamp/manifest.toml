@@ -1,0 +1,12 @@
+[app]
+id = "lava-lamp"
+name = "Lava Lamp"
+version = "0.1.0"
+description = "Fluid blob simulation with fake-metaball blending — demonstrates DrawCommand::Circle layering."
+entry = "lava_lamp.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.35 }
