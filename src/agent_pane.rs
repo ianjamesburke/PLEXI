@@ -97,6 +97,8 @@ pub struct AgentPane {
     pub in_flight: bool,
     /// Working directory scoped to this pane (used for the claude subprocess).
     pub cwd: PathBuf,
+    /// True until the input bar has received its initial auto-focus on first render.
+    needs_focus: bool,
 
     // Channel pair — kept on the pane so the background thread stays alive.
     turn_tx: Option<mpsc::SyncSender<WorkerMsg>>,
@@ -138,6 +140,7 @@ impl AgentPane {
             input_buf: String::new(),
             in_flight: false,
             cwd,
+            needs_focus: true,
             turn_tx: Some(turn_tx),
             result_rx,
         }
@@ -288,7 +291,13 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                     .frame(false);
                 let resp = ui.add(input);
 
-                let enter_pressed = resp.lost_focus()
+                // Auto-focus the input bar on first render so typing works immediately.
+                if pane.needs_focus {
+                    resp.request_focus();
+                    pane.needs_focus = false;
+                }
+
+                let enter_pressed = resp.has_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let button_clicked = ui
                     .add_enabled(
