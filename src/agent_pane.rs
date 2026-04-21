@@ -3,70 +3,122 @@
 /// Each `AgentPane` owns a background thread that drives `claude` as a
 /// subprocess. The UI thread sends messages in and receives responses out
 /// via synchronous mpsc channels, so the egui render loop is never blocked.
+///
+/// Soul and memory files live in the nearest `.plexi/agents/iq/` directory
+/// (found by walking up from cwd). Sessions are stored as per-pane JSON files
+/// in `.plexi/agents/iq/sessions/<pane-id>.json` so transcripts survive restarts.
 use crate::agent_turn;
 use crate::theme::Colors;
 use crate::tiling::PaneId;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
+// ── Workspace resolution ─────────────────────────────────────────────────────
+
+/// Walk up from `start` to find the nearest `.plexi/` directory.
+/// Returns the `.plexi/agents/iq/` path if a workspace is found.
+fn find_iq_dir(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        let candidate = dir.join(".plexi");
+        if candidate.is_dir() {
+            return Some(candidate.join("agents").join("iq"));
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+// ── Soul / memory loading ────────────────────────────────────────────────────
+
+const DEFAULT_SOUL: &str = "\
+# Soul
+
+You are the Plexi AI assistant — an expert developer embedded in the Plexi terminal environment.
+You have full awareness of the project context from CLAUDE.md files in the workspace.
+You are direct, technical, and concise.
+You help with coding, architecture, debugging, and project management.
+You remember what you have learned about this project and the user.
+";
+
+const DEFAULT_MEMORY: &str = "\
+# Memory
+
+(This file is updated by the agent to record important learned facts about the project and user.)
+";
+
+/// Load SOUL.md and MEMORY.md from the iq dir, creating defaults if absent.
+/// Returns the combined context string to prepend to the first message.
+fn load_soul_context(iq_dir: &Path) -> String {
+    let soul_path = iq_dir.join("SOUL.md");
+    let memory_path = iq_dir.join("MEMORY.md");
+
+    if let Err(e) = std::fs::create_dir_all(iq_dir) {
+        log::warn!("agent_pane: could not create iq dir: {e}");
+        return String::new();
+    }
+
+    let soul = if soul_path.exists() {
+        std::fs::read_to_string(&soul_path).unwrap_or_else(|_| DEFAULT_SOUL.to_string())
+    } else {
+        if let Err(e) = std::fs::write(&soul_path, DEFAULT_SOUL) {
+            log::warn!("agent_pane: could not write default SOUL.md: {e}");
+        }
+        DEFAULT_SOUL.to_string()
+    };
+
+    let memory = if memory_path.exists() {
+        std::fs::read_to_string(&memory_path).unwrap_or_else(|_| DEFAULT_MEMORY.to_string())
+    } else {
+        if let Err(e) = std::fs::write(&memory_path, DEFAULT_MEMORY) {
+            log::warn!("agent_pane: could not write default MEMORY.md: {e}");
+        }
+        DEFAULT_MEMORY.to_string()
+    };
+
+    format!("{soul}\n\n{memory}\n\n---\n\n")
+}
+
 // ── Session persistence ──────────────────────────────────────────────────────
 
-/// Path to the per-build sessions file.
-fn sessions_path() -> PathBuf {
-    crate::config::config_dir().join("sessions.toml")
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct SessionFile {
+    session_id: String,
+    transcript: Vec<String>,
 }
 
-/// Load all agent session IDs from disk.
-/// File format:
-/// ```toml
-/// [agents]
-/// "42" = "claude-session-abc123"
-/// ```
-fn load_sessions() -> HashMap<String, String> {
-    let path = sessions_path();
+fn session_path(iq_dir: &Path, pane_id: PaneId) -> PathBuf {
+    iq_dir.join("sessions").join(format!("{pane_id}.json"))
+}
+
+fn load_session(iq_dir: &Path, pane_id: PaneId) -> SessionFile {
+    let path = session_path(iq_dir, pane_id);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
-        Err(_) => return HashMap::new(),
+        Err(_) => return SessionFile::default(),
     };
-    let table: toml::Value = match toml::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("agent_pane: failed to parse sessions.toml: {e}");
-            return HashMap::new();
-        }
-    };
-    let mut out = HashMap::new();
-    if let Some(agents) = table.get("agents").and_then(|v| v.as_table()) {
-        for (k, v) in agents {
-            if let Some(s) = v.as_str() {
-                out.insert(k.clone(), s.to_string());
-            }
-        }
-    }
-    out
+    serde_json::from_str(&text).unwrap_or_else(|e| {
+        log::warn!("agent_pane: failed to parse session {pane_id}: {e}");
+        SessionFile::default()
+    })
 }
 
-/// Persist a single agent's session ID to disk.
-fn save_session(pane_id: PaneId, session_id: &str) {
-    let mut sessions = load_sessions();
-    sessions.insert(pane_id.to_string(), session_id.to_string());
-
-    let mut body = String::from("[agents]\n");
-    for (k, v) in &sessions {
-        body.push_str(&format!("{:?} = {:?}\n", k, v));
+fn save_session_file(iq_dir: &Path, pane_id: PaneId, file: &SessionFile) {
+    let dir = iq_dir.join("sessions");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::error!("agent_pane: failed to create sessions dir: {e}");
+        return;
     }
-
-    let path = sessions_path();
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::error!("agent_pane: failed to create sessions dir: {e}");
-            return;
+    let path = session_path(iq_dir, pane_id);
+    match serde_json::to_string_pretty(file) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                log::error!("agent_pane: failed to write session {pane_id}: {e}");
+            }
         }
-    }
-    if let Err(e) = std::fs::write(&path, body) {
-        log::error!("agent_pane: failed to write sessions.toml: {e}");
+        Err(e) => log::error!("agent_pane: failed to serialize session {pane_id}: {e}"),
     }
 }
 
@@ -75,6 +127,8 @@ fn save_session(pane_id: PaneId, session_id: &str) {
 /// Message sent to the background worker thread.
 struct WorkerMsg {
     session_id: String,
+    /// Soul + memory context prepended to the first message of a new session.
+    soul_context: Option<String>,
     message: String,
     cwd: PathBuf,
 }
@@ -97,6 +151,8 @@ pub struct AgentPane {
     pub in_flight: bool,
     /// Working directory scoped to this pane (used for the claude subprocess).
     pub cwd: PathBuf,
+    /// Resolved `.plexi/agents/iq/` dir for this pane's workspace, if found.
+    iq_dir: Option<PathBuf>,
     /// Font size — adjustable with Cmd+= / Cmd+-.
     pub font_size: f32,
     /// True until the input bar has received its initial auto-focus on first render.
@@ -109,16 +165,17 @@ pub struct AgentPane {
 
 impl AgentPane {
     /// Create a new `AgentPane`, spawning its background worker thread.
-    ///
-    /// Looks up a persisted session ID for `id` in `sessions.toml` and
-    /// restores it if found.
+    /// Restores session ID and transcript from the workspace session file if found.
     pub fn new(id: PaneId, cwd: PathBuf) -> Self {
-        // Restore session ID if one was persisted for this pane.
-        let sessions = load_sessions();
-        let session_id = sessions.get(&id.to_string()).cloned().unwrap_or_default();
+        let iq_dir = find_iq_dir(&cwd);
 
-        // Synchronous channel: worker blocks until the UI drains results,
-        // which is fine — we only ever have one turn in flight at a time.
+        let (session_id, transcript) = if let Some(ref dir) = iq_dir {
+            let sf = load_session(dir, id);
+            (sf.session_id, sf.transcript)
+        } else {
+            (String::new(), Vec::new())
+        };
+
         let (turn_tx, turn_rx) = mpsc::sync_channel::<WorkerMsg>(1);
         let (result_tx, result_rx) = mpsc::sync_channel::<WorkerResult>(8);
 
@@ -127,9 +184,18 @@ impl AgentPane {
             .spawn(move || {
                 while let Ok(msg) = turn_rx.recv() {
                     log::info!("agent_pane {id}: running turn, session={:?}", msg.session_id);
-                    let result = agent_turn::run_turn(&msg.session_id, &msg.message, &msg.cwd);
+                    let result = agent_turn::run_turn(
+                        &msg.session_id,
+                        &msg.message,
+                        &msg.cwd,
+                        msg.soul_context,
+                    );
                     match &result {
-                        Ok(t) => log::info!("agent_pane {id}: turn ok, session={:?}, response={:?}", t.session_id, t.response),
+                        Ok(t) => log::info!(
+                            "agent_pane {id}: turn ok, session={:?}, response={:?}",
+                            t.session_id,
+                            t.response
+                        ),
                         Err(e) => log::error!("agent_pane {id}: turn error: {e}"),
                     }
                     if result_tx.send(WorkerResult { response: result }).is_err() {
@@ -142,10 +208,11 @@ impl AgentPane {
         Self {
             id,
             session_id,
-            transcript: Vec::new(),
+            transcript,
             input_buf: String::new(),
             in_flight: false,
             cwd,
+            iq_dir,
             font_size: 13.0,
             needs_focus: true,
             turn_tx: Some(turn_tx),
@@ -154,10 +221,6 @@ impl AgentPane {
     }
 
     /// Submit the current `input_buf` as a user turn.
-    ///
-    /// Pushes the message to `transcript`, sends it to the background thread,
-    /// and sets `in_flight = true`. No-op if a turn is already in flight or
-    /// the input is empty.
     pub fn submit_input(&mut self) {
         if self.in_flight {
             return;
@@ -170,16 +233,22 @@ impl AgentPane {
         self.input_buf.clear();
         self.transcript.push(format!("You: {message}"));
 
+        // On the first turn of a new session, load and prepend soul context.
+        let soul_context = if self.session_id.is_empty() {
+            self.iq_dir.as_deref().map(load_soul_context)
+        } else {
+            None
+        };
+
         let msg = WorkerMsg {
             session_id: self.session_id.clone(),
+            soul_context,
             message,
             cwd: self.cwd.clone(),
         };
         if let Some(tx) = &self.turn_tx {
             match tx.try_send(msg) {
-                Ok(_) => {
-                    self.in_flight = true;
-                }
+                Ok(_) => self.in_flight = true,
                 Err(e) => {
                     log::error!("agent_pane {}: failed to send to worker: {e}", self.id);
                     self.transcript
@@ -190,41 +259,42 @@ impl AgentPane {
     }
 
     /// Drain completed turn results from the background thread.
-    ///
-    /// Returns `true` if any results were received (caller should request a
-    /// repaint so the transcript updates are visible immediately).
+    /// Returns `true` if the caller should request a repaint.
     pub fn drain_results(&mut self) -> bool {
         let mut got_any = false;
         while let Ok(result) = self.result_rx.try_recv() {
             got_any = true;
             self.in_flight = false;
-            self.needs_focus = true; // re-focus input after response arrives
+            self.needs_focus = true;
             match result.response {
                 Ok(turn) => {
-                    // Persist the (possibly new) session ID.
-                    if self.session_id != turn.session_id && !turn.session_id.is_empty() {
+                    if !turn.session_id.is_empty() && self.session_id != turn.session_id {
                         self.session_id = turn.session_id.clone();
-                        save_session(self.id, &self.session_id);
                     }
                     self.transcript.push(format!("Agent: {}", turn.response));
+                    // Persist session ID + full transcript to workspace.
+                    if let Some(ref dir) = self.iq_dir {
+                        save_session_file(
+                            dir,
+                            self.id,
+                            &SessionFile {
+                                session_id: self.session_id.clone(),
+                                transcript: self.transcript.clone(),
+                            },
+                        );
+                    }
                 }
                 Err(e) => {
                     self.transcript.push(format!("Error: {e}"));
                 }
             }
         }
-        // Keep requesting repaints while a turn is in flight so the result
-        // surfaces as soon as the background thread delivers it, without
-        // requiring a mouse/keyboard event to trigger a frame.
         got_any || self.in_flight
     }
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
 
-/// Render the agent pane UI into `ui`.
-///
-/// Called from `PlexiBehavior::pane_ui` when the pane ID maps to an `AgentPane`.
 pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
     let bg = colors.terminal_bg;
     let text_color = colors.text_primary;
@@ -237,30 +307,23 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
         .show(ui, |ui| {
             // Header
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Agent")
-                        .size(11.0)
-                        .color(accent),
-                );
-                if !pane.session_id.is_empty() {
-                    ui.label(
-                        egui::RichText::new(format!("  session: {}", &pane.session_id[..pane.session_id.len().min(12)]))
-                            .size(10.0)
-                            .color(dim_color),
-                    );
+                ui.label(egui::RichText::new("IQ").size(11.0).color(accent));
+                if let Some(ref dir) = pane.iq_dir {
+                    if let Some(workspace) = dir.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()) {
+                        ui.label(
+                            egui::RichText::new(format!("  {}", workspace.to_string_lossy()))
+                                .size(10.0)
+                                .color(dim_color),
+                        );
+                    }
                 }
                 if pane.in_flight {
-                    ui.label(
-                        egui::RichText::new(" ●")
-                            .size(10.0)
-                            .color(accent),
-                    );
+                    ui.label(egui::RichText::new(" ●").size(10.0).color(accent));
                 }
             });
 
             ui.add_space(4.0);
 
-            // Transcript scroll area
             let input_height = 60.0;
             let available = ui.available_height() - input_height - 8.0;
             egui::ScrollArea::vertical()
@@ -292,7 +355,6 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
             ui.separator();
             ui.add_space(4.0);
 
-            // Input bar
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(">").size(12.0).color(accent));
                 let input = egui::TextEdit::singleline(&mut pane.input_buf)
@@ -303,14 +365,13 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                     .frame(false);
                 let resp = ui.add(input);
 
-                // Auto-focus the input bar on first render so typing works immediately.
                 if pane.needs_focus {
                     resp.request_focus();
                     pane.needs_focus = false;
                 }
 
-                let enter_pressed = resp.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let enter_pressed =
+                    resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let button_clicked = ui
                     .add_enabled(
                         !pane.in_flight && !pane.input_buf.trim().is_empty(),
@@ -327,10 +388,6 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
         });
 }
 
-/// Render the agent pane, also draining any pending results.
-///
-/// Returns true if a repaint was needed (caller should call
-/// `ui.ctx().request_repaint()`).
 pub fn render_and_drain(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) -> bool {
     let needs_repaint = pane.drain_results();
     render(ui, pane, colors);

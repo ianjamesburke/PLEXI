@@ -36,7 +36,12 @@ fn augmented_path() -> String {
     }
 }
 
-pub fn run_turn(session_id: &str, message: &str, cwd: &Path) -> Result<TurnResult, String> {
+pub fn run_turn(
+    session_id: &str,
+    message: &str,
+    cwd: &Path,
+    soul_context: Option<String>,
+) -> Result<TurnResult, String> {
     let path = augmented_path();
 
     // Locate claude before spawning so we give a clear error if absent.
@@ -52,6 +57,12 @@ pub fn run_turn(session_id: &str, message: &str, cwd: &Path) -> Result<TurnResul
         ));
     }
 
+    // Prepend soul/memory context to the first message of a new session.
+    let full_message = match soul_context {
+        Some(ctx) if !ctx.is_empty() => format!("{ctx}{message}"),
+        _ => message.to_string(),
+    };
+
     let mut cmd = Command::new("claude");
     cmd.env("PATH", &path);
     cmd.arg("-p");
@@ -59,7 +70,7 @@ pub fn run_turn(session_id: &str, message: &str, cwd: &Path) -> Result<TurnResul
         cmd.arg("--resume");
         cmd.arg(session_id);
     }
-    cmd.arg(message);
+    cmd.arg(&full_message);
     cmd.current_dir(cwd);
 
     let output = cmd.output().map_err(|e| format!("Failed to spawn claude: {e}"))?;
