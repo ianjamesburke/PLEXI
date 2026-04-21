@@ -124,9 +124,13 @@ impl AgentPane {
             .name(format!("agent-pane-{id}"))
             .spawn(move || {
                 while let Ok(msg) = turn_rx.recv() {
+                    log::info!("agent_pane {id}: running turn, session={:?}", msg.session_id);
                     let result = agent_turn::run_turn(&msg.session_id, &msg.message, &msg.cwd);
+                    match &result {
+                        Ok(t) => log::info!("agent_pane {id}: turn ok, session={:?}, response={:?}", t.session_id, t.response),
+                        Err(e) => log::error!("agent_pane {id}: turn error: {e}"),
+                    }
                     if result_tx.send(WorkerResult { response: result }).is_err() {
-                        // UI side dropped — exit thread cleanly.
                         break;
                     }
                 }
@@ -159,6 +163,7 @@ impl AgentPane {
         if message.is_empty() {
             return;
         }
+        log::info!("agent_pane {}: submit: {:?}", self.id, message);
         self.input_buf.clear();
         self.transcript.push(format!("You: {message}"));
 
@@ -190,6 +195,7 @@ impl AgentPane {
         while let Ok(result) = self.result_rx.try_recv() {
             got_any = true;
             self.in_flight = false;
+            self.needs_focus = true; // re-focus input after response arrives
             match result.response {
                 Ok(turn) => {
                     // Persist the (possibly new) session ID.
@@ -300,7 +306,7 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                     pane.needs_focus = false;
                 }
 
-                let enter_pressed = resp.has_focus()
+                let enter_pressed = resp.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let button_clicked = ui
                     .add_enabled(
