@@ -27,7 +27,7 @@ pub(crate) fn file_icon_kind(entry: &Entry) -> FileIconKind {
         return FileIconKind::Generic;
     };
     match ext.as_str() {
-        "mp3" | "wav" | "flac" | "ogg" | "aiff" | "aif" | "m4a" => return FileIconKind::Audio,
+        "mp3" | "wav" | "flac" | "ogg" | "aiff" | "aif" | "m4a" => FileIconKind::Audio,
         "md" | "markdown" | "mdx" | "rst" => FileIconKind::Markdown,
         "txt" | "rtf" | "log" => FileIconKind::Text,
         "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "go" | "java" | "swift" | "kt" | "c" | "h"

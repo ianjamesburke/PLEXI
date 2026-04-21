@@ -66,8 +66,7 @@ impl HeadlessRenderer {
                 pb.move_to(from.x, from.y);
                 pb.line_to(to.x, to.y);
                 let Some(path) = pb.finish() else { return };
-                let mut stroke_style = Stroke::default();
-                stroke_style.width = stroke.width;
+                let stroke_style = Stroke { width: stroke.width, ..Stroke::default() };
                 pixmap.stroke_path(
                     &path,
                     &solid_paint(&stroke.color),
@@ -259,8 +258,7 @@ impl HeadlessRenderer {
         pb.move_to(x1, y1);
         pb.line_to(x2, y2);
         let Some(path) = pb.finish() else { return };
-        let mut stroke = Stroke::default();
-        stroke.width = width;
+        let stroke = Stroke { width, ..Stroke::default() };
         pixmap.stroke_path(&path, &solid_paint(&color), &stroke, Transform::identity(), None);
     }
 

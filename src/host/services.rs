@@ -13,15 +13,6 @@ pub trait EventSink: Send {
     fn emit(&mut self, effect: &HostEffect);
 }
 
-/// No-op sink — used in Layer-2 tests that don't care about event observation.
-#[cfg(test)]
-pub struct NoopEventSink;
-
-#[cfg(test)]
-impl EventSink for NoopEventSink {
-    fn emit(&mut self, _effect: &HostEffect) {}
-}
-
 /// Append-only JSONL sink. One line per `HostEffect` written to the configured
 /// path. Production wires this to `~/.plexi-v3/events.jsonl` so every command
 /// path leaves a durable audit trail and the Runs palette + future agent
@@ -81,33 +72,6 @@ impl EventSink for FileEventSink {
             }
             Err(e) => log::warn!("FileEventSink serialize failed: {e}"),
         }
-    }
-}
-
-/// Accumulates all emitted effects into a vec. Tests only.
-#[cfg(test)]
-pub struct VecEventSink {
-    pub events: Vec<HostEffect>,
-}
-
-#[cfg(test)]
-impl VecEventSink {
-    pub fn new() -> Self {
-        Self { events: Vec::new() }
-    }
-}
-
-#[cfg(test)]
-impl Default for VecEventSink {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl EventSink for VecEventSink {
-    fn emit(&mut self, effect: &HostEffect) {
-        self.events.push(effect.clone());
     }
 }
 
@@ -208,55 +172,6 @@ impl NetService for UreqNetService {
     }
 }
 
-/// Tests only — URL → body map. Unknown URLs return 404.
-#[cfg(test)]
-pub struct MockNetService {
-    pub responses: HashMap<String, String>,
-}
-
-#[cfg(test)]
-impl MockNetService {
-    pub fn new() -> Self {
-        Self { responses: HashMap::new() }
-    }
-
-    pub fn with(mut self, url: &str, body: &str) -> Self {
-        self.responses.insert(url.to_string(), body.to_string());
-        self
-    }
-}
-
-#[cfg(test)]
-impl Default for MockNetService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl NetService for MockNetService {
-    fn http(
-        &self,
-        _method: &str,
-        url: &str,
-        _headers: &HashMap<String, String>,
-        _body: Option<&str>,
-    ) -> HttpResponse {
-        match self.responses.get(url) {
-            Some(body) => HttpResponse {
-                status: 200,
-                body: body.clone(),
-                error: None,
-            },
-            None => HttpResponse {
-                status: 404,
-                body: String::new(),
-                error: Some(format!("no mock for {url}")),
-            },
-        }
-    }
-}
-
 // ── HostServices aggregate ─────────────────────────────────────────────────
 
 pub struct HostServices {
@@ -274,13 +189,7 @@ impl HostServices {
         }
     }
 
-    /// Test wiring — accumulates effects for assertion.
-    #[cfg(test)]
-    pub fn mock() -> Self {
-        Self {
-            event_sink: Box::new(VecEventSink::new()),
-        }
-    }
+
 }
 
 impl Default for HostServices {

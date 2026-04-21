@@ -363,11 +363,8 @@ impl App for ProcessApp {
         });
 
         // Drain async HTTP responses from background request threads.
-        loop {
-            match self.http_rx.try_recv() {
-                Ok(event) => self.outbound_events.push_back(event),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(event) = self.http_rx.try_recv() {
+            self.outbound_events.push_back(event);
         }
 
         let new_cmds = self.drain_draw_commands();

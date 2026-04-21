@@ -534,10 +534,8 @@ impl eframe::App for PlexiApp {
                 .and_then(|pane| {
                     if let Some(t) = pane.as_terminal() {
                         t.name.clone()
-                    } else if let Some(a) = pane.as_app() {
-                        Some(a.name.clone())
                     } else {
-                        None
+                        pane.as_app().map(|a| a.name.clone())
                     }
                 });
             let title = match pane_name {

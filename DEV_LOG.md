@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-20 — [DECISION] Where Were We snapshot
+Fresh session orientation. Last committed work: dead code sweep (PlexiIQ removal, zero warnings). v3 is in clean state — only `Cargo.lock` modified in worktree. Open work: `V3_STEP_9_FOLLOWUPS.md` tracks remaining brokers (PipeSend peer routing, RunUpdate round-trip, media handlers, FD CLOEXEC audit) before v3.0.0 tag.
+**Progress:** All 12 refactor steps done; HTTP broker live; CI gate real; 74+ tests green.
+**Open:** Step-9 follow-ups (see `V3_STEP_9_FOLLOWUPS.md`), then tag v3.0.0.
+
 ## 2026-04-20 — [CHANGED] Dead code sweep: PlexiIQ removal + zero-warning cleanup (→ v3)
 Removed PlexiIQ agent feature entirely from v3 (preserved on `feature/plexi-iq` branch at d3c4c1f). Removed `Pane::Agent`, `AgentPane`, `TurnMsg`, `spawn_agent_pane`, agent workspace restore, `Action::SpawnAgentPane`, and the agent rendering block in `tiling.rs` (~175 LOC). Removed 8 dead `HostCommand` variants, 7 dead `HostEffect` variants, `PermissionsLog`/`PermissionDecision` structs (permissions.jsonl persistence never wired), `AppReply` enum (superseded by `DrawCommand::Ready`), `FsService`/`SecretsService`/`SpawnService` trait objects (zero production readers after STEP-5 rework), and all module-level `#[allow(dead_code)]` from `main.rs`. 1,311 lines deleted, 0 warnings, 0 errors.
 **Breaks if:** `cargo build` produces any warning (dead_code allows are gone — they were the only gate). PlexiIQ agent pane survives on v3 (it shouldn't — feature/plexi-iq is the preservation branch).
