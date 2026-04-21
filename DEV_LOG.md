@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-20 — [CHANGED] lava-opus app shipped (examples/lava-opus/)
+Buoyancy-driven blob simulation with fake-metaball blending via `DrawCommand::Circle` layering. Named "lava-opus" (not "lava-lamp") to avoid collision with a second lava app in flight. Physics: temperature-driven rise/fall, viscous drag, wall repulsion, soft bounce. Render: glow halo + solid core + specular highlight per blob; translucent bridge circles between nearby pairs fake the metaball merge look. Click to inject heat. Installed and verified at `~/.plexi-v3/apps/lava-opus/`.
+**Breaks if:** app registry fails to load `lava-opus` (id mismatch in manifest.toml — it must be `id = "lava-opus"`). Blobs teleport to top/bottom edge (bounds clamp regressed). Bridge circles disappear entirely between nearby blobs (MERGE_FACTOR or bridge alpha logic changed).
+
 ## 2026-04-20 — [DECISION] Where Were We snapshot
 Fresh session orientation. Last committed work: dead code sweep (PlexiIQ removal, zero warnings). v3 is in clean state — only `Cargo.lock` modified in worktree. Open work: `V3_STEP_9_FOLLOWUPS.md` tracks remaining brokers (PipeSend peer routing, RunUpdate round-trip, media handlers, FD CLOEXEC audit) before v3.0.0 tag.
 **Progress:** All 12 refactor steps done; HTTP broker live; CI gate real; 74+ tests green.
