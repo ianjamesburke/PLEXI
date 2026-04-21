@@ -3,9 +3,13 @@
 /// Uses `claude -p --output-format stream-json --verbose` to stream responses
 /// line by line. Partial text chunks and tool-use events are sent back via
 /// a `Sender<WorkerEvent>` so the UI can update in real time.
+///
+/// `child_slot` is shared with the owning AgentPane so it can kill the subprocess
+/// mid-turn for interruption.
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 
 pub struct TurnResult {
@@ -40,6 +44,7 @@ pub fn run_turn(
     cwd: &Path,
     soul_context: Option<String>,
     event_tx: mpsc::SyncSender<WorkerEvent>,
+    child_slot: Arc<Mutex<Option<std::process::Child>>>,
 ) -> Result<(), String> {
     let path = augmented_path();
 
@@ -50,9 +55,9 @@ pub fn run_turn(
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !found {
-        let _ = event_tx.send(WorkerEvent::Done(Err(format!(
-            "claude not found on PATH — install Claude Code CLI"
-        ))));
+        let _ = event_tx.send(WorkerEvent::Done(Err(
+            "claude not found on PATH — install Claude Code CLI".into(),
+        )));
         return Ok(());
     }
 
@@ -78,8 +83,14 @@ pub fn run_turn(
 
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn claude: {e}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
-    let reader = BufReader::new(stdout);
 
+    // Store child in the shared slot so the pane can kill it to interrupt.
+    {
+        let mut slot = child_slot.lock().unwrap();
+        *slot = Some(child);
+    }
+
+    let reader = BufReader::new(stdout);
     let mut accumulated_text = String::new();
     let mut final_session_id = session_id.to_string();
     let mut is_error = false;
@@ -88,6 +99,7 @@ pub fn run_turn(
     for line in reader.lines() {
         let line = match line {
             Ok(l) if l.trim().is_empty() => continue,
+            // stdout closed — either process killed (interrupt) or normal EOF
             Ok(l) => l,
             Err(_) => break,
         };
@@ -99,7 +111,6 @@ pub fn run_turn(
 
         match v["type"].as_str() {
             Some("assistant") => {
-                // Extract text content and any tool_use blocks.
                 if let Some(content) = v["message"]["content"].as_array() {
                     for block in content {
                         match block["type"].as_str() {
@@ -111,7 +122,6 @@ pub fn run_turn(
                             }
                             Some("tool_use") => {
                                 let name = block["name"].as_str().unwrap_or("tool").to_string();
-                                // Show a short preview of the input (first 60 chars of JSON).
                                 let input_preview = block["input"]
                                     .as_object()
                                     .and_then(|o| o.values().next())
@@ -136,12 +146,14 @@ pub fn run_turn(
         }
     }
 
-    let _ = child.wait();
+    // Reclaim the child and wait to avoid zombies.
+    let child_opt = child_slot.lock().unwrap().take();
+    if let Some(mut c) = child_opt {
+        let _ = c.wait();
+    }
 
     let done = if is_error {
-        WorkerEvent::Done(Err(
-            final_result.unwrap_or_else(|| "unknown error".to_string())
-        ))
+        WorkerEvent::Done(Err(final_result.unwrap_or_else(|| "unknown error".to_string())))
     } else {
         WorkerEvent::Done(Ok(TurnResult {
             response: if accumulated_text.is_empty() {

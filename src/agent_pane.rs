@@ -1,12 +1,21 @@
 /// Agent pane: chats with `claude -p` using streaming JSON for real-time output.
 ///
-/// Streaming lets the UI show text as it arrives and surface tool use in-line.
-/// A pending_message queue lets the user type and submit the next message while
-/// a turn is still in flight — it auto-sends when the current turn completes.
+/// Layout (top→bottom):
+///   Header: "IQ  workspace-name"
+///   Status: animated "working..." when in-flight (top of content, always visible)
+///   Transcript: scrollable, sticks to bottom
+///   Input: multiline — Enter sends, Shift+Enter inserts newline
+///
+/// Interruption: submitting while in-flight kills the subprocess and dispatches
+/// the new message immediately. The cancelled turn is discarded silently.
+///
+/// Large pastes (>300 chars or multiline) appear collapsed in the transcript as
+/// "You: [pasted text — N chars]" — the full text is still sent to the agent.
 use crate::agent_turn::{self, WorkerEvent};
 use crate::theme::Colors;
 use crate::tiling::PaneId;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::thread;
 
@@ -120,10 +129,14 @@ pub struct AgentPane {
     iq_dir: Option<PathBuf>,
     pub font_size: f32,
     needs_focus: bool,
-    /// Message queued while a turn is in flight — auto-sends when turn completes.
+    /// Message queued to send immediately after current turn completes.
     pending_message: Option<String>,
-    /// True when the last transcript line is a streaming in-progress agent line.
+    /// True when the last transcript line is the live streaming agent response.
     streaming_active: bool,
+    /// True when we killed the current turn intentionally — suppresses the error display.
+    interrupting: bool,
+    /// Shared with the worker so we can kill the subprocess to interrupt a turn.
+    child_slot: Arc<Mutex<Option<std::process::Child>>>,
 
     turn_tx: Option<mpsc::SyncSender<WorkerMsg>>,
     event_rx: mpsc::Receiver<WorkerEvent>,
@@ -140,6 +153,9 @@ impl AgentPane {
             (String::new(), Vec::new())
         };
 
+        let child_slot: Arc<Mutex<Option<std::process::Child>>> = Arc::new(Mutex::new(None));
+        let child_slot_worker = Arc::clone(&child_slot);
+
         let (turn_tx, turn_rx) = mpsc::sync_channel::<WorkerMsg>(1);
         let (event_tx, event_rx) = mpsc::sync_channel::<WorkerEvent>(64);
 
@@ -154,6 +170,7 @@ impl AgentPane {
                         &msg.cwd,
                         msg.soul_context,
                         event_tx.clone(),
+                        Arc::clone(&child_slot_worker),
                     ) {
                         log::error!("agent_pane {id}: run_turn error: {e}");
                     }
@@ -173,6 +190,8 @@ impl AgentPane {
             needs_focus: true,
             pending_message: None,
             streaming_active: false,
+            interrupting: false,
+            child_slot,
             turn_tx: Some(turn_tx),
             event_rx,
         }
@@ -180,7 +199,19 @@ impl AgentPane {
 
     fn dispatch(&mut self, message: String) {
         log::info!("agent_pane {}: submit {:?}", self.id, message);
-        self.transcript.push(format!("You: {message}"));
+
+        // Show large/multiline pastes collapsed — full text still sent to the agent.
+        let display = if message.len() > 300 || message.contains('\n') {
+            let lines = message.lines().count();
+            if lines > 1 {
+                format!("You: [pasted text — {lines} lines, {} chars]", message.len())
+            } else {
+                format!("You: [pasted text — {} chars]", message.len())
+            }
+        } else {
+            format!("You: {message}")
+        };
+        self.transcript.push(display);
 
         let soul_context = if self.session_id.is_empty() {
             self.iq_dir.as_deref().map(load_soul_context)
@@ -208,6 +239,17 @@ impl AgentPane {
         }
     }
 
+    /// Kill the current subprocess. Done(Err) will arrive; `interrupting` suppresses
+    /// the error display. `pending_message` auto-dispatches on Done.
+    fn cancel_current_turn(&mut self) {
+        self.interrupting = true;
+        if let Ok(mut slot) = self.child_slot.lock() {
+            if let Some(ref mut child) = *slot {
+                let _ = child.kill();
+            }
+        }
+    }
+
     pub fn submit_input(&mut self) {
         let message = self.input_buf.trim().to_string();
         if message.is_empty() {
@@ -216,15 +258,15 @@ impl AgentPane {
         self.input_buf.clear();
 
         if self.in_flight {
-            // Queue it — will auto-send when current turn completes.
+            // Interrupt current turn, queue new message — dispatches when Done arrives.
+            self.cancel_current_turn();
             self.pending_message = Some(message);
         } else {
             self.dispatch(message);
         }
     }
 
-    /// Drain streaming events from the background thread.
-    /// Returns true if the caller should request a repaint.
+    /// Drain streaming events. Returns true if caller should request a repaint.
     pub fn drain_results(&mut self) -> bool {
         let mut changed = false;
 
@@ -233,7 +275,6 @@ impl AgentPane {
             match event {
                 WorkerEvent::Chunk(text) => {
                     if self.streaming_active {
-                        // Update the last line in place.
                         if let Some(last) = self.transcript.last_mut() {
                             *last = format!("Agent: {text}");
                         }
@@ -248,8 +289,7 @@ impl AgentPane {
                     } else {
                         format!("  ↳ {name}: {input_preview}")
                     };
-                    // Insert tool-use line before the streaming agent line so it
-                    // stays visually above the response text.
+                    // Insert before the streaming response so tools stay above reply text.
                     if self.streaming_active {
                         let idx = self.transcript.len().saturating_sub(1);
                         self.transcript.insert(idx, label);
@@ -262,12 +302,15 @@ impl AgentPane {
                     self.streaming_active = false;
                     self.needs_focus = true;
 
+                    let was_interrupting = self.interrupting;
+                    self.interrupting = false;
+
                     match result {
                         Ok(turn) => {
                             if !turn.session_id.is_empty() && self.session_id != turn.session_id {
                                 self.session_id = turn.session_id.clone();
                             }
-                            // If no chunks arrived (e.g. error path), push the result text.
+                            // Push response text if no chunks arrived (e.g. very short reply).
                             if !self.transcript.last().map(|l| l.starts_with("Agent:")).unwrap_or(false) {
                                 if !turn.response.is_empty() {
                                     self.transcript.push(format!("Agent: {}", turn.response));
@@ -281,11 +324,14 @@ impl AgentPane {
                             }
                         }
                         Err(e) => {
-                            self.transcript.push(format!("Error: {e}"));
+                            // Suppress error display when we killed the turn intentionally.
+                            if !was_interrupting {
+                                self.transcript.push(format!("Error: {e}"));
+                            }
                         }
                     }
 
-                    // Auto-send queued message.
+                    // Auto-send queued message (from pending or interrupt).
                     if let Some(pending) = self.pending_message.take() {
                         self.dispatch(pending);
                     }
@@ -304,13 +350,14 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
     let text_color = colors.text_primary;
     let dim_color = colors.text_dim;
     let accent = colors.accent;
-    let tool_color = egui::Color32::from_rgb(0x89, 0xb4, 0xfa); // blue
+    let tool_color = egui::Color32::from_rgb(0x89, 0xb4, 0xfa);
+    let error_color = egui::Color32::from_rgb(0xf3, 0x8b, 0xa8);
 
     egui::Frame::new()
         .fill(bg)
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
-            // Header
+            // ── Header ──────────────────────────────────────────────────────
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("IQ").size(11.0).color(accent));
                 if let Some(ref dir) = pane.iq_dir {
@@ -322,35 +369,48 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                         );
                     }
                 }
-                if pane.in_flight {
-                    let dots = match (ui.input(|i| i.time) * 1.5) as usize % 4 {
-                        0 => "   ", 1 => ".  ", 2 => ".. ", _ => "...",
-                    };
+            });
+
+            // ── Working status — top of content, animated ────────────────────
+            if pane.in_flight {
+                let t = ui.input(|i| i.time);
+                let dot_count = (t * 1.5) as usize % 4;
+                let dots = &"..."[..dot_count];
+                let spaces = &"   "[..3 - dot_count];
+                let status = format!("working{dots}{spaces}");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("  working{dots}"))
+                        egui::RichText::new(status)
                             .size(10.0)
                             .italics()
                             .color(dim_color),
                     );
-                }
-                if pane.pending_message.is_some() {
-                    ui.label(egui::RichText::new("  [queued]").size(10.0).color(dim_color));
-                }
-            });
+                    if pane.pending_message.is_some() {
+                        ui.label(
+                            egui::RichText::new("· next queued")
+                                .size(10.0)
+                                .color(dim_color),
+                        );
+                    }
+                });
+            }
 
             ui.add_space(4.0);
 
-            let input_height = 48.0;
-            let available = ui.available_height() - input_height - 8.0;
+            // ── Transcript ───────────────────────────────────────────────────
+            // Reserve space for separator + input at bottom.
+            let input_reserve = pane.font_size * 3.0 + 32.0;
+            let avail = ui.available_height() - input_reserve;
             egui::ScrollArea::vertical()
-                .max_height(available.max(40.0))
+                .max_height(avail.max(40.0))
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     for line in &pane.transcript {
                         let (color, size) = if line.starts_with("You: ") {
                             (text_color, pane.font_size)
                         } else if line.starts_with("Error:") {
-                            (egui::Color32::from_rgb(0xf3, 0x8b, 0xa8), pane.font_size)
+                            (error_color, pane.font_size)
                         } else if line.starts_with("  ↳ ") {
                             (tool_color, pane.font_size - 1.5)
                         } else {
@@ -365,11 +425,16 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
             ui.separator();
             ui.add_space(4.0);
 
+            // ── Input ────────────────────────────────────────────────────────
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(">").size(12.0).color(accent));
-                let input = egui::TextEdit::singleline(&mut pane.input_buf)
+                let prompt_label = if pane.in_flight { "↯" } else { ">" };
+                let prompt_color = if pane.in_flight { error_color } else { accent };
+                ui.label(egui::RichText::new(prompt_label).size(12.0).color(prompt_color));
+
+                let input = egui::TextEdit::multiline(&mut pane.input_buf)
+                    .desired_rows(2)
                     .desired_width(ui.available_width() - 50.0)
-                    .hint_text("Message…")
+                    .hint_text("Message…  (Shift+Enter for newline)")
                     .font(egui::FontId::monospace(pane.font_size))
                     .text_color(text_color)
                     .frame(false);
@@ -380,20 +445,23 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                     pane.needs_focus = false;
                 }
 
-                let enter_pressed =
-                    resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let send_label = if pane.in_flight { "Queue" } else { "Send" };
+                // Enter without Shift = send/interrupt. Shift+Enter inserts newline.
+                let enter_pressed = resp.has_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+
+                let send_label = if pane.in_flight { "Interrupt" } else { "Send" };
                 let button_clicked = ui
                     .add_enabled(
                         !pane.input_buf.trim().is_empty(),
                         egui::Button::new(
-                            egui::RichText::new(send_label).size(11.0).color(accent),
+                            egui::RichText::new(send_label).size(11.0).color(prompt_color),
                         ),
                     )
                     .clicked();
 
                 if enter_pressed || button_clicked {
                     pane.submit_input();
+                    pane.needs_focus = true;
                 }
             });
         });
