@@ -119,6 +119,6 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 - Before SSH/networking setup, ask if machines are on the same LAN or remote. Before any multi-step infra task, clarify topology first.
 - When the user reports a bug, fix what they asked for first. Don't pivot to QA, refactoring, or tangential improvements until the primary request is resolved.
 - When the user provides multiple distinct ideas, file them separately. Don't combine unrelated concepts.
-- never write allow dead of code. alway do the work to clean the code base.
+- Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Always do the work: delete unused code, wire it up, or move it to a feature-flagged module. If fixing a warning takes a long time, that's the job — do not paper over it with an allow attribute.
 - always run cargo build after work to make sure it passes.
 

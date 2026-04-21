@@ -1,6 +1,6 @@
 [app]
-id = "lava-opus"
-name = "Lava Opus"
+id = "lava-lamp"
+name = "Lava Lamp"
 version = "0.1.0"
 description = "Fluid blob simulation with fake-metaball blending — demonstrates DrawCommand::Circle layering."
 entry = "lava_lamp.py"
