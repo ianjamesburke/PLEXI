@@ -29,12 +29,11 @@ If a doc outside these contradicts them, the doc is wrong. Fix or delete it.
 
 ## Branches
 
-- `main` — stable releases.
-- `beta` — staging.
-- `alpha` — frozen v2.x tree, tagged `v2-last`, retired. Do not land new work here.
-- `v3` — active development for the v3.0 clean cut. All feature branches cut from `v3`, worked in `.claude/worktrees/`, merged back via PR.
+- `alpha` — active development. All PRs land here.
+- `beta` — staging/release channel. Promoted from alpha when ready.
+- `main` — stable releases only.
 
-Feature branch naming: `feature/<issue-number>-short-description`. Sub-agent workflow: `isolation: "worktree"` off `v3`, PR back to `v3`. Never push directly to long-lived branches.
+Feature branch naming: `feature/<issue-number>-short-description`. Sub-agent workflow: `isolation: "worktree"` off `alpha`, PR back to `alpha`. Never push directly to `main` or `beta`.
 
 ## GitHub Issue Labels
 
@@ -63,13 +62,13 @@ Each app is a subdirectory with `manifest.toml` and an executable entry point. I
 `just install` runs `cargo bundle --release`, copies the `.app` to `/Applications`, extracts the binary to `/usr/local/bin/plexi`, then runs `lsregister -f <bundle>` and `pbs -update` to refresh macOS Services.
 
 **After every completed code change, install for the active branch** before reporting the task complete:
-- `v3` → `just install-v3`
+- `alpha` → `just install-alpha`
 - `main` → `just install`
 
 ## Logging
 
 Build-specific log file:
-- v3: `~/.plexi-v3/plexi.log`
+- Alpha: `~/.plexi-alpha/plexi.log`
 - Stable: `~/.plexi/plexi.log`
 
 Rotates to `plexi.log.1` at 10 MB. Level set in `config.toml` (`error | warn | info | debug`). Third-party crates clamped to `warn`.
