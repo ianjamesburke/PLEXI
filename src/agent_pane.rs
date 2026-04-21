@@ -342,8 +342,14 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                         ui.add_space(2.0);
                     }
                     if pane.in_flight {
+                        let dots = match (ui.input(|i| i.time) * 1.5) as usize % 4 {
+                            0 => "   ",
+                            1 => ".  ",
+                            2 => ".. ",
+                            _ => "...",
+                        };
                         ui.label(
-                            egui::RichText::new("working…")
+                            egui::RichText::new(format!("working{dots}"))
                                 .size(pane.font_size - 1.0)
                                 .italics()
                                 .color(dim_color),

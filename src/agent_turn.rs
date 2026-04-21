@@ -1,27 +1,15 @@
 /// Synchronous turn runner for the Claude CLI backend.
 ///
-/// Calls `claude -p --resume <session_id> "<message>"` as a subprocess.
-/// On the first turn (no session_id), runs without `--resume` and parses
-/// the new session ID from the output header that the Claude CLI prints.
+/// Uses `claude -p --output-format json` to get structured output including
+/// the session_id needed for `--resume` on subsequent turns.
 use std::path::Path;
 use std::process::Command;
 
-/// Result of a completed turn.
 pub struct TurnResult {
-    /// The assistant's response text.
     pub response: String,
-    /// The session ID to persist (may be the same as the one passed in, or
-    /// a freshly-allocated one for the first turn).
     pub session_id: String,
 }
 
-/// Run one conversational turn against the Claude CLI.
-///
-/// - `session_id`: empty string on the first turn; non-empty to resume.
-/// - `message`: the user's message text.
-/// - `cwd`: working directory for the subprocess.
-///
-/// Returns `Ok(TurnResult)` on success, `Err(String)` on failure.
 /// Build an augmented PATH that includes common Claude CLI install locations.
 /// macOS GUI bundles inherit a minimal PATH (/usr/bin:/bin) that misses
 /// user-local installs like ~/.local/bin and /usr/local/bin.
@@ -44,7 +32,6 @@ pub fn run_turn(
 ) -> Result<TurnResult, String> {
     let path = augmented_path();
 
-    // Locate claude before spawning so we give a clear error if absent.
     let found = Command::new("which")
         .arg("claude")
         .env("PATH", &path)
@@ -57,7 +44,6 @@ pub fn run_turn(
         ));
     }
 
-    // Prepend soul/memory context to the first message of a new session.
     let full_message = match soul_context {
         Some(ctx) if !ctx.is_empty() => format!("{ctx}{message}"),
         _ => message.to_string(),
@@ -66,6 +52,8 @@ pub fn run_turn(
     let mut cmd = Command::new("claude");
     cmd.env("PATH", &path);
     cmd.arg("-p");
+    cmd.arg("--output-format");
+    cmd.arg("json");
     if !session_id.is_empty() {
         cmd.arg("--resume");
         cmd.arg(session_id);
@@ -75,41 +63,31 @@ pub fn run_turn(
 
     let output = cmd.output().map_err(|e| format!("Failed to spawn claude: {e}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("claude exited with error: {stderr}"));
-    }
-
     let raw = String::from_utf8_lossy(&output.stdout).into_owned();
-
-    // The Claude CLI `--print` mode emits the response directly. When a new
-    // session is created the CLI writes a header line:
-    //   > Session ID: <id>
-    // before the response body. We parse that out if present.
-    let (new_session_id, response) = parse_output(&raw, session_id);
-
-    Ok(TurnResult {
-        response,
-        session_id: new_session_id,
-    })
+    parse_json_output(&raw, session_id)
 }
 
-/// Extract the session ID header (if present) and return (session_id, body).
-///
-/// Claude CLI `-p` mode may print a line like:
-///   `> Session ID: abc123`
-/// as the first line of stdout. We strip it and use it as the session ID.
-/// If no such line is found, we keep the caller's existing `session_id`.
-fn parse_output(raw: &str, existing_session_id: &str) -> (String, String) {
-    let session_prefix = "> Session ID: ";
-    let mut lines = raw.lines();
-    if let Some(first) = lines.next() {
-        if let Some(id) = first.strip_prefix(session_prefix) {
-            let body: Vec<&str> = lines.collect();
-            return (id.trim().to_string(), body.join("\n").trim().to_string());
-        }
+/// Parse the JSON output from `claude -p --output-format json`.
+/// Extracts `result` (response text) and `session_id`.
+fn parse_json_output(raw: &str, existing_session_id: &str) -> Result<TurnResult, String> {
+    let v: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|e| format!("Failed to parse claude JSON output: {e}\nRaw: {raw}"))?;
+
+    let session_id = v["session_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(existing_session_id)
+        .to_string();
+
+    // `is_error` means the API returned an error (e.g. credit balance) but
+    // the CLI itself exited cleanly. Surface the result text as an error.
+    if v["is_error"].as_bool().unwrap_or(false) {
+        let msg = v["result"].as_str().unwrap_or("unknown error").to_string();
+        return Err(msg);
     }
-    (existing_session_id.to_string(), raw.trim().to_string())
+
+    let response = v["result"].as_str().unwrap_or("").trim().to_string();
+    Ok(TurnResult { response, session_id })
 }
 
 #[cfg(test)]
@@ -117,26 +95,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_output_with_session_header() {
-        let raw = "> Session ID: abc123\nHello, world!";
-        let (id, body) = parse_output(raw, "old");
-        assert_eq!(id, "abc123");
-        assert_eq!(body, "Hello, world!");
+    fn parse_success_response() {
+        let raw = r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello!","session_id":"abc-123"}"#;
+        let r = parse_json_output(raw, "").unwrap();
+        assert_eq!(r.session_id, "abc-123");
+        assert_eq!(r.response, "Hello!");
     }
 
     #[test]
-    fn parse_output_without_session_header() {
-        let raw = "Hello, world!";
-        let (id, body) = parse_output(raw, "existing-id");
-        assert_eq!(id, "existing-id");
-        assert_eq!(body, "Hello, world!");
+    fn parse_error_response() {
+        let raw = r#"{"type":"result","is_error":true,"result":"Credit balance is too low","session_id":"fe56a3d8"}"#;
+        let err = parse_json_output(raw, "").unwrap_err();
+        assert!(err.contains("Credit balance"));
     }
 
     #[test]
-    fn parse_output_multiline_body() {
-        let raw = "> Session ID: new-id\nLine one\nLine two\n";
-        let (id, body) = parse_output(raw, "old");
-        assert_eq!(id, "new-id");
-        assert_eq!(body, "Line one\nLine two");
+    fn fallback_to_existing_session_id() {
+        let raw = r#"{"type":"result","is_error":false,"result":"Hi","session_id":""}"#;
+        let r = parse_json_output(raw, "old-id").unwrap();
+        assert_eq!(r.session_id, "old-id");
     }
 }

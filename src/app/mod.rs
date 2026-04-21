@@ -929,6 +929,10 @@ impl eframe::App for PlexiApp {
                                             is_focused: true,
                                         };
                                         a.runtime.ui(ui, &app_ctx);
+                                    } else if let Some(agent) = pane.as_agent_mut() {
+                                        if crate::agent_pane::render_and_drain(ui, agent, &self.colors) {
+                                            ui.ctx().request_repaint();
+                                        }
                                     }
                                 }
 
