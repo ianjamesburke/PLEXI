@@ -12,7 +12,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
-from plexi_sdk import App, RenderContext, dim
+from plexi_sdk import App, RenderContext
 
 # ── Constants ────────────────────────────────────────────────────────────────
 NUM_BLOBS      = 7
@@ -142,5 +142,55 @@ def _render_bridge(ctx: RenderContext, a: Blob, b: Blob, proximity: float) -> No
         col = f"#{rc:02x}{gc:02x}{bc:02x}"
         ctx.circle(cx, cy, r, _dim_alpha(col, base_alpha))
 
+class LavaLampApp(App):
+
+    def on_init(self, ctx: RenderContext) -> None:
+        w, h = ctx.w, ctx.h
+        self.blobs: list[Blob] = []
+        for i in range(NUM_BLOBS):
+            r     = random.uniform(22.0, 48.0)
+            x     = random.uniform(w * 0.2, w * 0.8)
+            y     = random.uniform(h * 0.2, h * 0.9)
+            color = PALETTE[i % len(PALETTE)]
+            self.blobs.append(Blob(x, y, r, color))
+
+    def on_render(self, ctx: RenderContext) -> None:
+        dt = ctx.elapsed
+        w, h = ctx.w, ctx.h
+
+        for blob in self.blobs:
+            blob.update(dt, w, h)
+
+        ctx.clear("#0a0a1a")
+
+        blobs = self.blobs
+        n = len(blobs)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = blobs[i], blobs[j]
+                dx   = b.x - a.x
+                dy   = b.y - a.y
+                dist = math.sqrt(dx * dx + dy * dy) or 0.001
+                threshold = (a.r + b.r) * MERGE_FACTOR
+                if dist < threshold:
+                    proximity = 1.0 - (dist / threshold)
+                    _render_bridge(ctx, a, b, proximity)
+
+        for blob in blobs:
+            _render_blob(ctx, blob)
+
+        ctx.emit.schedule_render(16)
+
+    def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
+        if not self.blobs:
+            return
+        nearest = min(
+            self.blobs,
+            key=lambda b: (b.x - x) ** 2 + (b.y - y) ** 2,
+        )
+        nearest.temp = min(1.0, nearest.temp + 0.5)
+        nearest.vy  -= 80.0
+
+
 if __name__ == "__main__":
-    pass  # entry point wired in Task 4
+    LavaLampApp().run()
