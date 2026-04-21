@@ -93,5 +93,54 @@ class Blob:
             self.vy = -abs(self.vy) * 0.3
         self.x = max(self.r, min(w - self.r, self.x))
 
+
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    """Parse #rrggbb → (r, g, b)."""
+    h = h.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _dim_alpha(hex_color: str, alpha: int) -> str:
+    """Return hex_color with a given alpha (0–255) as #rrggbbaa."""
+    r, g, b = _hex_to_rgb(hex_color)
+    return f"#{r:02x}{g:02x}{b:02x}{alpha:02x}"
+
+
+def _render_blob(ctx: RenderContext, b: Blob) -> None:
+    """Draw a blob as layered circles: glow → body → specular highlight."""
+    # Outer glow (large, very translucent)
+    ctx.circle(b.x, b.y, b.r * 1.55, _dim_alpha(b.color, 22))
+    # Mid halo
+    ctx.circle(b.x, b.y, b.r * 1.25, _dim_alpha(b.color, 45))
+    # Solid core
+    ctx.circle(b.x, b.y, b.r, b.color)
+    # Specular highlight
+    hi_r = max(3.0, b.r * 0.25)
+    ctx.circle(b.x - b.r * 0.30, b.y - b.r * 0.30, hi_r, _dim_alpha("#ffffff", 80))
+
+
+def _render_bridge(ctx: RenderContext, a: Blob, b: Blob, proximity: float) -> None:
+    """Draw translucent circles along the line between two nearby blobs.
+
+    proximity: 0.0 = just touching threshold, 1.0 = centers overlapping.
+    """
+    base_alpha = int(proximity * 70)
+    if base_alpha < 5:
+        return
+
+    for i in range(1, BRIDGE_STEPS):
+        t   = i / BRIDGE_STEPS
+        cx  = a.x + (b.x - a.x) * t
+        cy  = a.y + (b.y - a.y) * t
+        mid_boost = 1.0 - abs(t - 0.5) * 1.2
+        r   = (a.r * (1 - t) + b.r * t) * (0.55 + mid_boost * 0.35)
+        ra, ga, ba_ = _hex_to_rgb(a.color)
+        rb, gb, bb_ = _hex_to_rgb(b.color)
+        rc  = int(ra + (rb - ra) * t)
+        gc  = int(ga + (gb - ga) * t)
+        bc  = int(ba_ + (bb_ - ba_) * t)
+        col = f"#{rc:02x}{gc:02x}{bc:02x}"
+        ctx.circle(cx, cy, r, _dim_alpha(col, base_alpha))
+
 if __name__ == "__main__":
     pass  # entry point wired in Task 4
