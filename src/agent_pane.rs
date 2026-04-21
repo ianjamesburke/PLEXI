@@ -4,7 +4,7 @@
 ///   Header: "IQ  workspace-name"
 ///   Status: animated "working..." when in-flight (top of content, always visible)
 ///   Transcript: scrollable, sticks to bottom
-///   Input: multiline — Enter sends, Shift+Enter inserts newline
+///   Input: multiline — Enter sends, Shift+Enter inserts newline (no hint shown)
 ///
 /// Interruption: submitting while in-flight kills the subprocess and dispatches
 /// the new message immediately. The cancelled turn is discarded silently.
@@ -441,23 +441,20 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
 
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let send_label = if pane.in_flight { "⊘" } else { "↑" };
+                    let send_label = if pane.in_flight { "Stop" } else { "Send" };
                     button_clicked = ui
                         .add_enabled(
-                            !pane.input_buf.trim().is_empty(),
+                            !pane.input_buf.trim().is_empty() || pane.in_flight,
                             egui::Button::new(
-                                egui::RichText::new(send_label).size(13.0).color(prompt_color),
+                                egui::RichText::new(send_label).size(12.0).color(prompt_color),
                             ),
                         )
                         .clicked();
 
-                    let prompt_label = if pane.in_flight { "↯" } else { ">" };
-                    ui.label(egui::RichText::new(prompt_label).size(12.0).color(prompt_color));
-
                     let input = egui::TextEdit::multiline(&mut pane.input_buf)
                         .desired_rows(2)
                         .desired_width(f32::INFINITY)
-                        .hint_text("Message…  (Shift+Enter for newline)")
+                        .hint_text("Message…")
                         .font(egui::FontId::monospace(pane.font_size))
                         .text_color(text_color)
                         .frame(false);
