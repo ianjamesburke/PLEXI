@@ -758,6 +758,15 @@ impl PlexiApp {
                         app_id: Some(a.runtime.type_id().to_string()),
                         app_state: a.runtime.serialize_state(),
                     });
+                } else if let Some(ag) = pane.as_agent() {
+                    saved_panes.push(crate::workspace::SavedPane {
+                        id,
+                        kind: crate::workspace::SavedPaneKind::Agent,
+                        cwd: ag.cwd.clone(),
+                        name: None,
+                        app_id: None,
+                        app_state: None,
+                    });
                 }
             }
             saved_contexts.push(crate::workspace::SavedContext {

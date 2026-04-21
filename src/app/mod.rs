@@ -179,6 +179,18 @@ impl PlexiApp {
                         }
                     }
 
+                    if pane_entry.is_none()
+                        && matches!(
+                            saved_pane.kind,
+                            crate::workspace::SavedPaneKind::Agent
+                        )
+                    {
+                        let agent_cwd = saved_pane.cwd.clone();
+                        let pane =
+                            crate::agent_pane::AgentPane::new(saved_pane.id, agent_cwd);
+                        pane_entry = Some(crate::pane::Pane::Agent(Box::new(pane)));
+                    }
+
                     if pane_entry.is_none() {
                         let settings = Self::make_backend_settings(cwd, &colors);
                         if let Some(mut pane) = TerminalPane::new(

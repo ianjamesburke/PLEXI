@@ -52,6 +52,13 @@ impl Pane {
         }
     }
 
+    pub fn as_agent(&self) -> Option<&AgentPane> {
+        match self {
+            Pane::Agent(a) => Some(a),
+            _ => None,
+        }
+    }
+
     pub fn as_agent_mut(&mut self) -> Option<&mut AgentPane> {
         match self {
             Pane::Agent(a) => Some(a),
