@@ -97,6 +97,8 @@ pub struct AgentPane {
     pub in_flight: bool,
     /// Working directory scoped to this pane (used for the claude subprocess).
     pub cwd: PathBuf,
+    /// Font size — adjustable with Cmd+= / Cmd+-.
+    pub font_size: f32,
     /// True until the input bar has received its initial auto-focus on first render.
     needs_focus: bool,
 
@@ -144,6 +146,7 @@ impl AgentPane {
             input_buf: String::new(),
             in_flight: false,
             cwd,
+            font_size: 13.0,
             needs_focus: true,
             turn_tx: Some(turn_tx),
             result_rx,
@@ -268,17 +271,17 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                         let color = if line.starts_with("You: ") {
                             text_color
                         } else if line.starts_with("Error:") {
-                            egui::Color32::from_rgb(0xf3, 0x8b, 0xa8) // soft red
+                            egui::Color32::from_rgb(0xf3, 0x8b, 0xa8)
                         } else {
                             dim_color
                         };
-                        ui.label(egui::RichText::new(line).size(13.0).color(color));
+                        ui.label(egui::RichText::new(line).size(pane.font_size).color(color));
                         ui.add_space(2.0);
                     }
                     if pane.in_flight {
                         ui.label(
-                            egui::RichText::new("…thinking")
-                                .size(12.0)
+                            egui::RichText::new("working…")
+                                .size(pane.font_size - 1.0)
                                 .italics()
                                 .color(dim_color),
                         );
@@ -295,7 +298,7 @@ pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) {
                 let input = egui::TextEdit::singleline(&mut pane.input_buf)
                     .desired_width(ui.available_width() - 60.0)
                     .hint_text("Ask Claude…")
-                    .font(egui::TextStyle::Monospace)
+                    .font(egui::FontId::monospace(pane.font_size))
                     .text_color(text_color)
                     .frame(false);
                 let resp = ui.add(input);
