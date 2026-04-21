@@ -1,31 +1,14 @@
 Always confirm best practices by researching the docs.
 
-## Current Queue
+## Source of Truth for Project State
 
-> This section is live. Items are added when scoped, deleted when shipped. Nothing here is permanent — it's just what's next. When an item ships, remove it and log the decision in DEV_LOG.
+**CLAUDE.md does not track in-progress work or completion status.** It goes stale immediately and will mislead future sessions.
 
-- [x] **Headless PNG renderer** — `src/headless_renderer.rs`. Done: 3 tests pass (rect pixel assertion, text no-panic, document blank frame). No egui dependency.
-- [x] **HostModel rebuild** — Done: 26 host tests green (13 harness, 5 model, 8 pre-existing). Full command/effect set. No `todo!()`. Groups, capabilities, contexts, navigation all covered.
-- [x] **Wire harness** — Done: `Harness::render_to_png` wired. `agent_dev_loop_produces_png` test spawns snake, renders frame, asserts valid PNG with visible pixels.
-- [x] **inject_state + net.http brokering** — Done: 79 tests green. `PlexiEvent::InjectState`, `http_request`/`http_response` PGAP channel, `Harness::inject_state` + `mock_http` + pre-drain race fix, `emit.http_get()` in SDK. Wikipedia testable via inject_state (no key-pushing) and via mock_http (no network).
-- [x] **Cutover slice 1: launch_app_by_id → HostModel** — Done: `PlexiApp` holds `host: HostModel`, launch path routes `HostCommand::OpenPane` through `HostModel` and reads `(share, placement)` from the returned `PaneOpened` effect. `pane_ops::split_with_new_pane` drops the 3:1 hardcode, takes a `ShareRatio`. Manifest `initial_share` field wired with per-app defaults. 58 Rust tests green.
-- [x] **Cutover slices 2/3/4: split + close + navigate → HostModel** — Done: every user-facing pane op (launch, split, close, navigate) now flows through `HostCommand`. Slice 2 consumes `SplitOpened.placement`; slices 3/4 are observation-only until ID reconciliation is done.
+- **What shipped and why** → `DEV_LOG.md` (read the first 100 lines at session start)
+- **What's currently in flight** → `git log --oneline -20` and `git status`
+- **What's planned** → `.plexi/backlog`
 
-**V3 refactor plan** (`V3_REFACTOR_PLAN.md`) — 12 steps across 5 phases. Progress:
-- [x] **Step 1 — Dead code sweep** (582 LOC deleted, scaffolder migrated, module allows annotated)
-- [x] **Step 2 — Unify dual types** (single Direction, 9-cap Capability, TryFrom errors, InjectState/HttpResponse/Image/media variants added)
-- [x] **Step 3 — Finish or delete stubs** (plexi_iq prompt/tools deleted, context simplified, video-player removed from ship set)
-- [x] **Step 4 — Pane ID reconciliation** (HostModel owns alloc; PlexiApp::next_pane_id deleted; workspace seed/restore)
-- [x] **Step 5 — HostServices trait objects** (fs/secrets/net/spawn + mocks; `HostServices::mock()` for Layer-2 tests; STEP-9 still owns production wiring of routing.rs through services.secrets)
-- [x] **Step 6 — FileEventSink live** (`effects.jsonl` append-only per-effect log wired into `HostServices::new()`; consumer-side nav/close rewiring deferred to STEP-9)
-- [x] **Step 7 — Capability enforcement complete** (install-time manifest validation; runtime checks on HttpRequest/PipeSend/AudioPlay/AudioCapture; 403 HttpResponse on net.http denial)
-- [x] **Step 8 — Manifest schema freeze** (new `[launch]` section with structured `layout_hint = { side, split }`; install-time validator; 5 examples + scaffolders migrated)
-- [x] **Step 9 (partial) — env isolation + bold text + AppSpawned SDK hook**; HTTP broker, PipeSend peer routing, RunUpdate round-trip, media brokers, FD CLOEXEC audit all deferred to a follow-up session
-- [x] **Step 10 — Real Rust Layer-1 tests + uv runner** (5 `#[test]` fns in pgap_test_harness; pyproject.toml wires `uv run pytest`)
-- [x] **Step 11 — CI gate that enforces** (workflow runs cargo+pytest+smoke; smoke asserts effects.jsonl grows; `just install-v3` runs `lsregister -f` + `pbs -update`)
-- [x] **Step 12 — Invariant enforcement** (I-1 grep test for host egui-free; I-5 freeze doc; I-10 guard; I-2 already via #![deny] in main.rs)
-
-**Remaining scope before v3.0 tag:** the STEP-9 follow-ups — real HTTP broker, PipeSend peer routing, Image/Video/Audio broker plumbing, FD CLOEXEC audit, RunUpdate round-trip. Track as a separate PR.
+Before reporting anything as "done" or "missing", verify against `git log`. Never trust a status list in this file.
 
 ## North Star
 
