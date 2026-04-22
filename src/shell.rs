@@ -57,6 +57,14 @@ pub fn build_env() -> HashMap<String, String> {
         }
     }
 
+    // Inject user-flagged secrets as env vars
+    for entry in crate::secrets::list_inject_secrets() {
+        #[cfg(target_os = "macos")]
+        if let Some(value) = crate::secrets::retrieve_secret(&entry.key, &entry.app_id, &entry.directory) {
+            env.insert(entry.key.clone(), value.to_string());
+        }
+    }
+
     // ZDOTDIR injection for zsh shell integration
     let shell = detect_shell();
     if shell.ends_with("/zsh") || shell.ends_with("/zsh-5") {

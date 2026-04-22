@@ -92,12 +92,32 @@ impl SecretsApp {
                 directory: dir,
                 key: key.clone(),
                 workspace_root: None, // v1/v2 legacy path — no workspace scoping
+                inject: false,
             });
             self.selected = self.entries.len().saturating_sub(1);
             self.mode = Mode::List;
             self.status_msg = Some(format!("Stored '{key}'. Press r to sync."));
         } else {
             self.status_msg = Some("Failed to store secret - check logs.".to_string());
+        }
+    }
+
+    fn toggle_inject_selected(&mut self) {
+        if let Some(entry) = self.entries.get(self.selected).cloned() {
+            match crate::secrets::toggle_inject_secret(&entry.key, &entry.app_id, &entry.directory) {
+                Some(new_inject) => {
+                    // Optimistic update — don't re-read the whole index.
+                    if let Some(e) = self.entries.get_mut(self.selected) {
+                        e.inject = new_inject;
+                    }
+                    let label = if new_inject { "inject enabled" } else { "inject disabled" };
+                    self.status_msg = Some(format!("'{}' — {label}.", entry.key));
+                }
+                None => {
+                    self.status_msg =
+                        Some("Secret not found in index — press r to refresh".to_string());
+                }
+            }
         }
     }
 
@@ -172,6 +192,10 @@ impl App for SecretsApp {
             self.delete_selected();
             consumed = true;
         }
+        if input.key_pressed(egui::Key::I) && !self.entries.is_empty() {
+            self.toggle_inject_selected();
+            consumed = true;
+        }
 
         consumed
     }
@@ -200,7 +224,7 @@ impl App for SecretsApp {
         let hint = if self.mode == Mode::Adding {
             "Esc=cancel"
         } else {
-            "n=new · d=delete · r=refresh · j/k=navigate"
+            "n=new · d=delete · i=inject · r=refresh · j/k=navigate"
         };
 
         let mut header_ui = ui
@@ -513,6 +537,16 @@ impl SecretsApp {
                         egui::FontId::monospace(11.0),
                         colors.text_dim.linear_multiply(0.75),
                     );
+
+                    if entry.inject {
+                        ui.painter().text(
+                            egui::pos2(row_rect.right() - 12.0, row_rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            "→env",
+                            egui::FontId::monospace(11.0),
+                            colors.accent,
+                        );
+                    }
                 }
             });
     }

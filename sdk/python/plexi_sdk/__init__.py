@@ -401,6 +401,10 @@ class Emitter:
         _emit({"type": "secret_get", "key": key})
         return q.get()
 
+    def get_secret(self, key: str) -> str | None:
+        """Alias for secret_get(). Preferred name going forward."""
+        return self.secret_get(key)
+
     def http_get(self, url: str) -> str:
         """Blocking HTTP GET brokered through the host. Requires net.http capability.
         Call from any thread (background threads included). Raises RuntimeError on failure."""
@@ -570,6 +574,10 @@ class RenderContext:
 
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
+
+    def get_secret(self, key: str) -> str | None:
+        """Request a secret by key. Alias for emit.get_secret(). Blocking."""
+        return self.emit.get_secret(key)
 
     def frame_done(self) -> None:
         _emit({"type": "frame_done", "frame_id": self.frame_id})
