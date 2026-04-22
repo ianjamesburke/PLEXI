@@ -10,8 +10,8 @@ import time
 
 from plexi_sdk import (
     App, RenderContext,
-    BG, FG, MUTED, ACCENT, SURFACE, HIGHLIGHT,
-    BODY, CAPTION, HINT, HEADING, TITLE,
+    BG, FG, MUTED, ACCENT, SURFACE,
+    BODY, CAPTION, HINT, HEADING,
     PAD, HEADER_H,
 )
 
@@ -215,7 +215,7 @@ class ScreenTimeApp(App):
         # Start from north (top), sweep clockwise
         angle = -math.pi / 2
 
-        for label, secs, color in self._slices:
+        for _label, secs, color in self._slices:
             fraction = secs / total
             end_angle = angle + fraction * 2 * math.pi
             ctx.arc(chart_cx, chart_cy, r, angle, end_angle, color)
