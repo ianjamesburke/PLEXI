@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""Screen Time — pie chart of macOS app usage from the last 7 days (knowledgeC.db)."""
+"""Screen Time — pie chart of app usage from daily_log *_screen.jsonl files."""
 from __future__ import annotations
 
+import datetime
+import glob
+import json
 import math
 import os
-import sqlite3
 import threading
-import time
 
 from plexi_sdk import (
     App, RenderContext,
     BG, FG, MUTED, ACCENT, SURFACE,
-    BODY, CAPTION, HINT, HEADING,
-    PAD, HEADER_H,
+    CAPTION, HINT, HEADING, BODY,
+    PAD, PAD_TIGHT, HEADER_H,
 )
 
-# ── Color palette for pie slices (8 distinct colors) ─────────────────────────
+DEFAULT_LOG_DIR = os.path.expanduser("~/Documents/github/daily_log")
+DAYS = 7
+
 SLICE_COLORS = [
-    "#89b4fa",  # blue (ACCENT)
+    "#89b4fa",  # blue
     "#a6e3a1",  # green
     "#f38ba8",  # red/pink
     "#fab387",  # peach
@@ -25,82 +28,71 @@ SLICE_COLORS = [
     "#cba6f7",  # mauve/purple
     "#89dceb",  # sky
     "#f5c2e7",  # pink
-    "#94e2d5",  # teal (overflow)
+    "#94e2d5",  # teal
 ]
-OTHER_COLOR = "#45475a"  # HIGHLIGHT / muted grey for "Other"
-
-MAX_NAMED_SLICES = 8
-
-
-def _short_name(bundle_id: str) -> str:
-    """Strip bundle ID prefix; return last dot-component."""
-    parts = bundle_id.rsplit(".", 1)
-    name = parts[-1] if parts else bundle_id
-    # Capitalise common patterns for readability
-    return name[:20]  # cap length
+OTHER_COLOR = "#45475a"
+MAX_NAMED = 8
 
 
-def get_app_usage() -> list[tuple[str, float]]:
-    """Return list of (bundle_id, seconds) sorted desc, last 7 days."""
-    db_path = os.path.expanduser(
-        "~/Library/Application Support/Knowledge/knowledgeC.db"
-    )
-    if not os.path.exists(db_path):
-        return []
+def get_app_usage(log_dir: str) -> list[tuple[str, float]]:
+    cutoff = datetime.date.today() - datetime.timedelta(days=DAYS)
+    totals: dict[str, float] = {}
 
-    cutoff = time.time() - 7 * 86400
-    apple_cutoff = cutoff - 978307200  # Unix → Apple Core Data epoch offset
+    for path in glob.glob(os.path.join(log_dir, "*_screen.jsonl")):
+        fname = os.path.basename(path)
+        try:
+            date_str = fname.split("_screen")[0]
+            day = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            continue
+        if day < cutoff:
+            continue
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        app = rec.get("app", "")
+                        secs = float(rec.get("secs", 0))
+                        if app and secs > 0:
+                            totals[app] = totals.get(app, 0) + secs
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+        except OSError:
+            continue
 
-    try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        cur = con.execute(
-            """
-            SELECT ZVALUESTRING, SUM(ZENDDATE - ZSTARTDATE)
-            FROM ZOBJECT
-            WHERE ZSTREAMNAME = '/app/usage'
-              AND ZSTARTDATE > ?
-              AND ZVALUESTRING IS NOT NULL
-            GROUP BY ZVALUESTRING
-            ORDER BY 2 DESC
-            LIMIT 20
-            """,
-            (apple_cutoff,),
-        )
-        rows = [
-            (row[0], float(row[1]))
-            for row in cur.fetchall()
-            if row[1] and row[1] > 0
-        ]
-        con.close()
-        return rows
-    except Exception:
-        return []
+    return sorted(totals.items(), key=lambda x: x[1], reverse=True)
 
 
 class ScreenTimeApp(App):
     def on_init(self, _ctx: RenderContext) -> None:
-        self._rows: list[tuple[str, float]] = []   # raw (bundle_id, secs)
-        self._slices: list[tuple[str, float, str]] = []  # (label, secs, color)
+        self._log_dir: str = DEFAULT_LOG_DIR
+        self._slices: list[tuple[str, float, str]] = []
         self._total_secs: float = 0.0
         self._loading: bool = True
         self._error: str = ""
         self._spinner_frame: int = 0
+        self._settings_mode: bool = False
+        self._settings_buf: str = DEFAULT_LOG_DIR
         self._fetch()
 
-    # ── Data loading ──────────────────────────────────────────────────────────
+    # ── Data ─────────────────────────────────────────────────────────────────
 
     def _fetch(self) -> None:
         self._loading = True
         self._error = ""
         self.emit.status_summary("Loading…")
+        log_dir = self._log_dir
 
         def run() -> None:
             try:
-                rows = get_app_usage()
-                self._rows = rows
+                rows = get_app_usage(log_dir)
                 self._build_slices(rows)
             except Exception as e:
-                self._error = f"Failed to load: {e}"
+                self._error = str(e)
             finally:
                 self._loading = False
                 self.emit.status_summary("")
@@ -109,30 +101,44 @@ class ScreenTimeApp(App):
         threading.Thread(target=run, daemon=True).start()
 
     def _build_slices(self, rows: list[tuple[str, float]]) -> None:
-        """Collapse into MAX_NAMED_SLICES + optional 'Other' bucket."""
         total = sum(s for _, s in rows)
         self._total_secs = total
-
-        named = rows[:MAX_NAMED_SLICES]
-        rest = rows[MAX_NAMED_SLICES:]
-
+        named = rows[:MAX_NAMED]
+        rest = rows[MAX_NAMED:]
         slices: list[tuple[str, float, str]] = []
-        for i, (bundle_id, secs) in enumerate(named):
-            label = _short_name(bundle_id)
-            color = SLICE_COLORS[i % len(SLICE_COLORS)]
-            slices.append((label, secs, color))
-
+        for i, (name, secs) in enumerate(named):
+            slices.append((name[:22], secs, SLICE_COLORS[i % len(SLICE_COLORS)]))
         if rest:
-            other_secs = sum(s for _, s in rest)
-            slices.append(("Other", other_secs, OTHER_COLOR))
-
+            slices.append(("Other", sum(s for _, s in rest), OTHER_COLOR))
         self._slices = slices
 
-    # ── Key handling ──────────────────────────────────────────────────────────
+    # ── Input ─────────────────────────────────────────────────────────────────
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
-        if key == "r":
-            self._fetch()
+        if self._settings_mode:
+            self._handle_settings_key(key)
+        else:
+            if key == "r":
+                self._fetch()
+            elif key == "s":
+                self._settings_mode = True
+                self._settings_buf = self._log_dir
+
+    def _handle_settings_key(self, key: str) -> None:
+        if key == "escape":
+            self._settings_mode = False
+        elif key == "return":
+            path = self._settings_buf.strip()
+            if path:
+                self._log_dir = os.path.expanduser(path)
+                self._settings_mode = False
+                self._fetch()
+        elif key == "backspace":
+            self._settings_buf = self._settings_buf[:-1]
+        elif key == "space":
+            self._settings_buf += " "
+        elif len(key) == 1:
+            self._settings_buf += key
 
     # ── Render ────────────────────────────────────────────────────────────────
 
@@ -140,17 +146,29 @@ class ScreenTimeApp(App):
         ctx.clear(BG)
         self._draw_header(ctx)
 
+        if self._settings_mode:
+            self._draw_settings(ctx)
+            return
+
         if self._loading:
-            self._draw_spinner(ctx)
-            ctx.emit.schedule_render(after_ms=120)  # animate spinner
+            self._spinner_frame = (self._spinner_frame + 1) % 10
+            frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            ctx.text(PAD, ctx.h / 2 - 10,
+                     f"{frames[self._spinner_frame]} Loading…", size=BODY, color=MUTED)
+            ctx.emit.schedule_render(after_ms=120)
             return
 
         if self._error:
-            self._draw_error(ctx)
+            ctx.text(PAD, ctx.h / 2 - 10, f"Error: {self._error}",
+                     size=BODY, color="#f38ba8")
             return
 
         if not self._slices:
-            self._draw_empty(ctx)
+            ctx.text(PAD, ctx.h / 2 - 20,
+                     "No screen.jsonl files found in:", size=BODY, color=MUTED)
+            ctx.text(PAD, ctx.h / 2 + 4, self._log_dir, size=CAPTION, color=HINT)
+            ctx.text(PAD, ctx.h / 2 + 24, "Press s to change directory",
+                     size=HINT, color=MUTED)
             return
 
         self._draw_chart(ctx)
@@ -158,107 +176,63 @@ class ScreenTimeApp(App):
     def _draw_header(self, ctx: RenderContext) -> None:
         ctx.rect(0, 0, ctx.w, HEADER_H, fill=SURFACE)
         ctx.text(PAD, 14, "Screen Time", size=HEADING, color=ACCENT, bold=True)
-
         if self._total_secs > 0:
-            total_h = self._total_secs / 3600
-            summary = f"Last 7 days  ·  {total_h:.1f} h total"
-            ctx.text(PAD, 32, summary, size=HINT, color=MUTED)
+            ctx.text(PAD, 32, f"Last {DAYS} days · {self._total_secs/3600:.1f}h total",
+                     size=HINT, color=MUTED)
+        ctx.text(ctx.w - 100, 18, "r=refresh  s=dir", size=HINT, color=MUTED)
 
-        ctx.text(ctx.w - 80, 18, "r = refresh", size=HINT, color=MUTED)
-
-    def _draw_spinner(self, ctx: RenderContext) -> None:
-        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        self._spinner_frame = (self._spinner_frame + 1) % len(frames)
-        cy = ctx.h / 2
-        cx = ctx.w / 2
-        ctx.text(cx - 30, cy - 10, f"{frames[self._spinner_frame]} Loading…",
-                 size=BODY, color=MUTED)
-
-    def _draw_error(self, ctx: RenderContext) -> None:
-        ctx.text(PAD, ctx.h / 2 - 10, self._error, size=BODY, color="#f38ba8")
-
-    def _draw_empty(self, ctx: RenderContext) -> None:
-        ctx.text(PAD, ctx.h / 2 - 10,
-                 "No usage data found in knowledgeC.db",
-                 size=BODY, color=MUTED)
+    def _draw_settings(self, ctx: RenderContext) -> None:
+        top = HEADER_H + 48
+        ctx.text(PAD, top, "Log directory", size=HEADING, color=FG, bold=True)
+        ctx.text(PAD, top + 24, "Path to folder containing *_screen.jsonl files",
+                 size=CAPTION, color=MUTED)
+        box_y = top + 56
+        ctx.rect(PAD, box_y, ctx.w - PAD * 2, 44, fill=SURFACE, radius=8.0)
+        max_chars = max(1, int((ctx.w - PAD * 2 - PAD_TIGHT * 2) / 8))
+        display = self._settings_buf[-max_chars:] + "▌"
+        ctx.text(PAD + PAD_TIGHT, box_y + 13, display, size=BODY, color=FG, monospace=True)
+        ctx.text(PAD, box_y + 56, "Return to confirm · Esc to cancel",
+                 size=HINT, color=MUTED)
 
     def _draw_chart(self, ctx: RenderContext) -> None:
-        """Render pie chart + legend. Adapts to portrait vs landscape layout."""
-        content_top = HEADER_H + PAD
-        content_h = ctx.h - content_top
-        content_w = ctx.w
+        top = HEADER_H + PAD
+        ch = ctx.h - top
 
-        # Decide layout: wide pane → chart left / legend right
-        # Narrow pane → chart top / legend below
         wide = ctx.w >= ctx.h * 0.85
-
         if wide:
-            chart_area_w = content_w * 0.5
-            legend_x = chart_area_w + PAD
-            legend_w = content_w - legend_x - PAD
-            chart_cx = chart_area_w / 2
-            chart_cy = content_top + content_h / 2
-            r = min(chart_area_w / 2, content_h / 2) * 0.72
+            aw = ctx.w * 0.5
+            cx, cy = aw / 2, top + ch / 2
+            r = min(aw / 2, ch / 2) * 0.72
+            legend_x, legend_w = aw + PAD, ctx.w - aw - PAD * 2
         else:
-            chart_area_h = content_h * 0.48
-            chart_cx = content_w / 2
-            chart_cy = content_top + chart_area_h / 2
-            r = min(content_w / 2, chart_area_h / 2) * 0.80
-            legend_x = PAD
-            legend_w = content_w - 2 * PAD
+            ah = ch * 0.48
+            cx, cy = ctx.w / 2, top + ah / 2
+            r = min(ctx.w / 2, ah / 2) * 0.80
+            legend_x, legend_w = PAD, ctx.w - PAD * 2
 
-        # Draw pie slices
         total = self._total_secs
-        if total <= 0:
-            return
-
-        # Start from north (top), sweep clockwise
         angle = -math.pi / 2
+        for _name, secs, color in self._slices:
+            end = angle + secs / total * 2 * math.pi
+            ctx.arc(cx, cy, r, angle, end, color)
+            angle = end
 
-        for _label, secs, color in self._slices:
-            fraction = secs / total
-            end_angle = angle + fraction * 2 * math.pi
-            ctx.arc(chart_cx, chart_cy, r, angle, end_angle, color)
-            angle = end_angle
+        # Donut hole + center label
+        ctx.circle(cx, cy, r * 0.38, BG)
+        lbl = f"{total/3600:.1f}h"
+        ctx.text(cx - len(lbl) * 3.5, cy - 10, lbl, size=BODY, color=FG, bold=True)
+        ctx.text(cx - 14, cy + 6, "total", size=HINT, color=MUTED)
 
-        # Draw a small center circle to make it a donut (optional — cleaner look)
-        inner_r = r * 0.38
-        ctx.circle(chart_cx, chart_cy, inner_r, BG)
-
-        # Center label: total hours
-        total_h = total / 3600
-        label_txt = f"{total_h:.1f}h"
-        # Approximate centering: 7 px per char at CAPTION size
-        lw = len(label_txt) * 7
-        ctx.text(chart_cx - lw / 2, chart_cy - 10, label_txt,
-                 size=BODY, color=FG, bold=True)
-        ctx.text(chart_cx - 14, chart_cy + 6, "total", size=HINT, color=MUTED)
-
-        # Draw legend
-        if wide:
-            legend_top = content_top + (content_h - len(self._slices) * 28) / 2
-        else:
-            legend_top = content_top + content_h * 0.52
-
-        self._draw_legend(ctx, legend_x, legend_top, legend_w, total)
-
-    def _draw_legend(self, ctx: RenderContext,
-                     x: float, y: float, w: float, total: float) -> None:
-        row_h = 26.0
-        dot_r = 5.0
-
-        for label, secs, color in self._slices:
-            pct = secs / total * 100 if total > 0 else 0
-            hours = secs / 3600
-            # Colored dot
-            ctx.circle(x + dot_r, y + dot_r + 2, dot_r, color)
-            # App name
-            ctx.text(x + dot_r * 2 + 8, y, label, size=CAPTION, color=FG)
-            # Percentage + hours — right-aligned within legend width
-            stat = f"{pct:.1f}%  {hours:.1f}h"
-            stat_w = len(stat) * 6.5
-            ctx.text(x + w - stat_w, y, stat, size=CAPTION, color=MUTED)
-            y += row_h
+        legend_top = (top + (ch - len(self._slices) * 28) / 2) if wide else (top + ch * 0.52)
+        y = legend_top
+        for name, secs, color in self._slices:
+            pct = secs / total * 100
+            ctx.circle(legend_x + 5, y + 7, 5, color)
+            ctx.text(legend_x + 14, y, name, size=CAPTION, color=FG)
+            stat = f"{pct:.1f}%  {secs/3600:.1f}h"
+            ctx.text(legend_x + legend_w - len(stat) * 6.5, y, stat,
+                     size=CAPTION, color=MUTED)
+            y += 28
 
 
 if __name__ == "__main__":
