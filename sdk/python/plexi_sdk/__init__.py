@@ -540,6 +540,14 @@ class RenderContext:
         """Draw a filled circle. Alpha supported via 8-digit hex (#rrggbbaa) or dim()."""
         _emit({"type": "circle", "cx": cx, "cy": cy, "r": r, "fill": fill})
 
+    def arc(self, cx: float, cy: float, r: float,
+            start_angle: float, end_angle: float, fill: str) -> None:
+        """Draw a filled pie slice. Angles in radians, clockwise from east (right).
+        Full circle: start_angle=0, end_angle=6.2832 (2*pi).
+        Example pie slice: arc(cx, cy, r, 0, math.pi * 0.5, fill="#ff0000")"""
+        _emit({"type": "arc", "cx": cx, "cy": cy, "r": r,
+               "start_angle": start_angle, "end_angle": end_angle, "fill": fill})
+
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False) -> None:
         _emit({"type": "text", "x": x, "y": y, "text": text, "size": size,

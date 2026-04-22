@@ -355,6 +355,18 @@ pub enum DrawCommand {
         r: f32,
         fill: String,
     },
+
+    /// Draw a filled arc / pie slice.
+    /// `start_angle` and `end_angle` are in radians, measured clockwise from the right (east).
+    /// A full circle is 0.0 to std::f32::consts::TAU.
+    Arc {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        start_angle: f32,
+        end_angle: f32,
+        fill: String,
+    },
 }
 
 /// An action attached to a Notify command.
