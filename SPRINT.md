@@ -8,11 +8,11 @@ File is committed after every completed task.
 
 ## Track A — Notification Protocol (sequential)
 
-- [ ] A1: Delete `docs/specs/app-infrastructure.md` (stale, misleads agents)
+- [x] A1: Delete `docs/specs/app-infrastructure.md` (stale, misleads agents) — file never existed
 - [ ] A2: Rewrite `plexi_sdk.py` module docstring — full quick-start example, TypedDict types, every method documented
 - [ ] A2.5: Secrets UX — `inject` toggle in SecretsApp UI + help text + `emit.get_secret()` in SDK + inject flagged secrets into shell env via `build_env()` (#296)
-- [ ] A3: `DrawCommand::Notify` in `app_protocol.rs` + render stub in `process_app.rs`
-- [ ] A4: `emit.notify()` + `emit.notify_and_wait()` in Python SDK
+- [x] A3: `DrawCommand::Notify` in `app_protocol.rs` + render stub in `process_app.rs` — already in protocol + routing
+- [ ] A4: `emit.notify()` + `emit.notify_and_wait()` in Python SDK — `emit.notify()` done, need `notify_and_wait()`
 - [ ] A5: Notification panel UI + badge in top bar + Cmd+Shift+A (#291)
 
 ## Track B — Background Apps (parallel after A3 starts)
@@ -23,7 +23,7 @@ File is committed after every completed task.
 
 ## Track C — HTTP Broker (parallel after A3 starts)
 
-- [ ] C1: `DrawCommand::HttpRequest` + `PlexiEvent::HttpResponse` in protocol
+- [x] C1: `DrawCommand::HttpRequest` + `PlexiEvent::HttpResponse` in protocol — already implemented
 - [ ] C2: Host broker — check `net` capability + `allowed_hosts`, forward via `ureq`
 - [ ] C3: `llm` capability wired to secrets store + `emit.llm()` in SDK (#294)
 

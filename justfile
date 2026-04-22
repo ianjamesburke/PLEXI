@@ -275,6 +275,10 @@ install-alpha:
     alpha_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
     cp "$alpha_bin" /usr/local/bin/plexi-alpha
 
+    mkdir -p ~/.plexi-alpha/sdk
+    cp sdk/python/plexi_sdk/__init__.py ~/.plexi-alpha/sdk/plexi_sdk.py
+    find ~/.plexi-alpha/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
+
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
@@ -381,6 +385,10 @@ install-beta:
 
     beta_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
     cp "$beta_bin" /usr/local/bin/plexi-beta
+
+    mkdir -p ~/.plexi-beta/sdk
+    cp sdk/python/plexi_sdk/__init__.py ~/.plexi-beta/sdk/plexi_sdk.py
+    find ~/.plexi-beta/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-beta"

@@ -608,15 +608,15 @@ class App:
         self.emit = Emitter(self)
 
     # ── Override these ──────────────────────────────────────────────────────
-    def on_init(self, ctx: RenderContext) -> None: pass
-    def on_render(self, ctx: RenderContext) -> None: pass
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None: pass
-    def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None: pass
-    def on_command(self, ctx: RenderContext, text: str) -> None: pass
-    def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> None: pass
-    def on_path_changed(self, ctx: RenderContext, cwd: str) -> None: pass
-    def on_inject(self, ctx: "RenderContext", payload: Any) -> None: pass
-    def on_app_spawned(self, pane_id: int, type_id: str) -> None: pass
+    def on_init(self, _ctx: RenderContext) -> None: pass
+    def on_render(self, _ctx: RenderContext) -> None: pass
+    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> None: pass
+    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None: pass
+    def on_command(self, _ctx: RenderContext, _text: str) -> None: pass
+    def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> None: pass
+    def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> None: pass
+    def on_inject(self, _ctx: RenderContext, _payload: Any) -> None: pass
+    def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
