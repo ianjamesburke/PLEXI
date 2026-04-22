@@ -9,27 +9,27 @@ File is committed after every completed task.
 ## Track A — Notification Protocol (sequential)
 
 - [x] A1: Delete `docs/specs/app-infrastructure.md` (stale, misleads agents) — file never existed
-- [ ] A2: Rewrite `plexi_sdk.py` module docstring — full quick-start example, TypedDict types, every method documented
-- [ ] A2.5: Secrets UX — `inject` toggle in SecretsApp UI + help text + `emit.get_secret()` in SDK + inject flagged secrets into shell env via `build_env()` (#296)
+- [x] A2: Rewrite `plexi_sdk.py` module docstring — full quick-start example, TypedDict types, every method documented
+- [x] A2.5: Secrets UX — `inject` toggle in SecretsApp UI + help text + `emit.get_secret()` in SDK + inject flagged secrets into shell env via `build_env()` (#296)
 - [x] A3: `DrawCommand::Notify` in `app_protocol.rs` + render stub in `process_app.rs` — already in protocol + routing
-- [ ] A4: `emit.notify()` + `emit.notify_and_wait()` in Python SDK — `emit.notify()` done, need `notify_and_wait()`
-- [ ] A5: Notification panel UI + badge in top bar + Cmd+Shift+A (#291)
+- [x] A4: `emit.notify()` + `emit.notify_and_wait()` in Python SDK — `emit.notify()` done, need `notify_and_wait()`
+- [x] A5: Notification panel UI + badge in top bar + Cmd+Shift+A (#291)
 
 ## Track B — Background Apps (parallel after A3 starts)
 
-- [ ] B1: `background = true` in manifest schema
-- [ ] B2: Keep process alive in host when pane is closed
-- [ ] B3: Re-attach pane to running process on re-open (#292)
+- [x] B1: `background = true` in manifest schema
+- [x] B2: Keep process alive in host when pane is closed
+- [x] B3: Re-attach pane to running process on re-open (#292)
 
 ## Track C — HTTP Broker (parallel after A3 starts)
 
 - [x] C1: `DrawCommand::HttpRequest` + `PlexiEvent::HttpResponse` in protocol — already implemented
-- [ ] C2: Host broker — check `net` capability + `allowed_hosts`, forward via `ureq`
-- [ ] C3: `llm` capability wired to secrets store + `emit.llm()` in SDK (#294)
+- [x] C2: Host broker — check `net` capability + `allowed_hosts`, forward via `ureq`
+- [x] C3: `llm` capability wired to secrets store + `emit.llm()` in SDK (#294)
 
 ## Track D — Draw Primitives
 
-- [ ] D1: `DrawCommand::Arc { cx, cy, r, start_angle, end_angle, fill }` for pie charts
+- [x] D1: `DrawCommand::Arc { cx, cy, r, start_angle, end_angle, fill }` for pie charts
 
 ## Track E — Proof of Concept Apps
 
