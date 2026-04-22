@@ -8,6 +8,10 @@ pub struct PlexiConfig {
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
     pub log: Option<LogConfig>,
+    /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
+    pub confirm_quit: Option<bool>,
+    /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
+    pub confirm_close: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -172,6 +176,10 @@ const CONFIG_TEMPLATE: &str = r##"# Plexi Configuration
 # Changes take effect on next launch.
 
 font_size = 14.0
+
+# Confirmation dialogs — uncomment to disable.
+# confirm_quit = false   # Require triple Cmd+Q to quit (default: true)
+# confirm_close = false  # Show dialog before closing a pane via Cmd+W (default: true)
 
 # Theme preset — uncomment one to use it as a base.
 # Individual [theme] values below will override the preset.

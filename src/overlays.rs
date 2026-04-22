@@ -249,6 +249,84 @@ impl PlexiApp {
             });
     }
 
+    pub(crate) fn draw_confirm_close(&mut self, ctx: &egui::Context) {
+        let mut confirmed = false;
+        let mut cancelled = false;
+
+        egui::Area::new(egui::Id::new("confirm_close_overlay"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(egui::Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(20, 16))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+                        ui.label(
+                            RichText::new("Close pane?")
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new("The running process will be terminated.")
+                                .size(12.0)
+                                .color(self.colors.text_dim),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Close")
+                                            .size(12.0)
+                                            .color(self.colors.text_primary),
+                                    )
+                                    .fill(self.colors.bg_active),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                confirmed = true;
+                            }
+                            ui.add_space(8.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Cancel")
+                                            .size(12.0)
+                                            .color(self.colors.text_dim),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                cancelled = true;
+                            }
+                        });
+
+                        // Keyboard handling
+                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            confirmed = true;
+                        }
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            cancelled = true;
+                        }
+                    });
+            });
+
+        if confirmed {
+            self.pending_close = false;
+            self.execute_close_pane();
+        } else if cancelled {
+            self.pending_close = false;
+        }
+    }
+
     /// Run palette overlay (Cmd+R). Shows active runs across all panes; BlockedOnUser
     /// runs get a [!] badge and an inline text input for unblocking.
     pub(crate) fn draw_run_palette(&mut self, ctx: &egui::Context) {

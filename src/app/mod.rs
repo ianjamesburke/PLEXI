@@ -32,6 +32,8 @@ pub struct PlexiApp {
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) quit_confirm_required: bool,
+    pub(crate) confirm_close: bool,
+    pub(crate) pending_close: bool,
     pub(crate) renaming_context: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) registry: AppRegistry,
@@ -58,11 +60,9 @@ impl PlexiApp {
 
         let config = config::PlexiConfig::load();
         let features = crate::features::FeatureFlags::from_config(&config);
-        let quit_confirm_required = config
-            .beta
-            .as_ref()
-            .and_then(|b| b.quit_confirm)
-            .unwrap_or(true);
+        let quit_confirm_required = config.confirm_quit
+            .unwrap_or_else(|| config.beta.as_ref().and_then(|b| b.quit_confirm).unwrap_or(true));
+        let confirm_close = config.confirm_close.unwrap_or(true);
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -240,6 +240,8 @@ impl PlexiApp {
                     quit_press_count: 0,
                     quit_last_press: None,
                     quit_confirm_required,
+                    confirm_close,
+                    pending_close: false,
                     renaming_context: None,
                     rename_buffer: String::new(),
                     show_command_palette: false,
@@ -298,6 +300,8 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             quit_confirm_required,
+            confirm_close,
+            pending_close: false,
             renaming_context: None,
             rename_buffer: String::new(),
             show_command_palette: false,
@@ -602,14 +606,10 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ClosePane => {
-                    self.contexts[self.active_context].zoomed_pane = None;
-                    let active_panes = self.contexts[self.active_context].panes.len();
-                    if active_panes > 1 {
-                        self.close_focused();
-                    } else if self.contexts.len() > 1 {
-                        self.delete_context(self.active_context);
+                    if self.confirm_close {
+                        self.pending_close = true;
                     } else {
-                        self.reset_active_context();
+                        self.execute_close_pane();
                     }
                 }
                 Action::NewTab => self.new_tab(),
@@ -992,6 +992,11 @@ impl eframe::App for PlexiApp {
         // Rename pane overlay
         if self.renaming_pane.is_some() {
             self.draw_rename_pane_overlay(ctx);
+        }
+
+        // Close pane confirmation overlay
+        if self.pending_close {
+            self.draw_confirm_close(ctx);
         }
 
         // Quit confirmation overlay

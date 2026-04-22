@@ -856,6 +856,18 @@ impl PlexiApp {
         }
     }
 
+    /// Execute the close-pane action (called directly when confirm_close is false,
+    /// or from the confirm-close dialog when the user confirms).
+    pub(crate) fn execute_close_pane(&mut self) {
+        self.contexts[self.active_context].zoomed_pane = None;
+        let active_panes = self.contexts[self.active_context].panes.len();
+        if active_panes > 1 {
+            self.close_focused();
+        } else {
+            self.reset_active_context();
+        }
+    }
+
     /// Toggle the file browser: if the focused pane has a file browser open,
     /// close it. Otherwise, open one.
     pub(crate) fn open_file_browser(&mut self) {
