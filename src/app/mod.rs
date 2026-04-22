@@ -61,6 +61,9 @@ pub struct PlexiApp {
     pub(crate) show_notification_panel: bool,
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
+    /// Parked background ProcessApps — kept alive when their pane is closed.
+    /// Keyed by app type_id. Re-attached by B3 when the app is reopened.
+    pub(crate) background_apps: HashMap<String, Box<crate::process_app::ProcessApp>>,
 }
 
 impl PlexiApp {
@@ -270,6 +273,7 @@ impl PlexiApp {
                     show_notification_panel: false,
                     host,
                     host_services: crate::host::services::HostServices::new(),
+                    background_apps: HashMap::new(),
                 };
             }
         }
@@ -332,6 +336,7 @@ impl PlexiApp {
             show_notification_panel: false,
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
+            background_apps: HashMap::new(),
         }
     }
 

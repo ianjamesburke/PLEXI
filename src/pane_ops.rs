@@ -648,23 +648,43 @@ impl PlexiApp {
             self.contexts[ctx_idx].find_next_focus(tile_id)
         };
 
-        // Phase 3: Remove tile and pane
-        let ctx = &mut self.contexts[ctx_idx];
-        if let Some(parent_id) = ctx.tree.tiles.parent_of(tile_id) {
-            if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
-                parent.remove_child(tile_id);
+        // Phase 3: Remove tile and extract pane — defer drop so background apps can be parked.
+        let removed_pane = {
+            let ctx = &mut self.contexts[ctx_idx];
+            if let Some(parent_id) = ctx.tree.tiles.parent_of(tile_id) {
+                if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
+                    parent.remove_child(tile_id);
+                }
             }
-        }
 
-        if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
-            ctx.panes.remove(&pane_id);
-        }
+            let removed = if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
+                ctx.panes.remove(&pane_id)
+            } else {
+                None
+            };
 
-        ctx.tree.simplify(&SimplificationOptions {
-            all_panes_must_have_tabs: true,
-            ..SimplificationOptions::default()
-        });
-        ctx.focused_pane = next;
+            ctx.tree.simplify(&SimplificationOptions {
+                all_panes_must_have_tabs: true,
+                ..SimplificationOptions::default()
+            });
+            ctx.focused_pane = next;
+
+            removed
+        };
+
+        // ctx borrow is released — park background ProcessApps; drop everything else.
+        if let Some(Pane::App(app_pane)) = removed_pane {
+            if let crate::pane::AppRuntime::Process(mut process_app) = app_pane.runtime {
+                let type_id = process_app.type_id.clone();
+                if self.registry.is_background(&type_id) {
+                    process_app.send_event(&crate::app_protocol::PlexiEvent::Suspend);
+                    log::info!("parking background app '{type_id}'");
+                    self.background_apps.insert(type_id, process_app);
+                }
+                // else: process_app drops here — Drop impl sends Shutdown + kills process
+            }
+            // else: builtin app pane drops here
+        }
     }
 
     pub(crate) fn navigate(&mut self, dir: Direction) {
