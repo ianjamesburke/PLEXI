@@ -606,8 +606,6 @@ impl eframe::App for PlexiApp {
                     let active_panes = self.contexts[self.active_context].panes.len();
                     if active_panes > 1 {
                         self.close_focused();
-                    } else if self.contexts.len() > 1 {
-                        self.delete_context(self.active_context);
                     } else {
                         self.reset_active_context();
                     }

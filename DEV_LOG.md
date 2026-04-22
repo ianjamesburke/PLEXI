@@ -1,5 +1,8 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-22 — [FIX] Cmd+W on last pane no longer destroys the context
+`Action::ClosePane` had an `else if self.contexts.len() > 1` branch that called `delete_context` — so pressing Cmd+W on the last pane in any context (except the very last context) would silently wipe the entire context from the sidebar. Removed that branch. Now when the last pane is closed via Cmd+W, the handler always falls through to `reset_active_context()` regardless of how many contexts exist. Context deletion remains exclusively the sidebar X button's responsibility.
+
 ## 2026-04-20 — [CHANGED] lava-opus app shipped (examples/lava-opus/)
 Buoyancy-driven blob simulation with fake-metaball blending via `DrawCommand::Circle` layering. Named "lava-opus" (not "lava-lamp") to avoid collision with a second lava app in flight. Physics: temperature-driven rise/fall, viscous drag, wall repulsion, soft bounce. Render: glow halo + solid core + specular highlight per blob; translucent bridge circles between nearby pairs fake the metaball merge look. Click to inject heat. Installed and verified at `~/.plexi-v3/apps/lava-opus/`.
 **Breaks if:** app registry fails to load `lava-opus` (id mismatch in manifest.toml — it must be `id = "lava-opus"`). Blobs teleport to top/bottom edge (bounds clamp regressed). Bridge circles disappear entirely between nearby blobs (MERGE_FACTOR or bridge alpha logic changed).
