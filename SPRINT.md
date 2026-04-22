@@ -33,22 +33,22 @@ File is committed after every completed task.
 
 ## Track E — Proof of Concept Apps
 
-- [ ] E1: **GitHub Tree Visualizer** — HTTP broker + `HOMEBREW_TAP_TOKEN` secret
+- [x] E1: **GitHub Tree Visualizer** — HTTP broker + `HOMEBREW_TAP_TOKEN` secret
        Beautiful repo tree: branches, recent commits, file structure
        Depends on: C2
 
-- [ ] E2: **Screen Time** — pie chart of last 7 days macOS app usage
-       Reads ~/Library/Application Support/com.apple.ScreenTimeAgent/ SQLite
+- [x] E2: **Screen Time** — pie chart of last 7 days macOS app usage
+       Reads ~/Library/Application Support/Knowledge/knowledgeC.db SQLite
        Depends on: D1
 
-- [ ] E3: **Stand Up Reminder** — background app, notifies every 15 min, 100 random movement prompts
+- [x] E3: **Stand Up Reminder** — background app, notifies every 15 min, random movement prompts
        Full proof of concept: background + timer + notify stack end-to-end
        Depends on: A5, B3
 
 ## Track F — Timer + CLI (after their dependencies land)
 
-- [ ] F1: `timer` capability — `SetTimer` / `PlexiEvent::Timer` (#293) — after B3
-- [ ] F2: `plexi notify` CLI for external processes (#295) — after A5
+- [x] F1: `timer` capability — `SetTimer` / `PlexiEvent::Timer` (#293) — after B3
+- [x] F2: `plexi notify` CLI for external processes (#295) — after A5
 
 ---
 
