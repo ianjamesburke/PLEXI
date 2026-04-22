@@ -30,6 +30,7 @@ use std::sync::mpsc;
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
+    pub(crate) last_notify_poll: std::time::Instant,
     pub(crate) theme: TerminalTheme,
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
@@ -271,6 +272,7 @@ impl PlexiApp {
                     show_run_palette: false,
                     pending_notifications: Vec::new(),
                     show_notification_panel: false,
+                    last_notify_poll: std::time::Instant::now(),
                     host,
                     host_services: crate::host::services::HostServices::new(),
                     background_apps: HashMap::new(),
@@ -334,6 +336,7 @@ impl PlexiApp {
             show_run_palette: false,
             pending_notifications: Vec::new(),
             show_notification_panel: false,
+            last_notify_poll: std::time::Instant::now(),
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
@@ -362,6 +365,32 @@ impl PlexiApp {
             env: shell::build_env(),
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
+        }
+    }
+
+    fn drain_notify_queue(&mut self) {
+        let queue_dir = crate::config::config_dir().join("notify-queue");
+        let Ok(entries) = std::fs::read_dir(&queue_dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            let _ = std::fs::remove_file(&path);
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+            let level = val["level"].as_str().unwrap_or("info").to_string();
+            let title = val["title"].as_str().unwrap_or("").to_string();
+            let body = val["body"].as_str().unwrap_or("").to_string();
+            self.pending_notifications.push(PendingNotification {
+                notify_id: String::new(),
+                sender_pane_id: 0,
+                level,
+                title,
+                body,
+                actions: vec![],
+            });
+            self.show_notification_panel = true;
         }
     }
 
@@ -400,6 +429,10 @@ impl PlexiApp {
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
+            self.last_notify_poll = std::time::Instant::now();
+            self.drain_notify_queue();
+        }
         self.drain_pty_events();
         let deferred_app_cmds = self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();

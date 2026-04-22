@@ -478,6 +478,32 @@ pub fn app_list() -> i32 {
     0
 }
 
+/// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]`.
+/// Writes a JSON file to the notify queue dir; the running host polls and ingests it.
+pub fn notify_cli(title: &str, body: &str, level: &str) -> i32 {
+    let queue_dir = crate::config::config_dir().join("notify-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        eprintln!("error: could not create notify queue: {e}");
+        return 1;
+    }
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file = queue_dir.join(format!("{id}.json"));
+    let payload = serde_json::json!({
+        "level": level,
+        "title": title,
+        "body": body,
+    });
+    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+        eprintln!("error: could not write notification: {e}");
+        return 1;
+    }
+    println!("notification queued");
+    0
+}
+
 fn to_title_case(s: &str) -> String {
     s.split(['-', '_'])
         .map(|w| {
