@@ -84,6 +84,11 @@ pub struct LaunchSection {
     /// Cmd+W remain.
     #[serde(default)]
     pub keyboard_capture: bool,
+    /// If true, this app's process survives pane close and can be re-attached.
+    /// The host will not kill the subprocess when the pane is closed;
+    /// instead it parks the process in a background registry keyed by app_id.
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
@@ -241,6 +246,11 @@ impl AppRegistry {
         let mut apps: Vec<_> = self.apps.values().collect();
         apps.sort_by_key(|a| &a.manifest.name);
         apps
+    }
+
+    /// Returns true if the app's process should survive pane close (`[launch].background`).
+    pub fn is_background(&self, app_id: &str) -> bool {
+        self.apps.get(app_id).map(|a| a.launch.background).unwrap_or(false)
     }
 
     /// Get the manifest-declared pane group (`[launch].join_group`).
