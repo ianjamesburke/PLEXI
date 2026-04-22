@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-import queue
 import threading
 import urllib.parse
-import uuid
 
 from plexi_sdk import (
     App, RenderContext,
     BG, FG, MUTED, ACCENT, SURFACE, HIGHLIGHT, RED, GREEN, YELLOW,
     BODY, CAPTION, HINT, HEADING,
     PAD, PAD_TIGHT, HEADER_H,
-    dim, _emit,
+    dim,
 )
 
 GITHUB_API = "https://api.github.com"
@@ -36,7 +34,7 @@ class GitHubTreeApp(App):
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self, _ctx: RenderContext) -> None:
         self._mode = MODE_SEARCH
         self._query = ""
         self._token: str | None = None
@@ -61,37 +59,22 @@ class GitHubTreeApp(App):
         except Exception as e:
             self.emit.warn(f"github-tree: secret fetch failed: {e}")
 
-    # ── Authenticated HTTP (with custom headers) ──────────────────────────────
+    # ── Authenticated HTTP ────────────────────────────────────────────────────
 
     def _github_get(self, url: str) -> dict | list:
         """Blocking authenticated GET to api.github.com. Returns parsed JSON."""
-        req_id = str(uuid.uuid4())
-        q: queue.Queue = queue.Queue()
-        self._pending_http[req_id] = q
-
-        headers = {
+        headers: dict[str, str] = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
-
-        _emit({
-            "type": "http_request",
-            "request_id": req_id,
-            "method": "GET",
-            "url": url,
-            "headers": headers,
-        })
-
-        status, value = q.get()
-        if status == "error":
-            raise RuntimeError(value)
-        return json.loads(value)
+        body = self.emit.http_request(url, headers=headers)
+        return json.loads(body)
 
     # ── Input ─────────────────────────────────────────────────────────────────
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == MODE_SEARCH:
             self._handle_search_key(key)
         elif self._mode == MODE_REPO:

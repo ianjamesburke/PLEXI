@@ -427,14 +427,27 @@ class Emitter:
     def http_get(self, url: str) -> str:
         """Blocking HTTP GET brokered through the host. Requires net.http capability.
         Call from any thread (background threads included). Raises RuntimeError on failure."""
+        return self.http_request(url)
+
+    def http_request(self, url: str, method: str = "GET",
+                     headers: "dict[str, str] | None" = None,
+                     body: "str | None" = None) -> str:
+        """Blocking HTTP request brokered through the host. Requires net.http capability.
+        Supports custom method, headers, and body. Raises RuntimeError on failure."""
         import uuid
         req_id = str(uuid.uuid4())
         q: "queue.Queue[tuple[str, str]]" = queue.Queue()
         self._app._pending_http[req_id] = q
-        _emit({"type": "http_request", "request_id": req_id, "method": "GET", "url": url})
+        payload: dict = {"type": "http_request", "request_id": req_id,
+                         "method": method, "url": url}
+        if headers:
+            payload["headers"] = headers
+        if body is not None:
+            payload["body"] = body
+        _emit(payload)
         status, value = q.get()
         if status == "error":
-            raise RuntimeError(f"http_get {url!r}: {value}")
+            raise RuntimeError(f"http_request {url!r}: {value}")
         return value
 
     def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
@@ -643,6 +656,12 @@ class RenderContext:
     def get_secret(self, key: str) -> str | None:
         """Request a secret by key. Alias for emit.get_secret(). Blocking."""
         return self.emit.get_secret(key)
+
+    def http_request(self, url: str, method: str = "GET",
+                     headers: "dict[str, str] | None" = None,
+                     body: "str | None" = None) -> str:
+        """Blocking HTTP request with optional method, headers, body. Requires net.http capability."""
+        return self.emit.http_request(url, method=method, headers=headers, body=body)
 
     def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
             system: str | None = None) -> str:
