@@ -14,6 +14,9 @@ pub struct SecretEntry {
     /// Workspace root this secret is scoped to (v3). None for legacy v1/v2 secrets.
     #[serde(default)]
     pub workspace_root: Option<String>,
+    /// When true, this secret is injected as an env var into every new shell session.
+    #[serde(default)]
+    pub inject: bool,
 }
 
 /// Build the v1/v2 Keychain account string: "{app_id}/{directory}/{key}"
@@ -148,6 +151,12 @@ fn write_index(entries: &[SecretEntry]) {
 
 fn index_add(key: &str, app_id: &str, directory: &str) {
     let mut entries = read_index();
+    // Preserve inject flag if an entry already exists with this triple.
+    let existing_inject = entries
+        .iter()
+        .find(|e| e.key == key && e.app_id == app_id && e.directory == directory)
+        .map(|e| e.inject)
+        .unwrap_or(false);
     // Remove any existing entry with the same triple to avoid duplicates.
     entries.retain(|e| !(e.key == key && e.app_id == app_id && e.directory == directory));
     entries.push(SecretEntry {
@@ -155,6 +164,7 @@ fn index_add(key: &str, app_id: &str, directory: &str) {
         directory: directory.to_string(),
         key: key.to_string(),
         workspace_root: None, // v1/v2 legacy path — no workspace scoping
+        inject: existing_inject,
     });
     write_index(&entries);
 }
@@ -291,6 +301,24 @@ pub fn list_secrets(app_id: &str) -> Vec<String> {
 /// List every Plexi secret across all app_ids — reads from the index.
 pub fn list_all_secrets() -> Vec<SecretEntry> {
     read_index()
+}
+
+/// Return all secrets flagged with inject=true.
+pub fn list_inject_secrets() -> Vec<SecretEntry> {
+    read_index().into_iter().filter(|e| e.inject).collect()
+}
+
+/// Toggle the inject flag for the given key+app_id+directory triple.
+/// Returns the new inject value, or None if the entry was not found.
+pub fn toggle_inject_secret(key: &str, app_id: &str, directory: &str) -> Option<bool> {
+    let mut entries = read_index();
+    let entry = entries
+        .iter_mut()
+        .find(|e| e.key == key && e.app_id == app_id && e.directory == directory)?;
+    entry.inject = !entry.inject;
+    let new_value = entry.inject;
+    write_index(&entries);
+    Some(new_value)
 }
 
 /// Walk up from `launch_dir` to the user's home directory, returning the first

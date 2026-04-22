@@ -1,6 +1,16 @@
 mod dispatch;
 mod sync;
 
+#[derive(Clone)]
+pub(crate) struct PendingNotification {
+    pub notify_id: String,
+    pub sender_pane_id: u64,
+    pub level: String,
+    pub title: String,
+    pub body: String,
+    pub actions: Vec<crate::app_protocol::NotificationAction>,
+}
+
 use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
@@ -20,6 +30,7 @@ use std::sync::mpsc;
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
+    pub(crate) last_notify_poll: std::time::Instant,
     pub(crate) theme: TerminalTheme,
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
@@ -32,6 +43,8 @@ pub struct PlexiApp {
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) quit_confirm_required: bool,
+    pub(crate) confirm_close: bool,
+    pub(crate) pending_close: bool,
     pub(crate) renaming_context: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) registry: AppRegistry,
@@ -43,8 +56,15 @@ pub struct PlexiApp {
     pub(crate) features: crate::features::FeatureFlags,
     /// Whether the Run palette overlay is visible (Cmd+R).
     pub(crate) show_run_palette: bool,
+    /// Notifications queued from apps via ShowNotification.
+    pub(crate) pending_notifications: Vec<PendingNotification>,
+    /// Whether the notification panel overlay is visible (Cmd+Shift+A).
+    pub(crate) show_notification_panel: bool,
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
+    /// Parked background ProcessApps — kept alive when their pane is closed.
+    /// Keyed by app type_id. Re-attached by B3 when the app is reopened.
+    pub(crate) background_apps: HashMap<String, Box<crate::process_app::ProcessApp>>,
 }
 
 impl PlexiApp {
@@ -58,11 +78,9 @@ impl PlexiApp {
 
         let config = config::PlexiConfig::load();
         let features = crate::features::FeatureFlags::from_config(&config);
-        let quit_confirm_required = config
-            .beta
-            .as_ref()
-            .and_then(|b| b.quit_confirm)
-            .unwrap_or(true);
+        let quit_confirm_required = config.confirm_quit
+            .unwrap_or_else(|| config.beta.as_ref().and_then(|b| b.quit_confirm).unwrap_or(true));
+        let confirm_close = config.confirm_close.unwrap_or(true);
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -240,6 +258,8 @@ impl PlexiApp {
                     quit_press_count: 0,
                     quit_last_press: None,
                     quit_confirm_required,
+                    confirm_close,
+                    pending_close: false,
                     renaming_context: None,
                     rename_buffer: String::new(),
                     show_command_palette: false,
@@ -250,8 +270,12 @@ impl PlexiApp {
                     registry,
                     features: features.clone(),
                     show_run_palette: false,
+                    pending_notifications: Vec::new(),
+                    show_notification_panel: false,
+                    last_notify_poll: std::time::Instant::now(),
                     host,
                     host_services: crate::host::services::HostServices::new(),
+                    background_apps: HashMap::new(),
                 };
             }
         }
@@ -298,6 +322,8 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             quit_confirm_required,
+            confirm_close,
+            pending_close: false,
             renaming_context: None,
             rename_buffer: String::new(),
             show_command_palette: false,
@@ -308,8 +334,12 @@ impl PlexiApp {
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
             show_run_palette: false,
+            pending_notifications: Vec::new(),
+            show_notification_panel: false,
+            last_notify_poll: std::time::Instant::now(),
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
+            background_apps: HashMap::new(),
         }
     }
 
@@ -335,6 +365,32 @@ impl PlexiApp {
             env: shell::build_env(),
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
+        }
+    }
+
+    fn drain_notify_queue(&mut self) {
+        let queue_dir = crate::config::config_dir().join("notify-queue");
+        let Ok(entries) = std::fs::read_dir(&queue_dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            let _ = std::fs::remove_file(&path);
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+            let level = val["level"].as_str().unwrap_or("info").to_string();
+            let title = val["title"].as_str().unwrap_or("").to_string();
+            let body = val["body"].as_str().unwrap_or("").to_string();
+            self.pending_notifications.push(PendingNotification {
+                notify_id: String::new(),
+                sender_pane_id: 0,
+                level,
+                title,
+                body,
+                actions: vec![],
+            });
+            self.show_notification_panel = true;
         }
     }
 
@@ -373,6 +429,10 @@ impl PlexiApp {
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
+            self.last_notify_poll = std::time::Instant::now();
+            self.drain_notify_queue();
+        }
         self.drain_pty_events();
         let deferred_app_cmds = self.dispatch_app_key_events(ctx);
         self.sync_app_cwd();
@@ -438,6 +498,29 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::Notify(_) => {}
+                AppCommand::ShowNotification { notify_id, sender_pane_id, level, title, body, actions } => {
+                    self.pending_notifications.push(PendingNotification {
+                        notify_id,
+                        sender_pane_id,
+                        level,
+                        title,
+                        body,
+                        actions,
+                    });
+                }
+                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label } => {
+                    let active = self.active_context;
+                    if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            app.runtime.queue_outbound_event(
+                                crate::app_protocol::PlexiEvent::NotifyAction {
+                                    notify_id,
+                                    action_label,
+                                },
+                            );
+                        }
+                    }
+                }
                 AppCommand::DeliverPipeMessage { sender_pane_id, pipe_id, payload } => {
                     let active = self.active_context;
                     let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
@@ -602,14 +685,10 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ClosePane => {
-                    self.contexts[self.active_context].zoomed_pane = None;
-                    let active_panes = self.contexts[self.active_context].panes.len();
-                    if active_panes > 1 {
-                        self.close_focused();
-                    } else if self.contexts.len() > 1 {
-                        self.delete_context(self.active_context);
+                    if self.confirm_close {
+                        self.pending_close = true;
                     } else {
-                        self.reset_active_context();
+                        self.execute_close_pane();
                     }
                 }
                 Action::NewTab => self.new_tab(),
@@ -720,6 +799,9 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ToggleRunPalette => {
                     self.show_run_palette = !self.show_run_palette;
+                }
+                Action::ToggleNotificationPanel => {
+                    self.show_notification_panel = !self.show_notification_panel;
                 }
                 Action::OpenAgentPane => {
                     self.open_agent_pane();
@@ -989,9 +1071,35 @@ impl eframe::App for PlexiApp {
             self.draw_run_palette(ctx);
         }
 
+        // Notification panel overlay (Cmd+Shift+A)
+        if self.show_notification_panel {
+            let notif_cmds = self.draw_notification_panel(ctx);
+            for cmd in notif_cmds {
+                use crate::app_trait::AppCommand;
+                if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label } = cmd {
+                    let active = self.active_context;
+                    if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            app.runtime.queue_outbound_event(
+                                crate::app_protocol::PlexiEvent::NotifyAction {
+                                    notify_id,
+                                    action_label,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Rename pane overlay
         if self.renaming_pane.is_some() {
             self.draw_rename_pane_overlay(ctx);
+        }
+
+        // Close pane confirmation overlay
+        if self.pending_close {
+            self.draw_confirm_close(ctx);
         }
 
         // Quit confirmation overlay

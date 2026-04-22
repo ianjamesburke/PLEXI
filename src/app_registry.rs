@@ -65,6 +65,11 @@ pub struct AppCapabilities {
     /// video.playback. Unknown values cause install to fail (STEP-7).
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Hosts this app is allowed to reach via net.http.
+    /// Empty list = unrestricted (allow any host).
+    /// Patterns: exact hostname ("api.github.com") or wildcard ("*.wikipedia.org").
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 /// v3 launch section — `[launch]`. Controls pane placement, share, grouping,
@@ -84,6 +89,11 @@ pub struct LaunchSection {
     /// Cmd+W remain.
     #[serde(default)]
     pub keyboard_capture: bool,
+    /// If true, this app's process survives pane close and can be re-attached.
+    /// The host will not kill the subprocess when the pane is closed;
+    /// instead it parks the process in a background registry keyed by app_id.
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
@@ -103,7 +113,9 @@ fn default_split() -> f32 {
 impl AppCapabilities {
     /// Convert manifest-declared capabilities to runtime permissions.
     pub fn to_permissions(&self) -> crate::app_permissions::AppPermissions {
-        crate::app_permissions::AppPermissions::from_capability_strings(&self.capabilities)
+        let mut perms = crate::app_permissions::AppPermissions::from_capability_strings(&self.capabilities);
+        perms.allowed_hosts = self.allowed_hosts.clone();
+        perms
     }
 }
 
@@ -241,6 +253,11 @@ impl AppRegistry {
         let mut apps: Vec<_> = self.apps.values().collect();
         apps.sort_by_key(|a| &a.manifest.name);
         apps
+    }
+
+    /// Returns true if the app's process should survive pane close (`[launch].background`).
+    pub fn is_background(&self, app_id: &str) -> bool {
+        self.apps.get(app_id).map(|a| a.launch.background).unwrap_or(false)
     }
 
     /// Get the manifest-declared pane group (`[launch].join_group`).

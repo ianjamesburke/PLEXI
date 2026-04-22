@@ -166,6 +166,7 @@ impl ProcessApp {
                 title,
                 body,
                 actions,
+                notify_id,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
@@ -243,8 +244,18 @@ impl ProcessApp {
                         }
                     }
                 }
-                self.pending_commands
-                    .push(AppCommand::Notify(format!("[{level}] {title}: {body}")));
+                // Always show in the notification panel. Use app-supplied notify_id if
+                // provided (enables NotifyAction round-trips), otherwise use the auto-
+                // generated notif_id so the panel entry is always created.
+                let panel_id = notify_id.unwrap_or_else(|| notif_id.clone());
+                self.pending_commands.push(AppCommand::ShowNotification {
+                    notify_id: panel_id,
+                    sender_pane_id: 0, // stamped by dispatch.rs with the real pane_id
+                    level,
+                    title,
+                    body,
+                    actions,
+                });
             }
 
             // ── Pipe open ──────────────────────────────────────────────────
@@ -387,6 +398,24 @@ impl ProcessApp {
                         });
                     return;
                 }
+                // Check allowed_hosts if the list is non-empty.
+                if !self.permissions.allowed_hosts.is_empty() {
+                    let host = extract_host(&url);
+                    let allowed = self.permissions.allowed_hosts.iter().any(|pattern| host_matches(host, pattern));
+                    if !allowed {
+                        log::warn!(
+                            "ProcessApp[{}]: HttpRequest {request_id} denied — host '{host}' not in allowed_hosts",
+                            self.type_id
+                        );
+                        self.outbound_events.push_back(PlexiEvent::HttpResponse {
+                            request_id,
+                            status: 403,
+                            body: String::new(),
+                            error: Some(format!("host_not_allowed: '{host}' is not in this app's allowed_hosts list")),
+                        });
+                        return;
+                    }
+                }
                 log::debug!(
                     "ProcessApp[{}]: HttpRequest {request_id} {method} {url}",
                     self.type_id
@@ -406,6 +435,71 @@ impl ProcessApp {
                     });
                 });
             }
+            // ── LLM request (broker via Anthropic API) ────────────────────
+            DrawCommand::LlmRequest {
+                request_id,
+                prompt,
+                model,
+                system,
+            } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::Llm)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: LlmRequest {request_id} denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::LlmResponse {
+                        request_id,
+                        content: String::new(),
+                        error: Some(format!("capability_denied: {reason}")),
+                    });
+                    return;
+                }
+
+                let api_key = crate::secrets::resolve_secret(
+                    "ANTHROPIC_API_KEY",
+                    &self.type_id,
+                    self.workspace_root.to_str().unwrap_or(""),
+                );
+
+                let Some(api_key) = api_key else {
+                    log::warn!(
+                        "ProcessApp[{}]: LlmRequest {request_id} — ANTHROPIC_API_KEY not in secrets store",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::LlmResponse {
+                        request_id,
+                        content: String::new(),
+                        error: Some("api_key_missing: store ANTHROPIC_API_KEY in Plexi secrets to use llm capability".to_string()),
+                    });
+                    return;
+                };
+
+                log::debug!(
+                    "ProcessApp[{}]: LlmRequest {request_id} model={model}",
+                    self.type_id
+                );
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    let result = call_anthropic_api(&api_key, &model, &prompt, system.as_deref());
+                    let _ = tx.send(match result {
+                        Ok(content) => PlexiEvent::LlmResponse {
+                            request_id,
+                            content,
+                            error: None,
+                        },
+                        Err(e) => PlexiEvent::LlmResponse {
+                            request_id,
+                            content: String::new(),
+                            error: Some(e),
+                        },
+                    });
+                    log::debug!("ProcessApp[{type_id}]: LlmRequest completed");
+                });
+            }
+
             DrawCommand::AudioPlay { .. } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::AudioPlayback)
@@ -461,7 +555,100 @@ impl ProcessApp {
                 self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
             }
 
+            // ── Set timer ──────────────────────────────────────────────────
+            DrawCommand::SetTimer { timer_id, after_ms } => {
+                if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer) {
+                    log::warn!("ProcessApp[{}]: SetTimer {timer_id} denied — {reason}", self.type_id);
+                    return;
+                }
+                let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.pending_timers.insert(timer_id.clone(), std::sync::Arc::clone(&cancelled));
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(after_ms));
+                    if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        log::debug!("ProcessApp[{type_id}]: timer {timer_id} fired");
+                        let _ = tx.send(PlexiEvent::Timer { timer_id });
+                    }
+                });
+            }
+
+            // ── Cancel timer ───────────────────────────────────────────────
+            DrawCommand::CancelTimer { timer_id } => {
+                if let Some(flag) = self.pending_timers.remove(&timer_id) {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    log::debug!("ProcessApp[{}]: timer {timer_id} cancelled", self.type_id);
+                }
+            }
+
             _ => unreachable!("route_command called with non-control command"),
         }
+    }
+}
+
+/// Call the Anthropic Messages API synchronously. Returns the text of the first content block.
+fn call_anthropic_api(
+    api_key: &zeroize::Zeroizing<String>,
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+) -> Result<String, String> {
+    let mut body = serde_json::json!({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}]
+    });
+    if let Some(sys) = system {
+        body["system"] = serde_json::Value::String(sys.to_string());
+    }
+
+    let body_str = body.to_string();
+    let resp = ureq::post("https://api.anthropic.com/v1/messages")
+        .set("x-api-key", api_key.as_str())
+        .set("anthropic-version", "2023-06-01")
+        .set("content-type", "application/json")
+        .send_string(&body_str);
+
+    match resp {
+        Ok(r) => {
+            let resp_body = r.into_string().map_err(|e| format!("read_error: {e}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&resp_body).map_err(|e| format!("parse_error: {e}"))?;
+            v["content"][0]["text"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| format!("unexpected_response: {resp_body}"))
+        }
+        Err(ureq::Error::Status(status, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(format!("http_error: status={status} body={body}"))
+        }
+        Err(e) => Err(format!("http_error: {e}")),
+    }
+}
+
+/// Extract the hostname from a URL string. Returns empty string on parse failure.
+fn extract_host(url: &str) -> &str {
+    if let Some(after_scheme) = url.find("://").map(|i| &url[i + 3..]) {
+        let end = after_scheme.find('/').unwrap_or(after_scheme.len());
+        let host_port = &after_scheme[..end];
+        if let Some(colon) = host_port.rfind(':') {
+            &host_port[..colon]
+        } else {
+            host_port
+        }
+    } else {
+        ""
+    }
+}
+
+/// Check if `host` matches `pattern`. Supports exact match and `*.domain.com` wildcards.
+fn host_matches(host: &str, pattern: &str) -> bool {
+    if pattern.starts_with("*.") {
+        let suffix = &pattern[1..]; // ".domain.com"
+        host.ends_with(suffix) || host == &pattern[2..]
+    } else {
+        host == pattern
     }
 }

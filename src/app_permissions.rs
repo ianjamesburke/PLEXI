@@ -36,6 +36,10 @@ pub enum Capability {
     AudioPlayback,
     /// Decode and display video via host broker.
     VideoPlayback,
+    /// Make LLM API calls via host broker (uses ANTHROPIC_API_KEY from secrets store).
+    Llm,
+    /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
+    Timer,
 }
 
 impl fmt::Display for Capability {
@@ -56,6 +60,8 @@ impl Capability {
             Self::AudioRecord => "audio.record",
             Self::AudioPlayback => "audio.playback",
             Self::VideoPlayback => "video.playback",
+            Self::Llm => "llm",
+            Self::Timer => "timer",
         }
     }
 }
@@ -88,6 +94,8 @@ impl<'a> TryFrom<&'a str> for Capability {
             "audio.record" => Ok(Self::AudioRecord),
             "audio.playback" => Ok(Self::AudioPlayback),
             "video.playback" => Ok(Self::VideoPlayback),
+            "llm" => Ok(Self::Llm),
+            "timer" => Ok(Self::Timer),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -103,6 +111,9 @@ pub struct AppPermissions {
     /// True when this is a built-in app; bypasses all capability checks.
     #[serde(default)]
     pub is_builtin: bool,
+    /// Allowed HTTP hosts. Empty = unrestricted.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 impl AppPermissions {
@@ -111,6 +122,7 @@ impl AppPermissions {
         Self {
             capabilities: HashSet::new(), // not needed — is_builtin bypasses checks
             is_builtin: true,
+            allowed_hosts: vec![],
         }
     }
 
@@ -133,6 +145,7 @@ impl AppPermissions {
         Self {
             capabilities,
             is_builtin: false,
+            allowed_hosts: vec![],
         }
     }
 }

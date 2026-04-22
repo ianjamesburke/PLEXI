@@ -1,0 +1,13 @@
+[app]
+id = "stand-up-reminder"
+name = "Stand Up Reminder"
+version = "0.1.0"
+description = "Background app: notifies every 15 min with a random movement prompt."
+entry = "stand_up_reminder.py"
+
+[app.capabilities]
+capabilities = ["timer"]
+
+[launch]
+background = true
+layout_hint = { side = "right", split = 0.4 }

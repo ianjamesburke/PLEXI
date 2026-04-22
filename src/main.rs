@@ -184,6 +184,38 @@ fn main() -> eframe::Result {
                     }
                 }
             }
+            "notify" => {
+                let mut title = String::new();
+                let mut body = String::new();
+                let mut level = "info";
+                let mut i = 2;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--title" if i + 1 < args.len() => {
+                            title = args[i + 1].clone();
+                            i += 2;
+                        }
+                        "--body" if i + 1 < args.len() => {
+                            body = args[i + 1].clone();
+                            i += 2;
+                        }
+                        "--level" if i + 1 < args.len() => {
+                            level = args[i + 1].as_str();
+                            i += 2;
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+                if title.is_empty() {
+                    eprintln!(
+                        "Usage: plexi notify --title <text> --body <text> [--level info|warn|error]"
+                    );
+                    std::process::exit(1);
+                }
+                std::process::exit(cli::notify_cli(&title, &body, level));
+            }
             _ => {} // Not a CLI subcommand — fall through to GUI
         }
     }

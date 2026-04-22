@@ -80,6 +80,33 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 ui.painter().circle_filled(center, *r, color);
             }
 
+            DrawCommand::Arc {
+                cx,
+                cy,
+                r,
+                start_angle,
+                end_angle,
+                fill,
+            } => {
+                let color = parse_color(fill).unwrap_or(colors.accent);
+                let center = egui::pos2(origin.x + cx, origin.y + cy);
+                let span = (end_angle - start_angle).abs();
+                let steps = ((r * span) as usize).max(8).min(128);
+                let mut points = Vec::with_capacity(steps + 2);
+                points.push(center);
+                for i in 0..=steps {
+                    let t = start_angle + (end_angle - start_angle) * i as f32 / steps as f32;
+                    points.push(egui::pos2(center.x + r * t.cos(), center.y + r * t.sin()));
+                }
+                let shape = egui::Shape::Path(egui::epaint::PathShape {
+                    points,
+                    closed: true,
+                    fill: color,
+                    stroke: egui::epaint::PathStroke::NONE,
+                });
+                ui.painter().add(shape);
+            }
+
             DrawCommand::List {
                 x,
                 y,
@@ -153,6 +180,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::StatusSummary { .. }
             | DrawCommand::SpawnApp { .. }
             | DrawCommand::HttpRequest { .. }
+            | DrawCommand::LlmRequest { .. }
             | DrawCommand::CdRequest { .. }
             | DrawCommand::Image { .. }
             | DrawCommand::VideoPlayer { .. }
@@ -160,7 +188,9 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::AudioPlay { .. }
             | DrawCommand::AudioCapture { .. }
             | DrawCommand::Ready { .. }
-            | DrawCommand::ScheduleRender { .. } => {}
+            | DrawCommand::ScheduleRender { .. }
+            | DrawCommand::SetTimer { .. }
+            | DrawCommand::CancelTimer { .. } => {}
         }
     }
 }

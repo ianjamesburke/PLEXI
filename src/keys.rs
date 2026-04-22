@@ -74,6 +74,8 @@ pub enum Action {
     ToggleRunPalette,
     /// Open a new agent pane (Cmd+I).
     OpenAgentPane,
+    /// Toggle the notification panel overlay (Cmd+Shift+A).
+    ToggleNotificationPanel,
 }
 
 /// Poll global keyboard actions.
@@ -229,6 +231,11 @@ pub fn poll_actions(
         // Run palette (Cmd+R — plain, not Cmd+Shift+R which is RenamePane)
         if !input.modifiers.shift && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R) {
             actions.push(Action::ToggleRunPalette);
+        }
+
+        // Notification panel (Cmd+Shift+A)
+        if input.consume_key(cmd_shift, egui::Key::A) {
+            actions.push(Action::ToggleNotificationPanel);
         }
 
         // Switch context (Cmd+1 through Cmd+9)
