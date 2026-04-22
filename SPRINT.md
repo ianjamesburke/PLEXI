@@ -10,6 +10,7 @@ File is committed after every completed task.
 
 - [ ] A1: Delete `docs/specs/app-infrastructure.md` (stale, misleads agents)
 - [ ] A2: Rewrite `plexi_sdk.py` module docstring — full quick-start example, TypedDict types, every method documented
+- [ ] A2.5: Secrets UX — `inject` toggle in SecretsApp UI + help text + `emit.get_secret()` in SDK + inject flagged secrets into shell env via `build_env()` (#296)
 - [ ] A3: `DrawCommand::Notify` in `app_protocol.rs` + render stub in `process_app.rs`
 - [ ] A4: `emit.notify()` + `emit.notify_and_wait()` in Python SDK
 - [ ] A5: Notification panel UI + badge in top bar + Cmd+Shift+A (#291)
