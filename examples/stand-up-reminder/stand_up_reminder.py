@@ -6,8 +6,8 @@ import time
 
 from plexi_sdk import (
     App, RenderContext,
-    BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, GREEN, YELLOW,
-    TITLE, HEADING, BODY, CAPTION, HINT,
+    BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, GREEN,
+    TITLE, HEADING, CAPTION, HINT,
     PAD, PAD_TIGHT, HEADER_H,
 )
 
