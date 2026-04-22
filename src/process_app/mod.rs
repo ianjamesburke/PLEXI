@@ -410,6 +410,7 @@ impl App for ProcessApp {
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
+                | DrawCommand::LlmRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
                 | DrawCommand::CdRequest { .. }) => {

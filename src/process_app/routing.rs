@@ -435,6 +435,71 @@ impl ProcessApp {
                     });
                 });
             }
+            // ── LLM request (broker via Anthropic API) ────────────────────
+            DrawCommand::LlmRequest {
+                request_id,
+                prompt,
+                model,
+                system,
+            } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::Llm)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: LlmRequest {request_id} denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::LlmResponse {
+                        request_id,
+                        content: String::new(),
+                        error: Some(format!("capability_denied: {reason}")),
+                    });
+                    return;
+                }
+
+                let api_key = crate::secrets::resolve_secret(
+                    "ANTHROPIC_API_KEY",
+                    &self.type_id,
+                    self.workspace_root.to_str().unwrap_or(""),
+                );
+
+                let Some(api_key) = api_key else {
+                    log::warn!(
+                        "ProcessApp[{}]: LlmRequest {request_id} — ANTHROPIC_API_KEY not in secrets store",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::LlmResponse {
+                        request_id,
+                        content: String::new(),
+                        error: Some("api_key_missing: store ANTHROPIC_API_KEY in Plexi secrets to use llm capability".to_string()),
+                    });
+                    return;
+                };
+
+                log::debug!(
+                    "ProcessApp[{}]: LlmRequest {request_id} model={model}",
+                    self.type_id
+                );
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    let result = call_anthropic_api(&api_key, &model, &prompt, system.as_deref());
+                    let _ = tx.send(match result {
+                        Ok(content) => PlexiEvent::LlmResponse {
+                            request_id,
+                            content,
+                            error: None,
+                        },
+                        Err(e) => PlexiEvent::LlmResponse {
+                            request_id,
+                            content: String::new(),
+                            error: Some(e),
+                        },
+                    });
+                    log::debug!("ProcessApp[{type_id}]: LlmRequest completed");
+                });
+            }
+
             DrawCommand::AudioPlay { .. } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::AudioPlayback)
@@ -492,6 +557,47 @@ impl ProcessApp {
 
             _ => unreachable!("route_command called with non-control command"),
         }
+    }
+}
+
+/// Call the Anthropic Messages API synchronously. Returns the text of the first content block.
+fn call_anthropic_api(
+    api_key: &zeroize::Zeroizing<String>,
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+) -> Result<String, String> {
+    let mut body = serde_json::json!({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}]
+    });
+    if let Some(sys) = system {
+        body["system"] = serde_json::Value::String(sys.to_string());
+    }
+
+    let body_str = body.to_string();
+    let resp = ureq::post("https://api.anthropic.com/v1/messages")
+        .set("x-api-key", api_key.as_str())
+        .set("anthropic-version", "2023-06-01")
+        .set("content-type", "application/json")
+        .send_string(&body_str);
+
+    match resp {
+        Ok(r) => {
+            let resp_body = r.into_string().map_err(|e| format!("read_error: {e}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&resp_body).map_err(|e| format!("parse_error: {e}"))?;
+            v["content"][0]["text"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| format!("unexpected_response: {resp_body}"))
+        }
+        Err(ureq::Error::Status(status, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(format!("http_error: status={status} body={body}"))
+        }
+        Err(e) => Err(format!("http_error: {e}")),
     }
 }
 

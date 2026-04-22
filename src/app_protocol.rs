@@ -127,6 +127,15 @@ pub enum PlexiEvent {
         #[serde(default)]
         error: Option<String>,
     },
+    /// Sent when an LlmRequest completes.
+    LlmResponse {
+        request_id: String,
+        /// The text content of the first choice, or empty on error.
+        content: String,
+        /// Set if the call failed.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Sent when the user responds to a notification that included a notify_id.
     NotifyAction {
         notify_id: String,
@@ -299,6 +308,17 @@ pub enum DrawCommand {
         #[serde(default)]
         body: Option<String>,
     },
+    /// Host-brokered LLM call. Requires `llm` capability.
+    /// Calls Anthropic Claude with the given prompt and optional system message.
+    /// Host replies with `PlexiEvent::LlmResponse { request_id, content, error }`.
+    LlmRequest {
+        request_id: String,
+        prompt: String,
+        #[serde(default = "default_llm_model")]
+        model: String,
+        #[serde(default)]
+        system: Option<String>,
+    },
     /// Draw an image from a workspace-scoped path or data URL.
     Image {
         src: String,
@@ -420,4 +440,8 @@ fn default_sample_rate() -> u32 {
 
 fn default_buffer_size() -> u32 {
     1024
+}
+
+fn default_llm_model() -> String {
+    "claude-haiku-4-5-20251001".to_string()
 }

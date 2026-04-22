@@ -437,6 +437,25 @@ class Emitter:
             raise RuntimeError(f"http_get {url!r}: {value}")
         return value
 
+    def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
+            system: str | None = None) -> str:
+        """Blocking LLM call brokered through the host. Requires llm capability.
+        Uses ANTHROPIC_API_KEY from the Plexi secrets store.
+        Returns the text response. Raises RuntimeError on failure."""
+        import uuid
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self._app._pending_llm[req_id] = q
+        payload: dict = {"type": "llm_request", "request_id": req_id,
+                         "prompt": prompt, "model": model}
+        if system is not None:
+            payload["system"] = system
+        _emit(payload)
+        status, value = q.get()
+        if status == "error":
+            raise RuntimeError(f"llm call failed: {value}")
+        return value
+
     # Binary pipe
     def pipe_open(self, pipe_id: str, mode: str = "binary",
                   direction: str = "in") -> "Pipe":
@@ -611,6 +630,12 @@ class RenderContext:
         """Request a secret by key. Alias for emit.get_secret(). Blocking."""
         return self.emit.get_secret(key)
 
+    def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
+            system: str | None = None) -> str:
+        """Blocking LLM call brokered through the host. Requires llm capability.
+        Uses ANTHROPIC_API_KEY from the Plexi secrets store."""
+        return self.emit.llm(prompt=prompt, model=model, system=system)
+
     def frame_done(self) -> None:
         _emit({"type": "frame_done", "frame_id": self.frame_id})
 
@@ -643,6 +668,7 @@ class App:
         self._pending_capability: dict[str, queue.Queue] = {}
         self._pending_secret: dict[str, queue.Queue] = {}
         self._pending_http: dict[str, queue.Queue] = {}
+        self._pending_llm: dict[str, queue.Queue] = {}
         self._pending_notify: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
@@ -795,6 +821,15 @@ class App:
                         q.put(("error", ev["error"]))
                     else:
                         q.put(("ok", ev.get("body", "")))
+
+            elif t == "llm_response":
+                req_id = ev.get("request_id", "")
+                q = self._pending_llm.pop(req_id, None)
+                if q:
+                    if ev.get("error"):
+                        q.put(("error", ev["error"]))
+                    else:
+                        q.put(("ok", ev.get("content", "")))
 
             elif t == "notify_action":
                 notify_id = ev.get("notify_id", "")

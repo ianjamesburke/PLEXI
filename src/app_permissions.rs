@@ -36,6 +36,8 @@ pub enum Capability {
     AudioPlayback,
     /// Decode and display video via host broker.
     VideoPlayback,
+    /// Make LLM API calls via host broker (uses ANTHROPIC_API_KEY from secrets store).
+    Llm,
 }
 
 impl fmt::Display for Capability {
@@ -56,6 +58,7 @@ impl Capability {
             Self::AudioRecord => "audio.record",
             Self::AudioPlayback => "audio.playback",
             Self::VideoPlayback => "video.playback",
+            Self::Llm => "llm",
         }
     }
 }
@@ -88,6 +91,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "audio.record" => Ok(Self::AudioRecord),
             "audio.playback" => Ok(Self::AudioPlayback),
             "video.playback" => Ok(Self::VideoPlayback),
+            "llm" => Ok(Self::Llm),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
