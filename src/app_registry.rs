@@ -65,6 +65,11 @@ pub struct AppCapabilities {
     /// video.playback. Unknown values cause install to fail (STEP-7).
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Hosts this app is allowed to reach via net.http.
+    /// Empty list = unrestricted (allow any host).
+    /// Patterns: exact hostname ("api.github.com") or wildcard ("*.wikipedia.org").
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 /// v3 launch section — `[launch]`. Controls pane placement, share, grouping,
@@ -108,7 +113,9 @@ fn default_split() -> f32 {
 impl AppCapabilities {
     /// Convert manifest-declared capabilities to runtime permissions.
     pub fn to_permissions(&self) -> crate::app_permissions::AppPermissions {
-        crate::app_permissions::AppPermissions::from_capability_strings(&self.capabilities)
+        let mut perms = crate::app_permissions::AppPermissions::from_capability_strings(&self.capabilities);
+        perms.allowed_hosts = self.allowed_hosts.clone();
+        perms
     }
 }
 

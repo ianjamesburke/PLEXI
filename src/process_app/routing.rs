@@ -387,6 +387,24 @@ impl ProcessApp {
                         });
                     return;
                 }
+                // Check allowed_hosts if the list is non-empty.
+                if !self.permissions.allowed_hosts.is_empty() {
+                    let host = extract_host(&url);
+                    let allowed = self.permissions.allowed_hosts.iter().any(|pattern| host_matches(host, pattern));
+                    if !allowed {
+                        log::warn!(
+                            "ProcessApp[{}]: HttpRequest {request_id} denied — host '{host}' not in allowed_hosts",
+                            self.type_id
+                        );
+                        self.outbound_events.push_back(PlexiEvent::HttpResponse {
+                            request_id,
+                            status: 403,
+                            body: String::new(),
+                            error: Some(format!("host_not_allowed: '{host}' is not in this app's allowed_hosts list")),
+                        });
+                        return;
+                    }
+                }
                 log::debug!(
                     "ProcessApp[{}]: HttpRequest {request_id} {method} {url}",
                     self.type_id
@@ -463,5 +481,30 @@ impl ProcessApp {
 
             _ => unreachable!("route_command called with non-control command"),
         }
+    }
+}
+
+/// Extract the hostname from a URL string. Returns empty string on parse failure.
+fn extract_host(url: &str) -> &str {
+    if let Some(after_scheme) = url.find("://").map(|i| &url[i + 3..]) {
+        let end = after_scheme.find('/').unwrap_or(after_scheme.len());
+        let host_port = &after_scheme[..end];
+        if let Some(colon) = host_port.rfind(':') {
+            &host_port[..colon]
+        } else {
+            host_port
+        }
+    } else {
+        ""
+    }
+}
+
+/// Check if `host` matches `pattern`. Supports exact match and `*.domain.com` wildcards.
+fn host_matches(host: &str, pattern: &str) -> bool {
+    if pattern.starts_with("*.") {
+        let suffix = &pattern[1..]; // ".domain.com"
+        host.ends_with(suffix) || host == &pattern[2..]
+    } else {
+        host == pattern
     }
 }

@@ -103,6 +103,9 @@ pub struct AppPermissions {
     /// True when this is a built-in app; bypasses all capability checks.
     #[serde(default)]
     pub is_builtin: bool,
+    /// Allowed HTTP hosts. Empty = unrestricted.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 impl AppPermissions {
