@@ -4,29 +4,284 @@ plexi_sdk — Plexi external app SDK (Python), PGAP v3
 Spec: docs/specs/releases/plexi-v3.0.md §3 (PGAP v3), §7 (typed pipes).
 Zero dependencies, pure stdlib.
 
-Protocol: newline-delimited JSON over stdin/stdout.
-  PlexiEvent  (host → app): Init, Render, Key, Click, Command, CapabilityDecision,
-              SecretValue, RunUpdate, PipeMessage, PathChanged, Suspend, Resume,
-              Shutdown, PipeOpened, PipeOverrun
-  DrawCommand (app → host): Rect, Text, Line, List, Circle, FrameDone, Log,
-              CapabilityRequest, SecretGet, RunGet, RunComplete, Notify,
-              PipeOpen, PipeSend, StatusSummary, ScheduleRender
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+QUICK START
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Usage:
+    from plexi_sdk import App, BG, FG, BODY, ACCENT
 
-    class MyApp(App):
+    class CounterApp(App):
         def on_init(self, ctx):
-            pass  # called after Init handshake completes
+            # Called once after the host completes the Init handshake.
+            # ctx.workspace_root, ctx.capabilities, ctx.feature_flags are set.
+            self.count = 0
+            self.emit.info("CounterApp ready")
 
         def on_render(self, ctx):
-            ctx.clear("#1e1e2e")
-            ctx.text(20, 20, f"Hello v3! dt={ctx.elapsed:.3f}s", size=14, color="#cdd6f4")
+            # Called on every frame. Must not block — use threads for I/O.
+            # ctx.w / ctx.h are the current pane dimensions.
+            # ctx.elapsed is seconds since the previous render (0.0 on first frame).
+            ctx.clear(BG)
+            ctx.rect(20, 20, ctx.w - 40, 60, fill="#313244", radius=8.0)
+            ctx.text(36, 42, f"Count: {self.count}", size=BODY, color=FG)
+            ctx.text(36, 72, "Press +/- to change  •  q to quit", size=12.0, color="#6c7086")
 
         def on_key(self, ctx, key, mods):
-            if key == "q":
-                pass
+            # key is a string: "a"-"z", "up", "down", "left", "right",
+            # "return", "escape", "backspace", "tab", "space", "f1"…"f12", etc.
+            # mods shape: {"shift": bool, "ctrl": bool, "alt": bool, "meta": bool}
+            if key == "+" or (key == "=" and mods.get("shift")):
+                self.count += 1
+            elif key == "-":
+                self.count -= 1
+            elif key == "q":
+                pass  # host handles quit; apps cannot self-exit
 
-    MyApp().run()
+        def on_click(self, ctx, x, y, button):
+            # button: "primary" | "secondary" | "middle"
+            # x, y are pixel coordinates within the pane
+            ctx.notify("Clicked", f"({x:.0f}, {y:.0f}) {button}")
+
+    CounterApp().run()
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROTOCOL OVERVIEW (PGAP v3)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Newline-delimited JSON over stdin/stdout. Binary data travels on typed Unix
+socket pipes, not stdio.
+
+PlexiEvent  (host → app):
+  Init               — handshake; delivers app_id, workspace_root, capabilities,
+                        feature_flags, and protocol version string ("pgap/3.x")
+  Render             — draw a new frame; carries frame_id and rect {x,y,w,h}
+  Key                — keypress; carries key string and modifiers dict
+  Click              — pointer event; carries x, y, button string
+  Command            — command-palette entry submitted by the user; carries text
+  CapabilityDecision — response to a CapabilityRequest; carries request_id and granted bool
+  SecretValue        — response to SecretGet; carries key and value (str or null)
+  HttpResponse       — response to HttpRequest; carries request_id, body, and optional error
+  RunUpdate          — streaming update from a RunGet job; carries run_id and payload
+  PipeMessage        — JSON-mode pipe message; carries pipe_id and payload
+  PipeOpened         — binary pipe ready; carries pipe_id and socket_path (Unix socket)
+  PipeOverrun        — host dropped frames on a pipe; carries pipe_id and dropped_frames count
+  PathChanged        — terminal cwd broadcast; carries cwd string
+  AppSpawned         — confirmation that a SpawnApp request completed; carries pane_id and type_id
+  InjectState        — host-initiated state injection; carries payload dict
+  Suspend            — app is being hidden/backgrounded
+  Resume             — app is visible again
+  Shutdown           — app should clean up and exit
+
+DrawCommand (app → host):
+  Rect          — filled rectangle with optional corner radius
+  Circle        — filled circle
+  Text          — text label with font size, color, monospace/bold flags
+  Line          — straight line segment
+  List          — scrollable item list (see ListItem shape below)
+  Image         — display a raster image by path or data URI
+  VideoPlayer   — embed a video player widget
+  AudioMeter    — display a real-time audio level meter
+  AudioPlay     — play audio from a file or pipe
+  AudioCapture  — open an audio capture stream
+  FrameDone     — signals end of a render frame (auto-sent by SDK; do not call manually)
+  Log           — structured log line forwarded to the host log
+  Notify        — trigger a system notification
+  CapabilityRequest — request a runtime capability; host may prompt the user
+  SecretGet     — request a secret by key from the host secrets store
+  HttpRequest   — broker an HTTP request through the host (requires net.http capability)
+  RunGet        — dispatch an intent-based AI/agent job
+  RunComplete   — mark a RunGet job as finished
+  PipeOpen      — open a typed pipe (json or binary, in/out/duplex)
+  PipeSend      — send a JSON payload on a json-mode pipe
+  StatusSummary — set the status bar summary text for this pane
+  ScheduleRender — ask the host to send a Render event after N milliseconds
+  SpawnApp      — request the host to open a new pane with a given app type
+  CdRequest     — request the host to cd all terminals in the pane group to a path
+  Ready         — sent automatically after Init; do not emit manually
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THEME CONSTANTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Font sizes (float, points):
+  TITLE      = 22.0   — primary heading
+  HEADING    = 18.0   — section heading
+  BODY       = 15.0   — default body text
+  CAPTION    = 13.0   — secondary label
+  HINT       = 12.0   — muted hint text
+  MONO_BODY  = 14.0   — monospace body (code)
+  MONO_SMALL = 12.0   — monospace small (log output)
+
+Layout (float, pixels):
+  PAD        = 16.0   — standard outer padding
+  PAD_TIGHT  =  8.0   — tight/inner padding
+  HEADER_H   = 48.0   — standard header bar height
+  STATUS_H   = 44.0   — status bar height
+
+Colors (hex strings, Catppuccin Mocha):
+  BG        = "#1e1e2e"   — main background
+  SURFACE   = "#313244"   — elevated surface / card
+  HIGHLIGHT = "#45475a"   — hover / selection highlight
+  ACCENT    = "#89b4fa"   — primary accent (blue)
+  MUTED     = "#6c7086"   — muted / disabled text
+  FG        = "#cdd6f4"   — primary foreground text
+  RED       = "#f38ba8"   — error / destructive
+  GREEN     = "#a6e3a1"   — success / positive
+  YELLOW    = "#f9e2af"   — warning / caution
+
+Color helpers:
+  rgba(r, g, b, a=255) -> str  — build an 8-digit hex string #rrggbbaa
+  dim(hex_color, alpha) -> str — apply alpha (0-255) to an existing hex color
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RenderContext  (ctx passed to on_init, on_render, on_key, on_click, …)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Attributes:
+  ctx.x, ctx.y          — pane origin in logical pixels (usually 0, 0)
+  ctx.w, ctx.h          — pane width and height in logical pixels
+  ctx.frame_id          — monotonically increasing render counter
+  ctx.elapsed           — seconds since previous on_render (0.0 on first frame)
+  ctx.workspace_root    — absolute path to the workspace root directory
+  ctx.capabilities      — list of granted capability strings
+  ctx.feature_flags     — list of enabled feature flag strings
+  ctx.emit              — Emitter instance (same as self.emit on App)
+
+Drawing methods:
+  ctx.clear(fill)
+      Fill the entire pane with a solid color. Equivalent to ctx.rect(0, 0, w, h, fill).
+
+  ctx.rect(x, y, w, h, fill, radius=0.0)
+      Draw a filled rectangle. radius > 0 rounds the corners.
+
+  ctx.circle(cx, cy, r, fill)
+      Draw a filled circle centered at (cx, cy) with radius r.
+
+  ctx.text(x, y, text, size, color, monospace=False, bold=False)
+      Draw a text label. x, y are the top-left origin of the text block.
+
+  ctx.line(x1, y1, x2, y2, color, width=1.0)
+      Draw a straight line segment.
+
+  ctx.list(items, selected=0, item_height=40.0, x=0, y=0, w=None, h=None)
+      Draw a scrollable list. w defaults to ctx.w; h defaults to ctx.h - y.
+      Each item is a dict — see ListItem shape below.
+
+Notification / logging (usable inside or outside a frame):
+  ctx.notify(title, body, level="info", actions=None)
+      Trigger a system notification. actions: list of NotifyAction dicts (see below).
+
+  ctx.status_summary(text)
+      Set the status bar summary text for this pane.
+
+  ctx.log(level, message)  /  ctx.info(msg)  /  ctx.warn(msg)
+  ctx.error(msg)           /  ctx.debug(msg)
+      Forward a log line to the host logger, tagged with this app's ID.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Emitter  (self.emit — available at all times, including background threads)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All methods are thread-safe (protected by a global write lock).
+
+  emit.notify(title, body, level="info", actions=None)
+      Trigger a system notification outside of a render frame.
+
+  emit.log(level, message)  /  emit.info(msg)  /  emit.warn(msg)
+  emit.error(msg)           /  emit.debug(msg)
+      Write a structured log line to the host log.
+
+  emit.status_summary(text)
+      Set the status bar summary text for this pane.
+
+  emit.schedule_render(after_ms=16)
+      Ask the host to send a Render event after after_ms milliseconds.
+      Use at the end of on_render to drive a continuous animation loop.
+      16 ms ≈ 60 fps  |  32 ms ≈ 30 fps.
+
+  emit.secret_get(key) -> str | None        [BLOCKING]
+      Request a secret by key from the host secrets store. Blocks until the
+      host responds. Returns the secret string, or None if denied/not found.
+
+  emit.http_get(url) -> str                 [BLOCKING]
+      Broker an HTTP GET through the host. Requires the net.http capability.
+      Blocks until the response arrives. Raises RuntimeError on failure.
+      Call from a background thread to avoid stalling the render loop.
+
+  emit.capability_request(capability) -> bool  [BLOCKING]
+      Request a runtime capability (e.g. "net.http", "fs.write"). The host
+      may show a permission prompt to the user. Blocks until granted or denied.
+      Returns True if granted. Call once at startup, not on every render.
+
+  emit.cd_to(cwd)
+      Request the host to cd all terminals in the same pane group to cwd.
+
+  emit.run_get(intent, payload=None) -> str
+      Dispatch an intent-based AI/agent job. Returns a run_id. Progress arrives
+      via RunUpdate PlexiEvents; handle them in on_run_update if needed.
+
+  emit.pipe_open(pipe_id, mode="binary", direction="in") -> Pipe
+      Open a typed pipe and return a Pipe handle.
+      mode: "json" | "binary"    direction: "in" | "out" | "duplex"
+      For binary mode, call pipe.connect() and wait for PipeOpened before I/O.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STRUCTURED ARGUMENT SHAPES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+mods  (passed to on_key):
+    {"shift": bool, "ctrl": bool, "alt": bool, "meta": bool}
+
+ListItem  (each element of the items list passed to ctx.list):
+    {
+        "title":    str,          # primary label (required)
+        "subtitle": str,          # secondary label (optional)
+        "icon":     str,          # SF Symbol name or emoji (optional)
+        "color":    str,          # override title color (optional hex)
+        "tag":      str,          # right-aligned badge text (optional)
+    }
+
+NotifyAction  (each element of the actions list passed to notify):
+    {
+        "label": str,             # button label shown in the notification
+        "key":   str,             # identifier sent back in a Command event
+    }
+
+Pipe  (returned by emit.pipe_open):
+    pipe.connect(timeout=5.0) -> bool    — wait for the socket to be ready
+    pipe.read_frame()         -> bytes | None  — read one length-prefixed frame
+    pipe.write_frame(data)               — write one length-prefixed frame
+    pipe.send(payload)                   — JSON-mode send (dict/list/scalar)
+    pipe.close()                         — release the socket
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+App EVENT HANDLERS (override in your subclass)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  on_init(self, ctx)                            — after Init handshake completes
+  on_render(self, ctx)                          — on each Render event; auto-sends FrameDone
+  on_key(self, ctx, key, mods)                  — on Key event
+  on_click(self, ctx, x, y, button)             — on Click event
+  on_command(self, ctx, text)                   — on Command event (command palette)
+  on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (json-mode pipe)
+  on_path_changed(self, ctx, cwd)               — on PathChanged broadcast
+  on_inject(self, ctx, payload)                 — on InjectState from the host
+  on_app_spawned(self, pane_id, type_id)        — on AppSpawned confirmation
+  on_suspend(self)                              — on Suspend (app hidden/backgrounded)
+  on_resume(self)                               — on Resume (app visible again)
+  on_shutdown(self)                             — on Shutdown (clean up before exit)
+
+All handlers except on_suspend, on_resume, and on_shutdown receive a
+RenderContext as their first argument. on_render is the only handler that
+auto-emits FrameDone; all others must NOT emit FrameDone.
+
+Call MyApp().run() to start the PGAP event loop. This blocks until Shutdown.
 """
 from __future__ import annotations
 
