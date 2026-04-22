@@ -456,6 +456,14 @@ class Emitter:
             raise RuntimeError(f"llm call failed: {value}")
         return value
 
+    def set_timer(self, timer_id: str, after_ms: int) -> None:
+        """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
+        _emit({"type": "set_timer", "timer_id": timer_id, "after_ms": after_ms})
+
+    def cancel_timer(self, timer_id: str) -> None:
+        """Cancel a pending timer set with set_timer()."""
+        _emit({"type": "cancel_timer", "timer_id": timer_id})
+
     # Binary pipe
     def pipe_open(self, pipe_id: str, mode: str = "binary",
                   direction: str = "in") -> "Pipe":
@@ -626,6 +634,12 @@ class RenderContext:
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
 
+    def set_timer(self, timer_id: str, after_ms: int) -> None:
+        self.emit.set_timer(timer_id, after_ms)
+
+    def cancel_timer(self, timer_id: str) -> None:
+        self.emit.cancel_timer(timer_id)
+
     def get_secret(self, key: str) -> str | None:
         """Request a secret by key. Alias for emit.get_secret(). Blocking."""
         return self.emit.get_secret(key)
@@ -684,6 +698,7 @@ class App:
     def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> None: pass
     def on_inject(self, _ctx: RenderContext, _payload: Any) -> None: pass
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
+    def on_timer(self, _ctx: "RenderContext", _timer_id: str) -> None: pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
@@ -837,6 +852,11 @@ class App:
                 q = self._pending_notify.pop(notify_id, None)
                 if q:
                     q.put(action_label)
+
+            elif t == "timer":
+                timer_id = ev.get("timer_id", "")
+                ctx = self._make_ctx()
+                self.on_timer(ctx, timer_id)
 
             elif t in ("run_update",):
                 pass  # apps can override on_run_update if needed

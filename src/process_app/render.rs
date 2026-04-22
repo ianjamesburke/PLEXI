@@ -180,6 +180,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::StatusSummary { .. }
             | DrawCommand::SpawnApp { .. }
             | DrawCommand::HttpRequest { .. }
+            | DrawCommand::LlmRequest { .. }
             | DrawCommand::CdRequest { .. }
             | DrawCommand::Image { .. }
             | DrawCommand::VideoPlayer { .. }
@@ -187,7 +188,9 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::AudioPlay { .. }
             | DrawCommand::AudioCapture { .. }
             | DrawCommand::Ready { .. }
-            | DrawCommand::ScheduleRender { .. } => {}
+            | DrawCommand::ScheduleRender { .. }
+            | DrawCommand::SetTimer { .. }
+            | DrawCommand::CancelTimer { .. } => {}
         }
     }
 }

@@ -555,6 +555,33 @@ impl ProcessApp {
                 self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
             }
 
+            // ── Set timer ──────────────────────────────────────────────────
+            DrawCommand::SetTimer { timer_id, after_ms } => {
+                if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer) {
+                    log::warn!("ProcessApp[{}]: SetTimer {timer_id} denied — {reason}", self.type_id);
+                    return;
+                }
+                let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.pending_timers.insert(timer_id.clone(), std::sync::Arc::clone(&cancelled));
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(after_ms));
+                    if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        log::debug!("ProcessApp[{type_id}]: timer {timer_id} fired");
+                        let _ = tx.send(PlexiEvent::Timer { timer_id });
+                    }
+                });
+            }
+
+            // ── Cancel timer ───────────────────────────────────────────────
+            DrawCommand::CancelTimer { timer_id } => {
+                if let Some(flag) = self.pending_timers.remove(&timer_id) {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    log::debug!("ProcessApp[{}]: timer {timer_id} cancelled", self.type_id);
+                }
+            }
+
             _ => unreachable!("route_command called with non-control command"),
         }
     }

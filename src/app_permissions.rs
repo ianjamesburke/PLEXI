@@ -38,6 +38,8 @@ pub enum Capability {
     VideoPlayback,
     /// Make LLM API calls via host broker (uses ANTHROPIC_API_KEY from secrets store).
     Llm,
+    /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
+    Timer,
 }
 
 impl fmt::Display for Capability {
@@ -59,6 +61,7 @@ impl Capability {
             Self::AudioPlayback => "audio.playback",
             Self::VideoPlayback => "video.playback",
             Self::Llm => "llm",
+            Self::Timer => "timer",
         }
     }
 }
@@ -92,6 +95,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "audio.playback" => Ok(Self::AudioPlayback),
             "video.playback" => Ok(Self::VideoPlayback),
             "llm" => Ok(Self::Llm),
+            "timer" => Ok(Self::Timer),
             other => Err(UnknownCapability(other.to_string())),
         }
     }

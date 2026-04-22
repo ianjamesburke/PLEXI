@@ -142,6 +142,8 @@ pub enum PlexiEvent {
         /// The label of the action the user clicked, or "dismiss" if dismissed.
         action_label: String,
     },
+    /// Fired when a SetTimer timer expires.
+    Timer { timer_id: String },
 }
 
 /// A simple rectangle (logical coordinates).
@@ -376,6 +378,12 @@ pub enum DrawCommand {
     /// tick rate without relying on egui's unconditional repaint cadence.
     /// Apps that do not emit this will still repaint on keyboard/inject events.
     ScheduleRender { after_ms: u32 },
+
+    /// Request a one-shot timer. Requires `timer` capability.
+    /// Host fires `PlexiEvent::Timer { timer_id }` after `after_ms` milliseconds.
+    SetTimer { timer_id: String, after_ms: u64 },
+    /// Cancel a pending timer. No-op if the timer has already fired or doesn't exist.
+    CancelTimer { timer_id: String },
 
     /// Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).
     Circle {

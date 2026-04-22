@@ -22,7 +22,7 @@ use crate::event_log::{self, HostEvent};
 use crate::host::services::{NetService, UreqNetService};
 use crate::runs::RunRegistry;
 use crate::typed_pipes::TypedPipeRegistry;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -90,6 +90,8 @@ pub struct ProcessApp {
     /// result here so the UI thread never blocks on network I/O.
     pub(crate) http_tx: Sender<PlexiEvent>,
     http_rx: Receiver<PlexiEvent>,
+    /// Cancel flags for pending timers. Key = timer_id, value = Arc<AtomicBool> set to true to cancel.
+    pub(crate) pending_timers: HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ProcessApp {
@@ -248,6 +250,7 @@ impl ProcessApp {
             net: Arc::new(UreqNetService::new()),
             http_tx,
             http_rx,
+            pending_timers: HashMap::new(),
         })
     }
 
@@ -413,7 +416,9 @@ impl App for ProcessApp {
                 | DrawCommand::LlmRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
-                | DrawCommand::CdRequest { .. }) => {
+                | DrawCommand::CdRequest { .. }
+                | DrawCommand::SetTimer { .. }
+                | DrawCommand::CancelTimer { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),
