@@ -244,18 +244,18 @@ impl ProcessApp {
                         }
                     }
                 }
-                if let Some(ref nid) = notify_id {
-                    self.pending_commands.push(AppCommand::ShowNotification {
-                        notify_id: nid.clone(),
-                        sender_pane_id: 0, // stamped by dispatch.rs with the real pane_id
-                        level: level.clone(),
-                        title: title.clone(),
-                        body: body.clone(),
-                        actions: actions.clone(),
-                    });
-                }
-                self.pending_commands
-                    .push(AppCommand::Notify(format!("[{level}] {title}: {body}")));
+                // Always show in the notification panel. Use app-supplied notify_id if
+                // provided (enables NotifyAction round-trips), otherwise use the auto-
+                // generated notif_id so the panel entry is always created.
+                let panel_id = notify_id.unwrap_or_else(|| notif_id.clone());
+                self.pending_commands.push(AppCommand::ShowNotification {
+                    notify_id: panel_id,
+                    sender_pane_id: 0, // stamped by dispatch.rs with the real pane_id
+                    level,
+                    title,
+                    body,
+                    actions,
+                });
             }
 
             // ── Pipe open ──────────────────────────────────────────────────
