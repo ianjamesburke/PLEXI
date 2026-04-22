@@ -114,6 +114,7 @@ impl AppPermissions {
         Self {
             capabilities: HashSet::new(), // not needed — is_builtin bypasses checks
             is_builtin: true,
+            allowed_hosts: vec![],
         }
     }
 
@@ -136,6 +137,7 @@ impl AppPermissions {
         Self {
             capabilities,
             is_builtin: false,
+            allowed_hosts: vec![],
         }
     }
 }

@@ -210,6 +210,7 @@ impl ProcessApp {
         let permissions = AppPermissions {
             capabilities,
             is_builtin: false,
+            allowed_hosts: vec![],
         };
         let (http_tx, http_rx) = mpsc::channel::<PlexiEvent>();
 

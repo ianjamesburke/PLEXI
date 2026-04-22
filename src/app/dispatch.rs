@@ -46,9 +46,19 @@ impl PlexiApp {
                 AppCommand::Notify(msg) => {
                     log::info!("app notify: {msg}");
                 }
-                AppCommand::ShowNotification { .. } => {
-                    // No-op until A5 wires the notification panel.
+                AppCommand::ShowNotification { notify_id, level, title, body, actions, .. } => {
+                    deferred.push(AppCommand::ShowNotification {
+                        notify_id,
+                        sender_pane_id: pane_id,
+                        level,
+                        title,
+                        body,
+                        actions,
+                    });
                 }
+                // DeliverNotifyAction is issued by the overlay (overlays.rs), not by apps.
+                // If it somehow appears here, defer it for mod.rs to handle.
+                AppCommand::DeliverNotifyAction { .. } => deferred.push(cmd),
             }
         }
 

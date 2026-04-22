@@ -247,6 +247,7 @@ impl ProcessApp {
                 if let Some(ref nid) = notify_id {
                     self.pending_commands.push(AppCommand::ShowNotification {
                         notify_id: nid.clone(),
+                        sender_pane_id: 0, // stamped by dispatch.rs with the real pane_id
                         level: level.clone(),
                         title: title.clone(),
                         body: body.clone(),

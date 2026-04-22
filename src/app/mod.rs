@@ -1,6 +1,16 @@
 mod dispatch;
 mod sync;
 
+#[derive(Clone)]
+pub(crate) struct PendingNotification {
+    pub notify_id: String,
+    pub sender_pane_id: u64,
+    pub level: String,
+    pub title: String,
+    pub body: String,
+    pub actions: Vec<crate::app_protocol::NotificationAction>,
+}
+
 use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
@@ -45,6 +55,10 @@ pub struct PlexiApp {
     pub(crate) features: crate::features::FeatureFlags,
     /// Whether the Run palette overlay is visible (Cmd+R).
     pub(crate) show_run_palette: bool,
+    /// Notifications queued from apps via ShowNotification.
+    pub(crate) pending_notifications: Vec<PendingNotification>,
+    /// Whether the notification panel overlay is visible (Cmd+Shift+A).
+    pub(crate) show_notification_panel: bool,
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
 }
@@ -252,6 +266,8 @@ impl PlexiApp {
                     registry,
                     features: features.clone(),
                     show_run_palette: false,
+                    pending_notifications: Vec::new(),
+                    show_notification_panel: false,
                     host,
                     host_services: crate::host::services::HostServices::new(),
                 };
@@ -312,6 +328,8 @@ impl PlexiApp {
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
             show_run_palette: false,
+            pending_notifications: Vec::new(),
+            show_notification_panel: false,
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
         }
@@ -442,8 +460,28 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::Notify(_) => {}
-                AppCommand::ShowNotification { .. } => {
-                    // No-op until A5 wires the notification panel.
+                AppCommand::ShowNotification { notify_id, sender_pane_id, level, title, body, actions } => {
+                    self.pending_notifications.push(PendingNotification {
+                        notify_id,
+                        sender_pane_id,
+                        level,
+                        title,
+                        body,
+                        actions,
+                    });
+                }
+                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label } => {
+                    let active = self.active_context;
+                    if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            app.runtime.queue_outbound_event(
+                                crate::app_protocol::PlexiEvent::NotifyAction {
+                                    notify_id,
+                                    action_label,
+                                },
+                            );
+                        }
+                    }
                 }
                 AppCommand::DeliverPipeMessage { sender_pane_id, pipe_id, payload } => {
                     let active = self.active_context;
@@ -724,6 +762,9 @@ impl eframe::App for PlexiApp {
                 Action::ToggleRunPalette => {
                     self.show_run_palette = !self.show_run_palette;
                 }
+                Action::ToggleNotificationPanel => {
+                    self.show_notification_panel = !self.show_notification_panel;
+                }
                 Action::OpenAgentPane => {
                     self.open_agent_pane();
                 }
@@ -990,6 +1031,27 @@ impl eframe::App for PlexiApp {
         // Run palette overlay (Cmd+R)
         if self.show_run_palette {
             self.draw_run_palette(ctx);
+        }
+
+        // Notification panel overlay (Cmd+Shift+A)
+        if self.show_notification_panel {
+            let notif_cmds = self.draw_notification_panel(ctx);
+            for cmd in notif_cmds {
+                use crate::app_trait::AppCommand;
+                if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label } = cmd {
+                    let active = self.active_context;
+                    if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            app.runtime.queue_outbound_event(
+                                crate::app_protocol::PlexiEvent::NotifyAction {
+                                    notify_id,
+                                    action_label,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // Rename pane overlay

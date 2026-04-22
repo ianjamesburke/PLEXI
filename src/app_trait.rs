@@ -34,13 +34,20 @@ pub enum AppCommand {
         event: crate::app_protocol::PlexiEvent,
     },
     /// A notification that carries a notify_id and awaits a user response.
-    /// A5 will display this in the notification panel and send NotifyAction back.
+    /// Displayed in the notification panel; NotifyAction is routed back to the sender.
     ShowNotification {
         notify_id: String,
+        sender_pane_id: u64,
         level: String,
         title: String,
         body: String,
         actions: Vec<crate::app_protocol::NotificationAction>,
+    },
+    /// Route a NotifyAction event back to the app pane that sent the Notify.
+    DeliverNotifyAction {
+        pane_id: u64,
+        notify_id: String,
+        action_label: String,
     },
 }
 
