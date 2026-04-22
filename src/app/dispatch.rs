@@ -46,6 +46,9 @@ impl PlexiApp {
                 AppCommand::Notify(msg) => {
                     log::info!("app notify: {msg}");
                 }
+                AppCommand::ShowNotification { .. } => {
+                    // No-op until A5 wires the notification panel.
+                }
             }
         }
 

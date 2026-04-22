@@ -166,6 +166,7 @@ impl ProcessApp {
                 title,
                 body,
                 actions,
+                notify_id,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
@@ -242,6 +243,15 @@ impl ProcessApp {
                             );
                         }
                     }
+                }
+                if let Some(ref nid) = notify_id {
+                    self.pending_commands.push(AppCommand::ShowNotification {
+                        notify_id: nid.clone(),
+                        level: level.clone(),
+                        title: title.clone(),
+                        body: body.clone(),
+                        actions: actions.clone(),
+                    });
                 }
                 self.pending_commands
                     .push(AppCommand::Notify(format!("[{level}] {title}: {body}")));

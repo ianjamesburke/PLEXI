@@ -355,6 +355,25 @@ class Emitter:
         _emit({"type": "notify", "level": level, "title": title,
                "body": body, "actions": actions or []})
 
+    def notify_and_wait(self, title: str, body: str, level: str = "info",
+                        actions: list | None = None) -> str:
+        """Send a notification and block until the user responds.
+
+        Returns the label of the action clicked, or "dismiss" if dismissed.
+        Requires A5 notification panel to be active — blocks indefinitely otherwise.
+
+        actions: list of {"label": str, "action_type": str, "payload": dict} dicts.
+        If omitted, a single "Dismiss" action is added automatically.
+        """
+        import uuid
+        notify_id = str(uuid.uuid4())
+        q: "queue.Queue[str]" = queue.Queue()
+        self._app._pending_notify[notify_id] = q
+        actual_actions = actions or [{"label": "Dismiss", "action_type": "dismiss", "payload": {}}]
+        _emit({"type": "notify", "level": level, "title": title, "body": body,
+               "actions": actual_actions, "notify_id": notify_id})
+        return q.get()
+
     # Terminal commands (legacy back-compat)
     def run_in_terminal(self, command: str) -> None:
         _emit({"type": "run_in_terminal", "command": command})
@@ -580,6 +599,11 @@ class RenderContext:
                actions: list | None = None) -> None:
         self.emit.notify(title=title, body=body, level=level, actions=actions)
 
+    def notify_and_wait(self, title: str, body: str, level: str = "info",
+                        actions: list | None = None) -> str:
+        """Send a notification and block until the user responds. See Emitter.notify_and_wait."""
+        return self.emit.notify_and_wait(title=title, body=body, level=level, actions=actions)
+
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
 
@@ -619,6 +643,7 @@ class App:
         self._pending_capability: dict[str, queue.Queue] = {}
         self._pending_secret: dict[str, queue.Queue] = {}
         self._pending_http: dict[str, queue.Queue] = {}
+        self._pending_notify: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
         self.emit = Emitter(self)
@@ -770,6 +795,13 @@ class App:
                         q.put(("error", ev["error"]))
                     else:
                         q.put(("ok", ev.get("body", "")))
+
+            elif t == "notify_action":
+                notify_id = ev.get("notify_id", "")
+                action_label = ev.get("action_label", "dismiss")
+                q = self._pending_notify.pop(notify_id, None)
+                if q:
+                    q.put(action_label)
 
             elif t in ("run_update",):
                 pass  # apps can override on_run_update if needed

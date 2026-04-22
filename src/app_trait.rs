@@ -33,6 +33,15 @@ pub enum AppCommand {
         originator_type_id: String,
         event: crate::app_protocol::PlexiEvent,
     },
+    /// A notification that carries a notify_id and awaits a user response.
+    /// A5 will display this in the notification panel and send NotifyAction back.
+    ShowNotification {
+        notify_id: String,
+        level: String,
+        title: String,
+        body: String,
+        actions: Vec<crate::app_protocol::NotificationAction>,
+    },
 }
 
 /// The trait all Plexi apps implement.

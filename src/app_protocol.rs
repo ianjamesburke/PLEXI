@@ -127,6 +127,12 @@ pub enum PlexiEvent {
         #[serde(default)]
         error: Option<String>,
     },
+    /// Sent when the user responds to a notification that included a notify_id.
+    NotifyAction {
+        notify_id: String,
+        /// The label of the action the user clicked, or "dismiss" if dismissed.
+        action_label: String,
+    },
 }
 
 /// A simple rectangle (logical coordinates).
@@ -245,6 +251,9 @@ pub enum DrawCommand {
         body: String,
         #[serde(default)]
         actions: Vec<NotificationAction>,
+        /// If set, host sends PlexiEvent::NotifyAction when the user responds.
+        #[serde(default)]
+        notify_id: Option<String>,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"

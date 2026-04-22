@@ -442,6 +442,9 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::Notify(_) => {}
+                AppCommand::ShowNotification { .. } => {
+                    // No-op until A5 wires the notification panel.
+                }
                 AppCommand::DeliverPipeMessage { sender_pane_id, pipe_id, payload } => {
                     let active = self.active_context;
                     let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
