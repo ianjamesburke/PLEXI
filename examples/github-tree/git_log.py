@@ -151,16 +151,21 @@ def fetch_refs(repo_root: str, now_ts: int) -> list[dict]:
 
 # ── Commit log ────────────────────────────────────────────────────────────────
 
-_LOG_SEP = "\x00"  # NUL-delimited fields within a record
-_LOG_RS  = "\x01"  # record separator between commits
+_LOG_SEP = "\x00"  # NUL-delimited fields within a record (in OUTPUT)
+_LOG_RS  = "\x01"  # record separator between commits (in OUTPUT)
 
+# Git's own escapes for control bytes in --format output. We cannot put
+# literal \x00 into the --format argv string because Python's subprocess
+# rejects arguments containing embedded NUL bytes (fetch_commits silently
+# returned zero commits before this fix — git never ran). `%x00` / `%x01`
+# tell git to emit those bytes in its output; argv stays ASCII-clean.
 _LOG_FORMAT = (
-    "%H" + _LOG_SEP +  # 0 full hash
-    "%P" + _LOG_SEP +  # 1 parent hashes (space-separated)
-    "%an" + _LOG_SEP + # 2 author name
-    "%ct" + _LOG_SEP + # 3 commit timestamp (unix)
-    "%D" + _LOG_SEP +  # 4 ref names (HEAD -> main, origin/main, …)
-    "%s" + _LOG_RS     # 5 subject
+    "%H" + "%x00" +  # 0 full hash
+    "%P" + "%x00" +  # 1 parent hashes (space-separated)
+    "%an" + "%x00" + # 2 author name
+    "%ct" + "%x00" + # 3 commit timestamp (unix)
+    "%D" + "%x00" +  # 4 ref names (HEAD -> main, origin/main, …)
+    "%s" + "%x01"    # 5 subject
 )
 
 
