@@ -120,6 +120,12 @@ impl PlexiApp {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
+            // Cmd+P toggles the palette closed without re-dispatching through
+            // `poll_actions` (which runs after the keyboard drain). Consuming
+            // here keeps open→close symmetric with the open keybind.
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
+                self.show_command_palette = false;
+            }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
                 && total > 0
                 && self.palette_selected < total - 1

@@ -11,13 +11,15 @@ mod sync;
 /// which runs before the drain and is always live.
 ///
 /// New overlays should push their layer on open and pop on close to inherit
-/// input capture. Today the notification modal and confirm-close use the
-/// layer — command palette, run palette, and rename still have legacy
-/// per-handler input paths (tracked in `.plexi/backlog`).
+/// input capture. All keyboard-owning overlays live here: notification modal,
+/// confirm-close, command palette, run palette, and rename-pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FocusLayer {
     NotificationModal,
     ConfirmClose,
+    CommandPalette,
+    RunPalette,
+    RenamePane,
 }
 
 #[derive(Clone)]
@@ -515,13 +517,17 @@ impl eframe::App for PlexiApp {
         // `input_captured_by_overlay()` answers correctly this frame.
         self.sync_notification_modal_focus();
         self.sync_confirm_close_focus();
+        self.sync_command_palette_focus();
+        self.sync_run_palette_focus();
+        self.sync_rename_pane_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
-        // notification modal's TextEdit for the `input` kind) can read
-        // keystrokes before we drain. Then drain the keyboard buffer so
-        // downstream readers — focused app (`dispatch_app_key_events`),
-        // terminal backends, `keys::poll_actions` — see only the global
-        // allowlist (Cmd+Q, Cmd+W, Cmd+Shift+A, Cmd+]/Cmd+[).
+        // notification modal's TextEdit for the `input` kind, the palette's
+        // search field, the rename input) can read keystrokes before we
+        // drain. Then drain the keyboard buffer so downstream readers —
+        // focused app (`dispatch_app_key_events`), terminal backends,
+        // `keys::poll_actions` — see only the global allowlist (Cmd+Q,
+        // Cmd+W, Cmd+Shift+A, Cmd+]/Cmd+[).
         let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
         if self.input_captured_by_overlay() {
             match self.focus_stack.last() {
@@ -531,14 +537,27 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::ConfirmClose) => {
                     self.draw_confirm_close(ctx);
                 }
+                Some(FocusLayer::CommandPalette) => {
+                    self.draw_command_palette(ctx);
+                }
+                Some(FocusLayer::RunPalette) => {
+                    self.draw_run_palette(ctx);
+                }
+                Some(FocusLayer::RenamePane) => {
+                    self.draw_rename_pane_overlay(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
-            // The overlay may have self-closed (notification queue drained, or
-            // confirm-close confirmed/cancelled). Re-sync so the layer is
-            // accurate for the rest of this frame.
+            // The overlay may have self-closed (notification queue drained,
+            // confirm-close confirmed/cancelled, palette picked an entry,
+            // rename committed). Re-sync so the layer is accurate for the
+            // rest of this frame.
             self.sync_notification_modal_focus();
             self.sync_confirm_close_focus();
+            self.sync_command_palette_focus();
+            self.sync_run_palette_focus();
+            self.sync_rename_pane_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -1219,33 +1238,14 @@ impl eframe::App for PlexiApp {
             self.draw_shortcuts_overlay(ctx);
         }
 
-        // Command palette overlay
-        if self.show_command_palette {
-            self.draw_command_palette(ctx);
-        }
-
-        // Run palette overlay (Cmd+R)
-        if self.show_run_palette {
-            self.draw_run_palette(ctx);
-        }
-
-        // Notification modal — rendered in the EARLY phase of `update()` (see
-        // `input_captured_by_overlay` branch up top) so its input handling
-        // runs before panes. Nothing to render here; just keep the visibility
-        // flag honest if the queue has drained since the frame started.
+        // Command palette, run palette, rename-pane overlay, notification
+        // modal, and confirm-close are all drawn by the early input-capture
+        // path at the top of `update()` — they own a `FocusLayer` and render
+        // their own keystrokes before the drain. Drawing again here would
+        // double-dispatch Enter/Escape after keys have been drained.
         if self.pending_notifications.is_empty() {
             self.show_notification_modal = false;
         }
-
-        // Rename pane overlay
-        if self.renaming_pane.is_some() {
-            self.draw_rename_pane_overlay(ctx);
-        }
-
-        // Close-pane confirmation is drawn by the early input-capture path at
-        // the top of `update()` (it owns `FocusLayer::ConfirmClose`). Drawing
-        // it again here would run the Enter/Escape consumers a second time,
-        // after keys have already been drained.
 
         // Quit confirmation overlay
         if self.quit_confirm_required && self.quit_press_count > 0 {
@@ -1275,7 +1275,11 @@ impl PlexiApp {
     pub(crate) fn input_captured_by_overlay(&self) -> bool {
         matches!(
             self.focus_stack.last(),
-            Some(FocusLayer::NotificationModal) | Some(FocusLayer::ConfirmClose)
+            Some(FocusLayer::NotificationModal)
+                | Some(FocusLayer::ConfirmClose)
+                | Some(FocusLayer::CommandPalette)
+                | Some(FocusLayer::RunPalette)
+                | Some(FocusLayer::RenamePane)
         )
     }
 
@@ -1327,6 +1331,50 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::NotificationModal);
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::NotificationModal);
+        }
+    }
+
+    /// Reconcile the command-palette focus layer with `show_command_palette`.
+    /// Same pattern as the notification modal: boolean visibility flag is the
+    /// source of truth, focus stack follows it deterministically each frame.
+    pub(crate) fn sync_command_palette_focus(&mut self) {
+        let should_own = self.show_command_palette;
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::CommandPalette);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::CommandPalette);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::CommandPalette);
+        }
+    }
+
+    /// Reconcile the run-palette focus layer with `show_run_palette`.
+    pub(crate) fn sync_run_palette_focus(&mut self) {
+        let should_own = self.show_run_palette;
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::RunPalette);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::RunPalette);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::RunPalette);
+        }
+    }
+
+    /// Reconcile the rename-pane focus layer with `renaming_pane`.
+    pub(crate) fn sync_rename_pane_focus(&mut self) {
+        let should_own = self.renaming_pane.is_some();
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::RenamePane);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::RenamePane);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::RenamePane);
         }
     }
 
