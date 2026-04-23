@@ -2,12 +2,16 @@
 """Todo — fs.read + fs.write + persistence example for PGAP v3."""
 from __future__ import annotations
 
-import sys
-import os
-
 import json
 import pathlib
-from plexi_sdk import App, RenderContext, BG, FG, MUTED, ACCENT, SURFACE, GREEN, RED, BODY, CAPTION, HINT
+
+from plexi_sdk import (
+    App, RenderContext,
+    FG, MUTED, SURFACE, BODY,
+)
+from plexi_sdk.ui import (
+    Column, Header, Section, Label, Spacer, Footer,
+)
 
 TODO_FILE = ".plexi/todos.json"
 
@@ -84,28 +88,54 @@ class TodoApp(App):
             self._selected = min(self._selected, len(self._items) - 1)
             self._save()
 
+    # ── Item list body — functional surface, primitive draws ───────────────
+    class _Body:
+        """Renders the todo list (or the add-item input bar) into whatever
+        vertical space the Column hands us."""
+        def __init__(self, app: "TodoApp") -> None:
+            self._app = app
+
+        def measure(self, avail_w: float) -> float:
+            return 0.0
+
+        def is_grow(self) -> bool:
+            return True
+
+        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+            app = self._app
+            items = [
+                {"label": f"{'✓' if it['done'] else '○'} {it['text']}",
+                 "secondary": None}
+                for it in app._items
+            ]
+            if app._adding:
+                # Add-item input bar occupies the bottom ~56 px of the body.
+                bar_h = 56.0
+                list_h = max(0.0, h - bar_h - 8.0)
+                if items:
+                    ctx.list(items, selected=app._selected, item_height=40.0,
+                             x=x, y=y, w=w, h=list_h)
+                bar_y = y + h - bar_h
+                ctx.rect(x, bar_y, w, bar_h, fill=SURFACE, radius=4.0)
+                ctx.text(x + 12, bar_y + 8, "New item:", size=13, color=MUTED)
+                ctx.text(x + 12, bar_y + 28, app._input + "▌",
+                         size=BODY, color=FG, monospace=True)
+                return
+            if items:
+                ctx.list(items, selected=app._selected, item_height=40.0,
+                         x=x, y=y, w=w, h=h)
+            else:
+                ctx.text(x, y + 12, "No items. Press 'a' to add.",
+                         size=BODY, color=MUTED)
+
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, ctx.h, fill=BG)
-        ctx.rect(0, 0, ctx.w, 44, fill=SURFACE)
-        ctx.text(16, 14, "Todo", size=18.0, color=ACCENT, bold=True)
-        ctx.text(72, 18, str(self._cwd), size=CAPTION, color=MUTED, monospace=True)
-        items = []
-        for it in self._items:
-            check = "✓" if it["done"] else "○"
-            items.append({"label": f"{check} {it['text']}", "secondary": None})
-        if items:
-            ctx.list(items, selected=self._selected, item_height=40.0,
-                     y=52, h=max(0, ctx.h - 112))
-        else:
-            ctx.text(16, 80, "No items. Press 'a' to add.", size=BODY, color=MUTED)
-        # Input bar
-        bar_y = ctx.h - 56
-        if self._adding:
-            ctx.rect(0, bar_y, ctx.w, 56, fill=SURFACE)
-            ctx.text(16, bar_y + 8, "New item:", size=CAPTION, color=MUTED)
-            ctx.text(16, bar_y + 26, self._input + "▌", size=BODY, color=FG, monospace=True)
-        else:
-            ctx.text(16, ctx.h - 24, "↑↓ select · Space toggle · a add · d delete", size=HINT, color=MUTED)
+        ctx.render(Column([
+            Header(title="Todo", subtitle=str(self._cwd)),
+            Section("Current list"),
+            self._Body(self),
+            Spacer(grow=False),
+            Footer("↑↓ select · Space toggle · a add · d delete"),
+        ]))
 
 
 if __name__ == "__main__":

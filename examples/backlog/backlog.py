@@ -17,6 +17,11 @@ from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, ACCENT, MUTED,
 
 ROW_H     = 22.0
 LIST_FRAC = 0.38   # fraction of width for the item list
+# Chrome — where the list/preview body starts and ends vertically. These
+# replace the fixed header/footer bars from v1 chrome. They're tuned so the
+# list sits below Plexi's own pane chrome and above the key-hint footer.
+TOP       = 32.0
+BOTTOM_BAR_H = 26.0
 
 
 class BacklogApp(App):
@@ -110,15 +115,17 @@ class BacklogApp(App):
         self._load()
 
     # ── Render ───────────────────────────────────────────────────────────────────
+    #
+    # SDK v2 is a vertical stack; the two-pane list+preview layout doesn't map
+    # onto it without building a HSplit container. Keep the body as primitive
+    # draws; only the bottom status/key-hint bar is migrated chrome.
 
     def on_render(self, ctx: RenderContext) -> None:
         w, h = ctx.w, ctx.h
         ctx.clear(BG)
 
         list_w = w * LIST_FRAC
-        top = 32.0
-        bottom_bar_h = 26.0
-        list_h = h - top - bottom_bar_h
+        list_h = h - TOP - BOTTOM_BAR_H
 
         # Header
         ctx.text(12, 10, ".plexi/backlog", size=12, color=ACCENT, bold=True)
@@ -127,20 +134,21 @@ class BacklogApp(App):
         ctx.text(list_w - 80, 10, count_label, size=11, color=MUTED)
 
         if not self.backlog_dir.exists():
-            ctx.text(12, top + 12, "No backlog directory found.", size=13, color=FG)
-            ctx.text(12, top + 34, f"mkdir -p {self.backlog_dir}", size=11, color=MUTED, monospace=True)
+            ctx.text(12, TOP + 12, "No backlog directory found.", size=13, color=FG)
+            ctx.text(12, TOP + 34, f"mkdir -p {self.backlog_dir}",
+                     size=11, color=MUTED, monospace=True)
             return
 
         # Divider
-        ctx.line(list_w, top - 4, list_w, h - bottom_bar_h, color=HIGHLIGHT, width=1.0)
+        ctx.line(list_w, TOP - 4, list_w, h - BOTTOM_BAR_H, color=HIGHLIGHT, width=1.0)
 
         # ── Item list ────────────────────────────────────────────────────────────
         visible_start = max(0, self.selected - int(list_h / ROW_H) + 4)
         for i, path in enumerate(self.filtered):
             if i < visible_start:
                 continue
-            row_y = top + (i - visible_start) * ROW_H
-            if row_y + ROW_H > h - bottom_bar_h:
+            row_y = TOP + (i - visible_start) * ROW_H
+            if row_y + ROW_H > h - BOTTOM_BAR_H:
                 break
             is_sel = i == self.selected
             if is_sel:
@@ -151,30 +159,30 @@ class BacklogApp(App):
 
         if not self.filtered:
             msg = "No results" if self.search_query else "Backlog is empty"
-            ctx.text(12, top + 12, msg, size=12, color=MUTED)
+            ctx.text(12, TOP + 12, msg, size=12, color=MUTED)
 
         # ── Preview ──────────────────────────────────────────────────────────────
         px = list_w + 14
         pw = w - px - 10
         if self.preview_path and self.preview_text is not None:
-            ctx.text(px, top - 18, self.preview_path.name,
+            ctx.text(px, TOP - 18, self.preview_path.name,
                      size=11, color=ACCENT, bold=True)
             lines = self.preview_text.splitlines()
             for li, line in enumerate(lines):
-                ly = top + li * 15.0
-                if ly > h - bottom_bar_h - 4:
+                ly = TOP + li * 15.0
+                if ly > h - BOTTOM_BAR_H - 4:
                     break
                 # Dim markdown headings differently
                 color = FG if not line.startswith("#") else ACCENT
                 ctx.text(px, ly, line[:int(pw / 7)], size=11, color=color, monospace=True)
 
         # ── Bottom bar ───────────────────────────────────────────────────────────
-        bar_y = h - bottom_bar_h
-        ctx.rect(0, bar_y, w, bottom_bar_h, SURFACE)
+        bar_y = h - BOTTOM_BAR_H
+        ctx.rect(0, bar_y, w, BOTTOM_BAR_H, SURFACE)
 
         if self.in_search:
             ctx.text(12, bar_y + 7,
-                     f"/ {self.search_query}\u258c",   # block cursor
+                     f"/ {self.search_query}▌",   # block cursor
                      size=12, color=ACCENT, monospace=True)
         elif self.status:
             ctx.text(12, bar_y + 7, self.status, size=11, color=GREEN)
@@ -189,9 +197,9 @@ class BacklogApp(App):
             ox, oy, ow, oh = w / 2 - 170, h / 2 - 36, 340, 72
             ctx.rect(ox, oy, ow, oh, SURFACE, radius=6.0)
             ctx.rect(ox, oy, ow, 1, HIGHLIGHT)
-            ctx.text(ox + 16, oy + 14, f"Delete  \u2018{name}\u2019?",
+            ctx.text(ox + 16, oy + 14, f"Delete  ‘{name}’?",
                      size=13, color=RED, bold=True)
-            ctx.text(ox + 16, oy + 36, "Enter \u2192 confirm    Esc \u2192 cancel",
+            ctx.text(ox + 16, oy + 36, "Enter → confirm    Esc → cancel",
                      size=11, color=MUTED)
 
     # ── Keys ─────────────────────────────────────────────────────────────────────
