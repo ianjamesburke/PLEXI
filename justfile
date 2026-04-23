@@ -275,13 +275,16 @@ install-alpha:
     alpha_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
     cp "$alpha_bin" /usr/local/bin/plexi-alpha
 
-    mkdir -p ~/.plexi-alpha/sdk
+    mkdir -p ~/.plexi-alpha/sdk ~/.plexi-alpha/apps
     cp sdk/python/plexi_sdk/__init__.py ~/.plexi-alpha/sdk/plexi_sdk.py
+    cp -R examples/. ~/.plexi-alpha/apps/
     find ~/.plexi-alpha/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
+    find ~/.plexi-alpha/apps -name '*.py' -exec chmod +x {} \;
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
+    echo "Apps: $(ls ~/.plexi-alpha/apps | wc -l | tr -d ' ') synced from examples/"
 
 install-v3:
     #!/usr/bin/env bash
@@ -386,13 +389,16 @@ install-beta:
     beta_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
     cp "$beta_bin" /usr/local/bin/plexi-beta
 
-    mkdir -p ~/.plexi-beta/sdk
+    mkdir -p ~/.plexi-beta/sdk ~/.plexi-beta/apps
     cp sdk/python/plexi_sdk/__init__.py ~/.plexi-beta/sdk/plexi_sdk.py
+    cp -R examples/. ~/.plexi-beta/apps/
     find ~/.plexi-beta/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
+    find ~/.plexi-beta/apps -name '*.py' -exec chmod +x {} \;
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-beta"
     echo "Config dir: ~/.plexi-beta/"
+    echo "Apps: $(ls ~/.plexi-beta/apps | wc -l | tr -d ' ') synced from examples/"
 
 bump:
     #!/usr/bin/env bash
