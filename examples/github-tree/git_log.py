@@ -317,9 +317,9 @@ PALETTE = [
     "#a6adc8",  # 11 subtext
 ]
 
-_TRUNK_PATTERN = re.compile(
-    r"^(main|master|alpha|beta|develop|release/.+)$"
-)
+MUTED_COLOR = "#6c7086"  # Catppuccin MUTED — used for OTHER_LANE commits
+MAX_LANES   = 5         # lanes 0–4 render normally
+OTHER_LANE  = 5         # collapse index for overflow refs
 
 
 def _fnv1a(s: str) -> int:
@@ -347,166 +347,159 @@ def _branch_name_from_refs(refs: list[str]) -> Optional[str]:
 def assign_lanes(commits: list[dict], refs: list[dict]) -> list[dict]:
     """Assign lane and color to each commit (mutates and returns the list).
 
-    Implements the pre-pass + main-pass algorithm from the architecture plan.
+    v2 algorithm: viewport-scoped lanes. A ref earns a lane only if at least
+    one commit it reaches appears in `commits` (the visible window). Hard cap
+    of 5 rendered lanes; any overflow collapses to lane index 5 (OTHER_LANE)
+    drawn in MUTED.
+
+    Walk order: newest→oldest (commits are already sorted that way).
+    1. Walk commits; when a commit's hash matches a ref tip, that ref is
+       "seen". Collect seen_refs in commit-recency order.
+    2. Allocate lanes 0..4 from seen_refs, with reserved-colour overrides:
+       main → blue (0), alpha → green (1), beta → yellow (2) — but ONLY if
+       that branch has a commit in the window.
+    3. Each commit is assigned to the lane of the first ref whose tip_hash
+       chain contains it (walk child→parent via the in-window commit graph).
+       If no ref contains it → OTHER_LANE with MUTED.
     """
     if not commits:
         return commits
 
-    # ── Pre-pass: identify trunk branches and assign reserved lanes ───────────
-    # Collect local trunk names in priority order
-    trunk_names: list[str] = []
-    for priority_name in ("main", "master", "alpha", "beta", "develop"):
-        for ref in refs:
-            if not ref["is_remote"] and ref["name"] == priority_name:
-                if priority_name not in trunk_names:
-                    trunk_names.append(priority_name)
-    # Add any remaining local trunks matching the pattern
+    # MAX_LANES and OTHER_LANE are module-level constants (gl.OTHER_LANE usable in tests)
+
+    # ── Reserved colour map ───────────────────────────────────────────────────
+    # main→0 blue, alpha→1 green, beta→2 yellow (only when seen in window).
+    RESERVED: dict[str, int] = {"main": 0, "master": 0, "alpha": 1, "beta": 2}
+    RESERVED_REMOTE: dict[str, int] = {
+        "origin/main": 0, "origin/master": 0,
+        "origin/alpha": 1, "origin/beta": 2,
+    }
+
+    # ── Build tip_hash → ref name map ─────────────────────────────────────────
+    tip_to_refs: dict[str, list[str]] = {}
     for ref in refs:
-        if not ref["is_remote"] and _TRUNK_PATTERN.match(ref["name"]):
-            if ref["name"] not in trunk_names:
-                trunk_names.append(ref["name"])
+        tip_to_refs.setdefault(ref["tip_hash"], []).append(ref["name"])
 
-    # Map trunk name → reserved lane index
-    trunk_lane: dict[str, int] = {}
-    for i, name in enumerate(trunk_names):
-        trunk_lane[name] = i
-    # Also map remote counterparts to the same lane
-    for name, lane in list(trunk_lane.items()):
-        trunk_lane[f"origin/{name}"] = lane
+    # Build a quick lookup: ref name → ref dict
+    ref_by_name: dict[str, dict] = {r["name"]: r for r in refs}
 
-    num_reserved = len(trunk_names)
+    # ── Step 1: collect seen_refs in commit-recency order ─────────────────────
+    # A ref is "seen" when we encounter its tip_hash while walking newest→oldest.
+    commit_hashes: set[str] = {c["hash"] for c in commits}
+    seen_refs: list[str] = []           # ordered by first appearance
+    seen_ref_set: set[str] = set()
 
-    # Map tip_hash → list of branch names for that tip
-    tip_to_names: dict[str, list[str]] = {}
-    for ref in refs:
-        tip = ref["tip_hash"]
-        tip_to_names.setdefault(tip, []).append(ref["name"])
+    for c in commits:
+        for rname in tip_to_refs.get(c["hash"], []):
+            if rname not in seen_ref_set:
+                seen_refs.append(rname)
+                seen_ref_set.add(rname)
 
-    # ── Colour assignment helper ──────────────────────────────────────────────
+    # ── Step 2: allocate lanes with reserved-colour overrides ─────────────────
+    # We want at most MAX_LANES distinct rendered lanes (0..4); additional refs
+    # collapse to OTHER_LANE.
+    # Priority: reserved refs come first at their fixed indices; then remaining
+    # seen_refs fill gaps in recency order.
 
-    def lane_color(lane: int, branch_hint: Optional[str] = None) -> str:
-        if lane < 3 and lane < len(PALETTE):
-            return PALETTE[lane]
-        if branch_hint:
-            idx = 3 + (_fnv1a(branch_hint) % 9)
+    ref_to_lane: dict[str, int] = {}   # ref name → lane index (0-5)
+
+    # Place reserved refs first (only if seen)
+    all_reserved = dict(RESERVED)
+    all_reserved.update(RESERVED_REMOTE)
+    reserved_lanes_used: set[int] = set()
+
+    for rname in seen_refs:
+        if rname in all_reserved:
+            lane = all_reserved[rname]
+            if lane not in reserved_lanes_used:
+                ref_to_lane[rname] = lane
+                reserved_lanes_used.add(lane)
+
+    # Fill remaining seen_refs into free slots 0..MAX_LANES-1, in recency order
+    next_free = 0
+    for rname in seen_refs:
+        if rname in ref_to_lane:
+            continue
+        # Find next free slot not reserved
+        while next_free < MAX_LANES and next_free in reserved_lanes_used:
+            next_free += 1
+        if next_free < MAX_LANES:
+            ref_to_lane[rname] = next_free
+            next_free += 1
         else:
-            idx = 3 + ((lane - num_reserved) % 9)
+            ref_to_lane[rname] = OTHER_LANE
+
+    # ── Step 3: assign each commit to a lane ──────────────────────────────────
+    # Build parent→children adjacency for the in-window graph so we can walk
+    # child→parent to find the first containing ref.
+    # Strategy: for each commit, check all seen_refs. The ref whose tip is
+    # "reachable from" this commit (i.e., the commit is an ancestor of the tip
+    # within the window) owns it.
+    # Cheap approximation within the viewport: walk the child edge graph
+    # forward — a commit belongs to a ref if the ref's tip_hash descends from
+    # it within the commits list.
+    #
+    # Implementation: build child→[parents] so we can propagate ref ownership
+    # downward (newest→oldest). Each commit gets the lane of the first ref
+    # tip that reaches it via the in-window parent chain.
+
+    hash_to_idx: dict[str, int] = {c["hash"]: i for i, c in enumerate(commits)}
+
+    # For each commit, store which ref "owns" it (first ref tip that is a
+    # descendant in the window).
+    commit_ref: list[Optional[str]] = [None] * len(commits)
+
+    # Walk newest→oldest. When we hit a ref tip, propagate ownership down the
+    # first-parent chain until we hit a commit already owned or a gap.
+    # This is O(n * refs) in the worst case but n is capped at ~168 commits/week.
+
+    # Build parent chains: for each commit, track its first parent index
+    first_parent_idx: list[Optional[int]] = []
+    for c in commits:
+        p0 = c["parents"][0] if c["parents"] else None
+        first_parent_idx.append(hash_to_idx.get(p0) if p0 else None)
+
+    # Process refs in lane-priority order (lowest lane first)
+    sorted_refs = sorted(ref_to_lane.items(), key=lambda kv: kv[1])
+    for rname, lane in sorted_refs:
+        ref = ref_by_name.get(rname)
+        if ref is None:
+            continue
+        tip = ref["tip_hash"]
+        start_idx = hash_to_idx.get(tip)
+        if start_idx is None:
+            continue
+        # Walk from tip down the first-parent chain, assigning ownership
+        idx: Optional[int] = start_idx
+        while idx is not None:
+            if commit_ref[idx] is not None:
+                break   # already owned by a higher-priority (lower lane) ref
+            commit_ref[idx] = rname
+            idx = first_parent_idx[idx]
+
+    # ── Step 4: assign lane + colour to each commit ───────────────────────────
+    def _lane_color(lane: int, rname: Optional[str]) -> str:
+        if lane < 3:
+            return PALETTE[lane]
+        if lane == OTHER_LANE or lane >= MAX_LANES:
+            return MUTED_COLOR
+        if rname:
+            idx = 3 + (_fnv1a(rname) % (len(PALETTE) - 3))
+        else:
+            idx = 3 + (lane % (len(PALETTE) - 3))
         return PALETTE[min(idx, len(PALETTE) - 1)]
 
-    # ── Main pass ─────────────────────────────────────────────────────────────
-    # active_lanes[i] = hash that lane i is currently "expecting" (the child
-    # that is waiting for its parent to appear as we walk newest→oldest).
-    # None means the lane slot is free.
-
-    # Seed with trunk tips
-    # Build: tip_hash for each trunk lane
-    trunk_tip_by_lane: dict[int, str] = {}
-    for ref in refs:
-        name = ref["name"]
-        if name in trunk_lane and not ref["is_remote"]:
-            lane_idx = trunk_lane[name]
-            # Prefer the first ref encountered; keep the most-recent tip
-            if lane_idx not in trunk_tip_by_lane:
-                trunk_tip_by_lane[lane_idx] = ref["tip_hash"]
-
-    # Also seed from remotes when no local counterpart found
-    for ref in refs:
-        name = ref["name"]
-        if name in trunk_lane and ref["is_remote"]:
-            lane_idx = trunk_lane[name]
-            if lane_idx not in trunk_tip_by_lane:
-                trunk_tip_by_lane[lane_idx] = ref["tip_hash"]
-
-    # Initialise active_lanes with num_reserved slots
-    active_lanes: list[Optional[str]] = [None] * num_reserved
-    for lane_idx, tip in trunk_tip_by_lane.items():
-        if lane_idx < num_reserved:
-            active_lanes[lane_idx] = tip
-
-    # Track which lane index "owns" each branch name (for topic branches)
-    branch_lane: dict[str, int] = dict(trunk_lane)
-
-    def first_free_non_reserved() -> int:
-        """Return the leftmost free non-reserved slot, or append a new one."""
-        for i in range(num_reserved, len(active_lanes)):
-            if active_lanes[i] is None:
-                return i
-        active_lanes.append(None)
-        return len(active_lanes) - 1
-
-    def first_free_after(min_lane: int) -> int:
-        """Return leftmost free slot >= min_lane (for merge parent diverge)."""
-        for i in range(min_lane, len(active_lanes)):
-            if active_lanes[i] is None:
-                return i
-        active_lanes.append(None)
-        return len(active_lanes) - 1
-
-    # Build hash → set(lane_indices that are expecting this hash)
-    def build_expecting() -> dict[str, list[int]]:
-        exp: dict[str, list[int]] = {}
-        for i, h in enumerate(active_lanes):
-            if h is not None:
-                exp.setdefault(h, []).append(i)
-        return exp
-
-    for commit in commits:
-        h = commit["hash"]
-        parents = commit["parents"]
-        refs_list = commit["refs"]
-
-        # Determine if this commit belongs to a named branch
-        branch_hint = _branch_name_from_refs(refs_list)
-
-        # ── Step 1: pick this commit's lane ──────────────────────────────────
-        expecting = build_expecting()
-        if h in expecting:
-            # Use the leftmost lane already expecting this hash
-            chosen_lane = expecting[h][0]
+    for i, c in enumerate(commits):
+        rname = commit_ref[i]
+        if rname is not None:
+            lane = ref_to_lane.get(rname, OTHER_LANE)
         else:
-            # Not expected by any active lane — either it's outside the
-            # current viewport's seen tips or a new topic branch appearing
-            if branch_hint and branch_hint in branch_lane:
-                chosen_lane = branch_lane[branch_hint]
-            else:
-                chosen_lane = first_free_non_reserved()
-                if branch_hint:
-                    branch_lane[branch_hint] = chosen_lane
-
-        # Ensure chosen_lane is within active_lanes
-        while len(active_lanes) <= chosen_lane:
-            active_lanes.append(None)
-
-        # ── Step 2: record lane and colour ───────────────────────────────────
-        commit["lane"] = chosen_lane
-        commit["color"] = lane_color(chosen_lane, branch_hint)
-
-        # ── Step 3: clear this commit from all lanes expecting it ────────────
-        for i, slot in enumerate(active_lanes):
-            if slot == h:
-                active_lanes[i] = None
-
-        # ── Step 4: place parents into lanes ─────────────────────────────────
-        if not parents:
-            pass  # root commit — nothing to do
-        elif len(parents) == 1:
-            # Non-merge: first parent stays in chosen_lane
-            active_lanes[chosen_lane] = parents[0]
-        else:
-            # Merge: first parent stays in chosen_lane (mainline-first)
-            active_lanes[chosen_lane] = parents[0]
-            # Additional parents each get a new lane, allocated right of chosen_lane
-            for extra_parent in parents[1:]:
-                # Check if this parent is already expected somewhere
-                exp2 = build_expecting()
-                if extra_parent in exp2:
-                    # Already tracked — don't allocate a second lane for it
-                    pass
-                else:
-                    new_lane = first_free_after(chosen_lane + 1)
-                    while len(active_lanes) <= new_lane:
-                        active_lanes.append(None)
-                    active_lanes[new_lane] = extra_parent
+            # Not reachable from any ref tip in window — collapse to other
+            lane = OTHER_LANE
+        c["lane"] = lane
+        c["color"] = _lane_color(lane, rname)
+        # Stash the owning ref name for edge colouring
+        c["_ref"] = rname
 
     return commits
 
