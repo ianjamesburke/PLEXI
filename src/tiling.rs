@@ -1,14 +1,14 @@
-use crate::app_trait::AppRenderContext;
-use crate::pane::Pane;
-use crate::theme::{self, Colors};
-use egui::{Color32, Vec2};
-use egui_term::{BackendCommand, TerminalTheme, TerminalView};
+use crate::pane::{Pane, TerminalPane};
+use crate::render;
+use crate::theme::Colors;
+use egui::Color32;
+use egui_term::{BackendCommand, TerminalTheme};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
 
 pub type PaneId = u64;
 
-const DOT_RADIUS: f32 = 4.0;
+pub(crate) const DOT_RADIUS: f32 = 4.0;
 const DOT_SPACING: f32 = 12.0;
 const DOT_LEFT_MARGIN: f32 = 6.0;
 pub(crate) const TAB_DOT_RESERVED_HEIGHT: f32 = 14.0;
@@ -65,135 +65,50 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         let is_focused = self.focused_tile == Some(tile_id);
 
-        // Handle file drops — use the same geometric hit test as hover detection
-        // so the drop target matches the visual focus with no frame delay.
+        // Drop target matches the visual focus rect above.
         if is_drag_hovering {
-            let dropped = ui.input(|i| i.raw.dropped_files.clone());
-            if !dropped.is_empty() {
-                if let Some(pane) = self.panes.get_mut(pane_id) {
-                    if let Some(t) = pane.as_terminal_mut() {
-                        for file in dropped {
-                            if let Some(path) = &file.path {
-                                let path_str = path.display().to_string();
-                                let escaped = if path_str.contains(|c: char| {
-                                    c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)
-                                }) {
-                                    format!("'{}'", path_str.replace('\'', "'\\''"))
-                                } else {
-                                    path_str
-                                };
-                                t.backend.process_command(BackendCommand::Write(
-                                    escaped.as_bytes().to_vec(),
-                                ));
-                            }
-                        }
-                    }
-                }
+            if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
+                write_dropped_paths_to_terminal(ui, t);
             }
         }
 
-        // When any pane is zoomed, render ALL panes as dark placeholders.
-        // The zoomed pane is rendered separately in the overlay (app.rs).
-        //
-        // Paint directly via the painter over the pane's full rect. A
-        // `Frame::new().fill(...).show(ui, |_| {})` wrapper would size to
-        // its *allocated* content and collapse to a tiny rect in the
-        // top-left, leaving a visible grey square on top of the intended
-        // background.
+        // While any pane is zoomed, paint background panes as dark placeholders.
+        // The zoomed pane itself is rendered by the overlay in `app.rs`.
+        // Painter-only fill: wrapping in `egui::Frame` collapses to a grey
+        // square in the top-left when inner renderers don't allocate UI space.
+        let pane_rect = ui.available_rect_before_wrap();
         if self.zoomed_pane.is_some() {
-            let pane_rect = ui.available_rect_before_wrap();
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             return UiResponse::None;
         }
 
-        if let Some(pane) = self.panes.get_mut(pane_id) {
-            // Paint the pane background directly on the full rect. Same
-            // reason as above: the inner renderers (`ProcessApp::ui`,
-            // `render_and_drain`, the terminal path) do all their drawing
-            // via `ui.painter()` without allocating UI space, so wrapping
-            // them in an `egui::Frame` collapses the frame to zero size and
-            // produces a grey square in the top-left corner.
-            let pane_rect = ui.available_rect_before_wrap();
-            ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
+        let Some(pane) = self.panes.get_mut(pane_id) else {
+            return UiResponse::None;
+        };
+        ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
+        let mut inner_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect.shrink(8.0)));
+        let ui = &mut inner_ui;
 
-            let inner_rect = pane_rect.shrink(8.0);
-            let mut inner_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
-            let ui = &mut inner_ui;
-
-            {
-                if let Some(app_pane) = pane.as_app_mut() {
-                    let app_ctx = AppRenderContext {
-                        colors: &self.colors,
-                        is_focused,
-                    };
-                    app_pane.runtime.ui(ui, &app_ctx);
-                    return UiResponse::None;
-                }
-
-                if let Some(agent_pane) = pane.as_agent_mut() {
-                    if crate::agent_pane::render_and_drain(ui, agent_pane, &self.colors) {
-                        ui.ctx().request_repaint();
-                    }
-                    return UiResponse::None;
-                }
-
-                // Terminal panes.
-                let Some(t) = pane.as_terminal_mut() else {
-                    return UiResponse::None;
-                };
-
-                if t.exited {
-                    // Show exit message centered, auto-close on any key
-                    let rect = ui.max_rect();
-                    ui.painter().rect_filled(rect, 0.0, self.colors.terminal_bg);
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-                        ui.centered_and_justified(|ui| {
-                            ui.colored_label(self.colors.text_dim, "[process exited]");
-                        });
-                    });
-                    if is_focused
-                        && ui.input(|i| {
-                            i.events
-                                .iter()
-                                .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
-                        })
-                    {
-                        self.close_exited = Some(tile_id);
-                    }
-                    return UiResponse::None;
-                }
-
-                render_name_bar_and_dots(
-                    ui,
-                    tile_id,
-                    pane_id,
-                    &self.tab_info,
-                    &self.pane_names,
-                    &self.colors,
-                );
-                let font_size = t.font_size;
-                let terminal = TerminalView::new(ui, &mut t.backend)
-                    .set_focus(is_focused)
-                    .set_theme(self.theme.clone())
-                    .set_font(theme::terminal_font(font_size))
-                    .set_size(Vec2::new(ui.available_width(), ui.available_height()));
-                ui.add(terminal);
-
-                // Draw tab indicator dots (top-left) when 2+ tabs and NO name bar
-                if !self.pane_names.contains_key(pane_id) {
-                    if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
-                        let rect = ui.max_rect();
-                        paint_tab_dots(
-                            ui.painter(),
-                            rect.left(),
-                            rect.top() + 2.0 + DOT_RADIUS,
-                            active_idx,
-                            count,
-                            self.colors.accent,
-                            self.colors.bg_active,
-                        );
-                    }
-                }
+        if let Some(app_pane) = pane.as_app_mut() {
+            render::app_pane::render(ui, app_pane, &self.colors, is_focused);
+        } else if let Some(agent_pane) = pane.as_agent_mut() {
+            if render::agent_pane::render(ui, agent_pane, &self.colors) {
+                ui.ctx().request_repaint();
+            }
+        } else if let Some(terminal) = pane.as_terminal_mut() {
+            let close_exited = render::terminal_pane::render(
+                ui,
+                terminal,
+                tile_id,
+                pane_id,
+                is_focused,
+                &self.theme,
+                &self.colors,
+                &self.pane_names,
+                &self.tab_info,
+            );
+            if close_exited {
+                self.close_exited = Some(tile_id);
             }
         }
 
@@ -256,48 +171,21 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 }
 
-/// Render the pane name bar (if named) and tab dot indicators for a terminal in FullTerminal mode.
-fn render_name_bar_and_dots(
-    ui: &mut egui::Ui,
-    tile_id: TileId,
-    pane_id: &PaneId,
-    tab_info: &HashMap<TileId, (usize, usize)>,
-    pane_names: &HashMap<PaneId, String>,
-    colors: &Colors,
-) {
-    let name_bar_height = 20.0;
-    let has_name = pane_names.contains_key(pane_id);
-    let has_tabs = tab_info.contains_key(&tile_id);
-
-    if has_name {
-        let bar_rect = egui::Rect::from_min_size(
-            ui.cursor().min,
-            egui::vec2(ui.available_width(), name_bar_height),
-        );
-        ui.advance_cursor_after_rect(bar_rect);
-
-        let name = &pane_names[pane_id];
-
-        if let Some(&(active_idx, count)) = tab_info.get(&tile_id) {
-            paint_tab_dots(
-                ui.painter(),
-                bar_rect.left(),
-                bar_rect.center().y,
-                active_idx,
-                count,
-                colors.accent,
-                colors.bg_active,
-            );
-        }
-
-        ui.painter().text(
-            bar_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            name,
-            egui::FontId::proportional(11.0),
-            colors.text_dim,
-        );
-    } else if has_tabs {
-        ui.add_space(TAB_DOT_RESERVED_HEIGHT);
+/// Write any files the user just dropped into the terminal, quoting paths
+/// that contain shell-significant characters.
+fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPane) {
+    let dropped = ui.input(|i| i.raw.dropped_files.clone());
+    for file in dropped {
+        let Some(path) = &file.path else { continue };
+        let path_str = path.display().to_string();
+        let escaped = if path_str.contains(|c: char| {
+            c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)
+        }) {
+            format!("'{}'", path_str.replace('\'', "'\\''"))
+        } else {
+            path_str
+        };
+        t.backend
+            .process_command(BackendCommand::Write(escaped.as_bytes().to_vec()));
     }
 }
