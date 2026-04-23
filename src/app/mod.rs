@@ -1152,12 +1152,23 @@ impl eframe::App for PlexiApp {
                         let inner_rect = zoom_rect.shrink(2.0); // inside the border
                         let mut child_ui =
                             ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
+                        // Files dropped onto a zoomed pane must go to the
+                        // zoomed terminal, NOT a background tile. The
+                        // per-tile drop path in `tiling.rs` is gated off
+                        // while zoomed; we handle the drop here instead.
+                        let dropped_to_zoom = child_ui.input(|i| {
+                            !i.raw.dropped_files.is_empty()
+                                && child_ui.rect_contains_pointer(inner_rect)
+                        });
                         egui::Frame::new()
                             .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
                             .show(&mut child_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
                                     if let Some(t) = pane.as_terminal_mut() {
+                                        if dropped_to_zoom {
+                                            crate::tiling::write_dropped_paths_to_terminal(ui, t);
+                                        }
                                         if t.exited {
                                             let rect = ui.max_rect();
                                             ui.painter().rect_filled(

@@ -66,7 +66,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         let is_focused = self.focused_tile == Some(tile_id);
 
         // Drop target matches the visual focus rect above.
-        if is_drag_hovering {
+        //
+        // Skip when a pane is zoomed: background tiles are still rendered
+        // as dark placeholders and still receive pointer input, but the
+        // user can't see them. Without this guard, dropping a file onto a
+        // zoomed pane silently writes its path into a terminal *behind*
+        // the overlay. The zoomed overlay in `app.rs` owns drop handling
+        // for the zoomed pane itself.
+        if is_drag_hovering && self.zoomed_pane.is_none() {
             if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
                 write_dropped_paths_to_terminal(ui, t);
             }
@@ -173,7 +180,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
 /// Write any files the user just dropped into the terminal, quoting paths
 /// that contain shell-significant characters.
-fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPane) {
+pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPane) {
     let dropped = ui.input(|i| i.raw.dropped_files.clone());
     for file in dropped {
         let Some(path) = &file.path else { continue };

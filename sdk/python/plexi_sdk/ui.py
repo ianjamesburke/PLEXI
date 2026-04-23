@@ -515,11 +515,12 @@ class Column(Component):
     measures fixed-height children first, then distributes leftover space to
     any `Spacer(grow=True)` descendants at the top level.
 
-    Padding defaults to `SPACE_XL` (24px) on the sides and bottom, with a
-    tighter `SPACE_LG` (16px) on the top. A top-of-pane `Header` carries its
-    own visual weight via TEXT_TITLE_XL, so a full 24px above it reads as an
-    awkward gap — the header looks "dropped" rather than anchored. The other
-    three sides stay at 24px where content *does* need breathing room.
+    Padding defaults to `SPACE_XL` (24px) on the sides and bottom, and
+    `SPACE_SM` (8px) on the top. A top-of-pane `Header` carries its own
+    visual weight via TEXT_TITLE_XL and its own bottom rhythm (gap +
+    divider), so anything above a few px reads as "the title is dropped"
+    rather than anchored. The other three sides stay at 24px where content
+    *does* need breathing room.
 
     Override either with `padding=` (all sides) or `padding_top=` (top only).
     """
@@ -530,7 +531,7 @@ class Column(Component):
 
     @property
     def _pad_top(self) -> float:
-        return self.padding_top if self.padding_top is not None else SPACE_LG
+        return self.padding_top if self.padding_top is not None else SPACE_SM
 
     def measure(self, avail_w: float) -> float:
         inner_w = avail_w - 2 * self.padding
