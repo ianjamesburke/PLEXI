@@ -1,6 +1,6 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
-#!/usr/bin/env python3
 """Commit Graph — subway-style git history viewer for Plexi.
 
 One pane, no `gh` dependency. Reads the local git repo directly.
