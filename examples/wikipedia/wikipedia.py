@@ -2,12 +2,17 @@
 """Wikipedia — net.http + text render example for PGAP v3."""
 from __future__ import annotations
 
-import sys
-
 import json
 import threading
 import urllib.parse
-from plexi_sdk import App, RenderContext, BG, FG, MUTED, ACCENT, SURFACE, HIGHLIGHT, BODY, CAPTION, HINT
+
+from plexi_sdk import (
+    App, RenderContext,
+    FG, MUTED, ACCENT, SURFACE, BODY, CAPTION,
+)
+from plexi_sdk.ui import (
+    Column, Header, Spacer, Footer,
+)
 
 API = "https://en.wikipedia.org/w/api.php"
 EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
@@ -98,46 +103,73 @@ class WikiApp(App):
                 self.emit.status_summary("")
         threading.Thread(target=run, daemon=True).start()
 
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, ctx.h, fill=BG)
-        # Header
-        ctx.rect(0, 0, ctx.w, 44, fill=SURFACE)
-        ctx.text(16, 14, "Wikipedia", size=18.0, color=ACCENT, bold=True)
-        if self._loading:
-            ctx.text(ctx.w - 100, 14, "Loading…", size=12.0, color=MUTED)
+    # ── Mode body — functional surface, stays primitive ─────────────────────
+    class _Body:
+        """Renders the search box, results list, or article text into whatever
+        vertical space the Column hands us."""
+        def __init__(self, app: "WikiApp") -> None:
+            self._app = app
 
-        y = 60.0
-        if self._mode == "search":
-            ctx.text(16, y, "Search:", size=BODY, color=FG)
-            ctx.rect(16, y + 24, ctx.w - 32, 32, fill=SURFACE, radius=4.0)
-            ctx.text(24, y + 32, self._query + "▌", size=BODY, color=FG, monospace=True)
-            ctx.text(16, y + 72, "Type a query and press Enter", size=HINT, color=MUTED)
-        elif self._mode == "results":
-            ctx.text(16, y, f'Results for "{self._query}":', size=BODY, color=FG)
-            items = [{"label": r, "secondary": None} for r in self._results]
-            ctx.list(items, selected=self._selected, item_height=40.0,
-                     y=y + 28, h=ctx.h - y - 68)
-            ctx.text(16, ctx.h - 28, "↑↓ navigate · Enter open · Esc back", size=HINT, color=MUTED)
-        elif self._mode == "article":
-            title = self._results[self._selected] if self._results else ""
-            ctx.text(16, y, title, size=18.0, color=ACCENT, bold=True)
-            # Word-wrap extract into lines
-            words = self._extract.split()
-            line, lines = "", []
-            for w in words:
-                candidate = (line + " " + w).strip()
-                if len(candidate) * 8 > ctx.w - 32:
+        def measure(self, avail_w: float) -> float:
+            return 0.0
+
+        def is_grow(self) -> bool:
+            return True
+
+        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+            app = self._app
+            if app._mode == "search":
+                ctx.text(x, y, "Search:", size=BODY, color=FG)
+                ctx.rect(x, y + 24, w, 32, fill=SURFACE, radius=4.0)
+                ctx.text(x + 8, y + 32, app._query + "▌",
+                         size=BODY, color=FG, monospace=True)
+                ctx.text(x, y + 72, "Type a query and press Enter",
+                         size=12, color=MUTED)
+            elif app._mode == "results":
+                ctx.text(x, y, f'Results for "{app._query}":', size=BODY, color=FG)
+                items = [{"label": r, "secondary": None} for r in app._results]
+                ctx.list(items, selected=app._selected, item_height=40.0,
+                         x=x, y=y + 28, w=w, h=max(0.0, h - 28))
+            elif app._mode == "article":
+                title = app._results[app._selected] if app._results else ""
+                ctx.text(x, y, title, size=18.0, color=ACCENT, bold=True)
+                # Word-wrap extract into lines (rough 8px/char estimate).
+                words = app._extract.split()
+                line, lines = "", []
+                for word in words:
+                    candidate = (line + " " + word).strip()
+                    if len(candidate) * 8 > w:
+                        lines.append(line)
+                        line = word
+                    else:
+                        line = candidate
+                if line:
                     lines.append(line)
-                    line = w
-                else:
-                    line = candidate
-            if line:
-                lines.append(line)
-            ty = y + 30
-            for l in lines[:int((ctx.h - ty - 40) / 20)]:
-                ctx.text(16, ty, l, size=CAPTION, color=FG)
-                ty += 20
-            ctx.text(16, ctx.h - 28, "Esc back to results", size=HINT, color=MUTED)
+                ty = y + 30
+                for ln in lines[: int(max(0.0, (h - 30)) / 20)]:
+                    ctx.text(x, ty, ln, size=CAPTION, color=FG)
+                    ty += 20
+
+    def _footer_text(self) -> str:
+        if self._mode == "search":
+            return "Type a query · Enter to search"
+        if self._mode == "results":
+            return "↑↓ navigate · Enter open · Esc back"
+        return "Esc back to results"
+
+    def on_render(self, ctx: RenderContext) -> None:
+        subtitle = "Loading…" if self._loading else {
+            "search": "Search English Wikipedia",
+            "results": f'Results for "{self._query}"',
+            "article": self._results[self._selected] if self._results else "Article",
+        }[self._mode]
+
+        ctx.render(Column([
+            Header(title="Wikipedia", subtitle=subtitle),
+            self._Body(self),
+            Spacer(grow=False),
+            Footer(self._footer_text()),
+        ]))
 
 
 if __name__ == "__main__":

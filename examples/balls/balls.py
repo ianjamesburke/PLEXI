@@ -20,7 +20,7 @@ from plexi_sdk import App, RenderContext, dim
 GRAVITY = 300.0      # px/s²
 DAMPING = 0.78       # energy retained on wall bounce
 FRICTION = 0.995     # per-frame horizontal friction on floor contact
-MAX_BALLS = 25
+MAX_BALLS = 50
 MAX_DT = 0.05        # cap to avoid tunnelling on first frame / tab-back
 
 PALETTE = [
@@ -146,17 +146,21 @@ class BallsApp(App):
 
         # HUD
         count = len(self.balls)
-        ctx.text(10, 10, f"{count}/{MAX_BALLS} balls — click to add",
+        ctx.text(10, 10, f"{count} balls — click to add · click ball to remove",
                  size=12, color="#45475a")
 
         ctx.emit.schedule_render(16)   # 60 fps
 
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
-        if len(self.balls) >= MAX_BALLS:
-            return
-        idx = len(self.balls)
-        # Launch upward from click point with slight random spread
-        self.balls.append(_new_ball(x, y, idx, vy=random.uniform(-300.0, -120.0)))
+        # Click on an existing ball → remove it (check largest/topmost first)
+        for i in range(len(self.balls) - 1, -1, -1):
+            b = self.balls[i]
+            if (x - b.x) ** 2 + (y - b.y) ** 2 <= b.r ** 2:
+                self.balls.pop(i)
+                return
+        # Click on empty space → spawn at cursor
+        if len(self.balls) < MAX_BALLS:
+            self.balls.append(_new_ball(x, y, len(self.balls), vy=random.uniform(-300.0, -120.0)))
 
 
 if __name__ == "__main__":

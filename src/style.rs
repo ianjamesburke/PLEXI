@@ -1,0 +1,63 @@
+//! Plexi design tokens — the single source of truth for spacing, typography,
+//! corner radii, modal widths, and overlay styling. All overlays, modals, and
+//! chrome should reference these constants rather than hard-coding magic
+//! numbers.
+//!
+//! ## Why this exists
+//! Before this module, every overlay picked its own sizes (sometimes 14.0 body,
+//! sometimes 13.0, buttons 32px tall in one place and 40 in another). Cohesion
+//! broke down as the UI grew. Every new overlay introduced another "how big
+//! should this text be?" decision, and re-flowing layouts for readability
+//! meant grepping for literals.
+//!
+//! ## How to use
+//! ```ignore
+//! use crate::style;
+//! ui.set_width(style::MODAL_WIDTH_MD);
+//! ui.label(egui::RichText::new("Title").size(style::TEXT_TITLE_XL));
+//! ```
+//!
+//! ## When to add a token
+//! When two or more places need the same value. The token set here is
+//! intentionally minimal — only the constants actually referenced in the
+//! codebase. Add scale holes (e.g. `SPACE_XS`, `MODAL_WIDTH_SM`) as soon as
+//! a migration needs them, not speculatively.
+
+use egui::CornerRadius;
+
+// ── Spacing scale ──────────────────────────────────────────────────────────
+// 4-based scale. Use these for padding, margins, gaps between siblings.
+pub const SPACE_SM: f32 = 8.0;
+pub const SPACE_MD: f32 = 12.0;
+pub const SPACE_XL: f32 = 24.0;
+
+// ── Typography scale ───────────────────────────────────────────────────────
+// Point sizes for `RichText::new(...).size(...)`.
+pub const TEXT_HINT: f32 = 11.0;       // Keyboard hints, meta labels.
+pub const TEXT_CAPTION: f32 = 12.0;    // Secondary info, small labels.
+pub const TEXT_BODY: f32 = 14.0;       // Default body text, button labels.
+pub const TEXT_TITLE_XL: f32 = 28.0;   // Primary modal title — the thing the
+                                       // user reads first.
+
+// ── Corner radii ───────────────────────────────────────────────────────────
+pub const RADIUS_MD: CornerRadius = CornerRadius::same(8);
+pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
+
+// ── Modal widths ───────────────────────────────────────────────────────────
+// Pick the smallest width that fits the content without crowding. Bigger is
+// NOT better — oversized modals feel empty and force eye travel.
+pub const MODAL_WIDTH_MD: f32 = 640.0;   // Default — notifications, palettes.
+
+// ── Button heights ─────────────────────────────────────────────────────────
+pub const BUTTON_H_MD: f32 = 40.0;       // Standard form buttons.
+pub const BUTTON_H_LG: f32 = 52.0;       // Primary action buttons in modals.
+
+// ── Overlay / modal chrome ─────────────────────────────────────────────────
+/// Alpha (0-255) of the black scrim drawn behind modals. Higher = more of the
+/// workspace is dimmed.
+pub const SCRIM_ALPHA: u8 = 190;
+
+/// Inner padding of a modal frame (horizontal, vertical). Applied via
+/// `egui::Margin::symmetric`.
+pub const MODAL_PADDING_H: i8 = 32;
+pub const MODAL_PADDING_V: i8 = 28;

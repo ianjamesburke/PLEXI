@@ -37,18 +37,30 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 color,
                 monospace,
                 bold,
+                align,
             } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
                 let family = font_family_for_text(*monospace);
                 let font_id = egui::FontId::new(*size, family);
                 let pos = egui::pos2(origin.x + x, origin.y + y);
+                let anchor = match align.as_str() {
+                    "center" => egui::Align2::CENTER_CENTER,
+                    "top_center" => egui::Align2::CENTER_TOP,
+                    "right" => egui::Align2::RIGHT_TOP,
+                    "right_center" => egui::Align2::RIGHT_CENTER,
+                    "left_center" => egui::Align2::LEFT_CENTER,
+                    _ => egui::Align2::LEFT_TOP, // default
+                };
                 ui.painter()
-                    .text(pos, egui::Align2::LEFT_TOP, text, font_id, color);
+                    .text(pos, anchor, text, font_id, color);
                 if *bold {
+                    // Fake-bold by re-painting the same text with a 0.45px
+                    // horizontal offset. Same anchor so the center-aligned
+                    // case stays centered.
                     let font_id = egui::FontId::new(*size, font_family_for_text(*monospace));
                     ui.painter().text(
                         pos + egui::vec2(0.45, 0.0),
-                        egui::Align2::LEFT_TOP,
+                        anchor,
                         text,
                         font_id,
                         color,

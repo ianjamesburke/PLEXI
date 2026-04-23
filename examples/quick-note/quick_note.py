@@ -7,13 +7,13 @@ Posts a notification on save (surfaces in notification palette).
 """
 from __future__ import annotations
 
-import sys
-import os
-
 import pathlib
-import time
 from datetime import datetime
-from plexi_sdk import App, RenderContext, BG, FG, MUTED, ACCENT, SURFACE, HIGHLIGHT, GREEN, BODY, CAPTION, HINT
+
+from plexi_sdk import (
+    App, RenderContext,
+    FG, MUTED, SURFACE, GREEN, BODY, CAPTION, HINT,
+)
 
 NOTES_DIR = ".plexi/notes"
 
@@ -116,42 +116,79 @@ class QuickNoteApp(App):
         except Exception:
             self._preview = ""
 
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, ctx.h, fill=BG)
-        ctx.rect(0, 0, ctx.w, 44, fill=SURFACE)
-        ctx.text(16, 14, "Quick Note", size=18.0, color=ACCENT, bold=True)
-        if self._status:
-            ctx.text(ctx.w - 300, 14, self._status, size=12.0, color=GREEN)
+    # ── Render ─────────────────────────────────────────────────────────────
+    # SDK v2 gives us the top Header + bottom Footer. The editor body (compose
+    # lines with cursor, or browse list + side preview) is a custom functional
+    # surface and stays on primitive draws. A _BodyGap component reserves the
+    # vertical space between Header and Footer; its render paints the body.
 
+    class _Body:
+        """Escape hatch: paints the compose/browse body inside the Column's
+        remaining space. `is_grow=True` so Column gives us everything left
+        over after Header and Footer are measured."""
+        def __init__(self, app: "QuickNoteApp") -> None:
+            self._app = app
+
+        def measure(self, avail_w: float) -> float:
+            return 0.0
+
+        def is_grow(self) -> bool:
+            return True
+
+        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+            self._app._render_body(ctx, x, y, w, h)
+
+    def _render_body(self, ctx, x: float, y: float, w: float, h: float) -> None:
         if self._mode == "compose":
-            y = 60.0
+            cy = y
             for i, line in enumerate(self._lines):
-                color = FG if i == 0 else MUTED if i > 0 else FG
+                color = FG if i == 0 else (MUTED if i > 0 else FG)
                 size = 18.0 if i == 0 else BODY
                 cursor = "▌" if i == self._cursor_line else ""
-                ctx.text(16, y, line + cursor, size=size, color=color)
-                y += size + 6
-                if y > ctx.h - 60:
+                ctx.text(x, cy, line + cursor, size=size, color=color)
+                cy += size + 6
+                if cy > y + h - 4:
                     break
-            ctx.text(16, ctx.h - 24,
-                     "Cmd+Enter save · Cmd+K browse notes", size=HINT, color=MUTED)
         else:
-            # Browse mode
+            # Browse mode — list on the left, optional preview on the right.
             items = [{"label": p.stem, "secondary": None} for p in self._notes]
             if items:
-                ctx.list(items, selected=self._selected, item_height=40.0)
+                ctx.list(items, selected=self._selected, item_height=40.0,
+                         x=x, y=y, w=w, h=h)
             else:
-                ctx.text(16, 80, "No notes yet.", size=BODY, color=MUTED)
+                ctx.text(x, y + 16, "No notes yet.", size=BODY, color=MUTED)
             # Preview panel (right side if wide enough)
-            if ctx.w > 600 and self._preview:
-                px = ctx.w * 0.5
-                ctx.rect(px, 44, ctx.w - px, ctx.h - 44, fill=SURFACE)
-                py = 60.0
-                for l in self._preview.split("\n")[:int((ctx.h - 80) / 18)]:
-                    ctx.text(px + 12, py, l, size=CAPTION, color=FG)
+            if w > 520 and self._preview:
+                px = x + w * 0.5
+                ctx.rect(px, y, w - (px - x), h, fill=SURFACE)
+                py = y + 12
+                for ln in self._preview.split("\n")[: int((h - 16) / 18)]:
+                    ctx.text(px + 12, py, ln, size=CAPTION, color=FG)
                     py += 18
-            ctx.text(16, ctx.h - 24,
-                     "↑↓ navigate · Enter open · Esc back", size=HINT, color=MUTED)
+
+    def _footer_text(self) -> str:
+        base = (
+            "Cmd+Enter save · Cmd+K browse notes"
+            if self._mode == "compose"
+            else "↑↓ navigate · Enter open · Esc back"
+        )
+        if self._status:
+            return f"{self._status}   ·   {base}"
+        return base
+
+    def _footer_color(self) -> str:
+        return GREEN if self._status else MUTED
+
+    def on_render(self, ctx: RenderContext) -> None:
+        from plexi_sdk.ui import Column, Header, Spacer, Footer
+
+        subtitle = "Compose" if self._mode == "compose" else "Browse saved notes"
+        ctx.render(Column([
+            Header(title="Quick Note", subtitle=subtitle),
+            self._Body(self),
+            Spacer(size=HINT),
+            Footer(self._footer_text(), color=self._footer_color()),
+        ]))
 
 
 if __name__ == "__main__":

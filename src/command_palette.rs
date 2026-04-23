@@ -120,6 +120,12 @@ impl PlexiApp {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
+            // Cmd+P toggles the palette closed without re-dispatching through
+            // `poll_actions` (which runs after the keyboard drain). Consuming
+            // here keeps open→close symmetric with the open keybind.
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
+                self.show_command_palette = false;
+            }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
                 && total > 0
                 && self.palette_selected < total - 1
@@ -172,6 +178,11 @@ impl PlexiApp {
 
         // ── Render ─────────────────────────────────────────────────────────
         let screen_rect = ctx.screen_rect();
+        // Scale the list viewport with the window. 80 = anchor offset above,
+        // 120 = breathing room below + search input + frame padding. Every
+        // other ScrollArea in the codebase uses auto_shrink([false, false]);
+        // this one used [false, true] and collapsed to ~1 row inside an Area.
+        let palette_max_list_h = (screen_rect.height() - 80.0 - 120.0).max(200.0);
         egui::Area::new(egui::Id::new("palette_scrim"))
             .fixed_pos(screen_rect.min)
             .show(ctx, |ui| {
@@ -233,9 +244,19 @@ impl PlexiApp {
                         // Scroll the selected row into view when keyboard navigation moved it.
                         let should_scroll = self.palette_selected != prev_selected;
 
+                        // `max_height` alone caps the viewport but doesn't
+                        // *reserve* it — when the filtered result set is
+                        // short (e.g. a single pane + a handful of apps),
+                        // egui collapses the scrollable region to the
+                        // content's natural height, producing the "tiny
+                        // sliver showing one row" bug. `min_scrolled_height`
+                        // forces the viewport to stay at the computed
+                        // target height, so the palette always reads as a
+                        // full-size list.
                         egui::ScrollArea::vertical()
-                            .max_height(400.0)
-                            .auto_shrink([false, true])
+                            .max_height(palette_max_list_h)
+                            .min_scrolled_height(palette_max_list_h)
+                            .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 ui.set_width(MODAL_WIDTH);
 

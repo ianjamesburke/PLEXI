@@ -276,10 +276,23 @@ install-alpha:
     cp "$alpha_bin" /usr/local/bin/plexi-alpha
 
     mkdir -p ~/.plexi-alpha/sdk ~/.plexi-alpha/apps
-    cp sdk/python/plexi_sdk/__init__.py ~/.plexi-alpha/sdk/plexi_sdk.py
+    # Install the SDK as a proper package directory so Python can resolve
+    # submodules like `plexi_sdk.ui` (SDK v2). The older flat-file layout
+    # (~/.plexi-alpha/sdk/plexi_sdk.py) is removed if present.
+    rm -rf ~/.plexi-alpha/sdk/plexi_sdk.py ~/.plexi-alpha/sdk/plexi_sdk
+    cp -R sdk/python/plexi_sdk ~/.plexi-alpha/sdk/plexi_sdk
+    find ~/.plexi-alpha/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
     cp -R examples/. ~/.plexi-alpha/apps/
     find ~/.plexi-alpha/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
     find ~/.plexi-alpha/apps -name '*.py' -exec chmod +x {} \;
+
+    # Refresh macOS LaunchServices so the Apple menu / app menu bar picks up
+    # the current CFBundleName instead of a cached value.
+    lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+    if [[ -x "$lsregister_bin" ]]; then
+      "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
+    fi
+    /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-alpha"
@@ -328,7 +341,9 @@ install-v3:
     cp "$v3_bin" /usr/local/bin/plexi-v3
 
     mkdir -p ~/.plexi-v3/apps ~/.plexi-v3/sdk
-    cp sdk/python/plexi_sdk/__init__.py ~/.plexi-v3/sdk/plexi_sdk.py
+    rm -rf ~/.plexi-v3/sdk/plexi_sdk.py ~/.plexi-v3/sdk/plexi_sdk
+    cp -R sdk/python/plexi_sdk ~/.plexi-v3/sdk/plexi_sdk
+    find ~/.plexi-v3/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
     cp -R examples/. ~/.plexi-v3/apps/
     # Remove any stale per-app SDK copies; apps import from ~/.plexi-v3/sdk/ via PYTHONPATH.
     find ~/.plexi-v3/apps -maxdepth 2 -name 'plexi_sdk.py' -delete
@@ -390,10 +405,22 @@ install-beta:
     cp "$beta_bin" /usr/local/bin/plexi-beta
 
     mkdir -p ~/.plexi-beta/sdk ~/.plexi-beta/apps
-    cp sdk/python/plexi_sdk/__init__.py ~/.plexi-beta/sdk/plexi_sdk.py
+    rm -rf ~/.plexi-beta/sdk/plexi_sdk.py ~/.plexi-beta/sdk/plexi_sdk
+    cp -R sdk/python/plexi_sdk ~/.plexi-beta/sdk/plexi_sdk
+    find ~/.plexi-beta/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
     cp -R examples/. ~/.plexi-beta/apps/
     find ~/.plexi-beta/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
     find ~/.plexi-beta/apps -name '*.py' -exec chmod +x {} \;
+
+    # Refresh macOS LaunchServices so the Apple menu / app menu bar picks up
+    # the new CFBundleName ("Plexi Beta") instead of caching the old one.
+    # Without this, the menu bar still shows "Plexi" even though the bundle
+    # itself is correctly named.
+    lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+    if [[ -x "$lsregister_bin" ]]; then
+      "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
+    fi
+    /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-beta"

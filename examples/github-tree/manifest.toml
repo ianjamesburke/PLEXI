@@ -1,13 +1,12 @@
 [app]
 id = "github-tree"
-name = "GitHub Tree"
-version = "0.1.0"
-description = "Browse GitHub repos: branches, recent commits, file tree."
-entry = "github_tree.py"
+name = "Commit Graph"
+version = "0.3.0"
+description = "Subway-style git commit history for the pane's repo."
+entry = "commit_graph.py"
 
 [app.capabilities]
-capabilities = ["net.http", "secrets.get"]
-allowed_hosts = ["api.github.com"]
+capabilities = []
 
 [launch]
-layout_hint = { side = "right", split = 0.65 }
+layout_hint = { side = "above", split = 0.5 }

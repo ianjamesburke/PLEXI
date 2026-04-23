@@ -1,23 +1,17 @@
+//! Thin wrapper that delegates to the shipped #288 agent turn loop in
+//! `crate::agent_pane::render_and_drain`.
+//!
+//! Do not reimplement agent logic here. This module exists only so the tiling
+//! render dispatcher can call a `render::agent_pane::render(...)` entry point
+//! alongside the terminal and app renderers.
+
 use crate::pane::AgentPane;
 use crate::theme::Colors;
 
-/// Render an agent conversation pane. Placeholder UI — full turn loop wired in #288.
-pub fn render_agent_pane(ui: &mut egui::Ui, pane: &mut AgentPane, _colors: &Colors) {
-    ui.vertical(|ui| {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for line in &pane.transcript {
-                    ui.label(line);
-                }
-                if pane.transcript.is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_gray(120),
-                        "Agent pane — type a message below to begin.",
-                    );
-                }
-            });
-        ui.separator();
-        ui.text_edit_singleline(&mut pane.input_buf);
-    });
+/// Render an agent pane for one frame.
+///
+/// Returns `true` if background work produced new output and the UI should
+/// repaint on the next frame.
+pub fn render(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors) -> bool {
+    crate::agent_pane::render_and_drain(ui, pane, colors)
 }

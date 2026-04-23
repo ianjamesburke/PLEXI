@@ -46,14 +46,27 @@ impl PlexiApp {
                 AppCommand::Notify(msg) => {
                     log::info!("app notify: {msg}");
                 }
-                AppCommand::ShowNotification { notify_id, level, title, body, actions, .. } => {
+                AppCommand::ShowNotification {
+                    notify_id,
+                    level,
+                    title,
+                    body,
+                    kind,
+                    options,
+                    input_prompt,
+                    required,
+                    ..
+                } => {
                     deferred.push(AppCommand::ShowNotification {
                         notify_id,
                         sender_pane_id: pane_id,
                         level,
                         title,
                         body,
-                        actions,
+                        kind,
+                        options,
+                        input_prompt,
+                        required,
                     });
                 }
                 // DeliverNotifyAction is issued by the overlay (overlays.rs), not by apps.

@@ -165,6 +165,10 @@ impl ProcessApp {
                 level,
                 title,
                 body,
+                kind,
+                options,
+                input_prompt,
+                required,
                 actions,
                 notify_id,
             } => {
@@ -254,8 +258,15 @@ impl ProcessApp {
                     level,
                     title,
                     body,
-                    actions,
+                    kind,
+                    options,
+                    input_prompt,
+                    required,
                 });
+                // `actions` intentionally dropped: they were already processed
+                // as server-side side effects above (resume_run / open_intent /
+                // run_command). The modal surfaces options, not actions.
+                let _ = actions;
             }
 
             // ── Pipe open ──────────────────────────────────────────────────

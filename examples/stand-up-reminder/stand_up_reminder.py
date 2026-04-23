@@ -6,9 +6,11 @@ import time
 
 from plexi_sdk import (
     App, RenderContext,
-    BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, GREEN,
-    TITLE, HEADING, CAPTION, HINT,
-    PAD, PAD_TIGHT, HEADER_H,
+    SURFACE, ACCENT, MUTED, FG, GREEN,
+    TITLE, CAPTION,
+)
+from plexi_sdk.ui import (
+    Column, Header, Section, Label, Spacer, Footer,
 )
 
 PROMPTS = [
@@ -48,6 +50,9 @@ PROMPTS = [
 ]
 
 INTERVALS = [
+    (2, "2 sec"),
+    (5, "5 sec"),
+    (30, "30 sec"),
     (5 * 60, "5 min"),
     (15 * 60, "15 min"),
     (30 * 60, "30 min"),
@@ -69,7 +74,7 @@ def _format_duration(secs: float) -> str:
 
 class StandUpReminderApp(App):
     def on_init(self, ctx: RenderContext) -> None:
-        self._interval_idx = 1  # default: 15 min
+        self._interval_idx = 4  # default: 15 min
         self._reminders_today = 0
         self._last_prompt: str = ""
         self._next_fire_at: float = 0.0
@@ -97,64 +102,59 @@ class StandUpReminderApp(App):
         self._schedule_timer(ctx)
         self.emit.schedule_render(after_ms=100)
 
+    # ── Countdown ring — functional surface, stays as primitives ───────────
+    class _CountdownRing:
+        """Big centered circle with timer text. Escape hatch: primitive draws
+        inside a flex-grow slot so the ring auto-sizes to remaining space."""
+        def __init__(self, app: "StandUpReminderApp") -> None:
+            self._app = app
+
+        def measure(self, avail_w: float) -> float:
+            return 0.0
+
+        def is_grow(self) -> bool:
+            return True
+
+        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+            cx = x + w / 2
+            cy = y + h / 2
+            radius = min(w, h) * 0.38
+            ctx.circle(cx, cy, radius, SURFACE)
+
+            remaining = max(0.0, self._app._next_fire_at - time.time())
+            countdown_text = _format_duration(remaining)
+            ctx.text(cx, cy - 10, countdown_text,
+                     size=TITLE + 10, color=ACCENT, bold=True,
+                     align="center")
+            ctx.text(cx, cy + 24, "until next reminder",
+                     size=CAPTION, color=MUTED, align="center")
+
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(BG)
-
-        # Header bar
-        ctx.rect(0, 0, ctx.w, HEADER_H, SURFACE)
-        ctx.text(PAD, 14, "Stand Up Reminder", size=HEADING, color=FG, bold=True)
-        ctx.text(PAD, 31, "Running in background", size=HINT, color=MUTED)
-
-        # Separator
-        ctx.rect(0, HEADER_H, ctx.w, 1, HIGHLIGHT)
-
-        center_x = ctx.w / 2
-        center_y = ctx.h / 2
-
-        # Countdown circle background
-        radius = min(ctx.w, ctx.h) * 0.22
-        ctx.circle(center_x, center_y - 20, radius, SURFACE)
-
-        # Countdown text
-        remaining = max(0.0, self._next_fire_at - time.time())
-        countdown_text = _format_duration(remaining)
-        # Position countdown centered in circle
-        text_x = center_x - (len(countdown_text) * 11)
-        ctx.text(text_x, center_y - 46, countdown_text, size=TITLE + 10, color=ACCENT, bold=True)
-        ctx.text(center_x - 48, center_y + 10, "until next reminder", size=CAPTION, color=MUTED)
-
-        # Last prompt card
-        card_y = center_y + radius + 20
-        card_h = 64.0
-        card_x = PAD
-        card_w = ctx.w - PAD * 2
-        ctx.rect(card_x, card_y, card_w, card_h, SURFACE, radius=8.0)
-
-        if self._last_prompt:
-            ctx.text(card_x + PAD_TIGHT, card_y + 10, "Last prompt", size=HINT, color=MUTED)
-            # Truncate prompt if too long
-            max_chars = int((card_w - PAD * 2) / 7.5)
-            display_prompt = self._last_prompt
-            if len(display_prompt) > max_chars:
-                display_prompt = display_prompt[:max_chars - 1] + "…"
-            ctx.text(card_x + PAD_TIGHT, card_y + 30, display_prompt, size=CAPTION, color=FG)
-        else:
-            ctx.text(card_x + PAD_TIGHT, card_y + 24, "No reminders sent yet", size=CAPTION, color=MUTED)
-
-        # Reminders count
-        count_y = card_y + card_h + PAD
-        count_color = GREEN if self._reminders_today > 0 else MUTED
-        count_text = (
-            f"{self._reminders_today} reminder{'s' if self._reminders_today != 1 else ''} sent today"
-        )
-        ctx.text(center_x - (len(count_text) * 4), count_y, count_text, size=CAPTION, color=count_color)
-
-        # Footer
-        footer_y = ctx.h - 32.0
-        ctx.rect(0, footer_y - PAD_TIGHT, ctx.w, 1, HIGHLIGHT)
         _, interval_label = INTERVALS[self._interval_idx]
-        footer_text = f"Interval: {interval_label}   ·   j/k or +/- to adjust"
-        ctx.text(PAD, footer_y, footer_text, size=HINT, color=MUTED)
+
+        last_prompt_text = (
+            self._last_prompt if self._last_prompt else "No reminders sent yet"
+        )
+        last_prompt_color = FG if self._last_prompt else MUTED
+
+        count_text = (
+            f"{self._reminders_today} reminder"
+            f"{'s' if self._reminders_today != 1 else ''} sent today"
+        )
+        count_color = GREEN if self._reminders_today > 0 else MUTED
+
+        ctx.render(Column([
+            Header(
+                title="Stand Up Reminder",
+                subtitle="Running in background",
+            ),
+            self._CountdownRing(self),
+            Section("Last prompt"),
+            Label(last_prompt_text, tone="body", color=last_prompt_color),
+            Label(count_text, tone="caption", color=count_color),
+            Spacer(grow=False),
+            Footer(f"Interval: {interval_label}   ·   j/k or +/- to adjust"),
+        ]))
 
         # Schedule next repaint in 1 second to update countdown
         self.emit.schedule_render(after_ms=1000)

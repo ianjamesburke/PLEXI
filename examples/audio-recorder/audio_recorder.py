@@ -7,19 +7,23 @@ Works under PLEXI_AUDIO=mock://fixtures/in.wav,/tmp/out.wav.
 """
 from __future__ import annotations
 
-import sys
-import os
-
 import pathlib
 import struct
 import threading
 import time
 import wave
-from plexi_sdk import App, RenderContext, BG, FG, MUTED, ACCENT, SURFACE, RED, GREEN, BODY, CAPTION, HINT
+
+from plexi_sdk import App, RenderContext, RED, GREEN, MUTED
+from plexi_sdk.ui import (
+    Column, Card, Header, Section,
+    KeyRow, Label, Spacer, Footer,
+)
 
 PIPE_ID = "rec"
 SAMPLE_RATE = 48000
 BUFFER_SIZE = 512
+
+METER_H = 80.0
 
 
 class AudioRecorderApp(App):
@@ -96,37 +100,61 @@ class AudioRecorderApp(App):
         except Exception as e:
             self.emit.error(f"wav write failed: {e}")
 
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, ctx.h, fill=BG)
-        ctx.rect(0, 0, ctx.w, 44, fill=SURFACE)
-        ctx.text(16, 14, "Audio Recorder", size=18.0, color=ACCENT, bold=True)
-
-        # Status
+    # ── Status line ────────────────────────────────────────────────────────
+    def _status_text(self) -> str:
         if self._state == "IDLE":
-            status_col = MUTED
-            status = "IDLE"
-        elif self._state == "RECORDING":
+            return "IDLE"
+        if self._state == "RECORDING":
             elapsed = time.time() - self._start_time
-            status_col = RED
-            status = f"RECORDING  {elapsed:.1f}s"
-        else:
-            status_col = GREEN
-            status = "SAVED  →  recording.wav"
+            return f"RECORDING  {elapsed:.1f}s"
+        return "SAVED  →  recording.wav"
 
-        ctx.text(16, 68, status, size=20.0, color=status_col, bold=True)
-
-        # Audio meter (bound to the capture pipe)
-        meter_y = 110.0
-        ctx.audio_meter(16, meter_y, ctx.w - 32, 48, PIPE_ID)
-
-        # Help text
-        y = ctx.h - 48
+    def _status_color(self) -> str:
         if self._state == "IDLE":
-            ctx.text(16, y, "R — start recording", size=HINT, color=MUTED)
-        elif self._state == "RECORDING":
-            ctx.text(16, y, "S — stop and save", size=HINT, color=MUTED)
-        else:
-            ctx.text(16, y, "R — record again", size=HINT, color=MUTED)
+            return MUTED
+        if self._state == "RECORDING":
+            return RED
+        return GREEN
+
+    def _footer_text(self) -> str:
+        if self._state == "IDLE":
+            return "R — start recording"
+        if self._state == "RECORDING":
+            return "S — stop and save"
+        return "R — record again"
+
+    # ── Audio meter — primitive escape hatch ───────────────────────────────
+    class _Meter:
+        """Custom component: binds the host-side AudioMeter to the pipe."""
+        HEIGHT = METER_H
+
+        def measure(self, avail_w: float) -> float:
+            return self.HEIGHT
+
+        def is_grow(self) -> bool:
+            return False
+
+        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+            ctx.audio_meter(x, y + (h - 48.0) / 2.0, w, 48.0, PIPE_ID)
+
+    def on_render(self, ctx: RenderContext) -> None:
+        ctx.render(Column([
+            Header(
+                title="Audio Recorder",
+                subtitle="Capture mic input to recording.wav",
+            ),
+            Card([
+                KeyRow("r", "Start recording"),
+                KeyRow("s", "Stop and save"),
+            ]),
+            Section("Status"),
+            Label(self._status_text(), tone="body",
+                  color=self._status_color(), bold=True),
+            Section("Level"),
+            self._Meter(),
+            Spacer(grow=True),
+            Footer(self._footer_text()),
+        ]))
 
 
 if __name__ == "__main__":

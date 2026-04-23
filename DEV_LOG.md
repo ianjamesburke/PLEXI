@@ -1,5 +1,159 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-23 — [FIX] Host PATH broken under GUI-bundle launch (alpha)
+Root cause: when Plexi is launched from `/Applications` via Spotlight, Dock, Finder, or `open -a`, LaunchServices starts the process with a minimal `/usr/bin:/bin:/usr/sbin:/sbin` PATH — no Homebrew, no `~/.local/bin`, no asdf/nvm/pyenv shims. The user's shell profile never runs. Plexi then whitelists that broken PATH into every process-app subprocess via `process_app/mod.rs` (ENV_WHITELIST includes `PATH`), so apps that shell out to tools installed under `/opt/homebrew/bin` (e.g. GitHub Tree calling `gh`, any agent using `rg`/`fd`, etc.) see `shutil.which("gh") == None` and fail to auth. Running Plexi from a terminal (`plexi-alpha`) works because the shell PATH is inherited correctly.
+
+Fix: new `shell::install_login_shell_path()` runs `$SHELL -l -c 'printf %s "$PATH"'` once at startup and `set_var("PATH", ...)` on the Plexi process itself. Falls back to prepending `/opt/homebrew/{bin,sbin}:/usr/local/{bin,sbin}` if the probe fails. Called from `main()` right after logging init, before any subprocess spawns or threads start. All downstream reads (process-app whitelist, terminal env builder, internal shelling) inherit the resolved PATH with zero per-callsite changes. Removed the duplicate homebrew-prepend hack from `shell::build_env` — single source of truth now.
+
+**Breaks if:** Launch Plexi Alpha from `/Applications` (Spotlight/Dock, NOT from a terminal). Open a GitHub Tree pane. It says "The gh CLI isn't on PATH" or "Run `gh auth login`" despite `gh` being installed in Homebrew. Also breaks if `~/.plexi-alpha/plexi.log` shows `Login-shell PATH probe failed` without any fallback line after it.
+
+## 2026-04-23 — [FIX] Grey square top-left of every pane — round 2, in tiling (uncommitted)
+Root cause: the first grey-square fix in `src/process_app/mod.rs` only handled the `ProcessApp::ui()` path. The *outer* tile renderer in `src/tiling.rs::pane_ui` was wrapping *every* pane (app, agent, terminal) in the exact same collapsing `egui::Frame::new().fill(terminal_bg).inner_margin(8).show(ui, ...)`. Because every downstream renderer (ProcessApp, agent_pane, TerminalView) paints via `ui.painter()` / paints over its own computed rect without allocating egui UI space, the outer Frame collapsed to a tiny rect in the top-left and painted the background only there. Same for the zoomed-pane placeholder (line 97-102) — `Frame.show(ui, |_| {})` with an empty closure allocates zero.
+
+Fix: drop the outer Frames in `pane_ui`. Paint the pane background directly with `ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, terminal_bg)`, then run the inner renderer inside a child UI built with `UiBuilder::new().max_rect(pane_rect.shrink(8.0))` to preserve the 8px inner-margin behavior. Same treatment for the zoomed-pane placeholder. `cargo build --release` clean, `just install-alpha` green.
+
+**Breaks if:** Any pane — app, agent, or terminal — shows a small grey rectangle in its top-left corner, or the pane background/margin behavior changes (content touching the edges without an 8px gutter).
+
+## 2026-04-23 — [FIX] Grey square top-left — round 1, in process_app (uncommitted)
+Root cause: `ProcessApp::ui()` in `src/process_app/mod.rs` wrapped the draw-command playback in an `egui::Frame::new().fill(terminal_bg).show(ui, ...)`. Every primitive inside `render_draw_commands` paints via `ui.painter()`, which draws but never *allocates* UI space, so the Frame's content rect collapsed to its minimum size in the top-left and painted `terminal_bg` only over that tiny rect. Round 1 of the fix; round 2 is above (same pattern one level up in `src/tiling.rs`).
+
+Fix: drop the Frame wrapper. Paint `terminal_bg` directly over `ui.available_rect_before_wrap()`, then call `render_draw_commands` against `ui` as before. The pane-background contract now lives in one explicit painter call against a rect we control.
+
+**Breaks if:** An app's own background (drawn by ProcessApp before draw-commands play back) fails to fill the pane or shows a small inner grey rectangle.
+
+## 2026-04-23 — [FIX] Modal keyboard focus leaks to app behind close-confirm (uncommitted)
+Root cause: `draw_confirm_close` in `src/overlays.rs` used `ui.input(|i| i.key_pressed(Enter))` — a read-only check that does **not** consume the event. The pending-close overlay was also drawn at the *end* of `update()`, *after* `dispatch_app_key_events` had already forwarded the Enter to the focused pane. Symptom: Cmd+W on a backlog pane → confirm-modal appears → Enter both confirms the close *and* opens the selected note in the default markdown editor as the pane tears down.
+
+Fix: migrate confirm-close onto the existing `FocusLayer` pipeline used by the notification modal. New `FocusLayer::ConfirmClose` + `sync_confirm_close_focus()` pair in `src/app/mod.rs`; `input_captured_by_overlay()` now returns true when either modal owns focus; the early-render path in `update()` dispatches to the right modal before `drain_captured_keyboard_input` clears the buffer for downstream panes. `draw_confirm_close` uses `ctx.input_mut(|i| i.consume_key(Enter/Escape))` and its late-render call site was removed. Also added a scrim and inline "Enter confirm / Esc cancel" hint for stylistic parity with the command palette and notification modal.
+
+**Breaks if:** Cmd+W on a backlog (or any non-terminal) pane → hitting Enter on the confirm modal also triggers the selected-item action in the pane underneath; or the confirm-close modal no longer dims the background behind it.
+
+## 2026-04-23 — [FIX] Command palette collapses to one row after a cache-miss redraw (uncommitted)
+Root cause: follow-up on the earlier palette fix. `ScrollArea::max_height(...)` caps the viewport but does **not** reserve it — when the filtered entry set is short (single pane + a handful of apps), egui measured the natural content height and shrank the scroll viewport to ~1 row, even though `auto_shrink=[false, false]` was set. The earlier dynamic-height patch only addressed the cap, not the reservation.
+
+Fix: pair `.max_height(palette_max_list_h)` with `.min_scrolled_height(palette_max_list_h)`. Both now point at the same computed target so the viewport is locked at that height regardless of content size.
+
+**Breaks if:** Open Cmd+P with only one pane running → palette renders as a ~1-row sliver instead of a full-size list.
+
+## 2026-04-23 — [FIX] Header sits too low in the top of the pane (uncommitted)
+Root cause: `Column.padding` defaulted to `SPACE_XL` (24px) on all four sides. A `Header` at the top of a pane carries its own visual weight via `TEXT_TITLE_XL` (28pt); stacking 24px of top padding above it reads as a "dropped" title rather than an anchored one. Side/bottom padding at 24px feels correct — only the top is wrong.
+
+Fix: add `Column.padding_top: Optional[float]` that defaults to `SPACE_LG` (16px). Sides and bottom stay at 24px. Apps that want pixel-perfect override pass `padding_top=N`. Applies to every SDK v2 app with no migration needed — the new default takes over as soon as the updated `plexi_sdk` package is installed.
+
+**Breaks if:** `Screen Time` (or any other SDK v2 app with a `Header`) shows an obvious top gap that makes the title look like it's floating in the middle of a header region rather than anchored to the top of the pane.
+
+## 2026-04-23 — [FIX] Apps shadowing host Cmd-chords + unclipped text overflowing columns (uncommitted)
+Two systemic fixes the user flagged in the same breath.
+
+**Cmd-chord hijack (root cause):** `ProcessApp::handle_key` in `src/process_app/mod.rs` forwarded every Key event (except bare letters) to the app subprocess as `PlexiEvent::Key`. Apps received Cmd+Enter, Cmd+P, Cmd+Shift+A, etc. and could act on them *before* the host's `poll_actions` ran in the same frame. Concrete symptom: in the backlog app, Cmd+Enter opened the selected note instead of toggling pane zoom.
+
+Fix: skip forwarding any event where `modifiers.command` is set. Cmd-modified chords are reserved for host shortcuts; apps that want shortcuts use bare letters or Shift/Alt combos. `handle_key` still forwards non-Cmd chords (arrow keys, Enter, Esc, Tab, etc.) normally.
+
+**Unbounded text (root cause):** `ctx.text()` in the Python SDK had no width argument. Apps drawing bounded surfaces (list rows, columns, table cells) relied on ad-hoc `line[:int(pw/7)]` truncation or nothing at all. Long note names overflowed their column in the backlog app; when the pane was narrow, every item overlapped every other item into an unreadable mess.
+
+Fix: added `max_width: float | None = None` to `ctx.text()`. When set, the SDK truncates the string with an ellipsis *before* emitting the DrawCommand — there's no host-side clipping, so this is the only safe bound. Exposed `plexi_sdk.truncate_to_width(text, max_px, font_size, mono)` as a public helper for hand-drawn surfaces that can't route through `ctx.text`. Migrated backlog to use `max_width` on every bounded text call (header, item names, preview path + lines).
+
+**Breaks if:** (1) In the backlog pane, Cmd+Enter opens the selected note instead of zooming the pane; or (2) long note names in backlog render past the list column's right edge into the preview pane.
+
+## 2026-04-23 — [FIX] Command palette only rendering ~1.5 items (uncommitted)
+Root cause: `src/command_palette.rs` used `ScrollArea::vertical().max_height(400.0).auto_shrink([false, true])`. With `auto_shrink_y=true` inside an `egui::Area` + `egui::Frame` with margins, the ScrollArea measures available height incorrectly on first lay-out and collapses the viewport to roughly one row. Every other ScrollArea in the codebase (agent_pane, file_browser, render/agent_pane) uses `auto_shrink([false, false])`; the palette was the outlier.
+
+Fix: (1) switch to `auto_shrink([false, false])` to match the codebase convention — max_height alone governs the viewport. (2) Make max_height dynamic — `screen_rect.height() - 80 anchor - 120 bottom/input/padding`, clamped to a 200px floor — so the palette scales with window size instead of hard-capping at 400px.
+**Breaks if:** Cmd+P opens the palette and fewer than ~6 items are visible at once, or the palette no longer grows when the window is tall.
+
+## 2026-04-23 — [FIX] App panes were rendering monospace everywhere (uncommitted)
+Root cause: `src/theme.rs:font_definitions()` inserted `JetBrainsMonoNerdFont-Light` at index 0 for **both** `FontFamily::Monospace` AND `FontFamily::Proportional`. That meant any `ctx.text(..., monospace=False)` call from the Python SDK still rendered in JetBrains Mono (a monospace font), so app UIs looked like terminal dumps even when they explicitly requested proportional.
+
+Fix: swap priorities in the Proportional family — `DejaVuSans.ttf` (already bundled as fallback #1) now primary, `JetBrainsMonoNerdFont-Light.ttf` secondary for glyph fallback (nerd icons, box drawing). Monospace family unchanged. Apps get real proportional body text; terminal panes still use the mono font via `FontFamily::Monospace`.
+
+Same pass also tightened SDK v2 component defaults after the user flagged the notification-tester as still feeling "dog shit" post-SDK-v2:
+- `Column.padding`: SPACE_LG → SPACE_XL (24px outer padding feels airy, not cramped).
+- `Column.gap`: SPACE_SM → SPACE_MD (12px between siblings).
+- `Card`: added 1px border in HIGHLIGHT color — SURFACE and BG are close enough in brightness that cards weren't popping off the pane.
+- `Card.padding`: SPACE_MD → SPACE_LG.
+- `KeyRow.BADGE_W`: 28 → 44px, `BADGE_H`: 20 → 26px; badges now properly tile for chords (⌘K, Esc) and the glyph is monospace-centered.
+- `Header`: title sized to TEXT_TITLE_XL (28pt, was 20pt); clearer title-to-subtitle-to-divider spacing; baseline math fixed so subtitle sits below the title instead of overlapping.
+- `Footer`: symmetric top/bottom breathing room around the divider — previously hugged the pane frame edge.
+
+**Breaks if:** UI pane text renders monospace again. Card borders invisible (border=HIGHLIGHT removed). KeyRow badges rendered smaller than the description text height. Header subtitle overlaps title baseline. Footer text crowds the pane bottom edge. Fallback Unicode coverage (nerd icons) breaks because JetBrainsMono fell out of the Proportional fallback chain entirely (it should still be at index 1).
+
+## 2026-04-23 — [DECISION] SDK v2 — declarative UI primitives + `ui-playground` (uncommitted)
+Every app before today used `ctx.rect`, `ctx.text`, `ctx.circle` with hand-picked pixel coordinates. Result: every new app reinvented header layout, padding, truncation, footer placement — and the notification-tester screenshot made it concrete (footer clipping on the right edge, no padding in buttons, subtitle cut off).
+
+Added `sdk/python/plexi_sdk/ui.py` — a declarative component tree. Components are dataclasses (`Column`, `Card`, `Header`, `Section`, `Divider`, `Heading`, `Label`, `KeyRow`, `ScrollLog`, `Spacer`, `Footer`). Each has `measure(avail_w) -> height` and `render(ctx, x, y, w, h) -> None`. `Column` lays children top-to-bottom; `Spacer(grow=True)` soaks slack; `Label` wraps up to 3 lines; `Footer` wraps up to 2; `Heading` and `KeyRow` truncate with `…`. `ctx.render(tree)` clears the pane and lays out the tree.
+
+Style tokens are re-exported from ui.py and mirror `src/style.rs` (`SPACE_*`, `TEXT_*`, `RADIUS_*`, palette constants). Low-level `ctx.rect` / `ctx.text` remain — they're the escape hatch, not the starting point.
+
+Install recipes (`install-alpha`, `install-beta`, `install-v3`) now copy the entire `plexi_sdk/` package directory to `~/.plexi-*/sdk/plexi_sdk/` instead of a flat `plexi_sdk.py`, so `from plexi_sdk.ui import ...` resolves. Rejected: keeping the flat-file layout and concatenating ui.py contents into `__init__.py` — cohesion lost at 1000+ LOC in a single file.
+
+Also landed: `examples/ui-playground/` — a reference app that renders every component at once, plus `docs/sdk-ui-guide.md` with the component table, responsive behavior notes, and the "write your own component" recipe. Notification-tester migrated from raw primitives to SDK v2 as the proof point; new code is ~40% shorter and declarative. Smoke test passes — both the tester and playground boot cleanly with the new package layout.
+
+**Breaks if:** `from plexi_sdk.ui import Column` fails at app startup (the installed SDK is still flat-file; run `just install-alpha`). Notification-tester footer clips on a narrow pane (Footer wrap broken). Scroll log shows oldest lines at the top (should be newest-first). Card background doesn't honor the `radius` token. Heading text doesn't truncate with `…` when pane is narrower than the title. Install leaves a stale `~/.plexi-*/sdk/plexi_sdk.py` file alongside the new package dir (rm in the recipe missed).
+
+## 2026-04-23 — [FIX] install-alpha / install-beta refresh macOS LaunchServices (uncommitted)
+`install-beta` was only renaming the `.app` bundle but not refreshing macOS LaunchServices — so the Apple menu / app menu bar kept showing the cached "Plexi" name instead of "Plexi Beta". `install-v3` already had the `lsregister -f` + `pbs -update` calls; ported them to `install-alpha` and `install-beta` for consistency.
+**Breaks if:** a fresh `just install-beta` leaves the menu bar showing anything other than "Plexi Beta" next to the Apple menu.
+
+## 2026-04-23 — [CHANGED] Input-kind notifications are multiline with Cmd+Enter submit (uncommitted)
+Input-kind notifications used `TextEdit::singleline` + Enter-to-submit — single short text only. Use cases the user wants (describe what you're working on, write a quick note) want multi-line. Rejected: embedding a full text editor (way out of scope for a notification). Chose `TextEdit::multiline` + `Cmd+Enter` submit — same chord Slack / Linear / Discord use. Enter inserts a newline into the buffer; `Cmd+Enter` commits. Input field now has `desired_rows(6)` so it's obviously multi-line on first render and scrolls vertically once content exceeds the visible row count.
+
+`Cmd+Enter` is consumed via `ctx.input_mut.consume_key` inside `draw_notification_modal` so egui's `TextEdit` can't see it and can't invent a widget-local interpretation. Footer hint for input kind reads "Enter for newline · ⌘⏎ to submit · Esc to dismiss" (required variant drops Esc).
+
+**Breaks if:** pressing Enter in the input field submits instead of inserting a newline. Cmd+Enter inserts a newline and doesn't submit. Input field renders as a single-line edit. Input field doesn't scroll when content exceeds 6 rows. Submitted value returns without the newlines the user typed (trim() only strips leading/trailing whitespace — internal newlines must survive).
+
+## 2026-04-23 — [DECISION] `src/style.rs` design tokens + notification modal polish (uncommitted)
+Added a central design-tokens module so every overlay/pane references the same spacing, typography, radii, modal widths, and button heights. The set is intentionally minimal — only tokens referenced by the current codebase are exported; scale holes (`SPACE_XS`, `MODAL_WIDTH_SM`, `RADIUS_SM`, etc.) are added as migrations need them, not speculatively (project rule against `#[allow(dead_code)]` and speculative abstractions).
+
+Notification modal polished on top of the new tokens:
+- Width 520 → 640 (`MODAL_WIDTH_MD`), inner padding 32h / 28v.
+- Title centered and bumped from 20pt → 28pt (`TEXT_TITLE_XL`).
+- Body centered, max-width clamped so long lines wrap naturally.
+- Options rewritten as a hand-drawn `option_button` widget in `overlays.rs` — egui's built-in `Button` left-aligns labels and gives no API hook to center them inside a fixed-width rect; painting manually gets us a centered label + right-gutter shortcut hint (`[Y]`) + 52px tall button (`BUTTON_H_LG`). Focused option gets the accent fill + black text; hover on non-focused options lifts the bg slightly. Screenshot-reproducible: the previous "Yes  [Y]" with zero horizontal padding is gone.
+- Message-kind `Acknowledge` is now a fixed-width `primary_button` — 220px wide, centered on its own row, 40px tall.
+- Footer hint centered below the button instead of sharing a row with it.
+- Scrim alpha 170 → 190 (slightly deeper dim).
+
+**Breaks if:** option buttons render with left-aligned text. Focused option in a choice notif doesn't visually pop (no accent fill). Notification title is left-aligned, not centered. Modal width feels cramped (anything less than ~600px suggests the token wasn't applied). Acknowledge button for message kind spans the full modal width instead of being centered at 220px. Hover on a non-focused option doesn't visibly lift. `cargo build` emits a warning about unused constants in `style.rs` (the minimal-tokens rule was broken).
+
+## 2026-04-23 — [DECISION] FocusLayer input-capture primitive (uncommitted)
+Addresses a recurring class of bug: keystrokes leaked through overlays to panes behind them. Root cause — egui doesn't auto-route input by visual stacking; any widget that reads `ctx.input(...)` sees the same event stream. Every new overlay had to independently remember to gate input, and every miss reintroduced the same leak.
+
+Introduced `FocusLayer` enum + `focus_stack: Vec<FocusLayer>` on `PlexiApp` with semantics: the top-of-stack layer owns keyboard input for the frame. When a non-`Pane` layer is on top, `drain_captured_keyboard_input` retains only a global allowlist (`Cmd+Q`, `Cmd+W`, `Cmd+Shift+A`, `Cmd+]`/`Cmd+[`) in `ctx.input.events`, dropping every other `Event::Key` and all `Event::Text`. Mouse events pass through untouched.
+
+Integration: at the top of `update()`, `sync_notification_modal_focus()` reconciles the layer against `show_notification_modal && !pending_notifications.is_empty()`. If `input_captured_by_overlay()` returns true, the modal renders FIRST (so its `TextEdit` for the `input` kind consumes typed chars), then the drain runs. `dispatch_app_key_events` is gated on the same predicate — focused apps don't receive `handle_key` when an overlay owns input. `keys::poll_actions` runs afterward over the drained buffer, so global keybinds (and Cmd+]/Cmd+[ queue-cycling) still work. The late-in-`update()` modal render is gone — only the early phase renders now.
+
+Only the notification modal is migrated. Command palette, run palette, rename pane, confirm close, quit confirm, shortcuts overlay, and secrets manager still use their legacy per-handler input paths; the migration recipe is filed in `~/.plexi-alpha/backlog/note-2026-04-23-migrate-overlays-to-focus-stack.md`. `FocusLayer` has one variant today (`NotificationModal`) — extend as each overlay migrates.
+
+Rejected: intercepting input in the draw function alone (that's what we had — doesn't stop panes from reading the same events). Rejected: a full "only top layer can read input" enforcement via egui's focus API (the terminal backend doesn't use egui focus; it polls events directly, so only a buffer drain works).
+
+**Breaks if:** typing into the notification-tester's `input` kind doesn't reach the modal's input buffer. Opening a choice notification while a terminal pane is focused — keys like `j` or `k` — causes the terminal to receive them too. Cmd+Q doesn't quit while the notification modal is open. Cmd+Shift+A doesn't close the modal while a required notif is up. Cmd+]/Cmd+[ doesn't cycle the queue. Focused app still receives `handle_key` while the modal is open (check `dispatch_app_key_events` gating). `focus_stack` leaks layers across modal open/close cycles (grows unboundedly).
+
+## 2026-04-23 — [CHANGED] Notifications: multi-kind keyboard-first modal, [notifications] config, notification-tester app (uncommitted)
+Second-pass redesign of the notification system on top of the earlier modal pass. Key shifts:
+
+- **Kinds.** `DrawCommand::Notify` grows a `kind: NotifyKind` (`message` / `choice` / `input`) plus `options: Vec<NotifyOption>`, `input_prompt`, `required`. Back-compat: missing `kind` deserializes to `Message`, so existing apps (stand-up-reminder, etc.) keep working unchanged. `NotifyOption { label, value, shortcut }` is the choice-button model; `NotifyKind::Input` uses `input_prompt` as the placeholder hint.
+- **PlexiEvent::NotifyAction.value.** New optional field on the event delivered back to the app. For choice kind it carries the option value; for input kind the typed text; absent for plain acknowledge/cancel. Legacy `action_label` still identifies which button/path fired.
+- **Modal rewrite.** `draw_notification_modal` is now keyboard-first:
+    - `Enter` / `Space`: confirm (acknowledge for message, focused option for choice, submit for input).
+    - `↑↓` / `j/k`: cycle choice options.
+    - `1-9`: direct-select the Nth option.
+    - per-option `shortcut` char: direct-select that option.
+    - `Esc`: cancel (only when `required == false`).
+  The scrim catches clicks so they don't leak to panes behind. Modal Area lives on `Order::Tooltip` above a separate `Order::Foreground` scrim Area.
+- **Sidebar panel deleted.** `draw_notification_panel`, `show_notification_panel`, and `Action::ToggleNotificationPanel` are gone — the modal + queue cycle supersedes it. `Cmd+Shift+A` now maps to `Action::ToggleNotificationModal`. `Cmd+]` / `Cmd+[` cycle the queue when the modal is open (the keybind is context-sensitive: tab-cycling otherwise, queue-cycling when modal is up). `modal_queue_offset` is the currently-viewed index; acknowledging pops at offset, cycling moves without acknowledging.
+- **`[notifications]` config section.** `enabled` (master switch; false silently drops at both `ShowNotification` and `notify.sock` intake paths) and `focus_mode` (when true, arrivals queue silently and the user opts into review with Cmd+Shift+A). Both cached onto `PlexiApp` at startup from the config; no hot-reload. Alpha's config.toml was rewritten in the fat beta-style with full inline docs; beta's config gained the `[notifications]` block.
+- **`actions` field dropped from the ShowNotification path.** `DrawCommand::Notify.actions` was being ambiguously used for both (a) server-side side effects (`resume_run` / `open_intent` / `run_command`, handled in `process_app/routing.rs` before the UI ever sees it) and (b) UI buttons. New `options` + `kind = choice` handles the UI case cleanly; `actions` remains in the protocol for side effects only and is explicitly dropped after side-effect processing (`let _ = actions;` in routing.rs).
+- **Python SDK.** `ctx.notify_choice(title, options, required)` and `ctx.notify_input(title, prompt, required)` added; both block for a response. `ctx.notify(...)` and `ctx.notify_and_wait(...)` unchanged. `notify_action` event dispatch in the main loop now returns the `value` when present, `"__cancel__"` for Esc-cancels.
+- **notification-tester example app.** New playground at `examples/notification-tester/`. Keys: `m` / `c` / `i` fire each kind; `b` queues a 3-message burst so you can exercise `Cmd+]`/`Cmd+[` cycling; `r` fires a required (Esc-resistant) message. On-pane log shows what came back.
+
+Rejected: inferring `kind` from field presence (breaks on future media kinds, ambiguous when both `options` and `input_prompt` are set). Rejected: `type` over `kind` (Python reserved word, keyword-conflict in SDK). Deferred: media kinds (image/audio/video/rich), snooze, centralized history view, visual composition canvas + Moss transforms.
+
+**Breaks if:** stand-up-reminder fires and no modal appears. Cmd+Shift+A no longer opens any notification surface. Sending `{"type":"notify"}` without a `kind` field stops working (back-compat gone). Cmd+] in a normal terminal stops cycling tabs (the modal_open gate is inverted). Notification-tester `c` key shows options but Enter doesn't pick the focused one. Choice option values aren't delivered as `NotifyAction.value`. Setting `[notifications].enabled = false` doesn't silence notifications. Setting `focus_mode = true` still auto-pops the modal on arrival.
+
+## 2026-04-23 — [CHANGED] Notifications: centered modal as primary surface (uncommitted)
+The in-app `ShowNotification` path never set `show_notification_panel = true` (only the `notify.sock` drain path did), so `ctx.notify(...)` calls from apps like `stand-up-reminder` silently accumulated in `pending_notifications` with the badge incrementing but no visible window. Fixed the surfacing by introducing a new `show_notification_modal` state that auto-opens a centered work-area modal on every `ShowNotification` arrival (both in-process apps and socket-posted notifications). Modal dims the background (Area at `Order::Foreground` with an alpha-170 scrim, then a second Area at `Order::Tooltip` centered via `Align2::CENTER_CENTER`), shows one notification at a time (front of the queue), and auto-closes once the queue drains. Escape and the default "Acknowledge" button both send `NotifyAction { action_label: "acknowledge" }`. Sidebar panel (Cmd+Shift+A) kept as secondary history view; its fallback button also renamed from "Dismiss" to "Acknowledge" for consistency. Rejected: a display-wide OS-level takeover (too brutal for every reminder, bigger primitive to build — escalate later if a real use case demands it). Centralized notification management (history/snooze/mute-per-app) filed in `~/.plexi-alpha/backlog/note-2026-04-23-centralized-notifications.md` as a separate feature.
+**Breaks if:** Stand-up reminder fires on schedule but no centered modal appears (the bell badge still increments but the primary surface is broken). Acknowledge button doesn't pop the notification off the queue. Modal stays up after the queue is empty. Cmd+Shift+A sidebar panel no longer opens at all (regression — it should still toggle as the history view).
+
 ## 2026-04-22 — [CHANGED] Configurable Cmd+Q and Cmd+W confirmation dialogs (PR → alpha)
 Added `confirm_quit` and `confirm_close` top-level fields to `PlexiConfig` (both default `true`). `confirm_quit` supersedes the old `[beta].quit_confirm` flag (falls back to beta for backwards compat). `confirm_close` gates a new modal dialog shown before closing a pane via Cmd+W — `execute_close_pane()` in `pane_ops.rs` consolidates the close logic so both the immediate and dialog-confirm paths share one implementation. `draw_confirm_close` in `overlays.rs` patterns exactly after `draw_quit_confirm_overlay`. When `confirm_close = false`, closes happen immediately with no dialog.
 **Breaks if:** Cmd+W closes a pane without showing the dialog when `confirm_close` is unset/true. `confirm_quit = false` in config.toml still requires triple-press to quit. `execute_close_pane` on the last pane of the last context deletes the context instead of resetting to a blank pane.

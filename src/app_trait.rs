@@ -34,20 +34,27 @@ pub enum AppCommand {
         event: crate::app_protocol::PlexiEvent,
     },
     /// A notification that carries a notify_id and awaits a user response.
-    /// Displayed in the notification panel; NotifyAction is routed back to the sender.
+    /// The legacy server-side `NotificationAction` list is handled in
+    /// `routing.rs` as side effects (resume_run / open_intent / run_command)
+    /// BEFORE this command is emitted — it does not participate in the UI.
+    /// User-facing buttons are carried via `kind = "choice"` + `options`.
     ShowNotification {
         notify_id: String,
         sender_pane_id: u64,
         level: String,
         title: String,
         body: String,
-        actions: Vec<crate::app_protocol::NotificationAction>,
+        kind: crate::app_protocol::NotifyKind,
+        options: Vec<crate::app_protocol::NotifyOption>,
+        input_prompt: Option<String>,
+        required: bool,
     },
     /// Route a NotifyAction event back to the app pane that sent the Notify.
     DeliverNotifyAction {
         pane_id: u64,
         notify_id: String,
         action_label: String,
+        value: Option<String>,
     },
 }
 
