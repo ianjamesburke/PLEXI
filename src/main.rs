@@ -63,6 +63,11 @@ fn main() -> eframe::Result {
         .unwrap_or(log::LevelFilter::Info);
     crate::logging::init(log_level);
 
+    // Resolve the login-shell PATH once for the whole process. Fixes
+    // `gh`/`rg`/`fd`/any-homebrew-tool-not-found bugs when Plexi is launched
+    // as a GUI bundle (which inherits only `/usr/bin:/bin:/usr/sbin:/sbin`).
+    crate::shell::install_login_shell_path();
+
     // Capture Rust panics into the log file so they survive process death.
     // Without this, panics on the UI thread only appear in Console.app and are
     // invisible to the Plexi log (the log writer thread is killed mid-write).
