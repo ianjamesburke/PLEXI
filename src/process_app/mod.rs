@@ -460,6 +460,24 @@ impl App for ProcessApp {
         let frame_clone = self.frame.clone();
         render::render_draw_commands(ui, &frame_clone, ctx.colors);
 
+        // Detect clicks over the pane and forward them as PlexiEvent::Click.
+        let click_response = ui.interact(pane_rect, ui.id(), egui::Sense::click());
+        if let Some(pos) = click_response.interact_pointer_pos() {
+            let origin = pane_rect.min;
+            let button = if click_response.secondary_clicked() {
+                crate::app_protocol::MouseButton::Secondary
+            } else {
+                crate::app_protocol::MouseButton::Primary
+            };
+            if click_response.clicked() || click_response.secondary_clicked() {
+                self.send_event(&PlexiEvent::Click {
+                    x: pos.x - origin.x,
+                    y: pos.y - origin.y,
+                    button,
+                });
+            }
+        }
+
         // Idle polling for async HTTP responses. Apps that need faster repaints
         // (games, animations) emit DrawCommand::ScheduleRender { after_ms } each frame.
         ui.ctx()
