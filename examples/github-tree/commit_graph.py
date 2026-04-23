@@ -91,7 +91,12 @@ class CommitGraphApp(App):
     def _bootstrap(self) -> None:
         try:
             cwd = self.workspace_root or os.getcwd()
+            self.emit.debug(
+                f"bootstrap: workspace_root={self.workspace_root!r} "
+                f"os.getcwd={os.getcwd()!r} chosen_cwd={cwd!r}"
+            )
             root = gl.find_repo_root(cwd)
+            self.emit.debug(f"bootstrap: find_repo_root({cwd!r}) -> {root!r}")
             if root is None:
                 self._set_mode(MODE_NO_REPO)
                 return
@@ -99,6 +104,11 @@ class CommitGraphApp(App):
             self._repo_name = os.path.basename(root)
             self._head_branch = gl.get_head_branch(root)
             self._origin_url = gl.get_origin_remote(root)
+            self.emit.debug(
+                f"bootstrap: repo_name={self._repo_name!r} "
+                f"head_branch={self._head_branch!r} "
+                f"origin={self._origin_url!r}"
+            )
             self._fetch_graph()
         except Exception as e:
             self._error = f"bootstrap failed: {e}"
@@ -117,10 +127,18 @@ class CommitGraphApp(App):
         start_ts = end_ts - 7 * 86400
 
         try:
+            self.emit.debug(
+                f"fetch_graph: repo_root={self._repo_root!r} "
+                f"week_offset={self._week_offset} "
+                f"window=[{start_ts}..{end_ts}] "
+                f"now={now_ts}"
+            )
             # Refs + commits fetched; numstats can run in parallel but we keep
             # it simple (GIL-safe subprocess calls) — sequential is fine.
             refs = gl.fetch_refs(self._repo_root, now_ts)
+            self.emit.debug(f"fetch_graph: fetched {len(refs)} refs")
             commits = gl.fetch_commits(self._repo_root, start_ts, end_ts)
+            self.emit.debug(f"fetch_graph: fetched {len(commits)} commits in window")
 
             # Assign lanes and colours
             gl.assign_lanes(commits, refs)

@@ -58,10 +58,15 @@ pub fn init(level: log::LevelFilter) {
 
     let dispatch = fern::Dispatch::new()
         .format(formatter)
-        // plexi::* and plexi_v3::* (renamed crate) at the configured level
+        // plexi::*, plexi_v3::*, plexi_alpha::* (renamed crate for alpha
+        // builds), and app::<id> targets emitted by the SDK log bridge
+        // all follow the user-configured level. Everything else stays at
+        // Warn so third-party crates don't flood the log.
         .level(log::LevelFilter::Warn) // default for third-party
         .level_for("plexi", level)
-        .level_for("plexi_v3", level);
+        .level_for("plexi_v3", level)
+        .level_for("plexi_alpha", level)
+        .level_for("app", level);
 
     let dispatch = match file_result {
         Ok(file) => dispatch.chain(std::io::stderr()).chain(file),

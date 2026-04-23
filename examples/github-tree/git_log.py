@@ -37,18 +37,40 @@ from typing import Optional
 
 # ── Subprocess helper ─────────────────────────────────────────────────────────
 
+import sys
+
+def _diag(msg: str) -> None:
+    """Write a diagnostic line to stderr. The Plexi host forwards subprocess
+    stderr into the main log tagged `app::<app_id>`, so this is visible
+    regardless of the SDK-side log level and regardless of whether the app
+    has wired `ctx.debug` through to the code path."""
+    try:
+        print(f"[git_log] {msg}", file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 def _run(cmd: list[str], cwd: str, timeout: float = 15.0) -> tuple[int, str, str]:
     """Run cmd under cwd. Returns (returncode, stdout, stderr). Never raises."""
     try:
         proc = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
         )
+        _diag(
+            f"cmd={cmd!r} cwd={cwd!r} rc={proc.returncode} "
+            f"stdout_bytes={len(proc.stdout)} stderr_bytes={len(proc.stderr)}"
+        )
+        if proc.returncode != 0 and proc.stderr:
+            _diag(f"  stderr: {proc.stderr.strip()[:500]}")
         return proc.returncode, proc.stdout, proc.stderr
     except FileNotFoundError as e:
+        _diag(f"cmd={cmd!r} FileNotFoundError: {e}")
         return 127, "", f"command not found: {cmd[0]} ({e})"
     except subprocess.TimeoutExpired as e:
+        _diag(f"cmd={cmd!r} TimeoutExpired: {e}")
         return 124, "", f"timeout running {cmd[0]}: {e}"
     except Exception as e:
+        _diag(f"cmd={cmd!r} error: {e}")
         return 1, "", f"error running {cmd[0]}: {e}"
 
 
