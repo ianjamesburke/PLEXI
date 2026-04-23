@@ -40,8 +40,9 @@ class NotificationTesterApp(App):
             title="Plain message",
             body="This is a message-kind notification. Enter or Space to acknowledge.",
             level="info",
+            priority=50,
         )
-        self._append("sent: message (fire-and-forget)")
+        self._append("sent: message (priority=50)")
 
     def _fire_required_message(self) -> None:
         def runner():
@@ -49,10 +50,11 @@ class NotificationTesterApp(App):
                 title="Required message",
                 body="You cannot dismiss this with Esc. Press Enter to acknowledge.",
                 level="warn",
+                priority=200,
             )
             self._append(f"required message → {result}")
         threading.Thread(target=runner, daemon=True).start()
-        self._append("sent: required message")
+        self._append("sent: required message (priority=200)")
 
     def _fire_choice(self) -> None:
         def runner():
@@ -66,10 +68,11 @@ class NotificationTesterApp(App):
                 body="Pick one. Use y/n/m or arrow keys + Enter, or 1-3 to direct-select.",
                 options=options,
                 level="info",
+                priority=100,
             )
             self._append(f"choice → {result}")
         threading.Thread(target=runner, daemon=True).start()
-        self._append("sent: choice")
+        self._append("sent: choice (priority=100)")
 
     def _fire_input(self) -> None:
         def runner():
@@ -78,25 +81,32 @@ class NotificationTesterApp(App):
                 prompt="Type a short description…",
                 body="Enter for newline, Cmd+Enter to submit, Esc to cancel.",
                 level="info",
+                priority=100,
             )
             if result == "__cancel__":
                 self._append("input → cancelled")
             else:
                 self._append(f"input → {result!r}")
         threading.Thread(target=runner, daemon=True).start()
-        self._append("sent: input")
+        self._append("sent: input (priority=100)")
 
     def _fire_burst(self) -> None:
+        # A mixed-priority burst demonstrates the live-queue behaviour:
+        # send a critical one first, then two background ones — if the modal
+        # is already open on something else, the critical one goes to the
+        # *top* of the sort order without displacing the current view.
         self._burst_counter += 1
         tag = self._burst_counter
-        for i in range(1, 4):
+        priorities = [200, 0, 50]  # critical / background / normal
+        for i, pri in enumerate(priorities, 1):
             self.emit.notify(
-                title=f"Burst {tag} — message {i}/3",
+                title=f"Burst {tag} — {i}/3 (priority={pri})",
                 body="Use ⌘] / ⌘[ to cycle without acknowledging. "
-                     "Enter acknowledges and moves on.",
+                     "Enter acknowledges and the next highest-priority shows.",
                 level="info",
+                priority=pri,
             )
-        self._append(f"sent: burst {tag} (3 messages)")
+        self._append(f"sent: burst {tag} (priorities 200/0/50)")
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         k = key.lower()

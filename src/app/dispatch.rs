@@ -55,6 +55,7 @@ impl PlexiApp {
                     options,
                     input_prompt,
                     required,
+                    priority,
                     ..
                 } => {
                     deferred.push(AppCommand::ShowNotification {
@@ -67,6 +68,7 @@ impl PlexiApp {
                         options,
                         input_prompt,
                         required,
+                        priority,
                     });
                 }
                 // DeliverNotifyAction is issued by the overlay (overlays.rs), not by apps.

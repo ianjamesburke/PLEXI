@@ -98,8 +98,8 @@ impl PlexiApp {
                         .clicked()
                     {
                         self.show_notification_modal = !self.show_notification_modal;
-                        if self.show_notification_modal {
-                            self.modal_queue_offset = 0;
+                        if self.show_notification_modal && self.current_notify_id.is_none() {
+                            self.current_notify_id = self.select_highest_priority();
                         }
                     }
                 }
@@ -471,18 +471,35 @@ impl PlexiApp {
 
         let mut cmds: Vec<AppCommand> = Vec::new();
 
-        // Clamp the queue offset so it never points past the end. This matters
-        // after an acknowledge removes an entry from under us.
-        if self.modal_queue_offset >= self.pending_notifications.len() {
-            self.modal_queue_offset = self
-                .pending_notifications
-                .len()
-                .saturating_sub(1);
-        }
-
-        let offset = self.modal_queue_offset;
-        let Some(notif) = self.pending_notifications.get(offset).cloned() else {
+        // Resolve the currently-displayed notification by id. If the pinned
+        // id was removed under us (dismissed on another code path) or was
+        // never set, pick the highest-priority remaining — never arbitrarily
+        // index into the Vec.
+        if self.pending_notifications.is_empty() {
             self.show_notification_modal = false;
+            self.current_notify_id = None;
+            return cmds;
+        }
+        if self
+            .current_notify_id
+            .as_ref()
+            .map(|id| !self.pending_notifications.iter().any(|n| &n.notify_id == id))
+            .unwrap_or(true)
+        {
+            self.current_notify_id = self.select_highest_priority();
+        }
+        let Some(current_id) = self.current_notify_id.clone() else {
+            self.show_notification_modal = false;
+            return cmds;
+        };
+        let Some(notif) = self
+            .pending_notifications
+            .iter()
+            .find(|n| n.notify_id == current_id)
+            .cloned()
+        else {
+            self.show_notification_modal = false;
+            self.current_notify_id = None;
             return cmds;
         };
 
@@ -526,7 +543,13 @@ impl PlexiApp {
             _ => self.colors.accent,
         };
 
-        let queue_len = self.pending_notifications.len();
+        // Live position + total, recomputed every frame. Total reflects the
+        // current queue size so if a new notification arrives while this
+        // modal is open, the count updates on the next render without
+        // displacing the pinned view.
+        let (position_idx, queue_len) = self
+            .position_of_current()
+            .unwrap_or((1, self.pending_notifications.len()));
         let mut action_cmd: Option<AppCommand> = None;
 
         // ── Keyboard handling ──────────────────────────────────────────────
@@ -649,8 +672,7 @@ impl PlexiApp {
                                 if queue_len > 1 {
                                     ui.label(
                                         RichText::new(format!(
-                                            "{} of {queue_len}  ·  \u{2318}[/\u{2318}] to cycle",
-                                            offset + 1
+                                            "{position_idx} of {queue_len}  ·  \u{2318}[/\u{2318}] to cycle"
                                         ))
                                         .size(style::TEXT_HINT)
                                         .color(self.colors.text_dim),
@@ -887,17 +909,20 @@ impl PlexiApp {
         }
 
         if let Some(cmd) = action_cmd {
-            if offset < self.pending_notifications.len() {
-                self.pending_notifications.remove(offset);
-            }
+            // Remove the dismissed notification by id, then pick the next
+            // one to display dynamically from *whatever is in the queue
+            // right now* — highest priority wins. This is the opposite of
+            // walking a pre-frozen list.
+            self.pending_notifications
+                .retain(|n| n.notify_id != current_id);
             self.modal_focused_option = 0;
             self.modal_input_buffer.clear();
             self.modal_state_notify_id.clear();
             if self.pending_notifications.is_empty() {
                 self.show_notification_modal = false;
-                self.modal_queue_offset = 0;
-            } else if self.modal_queue_offset >= self.pending_notifications.len() {
-                self.modal_queue_offset = self.pending_notifications.len() - 1;
+                self.current_notify_id = None;
+            } else {
+                self.current_notify_id = self.select_highest_priority();
             }
             cmds.push(cmd);
         }

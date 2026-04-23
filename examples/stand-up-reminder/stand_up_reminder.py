@@ -97,6 +97,7 @@ class StandUpReminderApp(App):
             title="Time to move!",
             body=prompt,
             level="info",
+            priority=100,
         )
         self.emit.info(f"Reminder #{self._reminders_today}: {prompt}")
         self._schedule_timer(ctx)

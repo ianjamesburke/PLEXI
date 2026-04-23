@@ -33,6 +33,10 @@ pub(crate) struct PendingNotification {
     pub options: Vec<crate::app_protocol::NotifyOption>,
     pub input_prompt: Option<String>,
     pub required: bool,
+    /// Higher = more urgent. Used to pick next after dismiss + to order
+    /// Cmd+]/Cmd+[ preview traversal. Arrival order (index in the queue
+    /// Vec) breaks ties — oldest wins.
+    pub priority: u32,
 }
 
 use crate::app_registry::AppRegistry;
@@ -87,9 +91,15 @@ pub struct PlexiApp {
     /// `notifications.focus_mode` is on, in which case the modal only opens
     /// on Cmd+Shift+A.
     pub(crate) show_notification_modal: bool,
-    /// Index into `pending_notifications` the modal is currently showing.
-    /// Cmd+] / Cmd+[ cycle this without acknowledging. Clamped to queue length.
-    pub(crate) modal_queue_offset: usize,
+    /// ID of the notification the modal is currently showing. `None` means
+    /// "modal is empty / closed" — at the next render, the highest-priority
+    /// notification in the queue becomes current.
+    ///
+    /// The invariant: **the currently-displayed notification is pinned by
+    /// id**. New notifications arriving never change this, so the user can
+    /// never be yanked to a different notification without their input.
+    /// Cmd+] / Cmd+[ move this id across the priority-sorted queue.
+    pub(crate) current_notify_id: Option<String>,
     /// Focused option index for `kind = "choice"` notifications (0-based).
     /// Reset to 0 whenever the front of the queue changes.
     pub(crate) modal_focused_option: usize,
@@ -327,7 +337,7 @@ impl PlexiApp {
                     show_run_palette: false,
                     pending_notifications: Vec::new(),
                     show_notification_modal: false,
-                    modal_queue_offset: 0,
+                    current_notify_id: None,
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
                     modal_state_notify_id: String::new(),
@@ -398,7 +408,7 @@ impl PlexiApp {
             show_run_palette: false,
             pending_notifications: Vec::new(),
             show_notification_modal: false,
-            modal_queue_offset: 0,
+            current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
             modal_state_notify_id: String::new(),
@@ -454,8 +464,15 @@ impl PlexiApp {
             let level = val["level"].as_str().unwrap_or("info").to_string();
             let title = val["title"].as_str().unwrap_or("").to_string();
             let body = val["body"].as_str().unwrap_or("").to_string();
+            let internal_id = format!(
+                "__host__:{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            );
             self.pending_notifications.push(PendingNotification {
-                notify_id: String::new(),
+                notify_id: internal_id.clone(),
                 sender_pane_id: 0,
                 level,
                 title,
@@ -464,10 +481,15 @@ impl PlexiApp {
                 options: vec![],
                 input_prompt: None,
                 required: false,
+                priority: 0,
             });
             if !self.notifications_focus_mode {
                 self.show_notification_modal = true;
-                self.modal_queue_offset = 0;
+                // Only set the new notification as current if nothing is
+                // already pinned. Never displace what the user is viewing.
+                if self.current_notify_id.is_none() {
+                    self.current_notify_id = Some(internal_id);
+                }
             }
         }
     }
@@ -502,6 +524,77 @@ impl PlexiApp {
         for pane_id in panes_to_close {
             self.close_pane_by_id(pane_id);
         }
+    }
+
+    // ── Notification-queue helpers ──────────────────────────────────────────
+    //
+    // The notification modal tracks the currently-displayed entry by
+    // `notify_id`, not by index. These helpers centralise the
+    // priority-sort / selection logic so callers can't accidentally reach
+    // past the end of the Vec or pick by stale offset.
+    //
+    // Sort order: `priority DESC, arrival-index ASC`. Arrival index = the
+    // entry's current position in `pending_notifications`, which reflects
+    // push order (we never reorder the Vec; dismissal removes by id).
+
+    /// Return ids of all queued notifications, ordered by (priority desc,
+    /// arrival asc). Empty Vec when the queue is empty.
+    pub(crate) fn sorted_notification_ids(&self) -> Vec<String> {
+        let mut indexed: Vec<(usize, u32, &str)> = self
+            .pending_notifications
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (i, n.priority, n.notify_id.as_str()))
+            .collect();
+        // Reverse-sort by priority; stable sort preserves arrival order for ties.
+        indexed.sort_by(|a, b| b.1.cmp(&a.1));
+        indexed.into_iter().map(|(_, _, id)| id.to_string()).collect()
+    }
+
+    /// Return the id of the highest-priority notification currently queued,
+    /// breaking ties by oldest arrival. `None` when queue is empty.
+    pub(crate) fn select_highest_priority(&self) -> Option<String> {
+        self.sorted_notification_ids().into_iter().next()
+    }
+
+    /// (1-based position-in-sort-order, total len) for the current notify id,
+    /// or `None` when modal is empty / current id is missing from queue.
+    /// Renderer uses this for the "X of N" indicator.
+    pub(crate) fn position_of_current(&self) -> Option<(usize, usize)> {
+        let current = self.current_notify_id.as_ref()?;
+        let sorted = self.sorted_notification_ids();
+        let pos = sorted.iter().position(|id| id == current)?;
+        Some((pos + 1, sorted.len()))
+    }
+
+    /// Move `current_notify_id` forward (`direction = 1`) or backward
+    /// (`direction = -1`) through the priority-sorted queue. No wrap at the
+    /// ends. Called by Cmd+] / Cmd+[.
+    pub(crate) fn cycle_notification(&mut self, direction: i32) {
+        if !self.show_notification_modal {
+            return;
+        }
+        let sorted = self.sorted_notification_ids();
+        if sorted.is_empty() {
+            return;
+        }
+        let Some(current) = self.current_notify_id.as_ref() else {
+            // Queue has entries but nothing is current — pick highest.
+            self.current_notify_id = sorted.into_iter().next();
+            return;
+        };
+        let Some(pos) = sorted.iter().position(|id| id == current) else {
+            // Current id not in queue any more (probably dismissed under us).
+            // Fall back to highest-priority.
+            self.current_notify_id = sorted.into_iter().next();
+            return;
+        };
+        let next_pos = match direction {
+            d if d > 0 && pos + 1 < sorted.len() => pos + 1,
+            d if d < 0 && pos > 0 => pos - 1,
+            _ => return, // clamp at both ends
+        };
+        self.current_notify_id = Some(sorted[next_pos].clone());
     }
 }
 
@@ -643,11 +736,13 @@ impl eframe::App for PlexiApp {
                     options,
                     input_prompt,
                     required,
+                    priority,
                 } => {
                     if !self.notifications_enabled {
                         // Silently drop — master switch off.
                         continue;
                     }
+                    let new_id = notify_id.clone();
                     self.pending_notifications.push(PendingNotification {
                         notify_id,
                         sender_pane_id,
@@ -658,10 +753,18 @@ impl eframe::App for PlexiApp {
                         options,
                         input_prompt,
                         required,
+                        priority,
                     });
                     if !self.notifications_focus_mode {
                         self.show_notification_modal = true;
-                        self.modal_queue_offset = 0;
+                    }
+                    // Only set the new notification as current if nothing is
+                    // already pinned. The user's current view is never
+                    // displaced by incoming notifications — the queue just
+                    // grows beneath them, count updates live, and whatever
+                    // is highest-priority gets picked when they dismiss.
+                    if self.current_notify_id.is_none() {
+                        self.current_notify_id = Some(new_id);
                     }
                 }
                 AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } => {
@@ -963,22 +1066,19 @@ impl eframe::App for PlexiApp {
                         self.show_notification_modal = false;
                     } else if !self.pending_notifications.is_empty() {
                         self.show_notification_modal = true;
-                        self.modal_queue_offset = 0;
+                        // Pick highest-priority when re-opening the modal and
+                        // nothing is currently pinned. If something IS pinned
+                        // (user closed+reopened), keep showing that one.
+                        if self.current_notify_id.is_none() {
+                            self.current_notify_id = self.select_highest_priority();
+                        }
                     }
-                    // If the queue is empty and the modal is closed, this is a
-                    // no-op — there's nothing to review.
                 }
                 Action::NotificationCycleNext => {
-                    if self.show_notification_modal
-                        && self.modal_queue_offset + 1 < self.pending_notifications.len()
-                    {
-                        self.modal_queue_offset += 1;
-                    }
+                    self.cycle_notification(1);
                 }
                 Action::NotificationCyclePrev => {
-                    if self.show_notification_modal && self.modal_queue_offset > 0 {
-                        self.modal_queue_offset -= 1;
-                    }
+                    self.cycle_notification(-1);
                 }
                 Action::OpenAgentPane => {
                     self.open_agent_pane();

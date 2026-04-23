@@ -377,71 +377,98 @@ class Emitter:
     def debug(self, message: str) -> None: self.log("debug", message)
 
     # Notifications — kind = "message" (plain text, one Acknowledge button).
+    #
+    # `priority` is REQUIRED on every notify call. Higher = more urgent.
+    # The host uses it to pick the next front-most notification after
+    # dismiss and to order the Cmd+] / Cmd+[ preview traversal. Typical
+    # values: 0 (background info), 50 (normal), 100 (important), 200
+    # (critical). No default — apps must pick deliberately.
     def notify(self, title: str, body: str = "", level: str = "info",
+               priority: int | None = None,
                actions: list | None = None) -> None:
         """Post a message notification. The modal shows title + body and a
         single Acknowledge button; Enter / Space acknowledge, Esc dismisses
         (unless required=True — use `notify_and_wait` for that flow).
 
+        `priority` is required (int, higher = more urgent).
         `actions` is the legacy side-effect list (action_type =
         resume_run | open_intent | run_command). It does NOT render UI.
         """
+        if priority is None:
+            raise TypeError("notify() requires 'priority' (int, higher = more urgent)")
         _emit({"type": "notify", "level": level, "title": title,
                "body": body, "kind": "message",
+               "priority": int(priority),
                "actions": actions or []})
 
     # kind = "choice"
     def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False) -> str:
+                      level: str = "info", required: bool = False,
+                      priority: int | None = None) -> str:
         """Post a choice notification and block until the user picks one.
 
         `options` is a list of dicts: {"label": str, "value": str (optional),
         "shortcut": str (optional, single char)}. If `value` is omitted, the
         label is returned.
 
+        `priority` is required (int, higher = more urgent).
         Returns the chosen option's value (or the label if no value set). If
         `required=False` the user may cancel with Esc — this returns the string
         `"__cancel__"`.
         """
+        if priority is None:
+            raise TypeError("notify_choice() requires 'priority' (int, higher = more urgent)")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "choice", "options": options, "required": required,
+               "priority": int(priority),
                "notify_id": notify_id})
         return q.get()
 
     # kind = "input"
     def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False) -> str:
+                     level: str = "info", required: bool = False,
+                     priority: int | None = None) -> str:
         """Post an input notification and block until the user submits or
         cancels. Returns the typed text (possibly empty), or "__cancel__" if
         the user dismissed with Esc (only possible when required=False).
+
+        `priority` is required (int, higher = more urgent).
         """
+        if priority is None:
+            raise TypeError("notify_input() requires 'priority' (int, higher = more urgent)")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "input", "input_prompt": prompt, "required": required,
+               "priority": int(priority),
                "notify_id": notify_id})
         return q.get()
 
     def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None) -> str:
+                        actions: list | None = None,
+                        priority: int | None = None) -> str:
         """Post a message notification and block until the user acknowledges
         or cancels. Returns "acknowledge" on Enter/Space/button, "cancel" on Esc.
 
         For richer interaction, use `notify_choice` or `notify_input`.
+        `priority` is required (int, higher = more urgent).
         `actions` is the legacy server-side side-effect list.
         """
+        if priority is None:
+            raise TypeError("notify_and_wait() requires 'priority' (int, higher = more urgent)")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "message", "actions": actions or [],
+               "priority": int(priority),
                "notify_id": notify_id})
         return q.get()
 
@@ -750,30 +777,42 @@ class RenderContext:
     def debug(self, message: str) -> None: self.log("debug", message)
 
     def notify(self, title: str, body: str = "", level: str = "info",
+               priority: int | None = None,
                actions: list | None = None) -> None:
-        """Post a message notification. See Emitter.notify."""
-        self.emit.notify(title=title, body=body, level=level, actions=actions)
+        """Post a message notification. See Emitter.notify.
+        `priority` is required (int, higher = more urgent)."""
+        self.emit.notify(title=title, body=body, level=level,
+                         priority=priority, actions=actions)
 
     def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False) -> str:
+                      level: str = "info", required: bool = False,
+                      priority: int | None = None) -> str:
         """Post a choice notification and block until the user picks.
+        `priority` is required (int, higher = more urgent).
         Returns the chosen option's value (or label if no value set),
         or "__cancel__" if the user dismissed."""
         return self.emit.notify_choice(title=title, options=options, body=body,
-                                       level=level, required=required)
+                                       level=level, required=required,
+                                       priority=priority)
 
     def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False) -> str:
+                     level: str = "info", required: bool = False,
+                     priority: int | None = None) -> str:
         """Post an input notification and block until the user submits.
+        `priority` is required (int, higher = more urgent).
         Returns the typed text, or "__cancel__" if dismissed."""
         return self.emit.notify_input(title=title, prompt=prompt, body=body,
-                                      level=level, required=required)
+                                      level=level, required=required,
+                                      priority=priority)
 
     def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None) -> str:
+                        actions: list | None = None,
+                        priority: int | None = None) -> str:
         """Post a message notification and block for acknowledge/cancel.
+        `priority` is required (int, higher = more urgent).
         See Emitter.notify_and_wait."""
-        return self.emit.notify_and_wait(title=title, body=body, level=level, actions=actions)
+        return self.emit.notify_and_wait(title=title, body=body, level=level,
+                                         actions=actions, priority=priority)
 
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})

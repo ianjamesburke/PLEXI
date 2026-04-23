@@ -297,6 +297,12 @@ pub enum DrawCommand {
         /// If set, host sends PlexiEvent::NotifyAction when the user responds.
         #[serde(default)]
         notify_id: Option<String>,
+        /// Higher = more urgent. REQUIRED — no `#[serde(default)]`. Apps must
+        /// set this explicitly; omitting it fails deserialisation (forces SDK
+        /// upgrade, no silent defaults). Ties broken by arrival order.
+        /// Typical values: 0 (background info), 50 (normal), 100 (important),
+        /// 200 (critical/required).
+        priority: u32,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"

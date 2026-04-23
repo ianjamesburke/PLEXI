@@ -48,6 +48,10 @@ pub enum AppCommand {
         options: Vec<crate::app_protocol::NotifyOption>,
         input_prompt: Option<String>,
         required: bool,
+        /// Higher = more urgent. Used to pick the next front-most notification
+        /// after dismiss, and to order preview cycling via Cmd+] / Cmd+[.
+        /// Insertion order breaks ties (oldest first).
+        priority: u32,
     },
     /// Route a NotifyAction event back to the app pane that sent the Notify.
     DeliverNotifyAction {
