@@ -167,6 +167,15 @@ impl PlexiApp {
             None => return,
         };
 
+        // Consume Enter/Escape at the context level so they cannot bleed into
+        // the focused pane this frame. Pairs with `FocusLayer::RenamePane` —
+        // the overlay owns its own commit/cancel keys.
+        let (commit, cancel) = ctx.input_mut(|i| {
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            (enter, esc)
+        });
+
         egui::Area::new(egui::Id::new("rename_pane_overlay"))
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
             .order(egui::Order::Foreground)
@@ -195,32 +204,6 @@ impl PlexiApp {
                                 .font(egui::TextStyle::Body),
                         );
 
-                        if te.lost_focus() {
-                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                self.renaming_pane = None;
-                            } else {
-                                // Apply rename
-                                let new_name = self.rename_buffer.trim().to_string();
-                                if let Some(pane) =
-                                    self.contexts[self.active_context].panes.get_mut(&pane_id)
-                                {
-                                    if let Some(t) = pane.as_terminal_mut() {
-                                        t.name = if new_name.is_empty() {
-                                            None
-                                        } else {
-                                            Some(new_name)
-                                        };
-                                    }
-                                }
-                                self.renaming_pane = None;
-                            }
-                            // Consume Enter/Escape
-                            ui.input_mut(|i| {
-                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                            });
-                        }
-
                         // Auto-focus and select all
                         if !te.has_focus() {
                             te.request_focus();
@@ -236,6 +219,24 @@ impl PlexiApp {
                         }
                     });
             });
+
+        if cancel {
+            self.renaming_pane = None;
+        } else if commit {
+            let new_name = self.rename_buffer.trim().to_string();
+            if let Some(pane) =
+                self.contexts[self.active_context].panes.get_mut(&pane_id)
+            {
+                if let Some(t) = pane.as_terminal_mut() {
+                    t.name = if new_name.is_empty() {
+                        None
+                    } else {
+                        Some(new_name)
+                    };
+                }
+            }
+            self.renaming_pane = None;
+        }
     }
 
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
@@ -391,12 +392,21 @@ impl PlexiApp {
     /// Run palette overlay (Cmd+R). Shows active runs across all panes; BlockedOnUser
     /// runs get a [!] badge and an inline text input for unblocking.
     pub(crate) fn draw_run_palette(&mut self, ctx: &egui::Context) {
+        // Consume Escape / Cmd+R at the context level so the key can't bleed
+        // through to the focused pane or trigger `poll_actions` a second
+        // time. Pairs with `FocusLayer::RunPalette` — the overlay owns its
+        // own dismissal keys.
+        let mut close = ctx.input_mut(|i| {
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            let toggle = i.consume_key(egui::Modifiers::COMMAND, egui::Key::R);
+            esc || toggle
+        });
+
         // Collect all active runs from every app pane in every context.
         // Clone needed because we hold &self across the window render.
         let all_runs: Vec<(String, String, String, Option<String>)> = Vec::new(); // (run_id, app_id, status, blocked_prompt)
         for _context in &self.contexts {}
 
-        let mut close = false;
         egui::Window::new("Active Runs")
             .collapsible(false)
             .resizable(true)
@@ -432,10 +442,6 @@ impl PlexiApp {
             });
 
         if close {
-            self.show_run_palette = false;
-        }
-        // Also close on Escape.
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.show_run_palette = false;
         }
     }
