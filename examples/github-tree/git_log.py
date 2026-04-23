@@ -143,13 +143,19 @@ _LOG_FORMAT = (
 
 
 def fetch_commits(repo_root: str, since_ts: int, until_ts: int) -> list[dict]:
-    """Return commits (newest-first) in the [since_ts, until_ts] window."""
+    """Return commits (newest-first) in the [since_ts, until_ts] window.
+
+    `git log` does NOT accept a bare unix timestamp for `--since`/`--until` —
+    it tries to parse the value as a relative/absolute date string and
+    silently returns zero results if it can't. Use the `@<seconds>` form,
+    which is git's documented unix-epoch date syntax (see gitrevisions(7)).
+    """
     rc, out, _ = _run(
         [
             "git", "log", "--all", "--date-order",
             f"--format={_LOG_FORMAT}",
-            f"--since={since_ts}",
-            f"--until={until_ts}",
+            f"--since=@{since_ts}",
+            f"--until=@{until_ts}",
         ],
         cwd=repo_root,
         timeout=20.0,
@@ -221,7 +227,7 @@ def fetch_numstats(
     rc, out, _ = _run(
         [
             "git", "log", "--all", "--numstat", fmt,
-            f"--since={since_ts}", f"--until={until_ts}",
+            f"--since=@{since_ts}", f"--until=@{until_ts}",
         ],
         cwd=repo_root,
         timeout=30.0,

@@ -50,7 +50,7 @@ class CommitGraphApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         self._mode: str = MODE_LOADING
         self._loading_msg: str = "Locating git repo…"
-        self._spinner_frame: int = 0
+        self._spinner_start: float = time.monotonic()
         self._error: str = ""
 
         self._repo_root: Optional[str] = None
@@ -309,9 +309,12 @@ class CommitGraphApp(App):
         self._maybe_poll()
 
         if self._mode == MODE_LOADING:
-            self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER)
             self._render_loading(ctx)
-            self.emit.schedule_render(after_ms=80)
+            # Keep advancing the spinner at a calm 10 fps regardless of what
+            # else causes renders. Frame index is derived from wall-clock
+            # elapsed time, not incremented per-render, so event-driven
+            # redraws don't speed it up.
+            self.emit.schedule_render(after_ms=100)
             return
 
         if self._mode == MODE_NO_REPO:
@@ -345,11 +348,14 @@ class CommitGraphApp(App):
             self._render_ready(ctx)
 
     def _render_loading(self, ctx: RenderContext) -> None:
+        # Spinner frame derived from wall-clock time at 8 fps — stays calm
+        # even if on_render is called more frequently than the 100 ms tick.
+        idx = int((time.monotonic() - self._spinner_start) * 8) % len(SPINNER)
         ctx.render(Column([
             Header(title="Commit Graph", subtitle=self._repo_name or "Resolving…"),
             Card([
                 Label(
-                    f"{SPINNER[self._spinner_frame]}  {self._loading_msg}",
+                    f"{SPINNER[idx]}  {self._loading_msg}",
                     tone="body",
                     color=ACCENT,
                 ),
