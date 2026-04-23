@@ -1,6 +1,24 @@
 mod dispatch;
 mod sync;
 
+/// Which layer currently owns keyboard input.
+///
+/// The top of `PlexiApp.focus_stack` is the active layer. When a non-`Pane`
+/// layer is on top, keyboard `Event::Key` and `Event::Text` events are drained
+/// from `ctx.input` each frame *after* the owning overlay has rendered, so
+/// panes and other passive readers see an empty event buffer. Global
+/// keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are handled in `keys::poll_actions`
+/// which runs before the drain and is always live.
+///
+/// New overlays should push their layer on open and pop on close to inherit
+/// input capture. Today only the notification modal is migrated —
+/// command palette, run palette, rename, and confirm-close still use their
+/// legacy per-handler input paths (tracked in `.plexi/backlog`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FocusLayer {
+    NotificationModal,
+}
+
 #[derive(Clone)]
 pub(crate) struct PendingNotification {
     pub notify_id: String,
@@ -8,7 +26,10 @@ pub(crate) struct PendingNotification {
     pub level: String,
     pub title: String,
     pub body: String,
-    pub actions: Vec<crate::app_protocol::NotificationAction>,
+    pub kind: crate::app_protocol::NotifyKind,
+    pub options: Vec<crate::app_protocol::NotifyOption>,
+    pub input_prompt: Option<String>,
+    pub required: bool,
 }
 
 use crate::app_registry::AppRegistry;
@@ -58,8 +79,29 @@ pub struct PlexiApp {
     pub(crate) show_run_palette: bool,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
-    /// Whether the notification panel overlay is visible (Cmd+Shift+A).
-    pub(crate) show_notification_panel: bool,
+    /// Whether the centered notification modal is visible. Primary (and only)
+    /// surface; auto-shown when a new notification arrives unless
+    /// `notifications.focus_mode` is on, in which case the modal only opens
+    /// on Cmd+Shift+A.
+    pub(crate) show_notification_modal: bool,
+    /// Index into `pending_notifications` the modal is currently showing.
+    /// Cmd+] / Cmd+[ cycle this without acknowledging. Clamped to queue length.
+    pub(crate) modal_queue_offset: usize,
+    /// Focused option index for `kind = "choice"` notifications (0-based).
+    /// Reset to 0 whenever the front of the queue changes.
+    pub(crate) modal_focused_option: usize,
+    /// Buffer for `kind = "input"` notifications.
+    pub(crate) modal_input_buffer: String,
+    /// notify_id of the notification the modal currently has state for. Used to
+    /// detect a front-of-queue change and reset focus/input buffer.
+    pub(crate) modal_state_notify_id: String,
+    /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
+    pub(crate) notifications_enabled: bool,
+    pub(crate) notifications_focus_mode: bool,
+    /// Input-focus stack. Top layer receives keyboard input; panes see an
+    /// empty event buffer while a non-`Pane` layer is on top. See the
+    /// `FocusLayer` docs for the invariant.
+    pub(crate) focus_stack: Vec<FocusLayer>,
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
     /// Parked background ProcessApps — kept alive when their pane is closed.
@@ -81,6 +123,16 @@ impl PlexiApp {
         let quit_confirm_required = config.confirm_quit
             .unwrap_or_else(|| config.beta.as_ref().and_then(|b| b.quit_confirm).unwrap_or(true));
         let confirm_close = config.confirm_close.unwrap_or(true);
+        let notifications_enabled = config
+            .notifications
+            .as_ref()
+            .and_then(|n| n.enabled)
+            .unwrap_or(true);
+        let notifications_focus_mode = config
+            .notifications
+            .as_ref()
+            .and_then(|n| n.focus_mode)
+            .unwrap_or(false);
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -271,7 +323,14 @@ impl PlexiApp {
                     features: features.clone(),
                     show_run_palette: false,
                     pending_notifications: Vec::new(),
-                    show_notification_panel: false,
+                    show_notification_modal: false,
+                    modal_queue_offset: 0,
+                    modal_focused_option: 0,
+                    modal_input_buffer: String::new(),
+                    modal_state_notify_id: String::new(),
+                    notifications_enabled,
+                    notifications_focus_mode,
+                    focus_stack: Vec::new(),
                     last_notify_poll: std::time::Instant::now(),
                     host,
                     host_services: crate::host::services::HostServices::new(),
@@ -335,7 +394,14 @@ impl PlexiApp {
             features,
             show_run_palette: false,
             pending_notifications: Vec::new(),
-            show_notification_panel: false,
+            show_notification_modal: false,
+            modal_queue_offset: 0,
+            modal_focused_option: 0,
+            modal_input_buffer: String::new(),
+            modal_state_notify_id: String::new(),
+            notifications_enabled,
+            notifications_focus_mode,
+            focus_stack: Vec::new(),
             last_notify_poll: std::time::Instant::now(),
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
@@ -379,6 +445,9 @@ impl PlexiApp {
             let Ok(content) = std::fs::read_to_string(&path) else { continue };
             let _ = std::fs::remove_file(&path);
             let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+            if !self.notifications_enabled {
+                continue;
+            }
             let level = val["level"].as_str().unwrap_or("info").to_string();
             let title = val["title"].as_str().unwrap_or("").to_string();
             let body = val["body"].as_str().unwrap_or("").to_string();
@@ -388,9 +457,15 @@ impl PlexiApp {
                 level,
                 title,
                 body,
-                actions: vec![],
+                kind: crate::app_protocol::NotifyKind::Message,
+                options: vec![],
+                input_prompt: None,
+                required: false,
             });
-            self.show_notification_panel = true;
+            if !self.notifications_focus_mode {
+                self.show_notification_modal = true;
+                self.modal_queue_offset = 0;
+            }
         }
     }
 
@@ -434,8 +509,38 @@ impl eframe::App for PlexiApp {
             self.drain_notify_queue();
         }
         self.drain_pty_events();
-        let deferred_app_cmds = self.dispatch_app_key_events(ctx);
+
+        // Focus stack: reconcile layer state BEFORE any input routing so
+        // `input_captured_by_overlay()` answers correctly this frame.
+        self.sync_notification_modal_focus();
+
+        // If an overlay owns input, render it FIRST so its widgets (the
+        // notification modal's TextEdit for the `input` kind) can read
+        // keystrokes before we drain. Then drain the keyboard buffer so
+        // downstream readers — focused app (`dispatch_app_key_events`),
+        // terminal backends, `keys::poll_actions` — see only the global
+        // allowlist (Cmd+Q, Cmd+W, Cmd+Shift+A, Cmd+]/Cmd+[).
+        let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
+        if self.input_captured_by_overlay() {
+            early_modal_cmds = self.draw_notification_modal(ctx);
+            self.drain_captured_keyboard_input(ctx);
+            // The modal may have self-closed (queue drained to empty inside
+            // the draw). Re-sync so the layer is accurate for the rest of
+            // this frame.
+            self.sync_notification_modal_focus();
+        }
+
+        // Apps only receive key input if nothing is capturing above them.
+        let deferred_app_cmds = if self.input_captured_by_overlay() {
+            Vec::new()
+        } else {
+            self.dispatch_app_key_events(ctx)
+        };
         self.sync_app_cwd();
+
+        // Dispatch any DeliverNotifyAction commands the early modal render
+        // produced. Routes back to the originating pane as NotifyAction events.
+        self.dispatch_notify_action_cmds(early_modal_cmds);
 
         // Handle deferred app commands returned from dispatch_app_key_events.
         for cmd in deferred_app_cmds {
@@ -498,17 +603,38 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::Notify(_) => {}
-                AppCommand::ShowNotification { notify_id, sender_pane_id, level, title, body, actions } => {
+                AppCommand::ShowNotification {
+                    notify_id,
+                    sender_pane_id,
+                    level,
+                    title,
+                    body,
+                    kind,
+                    options,
+                    input_prompt,
+                    required,
+                } => {
+                    if !self.notifications_enabled {
+                        // Silently drop — master switch off.
+                        continue;
+                    }
                     self.pending_notifications.push(PendingNotification {
                         notify_id,
                         sender_pane_id,
                         level,
                         title,
                         body,
-                        actions,
+                        kind,
+                        options,
+                        input_prompt,
+                        required,
                     });
+                    if !self.notifications_focus_mode {
+                        self.show_notification_modal = true;
+                        self.modal_queue_offset = 0;
+                    }
                 }
-                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label } => {
+                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } => {
                     let active = self.active_context;
                     if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
                         if let Some(app) = pane.as_app_mut() {
@@ -516,6 +642,7 @@ impl eframe::App for PlexiApp {
                                 crate::app_protocol::PlexiEvent::NotifyAction {
                                     notify_id,
                                     action_label,
+                                    value,
                                 },
                             );
                         }
@@ -666,7 +793,8 @@ impl eframe::App for PlexiApp {
         };
 
         // Handle keyboard shortcuts
-        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active) {
+        let modal_open = self.show_notification_modal;
+        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active, modal_open) {
             match action {
                 Action::SplitHorizontal => {
                     self.contexts[self.active_context].zoomed_pane = None;
@@ -800,8 +928,27 @@ impl eframe::App for PlexiApp {
                 Action::ToggleRunPalette => {
                     self.show_run_palette = !self.show_run_palette;
                 }
-                Action::ToggleNotificationPanel => {
-                    self.show_notification_panel = !self.show_notification_panel;
+                Action::ToggleNotificationModal => {
+                    if self.show_notification_modal {
+                        self.show_notification_modal = false;
+                    } else if !self.pending_notifications.is_empty() {
+                        self.show_notification_modal = true;
+                        self.modal_queue_offset = 0;
+                    }
+                    // If the queue is empty and the modal is closed, this is a
+                    // no-op — there's nothing to review.
+                }
+                Action::NotificationCycleNext => {
+                    if self.show_notification_modal
+                        && self.modal_queue_offset + 1 < self.pending_notifications.len()
+                    {
+                        self.modal_queue_offset += 1;
+                    }
+                }
+                Action::NotificationCyclePrev => {
+                    if self.show_notification_modal && self.modal_queue_offset > 0 {
+                        self.modal_queue_offset -= 1;
+                    }
                 }
                 Action::OpenAgentPane => {
                     self.open_agent_pane();
@@ -1071,25 +1218,12 @@ impl eframe::App for PlexiApp {
             self.draw_run_palette(ctx);
         }
 
-        // Notification panel overlay (Cmd+Shift+A)
-        if self.show_notification_panel {
-            let notif_cmds = self.draw_notification_panel(ctx);
-            for cmd in notif_cmds {
-                use crate::app_trait::AppCommand;
-                if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label } = cmd {
-                    let active = self.active_context;
-                    if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
-                        if let Some(app) = pane.as_app_mut() {
-                            app.runtime.queue_outbound_event(
-                                crate::app_protocol::PlexiEvent::NotifyAction {
-                                    notify_id,
-                                    action_label,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
+        // Notification modal — rendered in the EARLY phase of `update()` (see
+        // `input_captured_by_overlay` branch up top) so its input handling
+        // runs before panes. Nothing to render here; just keep the visibility
+        // flag honest if the queue has drained since the frame started.
+        if self.pending_notifications.is_empty() {
+            self.show_notification_modal = false;
         }
 
         // Rename pane overlay
@@ -1124,6 +1258,112 @@ impl eframe::App for PlexiApp {
 }
 
 impl PlexiApp {
+    /// True when a modal overlay owns keyboard input. Used by `update()` to
+    /// drain remaining key events after the overlay has rendered so panes see
+    /// an empty input buffer this frame.
+    pub(crate) fn input_captured_by_overlay(&self) -> bool {
+        matches!(self.focus_stack.last(), Some(FocusLayer::NotificationModal))
+    }
+
+    /// Push a focus layer. Idempotent — if the same layer is already on top,
+    /// it's a no-op. Callers should pair with `pop_focus_layer`.
+    pub(crate) fn push_focus_layer(&mut self, layer: FocusLayer) {
+        if self.focus_stack.last() != Some(&layer) {
+            self.focus_stack.push(layer);
+        }
+    }
+
+    /// Pop the given layer if it's currently on top. No-op otherwise; this
+    /// prevents out-of-order pops from corrupting the stack.
+    pub(crate) fn pop_focus_layer(&mut self, layer: &FocusLayer) {
+        if self.focus_stack.last() == Some(layer) {
+            self.focus_stack.pop();
+        }
+    }
+
+    /// Reconcile the focus stack with the notification modal visibility. Called
+    /// once per frame — the modal can open/close from many paths (arrival,
+    /// Cmd+Shift+A, queue drains to empty mid-frame), so the source of truth is
+    /// `show_notification_modal && !pending_notifications.is_empty()`.
+    pub(crate) fn sync_notification_modal_focus(&mut self) {
+        let should_own = self.show_notification_modal
+            && !self.pending_notifications.is_empty();
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::NotificationModal);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::NotificationModal);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::NotificationModal);
+        }
+    }
+
+    /// Drain keyboard events from `ctx.input` so downstream widgets (panes,
+    /// terminal backends, `keys::poll_actions`) see only the global allowlist.
+    /// Called after the owning overlay has read what it needs. The allowlist
+    /// lets a small set of keybinds (Quit, Close, hide-modal, queue-cycle)
+    /// remain live even while an overlay owns focus — users always need a way
+    /// to quit or dismiss the overlay.
+    pub(crate) fn drain_captured_keyboard_input(&self, ctx: &egui::Context) {
+        ctx.input_mut(|i| {
+            i.events.retain(|e| match e {
+                egui::Event::Key { key, modifiers, .. } => {
+                    let cmd = modifiers.command;
+                    let shift = modifiers.shift;
+                    let alt = modifiers.alt;
+                    let ctrl_only = modifiers.ctrl;
+                    // Only pass modifier-bearing keys; drop bare key presses.
+                    if !cmd || alt || ctrl_only {
+                        return false;
+                    }
+                    // Cmd+Q (quit), Cmd+W (close pane / hide-modal fallback).
+                    if !shift && matches!(key, egui::Key::Q | egui::Key::W) {
+                        return true;
+                    }
+                    // Cmd+Shift+A — toggle notification modal (global escape
+                    // hatch, survives even required notifs).
+                    if shift && matches!(key, egui::Key::A) {
+                        return true;
+                    }
+                    // Cmd+] / Cmd+[ — cycle the notification queue without
+                    // acknowledging. Only meaningful while the modal is open.
+                    if !shift
+                        && matches!(key, egui::Key::CloseBracket | egui::Key::OpenBracket)
+                    {
+                        return true;
+                    }
+                    false
+                }
+                egui::Event::Text(_) => false,
+                _ => true,
+            });
+        });
+    }
+
+    /// Route `DeliverNotifyAction` commands back to the originating app pane as
+    /// `NotifyAction` events. Shared by the modal and the sidebar panel so both
+    /// surfaces dispatch identically.
+    pub(crate) fn dispatch_notify_action_cmds(&mut self, cmds: Vec<crate::app_trait::AppCommand>) {
+        use crate::app_trait::AppCommand;
+        for cmd in cmds {
+            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } = cmd {
+                let active = self.active_context;
+                if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                    if let Some(app) = pane.as_app_mut() {
+                        app.runtime.queue_outbound_event(
+                            crate::app_protocol::PlexiEvent::NotifyAction {
+                                notify_id,
+                                action_label,
+                                value,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn record_pane_visit(&mut self, ctx_idx: usize, tile_id: egui_tiles::TileId) {
         self.pane_visit_history
             .retain(|&(c, t)| !(c == ctx_idx && t == tile_id));

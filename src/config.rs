@@ -8,10 +8,25 @@ pub struct PlexiConfig {
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
     pub log: Option<LogConfig>,
+    pub notifications: Option<NotificationsConfig>,
     /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
     pub confirm_close: Option<bool>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+pub struct NotificationsConfig {
+    /// Master switch. If false, incoming notifications are silently dropped —
+    /// apps still send them, but the modal never appears and the queue stays
+    /// empty. Defaults to true.
+    pub enabled: Option<bool>,
+    /// Focus mode. When true, notifications silently queue instead of auto-
+    /// surfacing the modal. The user enters review mode with Cmd+Shift+D,
+    /// which opens the modal on the front of the queue; Cmd+] and Cmd+[
+    /// cycle forward and back through the queue without acknowledging.
+    /// Defaults to false (auto-surface, the original behavior).
+    pub focus_mode: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -172,35 +187,57 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
-const CONFIG_TEMPLATE: &str = r##"# Plexi Configuration
-# Changes take effect on next launch.
+const CONFIG_TEMPLATE: &str = r##"# ╔══════════════════════════════════════════════════════════════╗
+# ║  Plexi Configuration                                        ║
+# ║  Changes take effect on next launch.                        ║
+# ╚══════════════════════════════════════════════════════════════╝
 
 font_size = 14.0
 
-# Confirmation dialogs — uncomment to disable.
-# confirm_quit = false   # Require triple Cmd+Q to quit (default: true)
-# confirm_close = false  # Show dialog before closing a pane via Cmd+W (default: true)
+# ── Confirmation Dialogs ───────────────────────────────────────
+# Set to false to disable the corresponding confirmation flow.
+# confirm_quit  = false   # Triple Cmd+Q to quit (default: true)
+# confirm_close = false   # Dialog before Cmd+W closes a pane (default: true)
 
-# Theme preset — uncomment one to use it as a base.
-# Individual [theme] values below will override the preset.
-# Options: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
+# ── Notifications ──────────────────────────────────────────────
+# The work-area modal is the one and only notification surface.
+# Apps emit `ctx.notify(...)`, `ctx.notify_choice(...)`, or
+# `ctx.notify_input(...)` and the modal renders each kind with
+# keyboard-first navigation (Enter confirms, j/k or ↑↓ cycle
+# options, 1-9 direct-select, Esc cancels when allowed).
+[notifications]
+# Master switch. If false, notifications are silently dropped at
+# arrival — apps still send them, the modal never appears, and
+# the queue stays empty.
+enabled = true
+
+# Focus mode. When true, arriving notifications queue silently
+# instead of auto-opening the modal. The user opts into review
+# with Cmd+Shift+A, which opens the modal on the front of the
+# queue; Cmd+] / Cmd+[ cycle forward/back without acknowledging.
+# When false, notifications auto-surface as they arrive.
+focus_mode = false
+
+# ── Theme ──────────────────────────────────────────────────────
+# Pick a preset OR customize individual colors below.
+# Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
 # theme_preset = "catppuccin-mocha"
 
 [theme]
-# UI chrome
-# bg_darkest = "#11111b"
-# bg_sidebar = "#181825"
-# bg_toolbar = "#181825"
-# terminal_bg = "#292a44"
-# bg_hover = "#2a2a3c"
-# bg_active = "#313144"
-# text_primary = "#cdd6f4"
-# text_dim = "#6c7086"
-# text_section = "#585b70"
+# UI chrome colors (hex format)
 accent = "#89b4fa"
-# border = "#2a2a3c"
+# bg_darkest = "#11111b"      # Deepest background (window edges)
+# bg_sidebar = "#181825"      # Sidebar background
+# bg_toolbar = "#181825"      # Toolbar/status bar background
+# terminal_bg = "#292a44"     # Terminal pane background
+# bg_hover = "#2a2a3c"        # Hover highlight
+# bg_active = "#313144"       # Active/selected item
+# text_primary = "#cdd6f4"    # Main text color
+# text_dim = "#6c7086"        # Dimmed/secondary text
+# text_section = "#585b70"    # Section headers
+# border = "#2a2a3c"          # Pane borders
 
-# Terminal ANSI palette
+# Terminal ANSI colors (override the palette)
 # foreground = "#e8e6ed"
 # background = "#292a44"
 # black = "#12131e"
@@ -221,15 +258,17 @@ accent = "#89b4fa"
 # bright_white = "#f4f2f9"
 # bright_foreground = "#f4f2f9"
 
+# ── Experimental Features ──────────────────────────────────────
+# Flip any flag to true and restart to enable.
 [beta]
-# Experimental visual effects. Set to true to enable.
-# crt = false     # Retro CRT scanlines + green phosphor tint
-# pulse = false   # Focused pane border gently breathes
-# ghost = false   # Unfocused panes render at reduced opacity
-# quit_confirm = false  # Require triple Cmd+Q to quit (default: true)
+# crt   = false    # Retro CRT scanlines + green phosphor tint
+# pulse = false    # Focused pane border gently breathes
+# ghost = false    # Unfocused panes render at reduced opacity
+# quit_confirm = false   # Deprecated; prefer top-level `confirm_quit`
 
+# ── Logging ────────────────────────────────────────────────────
 # [log]
-# level = "info"  # error | warn | info | debug  (default: info)
+# level = "info"   # error | warn | info | debug  (default: info)
 "##;
 
 pub fn open_config_file() {

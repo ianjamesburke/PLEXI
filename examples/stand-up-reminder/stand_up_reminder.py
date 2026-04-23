@@ -48,6 +48,9 @@ PROMPTS = [
 ]
 
 INTERVALS = [
+    (2, "2 sec"),
+    (5, "5 sec"),
+    (30, "30 sec"),
     (5 * 60, "5 min"),
     (15 * 60, "15 min"),
     (30 * 60, "30 min"),
@@ -69,7 +72,7 @@ def _format_duration(secs: float) -> str:
 
 class StandUpReminderApp(App):
     def on_init(self, ctx: RenderContext) -> None:
-        self._interval_idx = 1  # default: 15 min
+        self._interval_idx = 4  # default: 15 min
         self._reminders_today = 0
         self._last_prompt: str = ""
         self._next_fire_at: float = 0.0

@@ -137,10 +137,17 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
     /// Sent when the user responds to a notification that included a notify_id.
+    ///
+    /// - `action_label`: what was clicked — "acknowledge" for the default,
+    ///   the option label for a choice, "submit" for input, or "cancel" if
+    ///   dismissed with Esc (only possible when `required = false`).
+    /// - `value`: option `value` for choice kind, typed text for input kind,
+    ///   absent otherwise.
     NotifyAction {
         notify_id: String,
-        /// The label of the action the user clicked, or "dismiss" if dismissed.
         action_label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
     },
     /// Fired when a SetTimer timer expires.
     Timer { timer_id: String },
@@ -187,6 +194,14 @@ pub enum DrawCommand {
         radius: f32,
     },
     /// Draw text at a position.
+    ///
+    /// `align` controls how the `(x, y)` point maps to the text box:
+    ///   - `"top_left"` (default) — `(x, y)` is the top-left corner.
+    ///   - `"center"`              — `(x, y)` is the visual center of the text.
+    ///
+    /// Centering uses the host's real font metrics, which matters for small
+    /// badges / buttons where a 0.1em difference is visible. Prefer `center`
+    /// for anything inside a fixed-size container.
     Text {
         x: f32,
         y: f32,
@@ -197,6 +212,8 @@ pub enum DrawCommand {
         monospace: bool,
         #[serde(default)]
         bold: bool,
+        #[serde(default = "default_text_align")]
+        align: String,
     },
     /// Draw a line segment.
     Line {
@@ -260,6 +277,21 @@ pub enum DrawCommand {
         level: String,
         title: String,
         body: String,
+        /// The notification shape. Defaults to `message` for back-compat with
+        /// existing apps. Determines how the modal renders and interacts.
+        #[serde(default)]
+        kind: NotifyKind,
+        /// Choice options (only meaningful for `kind = "choice"`). The host shows
+        /// these as keyboard-navigable buttons; Enter selects the focused one.
+        #[serde(default)]
+        options: Vec<NotifyOption>,
+        /// Placeholder / hint for the text input (only for `kind = "input"`).
+        #[serde(default)]
+        input_prompt: Option<String>,
+        /// If true, the user cannot dismiss with Esc — they must pick an option
+        /// or submit input. Intended for decisions the app depends on.
+        #[serde(default)]
+        required: bool,
         #[serde(default)]
         actions: Vec<NotificationAction>,
         /// If set, host sends PlexiEvent::NotifyAction when the user responds.
@@ -415,6 +447,39 @@ pub struct NotificationAction {
     pub payload: serde_json::Value,
 }
 
+/// The shape / interaction model of a notification.
+///
+/// - `Message` — title + body, single Acknowledge button.
+/// - `Choice`  — title + body + N options; Enter picks the focused one, ↑↓/j-k
+///               cycles, 1-9 direct-selects, optional per-option `shortcut` key.
+/// - `Input`   — title + body + a text field; Enter submits.
+///
+/// Future kinds (image / audio / video / rich) will land here without breaking
+/// existing apps — `#[serde(default)]` on the field means missing `kind`
+/// deserializes to `Message`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyKind {
+    #[default]
+    Message,
+    Choice,
+    Input,
+}
+
+/// One option in a `kind = "choice"` notification.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NotifyOption {
+    /// Visible label on the button.
+    pub label: String,
+    /// Value returned to the app in `PlexiEvent::NotifyAction.value`. If empty,
+    /// the label is used.
+    #[serde(default)]
+    pub value: String,
+    /// Optional single-char hotkey (e.g. "y", "n"). Case-insensitive.
+    #[serde(default)]
+    pub shortcut: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ListItem {
     pub label: String,
@@ -428,6 +493,10 @@ pub struct ListItem {
 
 fn default_stroke_width() -> f32 {
     1.0
+}
+
+fn default_text_align() -> String {
+    "top_left".to_string()
 }
 
 fn default_http_method() -> String {

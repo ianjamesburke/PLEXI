@@ -37,6 +37,7 @@ mod secrets;
 mod secrets_app;
 mod shell;
 mod sidebar;
+mod style;
 mod text_editor_app;
 mod theme;
 mod tiling;

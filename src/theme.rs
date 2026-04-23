@@ -394,8 +394,14 @@ pub fn terminal_dynamic_colors(colors: &Colors) -> HashMap<usize, [u8; 3]> {
 }
 
 pub fn terminal_font(size: f32) -> TerminalFont {
+    // Terminals MUST use the monospace family. Before the proportional-family
+    // font swap, this function worked with `FontId::proportional` only by
+    // accident — JetBrains Mono was registered as the primary font for both
+    // families. The correct routing is through `FontId::monospace` so any
+    // future change to the Proportional family (adding a real proportional
+    // font for UI) doesn't break column alignment in `ls`, `top`, etc.
     TerminalFont::new(FontSettings {
-        font_type: FontId::proportional(size),
+        font_type: FontId::monospace(size),
     })
 }
 
@@ -425,16 +431,22 @@ pub fn font_definitions() -> egui::FontDefinitions {
             "../fonts/NotoSans-Regular.ttf"
         ))),
     );
+    // Proportional family: DejaVuSans (actually proportional) is primary so
+    // UI text reads like a real app instead of a monospace terminal dump.
+    // JetBrains Mono falls through second — if DejaVuSans lacks a glyph
+    // (nerd-font icons, box drawing), the mono font provides coverage.
+    // BREAKS IF: UI text looks monospace again (priorities swapped back, or
+    // DejaVuSans removed from the bundle).
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .insert(0, FONT_NAME.to_owned());
+        .insert(0, FALLBACK_FONT_NAME.to_owned());
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .insert(1, FALLBACK_FONT_NAME.to_owned());
+        .insert(1, FONT_NAME.to_owned());
     fonts
         .families
         .entry(egui::FontFamily::Proportional)

@@ -75,7 +75,9 @@ pub enum Action {
     /// Open a new agent pane (Cmd+I).
     OpenAgentPane,
     /// Toggle the notification panel overlay (Cmd+Shift+A).
-    ToggleNotificationPanel,
+    ToggleNotificationModal,
+    NotificationCycleNext,
+    NotificationCyclePrev,
 }
 
 /// Poll global keyboard actions.
@@ -88,6 +90,7 @@ pub fn poll_actions(
     ctx: &egui::Context,
     app_active: bool,
     keyboard_capture_active: bool,
+    notification_modal_open: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
     let cmd_shift = egui::Modifiers {
@@ -137,12 +140,22 @@ pub fn poll_actions(
             actions.push(Action::NewTab);
         }
 
-        // Cycle tabs (Cmd+] / Cmd+[)
+        // Cycle tabs (Cmd+] / Cmd+[). When the notification modal is open,
+        // these cycle through the pending-notifications queue instead — the
+        // modal is the active context.
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
-            actions.push(Action::NextTab);
+            actions.push(if notification_modal_open {
+                Action::NotificationCycleNext
+            } else {
+                Action::NextTab
+            });
         }
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
-            actions.push(Action::PrevTab);
+            actions.push(if notification_modal_open {
+                Action::NotificationCyclePrev
+            } else {
+                Action::PrevTab
+            });
         }
 
         // Toggle sidebar (Cmd+B)
@@ -233,9 +246,10 @@ pub fn poll_actions(
             actions.push(Action::ToggleRunPalette);
         }
 
-        // Notification panel (Cmd+Shift+A)
+        // Notification modal (Cmd+Shift+A) — opens the queue on the front item,
+        // or closes the modal if already open.
         if input.consume_key(cmd_shift, egui::Key::A) {
-            actions.push(Action::ToggleNotificationPanel);
+            actions.push(Action::ToggleNotificationModal);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

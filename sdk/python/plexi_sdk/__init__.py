@@ -349,29 +349,73 @@ class Emitter:
     def error(self, message: str) -> None: self.log("error", message)
     def debug(self, message: str) -> None: self.log("debug", message)
 
-    # Notifications
-    def notify(self, title: str, body: str, level: str = "info",
+    # Notifications — kind = "message" (plain text, one Acknowledge button).
+    def notify(self, title: str, body: str = "", level: str = "info",
                actions: list | None = None) -> None:
+        """Post a message notification. The modal shows title + body and a
+        single Acknowledge button; Enter / Space acknowledge, Esc dismisses
+        (unless required=True — use `notify_and_wait` for that flow).
+
+        `actions` is the legacy side-effect list (action_type =
+        resume_run | open_intent | run_command). It does NOT render UI.
+        """
         _emit({"type": "notify", "level": level, "title": title,
-               "body": body, "actions": actions or []})
+               "body": body, "kind": "message",
+               "actions": actions or []})
 
-    def notify_and_wait(self, title: str, body: str, level: str = "info",
-                        actions: list | None = None) -> str:
-        """Send a notification and block until the user responds.
+    # kind = "choice"
+    def notify_choice(self, title: str, options: list, body: str = "",
+                      level: str = "info", required: bool = False) -> str:
+        """Post a choice notification and block until the user picks one.
 
-        Returns the label of the action clicked, or "dismiss" if dismissed.
-        Requires A5 notification panel to be active — blocks indefinitely otherwise.
+        `options` is a list of dicts: {"label": str, "value": str (optional),
+        "shortcut": str (optional, single char)}. If `value` is omitted, the
+        label is returned.
 
-        actions: list of {"label": str, "action_type": str, "payload": dict} dicts.
-        If omitted, a single "Dismiss" action is added automatically.
+        Returns the chosen option's value (or the label if no value set). If
+        `required=False` the user may cancel with Esc — this returns the string
+        `"__cancel__"`.
         """
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
-        actual_actions = actions or [{"label": "Dismiss", "action_type": "dismiss", "payload": {}}]
         _emit({"type": "notify", "level": level, "title": title, "body": body,
-               "actions": actual_actions, "notify_id": notify_id})
+               "kind": "choice", "options": options, "required": required,
+               "notify_id": notify_id})
+        return q.get()
+
+    # kind = "input"
+    def notify_input(self, title: str, prompt: str = "", body: str = "",
+                     level: str = "info", required: bool = False) -> str:
+        """Post an input notification and block until the user submits or
+        cancels. Returns the typed text (possibly empty), or "__cancel__" if
+        the user dismissed with Esc (only possible when required=False).
+        """
+        import uuid
+        notify_id = str(uuid.uuid4())
+        q: "queue.Queue[str]" = queue.Queue()
+        self._app._pending_notify[notify_id] = q
+        _emit({"type": "notify", "level": level, "title": title, "body": body,
+               "kind": "input", "input_prompt": prompt, "required": required,
+               "notify_id": notify_id})
+        return q.get()
+
+    def notify_and_wait(self, title: str, body: str = "", level: str = "info",
+                        actions: list | None = None) -> str:
+        """Post a message notification and block until the user acknowledges
+        or cancels. Returns "acknowledge" on Enter/Space/button, "cancel" on Esc.
+
+        For richer interaction, use `notify_choice` or `notify_input`.
+        `actions` is the legacy server-side side-effect list.
+        """
+        import uuid
+        notify_id = str(uuid.uuid4())
+        q: "queue.Queue[str]" = queue.Queue()
+        self._app._pending_notify[notify_id] = q
+        _emit({"type": "notify", "level": level, "title": title, "body": body,
+               "kind": "message", "actions": actions or [],
+               "notify_id": notify_id})
         return q.get()
 
     # Terminal commands (legacy back-compat)
@@ -608,14 +652,46 @@ class RenderContext:
                "start_angle": start_angle, "end_angle": end_angle, "fill": fill})
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
-             monospace: bool = False, bold: bool = False) -> None:
+             monospace: bool = False, bold: bool = False,
+             align: str = "top_left") -> None:
+        """Draw text. `align` controls how `(x, y)` maps to the text box:
+
+          - "top_left" (default) — (x, y) is the top-left corner.
+          - "center"              — (x, y) is the visual center.
+          - "top_center"          — (x, y) is the top-center.
+          - "right"               — (x, y) is the top-right corner.
+
+        Use "center" when placing text inside a fixed-size container (a badge,
+        a button, a pie-chart label) — the host uses real font metrics, which
+        is noticeably more accurate than Python-side math with approximate
+        character-width ratios.
+        """
         _emit({"type": "text", "x": x, "y": y, "text": text, "size": size,
-               "color": color, "monospace": monospace, "bold": bold})
+               "color": color, "monospace": monospace, "bold": bold,
+               "align": align})
 
     def line(self, x1: float, y1: float, x2: float, y2: float,
              color: str, width: float = 1.0) -> None:
         _emit({"type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                "color": color, "width": width})
+
+    # ── SDK v2 declarative UI entry point ──
+    def render(self, tree, fill: str = "#1e1e2e") -> None:
+        """Render a declarative UI tree (see `plexi_sdk.ui`). Clears the pane
+        to `fill` first, then lays out `tree` into the full pane rect.
+
+        Example:
+            from plexi_sdk.ui import Column, Header, Footer, Spacer
+            ctx.render(Column([
+                Header("My App"),
+                Spacer(grow=True),
+                Footer("status line"),
+            ]))
+        """
+        # Local import avoids a circular dependency at module load time
+        # (ui.py references RenderContext only through duck-typed `ctx`).
+        from plexi_sdk.ui import render_tree
+        render_tree(self, tree, fill=fill)
 
     def list(self, items: list[dict], selected: int = 0,
              item_height: float = 40.0, x: float = 0.0, y: float = 0.0,
@@ -635,13 +711,30 @@ class RenderContext:
     def error(self, message: str) -> None: self.log("error", message)
     def debug(self, message: str) -> None: self.log("debug", message)
 
-    def notify(self, title: str, body: str, level: str = "info",
+    def notify(self, title: str, body: str = "", level: str = "info",
                actions: list | None = None) -> None:
+        """Post a message notification. See Emitter.notify."""
         self.emit.notify(title=title, body=body, level=level, actions=actions)
 
-    def notify_and_wait(self, title: str, body: str, level: str = "info",
+    def notify_choice(self, title: str, options: list, body: str = "",
+                      level: str = "info", required: bool = False) -> str:
+        """Post a choice notification and block until the user picks.
+        Returns the chosen option's value (or label if no value set),
+        or "__cancel__" if the user dismissed."""
+        return self.emit.notify_choice(title=title, options=options, body=body,
+                                       level=level, required=required)
+
+    def notify_input(self, title: str, prompt: str = "", body: str = "",
+                     level: str = "info", required: bool = False) -> str:
+        """Post an input notification and block until the user submits.
+        Returns the typed text, or "__cancel__" if dismissed."""
+        return self.emit.notify_input(title=title, prompt=prompt, body=body,
+                                      level=level, required=required)
+
+    def notify_and_wait(self, title: str, body: str = "", level: str = "info",
                         actions: list | None = None) -> str:
-        """Send a notification and block until the user responds. See Emitter.notify_and_wait."""
+        """Post a message notification and block for acknowledge/cancel.
+        See Emitter.notify_and_wait."""
         return self.emit.notify_and_wait(title=title, body=body, level=level, actions=actions)
 
     def status_summary(self, text: str) -> None:
@@ -866,11 +959,20 @@ class App:
                         q.put(("ok", ev.get("content", "")))
 
             elif t == "notify_action":
+                # notify_choice / notify_input: put the value back.
+                # notify / notify_and_wait: put action_label back.
+                # Esc cancel: return "__cancel__" so callers can check easily.
                 notify_id = ev.get("notify_id", "")
-                action_label = ev.get("action_label", "dismiss")
+                action_label = ev.get("action_label", "")
+                value = ev.get("value")
                 q = self._pending_notify.pop(notify_id, None)
                 if q:
-                    q.put(action_label)
+                    if action_label == "cancel":
+                        q.put("__cancel__")
+                    elif value is not None:
+                        q.put(value)
+                    else:
+                        q.put(action_label or "acknowledge")
 
             elif t == "timer":
                 timer_id = ev.get("timer_id", "")
