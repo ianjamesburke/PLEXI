@@ -1,33 +1,79 @@
 #!/usr/bin/env python3
-"""GitHub Tree — browse repos, branches, and commits via the GitHub API."""
+"""GitHub Tree — browse the current git repo's tree via the `gh` CLI.
+
+The app inherits the launching pane's cwd. On startup it:
+  1. Confirms `gh` is authenticated.
+  2. Resolves the enclosing git repo and its owner/repo slug.
+  3. Fetches the repo tree via `gh api repos/<slug>/git/trees/HEAD?recursive=1`.
+
+Auth is delegated entirely to the `gh` CLI — no secrets broker, no net.http.
+Run `gh auth login` in any terminal to set up credentials; they live at
+`~/.config/gh/hosts.yml`, which is reachable because the subprocess env
+whitelist includes HOME + PATH.
+
+Keys:
+  h / l / left / right — move between columns
+  j / k / up / down    — move within a column
+  r                    — refetch the tree
+"""
 from __future__ import annotations
 
-import json
+import re
+import shutil
+import subprocess
 import threading
-import urllib.parse
+from typing import Optional
 
-from plexi_sdk import (
-    App, RenderContext,
-    BG, FG, MUTED, ACCENT, SURFACE, HIGHLIGHT, RED, GREEN, YELLOW,
-    BODY, CAPTION, HINT, HEADING,
-    PAD, PAD_TIGHT, HEADER_H,
-    dim,
+from plexi_sdk import App, RenderContext
+from plexi_sdk.ui import (
+    Column, Card, Header, Spacer, Footer, Label, KeyRow,
+    ACCENT, BG, FG, MUTED, HIGHLIGHT, RED, YELLOW,
+    SPACE_MD, SPACE_XL,
+    TEXT_CAPTION, TEXT_BODY,
 )
 
-GITHUB_API = "https://api.github.com"
-
-MODE_SEARCH  = "search"
-MODE_LOADING = "loading"
-MODE_REPO    = "repo"
-MODE_ERROR   = "error"
+MODE_LOADING  = "loading"
+MODE_NO_AUTH  = "no_auth"
+MODE_NO_REPO  = "no_repo"
+MODE_READY    = "ready"
+MODE_ERROR    = "error"
 
 SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+# Remote URL parsers: both git@github.com:owner/repo(.git) and
+# https://github.com/owner/repo(.git) forms.
+_RE_SSH_REMOTE  = re.compile(r"^git@github\.com:([^/]+)/(.+?)(?:\.git)?$")
+_RE_HTTP_REMOTE = re.compile(r"^https?://github\.com/([^/]+)/(.+?)(?:\.git)?/?$")
 
-def _trunc(s: str, max_chars: int) -> str:
-    if len(s) <= max_chars:
-        return s
-    return s[: max_chars - 1] + "…"
+
+def _run(cmd: list[str], cwd: Optional[str] = None,
+         timeout: float = 10.0) -> tuple[int, str, str]:
+    """Run `cmd` and return (returncode, stdout, stderr). Never raises on a
+    non-zero exit — caller inspects the return code. Failures to spawn (missing
+    binary, timeout) become synthetic non-zero return codes so the caller sees
+    a uniform shape."""
+    try:
+        proc = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+    except FileNotFoundError as e:
+        return 127, "", f"command not found: {cmd[0]} ({e})"
+    except subprocess.TimeoutExpired as e:
+        return 124, "", f"timeout running {cmd[0]}: {e}"
+    except Exception as e:
+        return 1, "", f"error running {cmd[0]}: {e}"
+
+
+def _parse_slug(remote_url: str) -> Optional[tuple[str, str]]:
+    url = remote_url.strip()
+    m = _RE_SSH_REMOTE.match(url)
+    if m:
+        return m.group(1), m.group(2)
+    m = _RE_HTTP_REMOTE.match(url)
+    if m:
+        return m.group(1), m.group(2)
+    return None
 
 
 class GitHubTreeApp(App):
@@ -35,284 +81,317 @@ class GitHubTreeApp(App):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_init(self, _ctx: RenderContext) -> None:
-        self._mode = MODE_SEARCH
-        self._query = ""
-        self._token: str | None = None
-
-        self._repo_info: dict = {}
-        self._branches: list[str] = []
-        self._commits: list[dict] = []
-
-        self._branch_sel = 0
+        self._mode: str = MODE_LOADING
+        self._loading_msg: str = "Checking gh auth…"
         self._spinner_frame = 0
-        self._error = ""
-        self._loading_msg = ""
 
-        threading.Thread(target=self._load_secret, daemon=True).start()
+        self._repo_root: Optional[str] = None
+        self._slug: Optional[str] = None           # "owner/repo"
+        self._tree: list[str] = []                 # repo-relative paths (blobs only)
+        self._error: str = ""
 
-    def _load_secret(self) -> None:
+        # Grid selection — index into self._tree.
+        self._sel: int = 0
+
+        # Last-computed column grid, stashed so the key handler can step by
+        # columns (sel += rows) without recomputing.
+        self._grid_cols: int = 1
+        self._grid_rows: int = 1
+
+        self.emit.status_summary("GitHub Tree — loading")
+        self.emit.info("github-tree: starting")
+
+        threading.Thread(target=self._bootstrap, daemon=True).start()
+
+    # ── Bootstrap (auth → repo detect → tree fetch) ──────────────────────────
+
+    def _bootstrap(self) -> None:
         try:
-            value = self.emit.get_secret("HOMEBREW_TAP_TOKEN")
-            if value:
-                self._token = value
-                self.emit.debug("github-tree: auth token loaded")
+            # 1. gh present?
+            if shutil.which("gh") is None:
+                self._fail_auth("The gh CLI isn't on PATH. Install it, then run "
+                                "`gh auth login`.")
+                return
+
+            # 2. gh authenticated?
+            self._loading_msg = "Checking gh auth…"
+            self.emit.schedule_render(after_ms=16)
+            rc, _, _ = _run(["gh", "auth", "status"])
+            if rc != 0:
+                self._fail_auth("Run `gh auth login` in any terminal, then reopen.")
+                return
+
+            # 3. In a git repo?
+            self._loading_msg = "Locating git repo…"
+            self.emit.schedule_render(after_ms=16)
+            rc, out, _ = _run(["git", "rev-parse", "--show-toplevel"])
+            if rc != 0 or not out.strip():
+                self._mode = MODE_NO_REPO
+                self.emit.status_summary("GitHub Tree — no repo")
+                self.emit.schedule_render(after_ms=16)
+                return
+            self._repo_root = out.strip()
+
+            # 4. Parse owner/repo from origin remote.
+            rc, out, err = _run(["git", "remote", "get-url", "origin"],
+                                cwd=self._repo_root)
+            if rc != 0 or not out.strip():
+                self._fail_error(f"No 'origin' remote: {err.strip() or 'not set'}")
+                return
+            parsed = _parse_slug(out.strip())
+            if not parsed:
+                self._fail_error(f"Origin remote is not a GitHub URL:\n{out.strip()}")
+                return
+            owner, repo = parsed
+            self._slug = f"{owner}/{repo}"
+            self.emit.status_summary(self._slug)
+
+            # 5. Fetch the tree via gh api.
+            self._fetch_tree()
+
         except Exception as e:
-            self.emit.warn(f"github-tree: secret fetch failed: {e}")
+            self._fail_error(f"bootstrap failed: {e}")
 
-    # ── Authenticated HTTP ────────────────────────────────────────────────────
+    def _fetch_tree(self) -> None:
+        if self._slug is None:
+            self._fail_error("no repo slug resolved")
+            return
+        self._mode = MODE_LOADING
+        self._loading_msg = f"Fetching tree for {self._slug}…"
+        self.emit.schedule_render(after_ms=16)
 
-    def _github_get(self, url: str) -> dict | list:
-        """Blocking authenticated GET to api.github.com. Returns parsed JSON."""
-        headers: dict[str, str] = {
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        body = self.emit.http_request(url, headers=headers)
-        return json.loads(body)
+        rc, out, err = _run(
+            ["gh", "api",
+             f"repos/{self._slug}/git/trees/HEAD?recursive=1",
+             "--jq", ".tree[] | select(.type==\"blob\") | .path"],
+            cwd=self._repo_root,
+            timeout=30.0,
+        )
+        if rc != 0:
+            self._fail_error(
+                f"gh api failed: {err.strip() or out.strip() or 'unknown error'}"
+            )
+            return
+
+        paths = sorted(line for line in out.splitlines() if line.strip())
+        self._tree = paths
+        self._sel = 0
+        self._mode = MODE_READY
+        self.emit.info(f"github-tree: {len(paths)} blobs in {self._slug}")
+        self.emit.schedule_render(after_ms=16)
+
+    # Transition helpers — keep `_mode` moves centralised so every render sees
+    # a consistent (mode, error) snapshot.
+    def _fail_auth(self, message: str) -> None:
+        self._error = message
+        self._mode = MODE_NO_AUTH
+        self.emit.status_summary("GitHub Tree — not authed")
+        self.emit.schedule_render(after_ms=16)
+
+    def _fail_error(self, message: str) -> None:
+        self._error = message
+        self._mode = MODE_ERROR
+        self.emit.warn(f"github-tree: {message}")
+        self.emit.status_summary("GitHub Tree — error")
+        self.emit.schedule_render(after_ms=16)
 
     # ── Input ─────────────────────────────────────────────────────────────────
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
-        if self._mode == MODE_SEARCH:
-            self._handle_search_key(key)
-        elif self._mode == MODE_REPO:
-            self._handle_repo_key(key)
-        elif self._mode == MODE_ERROR:
-            if key in ("escape", "return"):
-                self._mode = MODE_SEARCH
-        # Loading: Escape returns to search
-        elif self._mode == MODE_LOADING and key == "escape":
-            self._mode = MODE_SEARCH
+        k = key.lower()
+        if self._mode == MODE_READY:
+            self._handle_ready_key(k)
+        elif self._mode in (MODE_ERROR, MODE_NO_AUTH, MODE_NO_REPO):
+            if k in ("r", "return"):
+                threading.Thread(target=self._bootstrap, daemon=True).start()
 
-    def _handle_search_key(self, key: str) -> None:
-        if key == "return":
-            slug = self._query.strip()
-            if "/" in slug:
-                self._fetch_repo(slug)
-        elif key == "backspace":
-            self._query = self._query[:-1]
-        elif key == "space":
-            self._query += " "
-        elif len(key) == 1:
-            self._query += key
+    def _handle_ready_key(self, k: str) -> None:
+        if not self._tree:
+            return
+        rows = max(1, self._grid_rows)
+        total = len(self._tree)
 
-    def _handle_repo_key(self, key: str) -> None:
-        if key == "escape":
-            self._mode = MODE_SEARCH
-        elif key in ("j", "down"):
-            self._branch_sel = min(len(self._branches) - 1, self._branch_sel + 1)
-        elif key in ("k", "up"):
-            self._branch_sel = max(0, self._branch_sel - 1)
-        elif key == "return":
-            if self._branches:
-                branch = self._branches[self._branch_sel]
-                slug = self._repo_info.get("full_name", "")
-                if slug:
-                    self._fetch_commits(slug, branch)
-        elif key == "r":
-            slug = self._repo_info.get("full_name", "")
-            if slug:
-                self._fetch_repo(slug)
-
-    # ── Networking ────────────────────────────────────────────────────────────
-
-    def _fetch_repo(self, slug: str) -> None:
-        self._mode = MODE_LOADING
-        self._loading_msg = f"Fetching {slug}…"
-        self._error = ""
-
-        def run() -> None:
-            try:
-                owner, repo = slug.split("/", 1)
-                info      = self._github_get(f"{GITHUB_API}/repos/{owner}/{repo}")
-                branches  = self._github_get(f"{GITHUB_API}/repos/{owner}/{repo}/branches?per_page=30")
-                commits   = self._github_get(f"{GITHUB_API}/repos/{owner}/{repo}/commits?per_page=5")
-
-                self._repo_info  = info  # type: ignore[assignment]
-                self._branches   = [b["name"] for b in branches]  # type: ignore[union-attr]
-                self._commits    = _parse_commits(commits)  # type: ignore[arg-type]
-                self._branch_sel = 0
-                self._mode       = MODE_REPO
-                self.emit.status_summary(info.get("full_name", slug))  # type: ignore[union-attr]
-            except Exception as e:
-                self._error = str(e)
-                self._mode  = MODE_ERROR
-                self.emit.status_summary("Error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _fetch_commits(self, slug: str, branch: str) -> None:
-        self._loading_msg = f"Commits for {branch}…"
-        self._mode = MODE_LOADING
-
-        def run() -> None:
-            try:
-                commits = self._github_get(
-                    f"{GITHUB_API}/repos/{slug}/commits"
-                    f"?sha={urllib.parse.quote(branch)}&per_page=5"
-                )
-                self._commits = _parse_commits(commits)  # type: ignore[arg-type]
-                self._mode    = MODE_REPO
-            except Exception as e:
-                self._error = str(e)
-                self._mode  = MODE_ERROR
-
-        threading.Thread(target=run, daemon=True).start()
+        if k in ("j", "down"):
+            nxt = self._sel + 1
+            if nxt < total and (nxt % rows) != 0:
+                self._sel = nxt
+        elif k in ("k", "up"):
+            if (self._sel % rows) != 0:
+                self._sel -= 1
+        elif k in ("l", "right"):
+            nxt = self._sel + rows
+            if nxt < total:
+                self._sel = nxt
+        elif k in ("h", "left"):
+            nxt = self._sel - rows
+            if nxt >= 0:
+                self._sel = nxt
+        elif k == "r":
+            threading.Thread(target=self._fetch_tree, daemon=True).start()
+        self.emit.schedule_render(after_ms=16)
 
     # ── Render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER)
-        ctx.clear(BG)
-        _draw_header(ctx, self._token is not None)
-
-        if self._mode == MODE_SEARCH:
-            _draw_search(ctx, self._query)
-        elif self._mode == MODE_LOADING:
-            _draw_loading(ctx, SPINNER[self._spinner_frame], self._loading_msg)
+        if self._mode == MODE_LOADING:
+            self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER)
             ctx.emit.schedule_render(after_ms=80)
-        elif self._mode == MODE_REPO:
-            _draw_repo(ctx, self._repo_info, self._branches,
-                       self._branch_sel, self._commits)
+            self._render_loading(ctx)
+        elif self._mode == MODE_NO_AUTH:
+            self._render_empty_state(
+                ctx,
+                title="gh CLI not authenticated",
+                body=self._error or "Run `gh auth login` in any terminal, then reopen.",
+                accent=YELLOW,
+            )
+        elif self._mode == MODE_NO_REPO:
+            self._render_empty_state(
+                ctx,
+                title="Not in a git repository",
+                body="Launch from a repo terminal (the app inherits its cwd).",
+                accent=YELLOW,
+            )
         elif self._mode == MODE_ERROR:
-            _draw_error(ctx, self._error)
+            self._render_empty_state(
+                ctx,
+                title="Something went wrong",
+                body=self._error or "unknown error",
+                accent=RED,
+            )
+        elif self._mode == MODE_READY:
+            self._render_ready(ctx)
+
+    # ── Chrome for loading/empty/error states ────────────────────────────────
+    def _render_loading(self, ctx: RenderContext) -> None:
+        ctx.render(Column([
+            Header(title="GitHub Tree", subtitle=self._slug or "Resolving…"),
+            Card([
+                Label(f"{SPINNER[self._spinner_frame]}  {self._loading_msg}",
+                      tone="body", color=ACCENT),
+            ]),
+            Spacer(grow=True),
+            Footer("Auth via `gh` CLI · tree fetched via `gh api`"),
+        ]))
+
+    def _render_empty_state(self, ctx: RenderContext, *,
+                            title: str, body: str, accent: str) -> None:
+        ctx.render(Column([
+            Header(title="GitHub Tree", subtitle=title, accent=accent),
+            Card([
+                Label(body, tone="body"),
+            ]),
+            Card([
+                KeyRow("r", "Retry"),
+            ]),
+            Spacer(grow=True),
+            Footer("Auth via `gh` CLI · inherits the launching pane's cwd"),
+        ]))
+
+    # Ready state: Header band on top, Footer band on bottom, horizontal grid
+    # of file paths in between. Chrome uses SDK v2; the grid uses primitives
+    # because SDK v2 has no multi-column list component.
+    def _render_ready(self, ctx: RenderContext) -> None:
+        ctx.clear(BG)
+
+        header = Header(title="GitHub Tree", subtitle=self._slug or "—")
+        header_h = header.measure(ctx.w - 2 * SPACE_XL)
+        header.render(
+            ctx,
+            SPACE_XL, SPACE_XL,
+            ctx.w - 2 * SPACE_XL, header_h,
+        )
+
+        footer_text = (
+            f"{len(self._tree)} files · "
+            "h/l columns · j/k within column · r refresh"
+        )
+        footer = Footer(footer_text)
+        footer_h = footer.measure(ctx.w - 2 * SPACE_XL)
+        footer_y = ctx.h - SPACE_XL - footer_h
+        footer.render(
+            ctx,
+            SPACE_XL, footer_y,
+            ctx.w - 2 * SPACE_XL, footer_h,
+        )
+
+        grid_x = SPACE_XL
+        grid_y = SPACE_XL + header_h + SPACE_MD
+        grid_w = ctx.w - 2 * SPACE_XL
+        grid_h = footer_y - grid_y - SPACE_MD
+        if grid_h <= 0 or grid_w <= 0:
+            return
+
+        self._draw_grid(ctx, grid_x, grid_y, grid_w, grid_h)
+
+    # ── Horizontal column grid ────────────────────────────────────────────────
+    # Items flow column-major: column 0 fills top-to-bottom, then column 1, etc.
+    # h/l moves between columns (sel ± rows), j/k moves within a column.
+    # When the selection's column is off-screen we shift the visible window so
+    # the selection is always visible (rightmost if scrolling right).
+
+    ROW_H       = 20.0
+    COL_GAP     = SPACE_MD
+    COL_MIN_W   = 160.0   # anything narrower and paths truncate brutally
+    COL_MAX_W   = 320.0
+
+    def _draw_grid(self, ctx: RenderContext, x: float, y: float,
+                   w: float, h: float) -> None:
+        if not self._tree:
+            ctx.text(x, y, "(empty tree)", size=TEXT_BODY, color=MUTED)
+            self._grid_rows = 1
+            self._grid_cols = 1
+            return
+
+        rows = max(1, int(h // self.ROW_H))
+        max_cols_by_width = max(1, int(
+            (w + self.COL_GAP) // (self.COL_MIN_W + self.COL_GAP)
+        ))
+        cols_needed = (len(self._tree) + rows - 1) // rows
+        cols = min(max_cols_by_width, max(1, cols_needed))
+
+        col_w = (w - self.COL_GAP * (cols - 1)) / cols
+        if col_w > self.COL_MAX_W:
+            col_w = self.COL_MAX_W
+
+        self._grid_rows = rows
+        self._grid_cols = cols
+
+        # Scroll window: if the selection's column has scrolled off the
+        # right edge, shift so it's the rightmost visible column.
+        sel_col = self._sel // rows
+        col_offset = 0
+        if sel_col >= cols:
+            col_offset = sel_col - cols + 1
+
+        for visible_col in range(cols):
+            src_col = visible_col + col_offset
+            for row in range(rows):
+                idx = src_col * rows + row
+                if idx >= len(self._tree):
+                    break
+                cx = x + visible_col * (col_w + self.COL_GAP)
+                cy = y + row * self.ROW_H
+                path = self._tree[idx]
+                selected = idx == self._sel
+
+                if selected:
+                    ctx.rect(cx - 4.0, cy, col_w + 4.0, self.ROW_H,
+                             fill=HIGHLIGHT, radius=4.0)
+                color = ACCENT if selected else FG
+                display = _fit_path(path, col_w)
+                ctx.text(cx, cy + self.ROW_H / 2.0, display,
+                         size=TEXT_CAPTION, color=color,
+                         monospace=True, align="left_center")
 
 
-# ── Stateless draw helpers ────────────────────────────────────────────────────
-
-def _draw_header(ctx: RenderContext, authed: bool) -> None:
-    ctx.rect(0, 0, ctx.w, HEADER_H, fill=SURFACE)
-    ctx.text(PAD, 14, "GitHub Tree", size=HEADING, color=ACCENT, bold=True)
-    dot_color = GREEN if authed else YELLOW
-    dot_label = "auth" if authed else "anon"
-    ctx.circle(ctx.w - PAD - 4, 24, 5, dot_color)
-    ctx.text(ctx.w - PAD - (10 if authed else 14) - 18, 16,
-             dot_label, size=HINT, color=MUTED)
-
-
-def _draw_search(ctx: RenderContext, query: str) -> None:
-    top = HEADER_H + 48
-    ctx.text(PAD, top, "Open a GitHub repository", size=HEADING, color=FG, bold=True)
-    ctx.text(PAD, top + 26, "owner/repo", size=CAPTION, color=MUTED)
-
-    box_y = top + 60
-    ctx.rect(PAD, box_y, ctx.w - PAD * 2, 44, fill=SURFACE, radius=8.0)
-    ctx.rect(PAD, box_y, ctx.w - PAD * 2, 44, fill=dim(ACCENT, 25), radius=8.0)
-
-    max_chars = max(1, int((ctx.w - PAD * 2 - PAD_TIGHT * 2) / 8))
-    display = _trunc(query, max_chars - 1) + "▌"
-    ctx.text(PAD + PAD_TIGHT, box_y + 13, display, size=BODY, color=FG, monospace=True)
-
-    ctx.text(PAD, box_y + 60, "Return to fetch  ·  Esc to clear",
-             size=HINT, color=MUTED)
-    ctx.text(PAD, box_y + 80, "e.g.  anthropics/anthropic-sdk-python",
-             size=HINT, color=dim(MUTED, 140))
-
-
-def _draw_loading(ctx: RenderContext, spinner: str, msg: str) -> None:
-    cx = ctx.w / 2
-    cy = ctx.h / 2
-    label = f"{spinner}  {msg}"
-    # Rough centering: 8px per char at BODY size
-    lx = cx - len(label) * 4
-    ctx.text(lx, cy - 10, label, size=BODY, color=ACCENT)
-
-
-def _draw_repo(ctx: RenderContext, info: dict, branches: list[str],
-               branch_sel: int, commits: list[dict]) -> None:
-    w = ctx.w
-
-    # ── Info card ─────────────────────────────────────────────────────────────
-    cx = PAD
-    cy = HEADER_H + PAD
-    cw = w - PAD * 2
-    ch = 84
-    ctx.rect(cx, cy, cw, ch, fill=SURFACE, radius=8.0)
-
-    name        = info.get("full_name", "unknown")
-    description = info.get("description") or ""
-    stars       = info.get("stargazers_count", 0)
-    forks       = info.get("forks_count", 0)
-    language    = info.get("language") or ""
-
-    ctx.text(cx + PAD, cy + 10, _trunc(name, 42), size=HEADING, color=ACCENT, bold=True)
-    max_desc = max(1, int((cw - PAD * 2) / 7))
-    ctx.text(cx + PAD, cy + 34, _trunc(description, max_desc), size=CAPTION, color=FG)
-
-    meta_parts = []
-    if stars:
-        meta_parts.append(f"★ {stars:,}")
-    if forks:
-        meta_parts.append(f"⑂ {forks:,}")
-    if language:
-        meta_parts.append(language)
-    ctx.text(cx + PAD, cy + 56, "  ·  ".join(meta_parts), size=HINT, color=MUTED)
-
-    # ── Columns ───────────────────────────────────────────────────────────────
-    section_y  = cy + ch + PAD
-    branch_col = int(w * 0.35)
-    commit_col = w - branch_col - PAD * 2 - PAD_TIGHT
-    commit_x   = PAD + branch_col + PAD_TIGHT
-
-    # Branches column
-    ctx.text(PAD, section_y, "Branches", size=CAPTION, color=MUTED, bold=True)
-    ctx.line(PAD, section_y + 18, float(PAD + branch_col),
-             section_y + 18, color=HIGHLIGHT)
-
-    list_y = section_y + 22
-    list_h = ctx.h - list_y - 32
-    branch_items = [{"title": b} for b in branches]
-    ctx.list(branch_items, selected=branch_sel,
-             item_height=32.0, x=PAD, y=list_y,
-             w=float(branch_col), h=float(list_h))
-
-    # Commits column
-    ctx.text(commit_x, section_y, "Recent Commits", size=CAPTION, color=MUTED, bold=True)
-    ctx.line(commit_x, section_y + 18, commit_x + commit_col,
-             section_y + 18, color=HIGHLIGHT)
-
-    ry = section_y + 22
-    max_msg = max(1, int((commit_col - PAD_TIGHT * 2) / 7))
-    for c in commits:
-        if ry + 56 > ctx.h - 32:
-            break
-        ctx.rect(commit_x, ry, commit_col, 52, fill=SURFACE, radius=6.0)
-        ctx.text(commit_x + PAD_TIGHT, ry + 7,
-                 f"[{c['sha']}]", size=HINT, color=ACCENT, monospace=True)
-        ctx.text(commit_x + PAD_TIGHT + 60, ry + 7,
-                 _trunc(c["author"], 20), size=HINT, color=MUTED)
-        ctx.text(commit_x + PAD_TIGHT, ry + 27,
-                 _trunc(c["message"], max_msg), size=CAPTION, color=FG)
-        ry += 58
-
-    # Footer
-    ctx.text(PAD, ctx.h - 22,
-             "j/k branches  ·  Return load commits  ·  r refresh  ·  Esc search",
-             size=HINT, color=MUTED)
-
-
-def _draw_error(ctx: RenderContext, error: str) -> None:
-    cy = ctx.h / 2
-    ctx.rect(PAD, cy - 44, ctx.w - PAD * 2, 88, fill=SURFACE, radius=8.0)
-    ctx.text(PAD + PAD_TIGHT, cy - 28, "Error", size=HEADING, color=RED, bold=True)
-    max_chars = max(1, int((ctx.w - PAD * 2 - PAD_TIGHT * 2) / 7))
-    ctx.text(PAD + PAD_TIGHT, cy, _trunc(error, max_chars), size=CAPTION, color=FG)
-    ctx.text(PAD + PAD_TIGHT, cy + 24, "Escape to go back", size=HINT, color=MUTED)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _parse_commits(raw: list) -> list[dict]:
-    out = []
-    for c in raw[:5]:
-        commit  = c.get("commit", {})
-        sha     = c.get("sha", "")[:7]
-        message = commit.get("message", "").split("\n")[0]
-        author  = commit.get("author", {}).get("name", "?")
-        out.append({"sha": sha, "message": message, "author": author})
-    return out
+def _fit_path(path: str, avail_px: float) -> str:
+    """Truncate from the LEFT so the filename (tail) stays visible. Mono glyph
+    width ≈ 0.60 * font_size; we render at TEXT_CAPTION."""
+    char_w = TEXT_CAPTION * 0.60
+    max_chars = max(4, int(avail_px / char_w))
+    if len(path) <= max_chars:
+        return path
+    return "…" + path[-(max_chars - 1):]
 
 
 if __name__ == "__main__":

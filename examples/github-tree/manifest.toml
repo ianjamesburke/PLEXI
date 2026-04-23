@@ -1,13 +1,12 @@
 [app]
 id = "github-tree"
 name = "GitHub Tree"
-version = "0.1.0"
-description = "Browse GitHub repos: branches, recent commits, file tree."
+version = "0.2.0"
+description = "Browse the current repo's tree. Auth via the gh CLI."
 entry = "github_tree.py"
 
 [app.capabilities]
-capabilities = ["net.http", "secrets.get"]
-allowed_hosts = ["api.github.com"]
+capabilities = []
 
 [launch]
-layout_hint = { side = "right", split = 0.65 }
+layout_hint = { side = "above", split = 0.5 }
