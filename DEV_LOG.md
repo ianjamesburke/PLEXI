@@ -1,5 +1,52 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-23 — [FIX] Grey square top-left of every app pane (uncommitted)
+Root cause: `ProcessApp::ui()` in `src/process_app/mod.rs` wrapped the draw-command playback in an `egui::Frame::new().fill(terminal_bg).show(ui, ...)`. Every primitive inside `render_draw_commands` paints via `ui.painter()`, which draws but never *allocates* UI space, so the Frame's content rect collapsed to its minimum size (a few px) in the top-left and painted `terminal_bg` only over that tiny rect. The rest of the pane showed the host's background, and the collapsed Frame rect read as a small grey square behind every app's real content.
+
+Fix: drop the Frame wrapper. Paint `terminal_bg` directly over `ui.available_rect_before_wrap()`, then call `render_draw_commands` against `ui` as before. The pane-background contract now lives in one explicit painter call against a rect we control.
+
+**Breaks if:** Every app pane (backlog, screen-time, quick-note, etc.) shows a small grey rectangle in its top-left corner, or the pane background bleeds through to the window behind it instead of using `terminal_bg`.
+
+## 2026-04-23 — [FIX] Modal keyboard focus leaks to app behind close-confirm (uncommitted)
+Root cause: `draw_confirm_close` in `src/overlays.rs` used `ui.input(|i| i.key_pressed(Enter))` — a read-only check that does **not** consume the event. The pending-close overlay was also drawn at the *end* of `update()`, *after* `dispatch_app_key_events` had already forwarded the Enter to the focused pane. Symptom: Cmd+W on a backlog pane → confirm-modal appears → Enter both confirms the close *and* opens the selected note in the default markdown editor as the pane tears down.
+
+Fix: migrate confirm-close onto the existing `FocusLayer` pipeline used by the notification modal. New `FocusLayer::ConfirmClose` + `sync_confirm_close_focus()` pair in `src/app/mod.rs`; `input_captured_by_overlay()` now returns true when either modal owns focus; the early-render path in `update()` dispatches to the right modal before `drain_captured_keyboard_input` clears the buffer for downstream panes. `draw_confirm_close` uses `ctx.input_mut(|i| i.consume_key(Enter/Escape))` and its late-render call site was removed. Also added a scrim and inline "Enter confirm / Esc cancel" hint for stylistic parity with the command palette and notification modal.
+
+**Breaks if:** Cmd+W on a backlog (or any non-terminal) pane → hitting Enter on the confirm modal also triggers the selected-item action in the pane underneath; or the confirm-close modal no longer dims the background behind it.
+
+## 2026-04-23 — [FIX] Command palette collapses to one row after a cache-miss redraw (uncommitted)
+Root cause: follow-up on the earlier palette fix. `ScrollArea::max_height(...)` caps the viewport but does **not** reserve it — when the filtered entry set is short (single pane + a handful of apps), egui measured the natural content height and shrank the scroll viewport to ~1 row, even though `auto_shrink=[false, false]` was set. The earlier dynamic-height patch only addressed the cap, not the reservation.
+
+Fix: pair `.max_height(palette_max_list_h)` with `.min_scrolled_height(palette_max_list_h)`. Both now point at the same computed target so the viewport is locked at that height regardless of content size.
+
+**Breaks if:** Open Cmd+P with only one pane running → palette renders as a ~1-row sliver instead of a full-size list.
+
+## 2026-04-23 — [FIX] Header sits too low in the top of the pane (uncommitted)
+Root cause: `Column.padding` defaulted to `SPACE_XL` (24px) on all four sides. A `Header` at the top of a pane carries its own visual weight via `TEXT_TITLE_XL` (28pt); stacking 24px of top padding above it reads as a "dropped" title rather than an anchored one. Side/bottom padding at 24px feels correct — only the top is wrong.
+
+Fix: add `Column.padding_top: Optional[float]` that defaults to `SPACE_LG` (16px). Sides and bottom stay at 24px. Apps that want pixel-perfect override pass `padding_top=N`. Applies to every SDK v2 app with no migration needed — the new default takes over as soon as the updated `plexi_sdk` package is installed.
+
+**Breaks if:** `Screen Time` (or any other SDK v2 app with a `Header`) shows an obvious top gap that makes the title look like it's floating in the middle of a header region rather than anchored to the top of the pane.
+
+## 2026-04-23 — [FIX] Apps shadowing host Cmd-chords + unclipped text overflowing columns (uncommitted)
+Two systemic fixes the user flagged in the same breath.
+
+**Cmd-chord hijack (root cause):** `ProcessApp::handle_key` in `src/process_app/mod.rs` forwarded every Key event (except bare letters) to the app subprocess as `PlexiEvent::Key`. Apps received Cmd+Enter, Cmd+P, Cmd+Shift+A, etc. and could act on them *before* the host's `poll_actions` ran in the same frame. Concrete symptom: in the backlog app, Cmd+Enter opened the selected note instead of toggling pane zoom.
+
+Fix: skip forwarding any event where `modifiers.command` is set. Cmd-modified chords are reserved for host shortcuts; apps that want shortcuts use bare letters or Shift/Alt combos. `handle_key` still forwards non-Cmd chords (arrow keys, Enter, Esc, Tab, etc.) normally.
+
+**Unbounded text (root cause):** `ctx.text()` in the Python SDK had no width argument. Apps drawing bounded surfaces (list rows, columns, table cells) relied on ad-hoc `line[:int(pw/7)]` truncation or nothing at all. Long note names overflowed their column in the backlog app; when the pane was narrow, every item overlapped every other item into an unreadable mess.
+
+Fix: added `max_width: float | None = None` to `ctx.text()`. When set, the SDK truncates the string with an ellipsis *before* emitting the DrawCommand — there's no host-side clipping, so this is the only safe bound. Exposed `plexi_sdk.truncate_to_width(text, max_px, font_size, mono)` as a public helper for hand-drawn surfaces that can't route through `ctx.text`. Migrated backlog to use `max_width` on every bounded text call (header, item names, preview path + lines).
+
+**Breaks if:** (1) In the backlog pane, Cmd+Enter opens the selected note instead of zooming the pane; or (2) long note names in backlog render past the list column's right edge into the preview pane.
+
+## 2026-04-23 — [FIX] Command palette only rendering ~1.5 items (uncommitted)
+Root cause: `src/command_palette.rs` used `ScrollArea::vertical().max_height(400.0).auto_shrink([false, true])`. With `auto_shrink_y=true` inside an `egui::Area` + `egui::Frame` with margins, the ScrollArea measures available height incorrectly on first lay-out and collapses the viewport to roughly one row. Every other ScrollArea in the codebase (agent_pane, file_browser, render/agent_pane) uses `auto_shrink([false, false])`; the palette was the outlier.
+
+Fix: (1) switch to `auto_shrink([false, false])` to match the codebase convention — max_height alone governs the viewport. (2) Make max_height dynamic — `screen_rect.height() - 80 anchor - 120 bottom/input/padding`, clamped to a 200px floor — so the palette scales with window size instead of hard-capping at 400px.
+**Breaks if:** Cmd+P opens the palette and fewer than ~6 items are visible at once, or the palette no longer grows when the window is tall.
+
 ## 2026-04-23 — [FIX] App panes were rendering monospace everywhere (uncommitted)
 Root cause: `src/theme.rs:font_definitions()` inserted `JetBrainsMonoNerdFont-Light` at index 0 for **both** `FontFamily::Monospace` AND `FontFamily::Proportional`. That meant any `ctx.text(..., monospace=False)` call from the Python SDK still rendered in JetBrains Mono (a monospace font), so app UIs looked like terminal dumps even when they explicitly requested proportional.
 

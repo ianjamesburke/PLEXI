@@ -128,10 +128,12 @@ class BacklogApp(App):
         list_h = h - TOP - BOTTOM_BAR_H
 
         # Header
-        ctx.text(12, 10, ".plexi/backlog", size=12, color=ACCENT, bold=True)
+        ctx.text(12, 10, ".plexi/backlog", size=12, color=ACCENT, bold=True,
+                 max_width=list_w - 100)
         item_count = len(self.filtered)
         count_label = f"{item_count} item{'s' if item_count != 1 else ''}"
-        ctx.text(list_w - 80, 10, count_label, size=11, color=MUTED)
+        ctx.text(list_w - 80, 10, count_label, size=11, color=MUTED,
+                 max_width=80)
 
         if not self.backlog_dir.exists():
             ctx.text(12, TOP + 12, "No backlog directory found.", size=13, color=FG)
@@ -155,7 +157,8 @@ class BacklogApp(App):
                 ctx.rect(1, row_y, list_w - 2, ROW_H, HIGHLIGHT, radius=3.0)
             name = path.stem
             color = FG if is_sel else MUTED
-            ctx.text(12, row_y + 4, name, size=12, color=color)
+            ctx.text(12, row_y + 4, name, size=12, color=color,
+                     max_width=list_w - 24)
 
         if not self.filtered:
             msg = "No results" if self.search_query else "Backlog is empty"
@@ -166,7 +169,7 @@ class BacklogApp(App):
         pw = w - px - 10
         if self.preview_path and self.preview_text is not None:
             ctx.text(px, TOP - 18, self.preview_path.name,
-                     size=11, color=ACCENT, bold=True)
+                     size=11, color=ACCENT, bold=True, max_width=pw)
             lines = self.preview_text.splitlines()
             for li, line in enumerate(lines):
                 ly = TOP + li * 15.0
@@ -174,7 +177,8 @@ class BacklogApp(App):
                     break
                 # Dim markdown headings differently
                 color = FG if not line.startswith("#") else ACCENT
-                ctx.text(px, ly, line[:int(pw / 7)], size=11, color=color, monospace=True)
+                ctx.text(px, ly, line, size=11, color=color, monospace=True,
+                         max_width=pw)
 
         # ── Bottom bar ───────────────────────────────────────────────────────────
         bar_y = h - BOTTOM_BAR_H

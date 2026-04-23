@@ -11,12 +11,13 @@ mod sync;
 /// which runs before the drain and is always live.
 ///
 /// New overlays should push their layer on open and pop on close to inherit
-/// input capture. Today only the notification modal is migrated —
-/// command palette, run palette, rename, and confirm-close still use their
-/// legacy per-handler input paths (tracked in `.plexi/backlog`).
+/// input capture. Today the notification modal and confirm-close use the
+/// layer — command palette, run palette, and rename still have legacy
+/// per-handler input paths (tracked in `.plexi/backlog`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FocusLayer {
     NotificationModal,
+    ConfirmClose,
 }
 
 #[derive(Clone)]
@@ -513,6 +514,7 @@ impl eframe::App for PlexiApp {
         // Focus stack: reconcile layer state BEFORE any input routing so
         // `input_captured_by_overlay()` answers correctly this frame.
         self.sync_notification_modal_focus();
+        self.sync_confirm_close_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind) can read
@@ -522,12 +524,21 @@ impl eframe::App for PlexiApp {
         // allowlist (Cmd+Q, Cmd+W, Cmd+Shift+A, Cmd+]/Cmd+[).
         let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
         if self.input_captured_by_overlay() {
-            early_modal_cmds = self.draw_notification_modal(ctx);
+            match self.focus_stack.last() {
+                Some(FocusLayer::NotificationModal) => {
+                    early_modal_cmds = self.draw_notification_modal(ctx);
+                }
+                Some(FocusLayer::ConfirmClose) => {
+                    self.draw_confirm_close(ctx);
+                }
+                None => {}
+            }
             self.drain_captured_keyboard_input(ctx);
-            // The modal may have self-closed (queue drained to empty inside
-            // the draw). Re-sync so the layer is accurate for the rest of
-            // this frame.
+            // The overlay may have self-closed (notification queue drained, or
+            // confirm-close confirmed/cancelled). Re-sync so the layer is
+            // accurate for the rest of this frame.
             self.sync_notification_modal_focus();
+            self.sync_confirm_close_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -1231,10 +1242,10 @@ impl eframe::App for PlexiApp {
             self.draw_rename_pane_overlay(ctx);
         }
 
-        // Close pane confirmation overlay
-        if self.pending_close {
-            self.draw_confirm_close(ctx);
-        }
+        // Close-pane confirmation is drawn by the early input-capture path at
+        // the top of `update()` (it owns `FocusLayer::ConfirmClose`). Drawing
+        // it again here would run the Enter/Escape consumers a second time,
+        // after keys have already been drained.
 
         // Quit confirmation overlay
         if self.quit_confirm_required && self.quit_press_count > 0 {
@@ -1262,7 +1273,10 @@ impl PlexiApp {
     /// drain remaining key events after the overlay has rendered so panes see
     /// an empty input buffer this frame.
     pub(crate) fn input_captured_by_overlay(&self) -> bool {
-        matches!(self.focus_stack.last(), Some(FocusLayer::NotificationModal))
+        matches!(
+            self.focus_stack.last(),
+            Some(FocusLayer::NotificationModal) | Some(FocusLayer::ConfirmClose)
+        )
     }
 
     /// Push a focus layer. Idempotent — if the same layer is already on top,
@@ -1285,6 +1299,23 @@ impl PlexiApp {
     /// once per frame — the modal can open/close from many paths (arrival,
     /// Cmd+Shift+A, queue drains to empty mid-frame), so the source of truth is
     /// `show_notification_modal && !pending_notifications.is_empty()`.
+    /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors
+    /// `sync_notification_modal_focus` — the source of truth is a boolean
+    /// toggled from multiple paths, and the focus stack must follow it
+    /// deterministically each frame.
+    pub(crate) fn sync_confirm_close_focus(&mut self) {
+        let should_own = self.pending_close;
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::ConfirmClose);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::ConfirmClose);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::ConfirmClose);
+        }
+    }
+
     pub(crate) fn sync_notification_modal_focus(&mut self) {
         let should_own = self.show_notification_modal
             && !self.pending_notifications.is_empty();

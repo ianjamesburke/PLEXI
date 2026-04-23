@@ -311,6 +311,33 @@ RED       = "#f38ba8"
 GREEN     = "#a6e3a1"
 YELLOW    = "#f9e2af"
 
+# ── Text-width heuristics (used for truncation / layout math) ─────────────────
+# Proportional ≈ 0.52x font size, mono ≈ 0.60x. Approximation — host uses real
+# font metrics at draw time. These match `plexi_sdk.ui._CHAR_W_*`.
+_CHAR_W_PROPORTIONAL = 0.52
+_CHAR_W_MONO         = 0.60
+
+
+def truncate_to_width(text: str, max_px: float, font_size: float,
+                      mono: bool = False) -> str:
+    """Shorten `text` with an ellipsis if it exceeds `max_px` at `font_size`.
+
+    Every text primitive in the SDK routes through this when the caller passes
+    `max_width=...` — call it directly when you need the same safety for a
+    hand-drawn surface (preview lines, list columns, tooltips). Returns an
+    empty string when `max_px <= 0`.
+    """
+    if max_px <= 0 or not text:
+        return ""
+    ratio = _CHAR_W_MONO if mono else _CHAR_W_PROPORTIONAL
+    char_w = max(0.1, font_size * ratio)
+    max_chars = max(1, int(max_px / char_w))
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 1:
+        return "…"
+    return text[: max_chars - 1] + "…"
+
 # ── Color helpers ─────────────────────────────────────────────────────────────
 
 def rgba(r: int, g: int, b: int, a: int = 255) -> str:
@@ -653,7 +680,8 @@ class RenderContext:
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False,
-             align: str = "top_left") -> None:
+             align: str = "top_left",
+             max_width: "float | None" = None) -> None:
         """Draw text. `align` controls how `(x, y)` maps to the text box:
 
           - "top_left" (default) — (x, y) is the top-left corner.
@@ -665,7 +693,17 @@ class RenderContext:
         a button, a pie-chart label) — the host uses real font metrics, which
         is noticeably more accurate than Python-side math with approximate
         character-width ratios.
+
+        `max_width` — when set, the text is truncated with an ellipsis if it
+        would exceed this many pixels. **Pass this for any text inside a
+        bounded container** (list rows, columns, table cells). Without it, a
+        long string silently overflows its allotted region and blows out the
+        layout — there is no host-side clipping.
         """
+        if max_width is not None:
+            text = truncate_to_width(text, max_width, size, mono=monospace)
+            if not text:
+                return
         _emit({"type": "text", "x": x, "y": y, "text": text, "size": size,
                "color": color, "monospace": monospace, "bold": bold,
                "align": align})

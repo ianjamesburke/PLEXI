@@ -515,13 +515,22 @@ class Column(Component):
     measures fixed-height children first, then distributes leftover space to
     any `Spacer(grow=True)` descendants at the top level.
 
-    Padding is uniform on all four sides. `SPACE_XL` (24px) is the default
-    — roomy enough that text doesn't feel crammed against pane borders, not
-    so much that small panes lose usable area.
+    Padding defaults to `SPACE_XL` (24px) on the sides and bottom, with a
+    tighter `SPACE_LG` (16px) on the top. A top-of-pane `Header` carries its
+    own visual weight via TEXT_TITLE_XL, so a full 24px above it reads as an
+    awkward gap — the header looks "dropped" rather than anchored. The other
+    three sides stay at 24px where content *does* need breathing room.
+
+    Override either with `padding=` (all sides) or `padding_top=` (top only).
     """
     children: List[Component]
     padding: float = SPACE_XL
+    padding_top: Optional[float] = None
     gap: float = SPACE_MD
+
+    @property
+    def _pad_top(self) -> float:
+        return self.padding_top if self.padding_top is not None else SPACE_LG
 
     def measure(self, avail_w: float) -> float:
         inner_w = avail_w - 2 * self.padding
@@ -530,13 +539,13 @@ class Column(Component):
             total += c.measure(inner_w)
             if i < len(self.children) - 1:
                 total += self.gap
-        return total + 2 * self.padding
+        return total + self._pad_top + self.padding
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         inner_x = x + self.padding
-        inner_y = y + self.padding
+        inner_y = y + self._pad_top
         inner_w = w - 2 * self.padding
-        inner_h = h - 2 * self.padding
+        inner_h = h - self._pad_top - self.padding
 
         heights = [c.measure(inner_w) for c in self.children]
         gap_total = self.gap * max(0, len(self.children) - 1)

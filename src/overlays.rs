@@ -282,6 +282,40 @@ impl PlexiApp {
         let mut confirmed = false;
         let mut cancelled = false;
 
+        // Consume Enter/Escape at the context level so they cannot bleed
+        // through to the focused pane this frame. `ui.input(|i| key_pressed)`
+        // is a *read-only* check — it does not remove the event — which is
+        // how this modal used to leak a confirming Enter into the pane behind
+        // it (e.g. the backlog app opened the selected note on Cmd+W → Enter).
+        // Combined with the `FocusLayer::ConfirmClose` capture, this is the
+        // systemic fix: overlay owns focus, overlay drains its own keys.
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                confirmed = true;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                cancelled = true;
+            }
+        });
+
+        // Scrim — visually reinforces modal capture and mirrors the command
+        // palette / notification modal chrome.
+        let screen_rect = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("confirm_close_scrim"))
+            .fixed_pos(screen_rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(120),
+                );
+                let scrim_response = ui.allocate_rect(screen_rect, egui::Sense::click());
+                if scrim_response.clicked() {
+                    cancelled = true;
+                }
+            });
+
         egui::Area::new(egui::Id::new("confirm_close_overlay"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -336,15 +370,13 @@ impl PlexiApp {
                             {
                                 cancelled = true;
                             }
+                            ui.add_space(12.0);
+                            ui.label(
+                                RichText::new("Enter  confirm   Esc  cancel")
+                                    .size(10.0)
+                                    .color(self.colors.text_dim),
+                            );
                         });
-
-                        // Keyboard handling
-                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            confirmed = true;
-                        }
-                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                            cancelled = true;
-                        }
                     });
             });
 

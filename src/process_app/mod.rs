@@ -448,12 +448,17 @@ impl App for ProcessApp {
         }
 
         // Render the current committed frame.
+        //
+        // Paint the background directly over the pane's available rect instead
+        // of wrapping in an `egui::Frame` — `render_draw_commands` uses
+        // `ui.painter()` for every primitive, which paints but never allocates
+        // UI space. A Frame wrapper sizes to its *allocated* content and would
+        // collapse to a tiny rect in the top-left, leaving a visible grey
+        // square on top of the intended background.
+        let pane_rect = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
         let frame_clone = self.frame.clone();
-        egui::Frame::new()
-            .fill(ctx.colors.terminal_bg)
-            .show(ui, |ui| {
-                render::render_draw_commands(ui, &frame_clone, ctx.colors);
-            });
+        render::render_draw_commands(ui, &frame_clone, ctx.colors);
 
         // Idle polling for async HTTP responses. Apps that need faster repaints
         // (games, animations) emit DrawCommand::ScheduleRender { after_ms } each frame.
@@ -500,7 +505,12 @@ impl App for ProcessApp {
                             | egui::Key::Y
                             | egui::Key::Z
                     ) && !modifiers.any();
-                    if !is_bare_letter {
+                    // Cmd-modified chords are reserved for host shortcuts
+                    // (Cmd+Enter zoom, Cmd+P palette, Cmd+Shift+A notifications,
+                    // etc.). Apps that want keyboard shortcuts use bare letters
+                    // or non-Cmd modifiers. Skip forwarding so the app can't
+                    // shadow a host keybind.
+                    if !is_bare_letter && !modifiers.command {
                         self.send_event(&PlexiEvent::Key {
                             key: format!("{key:?}"),
                             modifiers: Modifiers {
