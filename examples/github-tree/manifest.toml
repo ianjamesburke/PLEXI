@@ -1,9 +1,9 @@
 [app]
 id = "github-tree"
-name = "GitHub Tree"
-version = "0.2.0"
-description = "Browse the current repo's tree. Auth via the gh CLI."
-entry = "github_tree.py"
+name = "Commit Graph"
+version = "0.3.0"
+description = "Subway-style git commit history for the pane's repo."
+entry = "commit_graph.py"
 
 [app.capabilities]
 capabilities = []
