@@ -94,93 +94,107 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         // When any pane is zoomed, render ALL panes as dark placeholders.
         // The zoomed pane is rendered separately in the overlay (app.rs).
+        //
+        // Paint directly via the painter over the pane's full rect. A
+        // `Frame::new().fill(...).show(ui, |_| {})` wrapper would size to
+        // its *allocated* content and collapse to a tiny rect in the
+        // top-left, leaving a visible grey square on top of the intended
+        // background.
         if self.zoomed_pane.is_some() {
-            egui::Frame::new()
-                .fill(self.colors.bg_darkest)
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |_ui| {});
+            let pane_rect = ui.available_rect_before_wrap();
+            ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             return UiResponse::None;
         }
 
         if let Some(pane) = self.panes.get_mut(pane_id) {
-            egui::Frame::new()
-                .fill(self.colors.terminal_bg)
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    if let Some(app_pane) = pane.as_app_mut() {
-                        let app_ctx = AppRenderContext {
-                            colors: &self.colors,
-                            is_focused,
-                        };
-                        app_pane.runtime.ui(ui, &app_ctx);
-                        return;
-                    }
+            // Paint the pane background directly on the full rect. Same
+            // reason as above: the inner renderers (`ProcessApp::ui`,
+            // `render_and_drain`, the terminal path) do all their drawing
+            // via `ui.painter()` without allocating UI space, so wrapping
+            // them in an `egui::Frame` collapses the frame to zero size and
+            // produces a grey square in the top-left corner.
+            let pane_rect = ui.available_rect_before_wrap();
+            ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
 
-                    if let Some(agent_pane) = pane.as_agent_mut() {
-                        if crate::agent_pane::render_and_drain(ui, agent_pane, &self.colors) {
-                            ui.ctx().request_repaint();
-                        }
-                        return;
-                    }
+            let inner_rect = pane_rect.shrink(8.0);
+            let mut inner_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
+            let ui = &mut inner_ui;
 
-                    // Terminal panes.
-                    let Some(t) = pane.as_terminal_mut() else {
-                        return;
+            {
+                if let Some(app_pane) = pane.as_app_mut() {
+                    let app_ctx = AppRenderContext {
+                        colors: &self.colors,
+                        is_focused,
                     };
+                    app_pane.runtime.ui(ui, &app_ctx);
+                    return UiResponse::None;
+                }
 
-                    if t.exited {
-                        // Show exit message centered, auto-close on any key
-                        let rect = ui.max_rect();
-                        ui.painter().rect_filled(rect, 0.0, self.colors.terminal_bg);
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-                            ui.centered_and_justified(|ui| {
-                                ui.colored_label(self.colors.text_dim, "[process exited]");
-                            });
+                if let Some(agent_pane) = pane.as_agent_mut() {
+                    if crate::agent_pane::render_and_drain(ui, agent_pane, &self.colors) {
+                        ui.ctx().request_repaint();
+                    }
+                    return UiResponse::None;
+                }
+
+                // Terminal panes.
+                let Some(t) = pane.as_terminal_mut() else {
+                    return UiResponse::None;
+                };
+
+                if t.exited {
+                    // Show exit message centered, auto-close on any key
+                    let rect = ui.max_rect();
+                    ui.painter().rect_filled(rect, 0.0, self.colors.terminal_bg);
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                        ui.centered_and_justified(|ui| {
+                            ui.colored_label(self.colors.text_dim, "[process exited]");
                         });
-                        if is_focused
-                            && ui.input(|i| {
-                                i.events
-                                    .iter()
-                                    .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
-                            })
-                        {
-                            self.close_exited = Some(tile_id);
-                        }
-                        return;
+                    });
+                    if is_focused
+                        && ui.input(|i| {
+                            i.events
+                                .iter()
+                                .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
+                        })
+                    {
+                        self.close_exited = Some(tile_id);
                     }
+                    return UiResponse::None;
+                }
 
-                    render_name_bar_and_dots(
-                        ui,
-                        tile_id,
-                        pane_id,
-                        &self.tab_info,
-                        &self.pane_names,
-                        &self.colors,
-                    );
-                    let font_size = t.font_size;
-                    let terminal = TerminalView::new(ui, &mut t.backend)
-                        .set_focus(is_focused)
-                        .set_theme(self.theme.clone())
-                        .set_font(theme::terminal_font(font_size))
-                        .set_size(Vec2::new(ui.available_width(), ui.available_height()));
-                    ui.add(terminal);
+                render_name_bar_and_dots(
+                    ui,
+                    tile_id,
+                    pane_id,
+                    &self.tab_info,
+                    &self.pane_names,
+                    &self.colors,
+                );
+                let font_size = t.font_size;
+                let terminal = TerminalView::new(ui, &mut t.backend)
+                    .set_focus(is_focused)
+                    .set_theme(self.theme.clone())
+                    .set_font(theme::terminal_font(font_size))
+                    .set_size(Vec2::new(ui.available_width(), ui.available_height()));
+                ui.add(terminal);
 
-                    // Draw tab indicator dots (top-left) when 2+ tabs and NO name bar
-                    if !self.pane_names.contains_key(pane_id) {
-                        if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
-                            let rect = ui.max_rect();
-                            paint_tab_dots(
-                                ui.painter(),
-                                rect.left(),
-                                rect.top() + 2.0 + DOT_RADIUS,
-                                active_idx,
-                                count,
-                                self.colors.accent,
-                                self.colors.bg_active,
-                            );
-                        }
+                // Draw tab indicator dots (top-left) when 2+ tabs and NO name bar
+                if !self.pane_names.contains_key(pane_id) {
+                    if let Some(&(active_idx, count)) = self.tab_info.get(&tile_id) {
+                        let rect = ui.max_rect();
+                        paint_tab_dots(
+                            ui.painter(),
+                            rect.left(),
+                            rect.top() + 2.0 + DOT_RADIUS,
+                            active_idx,
+                            count,
+                            self.colors.accent,
+                            self.colors.bg_active,
+                        );
                     }
-                });
+                }
+            }
         }
 
         UiResponse::None

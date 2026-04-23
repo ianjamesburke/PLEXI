@@ -1,11 +1,18 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
-## 2026-04-23 — [FIX] Grey square top-left of every app pane (uncommitted)
-Root cause: `ProcessApp::ui()` in `src/process_app/mod.rs` wrapped the draw-command playback in an `egui::Frame::new().fill(terminal_bg).show(ui, ...)`. Every primitive inside `render_draw_commands` paints via `ui.painter()`, which draws but never *allocates* UI space, so the Frame's content rect collapsed to its minimum size (a few px) in the top-left and painted `terminal_bg` only over that tiny rect. The rest of the pane showed the host's background, and the collapsed Frame rect read as a small grey square behind every app's real content.
+## 2026-04-23 — [FIX] Grey square top-left of every pane — round 2, in tiling (uncommitted)
+Root cause: the first grey-square fix in `src/process_app/mod.rs` only handled the `ProcessApp::ui()` path. The *outer* tile renderer in `src/tiling.rs::pane_ui` was wrapping *every* pane (app, agent, terminal) in the exact same collapsing `egui::Frame::new().fill(terminal_bg).inner_margin(8).show(ui, ...)`. Because every downstream renderer (ProcessApp, agent_pane, TerminalView) paints via `ui.painter()` / paints over its own computed rect without allocating egui UI space, the outer Frame collapsed to a tiny rect in the top-left and painted the background only there. Same for the zoomed-pane placeholder (line 97-102) — `Frame.show(ui, |_| {})` with an empty closure allocates zero.
+
+Fix: drop the outer Frames in `pane_ui`. Paint the pane background directly with `ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, terminal_bg)`, then run the inner renderer inside a child UI built with `UiBuilder::new().max_rect(pane_rect.shrink(8.0))` to preserve the 8px inner-margin behavior. Same treatment for the zoomed-pane placeholder. `cargo build --release` clean, `just install-alpha` green.
+
+**Breaks if:** Any pane — app, agent, or terminal — shows a small grey rectangle in its top-left corner, or the pane background/margin behavior changes (content touching the edges without an 8px gutter).
+
+## 2026-04-23 — [FIX] Grey square top-left — round 1, in process_app (uncommitted)
+Root cause: `ProcessApp::ui()` in `src/process_app/mod.rs` wrapped the draw-command playback in an `egui::Frame::new().fill(terminal_bg).show(ui, ...)`. Every primitive inside `render_draw_commands` paints via `ui.painter()`, which draws but never *allocates* UI space, so the Frame's content rect collapsed to its minimum size in the top-left and painted `terminal_bg` only over that tiny rect. Round 1 of the fix; round 2 is above (same pattern one level up in `src/tiling.rs`).
 
 Fix: drop the Frame wrapper. Paint `terminal_bg` directly over `ui.available_rect_before_wrap()`, then call `render_draw_commands` against `ui` as before. The pane-background contract now lives in one explicit painter call against a rect we control.
 
-**Breaks if:** Every app pane (backlog, screen-time, quick-note, etc.) shows a small grey rectangle in its top-left corner, or the pane background bleeds through to the window behind it instead of using `terminal_bg`.
+**Breaks if:** An app's own background (drawn by ProcessApp before draw-commands play back) fails to fill the pane or shows a small inner grey rectangle.
 
 ## 2026-04-23 — [FIX] Modal keyboard focus leaks to app behind close-confirm (uncommitted)
 Root cause: `draw_confirm_close` in `src/overlays.rs` used `ui.input(|i| i.key_pressed(Enter))` — a read-only check that does **not** consume the event. The pending-close overlay was also drawn at the *end* of `update()`, *after* `dispatch_app_key_events` had already forwarded the Enter to the focused pane. Symptom: Cmd+W on a backlog pane → confirm-modal appears → Enter both confirms the close *and* opens the selected note in the default markdown editor as the pane tears down.
