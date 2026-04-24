@@ -38,7 +38,7 @@ below the minimum pane size, or use `ScrollLog` for variable content.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Union
 
 # ── Style tokens ──────────────────────────────────────────────────────────
 # Keep these in sync with Rust's src/style.rs. Adding a token here without
@@ -346,42 +346,86 @@ class Section(Component):
 
 @dataclass
 class KeyRow(Component):
-    """A `[k]` key badge followed by a description, left-aligned. The badge
-    uses a monospace glyph on an elevated background so single keys and
-    chords (⌘K, ⎋) all look tidy. Description text is proportional.
+    """A keycap chip (or a chord of chips) followed by a description, left-aligned.
 
-    Layout math: the badge and description text are both vertically centered
-    within the row's HEIGHT. Text is drawn with LEFT_TOP anchor, so we
-    compute `top = y + (HEIGHT - font_size) / 2`.
+    `key` accepts either a single string (e.g. `"m"`) or a list of strings
+    forming a chord (e.g. `["⌘", "K"]`). Each element is rendered as a
+    distinct rounded-rect chip, matching the host-side `key_chip` primitive.
+
+    Layout:  [⌘][K]  Description text
+             ↑ chips  ↑ proportional label, vertically centred
+
+    Visual spec (mirrors src/widgets.rs key_chip):
+      - chip fill:   HIGHLIGHT
+      - chip border: drawn as a 1px rect outline in MUTED
+      - key text:    monospace, TEXT_HINT, MUTED
+      - corner r:    3px
+      - padding:     5px h / 1px v inside each chip
+      - min chip w:  16px
+      - gap between chips in a chord: 2px
     """
-    key: str
+    key: Union[str, List[str]]
     description: str
-    badge_color: str = HIGHLIGHT
-    key_color: str = ACCENT
 
-    HEIGHT = 34.0
-    BADGE_H = 26.0
-    BADGE_W = 44.0  # wide enough for 2–3 glyph chords like "⌘K" / "Esc"
+    HEIGHT = 28.0
+    CHIP_PAD_H = 5.0
+    CHIP_PAD_V = 1.0
+    CHIP_MIN_W = 16.0
+    CHIP_CORNER_R = 3.0
+    CHIP_GAP = 2.0       # gap between chips in a chord
+    DESC_GAP = 10.0      # gap between last chip and description text
+
+    def _keys(self) -> List[str]:
+        """Normalise key to a list."""
+        if isinstance(self.key, list):
+            return self.key
+        return [self.key]
+
+    def _chip_w(self, label: str) -> float:
+        """Approximate chip width for a given label."""
+        char_w = _char_px(TEXT_HINT, mono=True)
+        text_w = len(label) * char_w
+        return max(self.CHIP_MIN_W, text_w + self.CHIP_PAD_H * 2)
+
+    def _total_chips_w(self) -> float:
+        keys = self._keys()
+        total = sum(self._chip_w(k) for k in keys)
+        total += self.CHIP_GAP * max(0, len(keys) - 1)
+        return total
 
     def measure(self, avail_w: float) -> float:
         return self.HEIGHT
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        badge_y = y + (self.HEIGHT - self.BADGE_H) / 2.0
-        ctx.rect(x, badge_y, self.BADGE_W, self.BADGE_H, self.badge_color,
-                 radius=RADIUS_MD)
-        # Both the badge glyph and the description use host-side anchors so
-        # real font metrics drive the centering — no Python-side char-width
-        # approximation that falls apart on narrow glyphs like `i`.
-        glyph = self.key[:3]
-        ctx.text(
-            x + self.BADGE_W / 2.0,
-            badge_y + self.BADGE_H / 2.0,
-            glyph,
-            size=TEXT_BODY, color=self.key_color,
-            bold=True, monospace=True, align="center",
-        )
-        desc_x = x + self.BADGE_W + SPACE_MD
+        chip_h = TEXT_HINT + self.CHIP_PAD_V * 2
+        chip_y = y + (self.HEIGHT - chip_h) / 2.0
+
+        cursor_x = x
+        for i, label in enumerate(self._keys()):
+            if i > 0:
+                cursor_x += self.CHIP_GAP
+            cw = self._chip_w(label)
+            # Chip background
+            ctx.rect(
+                cursor_x, chip_y, cw, chip_h,
+                HIGHLIGHT, radius=self.CHIP_CORNER_R,
+            )
+            # Chip border (1px outline approximated as four thin rects)
+            ctx.rect(cursor_x, chip_y, cw, 1.0, MUTED)
+            ctx.rect(cursor_x, chip_y + chip_h - 1.0, cw, 1.0, MUTED)
+            ctx.rect(cursor_x, chip_y, 1.0, chip_h, MUTED)
+            ctx.rect(cursor_x + cw - 1.0, chip_y, 1.0, chip_h, MUTED)
+            # Key label, centred inside chip
+            ctx.text(
+                cursor_x + cw / 2.0,
+                chip_y + chip_h / 2.0,
+                label,
+                size=TEXT_HINT, color=MUTED,
+                monospace=True, align="center",
+            )
+            cursor_x += cw
+
+        desc_x = cursor_x + self.DESC_GAP
         desc_avail = w - (desc_x - x)
         desc_text = _truncate_to_width(self.description, desc_avail, TEXT_BODY)
         ctx.text(

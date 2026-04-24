@@ -108,6 +108,10 @@ impl PlexiApp {
     }
 
     pub(crate) fn draw_shortcuts_overlay(&self, ctx: &egui::Context) {
+        // Each row: (combo chips, description).
+        // Multi-key combos are expressed as slices; single-key as a one-element slice.
+        // Rows that cover two related combos (e.g. ]/[) are represented as a
+        // key_combo_list with two combos and a combined description.
         egui::Area::new(egui::Id::new("shortcuts_overlay"))
             .anchor(Align2::RIGHT_TOP, Vec2::new(-16.0, 44.0))
             .show(ctx, |ui| {
@@ -117,7 +121,7 @@ impl PlexiApp {
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
-                        ui.set_width(240.0);
+                        ui.set_width(280.0);
                         ui.label(
                             RichText::new("Keyboard Shortcuts")
                                 .size(13.0)
@@ -126,37 +130,60 @@ impl PlexiApp {
                         );
                         ui.add_space(8.0);
 
-                        let shortcuts = [
-                            ("\u{2318}P", "Command palette"),
-                            ("\u{2318}\u{21E7}R", "Rename pane"),
-                            ("\u{2318}T", "New tab"),
-                            ("\u{2318}]/[", "Next/prev tab"),
-                            ("\u{2318}D", "Split right"),
-                            ("\u{2318}\u{21E7}D", "Split down"),
-                            ("\u{2318}W", "Close pane"),
-                            ("\u{2318}B", "Toggle sidebar"),
-                            ("\u{2318}H/J/K/L", "Focus pane"),
-                            ("\u{2318}\u{21A9}", "Zoom pane"),
-                            ("\u{2318}N", "New context"),
-                            ("\u{2318}1-9", "Switch context"),
-                            ("\u{2318}/", "This help"),
-                            ("\u{2318}Q", "Quit"),
-                        ];
+                        // Two-column grid: fixed-width left column holds chips,
+                        // right column holds the description.
+                        egui::Grid::new("shortcuts_grid")
+                            .num_columns(2)
+                            .spacing([style::SPACE_SM, 4.0])
+                            .show(ui, |ui| {
+                                let colors = &self.colors;
 
-                        for (key, desc) in shortcuts {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(key)
-                                        .size(11.0)
-                                        .color(self.colors.accent)
-                                        .family(egui::FontFamily::Monospace),
-                                );
-                                ui.add_space(8.0);
-                                ui.label(
-                                    RichText::new(desc).size(11.0).color(self.colors.text_dim),
-                                );
+                                // Single-combo rows: (&[key parts], description)
+                                let rows: &[(&[&str], &str)] = &[
+                                    (&["\u{2318}", "P"], "Command palette"),
+                                    (&["\u{2318}", "\u{21E7}", "R"], "Rename pane"),
+                                    (&["\u{2318}", "T"], "New tab"),
+                                    (&["\u{2318}", "D"], "Split right"),
+                                    (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
+                                    (&["\u{2318}", "W"], "Close pane"),
+                                    (&["\u{2318}", "B"], "Toggle sidebar"),
+                                    (&["\u{2318}", "\u{21A9}"], "Zoom pane"),
+                                    (&["\u{2318}", "N"], "New context"),
+                                    (&["\u{2318}", "/"], "This help"),
+                                    (&["\u{2318}", "Q"], "Quit"),
+                                ];
+                                for (keys, desc) in rows {
+                                    crate::widgets::key_combo(ui, keys, colors);
+                                    ui.label(
+                                        RichText::new(*desc)
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+                                }
+
+                                // Two-combo rows rendered with key_combo_list.
+                                let two_combo_rows: &[(&[&str], &[&str], &str)] = &[
+                                    (&["\u{2318}", "]"], &["\u{2318}", "["], "Next/prev tab"),
+                                    (&["\u{2318}", "H"], &["\u{2318}", "L"], "Focus pane ←/→"),
+                                    (&["\u{2318}", "J"], &["\u{2318}", "K"], "Focus pane ↓/↑"),
+                                    (&["\u{2318}", "1"], &["\u{2318}", "9"], "Switch context 1–9"),
+                                ];
+                                for (keys_a, keys_b, desc) in two_combo_rows {
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[keys_a, keys_b],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new(*desc)
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+                                }
                             });
-                        }
                     });
             });
     }
@@ -372,9 +399,17 @@ impl PlexiApp {
                                 cancelled = true;
                             }
                             ui.add_space(12.0);
+                            crate::widgets::key_chip(ui, "Enter", &self.colors);
                             ui.label(
-                                RichText::new("Enter  confirm   Esc  cancel")
-                                    .size(10.0)
+                                RichText::new("confirm")
+                                    .size(style::TEXT_HINT)
+                                    .color(self.colors.text_dim),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                            ui.label(
+                                RichText::new("cancel")
+                                    .size(style::TEXT_HINT)
                                     .color(self.colors.text_dim),
                             );
                         });
@@ -436,9 +471,14 @@ impl PlexiApp {
                     }
                 }
                 ui.add_space(8.0);
-                if ui.button("Close  [Cmd+R]").clicked() {
-                    close = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    crate::widgets::key_combo_list(
+                        ui, &[&["\u{2318}", "R"]], None, &self.colors,
+                    );
+                });
             });
 
         if close {
@@ -812,35 +852,97 @@ impl PlexiApp {
                             ui.add_space(style::SPACE_MD);
                         }
 
-                        let hint = match notif.kind {
-                            NotifyKind::Message => {
-                                if notif.required {
-                                    "Enter / Space to acknowledge"
-                                } else {
-                                    "Enter / Space  ·  Esc to dismiss"
-                                }
-                            }
-                            NotifyKind::Choice => {
-                                if notif.required {
-                                    "↑↓ or j/k  ·  Enter  ·  1-9"
-                                } else {
-                                    "↑↓ or j/k  ·  Enter  ·  1-9  ·  Esc to dismiss"
-                                }
-                            }
-                            NotifyKind::Input => {
-                                if notif.required {
-                                    "Enter for newline  ·  \u{2318}\u{21B5} to submit"
-                                } else {
-                                    "Enter for newline  ·  \u{2318}\u{21B5} to submit  ·  Esc to dismiss"
-                                }
-                            }
-                        };
+                        // Footer keyboard hint — chips + inline labels per action.
                         ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new(hint)
-                                    .size(style::TEXT_HINT)
-                                    .color(self.colors.text_dim),
-                            );
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                match notif.kind {
+                                    NotifyKind::Message => {
+                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
+                                        crate::widgets::key_chip(ui, "Space", &self.colors);
+                                        ui.label(
+                                            RichText::new("acknowledge")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        if !notif.required {
+                                            ui.label(
+                                                RichText::new("·")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                                            ui.label(
+                                                RichText::new("dismiss")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        }
+                                    }
+                                    NotifyKind::Choice => {
+                                        crate::widgets::key_chip(ui, "↑↓", &self.colors);
+                                        crate::widgets::key_chip(ui, "j/k", &self.colors);
+                                        ui.label(
+                                            RichText::new("·")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
+                                        ui.label(
+                                            RichText::new("·")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        crate::widgets::key_chip(ui, "1-9", &self.colors);
+                                        if !notif.required {
+                                            ui.label(
+                                                RichText::new("·")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                                            ui.label(
+                                                RichText::new("dismiss")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        }
+                                    }
+                                    NotifyKind::Input => {
+                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
+                                        ui.label(
+                                            RichText::new("newline")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        ui.label(
+                                            RichText::new("·")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        crate::widgets::key_chip(ui, "\u{2318}", &self.colors);
+                                        crate::widgets::key_chip(ui, "\u{21B5}", &self.colors);
+                                        ui.label(
+                                            RichText::new("submit")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        if !notif.required {
+                                            ui.label(
+                                                RichText::new("·")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                                            ui.label(
+                                                RichText::new("dismiss")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        }
+                                    }
+                                }
+                            });
                         });
                     });
             });

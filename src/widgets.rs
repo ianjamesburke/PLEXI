@@ -114,5 +114,54 @@ pub(crate) fn key_chip(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui:
     response
 }
 
-// Combo/list wrappers will be added when the help modal migration lands.
-// Keeping the surface minimal until a second consumer exists.
+/// Gap between chips within a single combo (e.g. ⌘ + [).
+const INTRA_COMBO_GAP: f32 = 2.0;
+/// Gap between separate combos in a list (e.g. ⌘[ vs ⌘]).
+const INTER_COMBO_GAP: f32 = 10.0;
+/// Gap between the last combo/chip and the trailing description text.
+const TRAILING_GAP: f32 = 10.0;
+
+/// Render several chips forming a single key combo (e.g. ["⌘", "["]).
+/// Chips are laid out left-to-right with `INTRA_COMBO_GAP` between them.
+pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = INTRA_COMBO_GAP;
+        for key in keys {
+            key_chip(ui, key, colors);
+        }
+    });
+}
+
+/// Render multiple combos inline with an optional trailing description label.
+///
+/// Layout:    [⌘][[] ··inter·· [⌘][] ··trailing·· "cycle"
+pub(crate) fn key_combo_list(
+    ui: &mut egui::Ui,
+    combos: &[&[&str]],
+    trailing: Option<&str>,
+    colors: &Colors,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (i, keys) in combos.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(INTER_COMBO_GAP);
+            }
+            // Chips within a combo sit INTRA_COMBO_GAP apart.
+            for (j, key) in keys.iter().enumerate() {
+                if j > 0 {
+                    ui.add_space(INTRA_COMBO_GAP);
+                }
+                key_chip(ui, key, colors);
+            }
+        }
+        if let Some(text) = trailing {
+            ui.add_space(TRAILING_GAP);
+            ui.label(
+                egui::RichText::new(text)
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+        }
+    });
+}
