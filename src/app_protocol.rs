@@ -190,6 +190,24 @@ pub enum MouseButton {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DrawCommand {
     // ── Visual primitives (frame-scoped) ─────────────────────────────────
+
+    /// Push a clip rect onto the host's clip stack.
+    ///
+    /// The effective clip rect is the intersection of the new rect with the
+    /// current top of the stack (or the pane rect if the stack is empty).
+    /// All subsequent draw commands are clipped to this intersection until
+    /// a matching `PopClip` rebalances the stack.
+    ///
+    /// Imbalanced push/pop is a hard error logged at `warn` level. The host
+    /// resets to zero depth at frame end so a bug in one app cannot corrupt
+    /// subsequent frames.
+    PushClip { x: f32, y: f32, w: f32, h: f32 },
+
+    /// Pop the most recently pushed clip rect from the stack.
+    ///
+    /// If the stack is already empty, logs a `warn` and is a no-op.
+    PopClip,
+
     /// Fill a rectangle.
     Rect {
         x: f32,

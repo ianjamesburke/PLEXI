@@ -9,11 +9,46 @@ use egui::Color32;
 ///
 /// Only visual primitives reach this function — control commands are routed
 /// upstream in `process_app/mod.rs` before commands enter the frame pipeline.
+///
+/// # Clip stack
+///
+/// `PushClip` / `PopClip` maintain a `Vec<egui::Rect>` per render pass. Each
+/// `PushClip` intersects the new rect with the current top (or the pane rect
+/// when the stack is empty) and pushes the result. Every other draw command
+/// applies the current top as the painter's clip rect via
+/// `painter.with_clip_rect(top)`. At frame end a non-empty stack is logged at
+/// `warn` level and cleared.
 pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], colors: &Colors) {
     let origin = ui.min_rect().min;
+    let pane_rect = ui.min_rect();
+
+    // Clip stack. Entries are absolute egui screen-space Rects.
+    let mut clip_stack: Vec<egui::Rect> = Vec::new();
 
     for cmd in commands {
+        // Resolve the current effective clip rect: top of stack or pane rect.
+        let clip = clip_stack.last().copied().unwrap_or(pane_rect);
+
         match cmd {
+            // ── Clip stack ────────────────────────────────────────────────────
+            DrawCommand::PushClip { x, y, w, h } => {
+                let new_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x + x, origin.y + y),
+                    egui::vec2(*w, *h),
+                );
+                // Intersect with current top so nested clips can only tighten.
+                let effective = clip.intersect(new_rect);
+                clip_stack.push(effective);
+                continue;
+            }
+
+            DrawCommand::PopClip => {
+                if clip_stack.pop().is_none() {
+                    log::warn!("render: PopClip on empty clip stack (app bug)");
+                }
+                continue;
+            }
+
             DrawCommand::Rect {
                 x,
                 y,
@@ -27,7 +62,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                     egui::vec2(*w, *h),
                 );
                 let color = parse_color(fill).unwrap_or(colors.bg_active);
-                ui.painter().rect_filled(rect, *radius, color);
+                ui.painter().with_clip_rect(clip).rect_filled(rect, *radius, color);
             }
 
             DrawCommand::Text {
@@ -97,14 +132,14 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                     std::borrow::Cow::Borrowed(text.as_str())
                 };
 
-                ui.painter()
-                    .text(pos, anchor, display_text.as_ref(), font_id.clone(), color);
+                let painter = ui.painter().with_clip_rect(clip);
+                painter.text(pos, anchor, display_text.as_ref(), font_id.clone(), color);
                 if *bold {
                     // Fake-bold by re-painting the same text with a 0.45px
                     // horizontal offset. Same anchor so the center-aligned
                     // case stays centered.
                     let font_id_bold = egui::FontId::new(*size, font_family_for_text(*monospace));
-                    ui.painter().text(
+                    painter.text(
                         pos + egui::vec2(0.45, 0.0),
                         anchor,
                         display_text.as_ref(),
@@ -123,7 +158,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 width,
             } => {
                 let color = parse_color(color).unwrap_or(colors.bg_active);
-                ui.painter().line_segment(
+                ui.painter().with_clip_rect(clip).line_segment(
                     [
                         egui::pos2(origin.x + x1, origin.y + y1),
                         egui::pos2(origin.x + x2, origin.y + y2),
@@ -135,7 +170,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             DrawCommand::Circle { cx, cy, r, fill } => {
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
                 let color = parse_color(fill).unwrap_or(colors.accent);
-                ui.painter().circle_filled(center, *r, color);
+                ui.painter().with_clip_rect(clip).circle_filled(center, *r, color);
             }
 
             DrawCommand::Arc {
@@ -162,7 +197,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                     fill: color,
                     stroke: egui::epaint::PathStroke::NONE,
                 });
-                ui.painter().add(shape);
+                ui.painter().with_clip_rect(clip).add(shape);
             }
 
             DrawCommand::List {
@@ -181,10 +216,12 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 };
                 let list_w = if *w > 0.0 { *w } else { ui.available_width() };
                 let list_h = if *h > 0.0 { *h } else { ui.available_height() };
-                let clip_rect = egui::Rect::from_min_size(
+                // List has its own built-in clip rect; intersect with the current clip stack.
+                let list_abs_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(list_w, list_h),
                 );
+                let clip_rect = clip.intersect(list_abs_rect);
                 let painter = ui.painter().with_clip_rect(clip_rect);
 
                 for (i, item) in items.iter().enumerate() {
@@ -194,7 +231,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                         egui::vec2(list_w, row_h),
                     );
                     if !clip_rect.intersects(row_rect) {
-                        continue;
+                        continue; // row is entirely outside the clip rect
                     }
                     let is_sel = i == *selected;
                     if is_sel {
@@ -228,19 +265,19 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             // ── Host-measured layout primitives ──────────────────────────
 
             DrawCommand::Badge { x, y, label, fill, fg, font_size, radius } => {
-                render_badge(ui, origin, *x, *y, label, fill, fg, *font_size, *radius);
+                render_badge(ui, origin, clip, *x, *y, label, fill, fg, *font_size, *radius);
             }
 
             DrawCommand::KeyChip { x, y, label, font_size } => {
-                render_key_chip_at(ui, origin, *x, *y, label, *font_size, colors);
+                render_key_chip_at(ui, origin, clip, *x, *y, label, *font_size, colors);
             }
 
             DrawCommand::KeyChipRow { x, y, keys, description, font_size } => {
-                render_key_chip_row(ui, origin, *x, *y, keys, description.as_deref(), *font_size, colors);
+                render_key_chip_row(ui, origin, clip, *x, *y, keys, description.as_deref(), *font_size, colors);
             }
 
             DrawCommand::Shortcuts { x, y, max_width, pairs, font_size } => {
-                render_shortcuts(ui, origin, *x, *y, *max_width, pairs, *font_size, colors);
+                render_shortcuts(ui, origin, clip, *x, *y, *max_width, pairs, *font_size, colors);
             }
 
             // MeasureText is handled in routing.rs (needs a response channel);
@@ -273,6 +310,16 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::CancelTimer { .. } => {}
         }
     }
+
+    // Frame-end invariant: the clip stack must be empty (balanced push/pop).
+    // If not, log a warning and clear — this is an app bug but must not corrupt
+    // subsequent frames or other panes.
+    if !clip_stack.is_empty() {
+        log::warn!(
+            "render: clip stack not empty at frame end (depth={}); app sent unbalanced PushClip/PopClip",
+            clip_stack.len()
+        );
+    }
 }
 
 // ── Render helpers for host-measured primitives ───────────────────────────────
@@ -285,6 +332,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
 pub(crate) fn render_badge(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
+    clip: egui::Rect,
     x: f32,
     y_center: f32,
     label: &str,
@@ -307,11 +355,12 @@ pub(crate) fn render_badge(
         egui::pos2(pill_x, pill_y),
         egui::vec2(pill_w, pill_h),
     );
-    ui.painter().rect_filled(pill_rect, radius, fill_color);
+    let painter = ui.painter().with_clip_rect(clip);
+    painter.rect_filled(pill_rect, radius, fill_color);
     // Centre text inside the pill using measured galley dimensions.
     let text_x = pill_rect.center().x - text_w / 2.0;
     let text_y = pill_rect.center().y - text_h / 2.0;
-    ui.painter().galley(egui::pos2(text_x, text_y), galley, fg_color);
+    painter.galley(egui::pos2(text_x, text_y), galley, fg_color);
 }
 
 /// Render a single KeyChip at absolute position (`origin.x + x`, `origin.y + y`).
@@ -319,6 +368,7 @@ pub(crate) fn render_badge(
 pub(crate) fn render_key_chip_at(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
+    clip: egui::Rect,
     x: f32,
     y: f32,
     label: &str,
@@ -335,8 +385,9 @@ pub(crate) fn render_key_chip_at(
         egui::pos2(origin.x + x, origin.y + y),
         egui::vec2(chip_w, chip_h),
     );
-    ui.painter().rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
-    ui.painter().rect_stroke(
+    let painter = ui.painter().with_clip_rect(clip);
+    painter.rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
+    painter.rect_stroke(
         chip_rect,
         egui::CornerRadius::same(3),
         egui::Stroke::new(1.0, colors.border),
@@ -344,7 +395,7 @@ pub(crate) fn render_key_chip_at(
     );
     let text_x = chip_rect.center().x - text_w / 2.0;
     let text_y = chip_rect.min.y + style::KEYCHIP_PAD_V;
-    ui.painter().galley(egui::pos2(text_x, text_y), galley, colors.text_dim);
+    painter.galley(egui::pos2(text_x, text_y), galley, colors.text_dim);
     chip_w
 }
 
@@ -352,6 +403,7 @@ pub(crate) fn render_key_chip_at(
 pub(crate) fn render_key_chip_row(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
+    clip: egui::Rect,
     x: f32,
     y: f32,
     keys: &[String],
@@ -364,7 +416,7 @@ pub(crate) fn render_key_chip_row(
         if i > 0 {
             cursor_x += style::KEYCHIP_GAP;
         }
-        let chip_w = render_key_chip_at(ui, origin, cursor_x, y, key, font_size, colors);
+        let chip_w = render_key_chip_at(ui, origin, clip, cursor_x, y, key, font_size, colors);
         cursor_x += chip_w;
     }
     if let Some(desc) = description {
@@ -376,7 +428,7 @@ pub(crate) fn render_key_chip_row(
         });
         let chip_h = sample.size().y + style::KEYCHIP_PAD_V * 2.0;
         let desc_font = egui::FontId::proportional(font_size);
-        ui.painter().text(
+        ui.painter().with_clip_rect(clip).text(
             egui::pos2(origin.x + cursor_x, origin.y + y + chip_h / 2.0),
             egui::Align2::LEFT_CENTER,
             desc,
@@ -398,6 +450,7 @@ pub(crate) fn render_key_chip_row(
 pub(crate) fn render_shortcuts(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
+    clip: egui::Rect,
     x: f32,
     y: f32,
     max_width: f32,
@@ -492,14 +545,14 @@ pub(crate) fn render_shortcuts(
             if i > 0 {
                 chip_x += style::KEYCHIP_GAP;
             }
-            let _ = render_key_chip_at(ui, origin, chip_x, cursor_y, key, font_size, colors);
+            let _ = render_key_chip_at(ui, origin, clip, chip_x, cursor_y, key, font_size, colors);
             chip_x += lp.chip_widths[i];
         }
 
         // Description.
         if !pair.description.is_empty() {
             let desc_x = chip_x + style::KEYCHIP_DESC_GAP;
-            ui.painter().text(
+            ui.painter().with_clip_rect(clip).text(
                 egui::pos2(origin.x + desc_x, origin.y + cursor_y + chip_h / 2.0),
                 egui::Align2::LEFT_CENTER,
                 &pair.description,

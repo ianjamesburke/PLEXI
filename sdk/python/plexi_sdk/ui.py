@@ -144,6 +144,20 @@ class Component:
         """Emit draw commands. Implementations should stay within (x, y, w, h)."""
         raise NotImplementedError
 
+    def _render_clipped(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        """Render this component clipped to its allocated rect.
+
+        Container components (Column, Card) call this instead of `render` when
+        descending into children so each child's draws are bounded to its rect.
+        The PushClip/PopClip pair is emitted unconditionally; the host intersects
+        the new rect with the current clip stack top (only ever tightens).
+        """
+        ctx.push_clip(x, y, w, h)
+        try:
+            self.render(ctx, x, y, w, h)
+        finally:
+            ctx.pop_clip()
+
 
 # ── Leaf components ────────────────────────────────────────────────────────
 
@@ -285,6 +299,11 @@ class AppBar(Component):
         return self.BAND_H + self.DIVIDER_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        # Opaque BG backdrop so content scrolled under the AppBar doesn't
+        # bleed through (defensive; the host clip stack makes overdraw
+        # structurally impossible, but the backdrop keeps chrome visually
+        # solid regardless of rendering order).
+        ctx.rect(x, y, w, h, BG)
         # Vertically centre the title in BAND_H. Empirical -1px nudge to
         # compensate for proportional-font descent bias at 16pt.
         text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0 - 1.0
@@ -386,6 +405,96 @@ class ScrollLog(Component):
 
 
 @dataclass
+class Scrollable(Component):
+    """A clip-bounded vertically-scrollable container.
+
+    Renders its `child` component clipped to the allocated rect. If the child
+    is taller than the available height the excess is hidden and a thin
+    scrollbar indicator is drawn on the right edge.
+
+    Scroll offset is persisted on the instance, so the `Scrollable` must be
+    stable across renders — create it once in `on_init` (or as a class
+    attribute), not inside `on_render`.
+
+    Keyboard scroll: j/k or arrow-down/up keys update `scroll_offset`.
+    Apps drive this by calling `handle_key(key)` from their `on_key` handler.
+
+    # IMPL-NOTE: Wheel/touch event plumbing is deferred. The PGAP protocol
+    # doesn't yet carry scroll-wheel events from the host to the app. Once
+    # PlexiEvent::Scroll is wired through (a follow-up to #314), Scrollable
+    # can subscribe to it here with no breaking changes. For now, keyboard
+    # scroll (j/k) is the v1 input source. Apps that need wheel scroll today
+    # should use the host-managed DrawCommand::List primitive instead.
+    """
+    child: Component
+    scroll_offset: float = field(default=0.0, repr=False)
+    # How many pixels j/k advances per keypress.
+    key_step: float = 20.0
+
+    # Width of the scrollbar indicator drawn when content overflows.
+    _SCROLLBAR_W: float = field(default=3.0, init=False, repr=False)
+    # Stored child height from last measure (used for scrollbar sizing).
+    _child_h: float = field(default=0.0, repr=False)
+    # Stored allocated height from last render (used for scroll clamping).
+    _avail_h: float = field(default=0.0, repr=False)
+
+    def measure(self, avail_w: float) -> float:
+        """Scrollable reports 0 so it grows to consume available space."""
+        return 0.0
+
+    def is_grow(self) -> bool:
+        return True
+
+    def _clamp_offset(self, avail_h: float) -> None:
+        max_offset = max(0.0, self._child_h - avail_h)
+        self.scroll_offset = max(0.0, min(self.scroll_offset, max_offset))
+
+    def handle_key(self, key: str) -> bool:
+        """Update scroll_offset for j/k/ArrowDown/ArrowUp keys.
+
+        Returns True if the key was consumed. Call from the app's on_key handler:
+
+            if self._scrollable.handle_key(key):
+                return  # consumed
+        """
+        if key in ("j", "ArrowDown", "down"):
+            self.scroll_offset += self.key_step
+            self._clamp_offset(self._avail_h)
+            return True
+        if key in ("k", "ArrowUp", "up"):
+            self.scroll_offset = max(0.0, self.scroll_offset - self.key_step)
+            return True
+        return False
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._avail_h = h
+        # Measure child at our width (less scrollbar gutter).
+        content_w = w - self._SCROLLBAR_W - 2.0
+        self._child_h = self.child.measure(content_w)
+        self._clamp_offset(h)
+
+        # Clip to our allocated rect, then render child offset upward.
+        ctx.push_clip(x, y, w, h)
+        try:
+            child_y = y - self.scroll_offset
+            self.child.render(ctx, x, child_y, content_w, self._child_h)
+        finally:
+            ctx.pop_clip()
+
+        # Scrollbar indicator (only when content overflows).
+        if self._child_h > h and h > 0:
+            track_h = h
+            thumb_ratio = h / self._child_h
+            thumb_h = max(16.0, track_h * thumb_ratio)
+            thumb_y = y + (self.scroll_offset / self._child_h) * track_h
+            # Clamp thumb to track
+            thumb_y = min(thumb_y, y + track_h - thumb_h)
+            bar_x = x + w - self._SCROLLBAR_W
+            ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, HIGHLIGHT)
+            ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, MUTED)
+
+
+@dataclass
 class Footer(Component):
     """Small caption row. Wraps instead of clipping. The parent `Column`
     provides the outer bottom padding, so no extra padding is needed here."""
@@ -438,18 +547,22 @@ class FooterKeys(Component):
     """
     shortcuts: List[tuple]  # list of (key_or_keys, description)
 
-    TOP_GAP = SPACE_MD
+    # TOP_GAP reduced from SPACE_MD (12px) to SPACE_SM (8px) — trimmer chrome.
+    TOP_GAP = SPACE_SM
     CHIP_H = TEXT_HINT + 2.0 * 1.0   # TEXT_HINT + 2*CHIP_PAD_V
     # Single-row height. The host wraps the row to multiple lines when
     # `max_width` can't fit everything; very narrow panes may render past
     # this measurement. Apps wanting exact bounded footers should put
     # FooterKeys in a fixed-height region or constrain the shortcut count.
-    ROW_H = CHIP_H + 4.0
+    ROW_H = CHIP_H + 2.0  # reduced from +4.0 — tighter without cramping chips
 
     def measure(self, avail_w: float) -> float:
         return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        # Opaque BG backdrop so any content scrolled behind the footer doesn't
+        # bleed through the divider line.
+        ctx.rect(x, y, w, h, BG)
         line_y = y + self.TOP_GAP
         ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
 
@@ -595,7 +708,7 @@ class Card(Component):
         cursor = inner_y
         for i, child in enumerate(self.children):
             ch = child.measure(inner_w)
-            child.render(ctx, inner_x, cursor, inner_w, ch)
+            child._render_clipped(ctx, inner_x, cursor, inner_w, ch)
             cursor += ch
             if i < len(self.children) - 1:
                 cursor += self.gap
@@ -659,7 +772,7 @@ class Column(Component):
                 ch = max(0.0, inner_y + inner_h - cursor)
                 if ch <= 0:
                     break
-            child.render(ctx, inner_x, cursor, inner_w, ch)
+            child._render_clipped(ctx, inner_x, cursor, inner_w, ch)
             cursor += ch
             if i < len(self.children) - 1:
                 cursor += self.gap
@@ -688,7 +801,7 @@ __all__ = [
     # components
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
-    "Spacer", "Divider", "ScrollLog", "Footer", "FooterKeys",
+    "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     # badge primitive
     "badge",
     # entry
