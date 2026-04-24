@@ -6,8 +6,12 @@ Press:
   m — fire a plain message notification
   c — fire a choice notification (blocks for response)
   i — fire an input notification (blocks for text)
-  b — queue a burst (3 messages back-to-back, so you can cycle with Cmd+]/Cmd+[)
+  b — queue a mixed-priority burst (3 messages)
   r — fire a required message (cannot be dismissed with Esc)
+
+Scope (context vs global) is not a runtime choice — it's a per-app
+policy declared in this app's manifest.toml::default_notification_scope.
+Flip the manifest to test the other scope.
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ class NotificationTesterApp(App):
             body="This is a message-kind notification. Enter or Space to acknowledge.",
             level="info",
             priority=50,
+
         )
         self._append("sent: message (priority=50)")
 
@@ -51,6 +56,7 @@ class NotificationTesterApp(App):
                 body="You cannot dismiss this with Esc. Press Enter to acknowledge.",
                 level="warn",
                 priority=200,
+
             )
             self._append(f"required message → {result}")
         threading.Thread(target=runner, daemon=True).start()
@@ -69,6 +75,7 @@ class NotificationTesterApp(App):
                 options=options,
                 level="info",
                 priority=100,
+
             )
             self._append(f"choice → {result}")
         threading.Thread(target=runner, daemon=True).start()
@@ -82,6 +89,7 @@ class NotificationTesterApp(App):
                 body="Enter for newline, Cmd+Enter to submit, Esc to cancel.",
                 level="info",
                 priority=100,
+
             )
             if result == "__cancel__":
                 self._append("input → cancelled")
@@ -105,6 +113,7 @@ class NotificationTesterApp(App):
                      "Enter acknowledges and the next highest-priority shows.",
                 level="info",
                 priority=pri,
+
             )
         self._append(f"sent: burst {tag} (priorities 200/0/50)")
 
@@ -122,16 +131,19 @@ class NotificationTesterApp(App):
             self._fire_required_message()
 
     def on_render(self, ctx: RenderContext) -> None:
+        # NOTE: scope (context vs global) is a per-app manifest policy now,
+        # not a per-call kwarg. This tester's manifest sets it to `context`.
+        # To test global, change default_notification_scope in manifest.toml.
         ctx.render(Column([
             Header(
                 title="Notification Tester",
                 subtitle="Fire each Notify kind on demand",
             ),
             Card([
-                KeyRow("m", "Message (fire-and-forget)"),
+                KeyRow("m", "Message"),
                 KeyRow("c", "Choice (blocks for pick)"),
                 KeyRow("i", "Input (blocks for text)"),
-                KeyRow("b", "Burst — 3 messages at once"),
+                KeyRow("b", "Burst — 3 messages at mixed priority"),
                 KeyRow("r", "Required message (no Esc)"),
             ]),
             Section("Event log"),

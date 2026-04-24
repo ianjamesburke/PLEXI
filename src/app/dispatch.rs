@@ -32,30 +32,41 @@ impl PlexiApp {
         });
     }
 
-    /// Drain `pending_commands` from **every** app pane in the active
-    /// context, stamp sender pane ids, and return the consolidated list.
+    /// Drain `pending_commands` from **every** app pane in **every** context,
+    /// stamp sender pane ids and source_context indices, and return the
+    /// consolidated list.
     ///
     /// Must run every frame regardless of focus, modal state, or any
-    /// overlay. Previously this drain was tied to `dispatch_app_key_events`
-    /// and only ran for the focused pane — background apps emitting
-    /// notifications while a modal was open had their commands buffered
-    /// until the modal closed, causing the "next-time-you-open-it the
-    /// queue suddenly jumps" bug.
+    /// overlay. Draining all contexts (not just the active one) ensures
+    /// that background apps — e.g. stand-up-reminder in a non-active context
+    /// — can surface Global-scope notifications while the user is elsewhere.
     pub(super) fn drain_all_app_commands(&mut self) -> Vec<AppCommand> {
-        let active = self.active_context;
-        // Collect (pane_id, commands) first so we don't hold an aliasing
-        // mutable borrow across pushes in the loop body.
-        let mut per_pane: Vec<(u64, Vec<AppCommand>)> = Vec::new();
-        for (pane_id, pane) in self.contexts[active].panes.iter_mut() {
-            let Some(app_pane) = pane.as_app_mut() else { continue };
-            let cmds = app_pane.runtime.take_pending_commands();
-            if !cmds.is_empty() {
-                per_pane.push((*pane_id, cmds));
+        // Collect (ctx_idx, pane_id, type_id, commands) per pane. We capture
+        // type_id here because the manifest-declared notification scope is
+        // looked up from the registry by type_id, and we can't hold a
+        // mutable borrow on contexts + a shared borrow on the registry at
+        // the same time during the match below.
+        let mut per_pane: Vec<(usize, u64, String, Vec<AppCommand>)> = Vec::new();
+        for (ctx_idx, context) in self.contexts.iter_mut().enumerate() {
+            for (pane_id, pane) in context.panes.iter_mut() {
+                let Some(app_pane) = pane.as_app_mut() else { continue };
+                let type_id = app_pane.runtime.type_id().to_string();
+                let cmds = app_pane.runtime.take_pending_commands();
+                if !cmds.is_empty() {
+                    per_pane.push((ctx_idx, *pane_id, type_id, cmds));
+                }
             }
         }
 
         let mut deferred = Vec::new();
-        for (pane_id, cmds) in per_pane {
+        for (ctx_idx, pane_id, type_id, cmds) in per_pane {
+            // Scope is a per-app user-facing policy declared in the app's
+            // manifest.toml. Apps never set it — the host resolves it once
+            // per notification here. Defaults to `Context` when the manifest
+            // omits the field (safe default: don't interrupt across contexts).
+            let resolved_scope = self
+                .registry
+                .default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
                     AppCommand::SpawnApp { .. }
@@ -82,6 +93,7 @@ impl PlexiApp {
                         deferred.push(AppCommand::ShowNotification {
                             notify_id,
                             sender_pane_id: pane_id,
+                            source_context: ctx_idx,
                             level,
                             title,
                             body,
@@ -90,6 +102,7 @@ impl PlexiApp {
                             input_prompt,
                             required,
                             priority,
+                            scope: resolved_scope,
                         });
                     }
                     AppCommand::DeliverNotifyAction { .. } => deferred.push(cmd),

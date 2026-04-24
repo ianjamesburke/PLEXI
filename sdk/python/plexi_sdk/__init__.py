@@ -383,6 +383,11 @@ class Emitter:
     # dismiss and to order the Cmd+] / Cmd+[ preview traversal. Typical
     # values: 0 (background info), 50 (normal), 100 (important), 200
     # (critical). No default — apps must pick deliberately.
+    #
+    # Scope (context vs. global) is NOT set by the app. It's a per-app
+    # user-facing policy declared in manifest.toml:default_notification_scope
+    # and resolved by the host at dispatch time. Apps just call notify();
+    # the user chooses whether to be interrupted across contexts.
     def notify(self, title: str, body: str = "", level: str = "info",
                priority: int | None = None,
                actions: list | None = None) -> None:
@@ -780,7 +785,8 @@ class RenderContext:
                priority: int | None = None,
                actions: list | None = None) -> None:
         """Post a message notification. See Emitter.notify.
-        `priority` is required (int, higher = more urgent)."""
+        `priority` is required (int, higher = more urgent).
+        Scope is resolved from the app's manifest — not an argument."""
         self.emit.notify(title=title, body=body, level=level,
                          priority=priority, actions=actions)
 

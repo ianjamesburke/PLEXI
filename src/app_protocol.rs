@@ -444,6 +444,23 @@ pub enum DrawCommand {
     },
 }
 
+/// Visibility scope for a notification.
+///
+/// - `Context` — visible only when the source context is the active context.
+/// - `Global`  — always visible, regardless of which context is active.
+///
+/// Host-side enum. Apps do NOT emit this on the wire — scope is a per-app
+/// user-facing policy declared in `manifest.toml::default_notification_scope`,
+/// resolved by the host at dispatch time. Apps never think about it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyScope {
+    /// Only visible when the source context is the active context.
+    Context,
+    /// Always visible regardless of which context is active.
+    Global,
+}
+
 /// An action attached to a Notify command.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NotificationAction {

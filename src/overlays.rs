@@ -78,7 +78,7 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
-                let notif_count = self.pending_notifications.len();
+                let notif_count = self.visible_notification_count();
                 if notif_count > 0 {
                     let badge_text = if notif_count > 9 {
                         "9+".to_string()
