@@ -442,6 +442,7 @@ impl App for ProcessApp {
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
                 | DrawCommand::CdRequest { .. }
+                | DrawCommand::OpenUrl { .. }
                 | DrawCommand::SetTimer { .. }
                 | DrawCommand::CancelTimer { .. }) => {
                     self.route_command(cmd);

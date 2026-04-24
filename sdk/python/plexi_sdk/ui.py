@@ -263,42 +263,64 @@ class Divider(Component):
 
 @dataclass
 class Header(Component):
-    """Top-of-pane heading block: title + optional subtitle + divider.
+    """Top-of-pane app bar: title (and optional subtitle) vertically centred
+    within a fixed-height band, with a 1px divider at the band's bottom edge.
 
-    Vertical stack (top to bottom):
-        title                       (TEXT_TITLE_XL tall)
-        TITLE_TO_SUB_GAP (if subtitle)
-        subtitle                    (TEXT_HINT tall)
-        BEFORE_DIVIDER              (gap before the divider line)
-        divider                     (1px)
+    Designed to read as an app-bar / native-toolbar feel rather than a
+    billboard: TEXT_TITLE (20pt) instead of TEXT_TITLE_XL (28pt), tight
+    inter-line gap, and the title group is *vertically centred* within
+    BAND_H — never floats with awkward whitespace above it. Removing the
+    centring math from the app/Column-padding interplay was the goal:
+    Headers can no longer feel "dropped" because their geometry is
+    self-contained.
+
+    Vertical layout inside the BAND_H band:
+        ┌───────────────────────────────────────┐
+        │   (top inset, computed for centring)  │
+        │   title          (TEXT_TITLE = 20pt)  │
+        │   TITLE_TO_SUB_GAP                    │
+        │   subtitle       (TEXT_HINT = 11pt)   │
+        │   (bottom inset, mirrors top)         │
+        ├───────────────────────────────────────┤  ← 1px divider
     """
     title: str
     subtitle: Optional[str] = None
     accent: str = FG
 
-    TITLE_TO_SUB_GAP = 6.0
-    BEFORE_DIVIDER = 14.0
+    TITLE_SIZE = TEXT_TITLE  # 20pt — app-bar scale, not splash scale
+    TITLE_TO_SUB_GAP = 2.0
+    DIVIDER_H = 1.0
+    BAND_H = 56.0           # fixed band height; title group centres in this
 
-    def measure(self, avail_w: float) -> float:
-        h = TEXT_TITLE_XL
+    def _content_h(self) -> float:
+        h = self.TITLE_SIZE
         if self.subtitle:
             h += self.TITLE_TO_SUB_GAP + TEXT_HINT
-        h += self.BEFORE_DIVIDER + 1.0
         return h
 
+    def measure(self, avail_w: float) -> float:
+        return self.BAND_H + self.DIVIDER_H
+
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        cursor = y
+        # Centre the title (+ optional subtitle) group vertically within
+        # BAND_H. Subtracting an empirical 2px nudges the visual centre
+        # to compensate for typical font descent/leading bias — looks
+        # right at TEXT_TITLE on the proportional family.
+        content_h = self._content_h()
+        top_inset = (self.BAND_H - content_h) / 2.0 - 2.0
+        cursor = y + max(0.0, top_inset)
+
         ctx.text(x, cursor, self.title,
-                 size=TEXT_TITLE_XL, color=self.accent, bold=True,
+                 size=self.TITLE_SIZE, color=self.accent, bold=True,
                  max_width=w, elide=True)
-        cursor += TEXT_TITLE_XL
+        cursor += self.TITLE_SIZE
         if self.subtitle:
             cursor += self.TITLE_TO_SUB_GAP
             ctx.text(x, cursor, self.subtitle, size=TEXT_HINT, color=MUTED,
                      max_width=w, elide=True)
-            cursor += TEXT_HINT
-        cursor += self.BEFORE_DIVIDER
-        ctx.rect(x, cursor, w, 1.0, HIGHLIGHT)
+
+        # Divider at the bottom edge of the band.
+        ctx.rect(x, y + self.BAND_H, w, self.DIVIDER_H, HIGHLIGHT)
 
 
 @dataclass
