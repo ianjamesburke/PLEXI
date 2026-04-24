@@ -78,7 +78,7 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
-                let notif_count = self.pending_notifications.len();
+                let notif_count = self.visible_notification_count();
                 if notif_count > 0 {
                     let badge_text = if notif_count > 9 {
                         "9+".to_string()
@@ -98,8 +98,8 @@ impl PlexiApp {
                         .clicked()
                     {
                         self.show_notification_modal = !self.show_notification_modal;
-                        if self.show_notification_modal {
-                            self.modal_queue_offset = 0;
+                        if self.show_notification_modal && self.current_notify_id.is_none() {
+                            self.current_notify_id = self.select_highest_priority();
                         }
                     }
                 }
@@ -108,6 +108,10 @@ impl PlexiApp {
     }
 
     pub(crate) fn draw_shortcuts_overlay(&self, ctx: &egui::Context) {
+        // Each row: (combo chips, description).
+        // Multi-key combos are expressed as slices; single-key as a one-element slice.
+        // Rows that cover two related combos (e.g. ]/[) are represented as a
+        // key_combo_list with two combos and a combined description.
         egui::Area::new(egui::Id::new("shortcuts_overlay"))
             .anchor(Align2::RIGHT_TOP, Vec2::new(-16.0, 44.0))
             .show(ctx, |ui| {
@@ -117,7 +121,7 @@ impl PlexiApp {
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
-                        ui.set_width(240.0);
+                        ui.set_width(280.0);
                         ui.label(
                             RichText::new("Keyboard Shortcuts")
                                 .size(13.0)
@@ -126,37 +130,60 @@ impl PlexiApp {
                         );
                         ui.add_space(8.0);
 
-                        let shortcuts = [
-                            ("\u{2318}P", "Command palette"),
-                            ("\u{2318}\u{21E7}R", "Rename pane"),
-                            ("\u{2318}T", "New tab"),
-                            ("\u{2318}]/[", "Next/prev tab"),
-                            ("\u{2318}D", "Split right"),
-                            ("\u{2318}\u{21E7}D", "Split down"),
-                            ("\u{2318}W", "Close pane"),
-                            ("\u{2318}B", "Toggle sidebar"),
-                            ("\u{2318}H/J/K/L", "Focus pane"),
-                            ("\u{2318}\u{21A9}", "Zoom pane"),
-                            ("\u{2318}N", "New context"),
-                            ("\u{2318}1-9", "Switch context"),
-                            ("\u{2318}/", "This help"),
-                            ("\u{2318}Q", "Quit"),
-                        ];
+                        // Two-column grid: fixed-width left column holds chips,
+                        // right column holds the description.
+                        egui::Grid::new("shortcuts_grid")
+                            .num_columns(2)
+                            .spacing([style::SPACE_SM, 4.0])
+                            .show(ui, |ui| {
+                                let colors = &self.colors;
 
-                        for (key, desc) in shortcuts {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(key)
-                                        .size(11.0)
-                                        .color(self.colors.accent)
-                                        .family(egui::FontFamily::Monospace),
-                                );
-                                ui.add_space(8.0);
-                                ui.label(
-                                    RichText::new(desc).size(11.0).color(self.colors.text_dim),
-                                );
+                                // Single-combo rows: (&[key parts], description)
+                                let rows: &[(&[&str], &str)] = &[
+                                    (&["\u{2318}", "P"], "Command palette"),
+                                    (&["\u{2318}", "\u{21E7}", "R"], "Rename pane"),
+                                    (&["\u{2318}", "T"], "New tab"),
+                                    (&["\u{2318}", "D"], "Split right"),
+                                    (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
+                                    (&["\u{2318}", "W"], "Close pane"),
+                                    (&["\u{2318}", "B"], "Toggle sidebar"),
+                                    (&["\u{2318}", "\u{21A9}"], "Zoom pane"),
+                                    (&["\u{2318}", "N"], "New context"),
+                                    (&["\u{2318}", "/"], "This help"),
+                                    (&["\u{2318}", "Q"], "Quit"),
+                                ];
+                                for (keys, desc) in rows {
+                                    crate::widgets::key_combo(ui, keys, colors);
+                                    ui.label(
+                                        RichText::new(*desc)
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+                                }
+
+                                // Two-combo rows rendered with key_combo_list.
+                                let two_combo_rows: &[(&[&str], &[&str], &str)] = &[
+                                    (&["\u{2318}", "]"], &["\u{2318}", "["], "Next/prev tab"),
+                                    (&["\u{2318}", "H"], &["\u{2318}", "L"], "Focus pane ←/→"),
+                                    (&["\u{2318}", "J"], &["\u{2318}", "K"], "Focus pane ↓/↑"),
+                                    (&["\u{2318}", "1"], &["\u{2318}", "9"], "Switch context 1–9"),
+                                ];
+                                for (keys_a, keys_b, desc) in two_combo_rows {
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[keys_a, keys_b],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new(*desc)
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+                                }
                             });
-                        }
                     });
             });
     }
@@ -372,9 +399,17 @@ impl PlexiApp {
                                 cancelled = true;
                             }
                             ui.add_space(12.0);
+                            crate::widgets::key_chip(ui, "Enter", &self.colors);
                             ui.label(
-                                RichText::new("Enter  confirm   Esc  cancel")
-                                    .size(10.0)
+                                RichText::new("confirm")
+                                    .size(style::TEXT_HINT)
+                                    .color(self.colors.text_dim),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                            ui.label(
+                                RichText::new("cancel")
+                                    .size(style::TEXT_HINT)
                                     .color(self.colors.text_dim),
                             );
                         });
@@ -436,9 +471,14 @@ impl PlexiApp {
                     }
                 }
                 ui.add_space(8.0);
-                if ui.button("Close  [Cmd+R]").clicked() {
-                    close = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    crate::widgets::key_combo_list(
+                        ui, &[&["\u{2318}", "R"]], None, &self.colors,
+                    );
+                });
             });
 
         if close {
@@ -447,12 +487,17 @@ impl PlexiApp {
     }
 
     /// Primary notification surface: a keyboard-first centered modal over the
-    /// work area. Renders the front of the queue. Dispatches exactly one
-    /// `DeliverNotifyAction` per user action and pops the notification; if the
-    /// queue still has items the modal stays open on the next one.
+    /// work area. Renders the front of the queue.
+    ///
+    /// Enter / option-select / input-submit dispatches exactly one
+    /// `DeliverNotifyAction` and removes the notification from the queue.
+    /// Esc defers: the modal closes but the notification stays in the
+    /// queue (reopen with Cmd+Shift+A to come back to it). No
+    /// NotifyAction is dispatched on Esc — the app hasn't been answered.
+    /// Required notifications reject Esc.
     ///
     /// Input map (all kinds):
-    ///   Esc        — cancel (only when `required == false`)
+    ///   Esc        — defer (only when `required == false`); keeps in queue
     ///
     /// `kind = message`:
     ///   Enter | Space — Acknowledge
@@ -471,18 +516,35 @@ impl PlexiApp {
 
         let mut cmds: Vec<AppCommand> = Vec::new();
 
-        // Clamp the queue offset so it never points past the end. This matters
-        // after an acknowledge removes an entry from under us.
-        if self.modal_queue_offset >= self.pending_notifications.len() {
-            self.modal_queue_offset = self
-                .pending_notifications
-                .len()
-                .saturating_sub(1);
-        }
-
-        let offset = self.modal_queue_offset;
-        let Some(notif) = self.pending_notifications.get(offset).cloned() else {
+        // Resolve the currently-displayed notification by id. If the pinned
+        // id was removed under us (dismissed on another code path) or was
+        // never set, pick the highest-priority remaining — never arbitrarily
+        // index into the Vec.
+        if self.pending_notifications.is_empty() {
             self.show_notification_modal = false;
+            self.current_notify_id = None;
+            return cmds;
+        }
+        if self
+            .current_notify_id
+            .as_ref()
+            .map(|id| !self.pending_notifications.iter().any(|n| &n.notify_id == id))
+            .unwrap_or(true)
+        {
+            self.current_notify_id = self.select_highest_priority();
+        }
+        let Some(current_id) = self.current_notify_id.clone() else {
+            self.show_notification_modal = false;
+            return cmds;
+        };
+        let Some(notif) = self
+            .pending_notifications
+            .iter()
+            .find(|n| n.notify_id == current_id)
+            .cloned()
+        else {
+            self.show_notification_modal = false;
+            self.current_notify_id = None;
             return cmds;
         };
 
@@ -526,7 +588,13 @@ impl PlexiApp {
             _ => self.colors.accent,
         };
 
-        let queue_len = self.pending_notifications.len();
+        // Live position + total, recomputed every frame. Total reflects the
+        // current queue size so if a new notification arrives while this
+        // modal is open, the count updates on the next render without
+        // displacing the pinned view.
+        let (position_idx, queue_len) = self
+            .position_of_current()
+            .unwrap_or((1, self.pending_notifications.len()));
         let mut action_cmd: Option<AppCommand> = None;
 
         // ── Keyboard handling ──────────────────────────────────────────────
@@ -647,10 +715,27 @@ impl PlexiApp {
                             );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if queue_len > 1 {
+                                    // Reversed order because the layout is
+                                    // right-to-left: trailing text first,
+                                    // then combos in reverse, then the
+                                    // position/total label on the far left.
+                                    crate::widgets::key_chip(
+                                        ui, "]", &self.colors,
+                                    );
+                                    crate::widgets::key_chip(
+                                        ui, "\u{2318}", &self.colors,
+                                    );
+                                    ui.add_space(8.0);
+                                    crate::widgets::key_chip(
+                                        ui, "[", &self.colors,
+                                    );
+                                    crate::widgets::key_chip(
+                                        ui, "\u{2318}", &self.colors,
+                                    );
+                                    ui.add_space(8.0);
                                     ui.label(
                                         RichText::new(format!(
-                                            "{} of {queue_len}  ·  \u{2318}[/\u{2318}] to cycle",
-                                            offset + 1
+                                            "{position_idx} of {queue_len}  ·  cycle"
                                         ))
                                         .size(style::TEXT_HINT)
                                         .color(self.colors.text_dim),
@@ -772,35 +857,97 @@ impl PlexiApp {
                             ui.add_space(style::SPACE_MD);
                         }
 
-                        let hint = match notif.kind {
-                            NotifyKind::Message => {
-                                if notif.required {
-                                    "Enter / Space to acknowledge"
-                                } else {
-                                    "Enter / Space  ·  Esc to dismiss"
-                                }
-                            }
-                            NotifyKind::Choice => {
-                                if notif.required {
-                                    "↑↓ or j/k  ·  Enter  ·  1-9"
-                                } else {
-                                    "↑↓ or j/k  ·  Enter  ·  1-9  ·  Esc to dismiss"
-                                }
-                            }
-                            NotifyKind::Input => {
-                                if notif.required {
-                                    "Enter for newline  ·  \u{2318}\u{21B5} to submit"
-                                } else {
-                                    "Enter for newline  ·  \u{2318}\u{21B5} to submit  ·  Esc to dismiss"
-                                }
-                            }
-                        };
+                        // Footer keyboard hint — chips + inline labels per action.
                         ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new(hint)
-                                    .size(style::TEXT_HINT)
-                                    .color(self.colors.text_dim),
-                            );
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                match notif.kind {
+                                    NotifyKind::Message => {
+                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
+                                        crate::widgets::key_chip(ui, "Space", &self.colors);
+                                        ui.label(
+                                            RichText::new("acknowledge")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        if !notif.required {
+                                            ui.label(
+                                                RichText::new("·")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                                            ui.label(
+                                                RichText::new("dismiss")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        }
+                                    }
+                                    NotifyKind::Choice => {
+                                        crate::widgets::key_chip(ui, "↑↓", &self.colors);
+                                        crate::widgets::key_chip(ui, "j/k", &self.colors);
+                                        ui.label(
+                                            RichText::new("·")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
+                                        ui.label(
+                                            RichText::new("·")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        crate::widgets::key_chip(ui, "1-9", &self.colors);
+                                        if !notif.required {
+                                            ui.label(
+                                                RichText::new("·")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                                            ui.label(
+                                                RichText::new("dismiss")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        }
+                                    }
+                                    NotifyKind::Input => {
+                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
+                                        ui.label(
+                                            RichText::new("newline")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        ui.label(
+                                            RichText::new("·")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        crate::widgets::key_chip(ui, "\u{2318}", &self.colors);
+                                        crate::widgets::key_chip(ui, "\u{21B5}", &self.colors);
+                                        ui.label(
+                                            RichText::new("submit")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                        if !notif.required {
+                                            ui.label(
+                                                RichText::new("·")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
+                                            ui.label(
+                                                RichText::new("dismiss")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        }
+                                    }
+                                }
+                            });
                         });
                     });
             });
@@ -876,28 +1023,42 @@ impl PlexiApp {
             }
         }
 
-        // Esc cancels unless the notification is required.
+        // Esc defers (not cancels) unless the notification is required.
+        //
+        // Defer = close the modal but keep the notification in the queue.
+        // Cmd+Shift+A will bring it back as the front-most on reopen.
+        // No NotifyAction is dispatched to the app — the app hasn't been
+        // answered yet, it just got postponed.
+        //
+        // For required notifications, Esc does nothing: the user must
+        // acknowledge or pick an option.
         if action_cmd.is_none() && esc_pressed && !notif.required {
-            action_cmd = Some(AppCommand::DeliverNotifyAction {
-                pane_id: notif.sender_pane_id,
-                notify_id: notif.notify_id.clone(),
-                action_label: "cancel".to_string(),
-                value: None,
-            });
+            self.show_notification_modal = false;
+            self.modal_focused_option = 0;
+            self.modal_input_buffer.clear();
+            self.modal_state_notify_id.clear();
+            // `current_notify_id` intentionally stays set so the same
+            // notification is front-most on next reopen. No queue mutation,
+            // no NotifyAction — that's what makes it defer, not cancel.
+            return cmds;
         }
 
         if let Some(cmd) = action_cmd {
-            if offset < self.pending_notifications.len() {
-                self.pending_notifications.remove(offset);
-            }
+            // Acknowledgment / option-select / input-submit — the user gave
+            // a real answer. Remove the notification by id, deliver the
+            // NotifyAction to the originating app, then pick the next
+            // highest-priority remaining from whatever's in the queue
+            // right now (not a pre-frozen list).
+            self.pending_notifications
+                .retain(|n| n.notify_id != current_id);
             self.modal_focused_option = 0;
             self.modal_input_buffer.clear();
             self.modal_state_notify_id.clear();
             if self.pending_notifications.is_empty() {
                 self.show_notification_modal = false;
-                self.modal_queue_offset = 0;
-            } else if self.modal_queue_offset >= self.pending_notifications.len() {
-                self.modal_queue_offset = self.pending_notifications.len() - 1;
+                self.current_notify_id = None;
+            } else {
+                self.current_notify_id = self.select_highest_priority();
             }
             cmds.push(cmd);
         }

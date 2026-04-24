@@ -11,7 +11,7 @@ from plexi_sdk import (
     FG, MUTED, ACCENT, SURFACE, BODY, CAPTION,
 )
 from plexi_sdk.ui import (
-    Column, Header, Spacer, Footer,
+    Column, Header, Spacer, Footer, FooterKeys,
 )
 
 API = "https://en.wikipedia.org/w/api.php"
@@ -150,12 +150,16 @@ class WikiApp(App):
                     ctx.text(x, ty, ln, size=CAPTION, color=FG)
                     ty += 20
 
-    def _footer_text(self) -> str:
+    def _footer_component(self):
         if self._mode == "search":
-            return "Type a query · Enter to search"
+            return Footer("Type a query · Enter to search")
         if self._mode == "results":
-            return "↑↓ navigate · Enter open · Esc back"
-        return "Esc back to results"
+            return FooterKeys([
+                (["↑", "↓"], "navigate"),
+                ("↵", "open"),
+                ("esc", "back"),
+            ])
+        return FooterKeys([("esc", "back to results")])
 
     def on_render(self, ctx: RenderContext) -> None:
         subtitle = "Loading…" if self._loading else {
@@ -168,7 +172,7 @@ class WikiApp(App):
             Header(title="Wikipedia", subtitle=subtitle),
             self._Body(self),
             Spacer(grow=False),
-            Footer(self._footer_text()),
+            self._footer_component(),
         ]))
 
 

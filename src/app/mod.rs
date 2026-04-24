@@ -26,6 +26,8 @@ pub(crate) enum FocusLayer {
 pub(crate) struct PendingNotification {
     pub notify_id: String,
     pub sender_pane_id: u64,
+    /// Context index the notification originated from (stamped at drain time).
+    pub source_context: usize,
     pub level: String,
     pub title: String,
     pub body: String,
@@ -33,6 +35,12 @@ pub(crate) struct PendingNotification {
     pub options: Vec<crate::app_protocol::NotifyOption>,
     pub input_prompt: Option<String>,
     pub required: bool,
+    /// Higher = more urgent. Used to pick next after dismiss + to order
+    /// Cmd+]/Cmd+[ preview traversal. Arrival order (index in the queue
+    /// Vec) breaks ties — oldest wins.
+    pub priority: u32,
+    /// Visibility scope. Affects which contexts the notification appears in.
+    pub scope: crate::app_protocol::NotifyScope,
 }
 
 use crate::app_registry::AppRegistry;
@@ -87,9 +95,15 @@ pub struct PlexiApp {
     /// `notifications.focus_mode` is on, in which case the modal only opens
     /// on Cmd+Shift+A.
     pub(crate) show_notification_modal: bool,
-    /// Index into `pending_notifications` the modal is currently showing.
-    /// Cmd+] / Cmd+[ cycle this without acknowledging. Clamped to queue length.
-    pub(crate) modal_queue_offset: usize,
+    /// ID of the notification the modal is currently showing. `None` means
+    /// "modal is empty / closed" — at the next render, the highest-priority
+    /// notification in the queue becomes current.
+    ///
+    /// The invariant: **the currently-displayed notification is pinned by
+    /// id**. New notifications arriving never change this, so the user can
+    /// never be yanked to a different notification without their input.
+    /// Cmd+] / Cmd+[ move this id across the priority-sorted queue.
+    pub(crate) current_notify_id: Option<String>,
     /// Focused option index for `kind = "choice"` notifications (0-based).
     /// Reset to 0 whenever the front of the queue changes.
     pub(crate) modal_focused_option: usize,
@@ -101,6 +115,9 @@ pub struct PlexiApp {
     /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
     pub(crate) notifications_enabled: bool,
     pub(crate) notifications_focus_mode: bool,
+    /// Minimum priority that may auto-open the modal on arrival. Below this,
+    /// notifications enter the queue silently (badge only). Defaults to 100.
+    pub(crate) notifications_interrupt_threshold: u32,
     /// Input-focus stack. Top layer receives keyboard input; panes see an
     /// empty event buffer while a non-`Pane` layer is on top. See the
     /// `FocusLayer` docs for the invariant.
@@ -136,6 +153,11 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.focus_mode)
             .unwrap_or(false);
+        let notifications_interrupt_threshold = config
+            .notifications
+            .as_ref()
+            .and_then(|n| n.interrupt_threshold)
+            .unwrap_or(100); // PRIORITY_HIGH — only HIGH/CRITICAL interrupt by default
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -327,12 +349,13 @@ impl PlexiApp {
                     show_run_palette: false,
                     pending_notifications: Vec::new(),
                     show_notification_modal: false,
-                    modal_queue_offset: 0,
+                    current_notify_id: None,
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
                     modal_state_notify_id: String::new(),
                     notifications_enabled,
                     notifications_focus_mode,
+                    notifications_interrupt_threshold,
                     focus_stack: Vec::new(),
                     last_notify_poll: std::time::Instant::now(),
                     host,
@@ -398,12 +421,13 @@ impl PlexiApp {
             show_run_palette: false,
             pending_notifications: Vec::new(),
             show_notification_modal: false,
-            modal_queue_offset: 0,
+            current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
             modal_state_notify_id: String::new(),
             notifications_enabled,
             notifications_focus_mode,
+            notifications_interrupt_threshold,
             focus_stack: Vec::new(),
             last_notify_poll: std::time::Instant::now(),
             host: crate::host::model::HostModel::new(),
@@ -454,9 +478,20 @@ impl PlexiApp {
             let level = val["level"].as_str().unwrap_or("info").to_string();
             let title = val["title"].as_str().unwrap_or("").to_string();
             let body = val["body"].as_str().unwrap_or("").to_string();
+            let internal_id = format!(
+                "__host__:{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            );
             self.pending_notifications.push(PendingNotification {
-                notify_id: String::new(),
+                notify_id: internal_id.clone(),
                 sender_pane_id: 0,
+                // Host-originated notifications are global (they originate
+                // outside any context) and always visible.
+                source_context: self.active_context,
+                scope: crate::app_protocol::NotifyScope::Global,
                 level,
                 title,
                 body,
@@ -464,10 +499,19 @@ impl PlexiApp {
                 options: vec![],
                 input_prompt: None,
                 required: false,
+                priority: 0,
             });
-            if !self.notifications_focus_mode {
+            // Host-originated notifications are always LOW (priority 0) —
+            // below any reasonable interrupt threshold — so they queue
+            // silently by default. They still ride focus_mode as a hard
+            // gate for consistency.
+            let should_auto_open = !self.notifications_focus_mode
+                && 0 >= self.notifications_interrupt_threshold;
+            if should_auto_open {
                 self.show_notification_modal = true;
-                self.modal_queue_offset = 0;
+                if self.current_notify_id.is_none() {
+                    self.current_notify_id = Some(internal_id);
+                }
             }
         }
     }
@@ -502,6 +546,110 @@ impl PlexiApp {
         for pane_id in panes_to_close {
             self.close_pane_by_id(pane_id);
         }
+    }
+
+    // ── Notification-queue helpers ──────────────────────────────────────────
+    //
+    // The notification modal tracks the currently-displayed entry by
+    // `notify_id`, not by index. These helpers centralise the
+    // priority-sort / selection logic so callers can't accidentally reach
+    // past the end of the Vec or pick by stale offset.
+    //
+    // Sort order: `priority DESC, arrival-index ASC`. Arrival index = the
+    // entry's current position in `pending_notifications`, which reflects
+    // push order (we never reorder the Vec; dismissal removes by id).
+    //
+    // Visibility: Context-scoped notifications are only visible when
+    // `source_context == self.active_context`. Global notifications are
+    // always visible. The raw `pending_notifications` Vec stays flat;
+    // only the *view* changes with the active context.
+
+    /// True when this notification should appear in the current context view.
+    pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
+        matches!(n.scope, crate::app_protocol::NotifyScope::Global)
+            || n.source_context == self.active_context
+    }
+
+    /// Return ids of all *visible* notifications (for the current context),
+    /// ordered by (priority desc, arrival asc). Empty Vec when none visible.
+    pub(crate) fn sorted_notification_ids(&self) -> Vec<String> {
+        let mut indexed: Vec<(usize, u32, &str)> = self
+            .pending_notifications
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| self.notification_is_visible(n))
+            .map(|(i, n)| (i, n.priority, n.notify_id.as_str()))
+            .collect();
+        // Reverse-sort by priority; stable sort preserves arrival order for ties.
+        indexed.sort_by(|a, b| b.1.cmp(&a.1));
+        indexed.into_iter().map(|(_, _, id)| id.to_string()).collect()
+    }
+
+    /// Return the id of the highest-priority *visible* notification,
+    /// breaking ties by oldest arrival. `None` when none visible.
+    pub(crate) fn select_highest_priority(&self) -> Option<String> {
+        self.sorted_notification_ids().into_iter().next()
+    }
+
+    /// (1-based position-in-sort-order, total visible len) for the current
+    /// notify id, or `None` when modal is empty / current id is missing from
+    /// visible queue. Renderer uses this for the "X of N" indicator.
+    pub(crate) fn position_of_current(&self) -> Option<(usize, usize)> {
+        let current = self.current_notify_id.as_ref()?;
+        let sorted = self.sorted_notification_ids();
+        let pos = sorted.iter().position(|id| id == current)?;
+        Some((pos + 1, sorted.len()))
+    }
+
+    /// Move `current_notify_id` forward (`direction = 1`) or backward
+    /// (`direction = -1`) through the visible priority-sorted queue. No wrap
+    /// at the ends. Called by Cmd+] / Cmd+[.
+    pub(crate) fn cycle_notification(&mut self, direction: i32) {
+        if !self.show_notification_modal {
+            return;
+        }
+        let sorted = self.sorted_notification_ids();
+        if sorted.is_empty() {
+            return;
+        }
+        let Some(current) = self.current_notify_id.as_ref() else {
+            // Queue has entries but nothing is current — pick highest.
+            self.current_notify_id = sorted.into_iter().next();
+            return;
+        };
+        let Some(pos) = sorted.iter().position(|id| id == current) else {
+            // Current id not in visible queue any more (context switch or dismiss).
+            // Fall back to highest-priority visible.
+            self.current_notify_id = sorted.into_iter().next();
+            return;
+        };
+        let next_pos = match direction {
+            d if d > 0 && pos + 1 < sorted.len() => pos + 1,
+            d if d < 0 && pos > 0 => pos - 1,
+            _ => return, // clamp at both ends
+        };
+        self.current_notify_id = Some(sorted[next_pos].clone());
+    }
+
+    /// Count of context-scoped notifications whose source_context == ctx_idx.
+    /// Used for per-context sidebar badges on inactive contexts.
+    pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
+        self.pending_notifications
+            .iter()
+            .filter(|n| {
+                matches!(n.scope, crate::app_protocol::NotifyScope::Context)
+                    && n.source_context == ctx_idx
+            })
+            .count()
+    }
+
+    /// Count of visible notifications for the active context (context-scoped
+    /// from active + all globals). Used for the toolbar badge.
+    pub(crate) fn visible_notification_count(&self) -> usize {
+        self.pending_notifications
+            .iter()
+            .filter(|n| self.notification_is_visible(n))
+            .count()
     }
 }
 
@@ -561,11 +709,15 @@ impl eframe::App for PlexiApp {
         }
 
         // Apps only receive key input if nothing is capturing above them.
-        let deferred_app_cmds = if self.input_captured_by_overlay() {
-            Vec::new()
-        } else {
-            self.dispatch_app_key_events(ctx)
-        };
+        // (Key input is focus-scoped; command drain below is not.)
+        if !self.input_captured_by_overlay() {
+            self.dispatch_app_key_events(ctx);
+        }
+        // Drain every app pane's pending_commands every frame — including
+        // while a modal holds focus. Background apps emitting notifications
+        // must reach the queue *now*, not be buffered until the modal
+        // closes (which caused the "ghost queue appears on reopen" bug).
+        let deferred_app_cmds = self.drain_all_app_commands();
         self.sync_app_cwd();
 
         // Dispatch any DeliverNotifyAction commands the early modal render
@@ -636,6 +788,7 @@ impl eframe::App for PlexiApp {
                 AppCommand::ShowNotification {
                     notify_id,
                     sender_pane_id,
+                    source_context,
                     level,
                     title,
                     body,
@@ -643,14 +796,21 @@ impl eframe::App for PlexiApp {
                     options,
                     input_prompt,
                     required,
+                    priority,
+                    scope,
                 } => {
                     if !self.notifications_enabled {
                         // Silently drop — master switch off.
                         continue;
                     }
+                    let new_id = notify_id.clone();
+                    // Capture scope/source_context before they move into the struct.
+                    let is_global = matches!(scope, crate::app_protocol::NotifyScope::Global);
+                    let notif_source_ctx = source_context;
                     self.pending_notifications.push(PendingNotification {
                         notify_id,
                         sender_pane_id,
+                        source_context,
                         level,
                         title,
                         body,
@@ -658,10 +818,34 @@ impl eframe::App for PlexiApp {
                         options,
                         input_prompt,
                         required,
+                        priority,
+                        scope,
                     });
-                    if !self.notifications_focus_mode {
+                    // Auto-open rules:
+                    //   1. Visibility (Global or in active context) — else
+                    //      it stays invisible in the queue until the user
+                    //      switches to its context.
+                    //   2. focus_mode off — the global mute gate.
+                    //   3. priority >= interrupt_threshold — don't
+                    //      auto-open low-urgency notifications like
+                    //      "note saved".
+                    // If any gate fails, the notification still queues
+                    // (badge ticks) but the modal doesn't pop.
+                    let is_visible = is_global || notif_source_ctx == self.active_context;
+                    let should_auto_open = is_visible
+                        && !self.notifications_focus_mode
+                        && priority >= self.notifications_interrupt_threshold;
+                    if should_auto_open {
                         self.show_notification_modal = true;
-                        self.modal_queue_offset = 0;
+                    }
+                    // Only set the new notification as current if nothing is
+                    // already pinned AND the new notification is visible AND
+                    // it would auto-open. Low-priority passive notifications
+                    // shouldn't become the pinned front-most until the user
+                    // actually opens the modal (then the highest-priority
+                    // remaining is picked at modal-open time).
+                    if self.current_notify_id.is_none() && should_auto_open {
+                        self.current_notify_id = Some(new_id);
                     }
                 }
                 AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } => {
@@ -961,24 +1145,21 @@ impl eframe::App for PlexiApp {
                 Action::ToggleNotificationModal => {
                     if self.show_notification_modal {
                         self.show_notification_modal = false;
-                    } else if !self.pending_notifications.is_empty() {
+                    } else if self.visible_notification_count() > 0 {
                         self.show_notification_modal = true;
-                        self.modal_queue_offset = 0;
+                        // Pick highest-priority when re-opening the modal and
+                        // nothing is currently pinned. If something IS pinned
+                        // (user closed+reopened), keep showing that one.
+                        if self.current_notify_id.is_none() {
+                            self.current_notify_id = self.select_highest_priority();
+                        }
                     }
-                    // If the queue is empty and the modal is closed, this is a
-                    // no-op — there's nothing to review.
                 }
                 Action::NotificationCycleNext => {
-                    if self.show_notification_modal
-                        && self.modal_queue_offset + 1 < self.pending_notifications.len()
-                    {
-                        self.modal_queue_offset += 1;
-                    }
+                    self.cycle_notification(1);
                 }
                 Action::NotificationCyclePrev => {
-                    if self.show_notification_modal && self.modal_queue_offset > 0 {
-                        self.modal_queue_offset -= 1;
-                    }
+                    self.cycle_notification(-1);
                 }
                 Action::OpenAgentPane => {
                     self.open_agent_pane();
@@ -1254,7 +1435,7 @@ impl eframe::App for PlexiApp {
         // path at the top of `update()` — they own a `FocusLayer` and render
         // their own keystrokes before the drain. Drawing again here would
         // double-dispatch Enter/Escape after keys have been drained.
-        if self.pending_notifications.is_empty() {
+        if self.visible_notification_count() == 0 {
             self.show_notification_modal = false;
         }
 
@@ -1333,7 +1514,7 @@ impl PlexiApp {
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
         let should_own = self.show_notification_modal
-            && !self.pending_notifications.is_empty();
+            && self.visible_notification_count() > 0;
         let has_layer = self
             .focus_stack
             .iter()

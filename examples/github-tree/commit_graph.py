@@ -14,9 +14,11 @@ from typing import Optional
 from plexi_sdk import App, RenderContext, dim
 from plexi_sdk import BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, YELLOW
 from plexi_sdk.ui import (
-    Column, Card, Header, Spacer, Footer, Label, KeyRow,
+    Column, Card, Header, Spacer, Footer, FooterKeys, Label, KeyRow,
     TEXT_CAPTION, TEXT_BODY, TEXT_HINT, TEXT_HEADING,
     SPACE_MD, SPACE_LG, SPACE_XL,
+    RADIUS_SM, RADIUS_MD,
+    badge,
 )
 
 import git_log as gl
@@ -72,6 +74,7 @@ class CommitGraphApp(App):
         self._sel: int = 0
 
         # Tooltip / help overlay
+        self._tooltip_visible: bool = True   # shown whenever a commit is selected
         self._show_help: bool = False
 
         # Hit-test list: [(hash, cx, cy, r)] rebuilt each render
@@ -222,6 +225,19 @@ class CommitGraphApp(App):
             self.emit.schedule_render(after_ms=16)
             return
 
+        # Tooltip toggle: Enter shows/hides the commit detail card.
+        # Esc clears the entire selection (tooltip hides with it).
+        if key == "return":
+            if self._commits and 0 <= self._sel < len(self._commits):
+                self._tooltip_visible = not self._tooltip_visible
+                self.emit.schedule_render(after_ms=16)
+            return
+        if key == "escape":
+            self._sel = -1
+            self._tooltip_visible = True   # reset so next selection auto-shows
+            self.emit.schedule_render(after_ms=16)
+            return
+
         n = len(self._commits)
 
         if key in ("[",):
@@ -240,9 +256,11 @@ class CommitGraphApp(App):
                 threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key in ("j", "down") and n > 0:
             self._sel = min(self._sel + 1, n - 1)
+            self._tooltip_visible = True
             self.emit.schedule_render(after_ms=16)
         elif key in ("k", "up") and n > 0:
             self._sel = max(self._sel - 1, 0)
+            self._tooltip_visible = True
             self.emit.schedule_render(after_ms=16)
         elif key in ("h", "left") and n > 0:
             # Move to commit on left neighbouring lane at the same row
@@ -252,6 +270,7 @@ class CommitGraphApp(App):
                 best = self._nearest_in_lane(target_lane)
                 if best is not None:
                     self._sel = best
+                    self._tooltip_visible = True
                     self.emit.schedule_render(after_ms=16)
         elif key in ("l", "right") and n > 0:
             cur_lane = self._commits[self._sel]["lane"] if n > 0 else 0
@@ -259,12 +278,15 @@ class CommitGraphApp(App):
             best = self._nearest_in_lane(target_lane)
             if best is not None:
                 self._sel = best
+                self._tooltip_visible = True
                 self.emit.schedule_render(after_ms=16)
         elif key == "g":
             self._sel = 0
+            self._tooltip_visible = True
             self.emit.schedule_render(after_ms=16)
         elif key == "G":
             self._sel = max(0, n - 1)
+            self._tooltip_visible = True
             self.emit.schedule_render(after_ms=16)
         elif key == "c":
             # IMPL-NOTE: SDK has no clipboard emit — log + status line instead.
@@ -316,6 +338,7 @@ class CommitGraphApp(App):
                 for j, c in enumerate(self._commits):
                     if c["hash"] == h:
                         self._sel = j
+                        self._tooltip_visible = True
                         self._show_help = False
                         self.emit.schedule_render(after_ms=16)
                         return
@@ -416,8 +439,18 @@ class CommitGraphApp(App):
         y_cursor = SPACE_XL + hdr_h + SPACE_MD
 
         # ── Footer ────────────────────────────────────────────────────────────
-        from plexi_sdk.ui import Footer as UIFooter
-        footer = UIFooter("[ ] week  t today  j k commit  h l lane  g G ends  c copy  o open  r refresh  ? help")
+        footer = FooterKeys([
+            (["[", "]"], "week"),
+            ("t", "today"),
+            (["j", "k"], "commit"),
+            (["h", "l"], "lane"),
+            (["g", "G"], "ends"),
+            ("↵", "tooltip"),
+            ("c", "copy"),
+            ("o", "open"),
+            ("r", "refresh"),
+            ("?", "help"),
+        ])
         ftr_h = footer.measure(ctx.w - 2 * SPACE_XL)
         footer_y = ctx.h - SPACE_XL - ftr_h
         footer.render(ctx, SPACE_XL, footer_y, ctx.w - 2 * SPACE_XL, ftr_h)
@@ -437,7 +470,7 @@ class CommitGraphApp(App):
         self._draw_graph(ctx, graph_y, graph_h)
 
         # ── Tooltip ───────────────────────────────────────────────────────────
-        if self._commits and 0 <= self._sel < len(self._commits):
+        if self._tooltip_visible and self._commits and 0 <= self._sel < len(self._commits):
             self._draw_tooltip(ctx)
 
         # ── Help overlay ──────────────────────────────────────────────────────
@@ -670,23 +703,17 @@ class CommitGraphApp(App):
 
     def _draw_badge(self, ctx: RenderContext, x: float, cy: float,
                     name: str, color: str) -> float:
-        """Draw a branch-name pill badge. Returns badge width."""
-        BADGE_PAD_H = 5.0
-        BADGE_PAD_V = 3.0
-        fs = TEXT_CAPTION - 1.0
-        char_w = fs * 0.55
-        max_badge_chars = 16
-        label = name[:max_badge_chars] + ("…" if len(name) > max_badge_chars else "")
-        bw = len(label) * char_w + BADGE_PAD_H * 2
-        bh = fs + BADGE_PAD_V * 2
+        """Draw a branch-name pill badge using the SDK badge primitive.
 
+        Returns the rendered badge width so the caller can flow badges
+        horizontally.  Tag refs use a square-ish radius; branch refs are
+        fully rounded.
+        """
         is_tag = name.startswith("tag:")
         fill = YELLOW if is_tag else color
-        radius = 2.0 if is_tag else 8.0
-
-        ctx.rect(x, cy - bh / 2, bw, bh, fill=fill, radius=radius)
-        ctx.text(x + BADGE_PAD_H, cy - fs / 2, label, size=fs, color=BG)
-        return bw
+        radius = RADIUS_SM if is_tag else RADIUS_MD
+        return badge(ctx, x, cy, name, fill=fill, fg=BG,
+                     font_size=TEXT_HINT, radius=radius)
 
     # ── Tooltip ───────────────────────────────────────────────────────────────
 
@@ -769,32 +796,24 @@ class CommitGraphApp(App):
     # ── Help overlay ──────────────────────────────────────────────────────────
 
     def _draw_help(self, ctx: RenderContext) -> None:
-        help_items = [
-            ("[ ]",  "go to older / newer week"),
-            ("t",    "jump to today"),
-            ("j / k", "select next / previous commit"),
-            ("h / l", "select commit in left / right lane"),
-            ("g / G", "first / last commit"),
-            ("c",    "copy commit hash (shown in status bar)"),
-            ("o",    "open on GitHub (shown in status bar)"),
-            ("r",    "force refresh"),
-            ("?",    "toggle this help"),
+        help_rows = [
+            (["[", "]"],  "go to older / newer week"),
+            (["t"],       "jump to today"),
+            (["j", "/", "k"], "select next / previous commit"),
+            (["h", "/", "l"], "select commit in left / right lane"),
+            (["g", "/", "G"], "first / last commit"),
+            (["c"],       "copy hash (shown in status bar)"),
+            (["o"],       "open on GitHub (shown in status bar)"),
+            (["r"],       "force refresh"),
+            (["?"],       "toggle this help"),
         ]
-        W = min(380.0, ctx.w - 48.0)
-        ROW = 22.0
-        H = ROW * len(help_items) + 24.0
+        from plexi_sdk.ui import Column, Card, KeyRow, SPACE_MD
+        W = min(400.0, ctx.w - 48.0)
+        card = Card([KeyRow(keys, desc) for keys, desc in help_rows])
+        card_h = card.measure(W)
         bx = (ctx.w - W) / 2
-        by = (ctx.h - H) / 2
-
-        ctx.rect(bx - 1, by - 1, W + 2, H + 2, fill=HIGHLIGHT, radius=9.0)
-        ctx.rect(bx, by, W, H, fill=SURFACE, radius=8.0)
-
-        ty = by + 12.0
-        for key_str, desc in help_items:
-            ctx.text(bx + 12.0, ty, key_str, size=TEXT_CAPTION,
-                     color=ACCENT, monospace=True)
-            ctx.text(bx + 80.0, ty, desc, size=TEXT_CAPTION, color=FG)
-            ty += ROW
+        by = max(8.0, (ctx.h - card_h) / 2)
+        card.render(ctx, bx, by, W, card_h)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 

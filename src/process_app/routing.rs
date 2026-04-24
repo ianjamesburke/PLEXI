@@ -171,6 +171,7 @@ impl ProcessApp {
                 required,
                 actions,
                 notify_id,
+                priority,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
@@ -255,6 +256,7 @@ impl ProcessApp {
                 self.pending_commands.push(AppCommand::ShowNotification {
                     notify_id: panel_id,
                     sender_pane_id: 0, // stamped by dispatch.rs with the real pane_id
+                    source_context: 0, // stamped by dispatch.rs with the real ctx_idx
                     level,
                     title,
                     body,
@@ -262,6 +264,11 @@ impl ProcessApp {
                     options,
                     input_prompt,
                     required,
+                    priority,
+                    // Scope placeholder — dispatch.rs overwrites with the
+                    // manifest-declared default for this app's type_id.
+                    // Apps never set scope; users control it via manifest.
+                    scope: crate::app_protocol::NotifyScope::Context,
                 });
                 // `actions` intentionally dropped: they were already processed
                 // as server-side side effects above (resume_run / open_intent /

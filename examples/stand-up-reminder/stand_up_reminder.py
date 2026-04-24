@@ -8,9 +8,10 @@ from plexi_sdk import (
     App, RenderContext,
     SURFACE, ACCENT, MUTED, FG, GREEN,
     TITLE, CAPTION,
+    PRIORITY_HIGH,
 )
 from plexi_sdk.ui import (
-    Column, Header, Section, Label, Spacer, Footer,
+    Column, Header, Section, Label, Spacer, Footer, FooterKeys,
 )
 
 PROMPTS = [
@@ -97,6 +98,8 @@ class StandUpReminderApp(App):
             title="Time to move!",
             body=prompt,
             level="info",
+            priority=PRIORITY_HIGH,
+
         )
         self.emit.info(f"Reminder #{self._reminders_today}: {prompt}")
         self._schedule_timer(ctx)
@@ -146,14 +149,14 @@ class StandUpReminderApp(App):
         ctx.render(Column([
             Header(
                 title="Stand Up Reminder",
-                subtitle="Running in background",
+                subtitle=f"Running in background · interval {interval_label}",
             ),
             self._CountdownRing(self),
             Section("Last prompt"),
             Label(last_prompt_text, tone="body", color=last_prompt_color),
             Label(count_text, tone="caption", color=count_color),
             Spacer(grow=False),
-            Footer(f"Interval: {interval_label}   ·   j/k or +/- to adjust"),
+            FooterKeys([(["j", "k", "+", "-"], "adjust interval")]),
         ]))
 
         # Schedule next repaint in 1 second to update countdown

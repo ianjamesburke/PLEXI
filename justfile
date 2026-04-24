@@ -427,6 +427,41 @@ install-beta:
     echo "Config dir: ~/.plexi-beta/"
     echo "Apps: $(ls ~/.plexi-beta/apps | wc -l | tr -d ' ') synced from examples/"
 
+# Wipe a channel's installed apps directory. The install-* recipes use
+# `cp -R` (sync, not mirror), so apps deleted from `examples/` persist in
+# the install dir. Run this before re-installing when you want a clean
+# slate — e.g. after renaming or removing an example app.
+#
+# Safe by design: the default `channel` arg is intentionally empty so a
+# bare `just clear-apps` with no argument errors out. Pass `alpha`,
+# `beta`, `v3`, or `default`.
+#
+#   just clear-apps alpha      # wipes ~/.plexi-alpha/apps/*
+#   just clear-apps alpha && just install-alpha   # true mirror install
+clear-apps channel="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -z "{{channel}}" ]]; then
+      echo "error: channel required — one of: alpha | beta | v3 | default"
+      echo "example: just clear-apps alpha"
+      exit 1
+    fi
+    case "{{channel}}" in
+      alpha)   dir="$HOME/.plexi-alpha/apps" ;;
+      beta)    dir="$HOME/.plexi-beta/apps"  ;;
+      v3)      dir="$HOME/.plexi-v3/apps"    ;;
+      default) dir="$HOME/.plexi/apps"       ;;
+      *) echo "error: unknown channel '{{channel}}' — expected alpha | beta | v3 | default"; exit 1 ;;
+    esac
+    if [[ ! -d "$dir" ]]; then
+      echo "nothing to clear: $dir does not exist"
+      exit 0
+    fi
+    count=$(find "$dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+    rm -rf "$dir"/*
+    echo "Cleared $count app directories from $dir"
+    echo "Re-run 'just install-{{channel}}' to re-sync from examples/"
+
 bump:
     #!/usr/bin/env bash
     set -e

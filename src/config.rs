@@ -21,12 +21,17 @@ pub struct NotificationsConfig {
     /// apps still send them, but the modal never appears and the queue stays
     /// empty. Defaults to true.
     pub enabled: Option<bool>,
-    /// Focus mode. When true, notifications silently queue instead of auto-
-    /// surfacing the modal. The user enters review mode with Cmd+Shift+D,
-    /// which opens the modal on the front of the queue; Cmd+] and Cmd+[
-    /// cycle forward and back through the queue without acknowledging.
-    /// Defaults to false (auto-surface, the original behavior).
+    /// Focus mode. When true, NO notification auto-surfaces regardless of
+    /// priority. Everything queues silently; the user reviews via Cmd+Shift+A.
+    /// Defaults to false.
     pub focus_mode: Option<bool>,
+    /// Minimum priority that may auto-open the modal. Notifications below
+    /// this value queue silently (badge ticks, Cmd+Shift+A reveals them).
+    /// At or above it, arrival auto-opens the modal. Defaults to 100
+    /// (`PRIORITY_HIGH`) — NORMAL and LOW are passive; HIGH and CRITICAL
+    /// interrupt. Set to 0 to auto-open everything; set to 201 to match
+    /// `focus_mode = true`.
+    pub interrupt_threshold: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -211,12 +216,31 @@ font_size = 14.0
 # the queue stays empty.
 enabled = true
 
-# Focus mode. When true, arriving notifications queue silently
-# instead of auto-opening the modal. The user opts into review
-# with Cmd+Shift+A, which opens the modal on the front of the
-# queue; Cmd+] / Cmd+[ cycle forward/back without acknowledging.
-# When false, notifications auto-surface as they arrive.
+# Focus mode. When true, NO notification auto-surfaces regardless of
+# priority. Everything queues silently; open Cmd+Shift+A to review.
 focus_mode = false
+
+# Minimum priority that may auto-open the modal. Notifications below
+# this value queue silently (badge ticks on the toolbar, Cmd+Shift+A
+# reveals them). At or above it, arrival auto-opens the modal.
+#
+# Tiers (from plexi_sdk):
+#   0   = PRIORITY_LOW       (background info)
+#   50  = PRIORITY_NORMAL    (standard confirmations — "note saved")
+#   100 = PRIORITY_HIGH      (needs attention soon)
+#   200 = PRIORITY_CRITICAL  (interrupt-level)
+#
+# Default = 100: NORMAL and LOW queue silently, HIGH and CRITICAL
+# interrupt. Set to 0 to auto-open everything. Set to 201 to match
+# focus_mode = true (nothing auto-opens).
+interrupt_threshold = 100
+
+# Esc vs Enter on the modal:
+#   Enter (or option-select / input-submit) = acknowledge. Notification
+#     is removed from the queue and the app receives NotifyAction.
+#   Esc = defer. Modal closes but the notification stays in the queue —
+#     open Cmd+Shift+A later to come back to it. No NotifyAction dispatched.
+#   Required notifications (required = true) cannot be Esc'd.
 
 # ── Theme ──────────────────────────────────────────────────────
 # Pick a preset OR customize individual colors below.

@@ -297,6 +297,12 @@ pub enum DrawCommand {
         /// If set, host sends PlexiEvent::NotifyAction when the user responds.
         #[serde(default)]
         notify_id: Option<String>,
+        /// Higher = more urgent. REQUIRED — no `#[serde(default)]`. Apps must
+        /// set this explicitly; omitting it fails deserialisation (forces SDK
+        /// upgrade, no silent defaults). Ties broken by arrival order.
+        /// Typical values: 0 (background info), 50 (normal), 100 (important),
+        /// 200 (critical/required).
+        priority: u32,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
@@ -436,6 +442,23 @@ pub enum DrawCommand {
         end_angle: f32,
         fill: String,
     },
+}
+
+/// Visibility scope for a notification.
+///
+/// - `Context` — visible only when the source context is the active context.
+/// - `Global`  — always visible, regardless of which context is active.
+///
+/// Host-side enum. Apps do NOT emit this on the wire — scope is a per-app
+/// user-facing policy declared in `manifest.toml::default_notification_scope`,
+/// resolved by the host at dispatch time. Apps never think about it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyScope {
+    /// Only visible when the source context is the active context.
+    Context,
+    /// Always visible regardless of which context is active.
+    Global,
 }
 
 /// An action attached to a Notify command.

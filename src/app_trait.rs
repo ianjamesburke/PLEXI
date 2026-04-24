@@ -41,6 +41,9 @@ pub enum AppCommand {
     ShowNotification {
         notify_id: String,
         sender_pane_id: u64,
+        /// Context index the notification originated from. Stamped by
+        /// `drain_all_app_commands` with the index of the originating context.
+        source_context: usize,
         level: String,
         title: String,
         body: String,
@@ -48,6 +51,13 @@ pub enum AppCommand {
         options: Vec<crate::app_protocol::NotifyOption>,
         input_prompt: Option<String>,
         required: bool,
+        /// Higher = more urgent. Used to pick the next front-most notification
+        /// after dismiss, and to order preview cycling via Cmd+] / Cmd+[.
+        /// Insertion order breaks ties (oldest first).
+        priority: u32,
+        /// Visibility scope. `Global` notifications are always visible;
+        /// `Context` notifications are only visible in their source context.
+        scope: crate::app_protocol::NotifyScope,
     },
     /// Route a NotifyAction event back to the app pane that sent the Notify.
     DeliverNotifyAction {

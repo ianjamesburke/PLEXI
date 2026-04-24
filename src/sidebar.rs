@@ -174,6 +174,31 @@ impl PlexiApp {
                             )
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
 
+                        // Per-context notification badge.
+                        // Active context: count visible notifs (context-scoped for active + globals).
+                        // Inactive contexts: count only context-scoped notifs for that context
+                        // (globals appear only on the active badge to avoid triple-counting).
+                        let badge_count = if is_active {
+                            self.visible_notification_count()
+                        } else {
+                            self.context_notification_count(i)
+                        };
+                        if badge_count > 0 && !hover {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_space(8.0);
+                                let badge_text = if badge_count > 9 {
+                                    "9+".to_string()
+                                } else {
+                                    badge_count.to_string()
+                                };
+                                ui.label(
+                                    RichText::new(badge_text)
+                                        .size(10.0)
+                                        .color(self.colors.accent),
+                                );
+                            });
+                        }
+
                         // Delete button on hover when 2+ contexts
                         if hover && num_contexts > 1 {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

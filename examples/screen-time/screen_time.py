@@ -19,7 +19,7 @@ from plexi_sdk.ui import (
     TEXT_HINT, TEXT_CAPTION, TEXT_BODY, TEXT_HEADING, TEXT_TITLE, TEXT_TITLE_XL,
     SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL,
     RADIUS_MD,
-    Column, Header, Footer, KeyRow, Spacer,
+    Column, Header, Footer, FooterKeys, KeyRow, Spacer,
 )
 
 DEFAULT_LOG_DIR = os.path.expanduser("~/Documents/github/daily_log")
@@ -341,25 +341,24 @@ class ScreenTimeApp(App):
             ]
             footer_text = "Path is expanded (~ ok)."
 
-        # Chrome is intentionally minimal: Header + grow-spacer + Footer.
-        # Shortcuts are advertised in the Footer caption on every view so
-        # the content area (clock / month grid / settings form) owns the
-        # middle of the pane.
+        # Chrome is intentionally minimal: Header + grow-spacer + footer chrome.
+        # Context text (Footer) and key chips (FooterKeys) are stacked so the
+        # content area (clock / month grid / settings form) owns the middle.
+        footer_components: list
+        if self._mode == MODE_SETTINGS:
+            # Settings: only context text, no key chips (shortcuts shown inline)
+            footer_components = [Footer(footer_text)]
+        else:
+            footer_components = [
+                Footer(footer_text),
+                FooterKeys([(kr.key, kr.description) for kr in hints]),
+            ]
         children: list = [
             Header("Screen Time", subtitle=subtitle, accent=ACCENT),
             Spacer(grow=True),
-            Footer(self._footer_with_hints(footer_text, hints)),
+            *footer_components,
         ]
         return Column(children, padding=self._CHROME_PAD, gap=self._CHROME_GAP)
-
-    def _footer_with_hints(self, caption: str, hints: list) -> str:
-        """Fold the key hints into a single-line caption for the Footer on
-        non-settings views — avoids overflow at narrow widths (Footer wraps)
-        while still advertising every shortcut."""
-        if self._mode == MODE_SETTINGS:
-            return caption
-        parts = [f"[{kr.key}] {kr.description}" for kr in hints]
-        return " · ".join(parts)
 
     def _content_top(self) -> float:
         """Y-coordinate where the primitive content layer starts, just below
@@ -370,11 +369,19 @@ class ScreenTimeApp(App):
         return self._CHROME_PAD + header_h + self._CHROME_GAP
 
     def _content_bottom(self, ctx: RenderContext) -> float:
-        """Y-coordinate where the footer begins (top of Footer's top-gap)."""
-        # Footer height: TOP_GAP + 1 + TOP_GAP + lines * LINE_H.
-        # Be conservative (2 lines) to match the worst case Footer wraps to.
+        """Y-coordinate where footer chrome begins.
+
+        Non-settings modes have two footer components stacked (Footer + FooterKeys).
+        Footer height formula: TOP_GAP + 1 + TOP_GAP + lines * LINE_H.
+        FooterKeys height formula: TOP_GAP + 1 + TOP_GAP + ROW_H.
+        Be conservative (2 lines for Footer) to match the worst-case wrap.
+        """
         line_h = TEXT_HINT + 5.0
         footer_h = SPACE_MD + 1.0 + SPACE_MD + 2 * line_h
+        if self._mode != MODE_SETTINGS:
+            from plexi_sdk.ui import FooterKeys as _FK
+            footer_keys_h = _FK.TOP_GAP + 1.0 + _FK.TOP_GAP + _FK.ROW_H
+            footer_h += self._CHROME_GAP + footer_keys_h
         return ctx.h - self._CHROME_PAD - footer_h - self._CHROME_GAP
 
     # ── Clock view ────────────────────────────────────────────────────────────

@@ -137,6 +137,95 @@ Color helpers:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NOTIFICATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Four kinds. All are posted via ctx.notify* and render in the central
+notification modal (ctx.notify(...) returns immediately; the other three
+block the calling thread until the user responds — run them on a worker
+thread if the app needs to stay interactive).
+
+  ctx.notify(title, body="", level="info", priority=PRIORITY_NORMAL)
+      Fire-and-forget message. Enter / Space acknowledge, Esc dismisses.
+
+  ctx.notify_and_wait(title, body="", priority=...)  -> str
+      Same as notify() but blocks. Returns "acknowledge" or "cancel".
+
+  ctx.notify_choice(title, options, body="", required=False, priority=...) -> str
+      Blocking choice picker. options = [{"label":..., "value":...,
+      "shortcut":...}]. Returns chosen value (or label if no value),
+      or "__cancel__" if dismissed.
+
+  ctx.notify_input(title, prompt="", body="", required=False, priority=...) -> str
+      Blocking text input. Returns the typed string, or "__cancel__".
+
+Priority — required kwarg on every call. Use the named constants:
+
+  PRIORITY_LOW      = 0     Background info. Stacks at the bottom of the queue.
+  PRIORITY_NORMAL   = 50    Standard confirmations — "note saved", "done", etc.
+  PRIORITY_HIGH     = 100   Needs attention soon — not blocking but noticeable.
+  PRIORITY_CRITICAL = 200   Interrupt-level. Use sparingly; reserve for user
+                            decisions the app genuinely depends on. If every
+                            notification is CRITICAL, none is.
+
+(A future version may reserve a user-only priority band above CRITICAL so
+a misbehaving app can't yell itself to the top of someone's queue. Apps
+should stay under 200 regardless; 0..200 is the app band.)
+
+Queue model:
+
+- Notifications pile into a single priority-sorted queue (priority DESC,
+  arrival ASC). The front-most is pinned by id — new notifications
+  arriving NEVER change what's on screen, only the total count.
+- On dismiss, the next front-most is chosen dynamically from whatever's
+  in the queue right now — not from a pre-frozen snapshot.
+- Cmd+] / Cmd+[ preview other queued notifications without acknowledging.
+  Cmd+Shift+A toggles the modal on/off.
+
+Scope — context vs global — is NOT a runtime choice. It's declared per-app
+in the app's manifest.toml::default_notification_scope:
+
+  "context"  — notification is visible only when its source context is active
+               (default; safe — local confirmations stay local).
+  "global"   — notification is visible in all contexts (use for genuinely
+               cross-context things like stand-up reminders).
+
+The user controls which scope a given app uses by editing its manifest.
+Apps do not see or set scope at the SDK level.
+
+Round-trip response — notify_choice / notify_input / notify_and_wait all
+block for the user's answer. For fire-and-forget notifications that still
+need a response, set notify_id explicitly and handle PlexiEvent::NotifyAction
+in your event loop. The blocking helpers handle this plumbing internally.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MANIFEST REFERENCE (examples/<app>/manifest.toml)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Required:
+  [app]
+  id = "my-app"             # stable identifier — used for launch slot, log
+                            # target "app::<id>", install dir, pack refs
+  name = "My App"           # human-readable display name
+  version = "0.1.0"
+  description = "…"
+  entry = "my_app.py"       # executable entry point, relative to manifest
+
+Optional:
+  default_notification_scope = "context"  # "context" | "global" (default "context")
+
+  [app.capabilities]
+  capabilities = []         # e.g. ["net.http", "audio.record"]
+                            # apps must declare what they use; host prompts
+                            # on install (future) and gates at runtime
+
+  [launch]
+  layout_hint = { side = "above", split = 0.5 }  # preferred split direction
+                                                  # + size when spawned
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RenderContext  (ctx passed to on_init, on_render, on_key, on_click, …)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -311,6 +400,17 @@ RED       = "#f38ba8"
 GREEN     = "#a6e3a1"
 YELLOW    = "#f9e2af"
 
+# ── Notification priority tiers ───────────────────────────────────────────────
+# Higher = more urgent. Queue sorts priority DESC, arrival ASC. See the
+# NOTIFICATIONS block in the module docstring for guidance on which tier to
+# pick. Range 0..200 is the "app band" — stay inside it. A future release
+# may reserve priorities above 200 for user overrides so apps can't yell
+# themselves to the top; staying in-band today keeps you forward-compatible.
+PRIORITY_LOW      = 0
+PRIORITY_NORMAL   = 50
+PRIORITY_HIGH     = 100
+PRIORITY_CRITICAL = 200
+
 # ── Text-width heuristics (used for truncation / layout math) ─────────────────
 # Proportional ≈ 0.52x font size, mono ≈ 0.60x. Approximation — host uses real
 # font metrics at draw time. These match `plexi_sdk.ui._CHAR_W_*`.
@@ -377,71 +477,103 @@ class Emitter:
     def debug(self, message: str) -> None: self.log("debug", message)
 
     # Notifications — kind = "message" (plain text, one Acknowledge button).
+    #
+    # `priority` is REQUIRED on every notify call. Higher = more urgent.
+    # The host uses it to pick the next front-most notification after
+    # dismiss and to order the Cmd+] / Cmd+[ preview traversal. Typical
+    # values: 0 (background info), 50 (normal), 100 (important), 200
+    # (critical). No default — apps must pick deliberately.
+    #
+    # Scope (context vs. global) is NOT set by the app. It's a per-app
+    # user-facing policy declared in manifest.toml:default_notification_scope
+    # and resolved by the host at dispatch time. Apps just call notify();
+    # the user chooses whether to be interrupted across contexts.
     def notify(self, title: str, body: str = "", level: str = "info",
+               priority: int | None = None,
                actions: list | None = None) -> None:
         """Post a message notification. The modal shows title + body and a
         single Acknowledge button; Enter / Space acknowledge, Esc dismisses
         (unless required=True — use `notify_and_wait` for that flow).
 
+        `priority` is required (int, higher = more urgent).
         `actions` is the legacy side-effect list (action_type =
         resume_run | open_intent | run_command). It does NOT render UI.
         """
+        if priority is None:
+            raise TypeError("notify() requires 'priority' (int, higher = more urgent)")
         _emit({"type": "notify", "level": level, "title": title,
                "body": body, "kind": "message",
+               "priority": int(priority),
                "actions": actions or []})
 
     # kind = "choice"
     def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False) -> str:
+                      level: str = "info", required: bool = False,
+                      priority: int | None = None) -> str:
         """Post a choice notification and block until the user picks one.
 
         `options` is a list of dicts: {"label": str, "value": str (optional),
         "shortcut": str (optional, single char)}. If `value` is omitted, the
         label is returned.
 
+        `priority` is required (int, higher = more urgent).
         Returns the chosen option's value (or the label if no value set). If
         `required=False` the user may cancel with Esc — this returns the string
         `"__cancel__"`.
         """
+        if priority is None:
+            raise TypeError("notify_choice() requires 'priority' (int, higher = more urgent)")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "choice", "options": options, "required": required,
+               "priority": int(priority),
                "notify_id": notify_id})
         return q.get()
 
     # kind = "input"
     def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False) -> str:
+                     level: str = "info", required: bool = False,
+                     priority: int | None = None) -> str:
         """Post an input notification and block until the user submits or
         cancels. Returns the typed text (possibly empty), or "__cancel__" if
         the user dismissed with Esc (only possible when required=False).
+
+        `priority` is required (int, higher = more urgent).
         """
+        if priority is None:
+            raise TypeError("notify_input() requires 'priority' (int, higher = more urgent)")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "input", "input_prompt": prompt, "required": required,
+               "priority": int(priority),
                "notify_id": notify_id})
         return q.get()
 
     def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None) -> str:
+                        actions: list | None = None,
+                        priority: int | None = None) -> str:
         """Post a message notification and block until the user acknowledges
         or cancels. Returns "acknowledge" on Enter/Space/button, "cancel" on Esc.
 
         For richer interaction, use `notify_choice` or `notify_input`.
+        `priority` is required (int, higher = more urgent).
         `actions` is the legacy server-side side-effect list.
         """
+        if priority is None:
+            raise TypeError("notify_and_wait() requires 'priority' (int, higher = more urgent)")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "message", "actions": actions or [],
+               "priority": int(priority),
                "notify_id": notify_id})
         return q.get()
 
@@ -750,30 +882,43 @@ class RenderContext:
     def debug(self, message: str) -> None: self.log("debug", message)
 
     def notify(self, title: str, body: str = "", level: str = "info",
+               priority: int | None = None,
                actions: list | None = None) -> None:
-        """Post a message notification. See Emitter.notify."""
-        self.emit.notify(title=title, body=body, level=level, actions=actions)
+        """Post a message notification. See Emitter.notify.
+        `priority` is required (int, higher = more urgent).
+        Scope is resolved from the app's manifest — not an argument."""
+        self.emit.notify(title=title, body=body, level=level,
+                         priority=priority, actions=actions)
 
     def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False) -> str:
+                      level: str = "info", required: bool = False,
+                      priority: int | None = None) -> str:
         """Post a choice notification and block until the user picks.
+        `priority` is required (int, higher = more urgent).
         Returns the chosen option's value (or label if no value set),
         or "__cancel__" if the user dismissed."""
         return self.emit.notify_choice(title=title, options=options, body=body,
-                                       level=level, required=required)
+                                       level=level, required=required,
+                                       priority=priority)
 
     def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False) -> str:
+                     level: str = "info", required: bool = False,
+                     priority: int | None = None) -> str:
         """Post an input notification and block until the user submits.
+        `priority` is required (int, higher = more urgent).
         Returns the typed text, or "__cancel__" if dismissed."""
         return self.emit.notify_input(title=title, prompt=prompt, body=body,
-                                      level=level, required=required)
+                                      level=level, required=required,
+                                      priority=priority)
 
     def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None) -> str:
+                        actions: list | None = None,
+                        priority: int | None = None) -> str:
         """Post a message notification and block for acknowledge/cancel.
+        `priority` is required (int, higher = more urgent).
         See Emitter.notify_and_wait."""
-        return self.emit.notify_and_wait(title=title, body=body, level=level, actions=actions)
+        return self.emit.notify_and_wait(title=title, body=body, level=level,
+                                         actions=actions, priority=priority)
 
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
