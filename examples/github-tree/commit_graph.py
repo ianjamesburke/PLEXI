@@ -769,32 +769,24 @@ class CommitGraphApp(App):
     # ── Help overlay ──────────────────────────────────────────────────────────
 
     def _draw_help(self, ctx: RenderContext) -> None:
-        help_items = [
-            ("[ ]",  "go to older / newer week"),
-            ("t",    "jump to today"),
-            ("j / k", "select next / previous commit"),
-            ("h / l", "select commit in left / right lane"),
-            ("g / G", "first / last commit"),
-            ("c",    "copy commit hash (shown in status bar)"),
-            ("o",    "open on GitHub (shown in status bar)"),
-            ("r",    "force refresh"),
-            ("?",    "toggle this help"),
+        help_rows = [
+            (["[", "]"],  "go to older / newer week"),
+            (["t"],       "jump to today"),
+            (["j", "/", "k"], "select next / previous commit"),
+            (["h", "/", "l"], "select commit in left / right lane"),
+            (["g", "/", "G"], "first / last commit"),
+            (["c"],       "copy hash (shown in status bar)"),
+            (["o"],       "open on GitHub (shown in status bar)"),
+            (["r"],       "force refresh"),
+            (["?"],       "toggle this help"),
         ]
-        W = min(380.0, ctx.w - 48.0)
-        ROW = 22.0
-        H = ROW * len(help_items) + 24.0
+        from plexi_sdk.ui import Column, Card, KeyRow, SPACE_MD
+        W = min(400.0, ctx.w - 48.0)
+        card = Card([KeyRow(keys, desc) for keys, desc in help_rows])
+        card_h = card.measure(W)
         bx = (ctx.w - W) / 2
-        by = (ctx.h - H) / 2
-
-        ctx.rect(bx - 1, by - 1, W + 2, H + 2, fill=HIGHLIGHT, radius=9.0)
-        ctx.rect(bx, by, W, H, fill=SURFACE, radius=8.0)
-
-        ty = by + 12.0
-        for key_str, desc in help_items:
-            ctx.text(bx + 12.0, ty, key_str, size=TEXT_CAPTION,
-                     color=ACCENT, monospace=True)
-            ctx.text(bx + 80.0, ty, desc, size=TEXT_CAPTION, color=FG)
-            ty += ROW
+        by = max(8.0, (ctx.h - card_h) / 2)
+        card.render(ctx, bx, by, W, card_h)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
