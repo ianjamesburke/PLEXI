@@ -515,6 +515,27 @@ pub enum DrawCommand {
         font_size: f32,
     },
 
+    /// A multi-group shortcut row. The host owns all layout — chip widths
+    /// from real font metrics, flow horizontally with configurable inter-
+    /// group gap, wrap to a new line when the next group would exceed
+    /// `max_width`. Returns nothing; correct by construction.
+    ///
+    /// `x`, `y`      — top-left origin.
+    /// `max_width`   — wrap budget. Wrap to a new line when the next group
+    ///                 would exceed it. Caller passes the available pane
+    ///                 width minus its own padding.
+    /// `pairs`       — ordered list of `(chip-labels, description)` groups.
+    ///                 Each pair renders as one or more chips followed by
+    ///                 the description text.
+    /// `font_size`   — applies to all chips and descriptions.
+    Shortcuts {
+        x: f32,
+        y: f32,
+        max_width: f32,
+        pairs: Vec<ShortcutPair>,
+        font_size: f32,
+    },
+
     /// Request a one-shot text measurement. The host measures `text` at
     /// `font_size` with the proportional font and replies immediately with
     /// `PlexiEvent::TextMeasured { request_id, width, height }`.
@@ -528,6 +549,14 @@ pub enum DrawCommand {
         #[serde(default)]
         monospace: bool,
     },
+}
+
+/// One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips
+/// followed by `description` text.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ShortcutPair {
+    pub keys: Vec<String>,
+    pub description: String,
 }
 
 /// Visibility scope for a notification.

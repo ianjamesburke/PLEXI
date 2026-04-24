@@ -239,6 +239,10 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 render_key_chip_row(ui, origin, *x, *y, keys, description.as_deref(), *font_size, colors);
             }
 
+            DrawCommand::Shortcuts { x, y, max_width, pairs, font_size } => {
+                render_shortcuts(ui, origin, *x, *y, *max_width, pairs, *font_size, colors);
+            }
+
             // MeasureText is handled in routing.rs (needs a response channel);
             // it is never a frame-scoped visual command.
             DrawCommand::MeasureText { .. } => {}
@@ -379,6 +383,134 @@ pub(crate) fn render_key_chip_row(
             desc_font,
             colors.text_dim,
         );
+    }
+}
+
+/// Render a multi-group shortcut row with horizontal flow + multi-line wrap.
+/// All chip widths come from real font metrics; the host owns the layout
+/// entirely. SDK callers send one DrawCommand and trust the result.
+///
+/// Wrap rule: a pair fits on the current line iff `cursor_x + pair_width
+/// <= max_width`. Otherwise advance to the next line at `cursor_x = x`,
+/// `y += row_h`. The first pair on each line is always rendered (no
+/// further wrap check) so a single pair wider than `max_width` still
+/// renders, just past the budget.
+pub(crate) fn render_shortcuts(
+    ui: &mut egui::Ui,
+    origin: egui::Pos2,
+    x: f32,
+    y: f32,
+    max_width: f32,
+    pairs: &[crate::app_protocol::ShortcutPair],
+    font_size: f32,
+    colors: &Colors,
+) {
+    use crate::style;
+
+    // Pre-measure every chip + description so we can decide wrapping
+    // before rendering. Storing the laid-out widths means we render in
+    // a single linear pass, no re-measurement.
+    let mono_font = egui::FontId::monospace(font_size);
+    let prop_font = egui::FontId::proportional(font_size);
+
+    // Each pair contributes: chip0 + (gap + chip1)* + desc_gap + desc_width.
+    // Compute and cache per-pair total + per-chip widths.
+    struct LaidPair {
+        chip_widths: Vec<f32>,
+        desc_w: f32,
+        total_w: f32,
+    }
+    let mut laid: Vec<LaidPair> = Vec::with_capacity(pairs.len());
+
+    let chip_h = {
+        let g = ui.fonts(|f| {
+            f.layout_no_wrap("X".to_string(), mono_font.clone(), colors.text_dim)
+        });
+        g.size().y + style::KEYCHIP_PAD_V * 2.0
+    };
+
+    for pair in pairs {
+        let chip_widths: Vec<f32> = pair
+            .keys
+            .iter()
+            .map(|k| {
+                let g = ui.fonts(|f| {
+                    f.layout_no_wrap(k.clone(), mono_font.clone(), colors.text_dim)
+                });
+                let text_w = g.size().x;
+                (text_w + style::KEYCHIP_PAD_H * 2.0).max(style::KEYCHIP_MIN_W)
+            })
+            .collect();
+
+        let chips_w: f32 = chip_widths.iter().sum::<f32>()
+            + style::KEYCHIP_GAP * (chip_widths.len().saturating_sub(1) as f32);
+        let desc_w = if pair.description.is_empty() {
+            0.0
+        } else {
+            let g = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    pair.description.clone(),
+                    prop_font.clone(),
+                    colors.text_dim,
+                )
+            });
+            g.size().x
+        };
+        let desc_segment = if pair.description.is_empty() {
+            0.0
+        } else {
+            style::KEYCHIP_DESC_GAP + desc_w
+        };
+        let total_w = chips_w + desc_segment;
+        laid.push(LaidPair { chip_widths, desc_w, total_w });
+    }
+
+    // Inter-pair gap when flowing on the same line. Wider than the gap
+    // between chips inside a single pair so visual groups read clearly.
+    let pair_gap: f32 = 16.0;
+    let row_h = chip_h + 4.0; // matches FooterKeys ROW_H aesthetic
+
+    let mut cursor_x = x;
+    let mut cursor_y = y;
+    let mut on_line_first = true;
+
+    for (pair, lp) in pairs.iter().zip(laid.iter()) {
+        let pre_gap = if on_line_first { 0.0 } else { pair_gap };
+        if !on_line_first && cursor_x + pre_gap + lp.total_w > x + max_width {
+            // Wrap.
+            cursor_x = x;
+            cursor_y += row_h;
+            on_line_first = true;
+        }
+        if !on_line_first {
+            cursor_x += pair_gap;
+        }
+
+        // Render chips left-to-right.
+        let mut chip_x = cursor_x;
+        for (i, key) in pair.keys.iter().enumerate() {
+            if i > 0 {
+                chip_x += style::KEYCHIP_GAP;
+            }
+            let _ = render_key_chip_at(ui, origin, chip_x, cursor_y, key, font_size, colors);
+            chip_x += lp.chip_widths[i];
+        }
+
+        // Description.
+        if !pair.description.is_empty() {
+            let desc_x = chip_x + style::KEYCHIP_DESC_GAP;
+            ui.painter().text(
+                egui::pos2(origin.x + desc_x, origin.y + cursor_y + chip_h / 2.0),
+                egui::Align2::LEFT_CENTER,
+                &pair.description,
+                prop_font.clone(),
+                colors.text_dim,
+            );
+        }
+
+        cursor_x += lp.total_w;
+        on_line_first = false;
+        let _ = lp.desc_w; // (unused beyond total_w; kept on the struct for future tuning)
     }
 }
 

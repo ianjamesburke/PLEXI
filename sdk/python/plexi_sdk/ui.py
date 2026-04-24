@@ -447,28 +447,11 @@ class FooterKeys(Component):
 
     TOP_GAP = SPACE_MD
     CHIP_H = TEXT_HINT + 2.0 * 1.0   # TEXT_HINT + 2*CHIP_PAD_V
-    ROW_H = CHIP_H + 4.0             # visual row height for the chip row
-    CHIP_PAD_H = 5.0
-    CHIP_PAD_V = 1.0
-    CHIP_MIN_W = 16.0
-    CHIP_CORNER_R = 3.0
-    CHIP_GAP = 6.0   # gap between shortcut groups
-    DESC_GAP = 4.0   # gap between chip and its description
-
-    def _chip_label(self, key_or_keys) -> str:
-        if isinstance(key_or_keys, list):
-            return "/".join(key_or_keys)
-        return str(key_or_keys)
-
-    def _approx_chip_w(self, label: str) -> float:
-        """Approximate chip width for cursor advance. Chip rendering itself
-        is host-measured; this is used only for inter-group spacing in the
-        footer flow where we can't get exact widths without a round-trip."""
-        text_w = len(label) * TEXT_HINT * 0.60
-        return max(self.CHIP_MIN_W, text_w + self.CHIP_PAD_H * 2)
-
-    def _approx_desc_w(self, desc: str) -> float:
-        return len(desc) * TEXT_HINT * 0.55
+    # Single-row height. The host wraps the row to multiple lines when
+    # `max_width` can't fit everything; very narrow panes may render past
+    # this measurement. Apps wanting exact bounded footers should put
+    # FooterKeys in a fixed-height region or constrain the shortcut count.
+    ROW_H = CHIP_H + 4.0
 
     def measure(self, avail_w: float) -> float:
         return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H
@@ -478,22 +461,19 @@ class FooterKeys(Component):
         ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
 
         chip_row_y = line_y + 1.0 + self.TOP_GAP
-        chip_y = chip_row_y + (self.ROW_H - self.CHIP_H) / 2.0
 
-        # Emit one KeyChipRow per shortcut group so each chip+desc pair
-        # is rendered by the host. Cursor advance uses approximate widths
-        # (chip geometry only) — the host renders each chip precisely, and
-        # the small spacing error between groups is acceptable for the footer.
-        cursor_x = x
-        for i, (key_or_keys, desc) in enumerate(self.shortcuts):
-            if i > 0:
-                cursor_x += self.CHIP_GAP
-            label = self._chip_label(key_or_keys)
-            ctx.key_chip_row(x=cursor_x, y=chip_y, keys=[label],
-                             description=desc, font_size=TEXT_HINT)
-            cursor_x += (self._approx_chip_w(label)
-                         + self.DESC_GAP
-                         + self._approx_desc_w(desc))
+        # Single host-measured shortcuts row — host owns ALL geometry:
+        # chip widths from real font metrics, inter-group flow, and
+        # multi-line wrap when `max_width` is exceeded. SDK does no
+        # width math, no truncation, no overlap. This is the whole
+        # point of the host-measured layout primitives (#312).
+        ctx.shortcuts(
+            x=x,
+            y=chip_row_y,
+            max_width=w,
+            pairs=list(self.shortcuts),
+            font_size=TEXT_HINT,
+        )
 
 
 # ── Badge primitive ────────────────────────────────────────────────────────

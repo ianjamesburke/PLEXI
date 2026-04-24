@@ -843,9 +843,49 @@ class RenderContext:
         `keys`       — list of key labels, e.g. ["⌘", "K"] for a chord.
         `description`— optional trailing text label after the chips.
         `font_size`  — chip label pt size.
+
+        For multi-pair shortcut rows with horizontal flow + multi-line
+        wrapping, use `ctx.shortcuts(...)` instead — that's the right
+        primitive for footer-style "[k] desc · [j] desc · …" layouts.
         """
         _emit({"type": "key_chip_row", "x": x, "y": y, "keys": keys,
                "description": description, "font_size": font_size})
+
+    def shortcuts(self, x: float, y: float, max_width: float,
+                  pairs: "list[tuple]", font_size: float = 11.0) -> None:
+        """Render a multi-group shortcut row with host-measured layout.
+
+        The host owns ALL geometry: chip widths from real font metrics,
+        horizontal flow with inter-group spacing, multi-line wrapping
+        when the next group would exceed `max_width`. SDK callers send
+        one DrawCommand and trust the result — no Python width math,
+        no truncation, no overflow.
+
+        `pairs` is a list of `(keys, description)` tuples where `keys`
+        is either a single string or a list of strings (multi-key
+        chord). Example::
+
+            ctx.shortcuts(
+                x=24.0, y=12.0, max_width=ctx.w - 48.0,
+                pairs=[
+                    (["[", "]"], "week"),
+                    ("t", "today"),
+                    (["j", "k"], "commit"),
+                    ("?", "help"),
+                ],
+            )
+        """
+        # Normalise (keys-or-key, desc) → ShortcutPair on the wire.
+        wire_pairs = []
+        for keys_or_key, desc in pairs:
+            if isinstance(keys_or_key, str):
+                wire_keys = [keys_or_key]
+            else:
+                wire_keys = list(keys_or_key)
+            wire_pairs.append({"keys": wire_keys, "description": desc or ""})
+        _emit({"type": "shortcuts", "x": x, "y": y,
+               "max_width": max_width, "pairs": wire_pairs,
+               "font_size": font_size})
 
     def measure_text(self, text: str, font_size: float,
                      monospace: bool = False) -> "tuple[float, float]":
