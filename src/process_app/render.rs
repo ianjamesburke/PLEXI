@@ -19,8 +19,13 @@ use egui::Color32;
 /// `painter.with_clip_rect(top)`. At frame end a non-empty stack is logged at
 /// `warn` level and cleared.
 pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], colors: &Colors) {
-    let origin = ui.min_rect().min;
-    let pane_rect = ui.min_rect();
+    // `available_rect_before_wrap()` is the actual pane rect — what the
+    // caller allocated for us. `min_rect()` is empty at frame start
+    // because we paint via `ui.painter()` without allocating (so the Ui's
+    // min_rect never grows). Using min_rect made every draw clip to an
+    // empty rect — apps appeared blank. The rect must reflect reality.
+    let pane_rect = ui.available_rect_before_wrap();
+    let origin = pane_rect.min;
 
     // Clip stack. Entries are absolute egui screen-space Rects.
     let mut clip_stack: Vec<egui::Rect> = Vec::new();

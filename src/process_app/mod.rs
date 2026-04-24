@@ -81,6 +81,11 @@ pub struct ProcessApp {
     pub(crate) status_summary: Option<String>,
     pub(crate) outbound_events: VecDeque<PlexiEvent>,
     pub(crate) secret_input_buf: String,
+    /// Recent stderr lines from the subprocess. Capped at the last
+    /// `STDERR_RING_CAP` entries. Used by the in-pane error fallback that
+    /// surfaces when an app emits no draw commands — the user sees the
+    /// crash text in the pane instead of a silent blank screen.
+    pub(crate) recent_stderr: Arc<Mutex<VecDeque<String>>>,
     keyboard_capture: bool,
     /// Shared HTTP broker. `Arc<dyn NetService>` so production panes all point
     /// at the same `UreqNetService` while tests can inject `MockNetService`.
@@ -166,15 +171,26 @@ impl ProcessApp {
         let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
 
-        // Background thread: forward subprocess stderr to Plexi's logger.
+        // Background thread: forward subprocess stderr to Plexi's logger
+        // AND capture into the recent-stderr ring buffer used by the
+        // in-pane error fallback.
         let stderr_type_id = type_id.clone();
+        let recent_stderr_capture = Arc::new(Mutex::new(VecDeque::<String>::new()));
+        let recent_stderr_thread = Arc::clone(&recent_stderr_capture);
         thread::spawn(move || {
+            const STDERR_RING_CAP: usize = 32;
             let reader = std::io::BufReader::new(stderr);
             for line in std::io::BufRead::lines(reader) {
                 match line {
                     Ok(l) if !l.trim().is_empty() => {
                         let target = format!("app::{stderr_type_id}");
                         log::warn!(target: &target, "stderr: {l}");
+                        if let Ok(mut buf) = recent_stderr_thread.lock() {
+                            if buf.len() >= STDERR_RING_CAP {
+                                buf.pop_front();
+                            }
+                            buf.push_back(l);
+                        }
                     }
                     Err(_) => break,
                     _ => {}
@@ -246,6 +262,7 @@ impl ProcessApp {
             status_summary: None,
             outbound_events: VecDeque::new(),
             secret_input_buf: String::new(),
+            recent_stderr: Arc::clone(&recent_stderr_capture),
             keyboard_capture,
             net: Arc::new(UreqNetService::new()),
             http_tx,
@@ -484,6 +501,46 @@ impl App for ProcessApp {
         ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
         let frame_clone = self.frame.clone();
         render::render_draw_commands(ui, &frame_clone, ctx.colors);
+
+        // ── Error fallback ──────────────────────────────────────────────────
+        // If the app emitted no draw commands (crashed during init, threw an
+        // unhandled exception in on_render, or just never started rendering),
+        // surface its recent stderr in the pane instead of a silent blank
+        // screen. Apps that render normally never see this — empty frame +
+        // empty stderr means "still starting up", not "broken".
+        if frame_clone.is_empty() {
+            let stderr_lines: Vec<String> = self
+                .recent_stderr
+                .lock()
+                .map(|b| b.iter().rev().take(8).cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            if !stderr_lines.is_empty() {
+                let painter = ui.painter();
+                let title_pos = pane_rect.min + egui::vec2(16.0, 16.0);
+                painter.text(
+                    title_pos,
+                    egui::Align2::LEFT_TOP,
+                    format!("⚠  {} emitted no frames — recent stderr:", self.type_id),
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::from_rgb(0xff, 0x55, 0x55),
+                );
+                let mut y = title_pos.y + 24.0;
+                for line in stderr_lines.iter().rev() {
+                    let trimmed: String = line.chars().take(160).collect();
+                    painter.text(
+                        egui::pos2(title_pos.x, y),
+                        egui::Align2::LEFT_TOP,
+                        &trimmed,
+                        egui::FontId::monospace(11.0),
+                        ctx.colors.text_dim,
+                    );
+                    y += 14.0;
+                    if y > pane_rect.max.y - 16.0 {
+                        break;
+                    }
+                }
+            }
+        }
 
         // Detect clicks over the pane and forward them as PlexiEvent::Click.
         let click_response = ui.interact(pane_rect, ui.id(), egui::Sense::click());
