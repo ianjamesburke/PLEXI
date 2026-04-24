@@ -2965,8 +2965,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
-name = "plexi-alpha"
-version = "3.0.0-beta.1"
+name = "plexi"
+version = "3.0.0-beta.4"
 dependencies = [
  "async-anthropic",
  "async-trait",

@@ -2,6 +2,30 @@
 
 Newest releases appear first.
 
+## [3.0.0-beta.4] — 2026-04-24
+
+### Apps
+
+- **Broken apps fixed** — `notification-tester`, `screen-time`, and `stand-up-reminder` all crashed on launch due to syntax errors or missing `Component` inheritance after the AppBar migration. All three now boot cleanly.
+- **Custom component fix** — `_CountdownRing` (stand-up-reminder), `_Body` (quick-note, todo, wikipedia) now inherit `Component` so `_render_clipped` is available. Same class of bug fixed in `ui-playground`.
+- **SDK bug fix** — `Scrollable.render` was orphaned outside the class body after a bad indent; moved back in.
+- **Deleted lava-lamp, lava-opus, audio-recorder** — removed from examples and installed app dirs.
+
+### SDK
+
+- **`ensure_visible(scroll_offset, viewport_h, top, bottom, margin=0) → float`** free function in `plexi_sdk.ui`. Canonical one-line solve for selection-follows-scroll in any scrollable list. `Scrollable.ensure_visible()` wraps it as a method. Commit Graph j/k/g/G nav handlers migrated to use it.
+- **`_render_clipped` on `Component`** — base class now clips every child to its allocated rect via PushClip/PopClip before calling `render`. Custom components must inherit `Component` or they will crash when placed in a `Column`.
+
+### Host / Notification modal
+
+- Keyboard hint row is now centered (was left-aligned due to `horizontal_wrapped` inside `vertical_centered`).
+- Acknowledge button tightened: 220px → 180px, spacing above reduced from 24px → 12px.
+
+### Host / Rendering
+
+- `render_draw_commands` takes `pane_rect` explicitly — single source of geometry, no more `ui.min_rect()` surprise.
+- Clip stack (PushClip/PopClip) intersects with current stack top so nested clips only ever tighten.
+
 ## [3.0.0-beta.3] — 2026-04-23
 
 ### Notifications — major rework
