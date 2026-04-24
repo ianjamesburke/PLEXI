@@ -1,6 +1,7 @@
 //! Frame rendering — translates committed DrawCommands into egui paint calls.
 
 use crate::app_protocol::DrawCommand;
+use crate::style;
 use crate::theme::Colors;
 use egui::Color32;
 
@@ -38,10 +39,12 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 monospace,
                 bold,
                 align,
+                max_width,
+                elide,
             } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
                 let family = font_family_for_text(*monospace);
-                let font_id = egui::FontId::new(*size, family);
+                let font_id = egui::FontId::new(*size, family.clone());
                 let pos = egui::pos2(origin.x + x, origin.y + y);
                 let anchor = match align.as_str() {
                     "center" => egui::Align2::CENTER_CENTER,
@@ -51,18 +54,61 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                     "left_center" => egui::Align2::LEFT_CENTER,
                     _ => egui::Align2::LEFT_TOP, // default
                 };
+
+                // Apply max_width clipping / elision using host font metrics.
+                let display_text: std::borrow::Cow<'_, str> = if let Some(max_w) = max_width {
+                    if *max_w > 0.0 {
+                        let galley = ui.fonts(|f| {
+                            f.layout_no_wrap(text.clone(), font_id.clone(), color)
+                        });
+                        if galley.size().x > *max_w {
+                            // Binary-search for the longest prefix that fits.
+                            let mut lo = 0usize;
+                            let mut hi = text.chars().count();
+                            while lo + 1 < hi {
+                                let mid = (lo + hi) / 2;
+                                let candidate: String = if *elide {
+                                    text.chars().take(mid).collect::<String>() + "…"
+                                } else {
+                                    text.chars().take(mid).collect()
+                                };
+                                let g = ui.fonts(|f| {
+                                    f.layout_no_wrap(candidate, font_id.clone(), color)
+                                });
+                                if g.size().x <= *max_w {
+                                    lo = mid;
+                                } else {
+                                    hi = mid;
+                                }
+                            }
+                            let truncated: String = if *elide {
+                                text.chars().take(lo).collect::<String>() + "…"
+                            } else {
+                                text.chars().take(lo).collect()
+                            };
+                            std::borrow::Cow::Owned(truncated)
+                        } else {
+                            std::borrow::Cow::Borrowed(text.as_str())
+                        }
+                    } else {
+                        std::borrow::Cow::Borrowed(text.as_str())
+                    }
+                } else {
+                    std::borrow::Cow::Borrowed(text.as_str())
+                };
+
                 ui.painter()
-                    .text(pos, anchor, text, font_id, color);
+                    .text(pos, anchor, display_text.as_ref(), font_id.clone(), color);
                 if *bold {
                     // Fake-bold by re-painting the same text with a 0.45px
                     // horizontal offset. Same anchor so the center-aligned
                     // case stays centered.
-                    let font_id = egui::FontId::new(*size, font_family_for_text(*monospace));
+                    let font_id_bold = egui::FontId::new(*size, font_family_for_text(*monospace));
                     ui.painter().text(
                         pos + egui::vec2(0.45, 0.0),
                         anchor,
-                        text,
-                        font_id,
+                        display_text.as_ref(),
+                        font_id_bold,
                         color,
                     );
                 }
@@ -179,6 +225,24 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
                 }
             }
 
+            // ── Host-measured layout primitives ──────────────────────────
+
+            DrawCommand::Badge { x, y, label, fill, fg, font_size, radius } => {
+                render_badge(ui, origin, *x, *y, label, fill, fg, *font_size, *radius);
+            }
+
+            DrawCommand::KeyChip { x, y, label, font_size } => {
+                render_key_chip_at(ui, origin, *x, *y, label, *font_size, colors);
+            }
+
+            DrawCommand::KeyChipRow { x, y, keys, description, font_size } => {
+                render_key_chip_row(ui, origin, *x, *y, keys, description.as_deref(), *font_size, colors);
+            }
+
+            // MeasureText is handled in routing.rs (needs a response channel);
+            // it is never a frame-scoped visual command.
+            DrawCommand::MeasureText { .. } => {}
+
             // These are handled at the App trait level or routed upstream — never rendered.
             DrawCommand::Log { .. }
             | DrawCommand::FrameDone { .. }
@@ -204,6 +268,117 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::SetTimer { .. }
             | DrawCommand::CancelTimer { .. } => {}
         }
+    }
+}
+
+// ── Render helpers for host-measured primitives ───────────────────────────────
+//
+// Called by the DrawCommand match arms above. Badge / KeyChip sizing uses
+// real egui font metrics so app-emitted primitives and any future host-side
+// overlays that reuse these helpers always match.
+
+/// Render a Badge pill. `x` is the left edge; `y` is the vertical centre.
+pub(crate) fn render_badge(
+    ui: &mut egui::Ui,
+    origin: egui::Pos2,
+    x: f32,
+    y_center: f32,
+    label: &str,
+    fill: &str,
+    fg: &str,
+    font_size: f32,
+    radius: f32,
+) {
+    let fill_color = parse_color(fill).unwrap_or(egui::Color32::from_rgb(0x89, 0xb4, 0xfa));
+    let fg_color = parse_color(fg).unwrap_or(egui::Color32::from_rgb(0x1e, 0x1e, 0x2e));
+    let font_id = egui::FontId::proportional(font_size);
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id.clone(), fg_color));
+    let text_w = galley.size().x;
+    let text_h = galley.size().y;
+    let pill_w = (text_w + style::BADGE_PAD_H * 2.0).max(style::BADGE_MIN_W);
+    let pill_h = text_h + style::BADGE_PAD_V * 2.0;
+    let pill_x = origin.x + x;
+    let pill_y = origin.y + y_center - pill_h / 2.0;
+    let pill_rect = egui::Rect::from_min_size(
+        egui::pos2(pill_x, pill_y),
+        egui::vec2(pill_w, pill_h),
+    );
+    ui.painter().rect_filled(pill_rect, radius, fill_color);
+    // Centre text inside the pill using measured galley dimensions.
+    let text_x = pill_rect.center().x - text_w / 2.0;
+    let text_y = pill_rect.center().y - text_h / 2.0;
+    ui.painter().galley(egui::pos2(text_x, text_y), galley, fg_color);
+}
+
+/// Render a single KeyChip at absolute position (`origin.x + x`, `origin.y + y`).
+/// Returns the chip width so callers can flow chips horizontally.
+pub(crate) fn render_key_chip_at(
+    ui: &mut egui::Ui,
+    origin: egui::Pos2,
+    x: f32,
+    y: f32,
+    label: &str,
+    font_size: f32,
+    colors: &Colors,
+) -> f32 {
+    let font_id = egui::FontId::monospace(font_size);
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_dim));
+    let text_w = galley.size().x;
+    let text_h = galley.size().y;
+    let chip_w = (text_w + style::KEYCHIP_PAD_H * 2.0).max(style::KEYCHIP_MIN_W);
+    let chip_h = text_h + style::KEYCHIP_PAD_V * 2.0;
+    let chip_rect = egui::Rect::from_min_size(
+        egui::pos2(origin.x + x, origin.y + y),
+        egui::vec2(chip_w, chip_h),
+    );
+    ui.painter().rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
+    ui.painter().rect_stroke(
+        chip_rect,
+        egui::CornerRadius::same(3),
+        egui::Stroke::new(1.0, colors.border),
+        egui::StrokeKind::Inside,
+    );
+    let text_x = chip_rect.center().x - text_w / 2.0;
+    let text_y = chip_rect.min.y + style::KEYCHIP_PAD_V;
+    ui.painter().galley(egui::pos2(text_x, text_y), galley, colors.text_dim);
+    chip_w
+}
+
+/// Render a KeyChipRow: a sequence of chips followed by an optional description.
+pub(crate) fn render_key_chip_row(
+    ui: &mut egui::Ui,
+    origin: egui::Pos2,
+    x: f32,
+    y: f32,
+    keys: &[String],
+    description: Option<&str>,
+    font_size: f32,
+    colors: &Colors,
+) {
+    let mut cursor_x = x;
+    for (i, key) in keys.iter().enumerate() {
+        if i > 0 {
+            cursor_x += style::KEYCHIP_GAP;
+        }
+        let chip_w = render_key_chip_at(ui, origin, cursor_x, y, key, font_size, colors);
+        cursor_x += chip_w;
+    }
+    if let Some(desc) = description {
+        cursor_x += style::KEYCHIP_DESC_GAP;
+        // Measure one chip height to get vertical centre of the row.
+        let font_id = egui::FontId::monospace(font_size);
+        let sample = ui.fonts(|f| {
+            f.layout_no_wrap("X".to_string(), font_id.clone(), colors.text_dim)
+        });
+        let chip_h = sample.size().y + style::KEYCHIP_PAD_V * 2.0;
+        let desc_font = egui::FontId::proportional(font_size);
+        ui.painter().text(
+            egui::pos2(origin.x + cursor_x, origin.y + y + chip_h / 2.0),
+            egui::Align2::LEFT_CENTER,
+            desc,
+            desc_font,
+            colors.text_dim,
+        );
     }
 }
 

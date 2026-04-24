@@ -76,43 +76,21 @@ RED = "#f38ba8"
 GREEN = "#a6e3a1"
 YELLOW = "#f9e2af"
 
-# Approximate character-width ratios for width-based measurements. These are
-# empirical, not exact — used for ellipsis/wrap decisions. Real rendering
-# width is determined by the host's text shaper and may differ by a few px.
-_CHAR_W_PROPORTIONAL = 0.55
-_CHAR_W_MONO = 0.60
-
-
 # ── Utilities ──────────────────────────────────────────────────────────────
-
-
-def _char_px(font_size: float, mono: bool = False) -> float:
-    """Approximate pixel width of a single character at `font_size`."""
-    ratio = _CHAR_W_MONO if mono else _CHAR_W_PROPORTIONAL
-    return font_size * ratio
-
-
-def _truncate_to_width(text: str, avail_px: float, font_size: float,
-                       mono: bool = False) -> str:
-    """Shorten `text` with an ellipsis if it exceeds `avail_px`."""
-    if avail_px <= 0 or not text:
-        return ""
-    char_w = _char_px(font_size, mono)
-    max_chars = max(1, int(avail_px / char_w))
-    if len(text) <= max_chars:
-        return text
-    if max_chars <= 1:
-        return "…"  # just the ellipsis
-    return text[: max_chars - 1] + "…"
 
 
 def _wrap_to_width(text: str, avail_px: float, font_size: float,
                    mono: bool = False, max_lines: int = 3) -> List[str]:
     """Word-wrap `text` into up to `max_lines` lines. Final line gets an
-    ellipsis if content was truncated."""
+    ellipsis if content was truncated.
+
+    Uses approximate character-width ratios (0.60 mono, 0.55 proportional)
+    for layout arithmetic only. Actual clip/elision at render time is handled
+    by the host via `max_width` on `ctx.text()`.
+    """
     if avail_px <= 0 or not text:
         return []
-    char_w = _char_px(font_size, mono)
+    char_w = font_size * (0.60 if mono else 0.55)
     max_chars = max(1, int(avail_px / char_w))
 
     words = text.split()
@@ -195,8 +173,8 @@ class Heading(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         fs = self._font_size()
-        text = _truncate_to_width(self.text, w, fs)
-        ctx.text(x, y, text, size=fs, color=self.color, bold=self.bold)
+        ctx.text(x, y, self.text, size=fs, color=self.color, bold=self.bold,
+                 max_width=w, elide=True)
 
 
 @dataclass
@@ -310,14 +288,14 @@ class Header(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         cursor = y
-        title_text = _truncate_to_width(self.title, w, TEXT_TITLE_XL)
-        ctx.text(x, cursor, title_text,
-                 size=TEXT_TITLE_XL, color=self.accent, bold=True)
+        ctx.text(x, cursor, self.title,
+                 size=TEXT_TITLE_XL, color=self.accent, bold=True,
+                 max_width=w, elide=True)
         cursor += TEXT_TITLE_XL
         if self.subtitle:
             cursor += self.TITLE_TO_SUB_GAP
-            sub_text = _truncate_to_width(self.subtitle, w, TEXT_HINT)
-            ctx.text(x, cursor, sub_text, size=TEXT_HINT, color=MUTED)
+            ctx.text(x, cursor, self.subtitle, size=TEXT_HINT, color=MUTED,
+                     max_width=w, elide=True)
             cursor += TEXT_HINT
         cursor += self.BEFORE_DIVIDER
         ctx.rect(x, cursor, w, 1.0, HIGHLIGHT)
@@ -337,9 +315,9 @@ class Section(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         label_y = y + SPACE_SM
-        title_text = _truncate_to_width(self.title.upper(), w, TEXT_HINT)
-        ctx.text(x, label_y, title_text,
-                 size=TEXT_HINT, color=MUTED, bold=True)
+        ctx.text(x, label_y, self.title.upper(),
+                 size=TEXT_HINT, color=MUTED, bold=True,
+                 max_width=w, elide=True)
         line_y = label_y + TEXT_HINT + SPACE_XS
         ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
 
@@ -348,93 +326,31 @@ class Section(Component):
 class KeyRow(Component):
     """A keycap chip (or a chord of chips) followed by a description, left-aligned.
 
-    `key` accepts either a single string (e.g. `"m"`) or a list of strings
-    forming a chord (e.g. `["⌘", "K"]`). Each element is rendered as a
-    distinct rounded-rect chip, matching the host-side `key_chip` primitive.
+    Emits DrawCommand::KeyChipRow — the host measures each chip with real font
+    metrics and flows them left-to-right. No Python-side width math.
 
-    Layout:  [⌘][K]  Description text
-             ↑ chips  ↑ proportional label, vertically centred
-
-    Visual spec (mirrors src/widgets.rs key_chip):
-      - chip fill:   HIGHLIGHT
-      - chip border: drawn as a 1px rect outline in MUTED
-      - key text:    monospace, TEXT_HINT, MUTED
-      - corner r:    3px
-      - padding:     5px h / 1px v inside each chip
-      - min chip w:  16px
-      - gap between chips in a chord: 2px
+    `key` accepts a single string (e.g. `"m"`) or a list (e.g. `["⌘", "K"]`).
     """
     key: Union[str, List[str]]
     description: str
 
     HEIGHT = 28.0
-    CHIP_PAD_H = 5.0
-    CHIP_PAD_V = 1.0
-    CHIP_MIN_W = 16.0
-    CHIP_CORNER_R = 3.0
-    CHIP_GAP = 2.0       # gap between chips in a chord
-    DESC_GAP = 10.0      # gap between last chip and description text
+    CHIP_PAD_V = 1.0  # used for measure() height only
 
     def _keys(self) -> List[str]:
-        """Normalise key to a list."""
         if isinstance(self.key, list):
             return self.key
         return [self.key]
-
-    def _chip_w(self, label: str) -> float:
-        """Approximate chip width for a given label."""
-        char_w = _char_px(TEXT_HINT, mono=True)
-        text_w = len(label) * char_w
-        return max(self.CHIP_MIN_W, text_w + self.CHIP_PAD_H * 2)
-
-    def _total_chips_w(self) -> float:
-        keys = self._keys()
-        total = sum(self._chip_w(k) for k in keys)
-        total += self.CHIP_GAP * max(0, len(keys) - 1)
-        return total
 
     def measure(self, avail_w: float) -> float:
         return self.HEIGHT
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        # Vertical offset so the chip row is centred within HEIGHT.
         chip_h = TEXT_HINT + self.CHIP_PAD_V * 2
         chip_y = y + (self.HEIGHT - chip_h) / 2.0
-
-        cursor_x = x
-        for i, label in enumerate(self._keys()):
-            if i > 0:
-                cursor_x += self.CHIP_GAP
-            cw = self._chip_w(label)
-            # Chip background
-            ctx.rect(
-                cursor_x, chip_y, cw, chip_h,
-                HIGHLIGHT, radius=self.CHIP_CORNER_R,
-            )
-            # Chip border (1px outline approximated as four thin rects)
-            ctx.rect(cursor_x, chip_y, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y + chip_h - 1.0, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y, 1.0, chip_h, MUTED)
-            ctx.rect(cursor_x + cw - 1.0, chip_y, 1.0, chip_h, MUTED)
-            # Key label, centred inside chip
-            ctx.text(
-                cursor_x + cw / 2.0,
-                chip_y + chip_h / 2.0,
-                label,
-                size=TEXT_HINT, color=MUTED,
-                monospace=True, align="center",
-            )
-            cursor_x += cw
-
-        desc_x = cursor_x + self.DESC_GAP
-        desc_avail = w - (desc_x - x)
-        desc_text = _truncate_to_width(self.description, desc_avail, TEXT_BODY)
-        ctx.text(
-            desc_x,
-            y + self.HEIGHT / 2.0,
-            desc_text,
-            size=TEXT_BODY, color=FG,
-            align="left_center",
-        )
+        ctx.key_chip_row(x=x, y=chip_y, keys=self._keys(),
+                         description=self.description, font_size=TEXT_HINT)
 
 
 @dataclass
@@ -471,9 +387,9 @@ class ScrollLog(Component):
         visible = max(1, int(h / line_h))
         recent = list(reversed(self.lines[-visible:]))
         for i, line in enumerate(recent):
-            truncated = _truncate_to_width(line, w, self.line_size, mono=True)
-            ctx.text(x, y + i * line_h, truncated,
-                     size=self.line_size, color=FG, monospace=True)
+            ctx.text(x, y + i * line_h, line,
+                     size=self.line_size, color=FG, monospace=True,
+                     max_width=w, elide=True)
 
 
 @dataclass
@@ -544,13 +460,15 @@ class FooterKeys(Component):
             return "/".join(key_or_keys)
         return str(key_or_keys)
 
-    def _chip_w(self, label: str) -> float:
-        char_w = _char_px(TEXT_HINT, mono=True)
-        text_w = len(label) * char_w
+    def _approx_chip_w(self, label: str) -> float:
+        """Approximate chip width for cursor advance. Chip rendering itself
+        is host-measured; this is used only for inter-group spacing in the
+        footer flow where we can't get exact widths without a round-trip."""
+        text_w = len(label) * TEXT_HINT * 0.60
         return max(self.CHIP_MIN_W, text_w + self.CHIP_PAD_H * 2)
 
-    def _desc_w(self, desc: str) -> float:
-        return len(desc) * _char_px(TEXT_HINT)
+    def _approx_desc_w(self, desc: str) -> float:
+        return len(desc) * TEXT_HINT * 0.55
 
     def measure(self, avail_w: float) -> float:
         return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H
@@ -561,60 +479,24 @@ class FooterKeys(Component):
 
         chip_row_y = line_y + 1.0 + self.TOP_GAP
         chip_y = chip_row_y + (self.ROW_H - self.CHIP_H) / 2.0
-        cursor_x = x
 
+        # Emit one KeyChipRow per shortcut group so each chip+desc pair
+        # is rendered by the host. Cursor advance uses approximate widths
+        # (chip geometry only) — the host renders each chip precisely, and
+        # the small spacing error between groups is acceptable for the footer.
+        cursor_x = x
         for i, (key_or_keys, desc) in enumerate(self.shortcuts):
             if i > 0:
                 cursor_x += self.CHIP_GAP
-
             label = self._chip_label(key_or_keys)
-            cw = self._chip_w(label)
-
-            # Chip background
-            ctx.rect(cursor_x, chip_y, cw, self.CHIP_H,
-                     HIGHLIGHT, radius=self.CHIP_CORNER_R)
-            # Chip border (1px outline as four thin rects)
-            ctx.rect(cursor_x, chip_y, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y + self.CHIP_H - 1.0, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y, 1.0, self.CHIP_H, MUTED)
-            ctx.rect(cursor_x + cw - 1.0, chip_y, 1.0, self.CHIP_H, MUTED)
-            # Key label centred inside chip
-            ctx.text(
-                cursor_x + cw / 2.0,
-                chip_y + self.CHIP_H / 2.0,
-                label,
-                size=TEXT_HINT, color=MUTED,
-                monospace=True, align="center",
-            )
-            cursor_x += cw + self.DESC_GAP
-
-            # Description text, vertically centred with chip
-            avail_desc = w - (cursor_x - x)
-            if avail_desc > 0:
-                desc_text = _truncate_to_width(desc, avail_desc, TEXT_HINT)
-                ctx.text(
-                    cursor_x,
-                    chip_y + self.CHIP_H / 2.0,
-                    desc_text,
-                    size=TEXT_HINT, color=MUTED,
-                    align="left_center",
-                )
-                cursor_x += self._desc_w(desc)
+            ctx.key_chip_row(x=cursor_x, y=chip_y, keys=[label],
+                             description=desc, font_size=TEXT_HINT)
+            cursor_x += (self._approx_chip_w(label)
+                         + self.DESC_GAP
+                         + self._approx_desc_w(desc))
 
 
 # ── Badge primitive ────────────────────────────────────────────────────────
-
-
-# Padding constants shared by `badge()` callers and the implementation.
-_BADGE_PAD_H = 8.0          # horizontal padding (text-to-pill-edge)
-_BADGE_PAD_V = 3.0           # vertical padding
-_BADGE_MAX_CHARS = 16
-_BADGE_MIN_W = 32.0          # floor width so single-char labels don't scrunch
-# Width per character for the badge specifically. The SDK's
-# `_CHAR_W_PROPORTIONAL` (0.55) under-estimates real egui text width at small
-# sizes — wide glyphs like `m`/`w` overflow a tight pill. `0.62` leaves
-# enough budget that common branch names render without clipping.
-_BADGE_CHAR_W = 0.62
 
 
 def badge(
@@ -626,46 +508,25 @@ def badge(
     fg: str = BG,
     font_size: float = TEXT_HINT,
     radius: float = RADIUS_MD,
-) -> float:
-    """Render a pill-shaped badge and return its pixel width.
+) -> None:
+    """Render a host-measured pill badge centred on ``y_center``.
 
-    The badge is vertically centred on ``y_center``.  Text is centred both
-    horizontally and vertically inside the pill with explicit arithmetic —
-    we don't rely on ``align="center"`` because its y-semantics changed over
-    time and the pill geometry is easier to reason about as a single
-    top-left anchor derived from ``y_center``.
+    The host measures the label with real egui font metrics, sizes the pill
+    (text_w + padding), and centres the text — no Python width math.
 
     Args:
         ctx:       A ``RenderContext`` instance.
         x:         Left edge of the badge.
         y_center:  Vertical centre of the badge (e.g. the commit-node ``cy``).
-        label:     Text to display.  Truncated to 16 chars with an ellipsis.
-        fill:      Background colour (default ``ACCENT``).
+        label:     Text to display inside the pill.
+        fill:      Pill background colour.
         fg:        Text colour (default ``BG`` — dark text on light pill).
-        font_size: Font size in pt (default ``TEXT_HINT``).
-        radius:    Corner radius.  Use ``RADIUS_SM`` (4 px) for tag badges,
+        font_size: Label pt size (default ``TEXT_HINT``).
+        radius:    Corner radius. Use ``RADIUS_SM`` (4 px) for tag chips,
                    ``RADIUS_MD`` (8 px, default) for branch badges.
-
-    Returns:
-        The pixel width of the rendered badge (useful for flowing badges
-        horizontally: ``next_x = x + badge(...) + gap``).
     """
-    truncated = label[:_BADGE_MAX_CHARS] + ("…" if len(label) > _BADGE_MAX_CHARS else "")
-    char_w = font_size * _BADGE_CHAR_W
-    text_w = len(truncated) * char_w
-    bw = max(_BADGE_MIN_W, text_w + _BADGE_PAD_H * 2)
-    bh = font_size + _BADGE_PAD_V * 2
-    by = y_center - bh / 2.0
-
-    ctx.rect(x, by, bw, bh, fill, radius=radius)
-    # Manual centring. Text box is positioned by its top-left corner
-    # (the default `align` behaviour); the host draws text extending down
-    # and to the right from (text_x, text_y). Vertical centre is
-    # y_center - font_size/2; horizontal centre is x + bw/2 - text_w/2.
-    text_x = x + bw / 2.0 - text_w / 2.0
-    text_y = y_center - font_size / 2.0
-    ctx.text(text_x, text_y, truncated, size=font_size, color=fg)
-    return bw
+    ctx.badge(x=x, y_center=y_center, label=label,
+              fill=fill, fg=fg, font_size=font_size, radius=radius)
 
 
 # ── Container components ───────────────────────────────────────────────────
