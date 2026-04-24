@@ -1,5 +1,6 @@
-use egui::{Color32, CornerRadius};
+use egui::{Color32, CornerRadius, Pos2, Stroke, StrokeKind, Vec2};
 
+use crate::style;
 use crate::theme::Colors;
 
 /// Consistent inner padding applied to every selectable row.
@@ -64,3 +65,54 @@ pub(crate) fn selectable_row<R>(
 
     (response, scope.inner)
 }
+
+// ── Keycap primitive ─────────────────────────────────────────────────────
+//
+// The notification modal shipped with "⌘[/⌘] to cycle" rendered as flat
+// text and it looks like run-on typography. Native macOS menus render
+// each key as a distinct visual chip; we do the same. One rendering rule,
+// one primitive, apply everywhere shortcuts appear.
+//
+// Usage:
+//     key_combo(ui, &["⌘", "["], colors);        // single shortcut
+//     key_combo_list(ui, &[["⌘", "["], ["⌘", "]"]], colors, "to cycle");
+
+/// Padding around the key label text inside the chip.
+const KEYCAP_PAD_H: f32 = 5.0;
+const KEYCAP_PAD_V: f32 = 1.0;
+/// Minimum chip width — keeps single-char keys like `[` from looking cramped.
+const KEYCAP_MIN_W: f32 = 16.0;
+
+/// Render a single keycap chip. Allocates its own exact-size rect and
+/// returns the egui Response so callers can compose with other widgets.
+pub(crate) fn key_chip(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui::Response {
+    let font_id = egui::FontId::monospace(style::TEXT_HINT);
+    let galley = ui
+        .fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_dim));
+    let text_w = galley.size().x;
+    let text_h = galley.size().y;
+    let chip_w = (text_w + KEYCAP_PAD_H * 2.0).max(KEYCAP_MIN_W);
+    let chip_h = text_h + KEYCAP_PAD_V * 2.0;
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(chip_w, chip_h),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(3), colors.bg_active);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(3),
+        Stroke::new(1.0, colors.border),
+        StrokeKind::Inside,
+    );
+    // Centre the text horizontally inside the chip.
+    let text_pos = Pos2::new(
+        rect.center().x - text_w / 2.0,
+        rect.min.y + KEYCAP_PAD_V,
+    );
+    painter.galley(text_pos, galley, colors.text_dim);
+    response
+}
+
+// Combo/list wrappers will be added when the help modal migration lands.
+// Keeping the surface minimal until a second consumer exists.

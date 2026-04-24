@@ -670,9 +670,27 @@ impl PlexiApp {
                             );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if queue_len > 1 {
+                                    // Reversed order because the layout is
+                                    // right-to-left: trailing text first,
+                                    // then combos in reverse, then the
+                                    // position/total label on the far left.
+                                    crate::widgets::key_chip(
+                                        ui, "]", &self.colors,
+                                    );
+                                    crate::widgets::key_chip(
+                                        ui, "\u{2318}", &self.colors,
+                                    );
+                                    ui.add_space(8.0);
+                                    crate::widgets::key_chip(
+                                        ui, "[", &self.colors,
+                                    );
+                                    crate::widgets::key_chip(
+                                        ui, "\u{2318}", &self.colors,
+                                    );
+                                    ui.add_space(8.0);
                                     ui.label(
                                         RichText::new(format!(
-                                            "{position_idx} of {queue_len}  ·  \u{2318}[/\u{2318}] to cycle"
+                                            "{position_idx} of {queue_len}  ·  cycle"
                                         ))
                                         .size(style::TEXT_HINT)
                                         .color(self.colors.text_dim),
