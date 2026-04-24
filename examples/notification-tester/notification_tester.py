@@ -34,7 +34,7 @@ from plexi_sdk import (
     PRIORITY_LOW, PRIORITY_NORMAL, PRIORITY_HIGH, PRIORITY_CRITICAL,
 )
 from plexi_sdk.ui import (
-    Column, Card, Header, Section,
+    Column, Card, AppBar, Section,
     KeyRow, ScrollLog, Spacer, Footer,
 )
 
@@ -171,9 +171,8 @@ class NotificationTesterApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
-            Header(
-                title="Notification Tester",
-                subtitle="Fire kinds, tiers, and queue demos on demand",
+            AppBar(
+                title="Notification Tester", tiers, and queue demos on demand",
             ),
             Section("Kinds"),
             Card([

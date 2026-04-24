@@ -10,7 +10,7 @@ from plexi_sdk import (
     FG, MUTED, SURFACE, BODY,
 )
 from plexi_sdk.ui import (
-    Column, Header, Section, Label, Spacer, FooterKeys,
+    Column, AppBar, Section, Label, Spacer, FooterKeys,
 )
 
 TODO_FILE = ".plexi/todos.json"
@@ -130,7 +130,7 @@ class TodoApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
-            Header(title="Todo", subtitle=str(self._cwd)),
+            AppBar(title="Todo")),
             Section("Current list"),
             self._Body(self),
             Spacer(grow=False),

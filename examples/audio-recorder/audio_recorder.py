@@ -15,7 +15,7 @@ import wave
 
 from plexi_sdk import App, RenderContext, RED, GREEN, MUTED, PRIORITY_NORMAL
 from plexi_sdk.ui import (
-    Column, Card, Header, Section,
+    Column, Card, AppBar, Section,
     KeyRow, Label, Spacer, Footer,
 )
 
@@ -140,9 +140,8 @@ class AudioRecorderApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
-            Header(
+            AppBar(
                 title="Audio Recorder",
-                subtitle="Capture mic input to recording.wav",
             ),
             Card([
                 KeyRow("r", "Start recording"),

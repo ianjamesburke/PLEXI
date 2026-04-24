@@ -11,7 +11,7 @@ from plexi_sdk import (
     PRIORITY_HIGH,
 )
 from plexi_sdk.ui import (
-    Column, Header, Section, Label, Spacer, Footer, FooterKeys,
+    Column, AppBar, Section, Label, Spacer, Footer, FooterKeys,
 )
 
 PROMPTS = [
@@ -147,9 +147,8 @@ class StandUpReminderApp(App):
         count_color = GREEN if self._reminders_today > 0 else MUTED
 
         ctx.render(Column([
-            Header(
+            AppBar(
                 title="Stand Up Reminder",
-                subtitle=f"Running in background · interval {interval_label}",
             ),
             self._CountdownRing(self),
             Section("Last prompt"),

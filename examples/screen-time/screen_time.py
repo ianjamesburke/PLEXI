@@ -2,7 +2,7 @@
 """Screen Time — clock + monthly views from daily_log *_screen.jsonl files.
 
 Layout:
-  - Top bar chrome (Header, KeyRow hints, Footer) uses SDK v2 components.
+  - Top bar chrome (AppBar, KeyRow hints, Footer) uses SDK v2 components.
   - The clock face + month grid are drawn with primitive ctx.circle/arc/text —
     they're data surfaces, not chrome.
 """
@@ -19,7 +19,7 @@ from plexi_sdk.ui import (
     TEXT_HINT, TEXT_CAPTION, TEXT_BODY, TEXT_HEADING, TEXT_TITLE, TEXT_TITLE_XL,
     SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL,
     RADIUS_MD,
-    Column, Header, Footer, FooterKeys, KeyRow, Spacer,
+    Column, AppBar, Footer, FooterKeys, KeyRow, Spacer,
 )
 
 DEFAULT_LOG_DIR = os.path.expanduser("~/Documents/github/daily_log")
@@ -312,16 +312,9 @@ class ScreenTimeApp(App):
 
     def _chrome_tree(self) -> Column:
         if self._mode == MODE_CLOCK:
-            subtitle = (f"Clock  ·  "
-                        f"{self._view_date.strftime('%A, %B %-d')}")
+            %B %-d')}")
         elif self._mode == MODE_MONTH:
-            subtitle = "Month  ·  last 30 days"
-        else:
-            subtitle = "Settings"
-
-        if self._mode == MODE_CLOCK:
-            hints = [
-                KeyRow("h/l", "previous / next day"),
+            "previous / next day"),
                 KeyRow("m", "month grid"),
                 KeyRow("s", "set log directory"),
                 KeyRow("r", "refresh"),
@@ -354,7 +347,7 @@ class ScreenTimeApp(App):
                 FooterKeys([(kr.key, kr.description) for kr in hints]),
             ]
         children: list = [
-            Header("Screen Time", subtitle=subtitle, accent=ACCENT),
+            AppBar("Screen Time", accent=ACCENT),
             Spacer(grow=True),
             *footer_components,
         ]

@@ -181,11 +181,11 @@ class QuickNoteApp(App):
         ])
 
     def on_render(self, ctx: RenderContext) -> None:
-        from plexi_sdk.ui import Column, Header, Spacer, Footer
+        from plexi_sdk.ui import Column, AppBar, Spacer, Footer
 
         subtitle = "Compose" if self._mode == "compose" else "Browse saved notes"
         children = [
-            Header(title="Quick Note", subtitle=subtitle),
+            AppBar(title="Quick Note"),
             self._Body(self),
             Spacer(size=HINT),
         ]

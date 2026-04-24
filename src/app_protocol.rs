@@ -424,12 +424,6 @@ pub enum DrawCommand {
     /// Terminals receive `cd <cwd>\n` written to their PTY.
     CdRequest { cwd: String },
 
-    /// Open a URL in the user's default browser. The host validates the
-    /// scheme (http / https / mailto) and shells out to `open` on macOS.
-    /// Apps don't need a capability for this — it's user-visible and the
-    /// scheme allowlist makes it safe by default.
-    OpenUrl { url: String },
-
     /// Ask the host to trigger a new Render event after `after_ms` milliseconds.
     /// Intended for game loops and animations — emit once per frame to sustain a
     /// tick rate without relying on egui's unconditional repaint cadence.

@@ -14,7 +14,7 @@ from typing import Optional
 from plexi_sdk import App, RenderContext, dim
 from plexi_sdk import BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, YELLOW
 from plexi_sdk.ui import (
-    Column, Card, Header, Spacer, Footer, FooterKeys, Label, KeyRow,
+    Column, Card, AppBar, Spacer, Footer, FooterKeys, Label, KeyRow,
     TEXT_CAPTION, TEXT_BODY, TEXT_HINT, TEXT_HEADING,
     SPACE_MD, SPACE_LG, SPACE_XL,
     RADIUS_SM, RADIUS_MD,
@@ -305,8 +305,6 @@ class CommitGraphApp(App):
                 self.emit.info(f"commit-graph: copy hash {full_hash}")
                 self.emit.status_summary(f"Hash: {full_hash}")
                 self.emit.schedule_render(after_ms=0)
-        elif key == "o":
-            self._open_on_github()
         elif key == "r":
             threading.Thread(target=self._fetch_graph, daemon=True).start()
 
@@ -321,25 +319,6 @@ class CommitGraphApp(App):
         if not candidates:
             return None
         return min(candidates, key=lambda i: abs(i - cur_idx))
-
-    def _open_on_github(self) -> None:
-        if not self._commits or self._origin_url is None:
-            return
-        import re
-        url = self._origin_url
-        m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", url)
-        if not m:
-            return
-        slug = m.group(1)
-        commit_hash = self._commits[self._sel]["hash"]
-        gh_url = f"https://github.com/{slug}/commit/{commit_hash}"
-        # New SDK primitive — host shells `open <url>` (macOS), scheme-gated.
-        self.emit.info(f"commit-graph: opening {gh_url}")
-        # ctx is not in scope here; use the App-level emit which proxies _emit.
-        from plexi_sdk import _emit
-        _emit({"type": "open_url", "url": gh_url})
-        self.emit.status_summary(f"Opened {gh_url}")
-        self.emit.schedule_render(after_ms=0)
 
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
         if self._mode != MODE_READY:
@@ -407,7 +386,7 @@ class CommitGraphApp(App):
         # even if on_render is called more frequently than the 100 ms tick.
         idx = int((time.monotonic() - self._spinner_start) * 8) % len(SPINNER)
         ctx.render(Column([
-            Header(title="Commit Graph", subtitle=self._repo_name or "Resolving…"),
+            AppBar(title="Commit Graph"),
             Card([
                 Label(
                     f"{SPINNER[idx]}  {self._loading_msg}",
@@ -422,7 +401,7 @@ class CommitGraphApp(App):
     def _render_error_state(self, ctx: RenderContext, *,
                             title: str, lines: list[str]) -> None:
         ctx.render(Column([
-            Header(title="Commit Graph", subtitle=title, accent=RED),
+            AppBar(title="Commit Graph", accent=RED),
             Card([Label(l, tone="body") for l in lines]),
             Card([KeyRow("r", "Retry")]),
             Spacer(grow=True),
@@ -445,7 +424,7 @@ class CommitGraphApp(App):
             subtitle += f" (–{self._week_offset}w)"
 
         # Measure and render Header manually so we can position the rest below it
-        header = Header(title="Commit Graph", subtitle=subtitle)
+        header = AppBar(title="Commit Graph")
         hdr_h = header.measure(ctx.w - 2 * SPACE_XL)
         header.render(ctx, SPACE_XL, SPACE_XL, ctx.w - 2 * SPACE_XL, hdr_h)
         y_cursor = SPACE_XL + hdr_h + SPACE_MD
@@ -458,7 +437,6 @@ class CommitGraphApp(App):
             (["h", "l"], "lane"),
             (["g", "G"], "ends"),
             ("c", "copy"),
-            ("o", "open"),
             ("r", "refresh"),
             ("?", "help"),
         ])
@@ -866,7 +844,6 @@ class CommitGraphApp(App):
             (["h", "/", "l"], "select commit in left / right lane"),
             (["g", "/", "G"], "first / last commit"),
             (["c"],       "copy hash (shown in status bar)"),
-            (["o"],       "open on GitHub (shown in status bar)"),
             (["r"],       "force refresh"),
             (["?"],       "toggle this help"),
         ]

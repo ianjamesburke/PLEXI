@@ -15,7 +15,7 @@ import time
 
 from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
-    Column, Card, Header, Section, Divider,
+    Column, Card, AppBar, Section, Divider,
     Heading, Label, KeyRow, ScrollLog, Spacer, Footer,
     ACCENT, GREEN, RED,
 )
@@ -39,9 +39,8 @@ class UIPlaygroundApp(App):
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
             # ── Header ────────────────────────────────────────────────────
-            Header(
-                title="UI Playground",
-                subtitle="Every SDK v2 primitive, stacked top-to-bottom.",
+            AppBar(
+                title="UI Playground", stacked top-to-bottom.",
             ),
 
             # ── Typography ────────────────────────────────────────────────

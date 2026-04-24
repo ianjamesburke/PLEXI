@@ -11,7 +11,7 @@ from plexi_sdk import (
     FG, MUTED, ACCENT, SURFACE, BODY, CAPTION,
 )
 from plexi_sdk.ui import (
-    Column, Header, Spacer, Footer, FooterKeys,
+    Column, AppBar, Spacer, Footer, FooterKeys,
 )
 
 API = "https://en.wikipedia.org/w/api.php"
@@ -162,14 +162,12 @@ class WikiApp(App):
         return FooterKeys([("esc", "back to results")])
 
     def on_render(self, ctx: RenderContext) -> None:
-        subtitle = "Loading…" if self._loading else {
-            "search": "Search English Wikipedia",
-            "results": f'Results for "{self._query}"',
+        "results": f'Results for "{self._query}"',
             "article": self._results[self._selected] if self._results else "Article",
         }[self._mode]
 
         ctx.render(Column([
-            Header(title="Wikipedia", subtitle=subtitle),
+            AppBar(title="Wikipedia"),
             self._Body(self),
             Spacer(grow=False),
             self._footer_component(),
