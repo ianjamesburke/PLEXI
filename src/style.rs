@@ -61,3 +61,18 @@ pub const SCRIM_ALPHA: u8 = 190;
 /// `egui::Margin::symmetric`.
 pub const MODAL_PADDING_H: i8 = 32;
 pub const MODAL_PADDING_V: i8 = 28;
+
+// ── App protocol — Badge geometry ─────────────────────────────────────────
+// Padding tokens for the host-rendered Badge DrawCommand. Shared with the
+// Python SDK constants in plexi_sdk/ui.py so both sides agree on pill size.
+pub const BADGE_PAD_H: f32 = 8.0;   // horizontal padding (text-to-edge each side)
+pub const BADGE_PAD_V: f32 = 3.0;   // vertical padding (text-to-edge each side)
+pub const BADGE_MIN_W: f32 = 32.0;  // floor width; prevents single-char scrunch
+
+// ── App protocol — KeyChip geometry ──────────────────────────────────────
+// Padding tokens for the host-rendered KeyChip / KeyChipRow DrawCommands.
+pub const KEYCHIP_PAD_H: f32 = 5.0;    // horizontal padding (text-to-edge each side)
+pub const KEYCHIP_PAD_V: f32 = 1.0;    // vertical padding
+pub const KEYCHIP_MIN_W: f32 = 16.0;   // floor width; prevents single-char cramping
+pub const KEYCHIP_GAP: f32 = 2.0;      // gap between chips in a KeyChipRow
+pub const KEYCHIP_DESC_GAP: f32 = 10.0; // gap between last chip and description

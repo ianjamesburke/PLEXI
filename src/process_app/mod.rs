@@ -403,6 +403,31 @@ impl App for ProcessApp {
                         std::time::Duration::from_millis(after_ms as u64),
                     );
                 }
+                // MeasureText is handled here (not in routing.rs) because it
+                // needs `ui` to access egui font metrics on the UI thread.
+                DrawCommand::MeasureText {
+                    request_id,
+                    text,
+                    font_size,
+                    monospace,
+                } => {
+                    let family = if monospace {
+                        egui::FontFamily::Monospace
+                    } else {
+                        egui::FontFamily::Proportional
+                    };
+                    let font_id = egui::FontId::new(font_size, family);
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(text, font_id, egui::Color32::WHITE)
+                    });
+                    let sz = galley.size();
+                    self.outbound_events
+                        .push_back(crate::app_protocol::PlexiEvent::TextMeasured {
+                            request_id,
+                            width: sz.x,
+                            height: sz.y,
+                        });
+                }
                 cmd @ (DrawCommand::CapabilityRequest { .. }
                 | DrawCommand::SecretGet { .. }
                 | DrawCommand::RunGet { .. }

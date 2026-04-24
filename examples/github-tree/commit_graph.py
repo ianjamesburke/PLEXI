@@ -19,6 +19,7 @@ from plexi_sdk.ui import (
     SPACE_MD, SPACE_LG, SPACE_XL,
     RADIUS_SM, RADIUS_MD,
     badge,
+    _wrap_to_width,
 )
 
 import git_log as gl
@@ -424,7 +425,6 @@ class CommitGraphApp(App):
         start_ts = end_ts - 7 * 86400
 
         # ── Header ────────────────────────────────────────────────────────────
-        from plexi_sdk.ui import _truncate_to_width
         week_str = self._format_week(start_ts, end_ts)
         n = len(self._commits)
         subtitle = f"{self._repo_name} · {week_str} · {n} commit{'s' if n != 1 else ''}"
@@ -432,8 +432,7 @@ class CommitGraphApp(App):
             subtitle += f" (–{self._week_offset}w)"
 
         # Measure and render Header manually so we can position the rest below it
-        from plexi_sdk.ui import Header as UIHeader
-        header = UIHeader(title="Commit Graph", subtitle=subtitle)
+        header = Header(title="Commit Graph", subtitle=subtitle)
         hdr_h = header.measure(ctx.w - 2 * SPACE_XL)
         header.render(ctx, SPACE_XL, SPACE_XL, ctx.w - 2 * SPACE_XL, hdr_h)
         y_cursor = SPACE_XL + hdr_h + SPACE_MD
@@ -655,11 +654,14 @@ class CommitGraphApp(App):
 
             # ── Ref badges ───────────────────────────────────────────────────
             badge_x = label_x
-            avail_label_w = ctx.w - label_x - PAD_X
             ref_badge_w = 0.0
             for ref in self._refs:
                 if ref["tip_hash"] == c["hash"]:
-                    bw = self._draw_badge(ctx, badge_x, cy_node, ref["name"], color)
+                    self._draw_badge(ctx, badge_x, cy_node, ref["name"], color)
+                    # Advance by an approximate width. The host sizes the badge
+                    # from real font metrics so the rendered pill may differ slightly
+                    # from this estimate — acceptable for horizontal flow spacing.
+                    bw = self._approx_badge_w(ref["name"])
                     badge_x += bw + 4.0
                     ref_badge_w += bw + 4.0
 
@@ -702,18 +704,27 @@ class CommitGraphApp(App):
             ctx.line(x2, y_mid + CUT, x2, y2, color=color, width=2.0)
 
     def _draw_badge(self, ctx: RenderContext, x: float, cy: float,
-                    name: str, color: str) -> float:
-        """Draw a branch-name pill badge using the SDK badge primitive.
+                    name: str, color: str) -> None:
+        """Emit a host-measured badge DrawCommand for a branch/tag ref.
 
-        Returns the rendered badge width so the caller can flow badges
-        horizontally.  Tag refs use a square-ish radius; branch refs are
-        fully rounded.
+        Tag refs use RADIUS_SM; branch refs use RADIUS_MD.
+        The host sizes the pill from real font metrics.
         """
         is_tag = name.startswith("tag:")
         fill = YELLOW if is_tag else color
         radius = RADIUS_SM if is_tag else RADIUS_MD
-        return badge(ctx, x, cy, name, fill=fill, fg=BG,
-                     font_size=TEXT_HINT, radius=radius)
+        badge(ctx, x, cy, name, fill=fill, fg=BG,
+              font_size=TEXT_HINT, radius=radius)
+
+    @staticmethod
+    def _approx_badge_w(label: str) -> float:
+        """Approximate badge pixel width for horizontal flow cursor advance.
+
+        Uses the same heuristic as the old badge() — good enough for spacing
+        between consecutive badges. The host renders each badge precisely.
+        """
+        text_w = len(label) * TEXT_HINT * 0.62
+        return max(32.0, text_w + 8.0 * 2)
 
     # ── Tooltip ───────────────────────────────────────────────────────────────
 
@@ -737,8 +748,7 @@ class CommitGraphApp(App):
             else f"+{c['added']}  -{c['removed']}"
         )
 
-        # Wrap subject (up to 6 lines)
-        from plexi_sdk.ui import _wrap_to_width
+        # Wrap subject (up to 6 lines) for height estimation.
         subject_lines = _wrap_to_width(
             c["subject"], TIP_W - INNER_PAD * 2, TEXT_BODY, max_lines=6
         )
@@ -807,7 +817,6 @@ class CommitGraphApp(App):
             (["r"],       "force refresh"),
             (["?"],       "toggle this help"),
         ]
-        from plexi_sdk.ui import Column, Card, KeyRow, SPACE_MD
         W = min(400.0, ctx.w - 48.0)
         card = Card([KeyRow(keys, desc) for keys, desc in help_rows])
         card_h = card.measure(W)
