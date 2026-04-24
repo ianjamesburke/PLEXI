@@ -466,6 +466,66 @@ class Scrollable(Component):
             return True
         return False
 
+    def ensure_visible(self, top: float, bottom: float, margin: float = 0.0) -> None:
+        """See `ensure_visible(...)` free function. Wrapper for Scrollable's
+        own offset + cached viewport height. Use this from inside an app
+        that's wrapped its content in a Scrollable instance:
+
+            self._sel_idx = min(self._sel_idx + 1, len(items) - 1)
+            self._scrollable.ensure_visible(self._sel_idx * ROW_H,
+                                            self._sel_idx * ROW_H + ROW_H)
+        """
+        if self._avail_h <= 0:
+            return
+        self.scroll_offset = ensure_visible(
+            self.scroll_offset, self._avail_h, top, bottom, margin=margin
+        )
+        self._clamp_offset(self._avail_h)
+
+
+def ensure_visible(scroll_offset: float, viewport_h: float,
+                   top: float, bottom: float, margin: float = 0.0) -> float:
+    """Solve 'selection follows scroll' in one call. Returns the new offset.
+
+    The pattern: the user is navigating items with j/k. The cursor moves
+    freely while it stays inside the visible viewport; the moment it would
+    go off the top or bottom edge, the viewport scrolls just enough to
+    keep it visible. Identical to every native list widget.
+
+    Apps call this from their nav handler after mutating their
+    selected_index — works whether the app uses a `Scrollable` component
+    or hand-rolls its own scroll offset (commit-graph's clip-and-offset
+    style):
+
+        new_sel = min(self._sel + 1, len(items) - 1)
+        item_top = new_sel * ROW_H
+        self._scroll_offset = ensure_visible(
+            self._scroll_offset, viewport_h,
+            top=item_top, bottom=item_top + ROW_H,
+        )
+        self._sel = new_sel
+
+    Args:
+        scroll_offset: current scroll offset in the child's local space.
+        viewport_h:    visible height of the viewport.
+        top, bottom:   the item's top/bottom edges in the child's local space.
+        margin:        scrolloff equivalent. Set to one row-height to keep
+                       a row of breathing room above/below the cursor.
+
+    Returns:
+        The new scroll_offset that keeps `[top, bottom]` visible. Identical
+        to the input if the cursor was already in view.
+    """
+    if viewport_h <= 0:
+        return scroll_offset
+    cursor_top = scroll_offset + margin
+    cursor_bottom = scroll_offset + viewport_h - margin
+    if top < cursor_top:
+        return max(0.0, top - margin)
+    if bottom > cursor_bottom:
+        return bottom - viewport_h + margin
+    return scroll_offset
+
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         self._avail_h = h
         # Measure child at our width (less scrollbar gutter).
@@ -804,6 +864,8 @@ __all__ = [
     "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     # badge primitive
     "badge",
+    # scroll helpers
+    "ensure_visible",
     # entry
     "render_tree",
 ]

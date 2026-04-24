@@ -19,6 +19,7 @@ from plexi_sdk.ui import (
     SPACE_MD, SPACE_LG, SPACE_XL,
     RADIUS_SM, RADIUS_MD,
     badge,
+    ensure_visible,
     _wrap_to_width,
 )
 
@@ -95,6 +96,10 @@ class CommitGraphApp(App):
         # Vertical scroll offset (px) for the commit-graph region.
         # Scrolls the commit rows within the clipped graph rectangle.
         self._graph_scroll_offset: float = 0.0
+        # Cached at end of every render — the visible viewport height of the
+        # graph region. Used by j/k handlers to call ensure_visible without
+        # re-deriving layout. 0 until the first render completes.
+        self._graph_viewport_h: float = 0.0
 
         self.emit.status_summary("Commit Graph — loading")
         self.emit.schedule_render(after_ms=16)
@@ -280,13 +285,11 @@ class CommitGraphApp(App):
                 threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key in ("j", "down") and n > 0:
             self._sel = min(self._sel + 1, n - 1)
-            # Scroll down to keep selected commit in view.
-            self._graph_scroll_offset += ROW_H
+            self._scroll_to_selection()
             self.emit.schedule_render(after_ms=0)
         elif key in ("k", "up") and n > 0:
             self._sel = max(self._sel - 1, 0)
-            # Scroll up to keep selected commit in view.
-            self._graph_scroll_offset = max(0.0, self._graph_scroll_offset - ROW_H)
+            self._scroll_to_selection()
             self.emit.schedule_render(after_ms=0)
         elif key in ("h", "left") and n > 0:
             cur_lane = self._commits[self._sel]["lane"] if n > 0 else 0
@@ -295,6 +298,7 @@ class CommitGraphApp(App):
                 best = self._nearest_in_lane(target_lane)
                 if best is not None:
                     self._sel = best
+                    self._scroll_to_selection()
                     self.emit.schedule_render(after_ms=0)
         elif key in ("l", "right") and n > 0:
             cur_lane = self._commits[self._sel]["lane"] if n > 0 else 0
@@ -302,15 +306,15 @@ class CommitGraphApp(App):
             best = self._nearest_in_lane(target_lane)
             if best is not None:
                 self._sel = best
+                self._scroll_to_selection()
                 self.emit.schedule_render(after_ms=0)
         elif key == "g":
             self._sel = 0
-            self._graph_scroll_offset = 0.0
+            self._scroll_to_selection()
             self.emit.schedule_render(after_ms=0)
         elif key == "G":
             self._sel = max(0, n - 1)
-            # Scroll to the bottom of the commit list.
-            self._graph_scroll_offset = max(0.0, n * ROW_H)
+            self._scroll_to_selection()
             self.emit.schedule_render(after_ms=0)
         elif key == "c":
             # IMPL-NOTE: SDK has no clipboard emit — log + status line instead.
@@ -321,6 +325,28 @@ class CommitGraphApp(App):
                 self.emit.schedule_render(after_ms=0)
         elif key == "r":
             threading.Thread(target=self._fetch_graph, daemon=True).start()
+
+    def _scroll_to_selection(self) -> None:
+        """Keep the currently-selected commit visible in the graph viewport.
+
+        One-liner using the SDK's `ensure_visible` helper. Scrolls only when
+        the selection moves outside the viewport — selection moves freely
+        within view, scroll lockstep at the edges. Standard list-nav pattern.
+        """
+        if not self._commits or self._graph_viewport_h <= 0:
+            return
+        if not (0 <= self._sel < len(self._commits)):
+            return
+        row_top = self._sel * ROW_H
+        # Add ROW_H of margin so a row of breathing room stays visible above
+        # and below the cursor at the edges (vim's `scrolloff = 1`).
+        self._graph_scroll_offset = ensure_visible(
+            self._graph_scroll_offset,
+            self._graph_viewport_h,
+            top=row_top,
+            bottom=row_top + ROW_H,
+            margin=ROW_H,
+        )
 
     def _nearest_in_lane(self, lane: int) -> Optional[int]:
         """Return index of commit in `lane` nearest in row to current sel."""
@@ -485,6 +511,10 @@ class CommitGraphApp(App):
         graph_h = footer_y - graph_y - SPACE_MD
         if graph_h <= 0:
             return
+        # Cache the visible graph height so the j/k key handler can call
+        # ensure_visible() without re-deriving the layout. Updated every
+        # render so resize is handled automatically.
+        self._graph_viewport_h = graph_h
         self._draw_graph(ctx, graph_y, graph_h, right_edge=graph_right)
 
         # ── Suspense indicator (top-right of the graph region) ───────────────
