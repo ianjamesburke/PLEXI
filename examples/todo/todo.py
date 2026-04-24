@@ -10,7 +10,7 @@ from plexi_sdk import (
     FG, MUTED, SURFACE, BODY,
 )
 from plexi_sdk.ui import (
-    Column, Header, Section, Label, Spacer, Footer,
+    Column, Header, Section, Label, Spacer, FooterKeys,
 )
 
 TODO_FILE = ".plexi/todos.json"
@@ -134,7 +134,12 @@ class TodoApp(App):
             Section("Current list"),
             self._Body(self),
             Spacer(grow=False),
-            Footer("↑↓ select · Space toggle · a add · d delete"),
+            FooterKeys([
+                (["↑", "↓"], "select"),
+                ("space", "toggle"),
+                ("a", "add"),
+                ("d", "delete"),
+            ]),
         ]))
 
 
