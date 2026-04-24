@@ -262,6 +262,7 @@ pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], 
             | DrawCommand::HttpRequest { .. }
             | DrawCommand::LlmRequest { .. }
             | DrawCommand::CdRequest { .. }
+            | DrawCommand::OpenUrl { .. }
             | DrawCommand::Image { .. }
             | DrawCommand::VideoPlayer { .. }
             | DrawCommand::AudioMeter { .. }

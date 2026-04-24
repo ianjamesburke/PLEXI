@@ -564,6 +564,12 @@ class Emitter:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
         _emit({"type": "cd_request", "cwd": cwd})
 
+    def open_url(self, url: str) -> None:
+        """Open `url` in the user's default browser. The host validates the
+        scheme — only `http://`, `https://`, and `mailto:` are accepted —
+        and rejects anything else (no `file://`, no `open` shenanigans)."""
+        _emit({"type": "open_url", "url": url})
+
     def schedule_render(self, after_ms: int = 16) -> None:
         """Ask the host to send a new Render event after `after_ms` milliseconds.
         Call at the end of on_render to sustain a game/animation loop.

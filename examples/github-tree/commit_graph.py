@@ -77,6 +77,12 @@ class CommitGraphApp(App):
         # Tooltip / help overlay
         # Note: no tooltip state — selection drives the always-visible details
         # panel on the right side. No toggle, no Enter/Esc dance.
+
+        # Suspense pattern: `_fetching` tracks "is a refresh in flight"
+        # independently of `_mode`. First-ever fetch triggers MODE_LOADING
+        # (full-pane spinner); subsequent fetches keep MODE_READY and just
+        # render a small loading pill in the graph region. No flicker.
+        self._fetching: bool = False
         self._show_help: bool = False
 
         # Hit-test list: [(hash, cx, cy, r)] rebuilt each render
@@ -120,11 +126,24 @@ class CommitGraphApp(App):
             self._set_mode(MODE_ERROR)
 
     def _fetch_graph(self) -> None:
-        """Fetch refs + commits + numstats for the current week viewport."""
+        """Fetch refs + commits + numstats for the current week viewport.
+
+        First-ever fetch swaps to MODE_LOADING (full-pane spinner). Every
+        subsequent fetch keeps MODE_READY mounted and just sets
+        `_fetching = True` so a small loading pill appears in the graph
+        region. Stale data stays visible during the refresh — no flicker.
+        """
         if self._repo_root is None:
             return
 
-        self._set_mode(MODE_LOADING, "Fetching commits…")
+        # First fetch: swap to MODE_LOADING (full-pane spinner).
+        # Subsequent fetches: keep MODE_READY, raise the in-flight flag.
+        is_first_fetch = self._mode != MODE_READY
+        if is_first_fetch:
+            self._set_mode(MODE_LOADING, "Fetching commits…")
+        else:
+            self._fetching = True
+            self.emit.schedule_render(after_ms=0)
 
         import time as _time
         now_ts = int(_time.time())
@@ -169,9 +188,11 @@ class CommitGraphApp(App):
             self._last_head_sha = self._head_sha
             self._last_poll_time = time.monotonic()
 
+            self._fetching = False
             self._set_mode(MODE_READY)
         except Exception as e:
             self._error = f"fetch failed: {e}"
+            self._fetching = False
             self._set_mode(MODE_ERROR)
 
     def _set_mode(self, mode: str, msg: str = "") -> None:
@@ -312,10 +333,13 @@ class CommitGraphApp(App):
         slug = m.group(1)
         commit_hash = self._commits[self._sel]["hash"]
         gh_url = f"https://github.com/{slug}/commit/{commit_hash}"
-        # IMPL-NOTE: SDK has no open-url emit — log the URL as best effort.
-        self.emit.info(f"commit-graph: open {gh_url}")
-        self.emit.status_summary(f"URL: {gh_url}")
-        self.emit.schedule_render(after_ms=16)
+        # New SDK primitive — host shells `open <url>` (macOS), scheme-gated.
+        self.emit.info(f"commit-graph: opening {gh_url}")
+        # ctx is not in scope here; use the App-level emit which proxies _emit.
+        from plexi_sdk import _emit
+        _emit({"type": "open_url", "url": gh_url})
+        self.emit.status_summary(f"Opened {gh_url}")
+        self.emit.schedule_render(after_ms=0)
 
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
         if self._mode != MODE_READY:
@@ -470,6 +494,22 @@ class CommitGraphApp(App):
         if graph_h <= 0:
             return
         self._draw_graph(ctx, graph_y, graph_h, right_edge=graph_right)
+
+        # ── Suspense indicator (top-right of the graph region) ───────────────
+        # While `_fetching` is true, overlay a small loading pill on top of
+        # the (stale) graph. Stale data stays visible during the refresh —
+        # no full-pane spinner swap, no flicker. Pill disappears the moment
+        # the fetch completes and re-render fires.
+        if self._fetching:
+            from plexi_sdk.ui import loading_pill
+            # Anchor by approximate top-right; loading_pill is a host-
+            # measured badge so width is correct but we don't need it for
+            # placement (pill flows from x rightward; we keep some margin).
+            pill_x = graph_right - 140.0
+            pill_y = graph_y + 4.0
+            loading_pill(ctx, pill_x, pill_y, label="Refreshing")
+            # Keep ticking the spinner glyph at ~12 fps while we're loading.
+            self.emit.schedule_render(after_ms=80)
 
         # ── Vertical separator + details panel (right side) ───────────────────
         if details_w > 0:

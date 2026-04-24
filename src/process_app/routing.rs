@@ -573,6 +573,49 @@ impl ProcessApp {
                 self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
             }
 
+            // ── Open URL ───────────────────────────────────────────────────
+            DrawCommand::OpenUrl { url } => {
+                // Scheme allowlist — keeps a malicious app from invoking
+                // arbitrary `open <thing>` (which on macOS can launch
+                // local apps, files, etc.). Browser-bound only.
+                let safe_scheme = url.starts_with("https://")
+                    || url.starts_with("http://")
+                    || url.starts_with("mailto:");
+                if !safe_scheme {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenUrl rejected — disallowed scheme: {}",
+                        self.type_id, url
+                    );
+                    return;
+                }
+                log::info!("ProcessApp[{}]: OpenUrl {url}", self.type_id);
+                #[cfg(target_os = "macos")]
+                {
+                    let url_clone = url.clone();
+                    let type_id = self.type_id.clone();
+                    std::thread::spawn(move || {
+                        match std::process::Command::new("open").arg(&url_clone).status() {
+                            Ok(s) if s.success() => {
+                                log::debug!("ProcessApp[{type_id}]: OpenUrl spawned `open` ok");
+                            }
+                            Ok(s) => log::warn!(
+                                "ProcessApp[{type_id}]: OpenUrl `open` exit {s}"
+                            ),
+                            Err(e) => log::warn!(
+                                "ProcessApp[{type_id}]: OpenUrl `open` failed: {e}"
+                            ),
+                        }
+                    });
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenUrl unsupported on this platform",
+                        self.type_id
+                    );
+                }
+            }
+
             // ── Set timer ──────────────────────────────────────────────────
             DrawCommand::SetTimer { timer_id, after_ms } => {
                 if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer) {

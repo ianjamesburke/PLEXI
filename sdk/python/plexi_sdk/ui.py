@@ -509,6 +509,57 @@ def badge(
               fill=fill, fg=fg, font_size=font_size, radius=radius)
 
 
+# ── Loading pill (suspense indicator) ──────────────────────────────────────
+#
+# A small chip that apps overlay on top of stale content while a refresh
+# is in flight. The point: don't full-swap the pane to a spinner card on
+# every refresh — keep the existing UI mounted, surface a localised
+# loading indicator only over the region that's being refreshed.
+#
+# Pattern in the calling app:
+#     1. Track `_fetching: bool` separately from `_mode`.
+#     2. On first-ever fetch, show `_render_loading()` (full-pane spinner).
+#     3. On every subsequent fetch, set `_fetching = True` and re-render —
+#        the existing _render_ready stays up; loading_pill renders on top.
+#     4. When the fetch completes: set `_fetching = False`, update data,
+#        re-render. Pill disappears, content updates in place.
+#
+# This is the SDK-level equivalent of React Suspense with stale-while-
+# revalidate: the boundary stays mounted with current content; the only
+# visual signal is a small pill instead of a destructive remount.
+
+import time as _ct_time  # `time` collides with some example apps' imports
+
+
+def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
+    """Render a small spinner+label pill at (x, y). Returns rendered width.
+
+    The pill uses host-measured `badge()` rendering (so widths are
+    correct), with a wall-clock-driven Braille spinner glyph that ticks
+    at 8 fps regardless of how often `loading_pill` is called.
+
+    Pattern: position this in the top-right of the region being
+    refreshed. While `_fetching` is true, render it on top of the stale
+    content. When the fetch completes, just stop calling it.
+
+    Args:
+        ctx:   RenderContext.
+        x, y:  Top-left of the pill (NOT y-centre — easier to anchor).
+        label: Text shown after the spinner glyph.
+    """
+    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    idx = int(_ct_time.monotonic() * 8) % len(spinner)
+    text = f"{spinner[idx]}  {label}"
+    # Use the host-measured badge; subtle styling (surface fill, muted fg).
+    # Pill is anchored top-left here; convert to y_center for badge().
+    ctx.badge(x=x, y_center=y + 9.0, label=text,
+              fill=HIGHLIGHT, fg=FG, font_size=TEXT_HINT,
+              radius=RADIUS_SM)
+    # Approx width — not measured here because we don't need it for
+    # placement (callers anchor by top-right of the parent region).
+    return len(text) * TEXT_HINT * 0.62 + 16.0
+
+
 # ── Container components ───────────────────────────────────────────────────
 
 
