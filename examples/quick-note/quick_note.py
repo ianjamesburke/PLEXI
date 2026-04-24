@@ -167,29 +167,32 @@ class QuickNoteApp(App):
                     ctx.text(px + 12, py, ln, size=CAPTION, color=FG)
                     py += 18
 
-    def _footer_text(self) -> str:
-        base = (
-            "Cmd+Enter save · Cmd+K browse notes"
-            if self._mode == "compose"
-            else "↑↓ navigate · Enter open · Esc back"
-        )
-        if self._status:
-            return f"{self._status}   ·   {base}"
-        return base
-
-    def _footer_color(self) -> str:
-        return GREEN if self._status else MUTED
+    def _shortcut_footer(self):
+        from plexi_sdk.ui import FooterKeys
+        if self._mode == "compose":
+            return FooterKeys([
+                (["⌘", "↵"], "save"),
+                (["⌘", "k"], "browse notes"),
+            ])
+        return FooterKeys([
+            (["↑", "↓"], "navigate"),
+            ("↵", "open"),
+            ("esc", "back"),
+        ])
 
     def on_render(self, ctx: RenderContext) -> None:
         from plexi_sdk.ui import Column, Header, Spacer, Footer
 
         subtitle = "Compose" if self._mode == "compose" else "Browse saved notes"
-        ctx.render(Column([
+        children = [
             Header(title="Quick Note", subtitle=subtitle),
             self._Body(self),
             Spacer(size=HINT),
-            Footer(self._footer_text(), color=self._footer_color()),
-        ]))
+        ]
+        if self._status:
+            children.append(Footer(self._status, color=GREEN))
+        children.append(self._shortcut_footer())
+        ctx.render(Column(children))
 
 
 if __name__ == "__main__":
