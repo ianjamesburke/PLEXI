@@ -11,7 +11,7 @@ from plexi_sdk import (
     FG, MUTED, ACCENT, SURFACE, BODY, CAPTION,
 )
 from plexi_sdk.ui import (
-    Column, AppBar, Spacer, Footer, FooterKeys,
+    Column, AppBar, Spacer, Footer, FooterKeys, Component,
 )
 
 API = "https://en.wikipedia.org/w/api.php"
@@ -104,7 +104,7 @@ class WikiApp(App):
         threading.Thread(target=run, daemon=True).start()
 
     # ── Mode body — functional surface, stays primitive ─────────────────────
-    class _Body:
+    class _Body(Component):
         """Renders the search box, results list, or article text into whatever
         vertical space the Column hands us."""
         def __init__(self, app: "WikiApp") -> None:
@@ -162,10 +162,6 @@ class WikiApp(App):
         return FooterKeys([("esc", "back to results")])
 
     def on_render(self, ctx: RenderContext) -> None:
-        "results": f'Results for "{self._query}"',
-            "article": self._results[self._selected] if self._results else "Article",
-        }[self._mode]
-
         ctx.render(Column([
             AppBar(title="Wikipedia"),
             self._Body(self),

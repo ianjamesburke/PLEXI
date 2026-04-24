@@ -482,6 +482,33 @@ class Scrollable(Component):
         )
         self._clamp_offset(self._avail_h)
 
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._avail_h = h
+        # Measure child at our width (less scrollbar gutter).
+        content_w = w - self._SCROLLBAR_W - 2.0
+        self._child_h = self.child.measure(content_w)
+        self._clamp_offset(h)
+
+        # Clip to our allocated rect, then render child offset upward.
+        ctx.push_clip(x, y, w, h)
+        try:
+            child_y = y - self.scroll_offset
+            self.child.render(ctx, x, child_y, content_w, self._child_h)
+        finally:
+            ctx.pop_clip()
+
+        # Scrollbar indicator (only when content overflows).
+        if self._child_h > h and h > 0:
+            track_h = h
+            thumb_ratio = h / self._child_h
+            thumb_h = max(16.0, track_h * thumb_ratio)
+            thumb_y = y + (self.scroll_offset / self._child_h) * track_h
+            # Clamp thumb to track
+            thumb_y = min(thumb_y, y + track_h - thumb_h)
+            bar_x = x + w - self._SCROLLBAR_W
+            ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, HIGHLIGHT)
+            ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, MUTED)
+
 
 def ensure_visible(scroll_offset: float, viewport_h: float,
                    top: float, bottom: float, margin: float = 0.0) -> float:
@@ -525,33 +552,6 @@ def ensure_visible(scroll_offset: float, viewport_h: float,
     if bottom > cursor_bottom:
         return bottom - viewport_h + margin
     return scroll_offset
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self._avail_h = h
-        # Measure child at our width (less scrollbar gutter).
-        content_w = w - self._SCROLLBAR_W - 2.0
-        self._child_h = self.child.measure(content_w)
-        self._clamp_offset(h)
-
-        # Clip to our allocated rect, then render child offset upward.
-        ctx.push_clip(x, y, w, h)
-        try:
-            child_y = y - self.scroll_offset
-            self.child.render(ctx, x, child_y, content_w, self._child_h)
-        finally:
-            ctx.pop_clip()
-
-        # Scrollbar indicator (only when content overflows).
-        if self._child_h > h and h > 0:
-            track_h = h
-            thumb_ratio = h / self._child_h
-            thumb_h = max(16.0, track_h * thumb_ratio)
-            thumb_y = y + (self.scroll_offset / self._child_h) * track_h
-            # Clamp thumb to track
-            thumb_y = min(thumb_y, y + track_h - thumb_h)
-            bar_x = x + w - self._SCROLLBAR_W
-            ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, HIGHLIGHT)
-            ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, MUTED)
 
 
 @dataclass
