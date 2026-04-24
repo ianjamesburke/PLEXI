@@ -303,6 +303,13 @@ pub enum DrawCommand {
         /// Typical values: 0 (background info), 50 (normal), 100 (important),
         /// 200 (critical/required).
         priority: u32,
+        /// Visibility scope. REQUIRED — no `#[serde(default)]`. Apps must
+        /// set this explicitly. Use `NotifyScope::Global` to interrupt the
+        /// user regardless of which context is active (e.g. stand-up-reminder).
+        /// Use `NotifyScope::Context` for confirmations local to this context
+        /// (e.g. "note saved"). Apps receive the default from their manifest
+        /// via the SDK; they should pass it through unchanged.
+        scope: NotifyScope,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
@@ -442,6 +449,22 @@ pub enum DrawCommand {
         end_angle: f32,
         fill: String,
     },
+}
+
+/// Visibility scope for a notification.
+///
+/// - `Context` — visible only when the source context is the active context.
+/// - `Global`  — always visible, regardless of which context is active.
+///
+/// REQUIRED on the wire — no `#[serde(default)]`. Apps and SDKs must set this
+/// explicitly (v3 breaking-change policy). Omitting it fails deserialisation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyScope {
+    /// Only visible when the source context is the active context.
+    Context,
+    /// Always visible regardless of which context is active.
+    Global,
 }
 
 /// An action attached to a Notify command.

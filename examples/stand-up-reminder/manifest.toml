@@ -4,6 +4,7 @@ name = "Stand Up Reminder"
 version = "0.1.0"
 description = "Background app: notifies every 15 min with a random movement prompt."
 entry = "stand_up_reminder.py"
+default_notification_scope = "global"
 
 [app.capabilities]
 capabilities = ["timer"]

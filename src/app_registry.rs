@@ -51,6 +51,33 @@ pub struct AppManifestApp {
     pub description: String,
     #[serde(default)]
     pub capabilities: AppCapabilities,
+    /// Default notification scope for this app. Optional — defaults to
+    /// `NotifyScope::Context` when unset (safe default: local confirmations
+    /// are local). Set to "global" in manifest for apps that must interrupt
+    /// the user regardless of which context is active (e.g. stand-up-reminder).
+    #[serde(default)]
+    pub default_notification_scope: DefaultNotifyScope,
+}
+
+/// Newtype for the manifest `default_notification_scope` field so it
+/// deserialises from a snake_case string ("context" | "global") and has a
+/// sensible `Default` impl without pulling `NotifyScope` into the serde
+/// derive chain.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultNotifyScope {
+    #[default]
+    Context,
+    Global,
+}
+
+impl From<DefaultNotifyScope> for crate::app_protocol::NotifyScope {
+    fn from(d: DefaultNotifyScope) -> Self {
+        match d {
+            DefaultNotifyScope::Context => crate::app_protocol::NotifyScope::Context,
+            DefaultNotifyScope::Global => crate::app_protocol::NotifyScope::Global,
+        }
+    }
 }
 
 /// v3 capability section — `[app.capabilities]`. Holds only the capability
@@ -287,12 +314,26 @@ impl AppRegistry {
             .map(|h| h.split)
     }
 
+    /// Return the manifest-declared default notification scope for an app.
+    /// Used by operators and the host to understand the app's intent;
+    /// the actual scope is set per-notification by the app via the SDK.
+    pub fn default_notification_scope_for(
+        &self,
+        app_id: &str,
+    ) -> crate::app_protocol::NotifyScope {
+        self.apps
+            .get(app_id)
+            .map(|a| a.manifest.default_notification_scope.clone().into())
+            .unwrap_or(crate::app_protocol::NotifyScope::Context)
+    }
+
     /// Launch an app process for the given id.
     pub fn launch_process(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<ProcessApp> {
         let installed = self.apps.get(id)?;
         let perms = installed.manifest.capabilities.to_permissions();
         let caps = perms.capabilities.clone();
         let keyboard_capture = installed.launch.keyboard_capture;
+        let default_scope = self.default_notification_scope_for(id);
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -305,9 +346,10 @@ impl AppRegistry {
         ) {
             Ok(app) => {
                 log::info!(
-                    "AppRegistry: launched '{}' from {:?}",
+                    "AppRegistry: launched '{}' from {:?} (default_notification_scope={:?})",
                     id,
-                    installed.bin_path
+                    installed.bin_path,
+                    default_scope,
                 );
                 Some(app)
             }

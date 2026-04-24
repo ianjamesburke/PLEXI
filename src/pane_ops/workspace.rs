@@ -59,6 +59,27 @@ impl PlexiApp {
                 self.renaming_context = Some(r - 1);
             }
         }
+        // Remove context-scoped notifications from the deleted context.
+        // Global notifications survive (they aren't tied to any context).
+        // Re-index source_context for entries that referenced contexts after
+        // the deleted one (positional indices shifted down by one).
+        self.pending_notifications.retain(|n| {
+            !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
+                && n.source_context == index)
+        });
+        for n in &mut self.pending_notifications {
+            if n.source_context > index {
+                n.source_context -= 1;
+            }
+        }
+        // If the current notification was removed, clear the pin so the
+        // next highest-priority visible one is picked on the next render.
+        if let Some(ref id) = self.current_notify_id.clone() {
+            let still_present = self.pending_notifications.iter().any(|n| &n.notify_id == id);
+            if !still_present {
+                self.current_notify_id = None;
+            }
+        }
     }
 
     pub(crate) fn save_workspace(&self) {

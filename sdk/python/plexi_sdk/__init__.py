@@ -383,28 +383,45 @@ class Emitter:
     # dismiss and to order the Cmd+] / Cmd+[ preview traversal. Typical
     # values: 0 (background info), 50 (normal), 100 (important), 200
     # (critical). No default — apps must pick deliberately.
+    #
+    # `scope` is REQUIRED. "context" = only visible in the source context;
+    # "global" = always visible regardless of active context. No default —
+    # apps must choose explicitly. Use the app's manifest default_notification_scope
+    # as the baseline and pass it through without guessing.
     def notify(self, title: str, body: str = "", level: str = "info",
                priority: int | None = None,
+               scope: str | None = None,
                actions: list | None = None) -> None:
         """Post a message notification. The modal shows title + body and a
         single Acknowledge button; Enter / Space acknowledge, Esc dismisses
         (unless required=True — use `notify_and_wait` for that flow).
 
         `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global"). "global" interrupts the
+        user regardless of which context is active.
         `actions` is the legacy side-effect list (action_type =
         resume_run | open_intent | run_command). It does NOT render UI.
+
+        # IMPL-NOTE: scope is required at the SDK level (TypeError if omitted).
+        # The manifest's default_notification_scope is not injected via the
+        # Init handshake; apps must read their intended default from their own
+        # manifest or hard-code the right scope for each notification call.
         """
         if priority is None:
             raise TypeError("notify() requires 'priority' (int, higher = more urgent)")
+        if scope is None:
+            raise TypeError("notify() requires 'scope' (str: 'context' | 'global')")
         _emit({"type": "notify", "level": level, "title": title,
                "body": body, "kind": "message",
                "priority": int(priority),
+               "scope": scope,
                "actions": actions or []})
 
     # kind = "choice"
     def notify_choice(self, title: str, options: list, body: str = "",
                       level: str = "info", required: bool = False,
-                      priority: int | None = None) -> str:
+                      priority: int | None = None,
+                      scope: str | None = None) -> str:
         """Post a choice notification and block until the user picks one.
 
         `options` is a list of dicts: {"label": str, "value": str (optional),
@@ -412,12 +429,15 @@ class Emitter:
         label is returned.
 
         `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global").
         Returns the chosen option's value (or the label if no value set). If
         `required=False` the user may cancel with Esc — this returns the string
         `"__cancel__"`.
         """
         if priority is None:
             raise TypeError("notify_choice() requires 'priority' (int, higher = more urgent)")
+        if scope is None:
+            raise TypeError("notify_choice() requires 'scope' (str: 'context' | 'global')")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
@@ -425,21 +445,26 @@ class Emitter:
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "choice", "options": options, "required": required,
                "priority": int(priority),
+               "scope": scope,
                "notify_id": notify_id})
         return q.get()
 
     # kind = "input"
     def notify_input(self, title: str, prompt: str = "", body: str = "",
                      level: str = "info", required: bool = False,
-                     priority: int | None = None) -> str:
+                     priority: int | None = None,
+                     scope: str | None = None) -> str:
         """Post an input notification and block until the user submits or
         cancels. Returns the typed text (possibly empty), or "__cancel__" if
         the user dismissed with Esc (only possible when required=False).
 
         `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global").
         """
         if priority is None:
             raise TypeError("notify_input() requires 'priority' (int, higher = more urgent)")
+        if scope is None:
+            raise TypeError("notify_input() requires 'scope' (str: 'context' | 'global')")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
@@ -447,21 +472,26 @@ class Emitter:
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "input", "input_prompt": prompt, "required": required,
                "priority": int(priority),
+               "scope": scope,
                "notify_id": notify_id})
         return q.get()
 
     def notify_and_wait(self, title: str, body: str = "", level: str = "info",
                         actions: list | None = None,
-                        priority: int | None = None) -> str:
+                        priority: int | None = None,
+                        scope: str | None = None) -> str:
         """Post a message notification and block until the user acknowledges
         or cancels. Returns "acknowledge" on Enter/Space/button, "cancel" on Esc.
 
         For richer interaction, use `notify_choice` or `notify_input`.
         `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global").
         `actions` is the legacy server-side side-effect list.
         """
         if priority is None:
             raise TypeError("notify_and_wait() requires 'priority' (int, higher = more urgent)")
+        if scope is None:
+            raise TypeError("notify_and_wait() requires 'scope' (str: 'context' | 'global')")
         import uuid
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
@@ -469,6 +499,7 @@ class Emitter:
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "message", "actions": actions or [],
                "priority": int(priority),
+               "scope": scope,
                "notify_id": notify_id})
         return q.get()
 
@@ -778,41 +809,50 @@ class RenderContext:
 
     def notify(self, title: str, body: str = "", level: str = "info",
                priority: int | None = None,
+               scope: str | None = None,
                actions: list | None = None) -> None:
         """Post a message notification. See Emitter.notify.
-        `priority` is required (int, higher = more urgent)."""
+        `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global")."""
         self.emit.notify(title=title, body=body, level=level,
-                         priority=priority, actions=actions)
+                         priority=priority, scope=scope, actions=actions)
 
     def notify_choice(self, title: str, options: list, body: str = "",
                       level: str = "info", required: bool = False,
-                      priority: int | None = None) -> str:
+                      priority: int | None = None,
+                      scope: str | None = None) -> str:
         """Post a choice notification and block until the user picks.
         `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global").
         Returns the chosen option's value (or label if no value set),
         or "__cancel__" if the user dismissed."""
         return self.emit.notify_choice(title=title, options=options, body=body,
                                        level=level, required=required,
-                                       priority=priority)
+                                       priority=priority, scope=scope)
 
     def notify_input(self, title: str, prompt: str = "", body: str = "",
                      level: str = "info", required: bool = False,
-                     priority: int | None = None) -> str:
+                     priority: int | None = None,
+                     scope: str | None = None) -> str:
         """Post an input notification and block until the user submits.
         `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global").
         Returns the typed text, or "__cancel__" if dismissed."""
         return self.emit.notify_input(title=title, prompt=prompt, body=body,
                                       level=level, required=required,
-                                      priority=priority)
+                                      priority=priority, scope=scope)
 
     def notify_and_wait(self, title: str, body: str = "", level: str = "info",
                         actions: list | None = None,
-                        priority: int | None = None) -> str:
+                        priority: int | None = None,
+                        scope: str | None = None) -> str:
         """Post a message notification and block for acknowledge/cancel.
         `priority` is required (int, higher = more urgent).
+        `scope` is required ("context" | "global").
         See Emitter.notify_and_wait."""
         return self.emit.notify_and_wait(title=title, body=body, level=level,
-                                         actions=actions, priority=priority)
+                                         actions=actions, priority=priority,
+                                         scope=scope)
 
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
