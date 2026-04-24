@@ -15,6 +15,7 @@ from plexi_sdk import (
     FG, MUTED, SURFACE, GREEN, BODY, CAPTION, HINT,
     PRIORITY_LOW,
 )
+from plexi_sdk.ui import Component
 
 NOTES_DIR = ".plexi/notes"
 
@@ -123,7 +124,7 @@ class QuickNoteApp(App):
     # surface and stays on primitive draws. A _BodyGap component reserves the
     # vertical space between Header and Footer; its render paints the body.
 
-    class _Body:
+    class _Body(Component):
         """Escape hatch: paints the compose/browse body inside the Column's
         remaining space. `is_grow=True` so Column gives us everything left
         over after Header and Footer are measured."""
@@ -181,11 +182,11 @@ class QuickNoteApp(App):
         ])
 
     def on_render(self, ctx: RenderContext) -> None:
-        from plexi_sdk.ui import Column, Header, Spacer, Footer
+        from plexi_sdk.ui import Column, AppBar, Spacer, Footer
 
         subtitle = "Compose" if self._mode == "compose" else "Browse saved notes"
         children = [
-            Header(title="Quick Note", subtitle=subtitle),
+            AppBar(title="Quick Note"),
             self._Body(self),
             Spacer(size=HINT),
         ]

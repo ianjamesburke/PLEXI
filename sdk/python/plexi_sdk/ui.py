@@ -76,43 +76,21 @@ RED = "#f38ba8"
 GREEN = "#a6e3a1"
 YELLOW = "#f9e2af"
 
-# Approximate character-width ratios for width-based measurements. These are
-# empirical, not exact — used for ellipsis/wrap decisions. Real rendering
-# width is determined by the host's text shaper and may differ by a few px.
-_CHAR_W_PROPORTIONAL = 0.55
-_CHAR_W_MONO = 0.60
-
-
 # ── Utilities ──────────────────────────────────────────────────────────────
-
-
-def _char_px(font_size: float, mono: bool = False) -> float:
-    """Approximate pixel width of a single character at `font_size`."""
-    ratio = _CHAR_W_MONO if mono else _CHAR_W_PROPORTIONAL
-    return font_size * ratio
-
-
-def _truncate_to_width(text: str, avail_px: float, font_size: float,
-                       mono: bool = False) -> str:
-    """Shorten `text` with an ellipsis if it exceeds `avail_px`."""
-    if avail_px <= 0 or not text:
-        return ""
-    char_w = _char_px(font_size, mono)
-    max_chars = max(1, int(avail_px / char_w))
-    if len(text) <= max_chars:
-        return text
-    if max_chars <= 1:
-        return "…"  # just the ellipsis
-    return text[: max_chars - 1] + "…"
 
 
 def _wrap_to_width(text: str, avail_px: float, font_size: float,
                    mono: bool = False, max_lines: int = 3) -> List[str]:
     """Word-wrap `text` into up to `max_lines` lines. Final line gets an
-    ellipsis if content was truncated."""
+    ellipsis if content was truncated.
+
+    Uses approximate character-width ratios (0.60 mono, 0.55 proportional)
+    for layout arithmetic only. Actual clip/elision at render time is handled
+    by the host via `max_width` on `ctx.text()`.
+    """
     if avail_px <= 0 or not text:
         return []
-    char_w = _char_px(font_size, mono)
+    char_w = font_size * (0.60 if mono else 0.55)
     max_chars = max(1, int(avail_px / char_w))
 
     words = text.split()
@@ -166,6 +144,20 @@ class Component:
         """Emit draw commands. Implementations should stay within (x, y, w, h)."""
         raise NotImplementedError
 
+    def _render_clipped(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        """Render this component clipped to its allocated rect.
+
+        Container components (Column, Card) call this instead of `render` when
+        descending into children so each child's draws are bounded to its rect.
+        The PushClip/PopClip pair is emitted unconditionally; the host intersects
+        the new rect with the current clip stack top (only ever tightens).
+        """
+        ctx.push_clip(x, y, w, h)
+        try:
+            self.render(ctx, x, y, w, h)
+        finally:
+            ctx.pop_clip()
+
 
 # ── Leaf components ────────────────────────────────────────────────────────
 
@@ -195,8 +187,8 @@ class Heading(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         fs = self._font_size()
-        text = _truncate_to_width(self.text, w, fs)
-        ctx.text(x, y, text, size=fs, color=self.color, bold=self.bold)
+        ctx.text(x, y, self.text, size=fs, color=self.color, bold=self.bold,
+                 max_width=w, elide=True)
 
 
 @dataclass
@@ -284,43 +276,41 @@ class Divider(Component):
 
 
 @dataclass
-class Header(Component):
-    """Top-of-pane heading block: title + optional subtitle + divider.
+class AppBar(Component):
+    """Thin top-of-pane app bar — single-line title, vertically centred
+    in a fixed band, 1px divider at the bottom edge.
 
-    Vertical stack (top to bottom):
-        title                       (TEXT_TITLE_XL tall)
-        TITLE_TO_SUB_GAP (if subtitle)
-        subtitle                    (TEXT_HINT tall)
-        BEFORE_DIVIDER              (gap before the divider line)
-        divider                     (1px)
+    Replaces the old `Header` two-line block. Apps that need subtitle /
+    metadata text put it in a separate `Label(text, tone="hint")` row
+    below the AppBar — keeps the app bar minimal and predictable.
+
+    Future: an optional `actions` slot for right-aligned menu buttons
+    (e.g. settings, refresh) so apps can grow their own toolbar without
+    each rolling its own layout.
     """
     title: str
-    subtitle: Optional[str] = None
     accent: str = FG
 
-    TITLE_TO_SUB_GAP = 6.0
-    BEFORE_DIVIDER = 14.0
+    TITLE_SIZE = 16.0   # TEXT_HEADING — app-bar scale, not billboard
+    BAND_H = 36.0       # thin band; native-toolbar feel
+    DIVIDER_H = 1.0
 
     def measure(self, avail_w: float) -> float:
-        h = TEXT_TITLE_XL
-        if self.subtitle:
-            h += self.TITLE_TO_SUB_GAP + TEXT_HINT
-        h += self.BEFORE_DIVIDER + 1.0
-        return h
+        return self.BAND_H + self.DIVIDER_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        cursor = y
-        title_text = _truncate_to_width(self.title, w, TEXT_TITLE_XL)
-        ctx.text(x, cursor, title_text,
-                 size=TEXT_TITLE_XL, color=self.accent, bold=True)
-        cursor += TEXT_TITLE_XL
-        if self.subtitle:
-            cursor += self.TITLE_TO_SUB_GAP
-            sub_text = _truncate_to_width(self.subtitle, w, TEXT_HINT)
-            ctx.text(x, cursor, sub_text, size=TEXT_HINT, color=MUTED)
-            cursor += TEXT_HINT
-        cursor += self.BEFORE_DIVIDER
-        ctx.rect(x, cursor, w, 1.0, HIGHLIGHT)
+        # Opaque BG backdrop so content scrolled under the AppBar doesn't
+        # bleed through (defensive; the host clip stack makes overdraw
+        # structurally impossible, but the backdrop keeps chrome visually
+        # solid regardless of rendering order).
+        ctx.rect(x, y, w, h, BG)
+        # Vertically centre the title in BAND_H. Empirical -1px nudge to
+        # compensate for proportional-font descent bias at 16pt.
+        text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0 - 1.0
+        ctx.text(x, text_y, self.title,
+                 size=self.TITLE_SIZE, color=self.accent, bold=True,
+                 max_width=w, elide=True)
+        ctx.rect(x, y + self.BAND_H, w, self.DIVIDER_H, HIGHLIGHT)
 
 
 @dataclass
@@ -337,9 +327,9 @@ class Section(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         label_y = y + SPACE_SM
-        title_text = _truncate_to_width(self.title.upper(), w, TEXT_HINT)
-        ctx.text(x, label_y, title_text,
-                 size=TEXT_HINT, color=MUTED, bold=True)
+        ctx.text(x, label_y, self.title.upper(),
+                 size=TEXT_HINT, color=MUTED, bold=True,
+                 max_width=w, elide=True)
         line_y = label_y + TEXT_HINT + SPACE_XS
         ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
 
@@ -348,93 +338,31 @@ class Section(Component):
 class KeyRow(Component):
     """A keycap chip (or a chord of chips) followed by a description, left-aligned.
 
-    `key` accepts either a single string (e.g. `"m"`) or a list of strings
-    forming a chord (e.g. `["⌘", "K"]`). Each element is rendered as a
-    distinct rounded-rect chip, matching the host-side `key_chip` primitive.
+    Emits DrawCommand::KeyChipRow — the host measures each chip with real font
+    metrics and flows them left-to-right. No Python-side width math.
 
-    Layout:  [⌘][K]  Description text
-             ↑ chips  ↑ proportional label, vertically centred
-
-    Visual spec (mirrors src/widgets.rs key_chip):
-      - chip fill:   HIGHLIGHT
-      - chip border: drawn as a 1px rect outline in MUTED
-      - key text:    monospace, TEXT_HINT, MUTED
-      - corner r:    3px
-      - padding:     5px h / 1px v inside each chip
-      - min chip w:  16px
-      - gap between chips in a chord: 2px
+    `key` accepts a single string (e.g. `"m"`) or a list (e.g. `["⌘", "K"]`).
     """
     key: Union[str, List[str]]
     description: str
 
     HEIGHT = 28.0
-    CHIP_PAD_H = 5.0
-    CHIP_PAD_V = 1.0
-    CHIP_MIN_W = 16.0
-    CHIP_CORNER_R = 3.0
-    CHIP_GAP = 2.0       # gap between chips in a chord
-    DESC_GAP = 10.0      # gap between last chip and description text
+    CHIP_PAD_V = 1.0  # used for measure() height only
 
     def _keys(self) -> List[str]:
-        """Normalise key to a list."""
         if isinstance(self.key, list):
             return self.key
         return [self.key]
-
-    def _chip_w(self, label: str) -> float:
-        """Approximate chip width for a given label."""
-        char_w = _char_px(TEXT_HINT, mono=True)
-        text_w = len(label) * char_w
-        return max(self.CHIP_MIN_W, text_w + self.CHIP_PAD_H * 2)
-
-    def _total_chips_w(self) -> float:
-        keys = self._keys()
-        total = sum(self._chip_w(k) for k in keys)
-        total += self.CHIP_GAP * max(0, len(keys) - 1)
-        return total
 
     def measure(self, avail_w: float) -> float:
         return self.HEIGHT
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        # Vertical offset so the chip row is centred within HEIGHT.
         chip_h = TEXT_HINT + self.CHIP_PAD_V * 2
         chip_y = y + (self.HEIGHT - chip_h) / 2.0
-
-        cursor_x = x
-        for i, label in enumerate(self._keys()):
-            if i > 0:
-                cursor_x += self.CHIP_GAP
-            cw = self._chip_w(label)
-            # Chip background
-            ctx.rect(
-                cursor_x, chip_y, cw, chip_h,
-                HIGHLIGHT, radius=self.CHIP_CORNER_R,
-            )
-            # Chip border (1px outline approximated as four thin rects)
-            ctx.rect(cursor_x, chip_y, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y + chip_h - 1.0, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y, 1.0, chip_h, MUTED)
-            ctx.rect(cursor_x + cw - 1.0, chip_y, 1.0, chip_h, MUTED)
-            # Key label, centred inside chip
-            ctx.text(
-                cursor_x + cw / 2.0,
-                chip_y + chip_h / 2.0,
-                label,
-                size=TEXT_HINT, color=MUTED,
-                monospace=True, align="center",
-            )
-            cursor_x += cw
-
-        desc_x = cursor_x + self.DESC_GAP
-        desc_avail = w - (desc_x - x)
-        desc_text = _truncate_to_width(self.description, desc_avail, TEXT_BODY)
-        ctx.text(
-            desc_x,
-            y + self.HEIGHT / 2.0,
-            desc_text,
-            size=TEXT_BODY, color=FG,
-            align="left_center",
-        )
+        ctx.key_chip_row(x=x, y=chip_y, keys=self._keys(),
+                         description=self.description, font_size=TEXT_HINT)
 
 
 @dataclass
@@ -471,9 +399,159 @@ class ScrollLog(Component):
         visible = max(1, int(h / line_h))
         recent = list(reversed(self.lines[-visible:]))
         for i, line in enumerate(recent):
-            truncated = _truncate_to_width(line, w, self.line_size, mono=True)
-            ctx.text(x, y + i * line_h, truncated,
-                     size=self.line_size, color=FG, monospace=True)
+            ctx.text(x, y + i * line_h, line,
+                     size=self.line_size, color=FG, monospace=True,
+                     max_width=w, elide=True)
+
+
+@dataclass
+class Scrollable(Component):
+    """A clip-bounded vertically-scrollable container.
+
+    Renders its `child` component clipped to the allocated rect. If the child
+    is taller than the available height the excess is hidden and a thin
+    scrollbar indicator is drawn on the right edge.
+
+    Scroll offset is persisted on the instance, so the `Scrollable` must be
+    stable across renders — create it once in `on_init` (or as a class
+    attribute), not inside `on_render`.
+
+    Keyboard scroll: j/k or arrow-down/up keys update `scroll_offset`.
+    Apps drive this by calling `handle_key(key)` from their `on_key` handler.
+
+    # IMPL-NOTE: Wheel/touch event plumbing is deferred. The PGAP protocol
+    # doesn't yet carry scroll-wheel events from the host to the app. Once
+    # PlexiEvent::Scroll is wired through (a follow-up to #314), Scrollable
+    # can subscribe to it here with no breaking changes. For now, keyboard
+    # scroll (j/k) is the v1 input source. Apps that need wheel scroll today
+    # should use the host-managed DrawCommand::List primitive instead.
+    """
+    child: Component
+    scroll_offset: float = field(default=0.0, repr=False)
+    # How many pixels j/k advances per keypress.
+    key_step: float = 20.0
+
+    # Width of the scrollbar indicator drawn when content overflows.
+    _SCROLLBAR_W: float = field(default=3.0, init=False, repr=False)
+    # Stored child height from last measure (used for scrollbar sizing).
+    _child_h: float = field(default=0.0, repr=False)
+    # Stored allocated height from last render (used for scroll clamping).
+    _avail_h: float = field(default=0.0, repr=False)
+
+    def measure(self, avail_w: float) -> float:
+        """Scrollable reports 0 so it grows to consume available space."""
+        return 0.0
+
+    def is_grow(self) -> bool:
+        return True
+
+    def _clamp_offset(self, avail_h: float) -> None:
+        max_offset = max(0.0, self._child_h - avail_h)
+        self.scroll_offset = max(0.0, min(self.scroll_offset, max_offset))
+
+    def handle_key(self, key: str) -> bool:
+        """Update scroll_offset for j/k/ArrowDown/ArrowUp keys.
+
+        Returns True if the key was consumed. Call from the app's on_key handler:
+
+            if self._scrollable.handle_key(key):
+                return  # consumed
+        """
+        if key in ("j", "ArrowDown", "down"):
+            self.scroll_offset += self.key_step
+            self._clamp_offset(self._avail_h)
+            return True
+        if key in ("k", "ArrowUp", "up"):
+            self.scroll_offset = max(0.0, self.scroll_offset - self.key_step)
+            return True
+        return False
+
+    def ensure_visible(self, top: float, bottom: float, margin: float = 0.0) -> None:
+        """See `ensure_visible(...)` free function. Wrapper for Scrollable's
+        own offset + cached viewport height. Use this from inside an app
+        that's wrapped its content in a Scrollable instance:
+
+            self._sel_idx = min(self._sel_idx + 1, len(items) - 1)
+            self._scrollable.ensure_visible(self._sel_idx * ROW_H,
+                                            self._sel_idx * ROW_H + ROW_H)
+        """
+        if self._avail_h <= 0:
+            return
+        self.scroll_offset = ensure_visible(
+            self.scroll_offset, self._avail_h, top, bottom, margin=margin
+        )
+        self._clamp_offset(self._avail_h)
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._avail_h = h
+        # Measure child at our width (less scrollbar gutter).
+        content_w = w - self._SCROLLBAR_W - 2.0
+        self._child_h = self.child.measure(content_w)
+        self._clamp_offset(h)
+
+        # Clip to our allocated rect, then render child offset upward.
+        ctx.push_clip(x, y, w, h)
+        try:
+            child_y = y - self.scroll_offset
+            self.child.render(ctx, x, child_y, content_w, self._child_h)
+        finally:
+            ctx.pop_clip()
+
+        # Scrollbar indicator (only when content overflows).
+        if self._child_h > h and h > 0:
+            track_h = h
+            thumb_ratio = h / self._child_h
+            thumb_h = max(16.0, track_h * thumb_ratio)
+            thumb_y = y + (self.scroll_offset / self._child_h) * track_h
+            # Clamp thumb to track
+            thumb_y = min(thumb_y, y + track_h - thumb_h)
+            bar_x = x + w - self._SCROLLBAR_W
+            ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, HIGHLIGHT)
+            ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, MUTED)
+
+
+def ensure_visible(scroll_offset: float, viewport_h: float,
+                   top: float, bottom: float, margin: float = 0.0) -> float:
+    """Solve 'selection follows scroll' in one call. Returns the new offset.
+
+    The pattern: the user is navigating items with j/k. The cursor moves
+    freely while it stays inside the visible viewport; the moment it would
+    go off the top or bottom edge, the viewport scrolls just enough to
+    keep it visible. Identical to every native list widget.
+
+    Apps call this from their nav handler after mutating their
+    selected_index — works whether the app uses a `Scrollable` component
+    or hand-rolls its own scroll offset (commit-graph's clip-and-offset
+    style):
+
+        new_sel = min(self._sel + 1, len(items) - 1)
+        item_top = new_sel * ROW_H
+        self._scroll_offset = ensure_visible(
+            self._scroll_offset, viewport_h,
+            top=item_top, bottom=item_top + ROW_H,
+        )
+        self._sel = new_sel
+
+    Args:
+        scroll_offset: current scroll offset in the child's local space.
+        viewport_h:    visible height of the viewport.
+        top, bottom:   the item's top/bottom edges in the child's local space.
+        margin:        scrolloff equivalent. Set to one row-height to keep
+                       a row of breathing room above/below the cursor.
+
+    Returns:
+        The new scroll_offset that keeps `[top, bottom]` visible. Identical
+        to the input if the cursor was already in view.
+    """
+    if viewport_h <= 0:
+        return scroll_offset
+    cursor_top = scroll_offset + margin
+    cursor_bottom = scroll_offset + viewport_h - margin
+    if top < cursor_top:
+        return max(0.0, top - margin)
+    if bottom > cursor_bottom:
+        return bottom - viewport_h + margin
+    return scroll_offset
 
 
 @dataclass
@@ -529,86 +607,42 @@ class FooterKeys(Component):
     """
     shortcuts: List[tuple]  # list of (key_or_keys, description)
 
-    TOP_GAP = SPACE_MD
+    # TOP_GAP reduced from SPACE_MD (12px) to SPACE_SM (8px) — trimmer chrome.
+    TOP_GAP = SPACE_SM
     CHIP_H = TEXT_HINT + 2.0 * 1.0   # TEXT_HINT + 2*CHIP_PAD_V
-    ROW_H = CHIP_H + 4.0             # visual row height for the chip row
-    CHIP_PAD_H = 5.0
-    CHIP_PAD_V = 1.0
-    CHIP_MIN_W = 16.0
-    CHIP_CORNER_R = 3.0
-    CHIP_GAP = 6.0   # gap between shortcut groups
-    DESC_GAP = 4.0   # gap between chip and its description
-
-    def _chip_label(self, key_or_keys) -> str:
-        if isinstance(key_or_keys, list):
-            return "/".join(key_or_keys)
-        return str(key_or_keys)
-
-    def _chip_w(self, label: str) -> float:
-        char_w = _char_px(TEXT_HINT, mono=True)
-        text_w = len(label) * char_w
-        return max(self.CHIP_MIN_W, text_w + self.CHIP_PAD_H * 2)
-
-    def _desc_w(self, desc: str) -> float:
-        return len(desc) * _char_px(TEXT_HINT)
+    # Single-row height. The host wraps the row to multiple lines when
+    # `max_width` can't fit everything; very narrow panes may render past
+    # this measurement. Apps wanting exact bounded footers should put
+    # FooterKeys in a fixed-height region or constrain the shortcut count.
+    ROW_H = CHIP_H + 2.0  # reduced from +4.0 — tighter without cramping chips
 
     def measure(self, avail_w: float) -> float:
         return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        # Opaque BG backdrop so any content scrolled behind the footer doesn't
+        # bleed through the divider line.
+        ctx.rect(x, y, w, h, BG)
         line_y = y + self.TOP_GAP
         ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
 
         chip_row_y = line_y + 1.0 + self.TOP_GAP
-        chip_y = chip_row_y + (self.ROW_H - self.CHIP_H) / 2.0
-        cursor_x = x
 
-        for i, (key_or_keys, desc) in enumerate(self.shortcuts):
-            if i > 0:
-                cursor_x += self.CHIP_GAP
-
-            label = self._chip_label(key_or_keys)
-            cw = self._chip_w(label)
-
-            # Chip background
-            ctx.rect(cursor_x, chip_y, cw, self.CHIP_H,
-                     HIGHLIGHT, radius=self.CHIP_CORNER_R)
-            # Chip border (1px outline as four thin rects)
-            ctx.rect(cursor_x, chip_y, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y + self.CHIP_H - 1.0, cw, 1.0, MUTED)
-            ctx.rect(cursor_x, chip_y, 1.0, self.CHIP_H, MUTED)
-            ctx.rect(cursor_x + cw - 1.0, chip_y, 1.0, self.CHIP_H, MUTED)
-            # Key label centred inside chip
-            ctx.text(
-                cursor_x + cw / 2.0,
-                chip_y + self.CHIP_H / 2.0,
-                label,
-                size=TEXT_HINT, color=MUTED,
-                monospace=True, align="center",
-            )
-            cursor_x += cw + self.DESC_GAP
-
-            # Description text, vertically centred with chip
-            avail_desc = w - (cursor_x - x)
-            if avail_desc > 0:
-                desc_text = _truncate_to_width(desc, avail_desc, TEXT_HINT)
-                ctx.text(
-                    cursor_x,
-                    chip_y + self.CHIP_H / 2.0,
-                    desc_text,
-                    size=TEXT_HINT, color=MUTED,
-                    align="left_center",
-                )
-                cursor_x += self._desc_w(desc)
+        # Single host-measured shortcuts row — host owns ALL geometry:
+        # chip widths from real font metrics, inter-group flow, and
+        # multi-line wrap when `max_width` is exceeded. SDK does no
+        # width math, no truncation, no overlap. This is the whole
+        # point of the host-measured layout primitives (#312).
+        ctx.shortcuts(
+            x=x,
+            y=chip_row_y,
+            max_width=w,
+            pairs=list(self.shortcuts),
+            font_size=TEXT_HINT,
+        )
 
 
 # ── Badge primitive ────────────────────────────────────────────────────────
-
-
-# Padding constants shared by `badge()` callers and the implementation.
-_BADGE_PAD_H = 6.0
-_BADGE_PAD_V = 2.0
-_BADGE_MAX_CHARS = 16
 
 
 def badge(
@@ -620,46 +654,76 @@ def badge(
     fg: str = BG,
     font_size: float = TEXT_HINT,
     radius: float = RADIUS_MD,
-) -> float:
-    """Render a pill-shaped badge and return its pixel width.
+) -> None:
+    """Render a host-measured pill badge centred on ``y_center``.
 
-    The badge is vertically centred on ``y_center``.  Text is centred both
-    horizontally and vertically inside the pill — the host's ``align="center"``
-    path handles horizontal; we compute the exact ``ty`` ourselves for vertical.
+    The host measures the label with real egui font metrics, sizes the pill
+    (text_w + padding), and centres the text — no Python width math.
 
     Args:
         ctx:       A ``RenderContext`` instance.
         x:         Left edge of the badge.
         y_center:  Vertical centre of the badge (e.g. the commit-node ``cy``).
-        label:     Text to display.  Truncated to 16 chars with an ellipsis.
-        fill:      Background colour (default ``ACCENT``).
+        label:     Text to display inside the pill.
+        fill:      Pill background colour.
         fg:        Text colour (default ``BG`` — dark text on light pill).
-        font_size: Font size in pt (default ``TEXT_HINT``).
-        radius:    Corner radius.  Use ``RADIUS_SM`` (4 px) for tag badges,
+        font_size: Label pt size (default ``TEXT_HINT``).
+        radius:    Corner radius. Use ``RADIUS_SM`` (4 px) for tag chips,
                    ``RADIUS_MD`` (8 px, default) for branch badges.
-
-    Returns:
-        The pixel width of the rendered badge (useful for flowing badges
-        horizontally: ``next_x = x + badge(...) + gap``).
     """
-    char_w = _char_px(font_size)
-    truncated = label[:_BADGE_MAX_CHARS] + ("…" if len(label) > _BADGE_MAX_CHARS else "")
-    bw = len(truncated) * char_w + _BADGE_PAD_H * 2
-    bh = font_size + _BADGE_PAD_V * 2
-    by = y_center - bh / 2.0
+    ctx.badge(x=x, y_center=y_center, label=label,
+              fill=fill, fg=fg, font_size=font_size, radius=radius)
 
-    ctx.rect(x, by, bw, bh, fill, radius=radius)
-    # Horizontally: use host align="center" from pill midpoint.
-    # Vertically: top of text box = by + pad_v (text occupies font_size px).
-    ctx.text(
-        x + bw / 2.0,
-        by + _BADGE_PAD_V,
-        truncated,
-        size=font_size,
-        color=fg,
-        align="center",
-    )
-    return bw
+
+# ── Loading pill (suspense indicator) ──────────────────────────────────────
+#
+# A small chip that apps overlay on top of stale content while a refresh
+# is in flight. The point: don't full-swap the pane to a spinner card on
+# every refresh — keep the existing UI mounted, surface a localised
+# loading indicator only over the region that's being refreshed.
+#
+# Pattern in the calling app:
+#     1. Track `_fetching: bool` separately from `_mode`.
+#     2. On first-ever fetch, show `_render_loading()` (full-pane spinner).
+#     3. On every subsequent fetch, set `_fetching = True` and re-render —
+#        the existing _render_ready stays up; loading_pill renders on top.
+#     4. When the fetch completes: set `_fetching = False`, update data,
+#        re-render. Pill disappears, content updates in place.
+#
+# This is the SDK-level equivalent of React Suspense with stale-while-
+# revalidate: the boundary stays mounted with current content; the only
+# visual signal is a small pill instead of a destructive remount.
+
+import time as _ct_time  # `time` collides with some example apps' imports
+
+
+def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
+    """Render a small spinner+label pill at (x, y). Returns rendered width.
+
+    The pill uses host-measured `badge()` rendering (so widths are
+    correct), with a wall-clock-driven Braille spinner glyph that ticks
+    at 8 fps regardless of how often `loading_pill` is called.
+
+    Pattern: position this in the top-right of the region being
+    refreshed. While `_fetching` is true, render it on top of the stale
+    content. When the fetch completes, just stop calling it.
+
+    Args:
+        ctx:   RenderContext.
+        x, y:  Top-left of the pill (NOT y-centre — easier to anchor).
+        label: Text shown after the spinner glyph.
+    """
+    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    idx = int(_ct_time.monotonic() * 8) % len(spinner)
+    text = f"{spinner[idx]}  {label}"
+    # Use the host-measured badge; subtle styling (surface fill, muted fg).
+    # Pill is anchored top-left here; convert to y_center for badge().
+    ctx.badge(x=x, y_center=y + 9.0, label=text,
+              fill=HIGHLIGHT, fg=FG, font_size=TEXT_HINT,
+              radius=RADIUS_SM)
+    # Approx width — not measured here because we don't need it for
+    # placement (callers anchor by top-right of the parent region).
+    return len(text) * TEXT_HINT * 0.62 + 16.0
 
 
 # ── Container components ───────────────────────────────────────────────────
@@ -704,7 +768,7 @@ class Card(Component):
         cursor = inner_y
         for i, child in enumerate(self.children):
             ch = child.measure(inner_w)
-            child.render(ctx, inner_x, cursor, inner_w, ch)
+            child._render_clipped(ctx, inner_x, cursor, inner_w, ch)
             cursor += ch
             if i < len(self.children) - 1:
                 cursor += self.gap
@@ -768,7 +832,7 @@ class Column(Component):
                 ch = max(0.0, inner_y + inner_h - cursor)
                 if ch <= 0:
                     break
-            child.render(ctx, inner_x, cursor, inner_w, ch)
+            child._render_clipped(ctx, inner_x, cursor, inner_w, ch)
             cursor += ch
             if i < len(self.children) - 1:
                 cursor += self.gap
@@ -796,10 +860,12 @@ __all__ = [
     "RED", "GREEN", "YELLOW",
     # components
     "Component", "Column", "Card",
-    "Header", "Section", "KeyRow", "Heading", "Label",
-    "Spacer", "Divider", "ScrollLog", "Footer", "FooterKeys",
+    "AppBar", "Section", "KeyRow", "Heading", "Label",
+    "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     # badge primitive
     "badge",
+    # scroll helpers
+    "ensure_visible",
     # entry
     "render_tree",
 ]

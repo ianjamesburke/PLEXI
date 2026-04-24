@@ -14,11 +14,13 @@ from typing import Optional
 from plexi_sdk import App, RenderContext, dim
 from plexi_sdk import BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, YELLOW
 from plexi_sdk.ui import (
-    Column, Card, Header, Spacer, Footer, FooterKeys, Label, KeyRow,
+    Column, Card, AppBar, Spacer, Footer, FooterKeys, Label, KeyRow,
     TEXT_CAPTION, TEXT_BODY, TEXT_HINT, TEXT_HEADING,
     SPACE_MD, SPACE_LG, SPACE_XL,
     RADIUS_SM, RADIUS_MD,
     badge,
+    ensure_visible,
+    _wrap_to_width,
 )
 
 import git_log as gl
@@ -74,7 +76,14 @@ class CommitGraphApp(App):
         self._sel: int = 0
 
         # Tooltip / help overlay
-        self._tooltip_visible: bool = True   # shown whenever a commit is selected
+        # Note: no tooltip state — selection drives the always-visible details
+        # panel on the right side. No toggle, no Enter/Esc dance.
+
+        # Suspense pattern: `_fetching` tracks "is a refresh in flight"
+        # independently of `_mode`. First-ever fetch triggers MODE_LOADING
+        # (full-pane spinner); subsequent fetches keep MODE_READY and just
+        # render a small loading pill in the graph region. No flicker.
+        self._fetching: bool = False
         self._show_help: bool = False
 
         # Hit-test list: [(hash, cx, cy, r)] rebuilt each render
@@ -83,6 +92,14 @@ class CommitGraphApp(App):
         # Stale-check state
         self._last_head_sha: Optional[str] = None
         self._last_poll_time: float = 0.0
+
+        # Vertical scroll offset (px) for the commit-graph region.
+        # Scrolls the commit rows within the clipped graph rectangle.
+        self._graph_scroll_offset: float = 0.0
+        # Cached at end of every render — the visible viewport height of the
+        # graph region. Used by j/k handlers to call ensure_visible without
+        # re-deriving layout. 0 until the first render completes.
+        self._graph_viewport_h: float = 0.0
 
         self.emit.status_summary("Commit Graph — loading")
         self.emit.schedule_render(after_ms=16)
@@ -118,11 +135,24 @@ class CommitGraphApp(App):
             self._set_mode(MODE_ERROR)
 
     def _fetch_graph(self) -> None:
-        """Fetch refs + commits + numstats for the current week viewport."""
+        """Fetch refs + commits + numstats for the current week viewport.
+
+        First-ever fetch swaps to MODE_LOADING (full-pane spinner). Every
+        subsequent fetch keeps MODE_READY mounted and just sets
+        `_fetching = True` so a small loading pill appears in the graph
+        region. Stale data stays visible during the refresh — no flicker.
+        """
         if self._repo_root is None:
             return
 
-        self._set_mode(MODE_LOADING, "Fetching commits…")
+        # First fetch: swap to MODE_LOADING (full-pane spinner).
+        # Subsequent fetches: keep MODE_READY, raise the in-flight flag.
+        is_first_fetch = self._mode != MODE_READY
+        if is_first_fetch:
+            self._set_mode(MODE_LOADING, "Fetching commits…")
+        else:
+            self._fetching = True
+            self.emit.schedule_render(after_ms=0)
 
         import time as _time
         now_ts = int(_time.time())
@@ -167,9 +197,11 @@ class CommitGraphApp(App):
             self._last_head_sha = self._head_sha
             self._last_poll_time = time.monotonic()
 
+            self._fetching = False
             self._set_mode(MODE_READY)
         except Exception as e:
             self._error = f"fetch failed: {e}"
+            self._fetching = False
             self._set_mode(MODE_ERROR)
 
     def _set_mode(self, mode: str, msg: str = "") -> None:
@@ -216,26 +248,20 @@ class CommitGraphApp(App):
         # Help toggle
         if key == "?":
             self._show_help = not self._show_help
-            self.emit.schedule_render(after_ms=16)
+            self.emit.schedule_render(after_ms=0)
             return
 
         if self._show_help:
             # Any key dismisses help
             self._show_help = False
-            self.emit.schedule_render(after_ms=16)
+            self.emit.schedule_render(after_ms=0)
             return
 
-        # Tooltip toggle: Enter shows/hides the commit detail card.
-        # Esc clears the entire selection (tooltip hides with it).
-        if key == "return":
-            if self._commits and 0 <= self._sel < len(self._commits):
-                self._tooltip_visible = not self._tooltip_visible
-                self.emit.schedule_render(after_ms=16)
-            return
+        # Esc clears the selection. Detail panel falls back to placeholder.
+        # No tooltip toggle — selection drives the always-visible panel.
         if key == "escape":
             self._sel = -1
-            self._tooltip_visible = True   # reset so next selection auto-shows
-            self.emit.schedule_render(after_ms=16)
+            self.emit.schedule_render(after_ms=0)
             return
 
         n = len(self._commits)
@@ -243,63 +269,84 @@ class CommitGraphApp(App):
         if key in ("[",):
             self._week_offset += 1
             self._sel = 0
+            self._graph_scroll_offset = 0.0
             threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key in ("]",):
             if self._week_offset > 0:
                 self._week_offset -= 1
                 self._sel = 0
+                self._graph_scroll_offset = 0.0
                 threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key == "t":
             if self._week_offset != 0:
                 self._week_offset = 0
                 self._sel = 0
+                self._graph_scroll_offset = 0.0
                 threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key in ("j", "down") and n > 0:
             self._sel = min(self._sel + 1, n - 1)
-            self._tooltip_visible = True
-            self.emit.schedule_render(after_ms=16)
+            self._scroll_to_selection()
+            self.emit.schedule_render(after_ms=0)
         elif key in ("k", "up") and n > 0:
             self._sel = max(self._sel - 1, 0)
-            self._tooltip_visible = True
-            self.emit.schedule_render(after_ms=16)
+            self._scroll_to_selection()
+            self.emit.schedule_render(after_ms=0)
         elif key in ("h", "left") and n > 0:
-            # Move to commit on left neighbouring lane at the same row
             cur_lane = self._commits[self._sel]["lane"] if n > 0 else 0
             target_lane = cur_lane - 1
             if target_lane >= 0:
                 best = self._nearest_in_lane(target_lane)
                 if best is not None:
                     self._sel = best
-                    self._tooltip_visible = True
-                    self.emit.schedule_render(after_ms=16)
+                    self._scroll_to_selection()
+                    self.emit.schedule_render(after_ms=0)
         elif key in ("l", "right") and n > 0:
             cur_lane = self._commits[self._sel]["lane"] if n > 0 else 0
             target_lane = cur_lane + 1
             best = self._nearest_in_lane(target_lane)
             if best is not None:
                 self._sel = best
-                self._tooltip_visible = True
-                self.emit.schedule_render(after_ms=16)
+                self._scroll_to_selection()
+                self.emit.schedule_render(after_ms=0)
         elif key == "g":
             self._sel = 0
-            self._tooltip_visible = True
-            self.emit.schedule_render(after_ms=16)
+            self._scroll_to_selection()
+            self.emit.schedule_render(after_ms=0)
         elif key == "G":
             self._sel = max(0, n - 1)
-            self._tooltip_visible = True
-            self.emit.schedule_render(after_ms=16)
+            self._scroll_to_selection()
+            self.emit.schedule_render(after_ms=0)
         elif key == "c":
             # IMPL-NOTE: SDK has no clipboard emit — log + status line instead.
             if n > 0:
                 full_hash = self._commits[self._sel]["hash"]
                 self.emit.info(f"commit-graph: copy hash {full_hash}")
                 self.emit.status_summary(f"Hash: {full_hash}")
-                self.emit.schedule_render(after_ms=16)
-        elif key == "o":
-            # Open commit on GitHub if origin is a GitHub remote
-            self._open_on_github()
+                self.emit.schedule_render(after_ms=0)
         elif key == "r":
             threading.Thread(target=self._fetch_graph, daemon=True).start()
+
+    def _scroll_to_selection(self) -> None:
+        """Keep the currently-selected commit visible in the graph viewport.
+
+        One-liner using the SDK's `ensure_visible` helper. Scrolls only when
+        the selection moves outside the viewport — selection moves freely
+        within view, scroll lockstep at the edges. Standard list-nav pattern.
+        """
+        if not self._commits or self._graph_viewport_h <= 0:
+            return
+        if not (0 <= self._sel < len(self._commits)):
+            return
+        row_top = self._sel * ROW_H
+        # Add ROW_H of margin so a row of breathing room stays visible above
+        # and below the cursor at the edges (vim's `scrolloff = 1`).
+        self._graph_scroll_offset = ensure_visible(
+            self._graph_scroll_offset,
+            self._graph_viewport_h,
+            top=row_top,
+            bottom=row_top + ROW_H,
+            margin=ROW_H,
+        )
 
     def _nearest_in_lane(self, lane: int) -> Optional[int]:
         """Return index of commit in `lane` nearest in row to current sel."""
@@ -313,34 +360,20 @@ class CommitGraphApp(App):
             return None
         return min(candidates, key=lambda i: abs(i - cur_idx))
 
-    def _open_on_github(self) -> None:
-        if not self._commits or self._origin_url is None:
-            return
-        import re
-        url = self._origin_url
-        m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", url)
-        if not m:
-            return
-        slug = m.group(1)
-        commit_hash = self._commits[self._sel]["hash"]
-        gh_url = f"https://github.com/{slug}/commit/{commit_hash}"
-        # IMPL-NOTE: SDK has no open-url emit — log the URL as best effort.
-        self.emit.info(f"commit-graph: open {gh_url}")
-        self.emit.status_summary(f"URL: {gh_url}")
-        self.emit.schedule_render(after_ms=16)
-
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
         if self._mode != MODE_READY:
             return
         for i, (h, cx, cy, r) in enumerate(self._hit_nodes):
             if (x - cx) ** 2 + (y - cy) ** 2 <= (r + 4) ** 2:
-                # Find commit index by hash
                 for j, c in enumerate(self._commits):
                     if c["hash"] == h:
                         self._sel = j
-                        self._tooltip_visible = True
                         self._show_help = False
-                        self.emit.schedule_render(after_ms=16)
+                        # Snappy click: 0ms = repaint as soon as possible.
+                        # 16ms scheduled the next frame ~16-32ms out, which
+                        # felt sluggish. The selection is purely local
+                        # state — no I/O — so immediate repaint is safe.
+                        self.emit.schedule_render(after_ms=0)
                         return
                 break
 
@@ -393,7 +426,7 @@ class CommitGraphApp(App):
         # even if on_render is called more frequently than the 100 ms tick.
         idx = int((time.monotonic() - self._spinner_start) * 8) % len(SPINNER)
         ctx.render(Column([
-            Header(title="Commit Graph", subtitle=self._repo_name or "Resolving…"),
+            AppBar(title="Commit Graph"),
             Card([
                 Label(
                     f"{SPINNER[idx]}  {self._loading_msg}",
@@ -408,7 +441,7 @@ class CommitGraphApp(App):
     def _render_error_state(self, ctx: RenderContext, *,
                             title: str, lines: list[str]) -> None:
         ctx.render(Column([
-            Header(title="Commit Graph", subtitle=title, accent=RED),
+            AppBar(title="Commit Graph", accent=RED),
             Card([Label(l, tone="body") for l in lines]),
             Card([KeyRow("r", "Retry")]),
             Spacer(grow=True),
@@ -424,7 +457,6 @@ class CommitGraphApp(App):
         start_ts = end_ts - 7 * 86400
 
         # ── Header ────────────────────────────────────────────────────────────
-        from plexi_sdk.ui import _truncate_to_width
         week_str = self._format_week(start_ts, end_ts)
         n = len(self._commits)
         subtitle = f"{self._repo_name} · {week_str} · {n} commit{'s' if n != 1 else ''}"
@@ -432,8 +464,7 @@ class CommitGraphApp(App):
             subtitle += f" (–{self._week_offset}w)"
 
         # Measure and render Header manually so we can position the rest below it
-        from plexi_sdk.ui import Header as UIHeader
-        header = UIHeader(title="Commit Graph", subtitle=subtitle)
+        header = AppBar(title="Commit Graph")
         hdr_h = header.measure(ctx.w - 2 * SPACE_XL)
         header.render(ctx, SPACE_XL, SPACE_XL, ctx.w - 2 * SPACE_XL, hdr_h)
         y_cursor = SPACE_XL + hdr_h + SPACE_MD
@@ -445,9 +476,7 @@ class CommitGraphApp(App):
             (["j", "k"], "commit"),
             (["h", "l"], "lane"),
             (["g", "G"], "ends"),
-            ("↵", "tooltip"),
             ("c", "copy"),
-            ("o", "open"),
             ("r", "refresh"),
             ("?", "help"),
         ])
@@ -455,10 +484,26 @@ class CommitGraphApp(App):
         footer_y = ctx.h - SPACE_XL - ftr_h
         footer.render(ctx, SPACE_XL, footer_y, ctx.w - 2 * SPACE_XL, ftr_h)
 
-        # ── Legend row ────────────────────────────────────────────────────────
+        # ── Split: graph on the left, details panel on the right ─────────────
+        # Wide pane → side-by-side. Narrow pane → graph fills, no details.
+        # The details panel is always-visible and reflects the current
+        # selection. No tooltip toggle, no Esc/Enter to manage.
+        DETAILS_MIN_W = 280.0
+        DETAILS_MAX_W = 480.0
+        SPLIT_THRESHOLD = 700.0
+        SEPARATOR_W = 1.0
+        SEPARATOR_GAP = SPACE_MD
+        if ctx.w >= SPLIT_THRESHOLD:
+            details_w = max(DETAILS_MIN_W, min(DETAILS_MAX_W, ctx.w * 0.40))
+            graph_right = ctx.w - details_w - SEPARATOR_GAP - SEPARATOR_W - SEPARATOR_GAP
+        else:
+            details_w = 0.0
+            graph_right = ctx.w
+
+        # ── Legend row (constrained to the graph half) ───────────────────────
         lanes_on_screen = self._lanes_on_screen()
         legend_y = y_cursor
-        self._draw_legend(ctx, legend_y, lanes_on_screen)
+        self._draw_legend(ctx, legend_y, lanes_on_screen, right_edge=graph_right)
         y_cursor = legend_y + LEGEND_H + LEGEND_PAD
 
         # ── Graph canvas ──────────────────────────────────────────────────────
@@ -466,12 +511,36 @@ class CommitGraphApp(App):
         graph_h = footer_y - graph_y - SPACE_MD
         if graph_h <= 0:
             return
+        # Cache the visible graph height so the j/k key handler can call
+        # ensure_visible() without re-deriving the layout. Updated every
+        # render so resize is handled automatically.
+        self._graph_viewport_h = graph_h
+        self._draw_graph(ctx, graph_y, graph_h, right_edge=graph_right)
 
-        self._draw_graph(ctx, graph_y, graph_h)
+        # ── Suspense indicator (top-right of the graph region) ───────────────
+        # While `_fetching` is true, overlay a small loading pill on top of
+        # the (stale) graph. Stale data stays visible during the refresh —
+        # no full-pane spinner swap, no flicker. Pill disappears the moment
+        # the fetch completes and re-render fires.
+        if self._fetching:
+            from plexi_sdk.ui import loading_pill
+            # Anchor by approximate top-right; loading_pill is a host-
+            # measured badge so width is correct but we don't need it for
+            # placement (pill flows from x rightward; we keep some margin).
+            pill_x = graph_right - 140.0
+            pill_y = graph_y + 4.0
+            loading_pill(ctx, pill_x, pill_y, label="Refreshing")
+            # Keep ticking the spinner glyph at ~12 fps while we're loading.
+            self.emit.schedule_render(after_ms=80)
 
-        # ── Tooltip ───────────────────────────────────────────────────────────
-        if self._tooltip_visible and self._commits and 0 <= self._sel < len(self._commits):
-            self._draw_tooltip(ctx)
+        # ── Vertical separator + details panel (right side) ───────────────────
+        if details_w > 0:
+            sep_x = graph_right + SEPARATOR_GAP
+            ctx.rect(sep_x, y_cursor, SEPARATOR_W,
+                     footer_y - y_cursor - SPACE_MD, HIGHLIGHT)
+            details_x = sep_x + SEPARATOR_W + SEPARATOR_GAP
+            self._draw_details_panel(ctx, details_x, y_cursor,
+                                     details_w, footer_y - y_cursor - SPACE_MD)
 
         # ── Help overlay ──────────────────────────────────────────────────────
         if self._show_help:
@@ -505,7 +574,10 @@ class CommitGraphApp(App):
         return f"lane {lane}"
 
     def _draw_legend(self, ctx: RenderContext, y: float,
-                     lanes: list[tuple[int, str, str]]) -> None:
+                     lanes: list[tuple[int, str, str]],
+                     right_edge: Optional[float] = None) -> None:
+        if right_edge is None:
+            right_edge = ctx.w
         x = PAD_X
         swatch_size = 10.0
         swatch_gap  = 6.0
@@ -514,8 +586,8 @@ class CommitGraphApp(App):
         max_item_w = swatch_size + swatch_gap + 12 * char_w + label_gap
 
         for lane_idx, color, label in lanes:
-            # Wrap to next row if we'd overflow
-            if x + max_item_w > ctx.w - PAD_X and x > PAD_X:
+            # Wrap to next row if we'd overflow the legend region
+            if x + max_item_w > right_edge - PAD_X and x > PAD_X:
                 y += LEGEND_H
                 x = PAD_X
             # Dim stale lanes
@@ -541,10 +613,13 @@ class CommitGraphApp(App):
     def _lane_x(self, lane: int) -> float:
         return PAD_X + lane * LANE_W + LANE_W / 2
 
-    def _draw_graph(self, ctx: RenderContext, graph_y: float, graph_h: float) -> None:  # noqa: C901
+    def _draw_graph(self, ctx: RenderContext, graph_y: float, graph_h: float,
+                    right_edge: Optional[float] = None) -> None:  # noqa: C901
+        if right_edge is None:
+            right_edge = ctx.w
         if not self._commits:
-            # Empty viewport message
-            cx = ctx.w / 2
+            # Empty viewport message — centred in the graph half, not the pane.
+            cx = right_edge / 2
             cy = graph_y + graph_h / 2
             ctx.text(cx, cy, "No commits this week · press [ to go back",
                      size=TEXT_BODY, color=MUTED, align="center")
@@ -553,11 +628,11 @@ class CommitGraphApp(App):
         max_lane = self._max_lane()
         total_lane_w = (max_lane + 1) * LANE_W
         min_label_gutter = 180.0
-        # Narrow pane: collapse overflow lanes
+        # Narrow graph region: collapse overflow lanes
         overflow_threshold = PAD_X + total_lane_w + min_label_gutter
         overflow_start_lane = None
-        if overflow_threshold > ctx.w:
-            usable_w = ctx.w - PAD_X - min_label_gutter
+        if overflow_threshold > right_edge:
+            usable_w = right_edge - PAD_X - min_label_gutter
             max_visible_lanes = max(1, int(usable_w / LANE_W))
             if max_visible_lanes < max_lane + 1:
                 overflow_start_lane = max_visible_lanes
@@ -568,9 +643,22 @@ class CommitGraphApp(App):
         # Build a hash → commit index map for edge rendering
         hash_to_idx: dict[str, int] = {c["hash"]: i for i, c in enumerate(self._commits)}
 
-        # Assign y positions
+        # Clamp scroll offset to valid range (total content height - viewport).
+        total_content_h = len(self._commits) * ROW_H
+        self._graph_scroll_offset = max(
+            0.0, min(self._graph_scroll_offset, max(0.0, total_content_h - graph_h))
+        )
+
+        # y = graph_y - scroll_offset: scrolling shifts rows upward.
+        content_top = graph_y - self._graph_scroll_offset
+
+        # Assign y positions relative to the scrolled content origin.
         for i, c in enumerate(self._commits):
-            c["y"] = graph_y + i * ROW_H + ROW_H / 2
+            c["y"] = content_top + i * ROW_H + ROW_H / 2
+
+        # Clip all graph draws to the graph region so scrolled-out rows
+        # don't bleed into the legend above or footer below.
+        ctx.push_clip(0.0, graph_y, right_edge, graph_h)
 
         # ── Draw edges ────────────────────────────────────────────────────────
         for child_h, parent_h in self._edges:
@@ -587,7 +675,7 @@ class CommitGraphApp(App):
             color = child["color"]
 
             if pi is None:
-                # Parent is outside viewport — draw a stub going off the bottom
+                # Parent is outside viewport — draw a stub going off the bottom.
                 stub_end_y = graph_y + graph_h
                 ctx.line(child_x, child_y + NODE_R, child_x, stub_end_y,
                          color=dim(color, 0x88), width=2.0)
@@ -617,7 +705,7 @@ class CommitGraphApp(App):
             if overflow_start_lane and lane >= overflow_start_lane:
                 # Collapsed overflow — render a small grey dot
                 overflow_x = self._lane_x(overflow_start_lane - 1) + LANE_W
-                cx_node = min(overflow_x, ctx.w - PAD_X)
+                cx_node = min(overflow_x, right_edge - PAD_X)
                 cy_node = c["y"]
                 color = MUTED
                 ctx.circle(cx_node, cy_node, NODE_R - 2, color)
@@ -655,22 +743,40 @@ class CommitGraphApp(App):
 
             # ── Ref badges ───────────────────────────────────────────────────
             badge_x = label_x
-            avail_label_w = ctx.w - label_x - PAD_X
             ref_badge_w = 0.0
             for ref in self._refs:
                 if ref["tip_hash"] == c["hash"]:
-                    bw = self._draw_badge(ctx, badge_x, cy_node, ref["name"], color)
+                    self._draw_badge(ctx, badge_x, cy_node, ref["name"], color)
+                    # Advance by an approximate width. The host sizes the badge
+                    # from real font metrics so the rendered pill may differ slightly
+                    # from this estimate — acceptable for horizontal flow spacing.
+                    bw = self._approx_badge_w(ref["name"])
                     badge_x += bw + 4.0
                     ref_badge_w += bw + 4.0
 
             # ── Subject label ─────────────────────────────────────────────────
             subj_x = label_x + ref_badge_w
-            subj_avail = ctx.w - subj_x - PAD_X
+            subj_avail = right_edge - subj_x - PAD_X
             if subj_avail > 40:
                 subj_color = FG if selected else FG
                 ctx.text(subj_x, cy_node - TEXT_CAPTION / 2,
                          c["subject"], size=TEXT_CAPTION, color=subj_color,
                          max_width=subj_avail)
+
+        # End of clipped graph region.
+        ctx.pop_clip()
+
+        # ── Scrollbar indicator ───────────────────────────────────────────────
+        if total_content_h > graph_h and graph_h > 0:
+            SCROLLBAR_W = 3.0
+            track_h = graph_h
+            thumb_ratio = graph_h / total_content_h
+            thumb_h = max(16.0, track_h * thumb_ratio)
+            thumb_y = graph_y + (self._graph_scroll_offset / total_content_h) * track_h
+            thumb_y = min(thumb_y, graph_y + track_h - thumb_h)
+            bar_x = right_edge - SCROLLBAR_W - 2.0
+            ctx.rect(bar_x, graph_y, SCROLLBAR_W, track_h, HIGHLIGHT)
+            ctx.rect(bar_x, thumb_y, SCROLLBAR_W, thumb_h, MUTED)
 
     def _draw_orthogonal_edge(self, ctx: RenderContext,
                               x1: float, y1: float,
@@ -702,96 +808,103 @@ class CommitGraphApp(App):
             ctx.line(x2, y_mid + CUT, x2, y2, color=color, width=2.0)
 
     def _draw_badge(self, ctx: RenderContext, x: float, cy: float,
-                    name: str, color: str) -> float:
-        """Draw a branch-name pill badge using the SDK badge primitive.
+                    name: str, color: str) -> None:
+        """Emit a host-measured badge DrawCommand for a branch/tag ref.
 
-        Returns the rendered badge width so the caller can flow badges
-        horizontally.  Tag refs use a square-ish radius; branch refs are
-        fully rounded.
+        Tag refs use RADIUS_SM; branch refs use RADIUS_MD.
+        The host sizes the pill from real font metrics.
         """
         is_tag = name.startswith("tag:")
         fill = YELLOW if is_tag else color
         radius = RADIUS_SM if is_tag else RADIUS_MD
-        return badge(ctx, x, cy, name, fill=fill, fg=BG,
-                     font_size=TEXT_HINT, radius=radius)
+        badge(ctx, x, cy, name, fill=fill, fg=BG,
+              font_size=TEXT_HINT, radius=radius)
 
-    # ── Tooltip ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _approx_badge_w(label: str) -> float:
+        """Approximate badge pixel width for horizontal flow cursor advance.
 
-    def _draw_tooltip(self, ctx: RenderContext) -> None:
+        Uses the same heuristic as the old badge() — good enough for spacing
+        between consecutive badges. The host renders each badge precisely.
+        """
+        text_w = len(label) * TEXT_HINT * 0.62
+        return max(32.0, text_w + 8.0 * 2)
+
+    # ── Details panel ─────────────────────────────────────────────────────────
+    # Always-visible right-side panel showing the currently-selected commit.
+    # Replaces the old tooltip — selection just IS, the panel reflects it.
+    # No toggle state, no Enter/Esc dance, no overlap with the graph.
+
+    def _draw_details_panel(self, ctx: RenderContext, x: float, y: float,
+                            w: float, h: float) -> None:
+        # Empty state
+        if not self._commits or not (0 <= self._sel < len(self._commits)):
+            ctx.text(x + w / 2, y + h / 2,
+                     "Select a commit (j/k or click)",
+                     size=TEXT_CAPTION, color=MUTED, align="center")
+            return
+
         c = self._commits[self._sel]
-        lane = c["lane"]
-        cx_node = self._lane_x(lane)
-        cy_node = c["y"]
-
-        TIP_W = min(360.0, ctx.w - 48.0)
-        INNER_PAD = 12.0
+        INNER_PAD = 0.0  # x/y are already inside the separator gutter
         LINE_H = TEXT_BODY + 4.0
+        avail_w = w - INNER_PAD * 2
 
-        # Estimate content height
-        import time as _t
         import datetime
         dt = datetime.datetime.fromtimestamp(c["ts"]).strftime("%Y-%m-%d %H:%M")
-        stats_line = (
-            "stats unavailable (repo too large)"
-            if self._stats_unavailable
-            else f"+{c['added']}  -{c['removed']}"
-        )
 
-        # Wrap subject (up to 6 lines)
-        from plexi_sdk.ui import _wrap_to_width
-        subject_lines = _wrap_to_width(
-            c["subject"], TIP_W - INNER_PAD * 2, TEXT_BODY, max_lines=6
-        )
-        content_h = (
-            TEXT_CAPTION      # hash line
-            + LINE_H          # author + date
-            + LINE_H * max(1, len(subject_lines))
-            + LINE_H          # stats
-            + INNER_PAD * 2
-        )
+        tx = x + INNER_PAD
+        ty = y + INNER_PAD
 
-        # Position: anchor to node, offset right; flip if needed
-        tip_x = cx_node + 16.0
-        tip_y = cy_node - 8.0
-        if tip_x + TIP_W > ctx.w - 8:
-            tip_x = cx_node - TIP_W - 16.0
-        if tip_y + content_h > ctx.h - 8:
-            tip_y = cy_node - content_h - 8.0
-        tip_x = max(8.0, tip_x)
-        tip_y = max(8.0, tip_y)
-
-        # Border (1px HIGHLIGHT behind)
-        ctx.rect(tip_x - 1, tip_y - 1, TIP_W + 2, content_h + 2,
-                 fill=HIGHLIGHT, radius=9.0)
-        ctx.rect(tip_x, tip_y, TIP_W, content_h,
-                 fill=SURFACE, radius=8.0)
-
-        tx = tip_x + INNER_PAD
-        ty = tip_y + INNER_PAD
-
-        # Short hash
+        # Short hash (monospace, accent)
         ctx.text(tx, ty, c["short_hash"], size=TEXT_CAPTION,
                  color=ACCENT, monospace=True)
-        ty += TEXT_CAPTION + 4.0
+        ty += TEXT_CAPTION + 6.0
 
-        # Author + date
+        # Author + ISO timestamp (muted)
         ctx.text(tx, ty, f"{c['author']}  ·  {dt}",
                  size=TEXT_CAPTION, color=MUTED,
-                 max_width=TIP_W - INNER_PAD * 2)
-        ty += LINE_H
+                 max_width=avail_w)
+        ty += LINE_H + 4.0
 
-        # Subject lines
+        # Subject (bold, FG, wrapped up to 8 lines)
+        subject_lines = _wrap_to_width(
+            c["subject"], avail_w, TEXT_BODY, max_lines=8
+        )
         for line in subject_lines:
-            ctx.text(tx, ty, line, size=TEXT_BODY, color=FG,
-                     max_width=TIP_W - INNER_PAD * 2)
+            ctx.text(tx, ty, line, size=TEXT_BODY, color=FG, bold=True,
+                     max_width=avail_w)
             ty += LINE_H
+        ty += 6.0
 
-        # Stats
-        if not self._stats_unavailable:
-            ctx.text(tx, ty, f"+{c['added']}", size=TEXT_CAPTION, color=GREEN)
-            ctx.text(tx + 55.0, ty, f"-{c['removed']}", size=TEXT_CAPTION, color=RED)
+        # Stats line (+added / −removed)
+        if self._stats_unavailable:
+            ctx.text(tx, ty, "stats unavailable",
+                     size=TEXT_CAPTION, color=MUTED)
         else:
-            ctx.text(tx, ty, "stats unavailable", size=TEXT_CAPTION, color=MUTED)
+            ctx.text(tx, ty, f"+{c['added']}",
+                     size=TEXT_CAPTION, color=GREEN)
+            ctx.text(tx + 60.0, ty, f"−{c['removed']}",
+                     size=TEXT_CAPTION, color=RED)
+        ty += LINE_H + 8.0
+
+        # Refs at this commit (if any)
+        if c.get("refs"):
+            ctx.text(tx, ty, "refs:", size=TEXT_CAPTION, color=MUTED)
+            ty += TEXT_CAPTION + 2.0
+            ref_text = ", ".join(r for r in c["refs"] if r and r != "HEAD")
+            if ref_text:
+                ctx.text(tx, ty, ref_text, size=TEXT_CAPTION, color=FG,
+                         max_width=avail_w)
+                ty += LINE_H + 6.0
+
+        # Parents
+        if c.get("parents"):
+            ctx.text(tx, ty, "parents:", size=TEXT_CAPTION, color=MUTED)
+            ty += TEXT_CAPTION + 2.0
+            for p in c["parents"][:4]:
+                ctx.text(tx, ty, p[:12], size=TEXT_CAPTION, color=FG,
+                         monospace=True, max_width=avail_w)
+                ty += LINE_H
 
     # ── Help overlay ──────────────────────────────────────────────────────────
 
@@ -803,11 +916,9 @@ class CommitGraphApp(App):
             (["h", "/", "l"], "select commit in left / right lane"),
             (["g", "/", "G"], "first / last commit"),
             (["c"],       "copy hash (shown in status bar)"),
-            (["o"],       "open on GitHub (shown in status bar)"),
             (["r"],       "force refresh"),
             (["?"],       "toggle this help"),
         ]
-        from plexi_sdk.ui import Column, Card, KeyRow, SPACE_MD
         W = min(400.0, ctx.w - 48.0)
         card = Card([KeyRow(keys, desc) for keys, desc in help_rows])
         card_h = card.measure(W)

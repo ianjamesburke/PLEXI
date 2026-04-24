@@ -1,5 +1,14 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-23 — [CHANGED] Host-measured text layout primitives (issue #312, PR → alpha)
+Python SDK estimated text widths with `font_size × ratio` heuristics; the host renders with real egui font metrics. This produced mis-sized badge pills, wrongly-clipped keychips, and truncation that cut at the wrong character count.
+
+New PGAP DrawCommands: `Badge`, `KeyChip`, `KeyChipRow`, `MeasureText`; new `PlexiEvent::TextMeasured`. `DrawCommand::Text` extended with required `max_width: Option<f32>` and `elide: bool` (no serde defaults — breaking wire change). Host binary-searches for the clip point using real galleys. Deleted `_truncate_to_width`, `_char_px`, `_CHAR_W_*`, `_BADGE_*` from the Python SDK. `badge()`, `KeyRow`, `FooterKeys`, and `commit_graph.py` all rewritten to emit the new commands. `ctx.badge()`, `ctx.key_chip_row()`, `ctx.measure_text()` added to `RenderContext`.
+
+Key decision: `MeasureText` handled inside `mod.rs`'s `ui()` drain loop (not `routing.rs`) because only `ui()` has a live `egui::Ui` for font access. `badge()` free function in `ui.py` is now void — callers needing horizontal flow advance use `_approx_badge_w()` (heuristic for cursor-only, not rendering).
+
+**Breaks if:** Any badge pill is wrong size, or key chips show as plain text, or `ctx.text()` calls from older app code omit `max_width`/`elide` (they fail deserialization — required fields).
+
 ## 2026-04-23 — [FIX] Host PATH broken under GUI-bundle launch (alpha)
 Root cause: when Plexi is launched from `/Applications` via Spotlight, Dock, Finder, or `open -a`, LaunchServices starts the process with a minimal `/usr/bin:/bin:/usr/sbin:/sbin` PATH — no Homebrew, no `~/.local/bin`, no asdf/nvm/pyenv shims. The user's shell profile never runs. Plexi then whitelists that broken PATH into every process-app subprocess via `process_app/mod.rs` (ENV_WHITELIST includes `PATH`), so apps that shell out to tools installed under `/opt/homebrew/bin` (e.g. GitHub Tree calling `gh`, any agent using `rg`/`fd`, etc.) see `shutil.which("gh") == None` and fail to auth. Running Plexi from a terminal (`plexi-alpha`) works because the shell PATH is inherited correctly.
 

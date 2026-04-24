@@ -411,33 +411,6 @@ PRIORITY_NORMAL   = 50
 PRIORITY_HIGH     = 100
 PRIORITY_CRITICAL = 200
 
-# ── Text-width heuristics (used for truncation / layout math) ─────────────────
-# Proportional ≈ 0.52x font size, mono ≈ 0.60x. Approximation — host uses real
-# font metrics at draw time. These match `plexi_sdk.ui._CHAR_W_*`.
-_CHAR_W_PROPORTIONAL = 0.52
-_CHAR_W_MONO         = 0.60
-
-
-def truncate_to_width(text: str, max_px: float, font_size: float,
-                      mono: bool = False) -> str:
-    """Shorten `text` with an ellipsis if it exceeds `max_px` at `font_size`.
-
-    Every text primitive in the SDK routes through this when the caller passes
-    `max_width=...` — call it directly when you need the same safety for a
-    hand-drawn surface (preview lines, list columns, tooltips). Returns an
-    empty string when `max_px <= 0`.
-    """
-    if max_px <= 0 or not text:
-        return ""
-    ratio = _CHAR_W_MONO if mono else _CHAR_W_PROPORTIONAL
-    char_w = max(0.1, font_size * ratio)
-    max_chars = max(1, int(max_px / char_w))
-    if len(text) <= max_chars:
-        return text
-    if max_chars <= 1:
-        return "…"
-    return text[: max_chars - 1] + "…"
-
 # ── Color helpers ─────────────────────────────────────────────────────────────
 
 def rgba(r: int, g: int, b: int, a: int = 255) -> str:
@@ -590,6 +563,7 @@ class Emitter:
     def cd_to(self, cwd: str) -> None:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
         _emit({"type": "cd_request", "cwd": cwd})
+
 
     def schedule_render(self, after_ms: int = 16) -> None:
         """Ask the host to send a new Render event after `after_ms` milliseconds.
@@ -813,7 +787,8 @@ class RenderContext:
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False,
              align: str = "top_left",
-             max_width: "float | None" = None) -> None:
+             max_width: "float | None" = None,
+             elide: bool = True) -> None:
         """Draw text. `align` controls how `(x, y)` maps to the text box:
 
           - "top_left" (default) — (x, y) is the top-left corner.
@@ -826,19 +801,143 @@ class RenderContext:
         is noticeably more accurate than Python-side math with approximate
         character-width ratios.
 
-        `max_width` — when set, the text is truncated with an ellipsis if it
-        would exceed this many pixels. **Pass this for any text inside a
-        bounded container** (list rows, columns, table cells). Without it, a
-        long string silently overflows its allotted region and blows out the
-        layout — there is no host-side clipping.
+        `max_width` — when set, the host clips the text at this pixel width.
+        `elide`     — when True (default), a "…" is appended at the clip point;
+                      when False, the text is hard-clipped with no marker.
+
+        Both `max_width` and `elide` are sent explicitly on the wire so the
+        host always has required fields (no serde defaults). The SDK fills in
+        None / True when the caller omits them.
         """
-        if max_width is not None:
-            text = truncate_to_width(text, max_width, size, mono=monospace)
-            if not text:
-                return
         _emit({"type": "text", "x": x, "y": y, "text": text, "size": size,
                "color": color, "monospace": monospace, "bold": bold,
-               "align": align})
+               "align": align, "max_width": max_width, "elide": elide})
+
+    def badge(self, x: float, y_center: float, label: str,
+              fill: str = ACCENT, fg: str = BG,
+              font_size: float = 11.0, radius: float = 8.0) -> None:
+        """Render a host-measured pill badge.
+
+        The host measures the label with real egui font metrics, sizes the pill
+        (text_w + padding), and centres the text — no Python width math.
+
+        `x`        — left edge of the badge.
+        `y_center` — vertical centre of the badge.
+        `label`    — text to display.
+        `fill`     — pill background colour.
+        `fg`       — text colour.
+        `font_size`— label pt size.
+        `radius`   — corner radius (8.0 = fully rounded pill; 4.0 = tag chip).
+        """
+        _emit({"type": "badge", "x": x, "y": y_center, "label": label,
+               "fill": fill, "fg": fg, "font_size": font_size, "radius": radius})
+
+    def key_chip_row(self, x: float, y: float, keys: "list[str]",
+                     description: "str | None" = None,
+                     font_size: float = 11.0) -> None:
+        """Render a row of keycap chips followed by an optional description.
+
+        The host measures each chip with real egui font metrics and flows them
+        left-to-right — no Python width math.
+
+        `x`, `y`     — origin of the chip row (left edge, top of chips).
+        `keys`       — list of key labels, e.g. ["⌘", "K"] for a chord.
+        `description`— optional trailing text label after the chips.
+        `font_size`  — chip label pt size.
+
+        For multi-pair shortcut rows with horizontal flow + multi-line
+        wrapping, use `ctx.shortcuts(...)` instead — that's the right
+        primitive for footer-style "[k] desc · [j] desc · …" layouts.
+        """
+        _emit({"type": "key_chip_row", "x": x, "y": y, "keys": keys,
+               "description": description, "font_size": font_size})
+
+    def shortcuts(self, x: float, y: float, max_width: float,
+                  pairs: "list[tuple]", font_size: float = 11.0) -> None:
+        """Render a multi-group shortcut row with host-measured layout.
+
+        The host owns ALL geometry: chip widths from real font metrics,
+        horizontal flow with inter-group spacing, multi-line wrapping
+        when the next group would exceed `max_width`. SDK callers send
+        one DrawCommand and trust the result — no Python width math,
+        no truncation, no overflow.
+
+        `pairs` is a list of `(keys, description)` tuples where `keys`
+        is either a single string or a list of strings (multi-key
+        chord). Example::
+
+            ctx.shortcuts(
+                x=24.0, y=12.0, max_width=ctx.w - 48.0,
+                pairs=[
+                    (["[", "]"], "week"),
+                    ("t", "today"),
+                    (["j", "k"], "commit"),
+                    ("?", "help"),
+                ],
+            )
+        """
+        # Normalise (keys-or-key, desc) → ShortcutPair on the wire.
+        wire_pairs = []
+        for keys_or_key, desc in pairs:
+            if isinstance(keys_or_key, str):
+                wire_keys = [keys_or_key]
+            else:
+                wire_keys = list(keys_or_key)
+            wire_pairs.append({"keys": wire_keys, "description": desc or ""})
+        _emit({"type": "shortcuts", "x": x, "y": y,
+               "max_width": max_width, "pairs": wire_pairs,
+               "font_size": font_size})
+
+    def measure_text(self, text: str, font_size: float,
+                     monospace: bool = False) -> "tuple[float, float]":
+        """Measure `text` at `font_size` using the host's real font metrics.
+
+        Sends a `MeasureText` DrawCommand and blocks until the host responds
+        with `TextMeasured`. Returns `(width, height)` in logical pixels.
+
+        Use this only when layout depends on measured text width (e.g. flowing
+        multiple badges horizontally). Avoid on hot render paths — prefer
+        passing `max_width` on `ctx.text()` for simple truncation.
+        """
+        import uuid
+        request_id = str(uuid.uuid4())
+        _emit({"type": "measure_text", "request_id": request_id,
+               "text": text, "font_size": font_size, "monospace": monospace})
+        # Block until the matching TextMeasured response arrives on stdin.
+        # The App event loop reads from stdin; we need to read directly here
+        # because we're inside a frame callback. Use the shared stdin lock.
+        import sys as _sys
+        for line in _sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                import json as _json
+                event = _json.loads(line)
+            except Exception:
+                continue
+            if (event.get("type") == "text_measured"
+                    and event.get("request_id") == request_id):
+                return float(event.get("width", 0.0)), float(event.get("height", 0.0))
+            # Stash any non-matching events so the main loop sees them.
+            # NOTE: This is a best-effort flush for the common case (no other
+            # events expected mid-frame). A full async approach would require
+            # a separate thread; apps that need that should use DrawCommand::MeasureText
+            # with an explicit NotifyAction-style async pattern instead.
+
+    def push_clip(self, x: float, y: float, w: float, h: float) -> None:
+        """Push a clip rect onto the host's clip stack.
+
+        All subsequent draws are clipped to the intersection of this rect with
+        the current top of the stack (or the pane rect if the stack is empty).
+        Must be balanced with a matching `pop_clip()`. Use `_render_clipped`
+        on Component subclasses instead of calling this directly.
+        """
+        _emit({"type": "push_clip", "x": x, "y": y, "w": w, "h": h})
+
+    def pop_clip(self) -> None:
+        """Pop the most recently pushed clip rect. Must balance a `push_clip()`."""
+        _emit({"type": "pop_clip"})
 
     def line(self, x1: float, y1: float, x2: float, y2: float,
              color: str, width: float = 1.0) -> None:

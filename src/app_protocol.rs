@@ -151,6 +151,13 @@ pub enum PlexiEvent {
     },
     /// Fired when a SetTimer timer expires.
     Timer { timer_id: String },
+    /// Response to a `DrawCommand::MeasureText` request.
+    /// `width` and `height` are in logical pixels at the requested font size.
+    TextMeasured {
+        request_id: String,
+        width: f32,
+        height: f32,
+    },
 }
 
 /// A simple rectangle (logical coordinates).
@@ -183,6 +190,24 @@ pub enum MouseButton {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DrawCommand {
     // ── Visual primitives (frame-scoped) ─────────────────────────────────
+
+    /// Push a clip rect onto the host's clip stack.
+    ///
+    /// The effective clip rect is the intersection of the new rect with the
+    /// current top of the stack (or the pane rect if the stack is empty).
+    /// All subsequent draw commands are clipped to this intersection until
+    /// a matching `PopClip` rebalances the stack.
+    ///
+    /// Imbalanced push/pop is a hard error logged at `warn` level. The host
+    /// resets to zero depth at frame end so a bug in one app cannot corrupt
+    /// subsequent frames.
+    PushClip { x: f32, y: f32, w: f32, h: f32 },
+
+    /// Pop the most recently pushed clip rect from the stack.
+    ///
+    /// If the stack is already empty, logs a `warn` and is a no-op.
+    PopClip,
+
     /// Fill a rectangle.
     Rect {
         x: f32,
@@ -202,6 +227,10 @@ pub enum DrawCommand {
     /// Centering uses the host's real font metrics, which matters for small
     /// badges / buttons where a 0.1em difference is visible. Prefer `center`
     /// for anything inside a fixed-size container.
+    ///
+    /// `max_width` — when `Some(w)`, the text is clipped at `w` pixels.
+    /// `elide` — when `true`, a `…` is appended at the clip point; when
+    ///           `false`, the text is hard-clipped with no marker.
     Text {
         x: f32,
         y: f32,
@@ -214,6 +243,8 @@ pub enum DrawCommand {
         bold: bool,
         #[serde(default = "default_text_align")]
         align: String,
+        max_width: Option<f32>,
+        elide: bool,
     },
     /// Draw a line segment.
     Line {
@@ -442,6 +473,108 @@ pub enum DrawCommand {
         end_angle: f32,
         fill: String,
     },
+
+    // ── Host-measured layout primitives ──────────────────────────────────
+    //
+    // These commands delegate text measurement and pill geometry entirely to
+    // the host. The SDK emits intent; the host measures with real egui font
+    // metrics and renders. No Python-side width estimation.
+
+    /// Host-rendered pill badge. The host measures the label with real font
+    /// metrics, sizes the pill (text_w + padding), and centres the text
+    /// both horizontally and vertically. No width math in the SDK.
+    ///
+    /// `x`      — left edge of the badge.
+    /// `y`      — vertical centre (the badge is drawn centred on this y).
+    /// `label`  — text to display inside the pill.
+    /// `fill`   — pill background colour (hex).
+    /// `fg`     — text colour (hex).
+    /// `font_size` — label font size in pt.
+    /// `radius` — pill corner radius. Use a large value (e.g. font_size) for
+    ///            a fully-rounded pill, or RADIUS_SM (4.0) for tag chips.
+    Badge {
+        x: f32,
+        y: f32,
+        label: String,
+        fill: String,
+        fg: String,
+        font_size: f32,
+        radius: f32,
+    },
+
+    /// Host-rendered keycap chip. The host measures the label with real
+    /// monospace font metrics, sizes the chip, and centres the text inside.
+    ///
+    /// `x`         — left edge of the chip (top-left, matching ctx.text).
+    /// `y`         — top edge of the chip.
+    /// `label`     — key label (e.g. "⌘", "[", "Enter").
+    /// `font_size` — label font size in pt.
+    KeyChip {
+        x: f32,
+        y: f32,
+        label: String,
+        font_size: f32,
+    },
+
+    /// A horizontal row of keycap chips. The host flows them left-to-right
+    /// with a fixed 2px gap between chips, sizes each chip from real font
+    /// metrics, and places an optional trailing description label after the
+    /// last chip.
+    ///
+    /// `x`, `y`      — top-left origin of the row.
+    /// `keys`        — ordered list of key labels to render as chips.
+    /// `description` — optional label rendered after the last chip.
+    /// `font_size`   — applies to all chips and the description.
+    KeyChipRow {
+        x: f32,
+        y: f32,
+        keys: Vec<String>,
+        description: Option<String>,
+        font_size: f32,
+    },
+
+    /// A multi-group shortcut row. The host owns all layout — chip widths
+    /// from real font metrics, flow horizontally with configurable inter-
+    /// group gap, wrap to a new line when the next group would exceed
+    /// `max_width`. Returns nothing; correct by construction.
+    ///
+    /// `x`, `y`      — top-left origin.
+    /// `max_width`   — wrap budget. Wrap to a new line when the next group
+    ///                 would exceed it. Caller passes the available pane
+    ///                 width minus its own padding.
+    /// `pairs`       — ordered list of `(chip-labels, description)` groups.
+    ///                 Each pair renders as one or more chips followed by
+    ///                 the description text.
+    /// `font_size`   — applies to all chips and descriptions.
+    Shortcuts {
+        x: f32,
+        y: f32,
+        max_width: f32,
+        pairs: Vec<ShortcutPair>,
+        font_size: f32,
+    },
+
+    /// Request a one-shot text measurement. The host measures `text` at
+    /// `font_size` with the proportional font and replies immediately with
+    /// `PlexiEvent::TextMeasured { request_id, width, height }`.
+    ///
+    /// Use this only when layout genuinely depends on measured text width
+    /// (e.g. flowing multiple badges horizontally). Avoid on hot render paths.
+    MeasureText {
+        request_id: String,
+        text: String,
+        font_size: f32,
+        #[serde(default)]
+        monospace: bool,
+    },
+}
+
+/// One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips
+/// followed by `description` text.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ShortcutPair {
+    pub keys: Vec<String>,
+    pub description: String,
 }
 
 /// Visibility scope for a notification.
