@@ -115,6 +115,9 @@ pub struct PlexiApp {
     /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
     pub(crate) notifications_enabled: bool,
     pub(crate) notifications_focus_mode: bool,
+    /// Minimum priority that may auto-open the modal on arrival. Below this,
+    /// notifications enter the queue silently (badge only). Defaults to 100.
+    pub(crate) notifications_interrupt_threshold: u32,
     /// Input-focus stack. Top layer receives keyboard input; panes see an
     /// empty event buffer while a non-`Pane` layer is on top. See the
     /// `FocusLayer` docs for the invariant.
@@ -150,6 +153,11 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.focus_mode)
             .unwrap_or(false);
+        let notifications_interrupt_threshold = config
+            .notifications
+            .as_ref()
+            .and_then(|n| n.interrupt_threshold)
+            .unwrap_or(100); // PRIORITY_HIGH — only HIGH/CRITICAL interrupt by default
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -347,6 +355,7 @@ impl PlexiApp {
                     modal_state_notify_id: String::new(),
                     notifications_enabled,
                     notifications_focus_mode,
+                    notifications_interrupt_threshold,
                     focus_stack: Vec::new(),
                     last_notify_poll: std::time::Instant::now(),
                     host,
@@ -418,6 +427,7 @@ impl PlexiApp {
             modal_state_notify_id: String::new(),
             notifications_enabled,
             notifications_focus_mode,
+            notifications_interrupt_threshold,
             focus_stack: Vec::new(),
             last_notify_poll: std::time::Instant::now(),
             host: crate::host::model::HostModel::new(),
@@ -491,10 +501,14 @@ impl PlexiApp {
                 required: false,
                 priority: 0,
             });
-            if !self.notifications_focus_mode {
+            // Host-originated notifications are always LOW (priority 0) —
+            // below any reasonable interrupt threshold — so they queue
+            // silently by default. They still ride focus_mode as a hard
+            // gate for consistency.
+            let should_auto_open = !self.notifications_focus_mode
+                && 0 >= self.notifications_interrupt_threshold;
+            if should_auto_open {
                 self.show_notification_modal = true;
-                // Only set the new notification as current if nothing is
-                // already pinned. Never displace what the user is viewing.
                 if self.current_notify_id.is_none() {
                     self.current_notify_id = Some(internal_id);
                 }
@@ -807,19 +821,30 @@ impl eframe::App for PlexiApp {
                         priority,
                         scope,
                     });
-                    // For Global-scope notifications, always open the modal
-                    // (they interrupt regardless of active context). For
-                    // Context-scoped ones, only open if source_context matches
-                    // active (the user is already in that context).
+                    // Auto-open rules:
+                    //   1. Visibility (Global or in active context) — else
+                    //      it stays invisible in the queue until the user
+                    //      switches to its context.
+                    //   2. focus_mode off — the global mute gate.
+                    //   3. priority >= interrupt_threshold — don't
+                    //      auto-open low-urgency notifications like
+                    //      "note saved".
+                    // If any gate fails, the notification still queues
+                    // (badge ticks) but the modal doesn't pop.
                     let is_visible = is_global || notif_source_ctx == self.active_context;
-                    if is_visible && !self.notifications_focus_mode {
+                    let should_auto_open = is_visible
+                        && !self.notifications_focus_mode
+                        && priority >= self.notifications_interrupt_threshold;
+                    if should_auto_open {
                         self.show_notification_modal = true;
                     }
                     // Only set the new notification as current if nothing is
-                    // already pinned AND the new notification is visible.
-                    // The user's current view is never displaced by incoming
-                    // notifications — the queue just grows beneath them.
-                    if self.current_notify_id.is_none() && is_visible {
+                    // already pinned AND the new notification is visible AND
+                    // it would auto-open. Low-priority passive notifications
+                    // shouldn't become the pinned front-most until the user
+                    // actually opens the modal (then the highest-priority
+                    // remaining is picked at modal-open time).
+                    if self.current_notify_id.is_none() && should_auto_open {
                         self.current_notify_id = Some(new_id);
                     }
                 }

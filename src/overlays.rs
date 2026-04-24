@@ -487,12 +487,17 @@ impl PlexiApp {
     }
 
     /// Primary notification surface: a keyboard-first centered modal over the
-    /// work area. Renders the front of the queue. Dispatches exactly one
-    /// `DeliverNotifyAction` per user action and pops the notification; if the
-    /// queue still has items the modal stays open on the next one.
+    /// work area. Renders the front of the queue.
+    ///
+    /// Enter / option-select / input-submit dispatches exactly one
+    /// `DeliverNotifyAction` and removes the notification from the queue.
+    /// Esc defers: the modal closes but the notification stays in the
+    /// queue (reopen with Cmd+Shift+A to come back to it). No
+    /// NotifyAction is dispatched on Esc — the app hasn't been answered.
+    /// Required notifications reject Esc.
     ///
     /// Input map (all kinds):
-    ///   Esc        — cancel (only when `required == false`)
+    ///   Esc        — defer (only when `required == false`); keeps in queue
     ///
     /// `kind = message`:
     ///   Enter | Space — Acknowledge
@@ -1018,21 +1023,32 @@ impl PlexiApp {
             }
         }
 
-        // Esc cancels unless the notification is required.
+        // Esc defers (not cancels) unless the notification is required.
+        //
+        // Defer = close the modal but keep the notification in the queue.
+        // Cmd+Shift+A will bring it back as the front-most on reopen.
+        // No NotifyAction is dispatched to the app — the app hasn't been
+        // answered yet, it just got postponed.
+        //
+        // For required notifications, Esc does nothing: the user must
+        // acknowledge or pick an option.
         if action_cmd.is_none() && esc_pressed && !notif.required {
-            action_cmd = Some(AppCommand::DeliverNotifyAction {
-                pane_id: notif.sender_pane_id,
-                notify_id: notif.notify_id.clone(),
-                action_label: "cancel".to_string(),
-                value: None,
-            });
+            self.show_notification_modal = false;
+            self.modal_focused_option = 0;
+            self.modal_input_buffer.clear();
+            self.modal_state_notify_id.clear();
+            // `current_notify_id` intentionally stays set so the same
+            // notification is front-most on next reopen. No queue mutation,
+            // no NotifyAction — that's what makes it defer, not cancel.
+            return cmds;
         }
 
         if let Some(cmd) = action_cmd {
-            // Remove the dismissed notification by id, then pick the next
-            // one to display dynamically from *whatever is in the queue
-            // right now* — highest priority wins. This is the opposite of
-            // walking a pre-frozen list.
+            // Acknowledgment / option-select / input-submit — the user gave
+            // a real answer. Remove the notification by id, deliver the
+            // NotifyAction to the originating app, then pick the next
+            // highest-priority remaining from whatever's in the queue
+            // right now (not a pre-frozen list).
             self.pending_notifications
                 .retain(|n| n.notify_id != current_id);
             self.modal_focused_option = 0;
