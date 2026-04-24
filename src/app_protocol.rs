@@ -303,13 +303,6 @@ pub enum DrawCommand {
         /// Typical values: 0 (background info), 50 (normal), 100 (important),
         /// 200 (critical/required).
         priority: u32,
-        /// Visibility scope. REQUIRED — no `#[serde(default)]`. Apps must
-        /// set this explicitly. Use `NotifyScope::Global` to interrupt the
-        /// user regardless of which context is active (e.g. stand-up-reminder).
-        /// Use `NotifyScope::Context` for confirmations local to this context
-        /// (e.g. "note saved"). Apps receive the default from their manifest
-        /// via the SDK; they should pass it through unchanged.
-        scope: NotifyScope,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
@@ -456,9 +449,10 @@ pub enum DrawCommand {
 /// - `Context` — visible only when the source context is the active context.
 /// - `Global`  — always visible, regardless of which context is active.
 ///
-/// REQUIRED on the wire — no `#[serde(default)]`. Apps and SDKs must set this
-/// explicitly (v3 breaking-change policy). Omitting it fails deserialisation.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+/// Host-side enum. Apps do NOT emit this on the wire — scope is a per-app
+/// user-facing policy declared in `manifest.toml::default_notification_scope`,
+/// resolved by the host at dispatch time. Apps never think about it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyScope {
     /// Only visible when the source context is the active context.

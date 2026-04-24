@@ -53,7 +53,7 @@ class QuickNoteApp(App):
             fname = d / f"{ts}.md"
             fname.write_text(text)
             self._status = f"Saved: {fname.name}"
-            self.emit.notify(title="Note saved", body=first_line, level="info", priority=0, scope="context")
+            self.emit.notify(title="Note saved", body=first_line, level="info", priority=0)
             # Reset composer
             self._lines = [""]
             self._cursor_line = 0

@@ -80,8 +80,7 @@ class AudioRecorderApp(App):
         self.emit.notify(title="Recording saved",
                          body=f"recording.wav ({len(self._frames)} frames)",
                          level="info",
-                         priority=50,
-                         scope="context")
+                         priority=50)
 
     def _write_wav(self) -> None:
         out_path = pathlib.Path(self.workspace_root) / "recording.wav"

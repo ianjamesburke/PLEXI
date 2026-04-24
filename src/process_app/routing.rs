@@ -172,7 +172,6 @@ impl ProcessApp {
                 actions,
                 notify_id,
                 priority,
-                scope,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
@@ -266,7 +265,10 @@ impl ProcessApp {
                     input_prompt,
                     required,
                     priority,
-                    scope,
+                    // Scope placeholder — dispatch.rs overwrites with the
+                    // manifest-declared default for this app's type_id.
+                    // Apps never set scope; users control it via manifest.
+                    scope: crate::app_protocol::NotifyScope::Context,
                 });
                 // `actions` intentionally dropped: they were already processed
                 // as server-side side effects above (resume_run / open_intent /

@@ -41,21 +41,32 @@ impl PlexiApp {
     /// that background apps — e.g. stand-up-reminder in a non-active context
     /// — can surface Global-scope notifications while the user is elsewhere.
     pub(super) fn drain_all_app_commands(&mut self) -> Vec<AppCommand> {
-        // Collect (ctx_idx, pane_id, commands) first so we don't hold
-        // aliasing mutable borrows across pushes in the loop body.
-        let mut per_pane: Vec<(usize, u64, Vec<AppCommand>)> = Vec::new();
+        // Collect (ctx_idx, pane_id, type_id, commands) per pane. We capture
+        // type_id here because the manifest-declared notification scope is
+        // looked up from the registry by type_id, and we can't hold a
+        // mutable borrow on contexts + a shared borrow on the registry at
+        // the same time during the match below.
+        let mut per_pane: Vec<(usize, u64, String, Vec<AppCommand>)> = Vec::new();
         for (ctx_idx, context) in self.contexts.iter_mut().enumerate() {
             for (pane_id, pane) in context.panes.iter_mut() {
                 let Some(app_pane) = pane.as_app_mut() else { continue };
+                let type_id = app_pane.runtime.type_id().to_string();
                 let cmds = app_pane.runtime.take_pending_commands();
                 if !cmds.is_empty() {
-                    per_pane.push((ctx_idx, *pane_id, cmds));
+                    per_pane.push((ctx_idx, *pane_id, type_id, cmds));
                 }
             }
         }
 
         let mut deferred = Vec::new();
-        for (ctx_idx, pane_id, cmds) in per_pane {
+        for (ctx_idx, pane_id, type_id, cmds) in per_pane {
+            // Scope is a per-app user-facing policy declared in the app's
+            // manifest.toml. Apps never set it — the host resolves it once
+            // per notification here. Defaults to `Context` when the manifest
+            // omits the field (safe default: don't interrupt across contexts).
+            let resolved_scope = self
+                .registry
+                .default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
                     AppCommand::SpawnApp { .. }
@@ -77,15 +88,11 @@ impl PlexiApp {
                         input_prompt,
                         required,
                         priority,
-                        scope,
                         ..
                     } => {
                         deferred.push(AppCommand::ShowNotification {
                             notify_id,
                             sender_pane_id: pane_id,
-                            // Stamp the originating context so the host can
-                            // filter by scope (Context-scoped notifs are only
-                            // visible in their source context; Global ones always).
                             source_context: ctx_idx,
                             level,
                             title,
@@ -95,7 +102,7 @@ impl PlexiApp {
                             input_prompt,
                             required,
                             priority,
-                            scope,
+                            scope: resolved_scope,
                         });
                     }
                     AppCommand::DeliverNotifyAction { .. } => deferred.push(cmd),
