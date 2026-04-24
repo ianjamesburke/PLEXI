@@ -13,6 +13,7 @@ from datetime import datetime
 from plexi_sdk import (
     App, RenderContext,
     FG, MUTED, SURFACE, GREEN, BODY, CAPTION, HINT,
+    PRIORITY_LOW,
 )
 
 NOTES_DIR = ".plexi/notes"
@@ -53,7 +54,7 @@ class QuickNoteApp(App):
             fname = d / f"{ts}.md"
             fname.write_text(text)
             self._status = f"Saved: {fname.name}"
-            self.emit.notify(title="Note saved", body=first_line, level="info", priority=0)
+            self.emit.notify(title="Note saved", body=first_line, level="info", priority=PRIORITY_LOW)
             # Reset composer
             self._lines = [""]
             self._cursor_line = 0

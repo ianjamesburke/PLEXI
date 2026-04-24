@@ -8,6 +8,7 @@ from plexi_sdk import (
     App, RenderContext,
     SURFACE, ACCENT, MUTED, FG, GREEN,
     TITLE, CAPTION,
+    PRIORITY_HIGH,
 )
 from plexi_sdk.ui import (
     Column, Header, Section, Label, Spacer, Footer,
@@ -97,7 +98,7 @@ class StandUpReminderApp(App):
             title="Time to move!",
             body=prompt,
             level="info",
-            priority=100,
+            priority=PRIORITY_HIGH,
 
         )
         self.emit.info(f"Reminder #{self._reminders_today}: {prompt}")

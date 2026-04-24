@@ -137,6 +137,95 @@ Color helpers:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NOTIFICATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Four kinds. All are posted via ctx.notify* and render in the central
+notification modal (ctx.notify(...) returns immediately; the other three
+block the calling thread until the user responds — run them on a worker
+thread if the app needs to stay interactive).
+
+  ctx.notify(title, body="", level="info", priority=PRIORITY_NORMAL)
+      Fire-and-forget message. Enter / Space acknowledge, Esc dismisses.
+
+  ctx.notify_and_wait(title, body="", priority=...)  -> str
+      Same as notify() but blocks. Returns "acknowledge" or "cancel".
+
+  ctx.notify_choice(title, options, body="", required=False, priority=...) -> str
+      Blocking choice picker. options = [{"label":..., "value":...,
+      "shortcut":...}]. Returns chosen value (or label if no value),
+      or "__cancel__" if dismissed.
+
+  ctx.notify_input(title, prompt="", body="", required=False, priority=...) -> str
+      Blocking text input. Returns the typed string, or "__cancel__".
+
+Priority — required kwarg on every call. Use the named constants:
+
+  PRIORITY_LOW      = 0     Background info. Stacks at the bottom of the queue.
+  PRIORITY_NORMAL   = 50    Standard confirmations — "note saved", "done", etc.
+  PRIORITY_HIGH     = 100   Needs attention soon — not blocking but noticeable.
+  PRIORITY_CRITICAL = 200   Interrupt-level. Use sparingly; reserve for user
+                            decisions the app genuinely depends on. If every
+                            notification is CRITICAL, none is.
+
+(A future version may reserve a user-only priority band above CRITICAL so
+a misbehaving app can't yell itself to the top of someone's queue. Apps
+should stay under 200 regardless; 0..200 is the app band.)
+
+Queue model:
+
+- Notifications pile into a single priority-sorted queue (priority DESC,
+  arrival ASC). The front-most is pinned by id — new notifications
+  arriving NEVER change what's on screen, only the total count.
+- On dismiss, the next front-most is chosen dynamically from whatever's
+  in the queue right now — not from a pre-frozen snapshot.
+- Cmd+] / Cmd+[ preview other queued notifications without acknowledging.
+  Cmd+Shift+A toggles the modal on/off.
+
+Scope — context vs global — is NOT a runtime choice. It's declared per-app
+in the app's manifest.toml::default_notification_scope:
+
+  "context"  — notification is visible only when its source context is active
+               (default; safe — local confirmations stay local).
+  "global"   — notification is visible in all contexts (use for genuinely
+               cross-context things like stand-up reminders).
+
+The user controls which scope a given app uses by editing its manifest.
+Apps do not see or set scope at the SDK level.
+
+Round-trip response — notify_choice / notify_input / notify_and_wait all
+block for the user's answer. For fire-and-forget notifications that still
+need a response, set notify_id explicitly and handle PlexiEvent::NotifyAction
+in your event loop. The blocking helpers handle this plumbing internally.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MANIFEST REFERENCE (examples/<app>/manifest.toml)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Required:
+  [app]
+  id = "my-app"             # stable identifier — used for launch slot, log
+                            # target "app::<id>", install dir, pack refs
+  name = "My App"           # human-readable display name
+  version = "0.1.0"
+  description = "…"
+  entry = "my_app.py"       # executable entry point, relative to manifest
+
+Optional:
+  default_notification_scope = "context"  # "context" | "global" (default "context")
+
+  [app.capabilities]
+  capabilities = []         # e.g. ["net.http", "audio.record"]
+                            # apps must declare what they use; host prompts
+                            # on install (future) and gates at runtime
+
+  [launch]
+  layout_hint = { side = "above", split = 0.5 }  # preferred split direction
+                                                  # + size when spawned
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RenderContext  (ctx passed to on_init, on_render, on_key, on_click, …)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -310,6 +399,17 @@ FG        = "#cdd6f4"
 RED       = "#f38ba8"
 GREEN     = "#a6e3a1"
 YELLOW    = "#f9e2af"
+
+# ── Notification priority tiers ───────────────────────────────────────────────
+# Higher = more urgent. Queue sorts priority DESC, arrival ASC. See the
+# NOTIFICATIONS block in the module docstring for guidance on which tier to
+# pick. Range 0..200 is the "app band" — stay inside it. A future release
+# may reserve priorities above 200 for user overrides so apps can't yell
+# themselves to the top; staying in-band today keeps you forward-compatible.
+PRIORITY_LOW      = 0
+PRIORITY_NORMAL   = 50
+PRIORITY_HIGH     = 100
+PRIORITY_CRITICAL = 200
 
 # ── Text-width heuristics (used for truncation / layout math) ─────────────────
 # Proportional ≈ 0.52x font size, mono ≈ 0.60x. Approximation — host uses real

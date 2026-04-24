@@ -13,7 +13,7 @@ import threading
 import time
 import wave
 
-from plexi_sdk import App, RenderContext, RED, GREEN, MUTED
+from plexi_sdk import App, RenderContext, RED, GREEN, MUTED, PRIORITY_NORMAL
 from plexi_sdk.ui import (
     Column, Card, Header, Section,
     KeyRow, Label, Spacer, Footer,
@@ -80,7 +80,7 @@ class AudioRecorderApp(App):
         self.emit.notify(title="Recording saved",
                          body=f"recording.wav ({len(self._frames)} frames)",
                          level="info",
-                         priority=50)
+                         priority=PRIORITY_NORMAL)
 
     def _write_wav(self) -> None:
         out_path = pathlib.Path(self.workspace_root) / "recording.wav"
