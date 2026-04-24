@@ -92,6 +92,10 @@ class CommitGraphApp(App):
         self._last_head_sha: Optional[str] = None
         self._last_poll_time: float = 0.0
 
+        # Vertical scroll offset (px) for the commit-graph region.
+        # Scrolls the commit rows within the clipped graph rectangle.
+        self._graph_scroll_offset: float = 0.0
+
         self.emit.status_summary("Commit Graph — loading")
         self.emit.schedule_render(after_ms=16)
 
@@ -260,22 +264,29 @@ class CommitGraphApp(App):
         if key in ("[",):
             self._week_offset += 1
             self._sel = 0
+            self._graph_scroll_offset = 0.0
             threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key in ("]",):
             if self._week_offset > 0:
                 self._week_offset -= 1
                 self._sel = 0
+                self._graph_scroll_offset = 0.0
                 threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key == "t":
             if self._week_offset != 0:
                 self._week_offset = 0
                 self._sel = 0
+                self._graph_scroll_offset = 0.0
                 threading.Thread(target=self._fetch_graph, daemon=True).start()
         elif key in ("j", "down") and n > 0:
             self._sel = min(self._sel + 1, n - 1)
+            # Scroll down to keep selected commit in view.
+            self._graph_scroll_offset += ROW_H
             self.emit.schedule_render(after_ms=0)
         elif key in ("k", "up") and n > 0:
             self._sel = max(self._sel - 1, 0)
+            # Scroll up to keep selected commit in view.
+            self._graph_scroll_offset = max(0.0, self._graph_scroll_offset - ROW_H)
             self.emit.schedule_render(after_ms=0)
         elif key in ("h", "left") and n > 0:
             cur_lane = self._commits[self._sel]["lane"] if n > 0 else 0
@@ -294,9 +305,12 @@ class CommitGraphApp(App):
                 self.emit.schedule_render(after_ms=0)
         elif key == "g":
             self._sel = 0
+            self._graph_scroll_offset = 0.0
             self.emit.schedule_render(after_ms=0)
         elif key == "G":
             self._sel = max(0, n - 1)
+            # Scroll to the bottom of the commit list.
+            self._graph_scroll_offset = max(0.0, n * ROW_H)
             self.emit.schedule_render(after_ms=0)
         elif key == "c":
             # IMPL-NOTE: SDK has no clipboard emit — log + status line instead.
@@ -599,9 +613,22 @@ class CommitGraphApp(App):
         # Build a hash → commit index map for edge rendering
         hash_to_idx: dict[str, int] = {c["hash"]: i for i, c in enumerate(self._commits)}
 
-        # Assign y positions
+        # Clamp scroll offset to valid range (total content height - viewport).
+        total_content_h = len(self._commits) * ROW_H
+        self._graph_scroll_offset = max(
+            0.0, min(self._graph_scroll_offset, max(0.0, total_content_h - graph_h))
+        )
+
+        # y = graph_y - scroll_offset: scrolling shifts rows upward.
+        content_top = graph_y - self._graph_scroll_offset
+
+        # Assign y positions relative to the scrolled content origin.
         for i, c in enumerate(self._commits):
-            c["y"] = graph_y + i * ROW_H + ROW_H / 2
+            c["y"] = content_top + i * ROW_H + ROW_H / 2
+
+        # Clip all graph draws to the graph region so scrolled-out rows
+        # don't bleed into the legend above or footer below.
+        ctx.push_clip(0.0, graph_y, right_edge, graph_h)
 
         # ── Draw edges ────────────────────────────────────────────────────────
         for child_h, parent_h in self._edges:
@@ -618,7 +645,7 @@ class CommitGraphApp(App):
             color = child["color"]
 
             if pi is None:
-                # Parent is outside viewport — draw a stub going off the bottom
+                # Parent is outside viewport — draw a stub going off the bottom.
                 stub_end_y = graph_y + graph_h
                 ctx.line(child_x, child_y + NODE_R, child_x, stub_end_y,
                          color=dim(color, 0x88), width=2.0)
@@ -705,6 +732,21 @@ class CommitGraphApp(App):
                 ctx.text(subj_x, cy_node - TEXT_CAPTION / 2,
                          c["subject"], size=TEXT_CAPTION, color=subj_color,
                          max_width=subj_avail)
+
+        # End of clipped graph region.
+        ctx.pop_clip()
+
+        # ── Scrollbar indicator ───────────────────────────────────────────────
+        if total_content_h > graph_h and graph_h > 0:
+            SCROLLBAR_W = 3.0
+            track_h = graph_h
+            thumb_ratio = graph_h / total_content_h
+            thumb_h = max(16.0, track_h * thumb_ratio)
+            thumb_y = graph_y + (self._graph_scroll_offset / total_content_h) * track_h
+            thumb_y = min(thumb_y, graph_y + track_h - thumb_h)
+            bar_x = right_edge - SCROLLBAR_W - 2.0
+            ctx.rect(bar_x, graph_y, SCROLLBAR_W, track_h, HIGHLIGHT)
+            ctx.rect(bar_x, thumb_y, SCROLLBAR_W, thumb_h, MUTED)
 
     def _draw_orthogonal_edge(self, ctx: RenderContext,
                               x1: float, y1: float,

@@ -925,6 +925,20 @@ class RenderContext:
             # a separate thread; apps that need that should use DrawCommand::MeasureText
             # with an explicit NotifyAction-style async pattern instead.
 
+    def push_clip(self, x: float, y: float, w: float, h: float) -> None:
+        """Push a clip rect onto the host's clip stack.
+
+        All subsequent draws are clipped to the intersection of this rect with
+        the current top of the stack (or the pane rect if the stack is empty).
+        Must be balanced with a matching `pop_clip()`. Use `_render_clipped`
+        on Component subclasses instead of calling this directly.
+        """
+        _emit({"type": "push_clip", "x": x, "y": y, "w": w, "h": h})
+
+    def pop_clip(self) -> None:
+        """Pop the most recently pushed clip rect. Must balance a `push_clip()`."""
+        _emit({"type": "pop_clip"})
+
     def line(self, x1: float, y1: float, x2: float, y2: float,
              color: str, width: float = 1.0) -> None:
         _emit({"type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
