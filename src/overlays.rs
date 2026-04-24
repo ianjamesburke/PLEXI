@@ -833,7 +833,7 @@ impl PlexiApp {
                             }
                         }
 
-                        ui.add_space(style::SPACE_XL);
+                        ui.add_space(style::SPACE_MD);
 
                         // Footer: primary action for message kind, plus a
                         // centered hint row describing keyboard shortcuts.
@@ -843,7 +843,7 @@ impl PlexiApp {
                                     ui,
                                     "Acknowledge",
                                     &self.colors,
-                                    220.0,
+                                    180.0,
                                 );
                                 if resp.clicked() {
                                     action_cmd = Some(AppCommand::DeliverNotifyAction {
@@ -859,7 +859,7 @@ impl PlexiApp {
 
                         // Footer keyboard hint — chips + inline labels per action.
                         ui.vertical_centered(|ui| {
-                            ui.horizontal_wrapped(|ui| {
+                            ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 match notif.kind {
                                     NotifyKind::Message => {
