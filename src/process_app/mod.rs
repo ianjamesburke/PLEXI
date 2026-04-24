@@ -497,10 +497,16 @@ impl App for ProcessApp {
         // UI space. A Frame wrapper sizes to its *allocated* content and would
         // collapse to a tiny rect in the top-left, leaving a visible grey
         // square on top of the intended background.
+        // Compute pane_rect ONCE here and hand it to every downstream
+        // consumer (background paint, draw-command renderer, click region).
+        // No downstream function derives geometry on its own — single
+        // source of truth. The earlier two-sources bug (renderer used
+        // ui.min_rect(), caller used available_rect_before_wrap()) was a
+        // silent disagreement that clipped every draw to an empty rect.
         let pane_rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
         let frame_clone = self.frame.clone();
-        render::render_draw_commands(ui, &frame_clone, ctx.colors);
+        render::render_draw_commands(ui, pane_rect, &frame_clone, ctx.colors);
 
         // ── Error fallback ──────────────────────────────────────────────────
         // If the app emitted no draw commands (crashed during init, threw an

@@ -18,13 +18,21 @@ use egui::Color32;
 /// applies the current top as the painter's clip rect via
 /// `painter.with_clip_rect(top)`. At frame end a non-empty stack is logged at
 /// `warn` level and cleared.
-pub(super) fn render_draw_commands(ui: &mut egui::Ui, commands: &[DrawCommand], colors: &Colors) {
-    // `available_rect_before_wrap()` is the actual pane rect — what the
-    // caller allocated for us. `min_rect()` is empty at frame start
-    // because we paint via `ui.painter()` without allocating (so the Ui's
-    // min_rect never grows). Using min_rect made every draw clip to an
-    // empty rect — apps appeared blank. The rect must reflect reality.
-    let pane_rect = ui.available_rect_before_wrap();
+/// Render a frame's draw commands inside `pane_rect`.
+///
+/// `pane_rect` is **passed in by the caller** rather than derived from the
+/// `Ui`. This is deliberate — derivation invites two-sources-of-truth bugs
+/// where the renderer and the caller silently disagree about geometry. An
+/// earlier version used `ui.min_rect()` here and got an empty rect (because
+/// process_app paints via `ui.painter()` without allocating, so min_rect
+/// never grows), which clipped every draw to nothing — all apps appeared
+/// blank. Single-source-of-geometry: the caller hands us the rect once.
+pub(super) fn render_draw_commands(
+    ui: &mut egui::Ui,
+    pane_rect: egui::Rect,
+    commands: &[DrawCommand],
+    colors: &Colors,
+) {
     let origin = pane_rect.min;
 
     // Clip stack. Entries are absolute egui screen-space Rects.
