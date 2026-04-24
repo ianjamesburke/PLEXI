@@ -46,10 +46,17 @@ impl PlexiApp {
         // looked up from the registry by type_id, and we can't hold a
         // mutable borrow on contexts + a shared borrow on the registry at
         // the same time during the match below.
+        let active = self.active_context;
         let mut per_pane: Vec<(usize, u64, String, Vec<AppCommand>)> = Vec::new();
         for (ctx_idx, context) in self.contexts.iter_mut().enumerate() {
             for (pane_id, pane) in context.panes.iter_mut() {
                 let Some(app_pane) = pane.as_app_mut() else { continue };
+                // Active-context panes are already fully updated by ui() this frame.
+                // Non-active panes need a headless tick so their timer/async events
+                // reach the subprocess and control commands (notifications, etc.) flow out.
+                if ctx_idx != active {
+                    app_pane.runtime.background_tick();
+                }
                 let type_id = app_pane.runtime.type_id().to_string();
                 let cmds = app_pane.runtime.take_pending_commands();
                 if !cmds.is_empty() {
