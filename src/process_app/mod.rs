@@ -321,6 +321,60 @@ impl ProcessApp {
         }
         cmds
     }
+
+    /// Pump event I/O for a pane that is not currently rendered.
+    ///
+    /// Active-context panes are fully updated by `ui()` each frame. Non-active
+    /// panes never get `ui()` called, so `http_rx` (where timer events land) is
+    /// never drained and the Python process never receives those events — timers
+    /// stall and notifications never fire.
+    ///
+    /// This does the minimal work to keep background apps alive:
+    /// 1. Drain `http_rx` → `outbound_events`
+    /// 2. Flush `outbound_events` → Python stdin
+    /// 3. Drain `draw_rx` → route control commands (timers, notifications, etc.)
+    ///
+    /// Visual draw commands are discarded — there is no pane to render into.
+    pub(crate) fn background_tick(&mut self) {
+        while let Ok(event) = self.http_rx.try_recv() {
+            self.outbound_events.push_back(event);
+        }
+        self.flush_outbound_events();
+        for cmd in self.drain_draw_commands() {
+            match cmd {
+                DrawCommand::Log { level, message } => {
+                    let target = format!("app::{}", self.type_id);
+                    match level.as_str() {
+                        "error" => log::error!(target: &target, "{message}"),
+                        "warn"  => log::warn!(target: &target, "{message}"),
+                        "debug" => log::debug!(target: &target, "{message}"),
+                        _       => log::info!(target: &target, "{message}"),
+                    }
+                }
+                cmd @ (DrawCommand::CapabilityRequest { .. }
+                | DrawCommand::SecretGet { .. }
+                | DrawCommand::RunGet { .. }
+                | DrawCommand::RunComplete { .. }
+                | DrawCommand::Notify { .. }
+                | DrawCommand::PipeOpen { .. }
+                | DrawCommand::PipeSend { .. }
+                | DrawCommand::StatusSummary { .. }
+                | DrawCommand::SpawnApp { .. }
+                | DrawCommand::HttpRequest { .. }
+                | DrawCommand::LlmRequest { .. }
+                | DrawCommand::AudioPlay { .. }
+                | DrawCommand::AudioCapture { .. }
+                | DrawCommand::CdRequest { .. }
+                | DrawCommand::SetTimer { .. }
+                | DrawCommand::CancelTimer { .. }) => {
+                    self.route_command(cmd);
+                }
+                // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
+                // are discarded — no pane to render into.
+                _ => {}
+            }
+        }
+    }
 }
 
 impl App for ProcessApp {

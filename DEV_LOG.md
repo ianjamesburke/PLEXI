@@ -1,5 +1,21 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-24 — [GOTCHA] `wtp add` always branches from main, not the active worktree
+
+`wtp add -b <name>` picks up the repo's default branch (main) as the base, not the worktree you're currently sitting in. Running it from the alpha worktree still produced a branch off main — 14 commits behind. Fix: after every `wtp add`, immediately run `git log --oneline -1` in the new worktree. If it doesn't match alpha HEAD, `git reset --hard alpha` before touching any files.
+
+## 2026-04-24 — [GOTCHA] `vertical_centered` + `horizontal_wrapped` doesn't actually center content
+
+In egui, `horizontal_wrapped` fills the full available width and wraps left-to-right, so wrapping a it in `vertical_centered` only centers the outer widget block — the chips/labels inside still left-align. Fix: use `horizontal` (no wrap) when the content is short enough to fit on one line. The notification modal's keyboard hint row had this bug; switching to `horizontal` centered it correctly.
+
+## 2026-04-24 — [GOTCHA] Custom Component subclasses crash if they don't inherit `Component`
+
+`Column` calls `child._render_clipped()` on every child. Inner classes used as layout children (`_CountdownRing` in stand-up-reminder, `_Body` in quick-note/todo/wikipedia) that implement `measure/is_grow/render` but don't inherit `Component` will crash at render time with `AttributeError: object has no attribute '_render_clipped'`. Rule: any object placed inside a `Column` or `Card` must be a `Component` subclass.
+
+## 2026-04-24 — [FIX] App code corrupted during AppBar migration — not caught until smoke test
+
+The Header→AppBar migration in this session produced silent corruption in two apps: `screen-time`'s `_chrome_tree` had the MODE_CLOCK branch reduced to a dangling `%B %-d')}")` fragment (the subtitle f-string was deleted but a closing fragment remained), and `notification-tester`'s `AppBar(title=...)` call had extra words appended after the string close, making it a syntax error. Both were only discovered by opening the apps and seeing them crash. The Scrollable.render method was also found outside the class body (orphaned past a `return`). These are syntax-level bugs — the right safeguard is `python3 -m py_compile` on every modified app file before committing.
+
 ## 2026-04-23 — [CHANGED] Host-measured text layout primitives (issue #312, PR → alpha)
 Python SDK estimated text widths with `font_size × ratio` heuristics; the host renders with real egui font metrics. This produced mis-sized badge pills, wrongly-clipped keychips, and truncation that cut at the wrong character count.
 
