@@ -606,9 +606,15 @@ class FooterKeys(Component):
 
 
 # Padding constants shared by `badge()` callers and the implementation.
-_BADGE_PAD_H = 6.0
-_BADGE_PAD_V = 2.0
+_BADGE_PAD_H = 8.0          # horizontal padding (text-to-pill-edge)
+_BADGE_PAD_V = 3.0           # vertical padding
 _BADGE_MAX_CHARS = 16
+_BADGE_MIN_W = 32.0          # floor width so single-char labels don't scrunch
+# Width per character for the badge specifically. The SDK's
+# `_CHAR_W_PROPORTIONAL` (0.55) under-estimates real egui text width at small
+# sizes — wide glyphs like `m`/`w` overflow a tight pill. `0.62` leaves
+# enough budget that common branch names render without clipping.
+_BADGE_CHAR_W = 0.62
 
 
 def badge(
@@ -624,8 +630,10 @@ def badge(
     """Render a pill-shaped badge and return its pixel width.
 
     The badge is vertically centred on ``y_center``.  Text is centred both
-    horizontally and vertically inside the pill — the host's ``align="center"``
-    path handles horizontal; we compute the exact ``ty`` ourselves for vertical.
+    horizontally and vertically inside the pill with explicit arithmetic —
+    we don't rely on ``align="center"`` because its y-semantics changed over
+    time and the pill geometry is easier to reason about as a single
+    top-left anchor derived from ``y_center``.
 
     Args:
         ctx:       A ``RenderContext`` instance.
@@ -642,23 +650,21 @@ def badge(
         The pixel width of the rendered badge (useful for flowing badges
         horizontally: ``next_x = x + badge(...) + gap``).
     """
-    char_w = _char_px(font_size)
     truncated = label[:_BADGE_MAX_CHARS] + ("…" if len(label) > _BADGE_MAX_CHARS else "")
-    bw = len(truncated) * char_w + _BADGE_PAD_H * 2
+    char_w = font_size * _BADGE_CHAR_W
+    text_w = len(truncated) * char_w
+    bw = max(_BADGE_MIN_W, text_w + _BADGE_PAD_H * 2)
     bh = font_size + _BADGE_PAD_V * 2
     by = y_center - bh / 2.0
 
     ctx.rect(x, by, bw, bh, fill, radius=radius)
-    # Horizontally: use host align="center" from pill midpoint.
-    # Vertically: top of text box = by + pad_v (text occupies font_size px).
-    ctx.text(
-        x + bw / 2.0,
-        by + _BADGE_PAD_V,
-        truncated,
-        size=font_size,
-        color=fg,
-        align="center",
-    )
+    # Manual centring. Text box is positioned by its top-left corner
+    # (the default `align` behaviour); the host draws text extending down
+    # and to the right from (text_x, text_y). Vertical centre is
+    # y_center - font_size/2; horizontal centre is x + bw/2 - text_w/2.
+    text_x = x + bw / 2.0 - text_w / 2.0
+    text_y = y_center - font_size / 2.0
+    ctx.text(text_x, text_y, truncated, size=font_size, color=fg)
     return bw
 
 
