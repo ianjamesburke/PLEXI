@@ -11,7 +11,7 @@ from plexi_sdk import (
     PRIORITY_HIGH,
 )
 from plexi_sdk.ui import (
-    Column, AppBar, Section, Label, Spacer, Footer, FooterKeys,
+    Column, AppBar, Section, Label, Spacer, Footer, FooterKeys, Component,
 )
 
 PROMPTS = [
@@ -106,7 +106,7 @@ class StandUpReminderApp(App):
         self.emit.schedule_render(after_ms=100)
 
     # ── Countdown ring — functional surface, stays as primitives ───────────
-    class _CountdownRing:
+    class _CountdownRing(Component):
         """Big centered circle with timer text. Escape hatch: primitive draws
         inside a flex-grow slot so the ring auto-sizes to remaining space."""
         def __init__(self, app: "StandUpReminderApp") -> None:

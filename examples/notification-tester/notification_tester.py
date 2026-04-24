@@ -171,9 +171,7 @@ class NotificationTesterApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
-            AppBar(
-                title="Notification Tester", tiers, and queue demos on demand",
-            ),
+            AppBar(title="Notification Tester"),
             Section("Kinds"),
             Card([
                 KeyRow("m", "Message (NORMAL)"),

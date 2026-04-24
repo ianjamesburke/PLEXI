@@ -10,7 +10,7 @@ from plexi_sdk import (
     FG, MUTED, SURFACE, BODY,
 )
 from plexi_sdk.ui import (
-    Column, AppBar, Section, Label, Spacer, FooterKeys,
+    Column, AppBar, Section, Label, Spacer, FooterKeys, Component,
 )
 
 TODO_FILE = ".plexi/todos.json"
@@ -89,7 +89,7 @@ class TodoApp(App):
             self._save()
 
     # ── Item list body — functional surface, primitive draws ───────────────
-    class _Body:
+    class _Body(Component):
         """Renders the todo list (or the add-item input bar) into whatever
         vertical space the Column hands us."""
         def __init__(self, app: "TodoApp") -> None:
@@ -130,7 +130,7 @@ class TodoApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
-            AppBar(title="Todo")),
+            AppBar(title="Todo"),
             Section("Current list"),
             self._Body(self),
             Spacer(grow=False),

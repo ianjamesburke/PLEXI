@@ -39,9 +39,7 @@ class UIPlaygroundApp(App):
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
             # ── Header ────────────────────────────────────────────────────
-            AppBar(
-                title="UI Playground", stacked top-to-bottom.",
-            ),
+            AppBar(title="UI Playground"),
 
             # ── Typography ────────────────────────────────────────────────
             Section("Typography"),

@@ -312,9 +312,8 @@ class ScreenTimeApp(App):
 
     def _chrome_tree(self) -> Column:
         if self._mode == MODE_CLOCK:
-            %B %-d')}")
-        elif self._mode == MODE_MONTH:
-            "previous / next day"),
+            hints = [
+                KeyRow("h/l", "previous / next day"),
                 KeyRow("m", "month grid"),
                 KeyRow("s", "set log directory"),
                 KeyRow("r", "refresh"),
