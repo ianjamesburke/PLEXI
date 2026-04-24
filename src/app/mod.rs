@@ -654,11 +654,15 @@ impl eframe::App for PlexiApp {
         }
 
         // Apps only receive key input if nothing is capturing above them.
-        let deferred_app_cmds = if self.input_captured_by_overlay() {
-            Vec::new()
-        } else {
-            self.dispatch_app_key_events(ctx)
-        };
+        // (Key input is focus-scoped; command drain below is not.)
+        if !self.input_captured_by_overlay() {
+            self.dispatch_app_key_events(ctx);
+        }
+        // Drain every app pane's pending_commands every frame — including
+        // while a modal holds focus. Background apps emitting notifications
+        // must reach the queue *now*, not be buffered until the modal
+        // closes (which caused the "ghost queue appears on reopen" bug).
+        let deferred_app_cmds = self.drain_all_app_commands();
         self.sync_app_cwd();
 
         // Dispatch any DeliverNotifyAction commands the early modal render
