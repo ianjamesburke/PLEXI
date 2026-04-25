@@ -177,6 +177,14 @@ impl AppRuntime {
             AppRuntime::Builtin(app) => app.serialize_state(),
         }
     }
+
+    /// Pump event I/O for a pane not in the active context. No-op for builtins.
+    pub fn background_tick(&mut self) {
+        match self {
+            AppRuntime::Process(app) => app.background_tick(),
+            AppRuntime::Builtin(_) => {}
+        }
+    }
 }
 
 #[allow(dead_code)]
