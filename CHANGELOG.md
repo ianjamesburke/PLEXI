@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.0.0-beta.5] — 2026-04-25
+
+### Host / Notifications
+
+- **Background app cross-context tick fix** — Global notification apps running in the background were not receiving tick events when the active pane changed context. Fix ensures the tick is dispatched correctly regardless of which context is active.
+
 ## [3.0.0-beta.4] — 2026-04-24
 
 ### Apps
