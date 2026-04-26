@@ -31,6 +31,7 @@ mod overlays;
 mod packs;
 mod pane;
 mod pane_ops;
+mod plexi_descriptor;
 mod plexi_iq;
 mod render;
 mod process_app;
@@ -402,6 +403,34 @@ fn main() -> eframe::Result {
                 }
                 std::process::exit(cli::notify_cli(&title, &body, level));
             }
+            "descriptor" => {
+                // `plexi descriptor probe <cmd> [args...]` — invokes
+                // `<cmd> [args...] --plexi`, parses the result against the
+                // descriptor schema, and prints a human-readable summary.
+                // Reference consumer for #188 / substrate for #78 + #321.
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi descriptor probe <command> [args...]");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "probe" => {
+                        if args.len() < 4 {
+                            eprintln!("Usage: plexi descriptor probe <command> [args...]");
+                            std::process::exit(1);
+                        }
+                        let cmd = &args[3];
+                        let extra: Vec<&str> =
+                            args[4..].iter().map(|s| s.as_str()).collect();
+                        let runner = cli::descriptor::RealRunner;
+                        std::process::exit(cli::descriptor::probe(&runner, cmd, &extra));
+                    }
+                    other => {
+                        eprintln!("Unknown descriptor subcommand: {other}");
+                        eprintln!("Usage: plexi descriptor probe <command> [args...]");
+                        std::process::exit(1);
+                    }
+                }
+            }
             _ => {} // Not a CLI subcommand — fall through to GUI
         }
     }
@@ -472,6 +501,8 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "update",
         "list",
         "pack",
+        // #188 — `plexi descriptor probe <cmd>` for the --plexi standard.
+        "descriptor",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).

@@ -1,0 +1,170 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plexi.app/schemas/plexi-descriptor-schema.json",
+  "title": "Plexi CLI descriptor (`--plexi`)",
+  "description": "Authoritative shape for the JSON document a CLI emits when invoked with `--plexi`. Plexi (and any compatible UI generator) parses this to render a clickable interface for the CLI. v0.x of the format. See docs/specs/proposals/plexi-descriptor.md for the authoring guide.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["plexi_version", "name", "version", "commands"],
+  "properties": {
+    "plexi_version": {
+      "type": "string",
+      "description": "Semver of the descriptor format itself (NOT the CLI version). Major bump = breaking schema change. v0.x parsers reject v1+ descriptors loudly.",
+      "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-friendly CLI name. Usually matches the binary name.",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "description": "The CLI's own version string. Used by registry tier (#321) for cache keys.",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line description of what the CLI does."
+    },
+    "icon": {
+      "type": "string",
+      "description": "Single emoji or icon glyph rendered next to the CLI name."
+    },
+    "default_view": {
+      "$ref": "#/definitions/uiHint",
+      "description": "Initial render hint when no command is selected. Same enum as command-level ui_hint."
+    },
+    "commands": {
+      "type": "array",
+      "description": "Top-level commands. Each command may itself contain nested `commands[]` to model subcommand groups (e.g. `git remote add`).",
+      "items": { "$ref": "#/definitions/command" }
+    },
+    "live_state": { "$ref": "#/definitions/liveState" }
+  },
+  "definitions": {
+    "uiHint": {
+      "type": "string",
+      "enum": ["form", "output", "tabs", "stream", "list"],
+      "description": "Render mode: form = inputs+submit, output = run+show result, tabs = grouped subcommands, stream = long-running progress, list = browse children."
+    },
+    "argType": {
+      "type": "string",
+      "enum": ["string", "int", "float", "bool", "path", "enum"],
+      "description": "Argument/flag type. `path` = filesystem path (Plexi may render a file picker). `enum` = constrained choice (must supply enum_values)."
+    },
+    "outputFormat": {
+      "type": "string",
+      "description": "Free-form hint at the shape of stdout when ui_hint = output. Common values: `text`, `json`, `yaml`, `table`."
+    },
+    "liveStateSource": {
+      "type": "string",
+      "enum": ["file", "socket", "http"],
+      "description": "Transport Plexi uses to watch external state. `file` = poll path; `socket` = unix socket; `http` = poll URL."
+    },
+    "liveStateFormat": {
+      "type": "string",
+      "enum": ["json", "yaml", "text"],
+      "description": "How Plexi should parse the watched payload."
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Subcommand token as passed on the CLI."
+        },
+        "description": { "type": "string" },
+        "icon": { "type": "string" },
+        "ui_hint": { "$ref": "#/definitions/uiHint" },
+        "args": {
+          "type": "array",
+          "description": "Positional arguments, in order.",
+          "items": { "$ref": "#/definitions/argSpec" }
+        },
+        "flags": {
+          "type": "array",
+          "description": "Long-form flags. Names should include the leading `--`.",
+          "items": { "$ref": "#/definitions/argSpec" }
+        },
+        "writes": {
+          "type": "array",
+          "description": "Filesystem paths the command may write. Used for trust gating + dirty-state detection.",
+          "items": { "type": "string" }
+        },
+        "reads": {
+          "type": "array",
+          "description": "Filesystem paths the command reads. Hint for capability prompts.",
+          "items": { "type": "string" }
+        },
+        "streaming": {
+          "type": "boolean",
+          "description": "True if stdout streams progress over time (vs. one-shot)."
+        },
+        "output_format": { "$ref": "#/definitions/outputFormat" },
+        "commands": {
+          "type": "array",
+          "description": "Nested subcommands. Recursive — a `git`-style multilevel CLI can express `git remote add` as commands→commands→commands.",
+          "items": { "$ref": "#/definitions/command" }
+        }
+      }
+    },
+    "argSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Arg name (positional) or long flag (`--foo`)."
+        },
+        "type": { "$ref": "#/definitions/argType" },
+        "required": { "type": "boolean" },
+        "default": {
+          "description": "Default value if not supplied. Type must be compatible with `type`. Plexi does not coerce — emit the right JSON scalar."
+        },
+        "description": { "type": "string" },
+        "placeholder": {
+          "type": "string",
+          "description": "Hint text rendered inside the input field when empty."
+        },
+        "enum_values": {
+          "type": "array",
+          "description": "Required when `type` = `enum`. The complete set of accepted values.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "min": {
+          "type": "number",
+          "description": "Inclusive lower bound for `int` / `float` types."
+        },
+        "max": {
+          "type": "number",
+          "description": "Inclusive upper bound for `int` / `float` types."
+        }
+      }
+    },
+    "liveState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "path", "poll_ms", "format"],
+      "description": "Tells Plexi how to watch out-of-band state changes (e.g. a manifest the CLI mutates while the user is staring at the UI).",
+      "properties": {
+        "source": { "$ref": "#/definitions/liveStateSource" },
+        "path": {
+          "type": "string",
+          "description": "Filesystem path, socket path, or HTTP URL — depending on `source`."
+        },
+        "poll_ms": {
+          "type": "integer",
+          "minimum": 50,
+          "description": "How often Plexi re-reads the source. Min 50 ms to avoid busy-looping."
+        },
+        "format": { "$ref": "#/definitions/liveStateFormat" }
+      }
+    }
+  }
+}
