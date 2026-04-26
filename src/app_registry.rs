@@ -1,4 +1,14 @@
-//! App registry — discovers and loads Plexi apps from `~/.plexi/apps/`.
+//! App registry — discovers and loads Plexi apps and agents.
+//!
+//! # Discovery order (later entries shadow earlier ones)
+//!
+//! 1. `~/.plexi-<channel>/apps/<id>/manifest.toml` — global apps (lowest priority)
+//! 2. `<workspace_root>/.plexi/apps/<id>/manifest.toml` — local app (overrides global)
+//! 3. `<workspace_root>/.plexi/agents/<id>/manifest.toml` — local agent (overrides above)
+//!
+//! `workspace_root` is the nearest ancestor of the current working directory that
+//! contains a `.plexi/` directory; if none is found, only global apps are loaded.
+//! When ids collide, the local entry wins and the shadow is logged at info level.
 //!
 //! # App directory layout
 //!
@@ -31,7 +41,7 @@ use crate::app_trait::App;
 use crate::process_app::ProcessApp;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct AppManifest {
@@ -146,12 +156,38 @@ impl AppCapabilities {
     }
 }
 
+/// Where a discovered registry entry came from. Used for shadow-logging at
+/// `info` level so users can trace which copy of an id won discovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrySource {
+    /// `~/.plexi-<channel>/apps/<id>/`
+    Global,
+    /// `<workspace_root>/.plexi/apps/<id>/`
+    LocalApp,
+    /// `<workspace_root>/.plexi/agents/<id>/`
+    LocalAgent,
+}
+
+impl RegistrySource {
+    fn label(self) -> &'static str {
+        match self {
+            RegistrySource::Global => "global",
+            RegistrySource::LocalApp => "local-app",
+            RegistrySource::LocalAgent => "local-agent",
+        }
+    }
+}
+
 /// A discovered but not-yet-launched app.
 #[derive(Debug, Clone)]
 pub struct InstalledApp {
     pub manifest: AppManifestApp,
     pub launch: LaunchSection,
     pub bin_path: PathBuf,
+    /// Which discovery layer this entry came from. Set by `scan_dir`; the
+    /// value returned by `load_app` is a placeholder and is overwritten at
+    /// insert time.
+    pub source: RegistrySource,
 }
 
 pub struct AppRegistry {
@@ -162,65 +198,103 @@ pub struct AppRegistry {
 }
 
 impl AppRegistry {
-    /// Scan `~/.plexi/apps/` (global) plus `.plexi/apps/` directories found by
-    /// walking up from `cwd` (local). Local apps override global ones with the same id.
-    pub fn load(cwd: &std::path::Path) -> Self {
-        let mut registry = Self {
-            apps: HashMap::new(),
-            extension_map: HashMap::new(),
-        };
-
-        // Global apps first (lowest priority).
+    /// Scan global apps then walk up from `cwd` looking for a `.plexi/` directory;
+    /// if found, also scan its `apps/` and `agents/` subdirs. Local entries shadow
+    /// global ones with the same id (a single info-level log line per shadow).
+    pub fn load(cwd: &Path) -> Self {
         let global_dir = apps_dir();
         if !global_dir.exists() {
             if let Err(e) = std::fs::create_dir_all(&global_dir) {
                 log::warn!("AppRegistry: could not create global apps dir: {e}");
             }
-        } else {
-            registry.scan_apps_dir(&global_dir);
+        }
+        Self::load_with_global(cwd, &global_dir)
+    }
+
+    /// Same as [`load`], but with an explicit global apps directory. Used by
+    /// tests so they can stage a fake `~/.plexi-<channel>/apps/` without
+    /// touching the real one.
+    pub fn load_with_global(cwd: &Path, global_dir: &Path) -> Self {
+        let mut registry = Self {
+            apps: HashMap::new(),
+            extension_map: HashMap::new(),
+        };
+
+        if global_dir.is_dir() {
+            registry.scan_dir(global_dir, RegistrySource::Global);
         }
 
-        // Local apps — walk up from cwd, deepest last so closest dir wins.
-        for local_dir in collect_local_app_dirs(cwd).into_iter().rev() {
-            registry.scan_apps_dir(&local_dir);
+        // Local apps + agents — only scanned when a workspace root exists.
+        // `.plexi/apps/` is scanned first, then `.plexi/agents/`; both shadow
+        // global, and a colliding id between local apps and local agents lets
+        // the agent win (scanned later).
+        if let Some(root) = resolve_workspace_root(cwd) {
+            let local_apps = root.join(".plexi").join("apps");
+            if local_apps.is_dir() {
+                registry.scan_dir(&local_apps, RegistrySource::LocalApp);
+            }
+            let local_agents = root.join(".plexi").join("agents");
+            if local_agents.is_dir() {
+                registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
+            }
         }
 
         registry
     }
 
-    /// Scan one `apps/` directory, inserting discovered apps.
-    /// Later calls override earlier ones (local beats global).
-    fn scan_apps_dir(&mut self, apps_dir: &std::path::Path) {
-        let read_dir = match std::fs::read_dir(apps_dir) {
+    /// Look up an installed entry by id (returns `None` if not discovered).
+    /// Test-only — runtime code uses `launch` / `is_background` etc.
+    #[cfg(test)]
+    pub fn get(&self, id: &str) -> Option<&InstalledApp> {
+        self.apps.get(id)
+    }
+
+    /// Scan one directory of manifest-bearing subdirs, inserting discovered
+    /// entries. Calls made later in `load()` shadow earlier ones; on shadow
+    /// the displaced entry's source is logged so users can debug discovery.
+    fn scan_dir(&mut self, dir: &Path, source: RegistrySource) {
+        let read_dir = match std::fs::read_dir(dir) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("AppRegistry: failed to read {:?}: {e}", apps_dir);
+                log::warn!("AppRegistry: failed to read {:?}: {e}", dir);
                 return;
             }
         };
 
         for entry in read_dir.flatten() {
-            let app_dir = entry.path();
-            if !app_dir.is_dir() {
+            let entry_dir = entry.path();
+            if !entry_dir.is_dir() {
                 continue;
             }
 
-            match self.load_app(&app_dir) {
+            match self.load_app(&entry_dir) {
                 Ok(installed) => {
-                    log::info!(
-                        "AppRegistry: loaded app '{}' from {:?}",
-                        installed.manifest.id,
-                        apps_dir
-                    );
-                    for ext in &installed.manifest.capabilities.file_types {
-                        // Plain insert — local apps override global for extension map too.
-                        self.extension_map
-                            .insert(ext.to_lowercase(), installed.manifest.id.clone());
+                    let id = installed.manifest.id.clone();
+                    if let Some(existing) = self.apps.get(&id) {
+                        log::info!(
+                            "AppRegistry: {} entry '{}' (from {:?}) shadows {} entry from {:?}",
+                            source.label(),
+                            id,
+                            entry_dir,
+                            existing.source.label(),
+                            existing.bin_path.parent().unwrap_or(&existing.bin_path),
+                        );
+                    } else {
+                        log::info!(
+                            "AppRegistry: loaded {} entry '{}' from {:?}",
+                            source.label(),
+                            id,
+                            entry_dir,
+                        );
                     }
-                    self.apps.insert(installed.manifest.id.clone(), installed);
+                    for ext in &installed.manifest.capabilities.file_types {
+                        // Plain insert — local entries override global for extension map too.
+                        self.extension_map.insert(ext.to_lowercase(), id.clone());
+                    }
+                    self.apps.insert(id, InstalledApp { source, ..installed });
                 }
                 Err(e) => {
-                    log::warn!("AppRegistry: skipping {:?}: {e}", app_dir.file_name());
+                    log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
                 }
             }
         }
@@ -272,6 +346,8 @@ impl AppRegistry {
             manifest: manifest.app,
             launch: manifest.launch,
             bin_path,
+            // Placeholder — `scan_dir` overwrites this with the real source.
+            source: RegistrySource::Global,
         })
     }
 
@@ -372,30 +448,23 @@ pub fn apps_dir() -> PathBuf {
     crate::config::config_dir().join("apps")
 }
 
-/// Walk up from `cwd` toward home, collecting `.plexi/apps/` directories that exist.
-/// Returns dirs ordered from home→cwd (deepest last), so callers that iterate in reverse
-/// get the most-local directory applied last (highest priority).
-fn collect_local_app_dirs(cwd: &std::path::Path) -> Vec<PathBuf> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let mut dirs = Vec::new();
-    let mut current = cwd;
-
+/// Walk up from `start` toward the filesystem root looking for the nearest
+/// ancestor that contains a `.plexi/` directory. Returns that ancestor (the
+/// workspace root), or `None` if no `.plexi/` is found before the root.
+///
+/// The home directory is **not** treated as a workspace root unless it
+/// contains a `.plexi/` itself — `~/.plexi-<channel>/` is the global config
+/// dir, which lives next to `~`, not inside it.
+pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
     loop {
-        let candidate = current.join(".plexi").join("apps");
-        if candidate.is_dir() {
-            dirs.push(candidate);
+        if current.join(".plexi").is_dir() {
+            return Some(current);
         }
-        if current == home || current.parent().is_none() {
-            break;
+        if !current.pop() {
+            return None;
         }
-        current = match current.parent() {
-            Some(p) => p,
-            None => break,
-        };
     }
-
-    dirs.reverse(); // home→cwd order; callers iterate .rev() to apply closest last
-    dirs
 }
 
 /// Resolve the `entry` field from manifest.toml to an executable path.
@@ -421,4 +490,111 @@ fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
     }
 
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Create a manifest + executable entry under `dir/<id>/`.
+    /// `name` is what shows up in the manifest's `[app].name` so tests can
+    /// distinguish two entries with the same id but different content.
+    fn write_app(dir: &Path, id: &str, name: &str) {
+        let app_dir = dir.join(id);
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = format!(
+            "[app]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+        );
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_app_shadows_global_with_same_id() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let local_apps = workspace.path().join(".plexi").join("apps");
+        fs::create_dir_all(&local_apps).unwrap();
+
+        write_app(global.path(), "foo", "Global Foo");
+        write_app(&local_apps, "foo", "Local Foo");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let foo = registry.get("foo").expect("foo should be discovered");
+        assert_eq!(foo.manifest.name, "Local Foo");
+        assert_eq!(foo.source, RegistrySource::LocalApp);
+    }
+
+    #[test]
+    fn global_only_app_still_discovered_when_workspace_open() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        // Workspace exists (.plexi/ dir) but has no local apps/agents.
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+
+        write_app(global.path(), "global-only", "Global Only");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let entry = registry.get("global-only").expect("global app should appear");
+        assert_eq!(entry.source, RegistrySource::Global);
+    }
+
+    #[test]
+    fn workspace_root_resolved_from_deep_descendant() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        let deep = workspace.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep).unwrap();
+
+        let resolved = resolve_workspace_root(&deep).expect("should find ancestor");
+        // Canonicalize both sides — tempfile paths on macOS go through /var → /private/var.
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn workspace_root_returns_none_when_no_dot_plexi() {
+        let bare = tempfile::tempdir().unwrap();
+        assert!(resolve_workspace_root(bare.path()).is_none());
+    }
+
+    #[test]
+    fn agents_directory_is_discovered() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let local_agents = workspace.path().join(".plexi").join("agents");
+        fs::create_dir_all(&local_agents).unwrap();
+
+        write_app(&local_agents, "code-reviewer", "Code Reviewer");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let agent = registry
+            .get("code-reviewer")
+            .expect("agent should be discovered");
+        assert_eq!(agent.source, RegistrySource::LocalAgent);
+    }
+
+    #[test]
+    fn no_workspace_means_only_global_apps_load() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+
+        write_app(global.path(), "g", "Global");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(registry.get("g").is_some());
+        assert_eq!(registry.list().len(), 1);
+    }
 }
