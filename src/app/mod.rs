@@ -69,6 +69,7 @@ pub(crate) enum NotificationImageState {
     Pending,
 }
 
+use crate::agent_workspace::MergeOutcome;
 use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Context;
@@ -630,8 +631,20 @@ impl PlexiApp {
 
     fn drain_pty_events(&mut self) {
         let mut panes_to_close: Vec<u64> = Vec::new();
+        let now = std::time::Instant::now();
 
         while let Ok((id, event)) = self.pty_event_rx.try_recv() {
+            // Forward Wakeup / ChildExit to AgentWorkspace status heuristics
+            // (#349). Other panes ignore these — only the agent workspace
+            // tracks activity timing.
+            for context in &mut self.contexts {
+                if let Some(pane) = context.panes.get_mut(&id) {
+                    if let Some(workspace) = pane.as_agent_workspace_mut() {
+                        workspace.record_pty_activity(&event, now);
+                    }
+                    break;
+                }
+            }
             match &event {
                 PtyEvent::Exit => {
                     for context in &mut self.contexts {
@@ -763,6 +776,117 @@ impl PlexiApp {
             .filter(|n| self.notification_is_visible(n))
             .count()
     }
+
+    /// Per-frame tick for Agent Workspace panes (#349): refresh status against
+    /// the current clock (so Thinking → Idle transitions don't wait for the
+    /// next Wakeup), refresh the diff sidebar at most once every 2s, clear
+    /// stale "merged" badges, and surface conflict outcomes via the
+    /// notification queue.
+    fn tick_agent_workspaces(&mut self) {
+        let now = std::time::Instant::now();
+        let mut conflict_surfaces: Vec<(String, Vec<String>)> = Vec::new();
+        let mut merge_failures: Vec<(String, String)> = Vec::new();
+        for context in &mut self.contexts {
+            for pane in context.panes.values_mut() {
+                let Some(workspace) = pane.as_agent_workspace_mut() else {
+                    continue;
+                };
+                workspace.refresh_status(now);
+                workspace.maybe_refresh_diff(now);
+                workspace.maybe_clear_merge_flash(now);
+
+                // Promote a fresh Conflict / Failed outcome into a notification
+                // so the user sees the file list / stderr without staring at
+                // the badge. We consume the outcome (replace with `None`) so
+                // we don't re-fire the notification every frame.
+                let surface = matches!(
+                    workspace.merge_outcome,
+                    Some(MergeOutcome::Conflict { .. }) | Some(MergeOutcome::Failed { .. })
+                );
+                if surface {
+                    let outcome = workspace.merge_outcome.take();
+                    let branch = workspace.branch_name.clone();
+                    workspace.merge_outcome_at = None;
+                    match outcome {
+                        Some(MergeOutcome::Conflict { files }) => {
+                            conflict_surfaces.push((branch, files));
+                        }
+                        Some(MergeOutcome::Failed { stderr }) => {
+                            merge_failures.push((branch, stderr));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for (branch, files) in conflict_surfaces {
+            let body = if files.is_empty() {
+                "No conflict file list available — run `git status` in the repo.".to_string()
+            } else {
+                format!(
+                    "Resolve these files in a terminal, then commit:\n{}",
+                    files.join("\n")
+                )
+            };
+            self.push_host_notification(
+                "warn".to_string(),
+                format!("Merge conflict — {branch}"),
+                body,
+            );
+        }
+        for (branch, stderr) in merge_failures {
+            self.push_host_notification(
+                "error".to_string(),
+                format!("Merge failed — {branch}"),
+                stderr,
+            );
+        }
+    }
+
+    /// Push a host-originated notification onto the modal queue. Mirrors the
+    /// drain_notify_queue path but skips the file IO (caller already has the
+    /// title/body strings).
+    pub(crate) fn push_host_notification(
+        &mut self,
+        level: String,
+        title: String,
+        body: String,
+    ) {
+        if !self.notifications_enabled {
+            return;
+        }
+        let internal_id = format!(
+            "__host__:{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        self.pending_notifications.push(PendingNotification {
+            notify_id: internal_id.clone(),
+            sender_pane_id: 0,
+            source_context: self.active_context,
+            scope: crate::app_protocol::NotifyScope::Global,
+            level,
+            title,
+            body,
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            priority: 0,
+            image_inline: None,
+            image_pipe_id: None,
+        });
+        let should_auto_open = !self.notifications_focus_mode
+            && 0 >= self.notifications_interrupt_threshold;
+        if should_auto_open {
+            self.show_notification_modal = true;
+            if self.current_notify_id.is_none() {
+                self.current_notify_id = Some(internal_id);
+            }
+        }
+    }
 }
 
 impl eframe::App for PlexiApp {
@@ -772,6 +896,7 @@ impl eframe::App for PlexiApp {
             self.drain_notify_queue();
         }
         self.drain_pty_events();
+        self.tick_agent_workspaces();
 
         // Focus stack: reconcile layer state BEFORE any input routing so
         // `input_captured_by_overlay()` answers correctly this frame.
