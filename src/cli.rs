@@ -891,6 +891,373 @@ fn read_line_plain() -> io::Result<String> {
         .to_string())
 }
 
+// ── plexi registry (issue #321) ───────────────────────────────────────────────
+/// `plexi registry watch [<cli>]` — walks the seeded registry and reports,
+/// per-CLI, whether the locally installed CLI matches the registered version
+/// and whether `<cli> --help` shows top-level command names absent from the
+/// registry descriptor (a heuristic signal that the descriptor is stale).
+///
+/// Output is human-readable. JSON output is intentionally deferred — the
+/// release-watcher cron that consumes this is itself a follow-up issue (see
+/// #321 PR description).
+pub mod registry {
+    use crate::cli_registry;
+    use std::collections::BTreeSet;
+    use std::process::Command;
+
+    /// Indirection so the watch path can be tested without spawning real
+    /// processes.
+    pub trait CliInspector {
+        /// `which <name>` — `Some(path)` when the CLI is installed.
+        fn which(&self, name: &str) -> Option<String>;
+        /// Captured stdout of `<name> --version`. `None` when the spawn
+        /// itself fails.
+        fn version(&self, name: &str) -> Option<String>;
+        /// Captured stdout of `<name> --help`. Empty string on failure (we
+        /// downgrade to "couldn't read help" rather than blowing up).
+        fn help(&self, name: &str) -> String;
+    }
+
+    pub struct RealInspector;
+
+    impl CliInspector for RealInspector {
+        fn which(&self, name: &str) -> Option<String> {
+            let out = Command::new("which").arg(name).output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if path.is_empty() { None } else { Some(path) }
+        }
+        fn version(&self, name: &str) -> Option<String> {
+            let out = Command::new(name).arg("--version").output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        fn help(&self, name: &str) -> String {
+            match Command::new(name).arg("--help").output() {
+                Ok(out) => {
+                    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if s.is_empty() {
+                        // Some CLIs (e.g. cargo) print --help to stderr.
+                        s = String::from_utf8_lossy(&out.stderr).into_owned();
+                    }
+                    s
+                }
+                Err(_) => String::new(),
+            }
+        }
+    }
+
+    /// Per-CLI status emitted by the watcher. Variants are exhaustive so
+    /// callers can pivot rendering by case (text now, JSON later).
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum WatchStatus {
+        NotInstalled,
+        UpToDate { version: String },
+        Stale { installed: String, registered: String },
+        DescriptorDrift { added: Vec<String>, removed: Vec<String> },
+        RegistryError(String),
+    }
+
+    pub struct WatchReport {
+        pub cli: String,
+        pub status: WatchStatus,
+    }
+
+    /// Compare a CLI's installed `--version`/`--help` against its registry
+    /// descriptor. Pure given an inspector — drives both the real CLI surface
+    /// and the unit tests.
+    pub fn watch_one<I: CliInspector>(inspector: &I, cli: &str) -> WatchReport {
+        if inspector.which(cli).is_none() {
+            return WatchReport {
+                cli: cli.to_string(),
+                status: WatchStatus::NotInstalled,
+            };
+        }
+        let descriptor = match cli_registry::lookup(cli, None) {
+            Ok(d) => d,
+            Err(e) => {
+                return WatchReport {
+                    cli: cli.to_string(),
+                    status: WatchStatus::RegistryError(e.to_string()),
+                };
+            }
+        };
+        let installed_version_raw = inspector.version(cli).unwrap_or_default();
+        let installed_version = extract_version(&installed_version_raw);
+
+        if !installed_version.is_empty() && installed_version != descriptor.version {
+            return WatchReport {
+                cli: cli.to_string(),
+                status: WatchStatus::Stale {
+                    installed: installed_version,
+                    registered: descriptor.version.clone(),
+                },
+            };
+        }
+
+        // Help-diff heuristic: pull top-level command names from --help, diff
+        // against descriptor.commands[].name. Heuristic because every CLI
+        // formats --help differently; we don't try to be exhaustive.
+        let help = inspector.help(cli);
+        let help_commands = parse_top_level_commands(&help);
+        let descriptor_commands: BTreeSet<String> =
+            descriptor.commands.iter().map(|c| c.name.clone()).collect();
+        let added: Vec<String> = help_commands
+            .difference(&descriptor_commands)
+            .cloned()
+            .collect();
+        let removed: Vec<String> = descriptor_commands
+            .difference(&help_commands)
+            .cloned()
+            .collect();
+
+        if !added.is_empty() || !removed.is_empty() {
+            return WatchReport {
+                cli: cli.to_string(),
+                status: WatchStatus::DescriptorDrift { added, removed },
+            };
+        }
+
+        WatchReport {
+            cli: cli.to_string(),
+            status: WatchStatus::UpToDate {
+                version: descriptor.version.clone(),
+            },
+        }
+    }
+
+    /// CLI entry point. Walks every registered CLI (or just the named one),
+    /// prints a human-readable summary, returns 0 on success — failures here
+    /// are *informational* (a stale descriptor is the watcher's whole point),
+    /// so we don't treat them as exit-1.
+    pub fn watch_cli(only: Option<&str>) -> i32 {
+        let inspector = RealInspector;
+        let clis: Vec<String> = match only {
+            Some(c) => vec![c.to_string()],
+            None => cli_registry::list_clis(),
+        };
+        if clis.is_empty() {
+            println!("registry: no CLIs registered");
+            return 0;
+        }
+        for cli in &clis {
+            let report = watch_one(&inspector, cli);
+            print_report(&report);
+        }
+        0
+    }
+
+    fn print_report(report: &WatchReport) {
+        match &report.status {
+            WatchStatus::NotInstalled => {
+                println!("  {}  (not installed — skipping)", report.cli);
+            }
+            WatchStatus::UpToDate { version } => {
+                println!("  {}  up to date (v{version})", report.cli);
+            }
+            WatchStatus::Stale {
+                installed,
+                registered,
+            } => {
+                println!(
+                    "  [STALE] {}  registry has v{registered}; installed v{installed} \
+                     — descriptor may be outdated",
+                    report.cli
+                );
+            }
+            WatchStatus::DescriptorDrift { added, removed } => {
+                println!("  [DRIFT] {}  --help shows commands not in registry:", report.cli);
+                if !added.is_empty() {
+                    println!("    + {}", added.join(", "));
+                }
+                if !removed.is_empty() {
+                    println!("    - {} (in registry but not in --help)", removed.join(", "));
+                }
+            }
+            WatchStatus::RegistryError(msg) => {
+                println!("  [ERROR] {}  {msg}", report.cli);
+            }
+        }
+    }
+
+    /// Pull the first whitespace-separated token that contains a `.` from a
+    /// `<cli> --version` line. Handles "gh version 2.40.0 ..." and
+    /// "cargo 1.75.0 (...)" without baking in per-CLI parsers.
+    fn extract_version(raw: &str) -> String {
+        for token in raw.split_whitespace() {
+            if token.chars().any(|c| c == '.')
+                && token.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            {
+                // Strip trailing punctuation/build-metadata.
+                let cleaned: String = token
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
+                return cleaned;
+            }
+        }
+        String::new()
+    }
+
+    /// Heuristic: scan `--help` output for indented two-column "name<spaces>
+    /// description" rows under a "Commands:" / "COMMANDS" / "CORE COMMANDS"
+    /// header and treat the first column as a command name. The parser is
+    /// intentionally loose — every CLI formats --help differently, and the
+    /// goal is "good enough drift signal", not exhaustive parsing.
+    fn parse_top_level_commands(help: &str) -> BTreeSet<String> {
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        let mut in_commands = false;
+        for line in help.lines() {
+            let trimmed = line.trim_start();
+            let lower = trimmed.trim_end_matches(':').to_ascii_lowercase();
+            // Recognize any section header whose name *contains* "command" /
+            // "subcommand" as an entry point into command-listing mode. This
+            // covers "Commands:", "COMMANDS", "Core Commands", "Management
+            // Commands", "All Commands" without per-CLI special cases.
+            let is_command_header = !line.starts_with(' ')
+                && !line.starts_with('\t')
+                && (lower.ends_with("command")
+                    || lower.ends_with("commands")
+                    || lower.ends_with("subcommand")
+                    || lower.ends_with("subcommands"));
+            if is_command_header {
+                in_commands = true;
+                continue;
+            }
+            // Any other column-0 header that doesn't mention "command" exits
+            // the section (e.g. OPTIONS, FLAGS, EXAMPLES, ENVIRONMENT).
+            if in_commands && !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty()
+            {
+                in_commands = false;
+                continue;
+            }
+            if in_commands {
+                if trimmed.is_empty() {
+                    // Some CLIs (gh) split commands into labelled subsections
+                    // separated by blanks. Stay in command mode across blanks.
+                    continue;
+                }
+                if let Some(first) = trimmed.split_whitespace().next() {
+                    // Strip the gh-style trailing colon.
+                    let name = first.trim_end_matches(':');
+                    if name.is_empty() || name.starts_with('-') {
+                        continue;
+                    }
+                    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[cfg(test)]
+    pub struct MockInspector {
+        pub installed: bool,
+        pub version_str: String,
+        pub help_str: String,
+    }
+
+    #[cfg(test)]
+    impl CliInspector for MockInspector {
+        fn which(&self, _: &str) -> Option<String> {
+            if self.installed {
+                Some("/usr/bin/mock".to_string())
+            } else {
+                None
+            }
+        }
+        fn version(&self, _: &str) -> Option<String> {
+            if self.installed {
+                Some(self.version_str.clone())
+            } else {
+                None
+            }
+        }
+        fn help(&self, _: &str) -> String {
+            self.help_str.clone()
+        }
+    }
+}
+
+#[cfg(test)]
+mod registry_watch_tests {
+    use super::registry::*;
+
+    #[test]
+    fn watch_reports_not_installed_for_missing_binary() {
+        let inspector = MockInspector {
+            installed: false,
+            version_str: String::new(),
+            help_str: String::new(),
+        };
+        let report = watch_one(&inspector, "gh");
+        assert_eq!(report.status, WatchStatus::NotInstalled);
+    }
+
+    #[test]
+    fn watch_reports_up_to_date_when_versions_match() {
+        // The seeded `gh` registry has version 2.40.0. Match it exactly and
+        // give a --help that lists the same top-level commands as the
+        // descriptor.
+        let inspector = MockInspector {
+            installed: true,
+            version_str: "gh version 2.40.0 (2023-12-14)".into(),
+            help_str: "Usage:  gh <command> <subcommand> [flags]\n\n\
+                       CORE COMMANDS\n  \
+                       auth:        do auth\n  \
+                       pr:          do pr\n  \
+                       issue:       do issue\n  \
+                       repo:        do repo\n  \
+                       release:     do release\n"
+                .into(),
+        };
+        let report = watch_one(&inspector, "gh");
+        assert!(
+            matches!(report.status, WatchStatus::UpToDate { .. }),
+            "expected UpToDate, got {:?}",
+            report.status
+        );
+    }
+
+    #[test]
+    fn watch_reports_stale_when_installed_version_exceeds_registry() {
+        let inspector = MockInspector {
+            installed: true,
+            version_str: "gh version 2.99.0 (2026-01-01)".into(),
+            help_str: String::new(),
+        };
+        let report = watch_one(&inspector, "gh");
+        match report.status {
+            WatchStatus::Stale { installed, registered } => {
+                assert_eq!(installed, "2.99.0");
+                assert_eq!(registered, "2.40.0");
+            }
+            other => panic!("expected Stale, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watch_reports_registry_error_for_unknown_cli() {
+        let inspector = MockInspector {
+            installed: true,
+            version_str: "fake 0.0.1".into(),
+            help_str: String::new(),
+        };
+        let report = watch_one(&inspector, "nonexistent-cli-zzz");
+        assert!(
+            matches!(report.status, WatchStatus::RegistryError(_)),
+            "expected RegistryError, got {:?}",
+            report.status
+        );
+    }
+}
+
 // ── plexi descriptor (issue #188) ─────────────────────────────────────────────
 /// `plexi descriptor probe <cmd> [args...]` — invokes the target with
 /// `--plexi` appended, parses the JSON descriptor, prints a summary. Reference
@@ -926,53 +1293,105 @@ pub mod descriptor {
         }
     }
 
-    /// Run `<command> <args...> --plexi`, parse + summarize. Returns the
+    /// Knobs governing the Tier-2 registry fallback. The default behavior
+    /// (Tier 1 first, Tier 2 on failure) matches the issue #321 substrate;
+    /// `--no-registry` disables Tier 2.
+    pub struct ProbeOptions {
+        pub use_registry: bool,
+    }
+
+    impl Default for ProbeOptions {
+        fn default() -> Self {
+            Self { use_registry: true }
+        }
+    }
+
+    /// Run `<command> <args...> --plexi`, parse + summarize. On failure (spawn
+    /// error, non-zero exit, or unparseable JSON), optionally fall through to
+    /// the Tier-2 registry lookup (`cli_registry::lookup`). Returns the
     /// process exit code suitable for `std::process::exit`.
+    ///
+    /// The CLI surface in `main.rs` calls `probe_with_options` directly so
+    /// it can plumb `--no-registry`; this thin wrapper exists for tests and
+    /// for any future caller that wants the default behavior.
+    #[cfg(test)]
     pub fn probe<R: DescriptorRunner>(runner: &R, command: &str, args: &[&str]) -> i32 {
+        probe_with_options(runner, command, args, &ProbeOptions::default())
+    }
+
+    pub fn probe_with_options<R: DescriptorRunner>(
+        runner: &R,
+        command: &str,
+        args: &[&str],
+        options: &ProbeOptions,
+    ) -> i32 {
         let mut full_args: Vec<&str> = args.to_vec();
         full_args.push("--plexi");
 
-        let output = match runner.run(command, &full_args) {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("error: failed to spawn `{command}`: {e}");
-                return 1;
-            }
+        // Tier 1 — ask the CLI itself.
+        let tier1: Option<PlexiDescriptor> = match runner.run(command, &full_args) {
+            Ok(o) if o.status_success => match plexi_descriptor::parse(&o.stdout) {
+                Ok(d) => Some(d),
+                Err(_) => None, // Fall through to Tier 2 — bad/empty stdout.
+            },
+            Ok(_) => None, // Non-zero exit — `--plexi` not implemented.
+            Err(_) => None, // Spawn failed (e.g. command not on PATH).
         };
 
-        if !output.status_success {
-            eprintln!(
-                "error: `{command} {}` exited non-zero",
-                full_args.join(" ")
-            );
-            if !output.stderr.is_empty() {
-                eprintln!("--- stderr ---\n{}", output.stderr.trim_end());
-            }
-            return 1;
+        if let Some(descriptor) = tier1 {
+            print_summary(&descriptor, SummarySource::Native);
+            return 0;
         }
 
-        let descriptor = match plexi_descriptor::parse(&output.stdout) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("error: descriptor from `{command}` failed to parse:");
-                eprintln!("  {e}");
-                return 1;
+        // Tier 2 — registry. Only consulted when caller passes args=[],
+        // because registry descriptors describe the bare CLI, not arbitrary
+        // subcommand invocations.
+        if options.use_registry && args.is_empty() {
+            match crate::cli_registry::lookup(command, None) {
+                Ok(descriptor) => {
+                    print_summary(&descriptor, SummarySource::Registry);
+                    return 0;
+                }
+                Err(crate::cli_registry::RegistryError::NotFound { .. }) => {
+                    // Fall through to the no-descriptor message below.
+                }
+                Err(e) => {
+                    eprintln!("error: registry lookup for `{command}` failed:\n  {e}");
+                    return 1;
+                }
             }
-        };
+        }
 
-        print_summary(&descriptor);
-        0
+        eprintln!(
+            "error: no descriptor available for `{command}` — neither --plexi nor registry."
+        );
+        eprintln!(
+            "  Tier 3 (--help crawl) is owned by issue #78 and is not yet wired in."
+        );
+        1
     }
 
-    fn print_summary(d: &PlexiDescriptor) {
+    /// Where the descriptor printed in the summary came from. Used to surface
+    /// a `(via registry)` indicator when Tier-2 won the resolution.
+    pub enum SummarySource {
+        Native,
+        Registry,
+    }
+
+    fn print_summary(d: &PlexiDescriptor, source: SummarySource) {
         let icon = d.icon.as_deref().unwrap_or("");
+        let via = match source {
+            SummarySource::Native => "",
+            SummarySource::Registry => "  (via registry)",
+        };
         println!(
-            "{}{}{} v{}  (descriptor {})",
+            "{}{}{} v{}  (descriptor {}){}",
             icon,
             if icon.is_empty() { "" } else { " " },
             d.name,
             d.version,
-            d.plexi_version
+            d.plexi_version,
+            via,
         );
         if let Some(desc) = &d.description {
             println!("  {desc}");
@@ -1035,9 +1454,8 @@ mod descriptor_tests {
     use super::descriptor::*;
     use std::cell::RefCell;
 
-    #[test]
-    fn probe_invokes_command_with_plexi_flag() {
-        let mock = MockRunner {
+    fn ok_descriptor_runner() -> MockRunner {
+        MockRunner {
             stdout: r#"{
                 "plexi_version": "0.1",
                 "name": "fake",
@@ -1048,8 +1466,26 @@ mod descriptor_tests {
             stderr: String::new(),
             success: true,
             captured: RefCell::new(None),
-        };
+        }
+    }
+
+    fn no_plexi_runner() -> MockRunner {
+        // Simulates a CLI that exists on PATH but doesn't implement --plexi
+        // (non-zero exit code). This is the common case for the registry
+        // fallback path.
+        MockRunner {
+            stdout: String::new(),
+            stderr: "unknown flag --plexi".into(),
+            success: false,
+            captured: RefCell::new(None),
+        }
+    }
+
+    #[test]
+    fn probe_invokes_command_with_plexi_flag() {
+        let mock = ok_descriptor_runner();
         let code = probe(&mock, "fake-cli", &[]);
+        // Tier 1 succeeds; result is the parsed descriptor.
         assert_eq!(code, 0);
         let captured = mock.captured.borrow();
         let (cmd, args) = captured.as_ref().expect("runner was invoked");
@@ -1059,18 +1495,7 @@ mod descriptor_tests {
 
     #[test]
     fn probe_appends_plexi_after_user_args() {
-        let mock = MockRunner {
-            stdout: r#"{
-                "plexi_version": "0.1",
-                "name": "fake",
-                "version": "0.0.1",
-                "commands": []
-            }"#
-            .into(),
-            stderr: String::new(),
-            success: true,
-            captured: RefCell::new(None),
-        };
+        let mock = ok_descriptor_runner();
         let code = probe(&mock, "fake-cli", &["sub", "--verbose"]);
         assert_eq!(code, 0);
         let captured = mock.captured.borrow();
@@ -1079,38 +1504,42 @@ mod descriptor_tests {
     }
 
     #[test]
-    fn probe_surfaces_parse_error_with_path() {
-        // Mock returns JSON with an unknown top-level field. We assert the
-        // probe surfaces a non-zero exit; the specific error message reaches
-        // stderr (not assertable cleanly here without a buffer-capture
-        // harness — the field-path content is covered by the parser's own
-        // `parse_rejects_unknown_top_level_field` test).
-        let mock = MockRunner {
-            stdout: r#"{
-                "plexi_version": "0.1",
-                "name": "x",
-                "version": "0.0.1",
-                "commands": [],
-                "rogue": 1
-            }"#
-            .into(),
-            stderr: String::new(),
-            success: true,
-            captured: RefCell::new(None),
-        };
-        let code = probe(&mock, "fake-cli", &[]);
+    fn probe_falls_back_to_registry_when_native_plexi_fails() {
+        // `gh` ships in the embedded registry. With a runner that simulates
+        // gh's real behavior (no native --plexi), the probe should fall
+        // through to Tier 2 and resolve the registry descriptor.
+        let mock = no_plexi_runner();
+        let code = probe(&mock, "gh", &[]);
+        assert_eq!(code, 0, "registry fallback should succeed for `gh`");
+    }
+
+    #[test]
+    fn probe_no_registry_flag_skips_fallback() {
+        // Same setup, but registry disabled. Should fail because Tier 1
+        // fell through and Tier 2 is gated off.
+        let mock = no_plexi_runner();
+        let opts = ProbeOptions { use_registry: false };
+        let code = probe_with_options(&mock, "gh", &[], &opts);
+        assert_eq!(code, 1, "without registry, gh has no descriptor");
+    }
+
+    #[test]
+    fn probe_surfaces_nonzero_exit_for_unknown_cli_with_no_registry_entry() {
+        // No native --plexi, no registry hit → non-zero exit.
+        let mock = no_plexi_runner();
+        let code = probe(&mock, "nonexistent-cli-zzz", &[]);
         assert_eq!(code, 1);
     }
 
     #[test]
-    fn probe_surfaces_nonzero_exit_when_command_fails() {
-        let mock = MockRunner {
-            stdout: String::new(),
-            stderr: "boom".into(),
-            success: false,
-            captured: RefCell::new(None),
-        };
-        let code = probe(&mock, "fake-cli", &[]);
-        assert_eq!(code, 1);
+    fn probe_skips_registry_when_user_args_provided() {
+        // Registry descriptors describe the bare CLI; subcommand invocations
+        // shouldn't get a registry hit even if the CLI is registered.
+        let mock = no_plexi_runner();
+        let code = probe(&mock, "gh", &["pr", "create"]);
+        assert_eq!(
+            code, 1,
+            "registry fallback only applies when no user args are passed"
+        );
     }
 }

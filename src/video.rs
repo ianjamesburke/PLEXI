@@ -1,4 +1,4 @@
-//! Video subsystem substrate (#345).
+//! Video subsystem (#345 substrate, #346 AVFoundation backing).
 //!
 //! Three layers, mirroring [`crate::audio`] and [`crate::midi`]:
 //!
@@ -8,10 +8,12 @@
 //!      (`set_state`, `close`) take that `handle_id`. The trait lives behind
 //!      `Arc<dyn VideoDecoder>` on each `ProcessApp` instance.
 //!
-//!   2. [`AvfVideoDecoder`] — production stub. Every method returns
-//!      [`VideoError::NotImplemented`] cleanly. Real AVFoundation backing
-//!      lands in #346 (split out of #278). The factory selects this impl
-//!      unless `PLEXI_VIDEO=mock://...` is set.
+//!   2. [`AvfVideoDecoder`] — production decoder. macOS: AVFoundation
+//!      pipeline (`AVURLAsset` → `AVAssetReader` → `AVAssetReaderTrackOutput`
+//!      configured for 32BGRA → worker thread that pushes RGBA frames into
+//!      the binary pipe ring at native frame rate). Non-macOS: returns
+//!      `Err(NotImplemented)` cleanly. The factory selects this impl unless
+//!      `PLEXI_VIDEO=mock://...` is set.
 //!
 //!   3. [`MockVideoDecoder`] — procedural RGBA gradient at configurable fps.
 //!      Frames are pushed via the binary-pipe ring (one frame per packet).
@@ -26,13 +28,15 @@
 //! one video frame; consumers read whole frames using the existing
 //! `Pipe.read_frame()` length-prefix protocol.
 //!
-//! Out of scope (deferred to #346):
-//!   - Real AVFoundation decoding.
-//!   - PTS-accurate scheduling.
+//! Out of scope (deferred):
+//!   - PTS-accurate scheduling — frame timing is "sleep `1.0/fps` between
+//!     pushes". Drift accumulates over long clips.
 //!   - A/V sync.
-//!   - Codec coverage (H.264, HEVC, ProRes, etc.).
+//!   - Codec coverage beyond AVFoundation native (H.264, HEVC, ProRes, etc.
+//!     are all native).
 //!   - Streaming sources (HTTP, RTSP).
-//!   - Subtitles.
+//!   - Subtitles / closed-captions.
+//!   - Hardware-acceleration tuning.
 
 use std::sync::Arc;
 
@@ -66,9 +70,14 @@ pub struct VideoOpenAck {
 
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
-    /// Production stub returns this until #346 ships AVFoundation backing.
-    /// Test and routing code can match on this variant directly.
-    #[error("video decoder not implemented")]
+    /// Returned by [`AvfVideoDecoder`] on non-macOS targets where AVFoundation
+    /// is unavailable. macOS builds (post-#346) never produce this variant —
+    /// they surface concrete `Decoder(...)` / `InvalidSource(...)` errors
+    /// instead. Gated behind `cfg(not(target_os = "macos"))` so dead-code
+    /// analysis on macOS doesn't flag it; cross-platform consumers (router,
+    /// tests) handle it under the same gate.
+    #[cfg(not(target_os = "macos"))]
+    #[error("video decoder not implemented on this platform")]
     NotImplemented,
     #[error("invalid video source url: {0}")]
     InvalidSource(String),
@@ -137,16 +146,54 @@ pub trait VideoDecoder: Send + Sync {
 
 // ─── Production impl: AvfVideoDecoder ────────────────────────────────────────
 
-/// Production video decoder shell. Every method returns
-/// [`VideoError::NotImplemented`] cleanly until #346 swaps in real
-/// AVFoundation backing. Per the panic-discipline rule, this stub MUST NOT
-/// `todo!()` / `unimplemented!()` — those panic at runtime and freeze the
-/// host UI thread.
-pub struct AvfVideoDecoder;
+/// Production video decoder backed by AVFoundation (#346).
+///
+/// Pipeline: `AVURLAsset` → `AVAssetReader` → `AVAssetReaderTrackOutput`
+/// configured for `kCVPixelFormatType_32BGRA`. A worker thread owns the
+/// reader, pulls `CMSampleBuffer`s synchronously, locks the underlying
+/// `CVPixelBuffer`, swaps BGRA→RGBA, and pushes the frame into the binary
+/// pipe ring. Pause / play / seek are signalled via a shared `Mutex<VideoState>`;
+/// on seek, the worker rebuilds the reader from `time_range`.
+///
+/// Frame timing is "sleep `1.0 / fps` between pushes" — drift accumulates
+/// across long clips. PTS-accurate scheduling is deferred (issue body, "out
+/// of scope").
+///
+/// All AVFoundation / CoreVideo handles stay confined to the worker thread.
+/// Reader-style obj-c objects are not documented thread-safe; we never
+/// share them across threads.
+pub struct AvfVideoDecoder {
+    next_handle_id: std::sync::atomic::AtomicU64,
+}
 
 impl AvfVideoDecoder {
     pub fn new() -> Self {
-        Self
+        Self {
+            next_handle_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// Resolve a wire `source` string to a local filesystem path. Accepts
+    /// either an absolute path or a `file://` URL. Returns the path string
+    /// the caller passes to `NSURL::fileURLWithPath:`.
+    fn resolve_path(source: &str) -> Result<String, VideoError> {
+        if source.is_empty() {
+            return Err(VideoError::InvalidSource(
+                "source URL is empty".to_owned(),
+            ));
+        }
+        if let Some(rest) = source.strip_prefix("file://") {
+            // Strip the //hostname/ prefix if present (file:///foo/bar → /foo/bar).
+            let path = rest.trim_start_matches('/');
+            let absolute = format!("/{path}");
+            return Ok(absolute);
+        }
+        if source.starts_with('/') {
+            return Ok(source.to_owned());
+        }
+        Err(VideoError::InvalidSource(format!(
+            "expected absolute path or file:// URL, got {source:?}"
+        )))
     }
 }
 
@@ -156,15 +203,478 @@ impl Default for AvfVideoDecoder {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl VideoDecoder for AvfVideoDecoder {
+    fn open(
+        &self,
+        source: &str,
+        frame_ring: Arc<ArrayQueue<Vec<u8>>>,
+    ) -> Result<(VideoOpenAck, VideoHandle), VideoError> {
+        avf_impl::open(self, source, frame_ring)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 impl VideoDecoder for AvfVideoDecoder {
     fn open(
         &self,
         _source: &str,
         _frame_ring: Arc<ArrayQueue<Vec<u8>>>,
     ) -> Result<(VideoOpenAck, VideoHandle), VideoError> {
-        // #346 will replace this with real AVFoundation backing. Returning
-        // an explicit error variant — never panic.
+        // AVFoundation is macOS-only. On other platforms the production stub
+        // surfaces an explicit error rather than panicking.
         Err(VideoError::NotImplemented)
+    }
+}
+
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+// `AVAsset::tracksWithMediaType` is deprecated in favour of the async
+// `loadTracksWithMediaType:completionHandler:`. We deliberately use the sync
+// variant: this code runs on a dedicated worker thread that already owns the
+// AVAssetReader, so blocking-on-track-load is correct. Switching to the
+// async API would force a Tokio / dispatch_queue wrapper for no behavioural
+// gain. Localised `#[allow]` keeps the rest of the crate honest.
+mod avf_impl {
+    //! macOS-only AVFoundation backing. Isolated so non-mac builds don't see
+    //! the obj-c symbols and the rest of `video.rs` stays portable.
+
+    use super::{
+        AvfVideoDecoder, VideoError, VideoHandle, VideoHandleGuard, VideoHandleInner,
+        VideoOpenAck, VideoState,
+    };
+    use std::sync::Arc;
+
+    use crossbeam_queue::ArrayQueue;
+    use objc2_06 as objc2;
+    use objc2_av_foundation_06::{
+        AVAssetReader, AVAssetReaderTrackOutput, AVMediaTypeVideo, AVURLAsset,
+    };
+    use objc2_core_media_06::{CMTime, CMTimeRange};
+    use objc2_core_video_06::{
+        kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
+        CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
+        CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
+        CVPixelBufferUnlockBaseAddress,
+    };
+    use objc2_foundation_06::{NSDictionary, NSNumber, NSString, NSURL};
+
+    /// Top-level entry from the trait `open()`. Resolves the path, opens the
+    /// asset, queries metadata, allocates a handle id, then spawns the
+    /// worker thread.
+    pub(super) fn open(
+        decoder: &AvfVideoDecoder,
+        source: &str,
+        frame_ring: Arc<ArrayQueue<Vec<u8>>>,
+    ) -> Result<(VideoOpenAck, VideoHandle), VideoError> {
+        let path = AvfVideoDecoder::resolve_path(source)?;
+
+        // Construct AVURLAsset on the calling thread to query metadata
+        // synchronously. The asset itself is dropped at function exit; the
+        // worker constructs its own asset (cheap; the file handle is held
+        // by the asset reader).
+        let metadata = unsafe { query_metadata(&path)? };
+
+        let handle_id = decoder
+            .next_handle_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let state = Arc::new(std::sync::Mutex::new(VideoState::Play));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let path_thread = path.clone();
+        let state_thread = Arc::clone(&state);
+        let stop_thread = Arc::clone(&stop);
+        let width = metadata.width;
+        let height = metadata.height;
+        let fps = metadata.fps.max(1.0);
+
+        let join = std::thread::Builder::new()
+            .name(format!("avf-video-{handle_id}"))
+            .spawn(move || {
+                worker_loop(
+                    path_thread,
+                    width,
+                    height,
+                    fps,
+                    state_thread,
+                    stop_thread,
+                    frame_ring,
+                );
+            })
+            .map_err(|e| VideoError::Decoder(format!("avf worker spawn: {e}")))?;
+
+        let ack = VideoOpenAck {
+            handle_id,
+            width: metadata.width,
+            height: metadata.height,
+            fps: metadata.fps,
+            duration_ms: metadata.duration_ms,
+        };
+
+        struct AvfGuard {
+            stop: Arc<std::sync::atomic::AtomicBool>,
+            join: Option<std::thread::JoinHandle<()>>,
+        }
+        impl VideoHandleGuard for AvfGuard {}
+        impl Drop for AvfGuard {
+            fn drop(&mut self) {
+                self.stop
+                    .store(true, std::sync::atomic::Ordering::Release);
+                if let Some(h) = self.join.take() {
+                    let _ = h.join();
+                }
+            }
+        }
+
+        struct AvfInner {
+            state: Arc<std::sync::Mutex<VideoState>>,
+        }
+        impl VideoHandleInner for AvfInner {
+            fn set_state(&mut self, new_state: VideoState) -> Result<(), VideoError> {
+                let mut s = self
+                    .state
+                    .lock()
+                    .expect("avf-video state mutex poisoned on set_state");
+                *s = new_state;
+                Ok(())
+            }
+        }
+
+        let video_handle = VideoHandle {
+            handle_id,
+            width: metadata.width,
+            height: metadata.height,
+            fps: metadata.fps,
+            duration_ms: metadata.duration_ms,
+            _guard: Box::new(AvfGuard {
+                stop,
+                join: Some(join),
+            }),
+            inner: Box::new(AvfInner { state }),
+        };
+
+        Ok((ack, video_handle))
+    }
+
+    struct AssetMetadata {
+        width: u32,
+        height: u32,
+        fps: f32,
+        duration_ms: u64,
+    }
+
+    /// Build an `AVURLAsset` for `path` and pull `width`, `height`, `fps`,
+    /// `duration_ms` off the first video track. Returns `Decoder` on any
+    /// AVFoundation failure (file missing, no video track, etc.).
+    unsafe fn query_metadata(path: &str) -> Result<AssetMetadata, VideoError> {
+        let asset = build_asset(path)?;
+        let video_type = AVMediaTypeVideo
+            .ok_or_else(|| VideoError::Decoder("AVMediaTypeVideo unbound".to_owned()))?;
+        let tracks = asset.tracksWithMediaType(video_type);
+        if tracks.count() == 0 {
+            return Err(VideoError::Decoder(format!(
+                "no video track in asset: {path}"
+            )));
+        }
+        let track = tracks.objectAtIndex(0);
+        let size = track.naturalSize();
+        let fps = track.nominalFrameRate();
+        let duration_seconds = asset.duration().seconds();
+        let duration_ms = if duration_seconds.is_finite() && duration_seconds >= 0.0 {
+            (duration_seconds * 1000.0) as u64
+        } else {
+            0
+        };
+        Ok(AssetMetadata {
+            width: size.width.round().max(0.0) as u32,
+            height: size.height.round().max(0.0) as u32,
+            fps,
+            duration_ms,
+        })
+    }
+
+    /// Construct `AVURLAsset` from a filesystem path. Validates the file
+    /// exists; AVFoundation otherwise returns a reader that fails on
+    /// `start_reading()` with a less helpful error.
+    unsafe fn build_asset(
+        path: &str,
+    ) -> Result<objc2::rc::Retained<AVURLAsset>, VideoError> {
+        if !std::path::Path::new(path).exists() {
+            return Err(VideoError::Decoder(format!("file does not exist: {path}")));
+        }
+        let ns_path = NSString::from_str(path);
+        let url = NSURL::fileURLWithPath(&ns_path);
+        let asset = AVURLAsset::URLAssetWithURL_options(&url, None);
+        Ok(asset)
+    }
+
+    /// Build the output-settings dictionary `{kCVPixelBufferPixelFormatTypeKey:
+    /// kCVPixelFormatType_32BGRA}`. The key is a `CFString` and toll-free
+    /// bridged with `NSString`; we cast the pointer.
+    unsafe fn build_bgra_settings(
+    ) -> objc2::rc::Retained<NSDictionary<NSString, objc2::runtime::AnyObject>> {
+        // kCVPixelFormatType_32BGRA is OSType (u32 alias). NSNumber wraps it
+        // verbatim — the AVFoundation pixel-format key compares the numeric
+        // value, not the bit representation, so signed/unsigned NSNumber
+        // boxing is interchangeable here.
+        let format_value = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
+        let cf_key: &objc2_core_foundation_06::CFString =
+            kCVPixelBufferPixelFormatTypeKey;
+        // Toll-free bridge: CFString and NSString share an ABI-compatible
+        // representation. The cast is safe because both are opaque
+        // `[u8; 0]`-shaped types pointing at the same Core Foundation object.
+        let key: &NSString = &*(cf_key as *const _ as *const NSString);
+        let value: &objc2::runtime::AnyObject =
+            &*(format_value.as_ref() as *const _ as *const objc2::runtime::AnyObject);
+        NSDictionary::from_slices::<NSString>(&[key], &[value])
+    }
+
+    /// Build an `AVAssetReader` + `AVAssetReaderTrackOutput` configured for
+    /// 32BGRA, optionally seeked to `start_ms`. Returns the reader, the
+    /// track output, and the asset (kept alive for the duration of the
+    /// reader). Caller drops all three when the reader is exhausted or
+    /// being rebuilt for seek.
+    unsafe fn build_reader(
+        path: &str,
+        start_ms: Option<u64>,
+    ) -> Result<
+        (
+            objc2::rc::Retained<AVURLAsset>,
+            objc2::rc::Retained<AVAssetReader>,
+            objc2::rc::Retained<AVAssetReaderTrackOutput>,
+        ),
+        VideoError,
+    > {
+        let asset = build_asset(path)?;
+        let video_type = AVMediaTypeVideo
+            .ok_or_else(|| VideoError::Decoder("AVMediaTypeVideo unbound".to_owned()))?;
+        let tracks = asset.tracksWithMediaType(video_type);
+        if tracks.count() == 0 {
+            return Err(VideoError::Decoder(format!(
+                "no video track in asset: {path}"
+            )));
+        }
+        let track = tracks.objectAtIndex(0);
+
+        let settings = build_bgra_settings();
+
+        let track_output =
+            AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
+                &track,
+                Some(&settings),
+            );
+
+        let reader = AVAssetReader::assetReaderWithAsset_error(&asset)
+            .map_err(|e| VideoError::Decoder(format!("AVAssetReader init: {:?}", e)))?;
+
+        // Seek by setting time_range on the reader before adding outputs.
+        if let Some(ms) = start_ms {
+            let start = CMTime::new(ms as i64, 1000);
+            let duration = asset.duration();
+            // Range from start to "positive infinity" represented as the
+            // remaining duration. CMTimeRange is value/duration.
+            let remaining_ms = ((duration.seconds() * 1000.0) as i64).saturating_sub(ms as i64);
+            let dur = CMTime::new(remaining_ms.max(0), 1000);
+            let range = CMTimeRange {
+                start,
+                duration: dur,
+            };
+            reader.setTimeRange(range);
+        }
+
+        if !reader.canAddOutput(&track_output) {
+            return Err(VideoError::Decoder(format!(
+                "reader cannot add 32BGRA output for {path}"
+            )));
+        }
+        reader.addOutput(&track_output);
+
+        if !reader.startReading() {
+            let err = reader.error();
+            return Err(VideoError::Decoder(format!(
+                "AVAssetReader startReading failed: {:?}",
+                err
+            )));
+        }
+
+        Ok((asset, reader, track_output))
+    }
+
+    /// Decode loop. Owns the reader; rebuilds it on seek. Exits when `stop`
+    /// is set, when the reader returns no more samples, or on a permanent
+    /// error.
+    fn worker_loop(
+        path: String,
+        width: u32,
+        height: u32,
+        fps: f32,
+        state: Arc<std::sync::Mutex<VideoState>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        frame_ring: Arc<ArrayQueue<Vec<u8>>>,
+    ) {
+        let frame_period = std::time::Duration::from_secs_f32(1.0 / fps);
+
+        // Initial reader at offset 0.
+        let mut current = match unsafe { build_reader(&path, None) } {
+            Ok(r) => Some(r),
+            Err(e) => {
+                log::error!("avf worker[{path}]: initial reader build failed: {e}");
+                return;
+            }
+        };
+
+        loop {
+            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+
+            // Snapshot state. If a seek arrived, drop the current reader and
+            // rebuild at the new offset, then resume play.
+            let action = {
+                let mut st = state.lock().expect("avf state mutex poisoned");
+                match *st {
+                    VideoState::Play => StateAction::Play,
+                    VideoState::Pause => StateAction::Pause,
+                    VideoState::Seek { position_ms } => {
+                        *st = VideoState::Play;
+                        StateAction::Seek(position_ms)
+                    }
+                }
+            };
+
+            match action {
+                StateAction::Pause => {
+                    std::thread::sleep(frame_period);
+                    continue;
+                }
+                StateAction::Seek(ms) => {
+                    drop(current.take());
+                    current = match unsafe { build_reader(&path, Some(ms)) } {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            log::error!("avf worker[{path}]: seek rebuild failed: {e}");
+                            return;
+                        }
+                    };
+                    continue;
+                }
+                StateAction::Play => {}
+            }
+
+            let Some((_asset, _reader, track_output)) = current.as_ref() else {
+                return;
+            };
+
+            // Pull and push a frame inside an autoreleasepool so the
+            // CMSampleBuffer / CVPixelBuffer don't accumulate.
+            let pushed = objc2::rc::autoreleasepool(|_pool| unsafe {
+                let Some(sample) = track_output.copyNextSampleBuffer() else {
+                    return PullResult::EndOfStream;
+                };
+                let Some(image_buffer) = sample.image_buffer() else {
+                    return PullResult::Skip;
+                };
+                // CVPixelBuffer = CVImageBuffer = CVBuffer (type aliases). The
+                // CV functions all accept the same `&CVBuffer` shape.
+                let pixel_buffer: &objc2_core_video_06::CVPixelBuffer = &image_buffer;
+
+                let lock_flags = CVPixelBufferLockFlags::ReadOnly;
+                let lock_status = CVPixelBufferLockBaseAddress(pixel_buffer, lock_flags);
+                // CVReturn is i32; 0 == kCVReturnSuccess.
+                if lock_status != 0 {
+                    return PullResult::Skip;
+                }
+
+                let buf_width = CVPixelBufferGetWidth(pixel_buffer) as u32;
+                let buf_height = CVPixelBufferGetHeight(pixel_buffer) as u32;
+                let bytes_per_row = CVPixelBufferGetBytesPerRow(pixel_buffer);
+                let base = CVPixelBufferGetBaseAddress(pixel_buffer);
+
+                let result = if base.is_null() || buf_width == 0 || buf_height == 0 {
+                    PullResult::Skip
+                } else {
+                    let frame = copy_bgra_to_rgba(
+                        base.cast::<u8>(),
+                        bytes_per_row,
+                        buf_width,
+                        buf_height,
+                        width,
+                        height,
+                    );
+                    let _ = frame_ring.push(frame);
+                    PullResult::Pushed
+                };
+
+                let _ = CVPixelBufferUnlockBaseAddress(pixel_buffer, lock_flags);
+                result
+            });
+
+            match pushed {
+                PullResult::EndOfStream => {
+                    // Worker idles after EOS; the host closes the handle on
+                    // its own. Sleep at the frame cadence so we don't spin.
+                    std::thread::sleep(frame_period);
+                }
+                PullResult::Skip => {
+                    // Decode hiccup; retry next tick at frame cadence.
+                    std::thread::sleep(frame_period);
+                }
+                PullResult::Pushed => {
+                    std::thread::sleep(frame_period);
+                }
+            }
+        }
+    }
+
+    enum StateAction {
+        Play,
+        Pause,
+        Seek(u64),
+    }
+
+    enum PullResult {
+        Pushed,
+        Skip,
+        EndOfStream,
+    }
+
+    /// Copy a BGRA pixel buffer into an `[R,G,B,A,...]` packed `Vec<u8>` of
+    /// size `out_width * out_height * 4`. `bytes_per_row` may be larger
+    /// than `width * 4` due to row alignment — we only copy `width * 4`
+    /// bytes per row. If the buffer's intrinsic dimensions disagree with
+    /// the negotiated `out_width / out_height`, we use the smaller of each
+    /// to avoid reading past the buffer.
+    unsafe fn copy_bgra_to_rgba(
+        base: *const u8,
+        bytes_per_row: usize,
+        buf_width: u32,
+        buf_height: u32,
+        out_width: u32,
+        out_height: u32,
+    ) -> Vec<u8> {
+        let w = out_width.min(buf_width) as usize;
+        let h = out_height.min(buf_height) as usize;
+        let mut out = vec![0u8; (out_width * out_height * 4) as usize];
+        let out_row = (out_width * 4) as usize;
+        for y in 0..h {
+            let src_row = base.add(y * bytes_per_row);
+            let dst_row_off = y * out_row;
+            for x in 0..w {
+                let src = src_row.add(x * 4);
+                let b = *src;
+                let g = *src.add(1);
+                let r = *src.add(2);
+                let a = *src.add(3);
+                let dst = dst_row_off + x * 4;
+                out[dst] = r;
+                out[dst + 1] = g;
+                out[dst + 2] = b;
+                out[dst + 3] = a;
+            }
+        }
+        out
     }
 }
 
@@ -516,16 +1026,45 @@ mod tests {
     }
 
     #[test]
-    fn avf_decoder_open_returns_not_implemented() {
-        // Production stub: open MUST return Err(NotImplemented). Never panic.
-        // The #![deny(clippy::todo)] lint at the crate root catches todo!() /
-        // unimplemented!() — this test pins the runtime contract.
+    fn avf_decoder_open_with_invalid_path_returns_error_not_panic() {
+        // Production decoder against a missing file MUST return an error and
+        // never panic. The #![deny(clippy::todo)] lint at the crate root
+        // catches todo!() / unimplemented!() — this test pins the runtime
+        // contract for the AVFoundation path.
         let dev = AvfVideoDecoder::new();
         let ring = make_ring();
-        let res = dev.open("file:///tmp/anything.mp4", ring);
+        let res = dev.open("/tmp/definitely-does-not-exist-plexi-test.mp4", ring);
         match res {
+            Err(VideoError::Decoder(_)) => {}
+            #[cfg(not(target_os = "macos"))]
             Err(VideoError::NotImplemented) => {}
-            other => panic!("expected NotImplemented, got {other:?}"),
+            other => panic!("expected Decoder error for missing file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn avf_decoder_open_with_empty_source_returns_invalid_source() {
+        let dev = AvfVideoDecoder::new();
+        let ring = make_ring();
+        let res = dev.open("", ring);
+        match res {
+            Err(VideoError::InvalidSource(_)) => {}
+            #[cfg(not(target_os = "macos"))]
+            Err(VideoError::NotImplemented) => {}
+            other => panic!("expected InvalidSource for empty source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn avf_decoder_open_with_relative_path_returns_invalid_source() {
+        let dev = AvfVideoDecoder::new();
+        let ring = make_ring();
+        let res = dev.open("relative/path.mp4", ring);
+        match res {
+            Err(VideoError::InvalidSource(_)) => {}
+            #[cfg(not(target_os = "macos"))]
+            Err(VideoError::NotImplemented) => {}
+            other => panic!("expected InvalidSource for relative path, got {other:?}"),
         }
     }
 
@@ -603,24 +1142,33 @@ mod tests {
 
     #[test]
     fn factory_default_returns_avf_in_tests() {
-        // Under `cfg(test)`, the factory always returns the production stub —
-        // tests that need the mock inject `Arc::new(MockVideoDecoder::new(...))`
-        // into `ProcessApp::video_device` directly. This pins the contract.
+        // Under `cfg(test)`, the factory always returns the production
+        // AvfVideoDecoder — tests that need the mock inject
+        // `Arc::new(MockVideoDecoder::new(...))` into
+        // `ProcessApp::video_device` directly. The default decoder rejects
+        // a non-existent file via Decoder/InvalidSource — never NotImplemented
+        // (post-#346) on macOS, never panic anywhere.
         let dev = default_video_device();
         let ring = make_ring();
-        match dev.open("file:///tmp/x.mp4", ring) {
-            Err(VideoError::NotImplemented) => {}
-            other => panic!("expected NotImplemented from default factory, got {other:?}"),
-        }
+        let res = dev.open("/tmp/definitely-does-not-exist-plexi-factory-test.mp4", ring);
+        let ok = match &res {
+            Err(VideoError::Decoder(_)) => true,
+            #[cfg(not(target_os = "macos"))]
+            Err(VideoError::NotImplemented) => true,
+            _ => false,
+        };
+        assert!(ok, "expected Decoder error (or NotImplemented off-mac), got {res:?}");
     }
 
     #[test]
-    fn prod_stub_methods_no_panic_smoke() {
-        // Production-stub no-panic guarantee, mirrors the audio/midi pattern:
-        // calling every trait method must surface an error, never panic.
+    fn prod_methods_no_panic_smoke() {
+        // Production no-panic guarantee, mirrors the audio/midi pattern:
+        // every input shape (missing file, empty, relative, mock://) must
+        // surface an error and never panic.
         let dev = AvfVideoDecoder::new();
-        let _ = dev.open("file:///x.mp4", make_ring());
+        let _ = dev.open("/tmp/missing.mp4", make_ring());
         let _ = dev.open("", make_ring());
         let _ = dev.open("mock://gradient", make_ring());
+        let _ = dev.open("relative.mp4", make_ring());
     }
 }
