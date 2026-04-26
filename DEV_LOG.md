@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-25 — [DECISION] Alpha-train release orchestration through v3.5 (PR → alpha)
+
+Locked in the v3.1–v3.5 roadmap (5 milestones, 26 issues) and the orchestration model that will execute it. Specs landed: `docs/specs/process/release-orchestration.md` (durable spec — alpha-train flow, per-PR `Breaks if:` + Human verification + Test added requirements, three-strike rule for sub-agents, no backwards-compat shims, batched alpha→beta promotion only on explicit signal), `docs/specs/releases/v3.1.md`–`v3.5.md` (per-release issue lists + release-level human verification checklists), `.claude/iteration-cycle.md` (operational checklist Claude reads at session start). `.gitignore` flipped from `.claude/` to `.claude/*` + `!.claude/iteration-cycle.md` so the iteration spec is tracked while the rest of `.claude/` stays local.
+
+Rejected alternatives: per-release alpha→beta→main cycles (too much context-switching, batch promotion is cheaper); generic "next-up issue" loop without per-release human gates (verification debt accumulates and 3.5 ships unverifiable). Rejected because: alpha is the active dev branch and beta should only move when the user signals a batch promotion; verification has to be release-bounded so regressions don't compound silently across milestones.
+
+**Breaks if:** new PRs land on alpha without `Breaks if:` lines, without a release-level human verification checklist update in `docs/specs/releases/v3.x.md`, or without a test added — the orchestration spec calls these out as hard gates.
+
 ## 2026-04-11 — [CHANGED] Secrets manager write UI, index-file listing, logging infrastructure
 
 Secrets manager upgraded from read-only viewer to full add/delete UI. Listing fixed by replacing `security dump-keychain` (triggers invisible macOS permission prompt) with a local `secrets-index.json`. Centralized file logging added via `fern` with config-driven log levels and `DrawCommand::Log` forwarding from external apps.
