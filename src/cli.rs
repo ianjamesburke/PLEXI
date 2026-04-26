@@ -890,3 +890,227 @@ fn read_line_plain() -> io::Result<String> {
         .trim_end_matches('\r')
         .to_string())
 }
+
+// ── plexi descriptor (issue #188) ─────────────────────────────────────────────
+/// `plexi descriptor probe <cmd> [args...]` — invokes the target with
+/// `--plexi` appended, parses the JSON descriptor, prints a summary. Reference
+/// consumer for the v0 `--plexi` format. Used as the POC for #188; the full
+/// auto-UI renderer ships in #78.
+pub mod descriptor {
+    use crate::plexi_descriptor::{self, PlexiDescriptor};
+    use std::process::Command;
+
+    /// Indirection so the probe path can be tested without spawning real
+    /// processes. The `&[&str] -> Output` shape is the smallest contract that
+    /// covers "what command was run with what args".
+    pub trait DescriptorRunner {
+        fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput>;
+    }
+
+    pub struct RunOutput {
+        pub status_success: bool,
+        pub stdout: String,
+        pub stderr: String,
+    }
+
+    pub struct RealRunner;
+
+    impl DescriptorRunner for RealRunner {
+        fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput> {
+            let out = Command::new(command).args(args).output()?;
+            Ok(RunOutput {
+                status_success: out.status.success(),
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            })
+        }
+    }
+
+    /// Run `<command> <args...> --plexi`, parse + summarize. Returns the
+    /// process exit code suitable for `std::process::exit`.
+    pub fn probe<R: DescriptorRunner>(runner: &R, command: &str, args: &[&str]) -> i32 {
+        let mut full_args: Vec<&str> = args.to_vec();
+        full_args.push("--plexi");
+
+        let output = match runner.run(command, &full_args) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: failed to spawn `{command}`: {e}");
+                return 1;
+            }
+        };
+
+        if !output.status_success {
+            eprintln!(
+                "error: `{command} {}` exited non-zero",
+                full_args.join(" ")
+            );
+            if !output.stderr.is_empty() {
+                eprintln!("--- stderr ---\n{}", output.stderr.trim_end());
+            }
+            return 1;
+        }
+
+        let descriptor = match plexi_descriptor::parse(&output.stdout) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("error: descriptor from `{command}` failed to parse:");
+                eprintln!("  {e}");
+                return 1;
+            }
+        };
+
+        print_summary(&descriptor);
+        0
+    }
+
+    fn print_summary(d: &PlexiDescriptor) {
+        let icon = d.icon.as_deref().unwrap_or("");
+        println!(
+            "{}{}{} v{}  (descriptor {})",
+            icon,
+            if icon.is_empty() { "" } else { " " },
+            d.name,
+            d.version,
+            d.plexi_version
+        );
+        if let Some(desc) = &d.description {
+            println!("  {desc}");
+        }
+        println!("commands: {}", d.commands.len());
+        for cmd in d.commands.iter().take(3) {
+            let hint = cmd
+                .ui_hint
+                .map(|h| format!(" [{h:?}]").to_lowercase())
+                .unwrap_or_default();
+            let extra = if cmd.commands.is_empty() {
+                String::new()
+            } else {
+                format!(" (+{} subcommands)", cmd.commands.len())
+            };
+            let desc = cmd
+                .description
+                .as_deref()
+                .map(|s| format!(" — {s}"))
+                .unwrap_or_default();
+            println!("  - {}{hint}{extra}{desc}", cmd.name);
+        }
+        if d.commands.len() > 3 {
+            println!("  ... and {} more", d.commands.len() - 3);
+        }
+        if let Some(ls) = &d.live_state {
+            println!(
+                "live_state: {:?} {} (poll {} ms, {:?})",
+                ls.source, ls.path, ls.poll_ms, ls.format
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub struct MockRunner {
+        pub stdout: String,
+        pub stderr: String,
+        pub success: bool,
+        /// Last (command, args) the probe handed to the runner. Lets tests
+        /// assert that `--plexi` was appended in the right position.
+        pub captured: std::cell::RefCell<Option<(String, Vec<String>)>>,
+    }
+
+    #[cfg(test)]
+    impl DescriptorRunner for MockRunner {
+        fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput> {
+            *self.captured.borrow_mut() =
+                Some((command.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            Ok(RunOutput {
+                status_success: self.success,
+                stdout: self.stdout.clone(),
+                stderr: self.stderr.clone(),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    use super::descriptor::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn probe_invokes_command_with_plexi_flag() {
+        let mock = MockRunner {
+            stdout: r#"{
+                "plexi_version": "0.1",
+                "name": "fake",
+                "version": "0.0.1",
+                "commands": []
+            }"#
+            .into(),
+            stderr: String::new(),
+            success: true,
+            captured: RefCell::new(None),
+        };
+        let code = probe(&mock, "fake-cli", &[]);
+        assert_eq!(code, 0);
+        let captured = mock.captured.borrow();
+        let (cmd, args) = captured.as_ref().expect("runner was invoked");
+        assert_eq!(cmd, "fake-cli");
+        assert_eq!(args.last().map(|s| s.as_str()), Some("--plexi"));
+    }
+
+    #[test]
+    fn probe_appends_plexi_after_user_args() {
+        let mock = MockRunner {
+            stdout: r#"{
+                "plexi_version": "0.1",
+                "name": "fake",
+                "version": "0.0.1",
+                "commands": []
+            }"#
+            .into(),
+            stderr: String::new(),
+            success: true,
+            captured: RefCell::new(None),
+        };
+        let code = probe(&mock, "fake-cli", &["sub", "--verbose"]);
+        assert_eq!(code, 0);
+        let captured = mock.captured.borrow();
+        let (_, args) = captured.as_ref().expect("runner was invoked");
+        assert_eq!(args.as_slice(), &["sub", "--verbose", "--plexi"]);
+    }
+
+    #[test]
+    fn probe_surfaces_parse_error_with_path() {
+        // Mock returns JSON with an unknown top-level field. We assert the
+        // probe surfaces a non-zero exit; the specific error message reaches
+        // stderr (not assertable cleanly here without a buffer-capture
+        // harness — the field-path content is covered by the parser's own
+        // `parse_rejects_unknown_top_level_field` test).
+        let mock = MockRunner {
+            stdout: r#"{
+                "plexi_version": "0.1",
+                "name": "x",
+                "version": "0.0.1",
+                "commands": [],
+                "rogue": 1
+            }"#
+            .into(),
+            stderr: String::new(),
+            success: true,
+            captured: RefCell::new(None),
+        };
+        let code = probe(&mock, "fake-cli", &[]);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn probe_surfaces_nonzero_exit_when_command_fails() {
+        let mock = MockRunner {
+            stdout: String::new(),
+            stderr: "boom".into(),
+            success: false,
+            captured: RefCell::new(None),
+        };
+        let code = probe(&mock, "fake-cli", &[]);
+        assert_eq!(code, 1);
+    }
+}
