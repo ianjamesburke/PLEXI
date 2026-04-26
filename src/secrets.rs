@@ -288,16 +288,6 @@ pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
     }
 }
 
-/// List all secrets for a given app_id — reads from the index, no Keychain dump needed.
-#[cfg(target_os = "macos")]
-pub fn list_secrets(app_id: &str) -> Vec<String> {
-    read_index()
-        .into_iter()
-        .filter(|e| e.app_id == app_id)
-        .map(|e| account_key(&e.key, &e.app_id, &e.directory))
-        .collect()
-}
-
 /// List every Plexi secret across all app_ids — reads from the index.
 pub fn list_all_secrets() -> Vec<SecretEntry> {
     read_index()
@@ -373,12 +363,6 @@ pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroi
 pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
     warn!("secrets::delete_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     false
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn list_secrets(app_id: &str) -> Vec<String> {
-    warn!("secrets::list_secrets({app_id}): Keychain not available on this platform");
-    Vec::new()
 }
 
 #[cfg(not(target_os = "macos"))]
