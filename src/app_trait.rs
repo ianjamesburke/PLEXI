@@ -27,6 +27,23 @@ pub enum AppCommand {
         pipe_id: String,
         payload: serde_json::Value,
     },
+    /// Open a *directed* JSON pipe (#286) — only the sender and the named
+    /// target pane subscribe to subsequent `PipeMessage` deliveries.
+    /// Routed by the host because the target pane lives outside the sender's
+    /// process and the sender has no other way to subscribe peers.
+    OpenDirectedPipe {
+        sender_pane_id: u64,
+        pipe_id: String,
+        target_pane_id: u64,
+    },
+    /// Query the workspace agent roster (#286). The host enumerates every
+    /// `Pane::Agent` and emits `PlexiEvent::AgentRoster { request_id, agents }`
+    /// back to `sender_pane_id`. Apps without `agents.list` get an empty
+    /// roster (NOT an error) — see `app_permissions.rs::Capability::AgentsList`.
+    AgentRosterGet {
+        sender_pane_id: u64,
+        request_id: String,
+    },
     /// Deliver a RunUpdate event to the pane that originally issued the run,
     /// identified by its type_id.
     DeliverRunUpdate {

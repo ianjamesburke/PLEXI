@@ -273,6 +273,17 @@ pub enum PlexiEvent {
         port_id: String,
         error: String,
     },
+    /// Response to `DrawCommand::AgentRosterGet` (#286). Lists every live
+    /// `Pane::Agent` in the same workspace context.
+    ///
+    /// `agents` is sorted by `pane_id` ascending so the snapshot is
+    /// reproducible across calls. An app without the `agents.list`
+    /// capability receives an empty `agents` vec — NOT an error. This
+    /// matches the spec: "agents.list" is gated on visibility, not access.
+    AgentRoster {
+        request_id: String,
+        agents: Vec<AgentInfo>,
+    },
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -293,6 +304,18 @@ impl From<crate::midi::MidiPortInfo> for MidiPortWire {
             default: info.default,
         }
     }
+}
+
+/// One live agent pane on the wire. Returned by `AgentRoster` (#286).
+///
+/// `pane_id` matches the host's internal `PaneId` (`u64`); pass it back
+/// to the host as `target_pane_id` on `PipeOpenDirected` to address
+/// inter-agent pipes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AgentInfo {
+    pub pane_id: u64,
+    pub app_id: String,
+    pub name: String,
 }
 
 /// On-the-wire shape of one audio device. Mirrors `audio::AudioDeviceInfo`
@@ -541,11 +564,38 @@ pub enum DrawCommand {
         /// One of: "in" | "out" | "duplex"
         direction: String,
     },
+    /// Open a *directed* JSON pipe to a specific target pane (#286).
+    ///
+    /// Mirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only
+    /// the caller pane and the pane identified by `target_pane_id` can
+    /// receive messages on this pipe — peer apps are NOT subscribed even
+    /// if they call `pipe_open` with the same `pipe_id`.
+    ///
+    /// Created bidirectionally: both panes receive the other's `PipeSend`
+    /// payloads as `PlexiEvent::PipeMessage`. Either side can close.
+    ///
+    /// Capability gate: caller needs `pipe.open` (the same as `PipeOpen`).
+    /// The target does NOT need `agents.list` — it just needs to be
+    /// addressable. The target also doesn't need to opt in; the host
+    /// subscribes it on this pipe id.
+    ///
+    /// Direction is always `duplex` on directed pipes — there's no use case
+    /// for a one-way agent-to-agent channel today, so the field is omitted.
+    /// Mode is always `json`; binary directed pipes are out of scope until
+    /// a real use case arrives.
+    PipeOpenDirected {
+        pipe_id: String,
+        target_pane_id: u64,
+    },
     /// Send a JSON-mode pipe message (not for binary pipes).
     PipeSend {
         pipe_id: String,
         payload: serde_json::Value,
     },
+    /// Query the live agent roster (#286). Requires `agents.list` capability;
+    /// callers without it receive an empty `agents` vec on the response — not
+    /// an error. The response is `PlexiEvent::AgentRoster { request_id, agents }`.
+    AgentRosterGet { request_id: String },
     /// Update the status text shown in the parent pane chrome.
     StatusSummary { text: String },
 
@@ -1354,6 +1404,82 @@ mod tests {
         assert!(
             serde_json::from_str::<DrawCommand>(bad).is_err(),
             "must fail without required `bytes` field"
+        );
+    }
+
+    // ── v3.3 P2 agent roster + directed pipes (#286) ────────────────────
+    // Pin the on-the-wire shape for the roster query/event and the directed
+    // pipe DrawCommand. All fields required — no `#[serde(default)]`.
+
+    #[test]
+    fn agent_roster_get_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"agent_roster_get","request_id":"req-7"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::AgentRosterGet { request_id } => {
+                assert_eq!(request_id, "req-7");
+            }
+            other => panic!("expected AgentRosterGet, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"agent_roster_get""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn agent_roster_event_round_trips_serde() {
+        let json = r#"{"type":"agent_roster","request_id":"req-7","agents":[{"pane_id":3,"app_id":"agent-worker","name":"Worker"},{"pane_id":7,"app_id":"agent-coordinator","name":"Coordinator"}]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AgentRoster { request_id, agents } => {
+                assert_eq!(request_id, "req-7");
+                assert_eq!(agents.len(), 2);
+                assert_eq!(agents[0].pane_id, 3);
+                assert_eq!(agents[0].app_id, "agent-worker");
+                assert_eq!(agents[0].name, "Worker");
+                assert_eq!(agents[1].pane_id, 7);
+            }
+            other => panic!("expected AgentRoster, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"agent_roster""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn pipe_open_directed_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"pipe_open_directed","pipe_id":"coord-to-worker","target_pane_id":42}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::PipeOpenDirected { pipe_id, target_pane_id } => {
+                assert_eq!(pipe_id, "coord-to-worker");
+                assert_eq!(*target_pane_id, 42);
+            }
+            other => panic!("expected PipeOpenDirected, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"pipe_open_directed""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""target_pane_id":42"#),
+            "target_pane_id missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn pipe_open_directed_missing_target_pane_id_fails_deserialise() {
+        // No `target_pane_id` — must fail. Required.
+        let json = r#"{"type":"pipe_open_directed","pipe_id":"x"}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `target_pane_id` field"
         );
     }
 

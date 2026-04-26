@@ -308,3 +308,65 @@ fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
 
 // ---------------------------------------------------------------------------
 // Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the typed-pipe registry primitives that the directed
+    //! inter-agent pipe routing (#286) builds on.
+    use super::*;
+
+    #[test]
+    fn directed_pipe_routes_to_target_pane_only() {
+        // Two panes' registries are independent. The sender pane registers
+        // a JSON duplex pipe under id "x"; the target pane registers the
+        // same id under its own registry. Each registry's `has_reader`
+        // reflects only its own subscribers — they do NOT collide.
+        //
+        // This is the substrate for `directed_pipes` scoping in
+        // `app/mod.rs`: the host maintains a `(sender, target)` pair keyed
+        // on pipe_id, and `DeliverPipeMessage` consults that pair to route
+        // ONLY to the target — never broadcasting to other panes that
+        // coincidentally opened the same id. The registry's job is simply
+        // to track per-pane subscription state; the scoping is upstream.
+        let mut sender_reg = TypedPipeRegistry::new();
+        let mut target_reg = TypedPipeRegistry::new();
+
+        sender_reg
+            .open_json("coord-to-worker".to_string(), PipeDirection::Duplex)
+            .expect("sender opens JSON pipe");
+        target_reg
+            .open_json("coord-to-worker".to_string(), PipeDirection::Duplex)
+            .expect("target opens same id on its independent registry");
+
+        assert!(
+            sender_reg.has_reader("coord-to-worker"),
+            "sender side has_reader true (duplex)"
+        );
+        assert!(
+            target_reg.has_reader("coord-to-worker"),
+            "target side has_reader true (duplex)"
+        );
+
+        // A third bystander registry without the pipe must NOT read.
+        let bystander_reg = TypedPipeRegistry::new();
+        assert!(
+            !bystander_reg.has_reader("coord-to-worker"),
+            "bystander pane never opted in — has_reader must be false"
+        );
+    }
+
+    #[test]
+    fn open_json_rejects_duplicate_pipe_id_on_same_registry() {
+        // A single registry must reject opening the same pipe id twice —
+        // this is what the host's `register_directed_pipe_on_target`
+        // helper has to handle gracefully when the target pane has
+        // independently opened the pipe (treats AlreadyOpen as success).
+        let mut reg = TypedPipeRegistry::new();
+        reg.open_json("dup".to_string(), PipeDirection::Duplex).unwrap();
+        let err = reg
+            .open_json("dup".to_string(), PipeDirection::Duplex)
+            .unwrap_err();
+        assert!(matches!(err, PipeError::AlreadyOpen(_)));
+    }
+}

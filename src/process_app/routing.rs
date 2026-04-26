@@ -417,6 +417,79 @@ impl ProcessApp {
                 }
             }
 
+            // ── Pipe open (directed) — #286 ────────────────────────────────
+            // Inter-agent (or app↔agent) channel. Caller needs `pipe.open`
+            // (same gate as undirected `PipeOpen`). Resolution lives in
+            // `app/mod.rs::AppCommand::OpenDirectedPipe` because the target
+            // pane is not in this process and has to be subscribed by the
+            // host. We register the JSON pipe locally so subsequent
+            // `PipeSend` calls succeed; `has_reader` returns true for the
+            // sender side because the direction is duplex.
+            DrawCommand::PipeOpenDirected {
+                pipe_id,
+                target_pane_id,
+            } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::PipeOpen)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: PipeOpenDirected denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
+                match self
+                    .pipe_registry
+                    .lock()
+                    .unwrap()
+                    .open_json(pipe_id.clone(), PipeDirection::Duplex)
+                {
+                    Ok(()) => {
+                        log::info!(
+                            "ProcessApp[{}]: opened directed JSON pipe '{pipe_id}' → pane {target_pane_id}",
+                            self.type_id
+                        );
+                        event_log::emit_pipe_opened(&self.type_id, &pipe_id, "json");
+                        self.pending_commands.push(AppCommand::OpenDirectedPipe {
+                            sender_pane_id: self.pane_id,
+                            pipe_id,
+                            target_pane_id,
+                        });
+                    }
+                    Err(e) => log::warn!(
+                        "ProcessApp[{}]: PipeOpenDirected failed: {e}",
+                        self.type_id
+                    ),
+                }
+            }
+
+            // ── Agent roster query — #286 ─────────────────────────────────
+            // Capability gate is unusual: an undeclared `agents.list` does
+            // NOT return an error — it returns an empty roster. The check
+            // happens here (loud log) but we still defer to the host to
+            // emit the response so the wire shape is identical regardless.
+            DrawCommand::AgentRosterGet { request_id } => {
+                if let PermissionCheck::Denied(_) =
+                    check(&self.permissions, Capability::AgentsList)
+                {
+                    // Per-spec: undeclared → empty roster, not an error.
+                    log::debug!(
+                        "ProcessApp[{}]: AgentRosterGet without agents.list — empty roster",
+                        self.type_id
+                    );
+                    self.outbound_events
+                        .push_back(PlexiEvent::AgentRoster {
+                            request_id,
+                            agents: Vec::new(),
+                        });
+                    return;
+                }
+                self.pending_commands.push(AppCommand::AgentRosterGet {
+                    sender_pane_id: self.pane_id,
+                    request_id,
+                });
+            }
+
             // ── Pipe send ──────────────────────────────────────────────────
             DrawCommand::PipeSend { pipe_id, payload } => {
                 if let PermissionCheck::Denied(reason) =

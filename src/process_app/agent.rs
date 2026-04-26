@@ -217,7 +217,9 @@ impl ProcessApp {
                 | DrawCommand::RunComplete { .. }
                 | DrawCommand::Notify { .. }
                 | DrawCommand::PipeOpen { .. }
+                | DrawCommand::PipeOpenDirected { .. }
                 | DrawCommand::PipeSend { .. }
+                | DrawCommand::AgentRosterGet { .. }
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
