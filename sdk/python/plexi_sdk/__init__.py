@@ -411,6 +411,23 @@ class CapabilityDeniedError(RuntimeError):
     didn't declare the required capability. Distinct from generic RuntimeError
     so apps can catch the gate-denial path explicitly."""
 
+
+# ── CoreMIDI (#320) types ─────────────────────────────────────────────────────
+
+@dataclass
+class MidiPortInfo:
+    """One MIDI port (input or output). Mirrors `MidiPortWire` on the wire."""
+    id: str
+    name: str
+    default: bool
+
+
+@dataclass
+class MidiDeviceList:
+    """Result of `Emitter.list_midi_devices`. Both lists may be empty."""
+    inputs: list[MidiPortInfo]
+    outputs: list[MidiPortInfo]
+
 # ── Theme constants ───────────────────────────────────────────────────────────
 TITLE   = 22.0; HEADING = 18.0; BODY = 15.0; CAPTION = 13.0; HINT = 12.0
 MONO_BODY = 14.0; MONO_SMALL = 12.0
@@ -731,6 +748,100 @@ class Emitter:
             tokens_in=int(ev.get("tokens_in", 0) or 0),
             tokens_out=int(ev.get("tokens_out", 0) or 0),
         )
+
+    def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
+        """Blocking enumeration of CoreMIDI input + output ports (#320).
+        No capability gate — port names are publicly visible in Audio MIDI
+        Setup. Requires `midi.in` / `midi.out` only on subsequent open/send.
+
+        Returns a MidiDeviceList with `inputs` and `outputs` lists of
+        MidiPortInfo (id, name, default).
+
+        Raises RuntimeError on host enumeration failure or timeout.
+        """
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[dict]" = queue.Queue()
+        self._app._pending_midi_devices[req_id] = q
+        _emit({"type": "list_midi_devices", "request_id": req_id})
+        try:
+            ev = q.get(timeout=timeout)
+        except queue.Empty:
+            self._app._pending_midi_devices.pop(req_id, None)
+            raise RuntimeError(
+                f"list_midi_devices timed out after {timeout}s — host did not respond"
+            )
+        if ev.get("error"):
+            raise RuntimeError(f"list_midi_devices failed: {ev.get('error')}")
+        return MidiDeviceList(
+            inputs=[
+                MidiPortInfo(
+                    id=str(p.get("id", "")),
+                    name=str(p.get("name", "")),
+                    default=bool(p.get("default", False)),
+                )
+                for p in ev.get("inputs", [])
+            ],
+            outputs=[
+                MidiPortInfo(
+                    id=str(p.get("id", "")),
+                    name=str(p.get("name", "")),
+                    default=bool(p.get("default", False)),
+                )
+                for p in ev.get("outputs", [])
+            ],
+        )
+
+    def open_midi_input(self, port_id: str, pipe_id: str) -> "Pipe":
+        """Open a CoreMIDI input port and pipe its MIDI byte streams into a
+        binary pipe. Requires `midi.in` capability declared in manifest.toml.
+
+        Returns the Pipe handle. The host emits `PipeOpened` then
+        `MidiInputOpened`; the Pipe auto-connects to its socket on
+        `PipeOpened`. Apps then call `pipe.read_frame()` in a loop to
+        receive 1–3 byte MIDI messages (channel-voice / system real-time).
+
+        Each pipe frame is one MIDI 1.0 message — apps don't need to parse
+        message boundaries themselves.
+        """
+        # Open the binary pipe FIRST so the App's `_pipes` registry has it
+        # before PipeOpened arrives. The host emits PipeOpened then
+        # MidiInputOpened in order; both events are received by the event
+        # loop and forwarded to the Pipe / on_midi_input_opened handler.
+        p = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
+        self._app._pipes[pipe_id] = p
+        _emit({
+            "type": "open_midi_input",
+            "port_id": port_id,
+            "pipe_id": pipe_id,
+        })
+        return p
+
+    def close_midi_input(self, port_id: str) -> None:
+        """Close a previously-opened MIDI input port. The associated binary
+        pipe drains and closes; the app should drop its Pipe handle."""
+        _emit({"type": "close_midi_input", "port_id": port_id})
+
+    def send_midi(self, port_id: str, bytes_: "bytes | bytearray | list[int]") -> None:
+        """Fire-and-forget send of one MIDI 1.0 byte stream to `port_id`.
+        Requires `midi.out` capability. The host opens the output port lazily
+        on the first send and reuses the handle afterwards.
+
+        `bytes_` is a 1–3 byte sequence: NoteOn `[0x90+ch, note, vel]`,
+        NoteOff `[0x80+ch, note, vel]`, CC `[0xB0+ch, num, val]`, clock
+        pulse `[0xF8]`, etc. Use `plexi_sdk.midi` helpers to construct
+        messages with named arguments.
+
+        Successful sends produce no event; failures arrive as a logged
+        `midi_send_error` warning. Apps that need explicit error handling
+        should validate the destination via `list_midi_devices()` first.
+        """
+        if isinstance(bytes_, (bytes, bytearray)):
+            data = list(bytes_)
+        else:
+            data = list(bytes_)
+        # JSON wire shape: array of integers. The host accepts any ints in
+        # 0..=255 and rejects empty arrays.
+        _emit({"type": "send_midi", "port_id": port_id, "bytes": data})
 
     def set_timer(self, timer_id: str, after_ms: int) -> None:
         """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
@@ -1202,6 +1313,9 @@ class App:
         # v3.3 iq.query broker (#284): blocks on PlexiEvent::IqResponse keyed
         # on request_id. Each entry is consumed by a single iq_query() call.
         self._pending_iq: dict[str, queue.Queue] = {}
+        # v3.4 CoreMIDI (#320): blocks on PlexiEvent::MidiDevicesListed keyed
+        # on request_id. Each entry is consumed by a single list_midi_devices().
+        self._pending_midi_devices: dict[str, queue.Queue] = {}
         self._pending_notify: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
@@ -1226,6 +1340,16 @@ class App:
     def on_inject(self, _ctx: RenderContext, _payload: Any) -> None: pass
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
     def on_timer(self, _ctx: "RenderContext", _timer_id: str) -> None: pass
+    def on_midi_input_opened(
+        self,
+        _pipe_id: str,
+        _port_id: str,
+        _port_name: str,
+    ) -> None:
+        """Override to react to a successful OpenMidiInput. Apps that just
+        want the byte stream typically read directly from the binary pipe
+        opened alongside this event — Plexi sends `pipe_opened` first."""
+        pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
@@ -1393,6 +1517,45 @@ class App:
                 q = self._pending_iq.pop(req_id, None)
                 if q:
                     q.put(ev)
+
+            elif t == "midi_devices_listed":
+                # v3.4 CoreMIDI (#320). Forward to Emitter.list_midi_devices.
+                req_id = ev.get("request_id", "")
+                q = self._pending_midi_devices.pop(req_id, None)
+                if q:
+                    q.put(ev)
+
+            elif t == "midi_input_opened":
+                # Confirms an OpenMidiInput call landed a CoreMIDI source.
+                # Apps that care about "the port is now wired to my pipe"
+                # see this event after the corresponding PipeOpened — they
+                # can override on_midi_input_opened to react.
+                try:
+                    self.on_midi_input_opened(
+                        str(ev.get("pipe_id", "")),
+                        str(ev.get("port_id", "")),
+                        str(ev.get("port_name", "")),
+                    )
+                except Exception as e:
+                    sys.stderr.write(f"on_midi_input_opened handler raised: {e}\n")
+
+            elif t == "midi_input_error":
+                # OpenMidiInput failed (capability denied, port_id not found,
+                # CoreMIDI error). Apps log this; the typical recovery is to
+                # surface the error in-pane and let the user pick a different
+                # port from list_midi_devices.
+                self.emit.warn(
+                    f"midi_input_error pipe_id={ev.get('pipe_id')} "
+                    f"error={ev.get('error')}"
+                )
+
+            elif t == "midi_send_error":
+                # SendMidi failed. Surfaces only on capability denial / open
+                # failure / coremidi error — successful sends produce no event.
+                self.emit.warn(
+                    f"midi_send_error port_id={ev.get('port_id')} "
+                    f"error={ev.get('error')}"
+                )
 
             elif t == "notify_action":
                 # notify_choice / notify_input: put the value back.
