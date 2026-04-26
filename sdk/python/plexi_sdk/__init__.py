@@ -1182,6 +1182,40 @@ class Emitter:
         the decoder and drains the binary pipe. No response event."""
         _emit({"type": "close_video", "handle_id": int(handle_id)})
 
+    def audio_capture(
+        self,
+        pipe_id: str,
+        sample_rate: int = 48000,
+        buffer_size: int = 512,
+        device_id: "str | None" = None,
+    ) -> "Pipe":
+        """Start mic capture (#277). PCM frames stream as raw f32 PCM on
+        a binary pipe — interleaved per-channel, ``sample_rate`` per
+        channel per second.
+
+        Returns the binary Pipe immediately (negotiated values arrive
+        async via ``PlexiEvent::AudioCaptureStarted`` and the host log;
+        the app reads ``handle.read_frame()`` once it connects). Failure
+        arrives as ``PlexiEvent::AudioCaptureError``.
+
+        Requires ``audio.in`` capability. Raises ``CapabilityDeniedError``
+        only when the gate fires synchronously at the wire layer; the
+        usual TCC mic-permission denial surfaces async on the first frame
+        attempt as an ``AudioCaptureError`` event.
+        """
+        # Open the binary pipe FIRST so PipeOpened can attach when it
+        # arrives — same shape as ``open_video``.
+        pipe = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
+        self._app._pipes[pipe_id] = pipe
+        _emit({
+            "type": "audio_capture",
+            "pipe_id": pipe_id,
+            "device_id": device_id,
+            "sample_rate": int(sample_rate),
+            "buffer_size": int(buffer_size),
+        })
+        return pipe
+
     def set_timer(self, timer_id: str, after_ms: int) -> None:
         """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
         _emit({"type": "set_timer", "timer_id": timer_id, "after_ms": after_ms})

@@ -36,6 +36,8 @@ CapabilityDeniedError immediately and the app surfaces it in the log.
 from __future__ import annotations
 
 import os
+import shlex
+import sys
 import threading
 import time
 
@@ -54,7 +56,12 @@ from plexi_sdk.ui import (
 
 
 MOCK_SOURCE = "mock://gradient"
-FILE_SOURCE = os.environ.get("PLEXI_VIDEO_PATH", "")
+# Source resolution priority (most specific wins):
+#   1. argv[1]                 — file browser passes the path (#79).
+#   2. PLEXI_VIDEO_PATH env    — pre-#79 launch path (kept for the mock harness).
+#   3. mock://gradient         — fallback for the substrate POC (#345).
+ARGV_SOURCE = sys.argv[1] if len(sys.argv) >= 2 and sys.argv[1] else ""
+FILE_SOURCE = ARGV_SOURCE or os.environ.get("PLEXI_VIDEO_PATH", "")
 PIPE_ID = "video-stream"
 SEEK_STEP_MS = 5_000
 MAX_LOG_LINES = 200
@@ -67,25 +74,66 @@ class VideoPlayerApp(App):
         self._last_frame_bytes: int = 0
         self._position_ms: int = 0
         self._state: str = "(closed)"
-        self._source: str = MOCK_SOURCE
+        # If the file browser launched us with argv[1], default to that
+        # source so the user doesn't have to press `f` first. Otherwise
+        # the substrate-POC default (mock://gradient) holds.
+        self._source: str = FILE_SOURCE if ARGV_SOURCE else MOCK_SOURCE
         self._log_lines: list[str] = []
         self._log_lock = threading.Lock()
         self._reader_stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
+        # GUI↔Terminal media bridge (#79): every transport action also
+        # emits the equivalent ffplay/ffmpeg invocation through a linked
+        # terminal so the user can copy any GUI action as a CLI command.
+        self._terminal_pane_id: int = 0
         ctx.status_summary("Video Player - press o to open, f to toggle file/mock, p/r pause/resume, [/] seek")
         self.emit.info("Video Player started")
-        if FILE_SOURCE:
+        if ARGV_SOURCE:
+            self.emit.info(f"argv path: {ARGV_SOURCE} (file browser handoff)")
+        elif FILE_SOURCE:
             self.emit.info(f"PLEXI_VIDEO_PATH={FILE_SOURCE} - press f to switch to it")
         else:
             self.emit.info("PLEXI_VIDEO_PATH not set - mock://gradient only. Set it to drive AVFoundation.")
+        try:
+            self._terminal_pane_id = self.emit.request_linked_terminal(
+                cwd=None,
+                label="video bridge",
+            )
+            self.emit.info(f"linked terminal pane #{self._terminal_pane_id}")
+        except CapabilityDeniedError as e:
+            self.emit.warn(f"terminal.bindings denied — CLI bridge disabled: {e}")
 
     # -- Open / close ----------------------------------------------------------
+
+    # -- CLI bridge (#79) ------------------------------------------------
+
+    def _emit_cli(self, command: str, *, echo: bool = False) -> None:
+        """Echo the equivalent CLI through the linked terminal. We use
+        ``echo=False`` for the per-action mirror so it doesn't actually
+        run alongside the in-app decode — the in-app player IS doing the
+        playback. The user sees the command in the terminal as a copy-
+        ready primitive. No-op when no terminal is linked."""
+        if self._terminal_pane_id == 0:
+            return
+        # echo=False is observational only — the host always writes
+        # command+\n to the PTY (PTY-level echo is shell-controlled);
+        # we send a comment line so the user sees the equivalent without
+        # actually running ffplay alongside the in-app decode.
+        line = command if echo else f"# {command}"
+        self.emit.run_in_linked_terminal(self._terminal_pane_id, line, echo=False)
+
+    def _quoted_source(self) -> str:
+        # mock:// URLs are fine to pass verbatim to ffplay — it'll
+        # error, but the bridge contract is "the equivalent command",
+        # not "a command that will succeed".
+        return shlex.quote(self._source)
 
     def _open(self) -> None:
         if self._handle is not None:
             self._append_log("already open - close (x) first")
             return
         self._append_log(f"opening {self._source} ...")
+        self._emit_cli(f"ffplay -autoexit {self._quoted_source()}")
 
         def runner() -> None:
             try:
@@ -147,6 +195,7 @@ class VideoPlayerApp(App):
         self._reader_stop.set()
         self.emit.close_video(h.handle_id)
         self._append_log(f"closed handle_id={h.handle_id}")
+        self._emit_cli("ffplay teardown")
         self._handle = None
         self._state = "(closed)"
         self.emit.schedule_render(after_ms=20)
@@ -165,9 +214,17 @@ class VideoPlayerApp(App):
             # after a seek.
             self._frames_seen = int((position_ms / 1000.0) * self._handle.fps)
             self._append_log(f"seek -> {position_ms} ms")
+            seconds = position_ms / 1000.0
+            self._emit_cli(
+                f"ffplay -autoexit -ss {seconds:.3f} {self._quoted_source()}"
+            )
         else:
             self._state = state
             self._append_log(f"state -> {state}")
+            if state == "pause":
+                self._emit_cli("ffplay: press SPACE to toggle pause")
+            elif state == "play":
+                self._emit_cli(f"ffplay -autoexit {self._quoted_source()}")
         self.emit.schedule_render(after_ms=20)
 
     # -- Logging ---------------------------------------------------------------
