@@ -108,8 +108,16 @@ impl PlexiApp {
             });
         }
 
-        // ── Static actions (#348 — flat commands, no modal in this PR) ─────
+        // ── Static actions (#348 flat commands + #349 modal entry) ─────────
+        // The three flat commands stay (fast path: same-repo + last-CLI-style
+        // workflows). The "…" entry opens the richer modal picker (CLI dropdown
+        // with auto-disable, repo picker, optional task textarea).
         let action_specs: &[(&str, &str, &str)] = &[
+            (
+                "agent_workspace:modal",
+                "New Agent Workspace…",
+                "Open the picker with CLI dropdown, repo picker, and task prompt",
+            ),
             (
                 "agent_workspace:claude_code",
                 "New Agent Workspace: Claude Code",
@@ -512,6 +520,7 @@ impl PlexiApp {
     /// (1) appending to `action_specs` above, and (2) extending this match.
     pub(crate) fn run_palette_action(&mut self, id: &str) {
         match id {
+            "agent_workspace:modal" => self.open_agent_workspace_modal(),
             "agent_workspace:claude_code" => self.spawn_agent_workspace(
                 crate::agent_workspace::AgentCli::ClaudeCode,
             ),

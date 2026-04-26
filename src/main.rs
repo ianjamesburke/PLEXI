@@ -8,6 +8,7 @@
 mod agent_pane;
 mod agent_turn;
 mod agent_workspace;
+mod agent_workspace_modal;
 mod app;
 mod app_permissions;
 mod app_protocol;
