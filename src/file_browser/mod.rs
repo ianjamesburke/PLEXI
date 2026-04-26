@@ -8,7 +8,7 @@ use image::imageops::FilterType;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use helpers::{format_modified, format_size, DirStats, Entry, SortMode};
+use helpers::{format_modified, format_size, DirStats, Entry, MediaKind, SortMode};
 use icons::paint_entry_icon;
 
 const ROW_HEIGHT: f32 = 58.0;
@@ -145,6 +145,57 @@ impl FileBrowserApp {
             cwd: self.cwd.to_string_lossy().to_string(),
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
         });
+    }
+
+    /// Open a file the user activated (Enter, double-click, search-Enter).
+    /// GUI↔Terminal media bridge (#79): recognised video/audio extensions
+    /// route to the in-app players (`video-player` / `audio-player`) so
+    /// the user stays inside the canvas. Everything else falls through
+    /// to the system default opener (`open` on macOS, `xdg-open` on
+    /// Linux). Failures to spawn the system opener are logged and
+    /// silently swallowed — they're not user-recoverable from the file
+    /// browser.
+    fn open_file(&mut self, path: &Path) {
+        let kind = MediaKind::for_path(path);
+        if let Some(app_id) = kind.player_app_id() {
+            log::info!(
+                "file_browser: routing {kind:?} file '{}' to in-app player '{app_id}'",
+                path.display()
+            );
+            self.pending_cmds.push(AppCommand::SpawnApp {
+                type_id: app_id.to_string(),
+                layout: None, // respect the player's manifest layout_hint
+                args: vec![path.to_string_lossy().to_string()],
+            });
+            return;
+        }
+        match std::process::Command::new(Self::system_opener()).arg(path).spawn() {
+            Ok(_) => log::debug!("file_browser: system-open spawned for {}", path.display()),
+            Err(e) => log::error!(
+                "file_browser: system-open failed for {}: {e}",
+                path.display()
+            ),
+        }
+    }
+
+    /// Platform-appropriate fallback opener. macOS / Linux only — Windows
+    /// callers fall through to a no-op since the media-bridge surface is
+    /// unix-first for v3.4 (mirrors `canvas_bindings::shell_open`).
+    fn system_opener() -> &'static str {
+        #[cfg(target_os = "macos")]
+        {
+            "open"
+        }
+        #[cfg(target_os = "linux")]
+        {
+            "xdg-open"
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            // The Command will fail to spawn; the error log makes the
+            // platform gap visible without panicking.
+            "open"
+        }
     }
 
     fn navigate_up(&mut self) {
@@ -657,7 +708,7 @@ impl App for FileBrowserApp {
                     if is_dir {
                         self.navigate_into(path);
                     } else {
-                        let _ = std::process::Command::new("open").arg(&path).spawn();
+                        self.open_file(&path);
                     }
                 }
             });
@@ -682,7 +733,7 @@ impl App for FileBrowserApp {
                         self.exit_search();
                         self.navigate_into(entry.path);
                     } else {
-                        let _ = std::process::Command::new("open").arg(&entry.path).spawn();
+                        self.open_file(&entry.path);
                         self.exit_search();
                     }
                 }
@@ -777,7 +828,7 @@ impl App for FileBrowserApp {
                 if entry.is_dir {
                     self.navigate_into(entry.path);
                 } else {
-                    let _ = std::process::Command::new("open").arg(&entry.path).spawn();
+                    self.open_file(&entry.path);
                 }
             }
             consumed = true;
