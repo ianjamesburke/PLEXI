@@ -401,7 +401,16 @@ pub(super) fn render_draw_commands(
             // only as a safety net (the dispatcher should already have peeled
             // them off via the routing path).
             | DrawCommand::PipeOpenDirected { .. }
-            | DrawCommand::AgentRosterGet { .. } => {}
+            | DrawCommand::AgentRosterGet { .. }
+            // Canvas Terminal Binding Primitives (#78). All five are control
+            // commands routed by `route_command`; the painter never sees them
+            // unless the dispatcher missed a peel-off — silent no-op is the
+            // safe default to keep frames clean.
+            | DrawCommand::RequestLinkedTerminal { .. }
+            | DrawCommand::RunInLinkedTerminal { .. }
+            | DrawCommand::InsertPathToken { .. }
+            | DrawCommand::RequestCommandPreview { .. }
+            | DrawCommand::OpenArtifact { .. } => {}
         }
     }
 

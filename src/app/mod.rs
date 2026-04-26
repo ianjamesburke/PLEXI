@@ -1,3 +1,4 @@
+mod canvas_bindings;
 mod dispatch;
 mod sync;
 
@@ -1056,6 +1057,44 @@ impl eframe::App for PlexiApp {
                             }
                         }
                     }
+                }
+                AppCommand::RequestLinkedTerminal {
+                    sender_pane_id,
+                    request_id,
+                    cwd,
+                    label: _label,
+                } => {
+                    self.dispatch_request_linked_terminal(sender_pane_id, request_id, cwd);
+                }
+                AppCommand::RunInLinkedTerminal {
+                    terminal_pane_id,
+                    command,
+                    echo,
+                } => {
+                    self.dispatch_run_in_linked_terminal(terminal_pane_id, command, echo);
+                }
+                AppCommand::InsertPathToken {
+                    terminal_pane_id,
+                    path,
+                    mode,
+                } => {
+                    self.dispatch_insert_path_token(terminal_pane_id, path, mode);
+                }
+                AppCommand::RequestCommandPreview {
+                    sender_pane_id,
+                    request_id,
+                    terminal_pane_id,
+                    command,
+                } => {
+                    self.dispatch_command_preview(
+                        sender_pane_id,
+                        request_id,
+                        terminal_pane_id,
+                        command,
+                    );
+                }
+                AppCommand::OpenArtifact { path, mode } => {
+                    self.dispatch_open_artifact(path, mode);
                 }
                 AppCommand::DeliverRunUpdate { originator_type_id, event } => {
                     let active = self.active_context;

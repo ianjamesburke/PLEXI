@@ -651,6 +651,144 @@ class Emitter:
         _emit({"type": "copy_to_clipboard", "text": text})
 
 
+    # ── Canvas Terminal Binding Primitives (#78) ────────────────────────────
+    #
+    # All five gate on the manifest capability `terminal.bindings`. Apps
+    # without it get either a sentinel response (for the request/response
+    # primitives) or a silent drop (for fire-and-forget primitives) — the
+    # host logs `capability denied` either way so the bug is debuggable.
+    #
+    # The lifecycle: call `request_linked_terminal()` once at startup
+    # (typically inside `on_init`) and stash the returned pane id. Pass it
+    # to every subsequent `run_in_linked_terminal` / `insert_path_token` /
+    # `request_command_preview` call.
+    def request_linked_terminal(
+        self,
+        cwd: "str | None" = None,
+        label: "str | None" = None,
+    ) -> int:
+        """Ask the host to open a fresh terminal pane next to this app and
+        return its `terminal_pane_id` (an integer). Blocks until the host
+        emits `LinkedTerminalReady`.
+
+        Returns 0 if the host denied the request — this happens when the
+        manifest doesn't declare `terminal.bindings`. Apps should treat 0
+        as a hard error (no terminal to drive). Raises `CapabilityDeniedError`
+        in that case so the failure is loud.
+        """
+        import uuid
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[int]" = queue.Queue()
+        self._app._pending_linked_terminal[req_id] = q
+        _emit({
+            "type": "request_linked_terminal",
+            "request_id": req_id,
+            "cwd": cwd,
+            "label": label,
+        })
+        pane_id = q.get()
+        if pane_id == 0:
+            raise CapabilityDeniedError(
+                "request_linked_terminal: capability 'terminal.bindings' "
+                "not declared in manifest"
+            )
+        return int(pane_id)
+
+    def run_in_linked_terminal(
+        self,
+        terminal_pane_id: int,
+        command: str,
+        echo: bool = True,
+    ) -> None:
+        """Run `command` in the linked terminal. With `echo=True` the user
+        sees the command typed into the terminal; with `echo=False` the
+        signalled intent is silent execution (PTY-level echo is shell-
+        controlled — the flag is best-effort observational).
+
+        Fire-and-forget — capability denial drops silently with a host
+        log line."""
+        _emit({
+            "type": "run_in_linked_terminal",
+            "terminal_pane_id": int(terminal_pane_id),
+            "command": command,
+            "echo": bool(echo),
+        })
+
+    def insert_path_token(
+        self,
+        terminal_pane_id: int,
+        path: str,
+        mode: str = "replace",
+    ) -> None:
+        """Inject `path` at the linked terminal's cursor.
+
+        `mode = "replace"` — Ctrl-W (kill-word) before the path so the
+                            shell readline removes the partial token.
+        `mode = "append"`  — write the path verbatim.
+
+        The host POSIX-quotes the path when it contains shell metacharacters.
+        Fire-and-forget — capability denial drops silently with a host log
+        line."""
+        if mode not in ("replace", "append"):
+            raise ValueError(
+                f"insert_path_token: mode must be 'replace' or 'append', got {mode!r}"
+            )
+        _emit({
+            "type": "insert_path_token",
+            "terminal_pane_id": int(terminal_pane_id),
+            "path": path,
+            "mode": mode,
+        })
+
+    def request_command_preview(
+        self,
+        terminal_pane_id: int,
+        command: str,
+    ) -> "tuple[str, str]":
+        """Return `(command, would_run_in_cwd)` for `command` in the linked
+        terminal. Doesn't execute. Useful for confirmation modals before
+        destructive operations.
+
+        Blocking. If the host denies the request, `would_run_in_cwd` is
+        empty string; the SDK does NOT raise — apps that want to be loud
+        should check for empty cwd themselves (the most common failure
+        mode is a missing capability, which the host already logs)."""
+        import uuid
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self._app._pending_command_preview[req_id] = q
+        _emit({
+            "type": "request_command_preview",
+            "request_id": req_id,
+            "terminal_pane_id": int(terminal_pane_id),
+            "command": command,
+        })
+        return q.get()
+
+    def open_artifact(
+        self,
+        path: str,
+        mode: str = "open_in_pane",
+    ) -> None:
+        """Open a workspace artifact via the host.
+
+        Modes:
+          - `"open_in_pane"`        — directories open the file browser
+                                      next to the app; files open with
+                                      the OS default app (v3.5).
+          - `"reveal_in_finder"`    — `open -R <path>` on macOS.
+          - `"open_with_default"`   — `open <path>` on macOS.
+
+        Fire-and-forget. Capability denial drops silently with a host log
+        line."""
+        if mode not in ("open_in_pane", "reveal_in_finder", "open_with_default"):
+            raise ValueError(
+                f"open_artifact: mode must be one of "
+                f"open_in_pane / reveal_in_finder / open_with_default, "
+                f"got {mode!r}"
+            )
+        _emit({"type": "open_artifact", "path": path, "mode": mode})
+
     def schedule_render(self, after_ms: int = 16) -> None:
         """Ask the host to send a new Render event after `after_ms` milliseconds.
         Call at the end of on_render to sustain a game/animation loop.
@@ -1503,6 +1641,12 @@ class App:
         # on request_id. Each entry is consumed by a single agent_roster() call.
         self._pending_agent_roster: dict[str, queue.Queue] = {}
         self._pending_notify: dict[str, queue.Queue] = {}
+        # v3.5 Canvas Terminal Binding Primitives (#78). Two response shapes:
+        # `linked_terminal_ready` carries an int pane_id; `command_preview`
+        # carries (command, would_run_in_cwd). Each blocking helper drains
+        # its own keyed queue.
+        self._pending_linked_terminal: dict[str, queue.Queue] = {}
+        self._pending_command_preview: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
         # Pending text-input submissions keyed on TextInput `id`. The
@@ -1764,6 +1908,26 @@ class App:
                 q = self._pending_video_open.pop(req_id, None)
                 if q:
                     q.put(ev)
+
+            elif t == "linked_terminal_ready":
+                # v3.5 #78. Forward the terminal_pane_id (int) to the
+                # blocking helper. 0 = capability denied — the helper
+                # raises CapabilityDeniedError when it sees that.
+                req_id = ev.get("request_id", "")
+                q = self._pending_linked_terminal.pop(req_id, None)
+                if q:
+                    q.put(int(ev.get("terminal_pane_id", 0)))
+
+            elif t == "command_preview":
+                # v3.5 #78. Forward (command, would_run_in_cwd) tuple to the
+                # blocking helper. would_run_in_cwd is "" on capability denial.
+                req_id = ev.get("request_id", "")
+                q = self._pending_command_preview.pop(req_id, None)
+                if q:
+                    q.put((
+                        str(ev.get("command", "")),
+                        str(ev.get("would_run_in_cwd", "")),
+                    ))
 
             elif t == "agent_roster":
                 # v3.3 P2 agents.list (#286). The `agents` field is always

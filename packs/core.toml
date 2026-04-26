@@ -80,3 +80,12 @@ version = "0.1.0"
 id      = "agent-worker"
 source  = "local:agent-worker"
 version = "0.1.0"
+
+# Canvas Terminal Binding Primitives demo (#78 / v3.5 P1). Click any
+# button to drive a freshly-opened linked terminal: run a command,
+# inject a path token, preview a destructive command, open an
+# artifact in a pane / Finder. Capability: `terminal.bindings`.
+[[app]]
+id      = "canvas-terminal-bindings-test"
+source  = "local:canvas-terminal-bindings-test"
+version = "0.1.0"
