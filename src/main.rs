@@ -15,6 +15,7 @@ mod app_registry;
 mod app_trait;
 mod audio;
 mod cli;
+mod cli_registry;
 mod command_palette;
 mod config;
 mod context;
@@ -404,29 +405,68 @@ fn main() -> eframe::Result {
                 std::process::exit(cli::notify_cli(&title, &body, level));
             }
             "descriptor" => {
-                // `plexi descriptor probe <cmd> [args...]` — invokes
-                // `<cmd> [args...] --plexi`, parses the result against the
-                // descriptor schema, and prints a human-readable summary.
-                // Reference consumer for #188 / substrate for #78 + #321.
+                // `plexi descriptor probe <cmd> [args...] [--no-registry]` —
+                // runs `<cmd> [args...] --plexi`, parses the result against
+                // the descriptor schema, and prints a human-readable
+                // summary. On Tier-1 failure, falls back to the Tier-2
+                // registry (issue #321) unless `--no-registry` is set.
                 if args.len() < 3 {
-                    eprintln!("Usage: plexi descriptor probe <command> [args...]");
+                    eprintln!(
+                        "Usage: plexi descriptor probe <command> [args...] [--no-registry]"
+                    );
                     std::process::exit(1);
                 }
                 match args[2].as_str() {
                     "probe" => {
                         if args.len() < 4 {
-                            eprintln!("Usage: plexi descriptor probe <command> [args...]");
+                            eprintln!(
+                                "Usage: plexi descriptor probe <command> [args...] [--no-registry]"
+                            );
                             std::process::exit(1);
                         }
                         let cmd = &args[3];
-                        let extra: Vec<&str> =
-                            args[4..].iter().map(|s| s.as_str()).collect();
+                        // Split the tail into positional args + flags. `--no-registry`
+                        // is the only flag we consume; anything else is forwarded
+                        // verbatim to the target command.
+                        let mut use_registry = true;
+                        let mut extra: Vec<&str> = Vec::new();
+                        for a in &args[4..] {
+                            if a == "--no-registry" {
+                                use_registry = false;
+                            } else {
+                                extra.push(a.as_str());
+                            }
+                        }
                         let runner = cli::descriptor::RealRunner;
-                        std::process::exit(cli::descriptor::probe(&runner, cmd, &extra));
+                        let opts = cli::descriptor::ProbeOptions { use_registry };
+                        std::process::exit(cli::descriptor::probe_with_options(
+                            &runner, cmd, &extra, &opts,
+                        ));
                     }
                     other => {
                         eprintln!("Unknown descriptor subcommand: {other}");
-                        eprintln!("Usage: plexi descriptor probe <command> [args...]");
+                        eprintln!(
+                            "Usage: plexi descriptor probe <command> [args...] [--no-registry]"
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "registry" => {
+                // `plexi registry watch [<cli>]` — diff installed CLIs
+                // against their registered descriptors. Issue #321 substrate.
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi registry watch [<cli>]");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "watch" => {
+                        let only = args.get(3).map(|s| s.as_str());
+                        std::process::exit(cli::registry::watch_cli(only));
+                    }
+                    other => {
+                        eprintln!("Unknown registry subcommand: {other}");
+                        eprintln!("Usage: plexi registry watch [<cli>]");
                         std::process::exit(1);
                     }
                 }
@@ -503,6 +543,8 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "pack",
         // #188 — `plexi descriptor probe <cmd>` for the --plexi standard.
         "descriptor",
+        // #321 — `plexi registry watch [<cli>]` for the CLI wrapper registry.
+        "registry",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).

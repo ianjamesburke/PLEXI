@@ -1,0 +1,67 @@
+{
+  "plexi_version": "0.1",
+  "name": "cargo",
+  "version": "1.75.0",
+  "description": "Rust's package manager",
+  "icon": "📦",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "build",
+      "description": "Compile the current package",
+      "ui_hint": "stream",
+      "streaming": true,
+      "flags": [
+        {"name": "--release", "type": "bool", "default": false, "description": "Build artifacts in release mode"},
+        {"name": "--target", "type": "string", "description": "Build for the target triple"}
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run the tests",
+      "ui_hint": "stream",
+      "streaming": true,
+      "flags": [
+        {"name": "--release", "type": "bool", "default": false},
+        {"name": "--no-run", "type": "bool", "default": false, "description": "Compile, but don't run tests"}
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Run a binary or example of the local package",
+      "ui_hint": "stream",
+      "streaming": true,
+      "flags": [
+        {"name": "--release", "type": "bool", "default": false},
+        {"name": "--bin", "type": "string", "description": "Name of the bin target to run"}
+      ]
+    },
+    {
+      "name": "check",
+      "description": "Analyze the current package and report errors, but don't build object files",
+      "ui_hint": "stream",
+      "streaming": true
+    },
+    {
+      "name": "new",
+      "description": "Create a new cargo package at <path>",
+      "ui_hint": "form",
+      "args": [
+        {"name": "path", "type": "path", "required": true, "description": "Path of the new package"}
+      ],
+      "flags": [
+        {"name": "--lib", "type": "bool", "default": false, "description": "Create a library"},
+        {"name": "--bin", "type": "bool", "default": true, "description": "Create a binary (default)"}
+      ],
+      "writes": ["<path>/"]
+    },
+    {
+      "name": "publish",
+      "description": "Upload a package to the registry",
+      "ui_hint": "form",
+      "flags": [
+        {"name": "--dry-run", "type": "bool", "default": false}
+      ]
+    }
+  ]
+}
