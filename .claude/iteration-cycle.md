@@ -45,6 +45,18 @@ PRs missing any of the three are rejected. The orchestrator (this session) is re
 - A stub that makes the test pass is an implementation. Don't `todo!()`.
 - `todo!()` and `unimplemented!()` are banned outside `#[cfg(test)]` (enforced by clippy deny).
 
+## Research before implementing
+Before writing code, sub-agents must briefly skim the docs of any non-trivial dependency they're about to use (egui, eframe, serde, tokio, CoreAudio/CoreMIDI, AVFoundation, etc.). The goal is one or two minutes of "is this still the right API in this version?" — not deep research. Verify versioned APIs against the actual `Cargo.lock` / `pyproject.toml` versions, not training-data assumptions. Specifically check: deprecated methods, signature changes, recommended idioms vs. older patterns. Sub-agent briefs MUST include "research dependencies first" as an explicit step.
+
+## Pre-dispatch audit (orchestrator-only — non-negotiable)
+Before dispatching any sub-agent, the orchestrator runs a stale-state audit on the issue:
+1. `gh issue view <N> --json state,closedAt` — confirm `OPEN`.
+2. `git log --oneline --all -200 | grep -iE "<issue-number>|<keyword>"` — look for shipped PRs without a `Closes #N` trailer (orphan-open issues).
+3. Spot-check the codebase: grep for the names of types/functions the issue would introduce. If they exist, the work likely shipped.
+4. If shipped: close issue + tick milestone box + skip dispatch. If not shipped: dispatch.
+
+This audit takes under a minute. Skipping it wastes a sub-agent run on shipped work — happened with #312, #314, #317 during the v3.1 kickoff.
+
 ## Sub-agent dispatch (orchestrator workflow)
 See `docs/specs/process/release-orchestration.md` for the full spec.
 

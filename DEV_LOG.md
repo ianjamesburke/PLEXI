@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-25 — [GOTCHA] Squash-merged PRs without `Closes #N` trailer leave issues orphan-open
+
+Three v3.1 issues (#312, #314, #317) shipped to alpha in PRs that were squash-merged without `Closes #N` in the PR *body* — only in the title. GitHub's auto-close only scans the body of the squash commit message, so the issues stayed `OPEN` even though the work landed. Discovered when a sub-agent dispatch for #314 reset its worktree to current alpha and found the implementation already there. Cost: one wasted sub-agent run + an audit cycle. Fix: every PR body must include `Closes #N` on its own line (not just the title). Orchestrator pre-dispatch audit now also greps `git log --all -200` for shipped PRs that match the issue's keywords/number; codified in `.claude/iteration-cycle.md`. Also: DEV_LOG itself was not being updated for these shipped PRs — `git log` is the only reliable source for what shipped on alpha after 2026-04-11. This entry serves as a backfill anchor.
+
+## 2026-04-25 — [DECISION] Squash-merge + install-alpha per sub-agent PR (orchestrator merges unilaterally on alpha)
+
+User authorized the orchestrator to merge sub-agent PRs without waiting for human approval, on the condition that every merge is `gh pr merge --squash --delete-branch` so each PR lands as a single revertible commit on alpha. Bad PR → `git revert <sha>` removes it cleanly without unwinding others. Endgame: when v4 starts, alpha is not merged wholesale into v4; the squash history makes it cheap to cherry-pick the keepers. After every merge: orchestrator runs `just install-alpha` (no longer waits on user), pings user with the PR's Human verification checklist. Each new milestone branches from current alpha HEAD (cumulative).
+
+**Breaks if:** any sub-agent PR is merged with `--merge` or `--rebase` (multiple commits per PR breaks the cherry-pick model); or orchestrator skips `install-alpha` post-merge (user can't verify against the built binary).
+
 ## 2026-04-25 — [DECISION] Alpha-train release orchestration through v3.5 (PR → alpha)
 
 Locked in the v3.1–v3.5 roadmap (5 milestones, 26 issues) and the orchestration model that will execute it. Specs landed: `docs/specs/process/release-orchestration.md` (durable spec — alpha-train flow, per-PR `Breaks if:` + Human verification + Test added requirements, three-strike rule for sub-agents, no backwards-compat shims, batched alpha→beta promotion only on explicit signal), `docs/specs/releases/v3.1.md`–`v3.5.md` (per-release issue lists + release-level human verification checklists), `.claude/iteration-cycle.md` (operational checklist Claude reads at session start). `.gitignore` flipped from `.claude/` to `.claude/*` + `!.claude/iteration-cycle.md` so the iteration spec is tracked while the rest of `.claude/` stays local.
