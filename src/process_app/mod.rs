@@ -23,6 +23,7 @@ use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::event_log::{self, HostEvent};
 use crate::host::services::{NetService, UreqNetService};
+use crate::plexi_iq::broker::{IqBroker, LiveIqBroker};
 use crate::runs::RunRegistry;
 use crate::typed_pipes::TypedPipeRegistry;
 use std::collections::{HashMap, VecDeque};
@@ -97,7 +98,11 @@ pub struct ProcessApp {
     /// `route_command` spawns one thread per `HttpRequest`; threads send their
     /// result here so the UI thread never blocks on network I/O.
     pub(crate) http_tx: Sender<PlexiEvent>,
-    http_rx: Receiver<PlexiEvent>,
+    pub(crate) http_rx: Receiver<PlexiEvent>,
+    /// `iq.query` broker (#284). `Arc<dyn IqBroker>` so production panes share
+    /// a `LiveIqBroker` while tests can inject a `CannedBroker`. Dispatch runs
+    /// on a worker thread so the UI never blocks on the LLM call.
+    pub(crate) iq_broker: Arc<dyn IqBroker>,
     /// Cancel flags for pending timers. Key = timer_id, value = Arc<AtomicBool> set to true to cancel.
     pub(crate) pending_timers: HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Observable lifecycle state (issue #316). Written by the stdout/stderr
@@ -132,6 +137,10 @@ impl ProcessApp {
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
+        // Capture for the broker closure — moved into the broker after the
+        // `Self {}` constructor consumes the originals.
+        let type_id_for_broker = type_id.clone();
+        let workspace_root_for_broker = workspace_root.clone();
 
         if workspace_root.as_os_str().is_empty() {
             return Err(std::io::Error::new(
@@ -305,6 +314,10 @@ impl ProcessApp {
             net: Arc::new(UreqNetService::new()),
             http_tx,
             http_rx,
+            iq_broker: Arc::new(default_live_broker(
+                type_id_for_broker.clone(),
+                workspace_root_for_broker.clone(),
+            )),
             pending_timers: HashMap::new(),
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,
@@ -1016,6 +1029,17 @@ impl App for ProcessApp {
     }
 }
 
+/// Build a `LiveIqBroker` whose `api_key_resolver` resolves through the
+/// existing workspace-scoped secrets store every dispatch. Captured by value
+/// because the broker outlives the `launch` stack frame.
+fn default_live_broker(type_id: String, workspace_root: PathBuf) -> LiveIqBroker {
+    LiveIqBroker::new(move || {
+        let workspace_str = workspace_root.to_str().unwrap_or("");
+        crate::secrets::resolve_secret("ANTHROPIC_API_KEY", &type_id, workspace_str)
+            .map(|z| z.as_str().to_string())
+    })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1313,5 +1337,187 @@ impl Drop for ProcessApp {
             let _ = child.wait();
             let _ = child.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod iq_tests {
+    //! Routing tests for the v3.3 `iq.query` broker capability (#284).
+    //!
+    //! Two paths under test:
+    //!   1. App without `iq.query` capability — synchronous denial response
+    //!      lands on `outbound_events`. No broker dispatch occurs.
+    //!   2. App with `iq.query` capability — broker is invoked once and
+    //!      its response surfaces on `http_rx` as `PlexiEvent::IqResponse`.
+    //!
+    //! The mock broker (`CannedBroker`) records every call so the granted
+    //! path also confirms that the routing layer forwarded the right
+    //! `model_tier`, `system`, and `messages` payload to the broker.
+    use super::*;
+    use crate::app_protocol::{DrawCommand, IqMessage, ModelTier, PlexiEvent};
+    use crate::plexi_iq::broker::{IqBroker, IqBrokerRequest, IqBrokerResponse};
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    /// Test broker: records every dispatch and returns a canned response.
+    struct CannedBroker {
+        seen: Arc<Mutex<Vec<IqBrokerRequest>>>,
+        response: IqBrokerResponse,
+    }
+
+    impl IqBroker for CannedBroker {
+        fn dispatch(&self, request: IqBrokerRequest) -> IqBrokerResponse {
+            self.seen.lock().unwrap().push(request);
+            self.response.clone()
+        }
+    }
+
+    fn make_app(capabilities: HashSet<Capability>) -> Option<ProcessApp> {
+        let sh = ["/bin/sh", "/usr/bin/sh"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(PathBuf::from)?;
+        let workspace_root = std::env::temp_dir();
+        ProcessApp::launch(
+            "test_iq",
+            "Test IQ",
+            &sh,
+            &workspace_root,
+            &["-c".to_string(), "sleep 1".to_string()],
+            workspace_root.clone(),
+            capabilities,
+            false,
+        )
+        .ok()
+    }
+
+    #[test]
+    fn denied_app_gets_capability_denied_response() {
+        // App without `iq.query` capability: route_command must immediately
+        // queue an IqResponse with the canonical "capability denied" error
+        // — synchronously, without ever invoking the broker.
+        let Some(mut app) = make_app(HashSet::new()) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+
+        // Inject a broker that would *panic* if called. The denied path
+        // must short-circuit before reaching dispatch.
+        struct PanicBroker;
+        impl IqBroker for PanicBroker {
+            fn dispatch(&self, _: IqBrokerRequest) -> IqBrokerResponse {
+                panic!("denied path must never call the broker");
+            }
+        }
+        app.iq_broker = Arc::new(PanicBroker);
+
+        app.route_command(DrawCommand::IqQuery {
+            request_id: "req-denied".to_string(),
+            model_tier: ModelTier::Low,
+            system: "system".to_string(),
+            messages: vec![IqMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            }],
+            tools: vec![],
+        });
+
+        // Denied path is synchronous — the response is on outbound_events
+        // immediately, no thread, no http_rx wait.
+        let resp = app
+            .outbound_events
+            .iter()
+            .find(|e| matches!(e, PlexiEvent::IqResponse { .. }))
+            .expect("expected IqResponse on outbound queue");
+        match resp {
+            PlexiEvent::IqResponse {
+                request_id,
+                content,
+                tokens_in,
+                tokens_out,
+                error,
+            } => {
+                assert_eq!(request_id, "req-denied");
+                assert!(content.is_none());
+                assert_eq!(*tokens_in, 0);
+                assert_eq!(*tokens_out, 0);
+                let err = error.as_ref().expect("error must be set on denial");
+                assert!(
+                    err.contains("capability denied"),
+                    "denial message must say `capability denied`: {err}"
+                );
+                assert!(
+                    err.contains("iq.query"),
+                    "denial message must name the capability: {err}"
+                );
+            }
+            other => panic!("expected IqResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn granted_app_dispatches_to_broker() {
+        // App WITH `iq.query` granted: route_command must spawn a worker
+        // that calls broker.dispatch exactly once with the right payload,
+        // and the broker's response must arrive as a PlexiEvent::IqResponse
+        // on http_rx.
+        let mut caps = HashSet::new();
+        caps.insert(Capability::IqQuery);
+        let Some(mut app) = make_app(caps) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+
+        let seen: Arc<Mutex<Vec<IqBrokerRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        app.iq_broker = Arc::new(CannedBroker {
+            seen: Arc::clone(&seen),
+            response: IqBrokerResponse::ok("Pong.".to_string(), 12, 4),
+        });
+
+        app.route_command(DrawCommand::IqQuery {
+            request_id: "req-ok".to_string(),
+            model_tier: ModelTier::High,
+            system: "be terse".to_string(),
+            messages: vec![IqMessage {
+                role: "user".to_string(),
+                content: "ping".to_string(),
+            }],
+            tools: vec![],
+        });
+
+        // Worker thread is spawned — wait briefly for response to arrive
+        // on http_rx. 2s is generous; canned broker is in-memory so the
+        // typical wait is microseconds.
+        let event = app
+            .http_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("broker response must arrive on http_rx within 2s");
+
+        match event {
+            PlexiEvent::IqResponse {
+                request_id,
+                content,
+                tokens_in,
+                tokens_out,
+                error,
+            } => {
+                assert_eq!(request_id, "req-ok");
+                assert_eq!(content.as_deref(), Some("Pong."));
+                assert_eq!(tokens_in, 12);
+                assert_eq!(tokens_out, 4);
+                assert!(error.is_none());
+            }
+            other => panic!("expected IqResponse, got {other:?}"),
+        }
+
+        // Broker must have been invoked exactly once with the correct payload.
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1, "broker must be called exactly once");
+        assert_eq!(calls[0].app_id, "test_iq");
+        assert_eq!(calls[0].model_tier, ModelTier::High);
+        assert_eq!(calls[0].system, "be terse");
+        assert_eq!(calls[0].messages.len(), 1);
+        assert_eq!(calls[0].messages[0].content, "ping");
     }
 }

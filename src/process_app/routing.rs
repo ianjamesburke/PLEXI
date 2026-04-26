@@ -7,6 +7,7 @@ use crate::app_permissions::{check, Capability, PermissionCheck};
 use crate::app_protocol::{DrawCommand, PlexiEvent};
 use crate::app_trait::AppCommand;
 use crate::event_log::{self, HostEvent};
+use crate::plexi_iq::broker::IqBrokerRequest;
 use crate::typed_pipes::PipeDirection;
 
 use super::ProcessApp;
@@ -591,6 +592,64 @@ impl ProcessApp {
                         },
                     });
                     log::debug!("ProcessApp[{type_id}]: LlmRequest completed");
+                });
+            }
+            // ── iq.query broker (#284) ─────────────────────────────────────
+            DrawCommand::IqQuery {
+                request_id,
+                model_tier,
+                system,
+                messages,
+                tools,
+            } => {
+                if let PermissionCheck::Denied(_reason) =
+                    check(&self.permissions, Capability::IqQuery)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: IqQuery {request_id} denied — capability not declared",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::IqResponse {
+                        request_id,
+                        content: None,
+                        tokens_in: 0,
+                        tokens_out: 0,
+                        error: Some(
+                            "capability denied: iq.query not declared in manifest".to_string(),
+                        ),
+                    });
+                    return;
+                }
+
+                log::debug!(
+                    "ProcessApp[{}]: IqQuery {request_id} tier={:?} messages={} tools={}",
+                    self.type_id,
+                    model_tier,
+                    messages.len(),
+                    tools.len()
+                );
+
+                let broker = self.iq_broker.clone();
+                let app_id = self.type_id.clone();
+                let tx = self.http_tx.clone();
+                std::thread::spawn(move || {
+                    let resp = broker.dispatch(IqBrokerRequest {
+                        app_id,
+                        model_tier,
+                        system,
+                        messages,
+                        tools,
+                    });
+                    let event = PlexiEvent::IqResponse {
+                        request_id,
+                        content: resp.content,
+                        tokens_in: resp.tokens_in,
+                        tokens_out: resp.tokens_out,
+                        error: resp.error,
+                    };
+                    if let Err(e) = tx.send(event) {
+                        log::warn!("iq broker: response receiver dropped: {e}");
+                    }
                 });
             }
 

@@ -301,6 +301,14 @@ All methods are thread-safe (protected by a global write lock).
       Blocks until the response arrives. Raises RuntimeError on failure.
       Call from a background thread to avoid stalling the render loop.
 
+  emit.iq_query(model_tier, system, messages, tools=None) -> IqResponse  [BLOCKING]
+      Plexi IQ broker call (#284). Requires the `iq.query` capability declared
+      in manifest.toml. `model_tier` is "low" | "medium" | "high"
+      (Haiku / Sonnet / Opus). Returns an IqResponse with content, tokens_in,
+      tokens_out. Raises CapabilityDeniedError if the manifest didn't grant
+      `iq.query`, or RuntimeError on any other backend failure. Call from a
+      background thread — the host may take seconds to reply.
+
   emit.capability_request(capability) -> bool  [BLOCKING]
       Request a runtime capability (e.g. "net.http", "fs.write"). The host
       may show a permission prompt to the user. Blocks until granted or denied.
@@ -383,7 +391,25 @@ import socket
 import struct
 import sys
 import threading
+import uuid
+from dataclasses import dataclass
 from typing import Any
+
+
+# ── iq.query (#284) types ─────────────────────────────────────────────────────
+
+@dataclass
+class IqResponse:
+    """Result of `Emitter.iq_query`. `tokens_in`/`tokens_out` are zero on error."""
+    content: str
+    tokens_in: int
+    tokens_out: int
+
+
+class CapabilityDeniedError(RuntimeError):
+    """Raised when the host rejects a brokered call because the app's manifest
+    didn't declare the required capability. Distinct from generic RuntimeError
+    so apps can catch the gate-denial path explicitly."""
 
 # ── Theme constants ───────────────────────────────────────────────────────────
 TITLE   = 22.0; HEADING = 18.0; BODY = 15.0; CAPTION = 13.0; HINT = 12.0
@@ -643,7 +669,6 @@ class Emitter:
         """Blocking LLM call brokered through the host. Requires llm capability.
         Uses ANTHROPIC_API_KEY from the Plexi secrets store.
         Returns the text response. Raises RuntimeError on failure."""
-        import uuid
         req_id = str(uuid.uuid4())
         q: "queue.Queue[tuple[str, str]]" = queue.Queue()
         self._app._pending_llm[req_id] = q
@@ -656,6 +681,56 @@ class Emitter:
         if status == "error":
             raise RuntimeError(f"llm call failed: {value}")
         return value
+
+    def iq_query(self, model_tier: str, system: str,
+                 messages: "list[dict]",
+                 tools: "list[dict] | None" = None) -> IqResponse:
+        """Blocking call into the host's Plexi IQ broker (#284). Requires the
+        `iq.query` capability declared in `manifest.toml`.
+
+        Args:
+            model_tier: one of "low" | "medium" | "high" — the host maps these
+                to Haiku / Sonnet / Opus respectively.
+            system: system prompt (may be empty string).
+            messages: list of `{"role": "user"|"assistant", "content": str}`
+                dicts. At least one message is required.
+            tools: reserved for v3.4 tool-use; pass `None` or `[]` today.
+
+        Returns:
+            IqResponse with `content`, `tokens_in`, `tokens_out`.
+
+        Raises:
+            CapabilityDeniedError: app didn't declare `iq.query` in its manifest
+                (or the host returned any other "capability denied" error).
+            RuntimeError: backend failed (e.g. missing API key, network error).
+        """
+        if model_tier not in ("low", "medium", "high"):
+            raise ValueError(
+                f"iq_query: model_tier must be one of low|medium|high, got {model_tier!r}"
+            )
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[dict]" = queue.Queue()
+        self._app._pending_iq[req_id] = q
+        payload: dict = {
+            "type": "iq_query",
+            "request_id": req_id,
+            "model_tier": model_tier,
+            "system": system,
+            "messages": messages,
+            "tools": tools or [],
+        }
+        _emit(payload)
+        ev = q.get()
+        error = ev.get("error")
+        if error is not None:
+            if "capability denied" in error:
+                raise CapabilityDeniedError(error)
+            raise RuntimeError(f"iq_query failed: {error}")
+        return IqResponse(
+            content=ev.get("content") or "",
+            tokens_in=int(ev.get("tokens_in", 0) or 0),
+            tokens_out=int(ev.get("tokens_out", 0) or 0),
+        )
 
     def set_timer(self, timer_id: str, after_ms: int) -> None:
         """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
@@ -1124,6 +1199,9 @@ class App:
         self._pending_secret: dict[str, queue.Queue] = {}
         self._pending_http: dict[str, queue.Queue] = {}
         self._pending_llm: dict[str, queue.Queue] = {}
+        # v3.3 iq.query broker (#284): blocks on PlexiEvent::IqResponse keyed
+        # on request_id. Each entry is consumed by a single iq_query() call.
+        self._pending_iq: dict[str, queue.Queue] = {}
         self._pending_notify: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
@@ -1306,6 +1384,15 @@ class App:
                         q.put(("error", ev["error"]))
                     else:
                         q.put(("ok", ev.get("content", "")))
+
+            elif t == "iq_response":
+                # v3.3 iq.query broker (#284). Hand the whole event dict to
+                # `Emitter.iq_query` so it can split error vs success and
+                # attach token counts.
+                req_id = ev.get("request_id", "")
+                q = self._pending_iq.pop(req_id, None)
+                if q:
+                    q.put(ev)
 
             elif t == "notify_action":
                 # notify_choice / notify_input: put the value back.

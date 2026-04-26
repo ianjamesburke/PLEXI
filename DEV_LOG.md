@@ -1,5 +1,27 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-26 — [CHANGED] `iq.query` brokered capability — first v3.3 milestone PR (#284 → alpha)
+
+Opens the v3.3 milestone (Agents as First-Class Citizens). Three new wire types in `src/app_protocol.rs`: `DrawCommand::IqQuery { request_id, model_tier, system, messages, tools }`, `PlexiEvent::IqResponse { request_id, content, tokens_in, tokens_out, error }`, and the `ModelTier` enum (`low | medium | high`). All fields required — no `serde(default)`. Adds `IqQuery` to the `Capability` enum (string `"iq.query"`); manifest validator and `from_capability_strings` recognise it.
+
+New `src/plexi_iq/broker.rs` module owns the brokered path. `IqBroker` trait + `LiveIqBroker` (production) + `CannedBroker` (tests). `route_command` synchronously emits the gate-denied response when the manifest doesn't declare `iq.query`, and otherwise spawns a worker thread that calls `broker.dispatch()` and forwards the response onto `http_tx`. `LiveIqBroker` resolves `ANTHROPIC_API_KEY` per-call through the existing workspace-scoped secrets store, maps `ModelTier` to a concrete model id (`low → claude-haiku-4-5`, `medium → claude-sonnet-4-5`, `high → claude-opus-4-5`), and routes through `AnthropicApiBackend::with_model` + `turn_loop::run_turn` so we re-use the existing streaming + ledger path rather than forking a second LLM client.
+
+`LedgerRow` extended with optional `app_id` and `model` (skipped when None so legacy `Pane::Agent` rows aren't polluted) plus a required `cost_cents: u64` (computed at row construction so dependents don't have to). `LedgerRow::with_attribution` is the new call site for `iq.query`; `LedgerRow::new` stays for the legacy in-process turn loop. The broker appends a row on every successful dispatch — failures are logged but never propagate (a billing miss must never break the conversation).
+
+`plexi_iq` was on disk but never registered as a module; added `mod plexi_iq;` to `main.rs`. Module also gains `pub mod broker`. The existing `src/process_app/routing.rs` `LlmRequest` handler (legacy `llm` capability via raw `ureq` Anthropic call) is left in place — `iq.query` is the v3.3 successor; #285 will eventually retire `LlmRequest`.
+
+Python SDK adds `Emitter.iq_query(model_tier, system, messages, tools=None) -> IqResponse`, an `IqResponse` dataclass, and a `CapabilityDeniedError` exception (raised when the host returns "capability denied" — apps that want to handle the gate-denied path explicitly can `except CapabilityDeniedError`). The blocking pattern matches `secret_get` / `http_request` / `measure_text` — UUID `request_id`, per-request `queue.Queue`, drained by the App's stdin event loop on `iq_response`. `tools` non-empty is rejected at the broker until v3.4 ships tool dispatch — explicit refusal beats a silent drop.
+
+Two POC apps land alongside the protocol work (mandatory per orchestration rule):
+- `examples/iq-query-test/` — manifest declares `iq.query`. Text input + l/m/h keys to dispatch at each tier; renders content + token counts on success, red error card on failure.
+- `examples/iq-query-denied-test/` — manifest declares no capabilities. Press `s` to verify the gate fires; the `CapabilityDeniedError` arrives within a frame.
+
+Test-first: 14 new tests across `app_protocol::tests` (4), `app_permissions::tests` (2), `plexi_iq::broker::tests` (4), `plexi_iq::ledger::ledger_tests` (2), `process_app::iq_tests` (2). The `process_app` tests inject `CannedBroker`/`PanicBroker` into the `iq_broker` field to drive the routing layer deterministically — no real LLM calls.
+
+**Out of scope for this PR (deliberately):** #285 agent-as-app refactor (the existing `Pane::Agent` hardcoded LLM still uses `agent_turn::run_turn` directly — replacing that with subprocess agents calling `iq.query` is the next dispatch); tool-use loops at the broker level (apps drive their own loops by re-calling `iq_query`); cost-cap enforcement / rate limiting beyond what the existing ledger does; streaming responses (spec calls for one `IqResponse` per query).
+
+**Breaks if:** an app whose manifest does NOT declare `iq.query` calls `emit.iq_query(...)` and gets back content instead of `CapabilityDeniedError`; an app declaring `iq.query` calls into Low/Medium/High tier and the response model doesn't differ between tiers (verify by asking the same prompt at Low and High — the wording should differ); `~/.plexi-alpha/ledger.jsonl` doesn't gain a new line per query with `app_id`, `model`, `tokens_in`, `tokens_out`, `cost_cents`; or `ANTHROPIC_API_KEY` ever appears verbatim in the log file or any app's stderr.
+
 ## 2026-04-26 — [CHANGED] App package manager — top-level `install`/`uninstall`/`update`/`list`, manifest `schema_version`, bundled core pack (#308 Phase 2 → alpha)
 
 Phase 2 of the v3.2 headline. Adds a required `schema_version: u32` field to every `manifest.toml` (no `serde(default)` — missing → loud parse error; greater than `MANIFEST_SCHEMA_VERSION = 1` → install refused with a clear message), a new `packs.rs` module that parses `pack.toml` (requirements.txt-style app list with a tagged source-spec scheme: `github:owner/repo`, `git+https/ssh/file://...`, `local:<example-name>`), and a new `install.rs` that owns the install/uninstall/update flow plus a `Cloner` trait (mock for tests, `GitCloner` shells out to `git` in prod — no `git2` dependency).

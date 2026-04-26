@@ -371,6 +371,7 @@ pub(super) fn render_draw_commands(
             | DrawCommand::SpawnApp { .. }
             | DrawCommand::HttpRequest { .. }
             | DrawCommand::LlmRequest { .. }
+            | DrawCommand::IqQuery { .. }
             | DrawCommand::CdRequest { .. }
             | DrawCommand::Image { .. }
             | DrawCommand::VideoPlayer { .. }
