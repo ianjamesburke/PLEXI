@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "wikipedia"
+type = "app"
 name = "Wikipedia"
 version = "0.1.0"
 description = "Search Wikipedia and browse article summaries."

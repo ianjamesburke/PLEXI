@@ -134,9 +134,15 @@ impl IqBroker for LiveIqBroker {
 
         let backend = AnthropicApiBackend::with_model(api_key, model_id.clone());
 
-        let (prompt, system) = flatten_messages(&request.messages, &request.system);
-
-        let turn = turn_loop::run_turn(&backend, prompt, system, |_| {});
+        // Multi-turn conversations flow natively now — `LlmRequest` carries
+        // the structured `Vec<IqMessage>` and the backend translates each
+        // entry directly to the Anthropic Messages API. No flattening.
+        let turn = turn_loop::run_turn(
+            &backend,
+            request.messages.clone(),
+            request.system.clone(),
+            |_| {},
+        );
 
         match turn {
             Ok(result) => {
@@ -193,27 +199,6 @@ pub fn resolve_model_id(tier: ModelTier) -> String {
     }
 }
 
-/// Flatten an `IqMessage` array into the (single user prompt, system) shape
-/// the existing `LlmBackend::stream_to_channel` accepts. Until the backend
-/// trait grows native multi-turn message support, the broker collapses the
-/// conversation by joining every user message with `\n\n`. Assistant turns
-/// are kept in a labelled prefix so the model still sees the prior context.
-///
-/// This is a deliberate stop-gap; a future PR will widen `LlmRequest` to
-/// carry the structured array directly.
-fn flatten_messages(messages: &[IqMessage], system: &str) -> (String, String) {
-    let mut prompt_parts: Vec<String> = Vec::with_capacity(messages.len());
-    for m in messages {
-        match m.role.as_str() {
-            "user" => prompt_parts.push(m.content.clone()),
-            "assistant" => prompt_parts.push(format!("[assistant previously]: {}", m.content)),
-            other => prompt_parts.push(format!("[{other}]: {}", m.content)),
-        }
-    }
-    let prompt = prompt_parts.join("\n\n");
-    (prompt, system.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,8 +234,13 @@ mod tests {
     }
 
     #[test]
-    fn flatten_messages_joins_user_turns() {
-        let msgs = vec![
+    fn broker_accepts_structured_messages_after_widening() {
+        // Multi-turn conversations now flow as a structured `Vec<IqMessage>`
+        // through the broker — no flattening into a single prompt. This test
+        // pins the contract: the broker hands the full message array to the
+        // backend and `IqBrokerRequest` accepts the structured form unchanged.
+        let broker = CannedBroker::ok("response");
+        let messages = vec![
             IqMessage {
                 role: "user".to_string(),
                 content: "first".to_string(),
@@ -264,14 +254,20 @@ mod tests {
                 content: "second".to_string(),
             },
         ];
-        let (prompt, system) = flatten_messages(&msgs, "be helpful");
-        assert_eq!(system, "be helpful");
-        assert!(prompt.contains("first"), "prompt missing first turn: {prompt}");
-        assert!(prompt.contains("second"), "prompt missing second turn: {prompt}");
-        assert!(
-            prompt.contains("[assistant previously]: ok"),
-            "prompt must label prior assistant turn: {prompt}"
-        );
+        let resp = broker.dispatch(IqBrokerRequest {
+            app_id: "test".to_string(),
+            model_tier: ModelTier::Low,
+            system: "be helpful".to_string(),
+            messages: messages.clone(),
+            tools: vec![],
+        });
+        assert_eq!(resp.content.as_deref(), Some("response"));
+        // The broker must have received the structured array verbatim — no
+        // flattening, no "[assistant previously]" prefix, no joining.
+        let seen = broker.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "broker should have seen exactly one request");
+        assert_eq!(seen[0].messages, messages, "messages must round-trip unchanged");
+        assert_eq!(seen[0].system, "be helpful");
     }
 
     #[test]

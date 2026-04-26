@@ -1,5 +1,29 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-25 — [CHANGED] Agent-as-app foundation — manifest type field + protocol variants + broker widening (#285 part 1 → alpha)
+
+First slice of #285 (v3.3 P1 headline "Agent-as-app"). Lands the wire and schema additions that the host integration in part 2 will consume; does NOT yet spawn subprocess agents into `Pane::Agent` or ship the SDK Agent class. Scoped down deliberately to keep the PR reviewable — the host integration ripples through `process_app/routing.rs`, `agent_pane.rs`, `pane.rs`, and the SDK simultaneously, and is its own commit.
+
+**Manifest schema (`src/app_registry.rs`)** — required `[app] type = "app" | "agent"` field on every manifest. Discipline matches `schema_version` (#308 Phase 2): no `serde(default)`, no fallback to `"app"`, missing field → loud parse error. New `ManifestType` enum (`App` | `Agent`). Optional `[launch] system_prompt: Option<String>` for agent manifests; the host forwards it to the agent subprocess via `PlexiEvent::AgentInit` once the host integration lands. All 18 example manifests migrated to add `type = "app"`. Inline manifest fixtures in `src/install.rs` test helpers also migrated.
+
+**Protocol additions (`src/app_protocol.rs`)** — three new variants, all required-field shape, no `serde(default)`:
+  - `PlexiEvent::AgentInit { system_prompt: Option<String> }` — sent once at agent startup with the manifest's `system_prompt`. Only delivered to `type = "agent"` panes. `Option` is explicit on the wire (`null` for unset).
+  - `PlexiEvent::UserMessage { text }` — sent when the user submits text in the host-rendered conversation input box. Only delivered to agent panes.
+  - `DrawCommand::AppendConversation { role, content }` — agent emits one per logical turn; host renders into the conversation history surface. `role` accepted as a string (`"user" | "assistant" | "tool" | "system"`) for forward-compat with future role kinds; unknown roles render as plain text.
+
+**Broker widening (`src/plexi_iq/{broker,loop,backend/{mod,anthropic_api}}.rs`)** — lifted the `flatten_messages` stop-gap from #284. `LlmRequest` now carries `messages: Vec<IqMessage>` directly (the structured Anthropic Messages shape) plus `system: String`. `AnthropicApiBackend::stream_native` translates each `IqMessage` to a `MessageBuilder`-built `Message` with the matching `MessageRole`; empty `messages` is a loud error (`"LlmRequest.messages is empty"`), unknown role values likewise. `turn_loop::run_turn` widened: `messages: Vec<IqMessage>` instead of `prompt: impl Into<String>`. Multi-turn agent conversations now flow natively — no more `[assistant previously]:` prefix joining.
+
+**Out of scope deliberately (filed as follow-up):**
+  - Host integration: spawning subprocess agents into `Pane::Agent` with conversation UI scaffolding from `agent_pane.rs` backed by subprocess `AppendConversation` events (vs. the legacy hardcoded `agent_turn` loop).
+  - SDK `Agent` base class with the `on_user_message(text) -> str` callback pattern.
+  - POC `examples/agent-tester/` end-to-end agent.
+  - `plexi app new --type agent` scaffolder.
+  - Deletion of `agent_turn.rs` / `agent_pane.rs` legacy in-pane turn loop.
+
+Test-first: 11 new tests across `app_protocol::tests` (5), `app_registry::tests` (5), `plexi_iq::broker::tests` (1, replacing the deleted `flatten_messages_joins_user_turns`). All 114 pass; clean `cargo build --release`.
+
+**Breaks if:** any existing manifest loads after this PR without `type = "app"` set; `cargo test --bin plexi` reports any test in `app_protocol::tests::user_message_*`, `agent_init_*`, `append_conversation_*`, or `app_registry::tests::manifest_with_type_*` failing; `LlmRequest.messages` empty no longer surfaces a stream error containing `"messages is empty"`; or an agent manifest's `[launch].system_prompt` field is silently ignored at load (verify by checking `~/.plexi-alpha/plexi.log` — every `launching '<id>'` line should now also log `type=...` and `system_prompt=...`).
+
 ## 2026-04-26 — [CHANGED] `iq.query` brokered capability — first v3.3 milestone PR (#284 → alpha)
 
 Opens the v3.3 milestone (Agents as First-Class Citizens). Three new wire types in `src/app_protocol.rs`: `DrawCommand::IqQuery { request_id, model_tier, system, messages, tools }`, `PlexiEvent::IqResponse { request_id, content, tokens_in, tokens_out, error }`, and the `ModelTier` enum (`low | medium | high`). All fields required — no `serde(default)`. Adds `IqQuery` to the `Capability` enum (string `"iq.query"`); manifest validator and `from_capability_strings` recognise it.

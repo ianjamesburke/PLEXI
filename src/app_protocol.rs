@@ -165,6 +165,27 @@ pub enum PlexiEvent {
     /// buffer for `id` after emitting this event so the field is empty for
     /// the next input.
     TextSubmitted { id: String, value: String },
+    /// Sent once at agent startup to deliver the manifest's `[launch].system_prompt`.
+    ///
+    /// Only delivered to apps whose manifest declares `[app] type = "agent"`. Apps
+    /// of `type = "app"` will never receive this event. The agent decides how to
+    /// use the prompt — typically by passing it as the `system` field on the
+    /// first `iq.query` call. Apps that don't need a system prompt may simply
+    /// ignore the event.
+    ///
+    /// `system_prompt` is `None` when the manifest omits the `[launch].system_prompt`
+    /// field; the host serialises it as JSON `null` so the value is explicit on
+    /// the wire. Agents must handle the `None` case (no prompt set).
+    AgentInit { system_prompt: Option<String> },
+    /// User submitted text in the host-rendered conversation input box of an
+    /// agent pane.
+    ///
+    /// Only delivered to apps whose manifest declares `[app] type = "agent"`.
+    /// The agent receives the raw user text and decides how to respond
+    /// (typically by appending it to its conversation history and dispatching
+    /// an `iq.query`). The host owns the input widget; the agent owns the
+    /// conversation logic.
+    UserMessage { text: String },
     /// Clipboard paste forwarded into the focused app pane.
     ///
     /// Emitted whenever the host observes `egui::Event::Paste(text)` while an
@@ -668,6 +689,23 @@ pub enum DrawCommand {
     /// app already controls when it fires (key handler, button, etc.).
     CopyToClipboard { text: String },
 
+    /// Append a row to the host-owned conversation history of an agent pane.
+    ///
+    /// Only meaningful for panes whose manifest declares `[app] type = "agent"`.
+    /// The host renders the conversation history as the pane's primary surface;
+    /// the agent emits one of these per logical turn boundary (user echo,
+    /// assistant reply, tool result, system note).
+    ///
+    /// `role` is one of `"user"` | `"assistant"` | `"tool"` | `"system"`. Other
+    /// values are accepted at the wire level (forward-compatibility) but the
+    /// host renders unknown roles as plain text. Required field — no
+    /// `serde(default)`.
+    ///
+    /// `content` is the plain-text body of the row. Required field. Empty
+    /// strings are valid (e.g. a placeholder turn while a stream is in flight)
+    /// but discouraged — emit on completion, not on dispatch.
+    AppendConversation { role: String, content: String },
+
     /// Single-line text input field (host-owned buffer, submit-only).
     ///
     /// Emitted by the app each frame at `(x, y)` with width `w`. The host
@@ -957,6 +995,103 @@ mod tests {
             }
             other => panic!("expected IqResponse, got {other:?}"),
         }
+    }
+
+    // ── v3.3 agent-as-app wire shape (#285) ──────────────────────────────
+    // Pin the on-the-wire shape for the three new variants. All fields are
+    // required — no `serde(default)`.
+
+    #[test]
+    fn user_message_event_round_trips_serde() {
+        let json = r#"{"type":"user_message","text":"tell me a joke"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::UserMessage { text } => assert_eq!(text, "tell me a joke"),
+            other => panic!("expected UserMessage, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"user_message""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""text":"tell me a joke""#),
+            "text missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn user_message_missing_text_fails_deserialise() {
+        // No `text` field — must fail because the field is required (no
+        // `serde(default)`).
+        let json = r#"{"type":"user_message"}"#;
+        let result: Result<PlexiEvent, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `text` field"
+        );
+    }
+
+    #[test]
+    fn agent_init_event_round_trips_serde() {
+        // With a system prompt set.
+        let json = r#"{"type":"agent_init","system_prompt":"You are helpful."}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AgentInit { system_prompt } => {
+                assert_eq!(system_prompt.as_deref(), Some("You are helpful."));
+            }
+            other => panic!("expected AgentInit, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"agent_init""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Null system_prompt — agent manifests without a `[launch].system_prompt`.
+        let json = r#"{"type":"agent_init","system_prompt":null}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AgentInit { system_prompt } => {
+                assert!(system_prompt.is_none(), "system_prompt must be None");
+            }
+            other => panic!("expected AgentInit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_conversation_drawcommand_round_trips() {
+        let json =
+            r#"{"type":"append_conversation","role":"assistant","content":"Hello!"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::AppendConversation { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content, "Hello!");
+            }
+            other => panic!("expected AppendConversation, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"append_conversation""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""role":"assistant""#),
+            "role missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn append_conversation_missing_content_fails_deserialise() {
+        // No `content` field — must fail. Required.
+        let json = r#"{"type":"append_conversation","role":"user"}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `content` field"
+        );
     }
 
     #[test]

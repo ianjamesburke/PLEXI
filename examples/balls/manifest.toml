@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "balls"
+type = "app"
 name = "Balls"
 version = "0.1.0"
 description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."

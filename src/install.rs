@@ -720,7 +720,7 @@ pub(crate) mod test_support {
                 .cloned()
                 .unwrap_or_else(|| {
                     format!(
-                        "schema_version = 1\n\n[app]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+                        "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
                     )
                 });
             std::fs::write(target_dir.join("manifest.toml"), manifest)
@@ -810,7 +810,7 @@ mod install_tests {
     fn install_with_future_schema_refuses() {
         let target = tmp();
         let manifest = format!(
-            "schema_version = {}\n\n[app]\nid = \"future\"\nname = \"Future\"\nversion = \"0.1.0\"\nentry = \"run.sh\"\n",
+            "schema_version = {}\n\n[app]\nid = \"future\"\ntype = \"app\"\nname = \"Future\"\nversion = \"0.1.0\"\nentry = \"run.sh\"\n",
             MANIFEST_SCHEMA_VERSION + 1
         );
         let cloner =
@@ -937,7 +937,7 @@ mod pack_export_tests {
         std::fs::write(
             dir.join("manifest.toml"),
             format!(
-                "schema_version = 1\n\n[app]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"{version}\"\nentry = \"run.sh\"\n"
+                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"{version}\"\nentry = \"run.sh\"\n"
             ),
         )
         .unwrap();
@@ -1005,7 +1005,7 @@ mod pack_export_tests {
         let target = tempfile::tempdir().unwrap();
         let dir = target.path().join("foo");
         std::fs::create_dir_all(&dir).unwrap();
-        let manifest_text = "schema_version = 1\n\n[app]\nid = \"foo\"\nname = \"Foo\"\nversion = \"0.3.0\"\nentry = \"run.sh\"\n";
+        let manifest_text = "schema_version = 1\n\n[app]\nid = \"foo\"\ntype = \"app\"\nname = \"Foo\"\nversion = \"0.3.0\"\nentry = \"run.sh\"\n";
         let manifest: AppManifest = toml::from_str(manifest_text).unwrap();
         let (source, version) = infer_source_and_version(&dir, &manifest);
         assert_eq!(source, "local:foo");

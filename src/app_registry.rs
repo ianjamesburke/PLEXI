@@ -79,6 +79,21 @@ pub struct AppManifestApp {
     pub id: String,
     pub name: String,
     pub entry: String,
+    /// Required. Selects host rendering / pane behaviour:
+    ///
+    /// - `App` (`type = "app"`): the host renders the app's draw canvas. The
+    ///   default for nearly every Plexi app — UI is freeform, the app emits
+    ///   `Rect`/`Text`/etc.
+    /// - `Agent` (`type = "agent"`): the host renders a conversation UI
+    ///   (history scrollback + input box), and the agent subprocess emits
+    ///   `AppendConversation` rows in response to `UserMessage` events. The
+    ///   manifest may also declare `[launch].system_prompt` which the host
+    ///   forwards via `AgentInit` at startup.
+    ///
+    /// No `serde(default)` — every manifest must declare its type explicitly.
+    /// Discipline matches `schema_version` (issue #308 Phase 2).
+    #[serde(rename = "type")]
+    pub manifest_type: ManifestType,
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -91,6 +106,18 @@ pub struct AppManifestApp {
     /// the user regardless of which context is active (e.g. stand-up-reminder).
     #[serde(default)]
     pub default_notification_scope: DefaultNotifyScope,
+}
+
+/// Manifest `[app] type` field — chooses the host rendering surface for
+/// the pane. Required; no `serde(default)`.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManifestType {
+    /// Standard draw-canvas app. Host renders whatever the app draws.
+    App,
+    /// Conversation agent. Host renders a chat UI; agent subprocess emits
+    /// `AppendConversation` and reads `UserMessage` / `AgentInit`.
+    Agent,
 }
 
 /// Newtype for the manifest `default_notification_scope` field so it
@@ -155,6 +182,12 @@ pub struct LaunchSection {
     /// instead it parks the process in a background registry keyed by app_id.
     #[serde(default)]
     pub background: bool,
+    /// Agent system prompt — only meaningful when `[app] type = "agent"`.
+    /// Forwarded to the agent subprocess via `PlexiEvent::AgentInit` once at
+    /// startup. The agent decides how to use it (typically as the `system`
+    /// field on `iq.query`). Optional — `None` when the manifest omits it.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 /// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
@@ -458,6 +491,21 @@ impl AppRegistry {
         let keyboard_capture = installed.launch.keyboard_capture;
         let default_scope = self.default_notification_scope_for(id);
 
+        // Log manifest type + system_prompt presence for observability. The
+        // host integration that consumes these to switch pane rendering and
+        // forward `AgentInit` lands in the follow-up to #285; logging here
+        // makes the manifest contract visible from day one.
+        log::info!(
+            "AppRegistry: launching '{id}' as type={:?}, system_prompt={}",
+            installed.manifest.manifest_type,
+            installed
+                .launch
+                .system_prompt
+                .as_deref()
+                .map(|s| format!("set ({} chars)", s.len()))
+                .unwrap_or_else(|| "unset".to_string()),
+        );
+
         // Issue #322: log declared-but-routed status for visibility. The
         // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
         // this just makes the manifest's contract observable in the host log.
@@ -566,11 +614,16 @@ mod tests {
     /// Create a manifest + executable entry under `dir/<id>/`.
     /// `name` is what shows up in the manifest's `[app].name` so tests can
     /// distinguish two entries with the same id but different content.
+    /// Defaults to `type = "app"` — use `write_app_with_type` for agents.
     fn write_app(dir: &Path, id: &str, name: &str) {
+        write_app_with_type(dir, id, name, "app");
+    }
+
+    fn write_app_with_type(dir: &Path, id: &str, name: &str, manifest_type: &str) {
         let app_dir = dir.join(id);
         fs::create_dir_all(&app_dir).unwrap();
         let manifest = format!(
-            "schema_version = 1\n\n[app]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"{manifest_type}\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
         );
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         let entry = app_dir.join("run.sh");
@@ -666,7 +719,7 @@ mod tests {
         let app_dir = global.path().join("future-app");
         fs::create_dir_all(&app_dir).unwrap();
         let manifest = format!(
-            "schema_version = {}\n\n[app]\nid = \"future-app\"\nname = \"Future\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n",
+            "schema_version = {}\n\n[app]\nid = \"future-app\"\ntype = \"app\"\nname = \"Future\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n",
             MANIFEST_SCHEMA_VERSION + 1
         );
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
@@ -702,6 +755,116 @@ entry = "run.sh"
         assert!(
             parsed.is_err(),
             "manifest missing schema_version must be rejected, got: {parsed:?}"
+        );
+    }
+
+    // ── v3.3 agent-as-app manifest type field (#285) ─────────────────────
+
+    #[test]
+    fn manifest_with_type_app_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_type(global.path(), "regular-app", "Regular", "app");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let entry = registry
+            .get("regular-app")
+            .expect("type=app manifest should load");
+        assert_eq!(entry.manifest.manifest_type, ManifestType::App);
+    }
+
+    #[test]
+    fn manifest_with_type_agent_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_type(global.path(), "research-agent", "Research", "agent");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let entry = registry
+            .get("research-agent")
+            .expect("type=agent manifest should load");
+        assert_eq!(entry.manifest.manifest_type, ManifestType::Agent);
+    }
+
+    #[test]
+    fn manifest_missing_type_field_errors() {
+        // No `type` field — must fail to parse. Required field, no
+        // `serde(default)`. Discipline matches `schema_version`.
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "no-type"
+name = "No Type"
+version = "0.0.1"
+entry = "run.sh"
+"#;
+        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "manifest missing `type` must be rejected, got: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn manifest_with_unknown_type_errors() {
+        // `type = "wizard"` — must fail to parse. Only `app` and `agent` are
+        // valid; unknown values should not silently fall back.
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "unknown-type"
+type = "wizard"
+name = "Wizard"
+version = "0.0.1"
+entry = "run.sh"
+"#;
+        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "manifest with unknown type variant must be rejected, got: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn agent_manifest_with_system_prompt_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("prompted-agent");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"prompted-agent\"
+type = \"agent\"
+name = \"Prompted\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+
+[launch]
+system_prompt = \"You are terse.\"
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let agent = registry
+            .get("prompted-agent")
+            .expect("agent manifest should load");
+        assert_eq!(agent.manifest.manifest_type, ManifestType::Agent);
+        assert_eq!(
+            agent.launch.system_prompt.as_deref(),
+            Some("You are terse."),
+            "system_prompt must round-trip from manifest"
         );
     }
 

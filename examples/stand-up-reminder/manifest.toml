@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "stand-up-reminder"
+type = "app"
 name = "Stand Up Reminder"
 version = "0.1.0"
 description = "Background app: notifies every 15 min with a random movement prompt."
