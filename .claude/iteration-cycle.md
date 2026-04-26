@@ -15,7 +15,7 @@ Hotfixes are the only main-direct work — branch from `main`, PR to `main`, che
 - Alpha (active): `just install-alpha`
 - Stable (only when promoting beta → main): `just install`
 
-After every code change, install for the active branch before reporting done. The user installs alpha after every merge to verify.
+After every code change, install for the active branch before reporting done. **Orchestrator runs `just install-alpha` after every squash-merge** — the user does not have to.
 
 ## Smoke test (required before claiming done)
 ```
@@ -53,8 +53,8 @@ Per release:
 2. Group by file overlap — same-file issues serialize, others parallelize.
 3. Dispatch one sub-agent per issue via `Agent` with `isolation: "worktree"`, `run_in_background: true`.
 4. Review diffs (not summaries) when agents report done.
-5. Pull worktree, run smoke test, merge to `alpha` if clean.
-6. **User runs human-verification checklist on alpha build.** Green → next dispatch in this theme. Red → revert + new dispatch with diagnosis.
+5. Pull worktree, run smoke test, **squash-merge** to `alpha` if clean (`gh pr merge <N> --squash --delete-branch` — never `--merge` or `--rebase`; squash so each PR is one revertible commit).
+6. **Orchestrator runs `just install-alpha` immediately after merge**, then pings user with the human-verification checklist. Green → next dispatch. Red → `git revert <squash-sha>` on alpha + new dispatch with diagnosis.
 7. After all PRs in milestone merged + verified: run release-level checklist from `docs/specs/releases/v3.x.md`.
 8. After alpha contains v3.5 (or whenever user calls it): batch-promote alpha → beta, soak, → main.
 
