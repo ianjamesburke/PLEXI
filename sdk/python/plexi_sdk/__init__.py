@@ -971,6 +971,32 @@ class RenderContext:
                "items": items, "selected": selected,
                "item_height": item_height})
 
+    def text_input(self, id: str, x: float, y: float, w: float,
+                   placeholder: str = "") -> "str | None":
+        """Single-line text input — host-owned buffer, submit-only.
+
+        Emits a `DrawCommand::TextInput` and returns the most recently
+        submitted value for `id` if any landed since the previous frame,
+        else `None`. The host owns the buffer entirely — typed
+        characters never reach the app between keystrokes. On Enter the
+        host emits `PlexiEvent::TextSubmitted { id, value }` and clears
+        its buffer.
+
+        Pattern (poll on every frame)::
+
+            submitted = ctx.text_input("note", x=12, y=12, w=300,
+                                       placeholder="Type a note…")
+            if submitted is not None:
+                save_note(submitted)
+
+        Real-time validation (per-keystroke access) is out of scope —
+        see issue #283. Use `TextArea` for multi-line app-managed
+        editors instead.
+        """
+        _emit({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
+               "placeholder": placeholder})
+        return self._app._take_text_submission(id)
+
     # Logging helpers (in-frame, forwarded to host logger)
     def log(self, level: str, message: str) -> None:
         _emit({"type": "log", "level": level, "message": message})
@@ -1080,6 +1106,13 @@ class App:
         self._pending_notify: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
+        # Pending text-input submissions keyed on TextInput `id`. The
+        # event-loop thread fills this when `PlexiEvent::TextSubmitted`
+        # arrives; `RenderContext.text_input` drains it during render.
+        # One pending value per id — a second submit before the app
+        # consumes the first overwrites (apps poll every frame, so
+        # this only matters in a perverse scheduling case).
+        self._text_submissions: dict[str, str] = {}
         self.emit = Emitter(self)
 
     # ── Override these ──────────────────────────────────────────────────────
@@ -1098,6 +1131,14 @@ class App:
     def on_shutdown(self) -> None: pass
 
     # ── Internal ────────────────────────────────────────────────────────────
+    def _take_text_submission(self, id: str) -> "str | None":
+        """Pop the most recent submission for `id` if one is queued, else None.
+
+        Called by `RenderContext.text_input` to surface a buffered
+        `TextSubmitted` value into the current frame's render call.
+        """
+        return self._text_submissions.pop(id, None)
+
     def _make_ctx(self, frame_id: int = 0, elapsed: float = 0.0) -> RenderContext:
         return RenderContext(
             frame_id=frame_id,
@@ -1255,6 +1296,15 @@ class App:
                         q.put(value)
                     else:
                         q.put(action_label or "acknowledge")
+
+            elif t == "text_submitted":
+                # Host-owned text input: the user pressed Enter on a
+                # `DrawCommand::TextInput` field. Stash the value keyed
+                # on the input id; `RenderContext.text_input(...)` will
+                # drain it on the next frame the app polls.
+                tid = ev.get("id", "")
+                if tid:
+                    self._text_submissions[tid] = ev.get("value", "")
 
             elif t == "timer":
                 timer_id = ev.get("timer_id", "")

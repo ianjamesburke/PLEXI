@@ -158,6 +158,13 @@ pub enum PlexiEvent {
         width: f32,
         height: f32,
     },
+    /// User pressed Enter inside a `DrawCommand::TextInput` field.
+    ///
+    /// `id` matches the `id` the app supplied on the `TextInput` command.
+    /// `value` is the buffered text at submission time. The host clears its
+    /// buffer for `id` after emitting this event so the field is empty for
+    /// the next input.
+    TextSubmitted { id: String, value: String },
 }
 
 /// A simple rectangle (logical coordinates).
@@ -566,6 +573,24 @@ pub enum DrawCommand {
         font_size: f32,
         #[serde(default)]
         monospace: bool,
+    },
+
+    /// Single-line text input field (host-owned buffer, submit-only).
+    ///
+    /// Emitted by the app each frame at `(x, y)` with width `w`. The host
+    /// owns the underlying buffer keyed on `id` — typed characters never
+    /// reach the app between frames. On Enter the host emits
+    /// `PlexiEvent::TextSubmitted { id, value }` and clears its buffer.
+    ///
+    /// Real-time validation (per-keystroke value access) is intentionally
+    /// out of scope — see issue #283 option A. Apps that need it must
+    /// wait for a future protocol revision.
+    TextInput {
+        id: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        placeholder: String,
     },
 }
 
