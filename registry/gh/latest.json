@@ -1,0 +1,101 @@
+{
+  "plexi_version": "0.1",
+  "name": "gh",
+  "version": "2.40.0",
+  "description": "GitHub's official command-line tool",
+  "icon": "🐙",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "auth",
+      "description": "Authenticate gh and git with GitHub",
+      "ui_hint": "form",
+      "commands": [
+        {
+          "name": "login",
+          "description": "Authenticate with a GitHub host"
+        },
+        {
+          "name": "status",
+          "description": "View authentication status",
+          "ui_hint": "output"
+        }
+      ]
+    },
+    {
+      "name": "pr",
+      "description": "Manage pull requests",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "create",
+          "description": "Create a pull request",
+          "ui_hint": "form",
+          "flags": [
+            {"name": "--title", "type": "string", "description": "Title for the pull request"},
+            {"name": "--body", "type": "string", "description": "Body for the pull request"},
+            {"name": "--draft", "type": "bool", "default": false}
+          ]
+        },
+        {
+          "name": "list",
+          "description": "List pull requests in a repository",
+          "ui_hint": "output"
+        },
+        {
+          "name": "view",
+          "description": "View a pull request",
+          "ui_hint": "output",
+          "args": [
+            {"name": "number", "type": "int", "required": false, "description": "PR number"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "issue",
+      "description": "Manage issues",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "create",
+          "description": "Create a new issue",
+          "ui_hint": "form",
+          "flags": [
+            {"name": "--title", "type": "string", "required": true},
+            {"name": "--body", "type": "string"}
+          ]
+        },
+        {
+          "name": "list",
+          "description": "List issues in a repository",
+          "ui_hint": "output"
+        }
+      ]
+    },
+    {
+      "name": "repo",
+      "description": "Manage repositories",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "clone",
+          "description": "Clone a repository locally",
+          "args": [
+            {"name": "repository", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "view",
+          "description": "View a repository",
+          "ui_hint": "output"
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "description": "Manage releases",
+      "ui_hint": "list"
+    }
+  ]
+}
