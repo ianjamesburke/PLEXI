@@ -43,7 +43,8 @@ v3.5 PRN → alpha → user verifies on alpha build
 - The user can choose to cut a beta partway (e.g. after v3.2) if they want a "stable enough" snapshot — but it's a deliberate decision, not a per-release ritual.
 
 **Hard rules:**
-- Sub-agent worktrees branch from `alpha`, PR back to `alpha`. Never to `beta` or `main`.
+- Sub-agent worktrees branch from **current `alpha` HEAD** (not from where the previous milestone started). Each new milestone's first sub-agent therefore inherits every previously squash-merged PR — milestones cumulate on alpha, they don't fan out from a fixed base.
+- All sub-agent PRs target `alpha`. Never `beta` or `main`.
 - `beta` only moves when the user explicitly says "promote alpha."
 - `main` only moves when `beta` has soaked successfully.
 - Hotfixes for `main` are the only exception — those branch from `main`, PR to `main`, and cherry-pick back to `alpha`.
@@ -93,17 +94,19 @@ Spawn one sub-agent per issue (or per serial group) via `Agent` with `isolation:
 When an agent reports done:
 - Orchestrator reviews the diff (not the summary).
 - Pulls the worktree, runs smoke test locally.
-- If clean: merge to `alpha`.
+- If clean: **squash-merge to `alpha`** via `gh pr merge <N> --squash --delete-branch`. Squash is mandatory — every PR lands as a single revertible commit on alpha so a bad PR can be ejected with `git revert <sha>` without unwinding others. Never use `--merge` or `--rebase`.
 - If stub (`todo!()`, missing test, smoke-test failure): reject with tightened brief, re-dispatch.
 - After 3 rejections on the same issue, orchestrator takes it directly.
 
-### 5. Human verification on alpha
-After every merge to alpha:
-1. User pulls latest alpha and runs `just install-alpha`.
-2. User runs the **Human verification** checklist from the PR description.
-3. Reports back: ✅ → next PR can dispatch; ❌ → revert merge, file regression issue, re-dispatch with diagnosis.
+### 5. Install + human verification on alpha
+After every squash-merge to alpha:
+1. **Orchestrator runs `just install-alpha`** on the alpha worktree (no longer waits for the user to do it). Verify the install succeeded (binary present, smoke test passes).
+2. Orchestrator pings the user with the PR's **Human verification** checklist + a one-line summary of what to look at.
+3. User runs the checklist. Reports back: ✅ → next PR dispatches; ❌ → orchestrator runs `git revert <squash-sha>` on alpha, files regression issue with the diagnosis, re-dispatches with tightened brief.
 
-This step is non-optional. A merged PR that hasn't been human-verified blocks the next dispatch in the same theme. Other themes' PRs can continue in parallel.
+This step is non-optional. A merged-but-unverified PR blocks the next dispatch in the same theme. Other themes' PRs can continue in parallel.
+
+**Cherry-pick endgame:** once v4 planning starts, alpha will not be merged into the v4 branch wholesale. The squash-per-PR history makes it cheap to cherry-pick the keepers (`git cherry-pick <sha>`) into v4 and drop the dead-end PRs from v3.x. This is why every PR must be one commit.
 
 ### 6. Release-level checklist
 When all PRs in a milestone are merged + human-verified, run the release-level checklist in `docs/specs/releases/v3.x.md`. This is the rolled-up smoke test for the theme — proves the release as a whole works, not just the individual PRs. Examples:
