@@ -25,6 +25,7 @@ mod keys;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+mod midi;
 mod overlays;
 mod packs;
 mod pane;

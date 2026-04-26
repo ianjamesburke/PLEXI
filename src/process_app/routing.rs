@@ -4,7 +4,7 @@
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
 use crate::app_permissions::{check, Capability, PermissionCheck};
-use crate::app_protocol::{AudioDeviceWire, DrawCommand, PlexiEvent};
+use crate::app_protocol::{AudioDeviceWire, DrawCommand, MidiPortWire, PlexiEvent};
 use crate::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
 use crate::event_log::{self, HostEvent};
@@ -714,6 +714,76 @@ impl ProcessApp {
                         error: None,
                     });
             }
+            DrawCommand::ListMidiDevices { request_id } => {
+                // MIDI enumeration mirrors audio: not gated. Port names are
+                // already visible in Audio MIDI Setup.app, no privacy gate.
+                let inputs = self
+                    .midi_device
+                    .list_input_ports()
+                    .into_iter()
+                    .map(MidiPortWire::from)
+                    .collect();
+                let outputs = self
+                    .midi_device
+                    .list_output_ports()
+                    .into_iter()
+                    .map(MidiPortWire::from)
+                    .collect();
+                self.outbound_events
+                    .push_back(PlexiEvent::MidiDevicesListed {
+                        request_id,
+                        inputs,
+                        outputs,
+                        error: None,
+                    });
+            }
+            DrawCommand::OpenMidiInput { port_id, pipe_id } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::MidiIn)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenMidiInput denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::MidiInputError {
+                        pipe_id,
+                        error: format!("capability denied: {reason}"),
+                    });
+                    return;
+                }
+                self.start_midi_input(port_id, pipe_id);
+            }
+            DrawCommand::CloseMidiInput { port_id } => {
+                // Drop the session — its Drop impl disconnects from CoreMIDI.
+                // No response event; closing is fire-and-forget.
+                if self.midi_input_sessions.remove(&port_id).is_some() {
+                    log::info!(
+                        "app::{} midi.input closed: port_id={port_id}",
+                        self.type_id
+                    );
+                } else {
+                    log::debug!(
+                        "ProcessApp[{}]: CloseMidiInput on inactive port_id={port_id} (no-op)",
+                        self.type_id
+                    );
+                }
+            }
+            DrawCommand::SendMidi { port_id, bytes } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::MidiOut)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: SendMidi denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::MidiSendError {
+                        port_id,
+                        error: format!("capability denied: {reason}"),
+                    });
+                    return;
+                }
+                self.send_midi(port_id, bytes);
+            }
             DrawCommand::Image { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: Image not yet implemented (v3.1)",
@@ -910,6 +980,161 @@ impl ProcessApp {
                     error: format!("{e}"),
                 });
             }
+        }
+    }
+
+    /// Allocate a binary pipe for `pipe_id`, open the requested CoreMIDI input
+    /// port, and wire the CoreMIDI callback to push raw MIDI 1.0 byte streams
+    /// into the pipe ring. On any failure emits `PlexiEvent::MidiInputError`
+    /// and frees the pipe so the app's `pipe_open` queue stays consistent.
+    pub(super) fn start_midi_input(&mut self, port_id: String, pipe_id: String) {
+        if self.midi_input_sessions.contains_key(&port_id) {
+            log::warn!(
+                "ProcessApp[{}]: OpenMidiInput port_id={port_id} already open",
+                self.type_id
+            );
+            self.outbound_events.push_back(PlexiEvent::MidiInputError {
+                pipe_id,
+                error: format!("port_id={port_id} already open"),
+            });
+            return;
+        }
+
+        // Allocate the binary pipe first — without a destination the CoreMIDI
+        // callback would have nowhere to push frames.
+        let socket_path = match self
+            .pipe_registry
+            .lock()
+            .expect("pipe_registry poisoned")
+            .open_binary(pipe_id.clone(), PipeDirection::In)
+        {
+            Ok(alloc) => alloc.socket_path,
+            Err(e) => {
+                log::warn!(
+                    "ProcessApp[{}]: OpenMidiInput pipe alloc failed for {pipe_id}: {e}",
+                    self.type_id
+                );
+                self.outbound_events.push_back(PlexiEvent::MidiInputError {
+                    pipe_id,
+                    error: format!("pipe alloc failed: {e}"),
+                });
+                return;
+            }
+        };
+
+        let ring = match self
+            .pipe_registry
+            .lock()
+            .expect("pipe_registry poisoned")
+            .binary_ring(&pipe_id)
+        {
+            Some(r) => r,
+            None => {
+                self.pipe_registry
+                    .lock()
+                    .expect("pipe_registry poisoned")
+                    .close(&pipe_id);
+                self.outbound_events.push_back(PlexiEvent::MidiInputError {
+                    pipe_id,
+                    error: "pipe ring missing after open".to_owned(),
+                });
+                return;
+            }
+        };
+
+        // Notify the app that the pipe is open BEFORE opening the CoreMIDI
+        // source so the app can connect the unix socket before the first
+        // MIDI byte arrives.
+        self.outbound_events.push_back(PlexiEvent::PipeOpened {
+            pipe_id: pipe_id.clone(),
+            socket_path,
+        });
+
+        // Build the packet sink. CoreMIDI delivers callbacks on a real-time
+        // thread; we copy each MIDI 1.0 byte stream into a fresh `Vec<u8>`
+        // and push it into the ring. A full ring drops the frame.
+        let ring_for_cb = std::sync::Arc::clone(&ring);
+        let sink: crate::midi::MidiPacketSink =
+            std::sync::Arc::new(move |bytes: &[u8]| {
+                // Each MIDI message is its own pipe frame so the consumer
+                // sees message boundaries — no ambiguity decoding back-to-back
+                // 3-byte messages.
+                let _ = ring_for_cb.push(bytes.to_vec());
+                Ok(())
+            });
+
+        match self.midi_device.open_input(&port_id, sink) {
+            Ok(session) => {
+                let port_name = session.port_name.clone();
+                log::info!(
+                    "app::{} midi.input opened: port_id={port_id}, port_name={port_name}, pipe_id={pipe_id}",
+                    self.type_id
+                );
+                self.midi_input_sessions.insert(port_id.clone(), session);
+                self.outbound_events.push_back(PlexiEvent::MidiInputOpened {
+                    pipe_id,
+                    port_id,
+                    port_name,
+                });
+            }
+            Err(e) => {
+                log::warn!(
+                    "ProcessApp[{}]: OpenMidiInput failed for port_id={port_id}: {e}",
+                    self.type_id
+                );
+                self.pipe_registry
+                    .lock()
+                    .expect("pipe_registry poisoned")
+                    .close(&pipe_id);
+                self.outbound_events.push_back(PlexiEvent::MidiInputError {
+                    pipe_id,
+                    error: format!("{e}"),
+                });
+            }
+        }
+    }
+
+    /// Send one MIDI byte stream to `port_id`, opening the output handle
+    /// lazily on the first send. Successful sends produce no event;
+    /// failures emit `PlexiEvent::MidiSendError`.
+    pub(super) fn send_midi(&mut self, port_id: String, bytes: Vec<u8>) {
+        if !self.midi_output_handles.contains_key(&port_id) {
+            match self.midi_device.open_output(&port_id) {
+                Ok(handle) => {
+                    log::info!(
+                        "app::{} midi.output opened: port_id={port_id}, port_name={}",
+                        self.type_id,
+                        handle.port_name
+                    );
+                    self.midi_output_handles.insert(port_id.clone(), handle);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "ProcessApp[{}]: SendMidi open_output failed for port_id={port_id}: {e}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::MidiSendError {
+                        port_id,
+                        error: format!("{e}"),
+                    });
+                    return;
+                }
+            }
+        }
+
+        let handle = self
+            .midi_output_handles
+            .get_mut(&port_id)
+            .expect("midi output handle just inserted");
+        if let Err(e) = handle.send(&bytes) {
+            log::warn!(
+                "ProcessApp[{}]: SendMidi send failed for port_id={port_id}: {e}",
+                self.type_id
+            );
+            self.outbound_events.push_back(PlexiEvent::MidiSendError {
+                port_id,
+                error: format!("{e}"),
+            });
         }
     }
 }

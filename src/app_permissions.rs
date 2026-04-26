@@ -43,6 +43,14 @@ pub enum Capability {
     /// Issue tier-routed LLM calls through the Plexi IQ broker (`iq.query`).
     /// The host owns the API key and the cost ledger; apps never see the key.
     IqQuery,
+    /// Receive MIDI 1.0 byte streams from a connected hardware controller via
+    /// the host CoreMIDI broker (#320). Per-port; the manifest declares the
+    /// capability and the OpenMidiInput dispatch validates the gate.
+    MidiIn,
+    /// Send MIDI 1.0 byte streams to a connected hardware destination via the
+    /// host CoreMIDI broker (#320). Per-port; the SendMidi dispatch validates
+    /// the gate.
+    MidiOut,
 }
 
 impl fmt::Display for Capability {
@@ -66,6 +74,8 @@ impl Capability {
             Self::Llm => "llm",
             Self::Timer => "timer",
             Self::IqQuery => "iq.query",
+            Self::MidiIn => "midi.in",
+            Self::MidiOut => "midi.out",
         }
     }
 }
@@ -101,6 +111,8 @@ impl<'a> TryFrom<&'a str> for Capability {
             "llm" => Ok(Self::Llm),
             "timer" => Ok(Self::Timer),
             "iq.query" => Ok(Self::IqQuery),
+            "midi.in" => Ok(Self::MidiIn),
+            "midi.out" => Ok(Self::MidiOut),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
