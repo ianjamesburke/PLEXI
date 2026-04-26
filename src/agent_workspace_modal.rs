@@ -34,6 +34,10 @@ pub struct AgentWorkspaceModal {
     /// Detected install state per CLI — computed at open-time so we don't
     /// hit the filesystem every frame.
     pub install_state: [bool; 3],
+    /// Whether the initial focus request for the repo path field has been
+    /// issued. Focus is requested exactly once on the first render frame;
+    /// after that the user's explicit focus choices are not overridden.
+    pub focus_initialized: bool,
 }
 
 impl AgentWorkspaceModal {
@@ -78,6 +82,7 @@ impl AgentWorkspaceModal {
             task: String::new(),
             recent_repos,
             install_state,
+            focus_initialized: false,
         }
     }
 
@@ -324,11 +329,15 @@ fn render_modal(
                             .desired_width(MODAL_WIDTH)
                             .font(egui::TextStyle::Body),
                     );
-                    if !r.has_focus() && modal.task.is_empty() {
-                        // Auto-focus the repo field when the modal first opens
-                        // and the task is still empty (mid-flow re-renders
-                        // shouldn't steal focus).
+                    if !modal.focus_initialized {
+                        // Request focus exactly once on the first render frame.
+                        // egui's request_focus takes effect on the next frame,
+                        // so we gate on our own flag rather than has_focus() to
+                        // avoid re-requesting every frame and overriding the
+                        // user's explicit focus choices (e.g. clicking the task
+                        // field).
                         r.request_focus();
+                        modal.focus_initialized = true;
                     }
 
                     if !modal.recent_repos.is_empty() {
@@ -413,4 +422,21 @@ fn render_modal(
         });
 
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_workspace::persistence::LastCliMap;
+
+    #[test]
+    fn modal_focus_initialized_on_open() {
+        let map = LastCliMap::default();
+        let modal = AgentWorkspaceModal::open(&map, None);
+        assert!(
+            !modal.focus_initialized,
+            "focus_initialized must be false immediately after open() — \
+             focus is not claimed until the first render frame"
+        );
+    }
 }
