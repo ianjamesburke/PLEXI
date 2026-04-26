@@ -41,8 +41,9 @@ Every PR description must include:
 1. **`Breaks if:`** — concrete observable symptom (visible UI failure, missing log line, specific broken behavior)
 2. **Human verification checklist** — 3–5 numbered steps the user runs on alpha to confirm it works
 3. **Test added** — file + test name + one-line description
+4. **POC test app** (for user-visible features) — `examples/<feature>-test/` or a named showcase migration. The Human verification checklist references it by name. Pure protocol-only changes don't need one; anything the user clicks does.
 
-PRs missing any of the three are rejected. The orchestrator (this session) is responsible for writing all three before dispatching the sub-agent — never offload to the agent.
+PRs missing any of the four are rejected. The orchestrator (this session) is responsible for writing all four into the brief before dispatching — never offload to the agent.
 
 ## Test discipline
 - Test-first. The failing test is the starting state.

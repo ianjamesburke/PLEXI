@@ -35,6 +35,7 @@ mod quick_note_app;
 mod runs;
 mod secrets;
 mod secrets_app;
+mod workspace_secrets;
 mod shell;
 mod sidebar;
 mod style;
@@ -67,6 +68,20 @@ fn main() -> eframe::Result {
     // `gh`/`rg`/`fd`/any-homebrew-tool-not-found bugs when Plexi is launched
     // as a GUI bundle (which inherits only `/usr/bin:/bin:/usr/sbin:/sbin`).
     crate::shell::install_login_shell_path();
+
+    // One-shot migration from the v3.0 global-namespace secrets index to the
+    // workspace-namespaced layout (issue #322). Idempotent: a no-op once the
+    // index is in the new flat-string form.
+    #[cfg(target_os = "macos")]
+    {
+        let store = crate::workspace_secrets::MacKeychain::new();
+        let migrated = crate::workspace_secrets::migrate_legacy_global_secrets(&store);
+        if migrated > 0 {
+            log::info!(
+                "workspace_secrets: migrated {migrated} legacy global secrets to plexi:user:* namespace"
+            );
+        }
+    }
 
     // Capture Rust panics into the log file so they survive process death.
     // Without this, panics on the UI thread only appear in Console.app and are
@@ -114,28 +129,44 @@ fn main() -> eframe::Result {
                 }
                 std::process::exit(cli::run_command(&args[2]));
             }
+            "workspace" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi workspace <init>");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "init" => {
+                        std::process::exit(cli::workspace_init());
+                    }
+                    other => {
+                        eprintln!("Unknown workspace subcommand: {other}");
+                        eprintln!("Usage: plexi workspace <init>");
+                        std::process::exit(1);
+                    }
+                }
+            }
             "secret" => {
                 if args.len() < 3 {
-                    eprintln!("Usage: plexi secret <set|list|delete> [key]");
+                    eprintln!("Usage: plexi secret <set|list|delete> [friendly-name]");
                     std::process::exit(1);
                 }
                 match args[2].as_str() {
                     "set" => {
                         if args.len() < 4 {
-                            eprintln!("Usage: plexi secret set <key>");
+                            eprintln!("Usage: plexi secret set <friendly-name>");
                             std::process::exit(1);
                         }
-                        std::process::exit(cli::set_secret(&args[3]));
+                        std::process::exit(cli::workspace_secret_set(&args[3]));
                     }
                     "list" => {
-                        std::process::exit(cli::list_secrets());
+                        std::process::exit(cli::workspace_secret_list());
                     }
                     "delete" => {
                         if args.len() < 4 {
-                            eprintln!("Usage: plexi secret delete <key>");
+                            eprintln!("Usage: plexi secret delete <friendly-name>");
                             std::process::exit(1);
                         }
-                        std::process::exit(cli::delete_secret_cli(&args[3]));
+                        std::process::exit(cli::workspace_secret_delete(&args[3]));
                     }
                     other => {
                         eprintln!("Unknown secret subcommand: {other}");

@@ -126,8 +126,11 @@ pub fn run_command(command_name: &str) -> i32 {
     }
 }
 
-/// Entry point for `plexi secret set <key>` — stores a secret for the current directory.
-pub fn set_secret(key: &str) -> i32 {
+// ── plexi workspace subcommands (issue #322) ──────────────────────────────────
+
+/// `plexi workspace init` — scaffold `.plexi/workspace.toml` (UUID) and
+/// `.plexi/secrets.toml` (router with `fallback = true`) in the current dir.
+pub fn workspace_init() -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -135,10 +138,64 @@ pub fn set_secret(key: &str) -> i32 {
             return 1;
         }
     };
+    match crate::workspace_secrets::init_workspace(&cwd) {
+        Ok(cfg) => {
+            println!("Initialized workspace at {}", cwd.display());
+            println!("  workspace id: {}", cfg.id);
+            println!("  router:       .plexi/secrets.toml (fallback = true)");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: workspace init failed: {e}");
+            1
+        }
+    }
+}
 
-    eprint!("Enter value for {key}: ");
+// ── plexi secret subcommands (workspace-aware, issue #322) ───────────────────
+
+/// Resolve the current workspace and config. Errors out with a helpful
+/// message if the user has not run `plexi workspace init`.
+fn require_workspace(
+) -> Result<(std::path::PathBuf, crate::workspace_secrets::WorkspaceConfig), String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let root = match crate::app_registry::resolve_workspace_root(&cwd) {
+        Some(r) => r,
+        None => {
+            return Err(format!(
+                "no .plexi/ workspace found at or above {}.\n\
+                 Run `plexi workspace init` first.",
+                cwd.display()
+            ));
+        }
+    };
+    let cfg = match crate::workspace_secrets::WorkspaceConfig::load(&root)
+        .map_err(|e| format!("read workspace.toml: {e}"))?
+    {
+        Some(c) => c,
+        None => {
+            return Err(format!(
+                ".plexi/ exists at {} but workspace.toml is missing.\n\
+                 Run `plexi workspace init` to create it.",
+                root.display()
+            ));
+        }
+    };
+    Ok((root, cfg))
+}
+
+/// `plexi secret set <friendly-name>` — prompt for a value (no echo) and
+/// store it under `plexi:<workspace-id>:<friendly-name>`.
+pub fn workspace_secret_set(friendly: &str) -> i32 {
+    let (root, cfg) = match require_workspace() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    eprint!("Enter value for {friendly}: ");
     let _ = io::stderr().flush();
-
     let value = match read_secret_from_stdin() {
         Ok(v) => v,
         Err(e) => {
@@ -146,83 +203,124 @@ pub fn set_secret(key: &str) -> i32 {
             return 1;
         }
     };
-    eprintln!(); // newline after hidden input
-
+    eprintln!();
     if value.is_empty() {
         eprintln!("error: empty value, nothing stored");
         return 1;
     }
-
-    let dir_str = cwd.to_string_lossy();
-    if crate::secrets::store_secret(key, &value, APP_ID, &dir_str) {
-        eprintln!("Stored secret '{key}' for {}", cwd.display());
-        0
-    } else {
-        eprintln!("error: failed to store secret '{key}'");
-        1
-    }
-}
-
-/// Entry point for `plexi secret delete <key>` — deletes a secret for the current directory.
-pub fn delete_secret_cli(key: &str) -> i32 {
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error: could not determine current directory: {e}");
-            return 1;
-        }
-    };
-
-    let dir_str = cwd.to_string_lossy();
-    if crate::secrets::delete_secret(key, APP_ID, &dir_str) {
-        eprintln!("Deleted secret '{key}' for {}", cwd.display());
-        0
-    } else {
-        eprintln!("error: failed to delete secret '{key}' (does it exist?)");
-        1
-    }
-}
-
-/// Entry point for `plexi secret list` — lists secrets for the current directory.
-pub fn list_secrets() -> i32 {
-    let accounts = crate::secrets::list_secrets(APP_ID);
-
-    if accounts.is_empty() {
-        eprintln!("No secrets stored for {APP_ID}.");
-        return 0;
-    }
-
-    // accounts are strings like "plexi-run/dir/key"
-    // Group by directory
-    let prefix = format!("{APP_ID}/");
-    let mut by_dir: HashMap<String, Vec<String>> = HashMap::new();
-
-    for account in &accounts {
-        if let Some(rest) = account.strip_prefix(&prefix) {
-            // rest = "dir/key" — split on last '/' to separate dir from key
-            if let Some(last_slash) = rest.rfind('/') {
-                let dir = &rest[..last_slash];
-                let key = &rest[last_slash + 1..];
-                by_dir
-                    .entry(dir.to_string())
-                    .or_default()
-                    .push(key.to_string());
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{keychain_workspace_name, MacKeychain, SecretStore};
+        let account = keychain_workspace_name(&cfg.id, friendly);
+        let store = MacKeychain::new();
+        match store.set(&account, &value) {
+            Ok(()) => {
+                eprintln!(
+                    "Stored '{friendly}' for workspace {} ({})",
+                    root.display(),
+                    cfg.id
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: keychain write failed: {e}");
+                1
             }
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (root, cfg, friendly, value);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
 
-    let mut dirs: Vec<&String> = by_dir.keys().collect();
-    dirs.sort();
+/// `plexi secret list` — list friendly names defined under the current
+/// workspace's namespace plus user-scope. Names only, never values.
+pub fn workspace_secret_list() -> i32 {
+    let (_root, cfg) = match require_workspace() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{
+            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+        };
+        let store = MacKeychain::new();
+        let workspace_prefix = keychain_workspace_name(&cfg.id, "");
+        let user_prefix = keychain_user_name("");
+        let workspace_entries = store.list_with_prefix(&workspace_prefix);
+        let user_entries = store.list_with_prefix(&user_prefix);
+        if workspace_entries.is_empty() && user_entries.is_empty() {
+            eprintln!("No secrets stored.");
+            return 0;
+        }
+        if !workspace_entries.is_empty() {
+            println!("Workspace ({}):", cfg.id);
+            for a in &workspace_entries {
+                if let Some(name) = a.strip_prefix(&workspace_prefix) {
+                    println!("  {name}");
+                }
+            }
+        }
+        if !user_entries.is_empty() {
+            if !workspace_entries.is_empty() {
+                println!();
+            }
+            println!("User scope:");
+            for a in &user_entries {
+                if let Some(name) = a.strip_prefix(&user_prefix) {
+                    println!("  {name}");
+                }
+            }
+        }
+        0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cfg;
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
 
-    for dir in dirs {
-        println!("{}:", dir);
-        let keys = by_dir.get(dir).unwrap();
-        for key in keys {
-            println!("  {key}");
+/// `plexi secret delete <friendly-name>` — remove the workspace-scoped
+/// Keychain entry and update the index.
+pub fn workspace_secret_delete(friendly: &str) -> i32 {
+    let (_root, cfg) = match require_workspace() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{keychain_workspace_name, MacKeychain, SecretStore};
+        let account = keychain_workspace_name(&cfg.id, friendly);
+        let store = MacKeychain::new();
+        match store.delete(&account) {
+            Ok(()) => {
+                eprintln!("Deleted '{friendly}' from workspace {}", cfg.id);
+                0
+            }
+            Err(e) => {
+                eprintln!("error: keychain delete failed: {e}");
+                1
+            }
         }
     }
-
-    0
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (cfg, friendly);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
 }
 
 // ── plexi app subcommands ─────────────────────────────────────────────────────
