@@ -798,6 +798,24 @@ pub fn list_cli() -> i32 {
     0
 }
 
+/// `plexi pack export <path>` — write a `pack.toml` for the current set of
+/// installed apps under the channel apps dir to `path`. See
+/// `crate::install::export_pack` for the source-spec inference rules.
+pub fn pack_export_cli(dest_path: &str) -> i32 {
+    let target_root = crate::app_registry::apps_dir();
+    let dest = std::path::PathBuf::from(dest_path);
+    match crate::install::export_pack(&target_root, &dest) {
+        Ok(n) => {
+            println!("wrote {n} apps → {}", dest.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 /// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]`.
 /// Writes a JSON file to the notify queue dir; the running host polls and ingests it.
 pub fn notify_cli(title: &str, body: &str, level: &str) -> i32 {
