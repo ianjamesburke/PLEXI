@@ -112,7 +112,7 @@ impl PlexiApp {
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
                         kind: crate::workspace::SavedPaneKind::Agent,
-                        cwd: ag.cwd.clone(),
+                        cwd: ag.cwd(),
                         name: None,
                         app_id: None,
                         app_state: None,
