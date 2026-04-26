@@ -89,6 +89,7 @@ pub(super) fn render_draw_commands(
                 align,
                 max_width,
                 elide,
+                selectable,
             } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
                 let family = font_family_for_text(*monospace);
@@ -145,20 +146,73 @@ pub(super) fn render_draw_commands(
                     std::borrow::Cow::Borrowed(text.as_str())
                 };
 
-                let painter = ui.painter().with_clip_rect(clip);
-                painter.text(pos, anchor, display_text.as_ref(), font_id.clone(), color);
-                if *bold {
-                    // Fake-bold by re-painting the same text with a 0.45px
-                    // horizontal offset. Same anchor so the center-aligned
-                    // case stays centered.
-                    let font_id_bold = egui::FontId::new(*size, font_family_for_text(*monospace));
-                    painter.text(
-                        pos + egui::vec2(0.45, 0.0),
-                        anchor,
-                        display_text.as_ref(),
-                        font_id_bold,
-                        color,
+                if *selectable {
+                    // Selectable path: allocate a real egui Label so the user
+                    // can drag-select inside the text and Cmd+C copies the
+                    // current selection. egui owns the selection state across
+                    // frames keyed on the widget's screen position; the label
+                    // gets a wrap_width budget equal to (max_width or
+                    // remaining-pane-width) so selection behaves the same as
+                    // the painter path's clipping.
+                    //
+                    // We measure the natural galley size, then `ui.put` the
+                    // label at the resolved top-left so painted geometry
+                    // stays consistent with the non-selectable branch.
+                    let wrap_width = max_width
+                        .filter(|w| *w > 0.0)
+                        .unwrap_or((pane_rect.max.x - pos.x).max(1.0));
+                    let galley = ui.fonts(|f| {
+                        f.layout(
+                            display_text.to_string(),
+                            font_id.clone(),
+                            color,
+                            wrap_width,
+                        )
+                    });
+                    let sz = galley.size();
+                    // Resolve the top-left from the requested anchor + size.
+                    let top_left = match anchor {
+                        egui::Align2::CENTER_CENTER => {
+                            egui::pos2(pos.x - sz.x * 0.5, pos.y - sz.y * 0.5)
+                        }
+                        egui::Align2::CENTER_TOP => egui::pos2(pos.x - sz.x * 0.5, pos.y),
+                        egui::Align2::RIGHT_TOP => egui::pos2(pos.x - sz.x, pos.y),
+                        egui::Align2::RIGHT_CENTER => egui::pos2(pos.x - sz.x, pos.y - sz.y * 0.5),
+                        egui::Align2::LEFT_CENTER => egui::pos2(pos.x, pos.y - sz.y * 0.5),
+                        _ => pos,
+                    };
+                    let target = egui::Rect::from_min_size(top_left, sz);
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(target)
+                            .layout(egui::Layout::left_to_right(egui::Align::TOP)),
                     );
+                    child.set_clip_rect(clip);
+                    let mut rich = egui::RichText::new(display_text.as_ref())
+                        .color(color)
+                        .font(font_id.clone());
+                    if *bold {
+                        rich = rich.strong();
+                    }
+                    let label = egui::Label::new(rich).selectable(true).wrap();
+                    child.put(target, label);
+                } else {
+                    let painter = ui.painter().with_clip_rect(clip);
+                    painter.text(pos, anchor, display_text.as_ref(), font_id.clone(), color);
+                    if *bold {
+                        // Fake-bold by re-painting the same text with a 0.45px
+                        // horizontal offset. Same anchor so the center-aligned
+                        // case stays centered.
+                        let font_id_bold =
+                            egui::FontId::new(*size, font_family_for_text(*monospace));
+                        painter.text(
+                            pos + egui::vec2(0.45, 0.0),
+                            anchor,
+                            display_text.as_ref(),
+                            font_id_bold,
+                            color,
+                        );
+                    }
                 }
             }
 
@@ -326,7 +380,8 @@ pub(super) fn render_draw_commands(
             | DrawCommand::Ready { .. }
             | DrawCommand::ScheduleRender { .. }
             | DrawCommand::SetTimer { .. }
-            | DrawCommand::CancelTimer { .. } => {}
+            | DrawCommand::CancelTimer { .. }
+            | DrawCommand::CopyToClipboard { .. } => {}
         }
     }
 

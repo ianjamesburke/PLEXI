@@ -564,6 +564,17 @@ class Emitter:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
         _emit({"type": "cd_request", "cwd": cwd})
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Write `text` to the OS clipboard via the host (issue #146).
+
+        Routed through `egui::Context::copy_text` so the platform backend
+        (NSPasteboard / X11 / Wayland / Win32) handles the actual write.
+        Synchronous from the app's perspective — no acknowledgement event.
+        No capability flag is required; clipboard writes are low-risk and
+        the app already chooses when to fire (key handler, button, etc.).
+        """
+        _emit({"type": "copy_to_clipboard", "text": text})
+
 
     def schedule_render(self, after_ms: int = 16) -> None:
         """Ask the host to send a new Render event after `after_ms` milliseconds.
@@ -788,7 +799,8 @@ class RenderContext:
              monospace: bool = False, bold: bool = False,
              align: str = "top_left",
              max_width: "float | None" = None,
-             elide: bool = True) -> None:
+             elide: bool = True,
+             selectable: bool = False) -> None:
         """Draw text. `align` controls how `(x, y)` maps to the text box:
 
           - "top_left" (default) — (x, y) is the top-left corner.
@@ -804,14 +816,22 @@ class RenderContext:
         `max_width` — when set, the host clips the text at this pixel width.
         `elide`     — when True (default), a "…" is appended at the clip point;
                       when False, the text is hard-clipped with no marker.
+        `selectable` — when True, the host renders the text as a real egui
+                       label so the user can drag-select inside it and Cmd+C
+                       copies the current selection. Default False (#200).
 
-        Both `max_width` and `elide` are sent explicitly on the wire so the
-        host always has required fields (no serde defaults). The SDK fills in
-        None / True when the caller omits them.
+        `max_width`, `elide`, and `selectable` are sent explicitly on the wire
+        so the host always has required fields (no serde defaults). The SDK
+        fills in None / True / False when the caller omits them.
         """
         _emit({"type": "text", "x": x, "y": y, "text": text, "size": size,
                "color": color, "monospace": monospace, "bold": bold,
-               "align": align, "max_width": max_width, "elide": elide})
+               "align": align, "max_width": max_width, "elide": elide,
+               "selectable": selectable})
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Convenience shortcut for `emit.copy_to_clipboard(text)` (#146)."""
+        _emit({"type": "copy_to_clipboard", "text": text})
 
     def badge(self, x: float, y_center: float, label: str,
               fill: str = ACCENT, fg: str = BG,
@@ -1086,6 +1106,7 @@ class App:
         on_key(self, ctx, key, mods)                  — on Key event
         on_click(self, ctx, x, y, button)             — on Click event
         on_command(self, ctx, text)                   — on Command event
+        on_paste(self, ctx, text)                     — on Paste event (Cmd+V)
         on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (JSON mode)
         on_path_changed(self, ctx, cwd)               — on PathChanged broadcast
         on_suspend(self)                              — on Suspend
@@ -1121,6 +1142,7 @@ class App:
     def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> None: pass
     def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None: pass
     def on_command(self, _ctx: RenderContext, _text: str) -> None: pass
+    def on_paste(self, _ctx: RenderContext, _text: str) -> None: pass
     def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> None: pass
     def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> None: pass
     def on_inject(self, _ctx: RenderContext, _payload: Any) -> None: pass
@@ -1213,6 +1235,10 @@ class App:
             elif t == "command":
                 ctx = self._make_ctx()
                 self.on_command(ctx, ev.get("text", ""))
+
+            elif t == "paste":
+                ctx = self._make_ctx()
+                self.on_paste(ctx, ev.get("text", ""))
 
             elif t == "capability_decision":
                 req_id = ev.get("request_id", "")

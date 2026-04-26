@@ -709,6 +709,13 @@ impl App for ProcessApp {
                         std::time::Duration::from_millis(after_ms as u64),
                     );
                 }
+                // CopyToClipboard is handled here (not in routing.rs) because
+                // `egui::Context::copy_text` is a UI-context method. The host
+                // owns the clipboard backend selection (pasteboard / X11 /
+                // Wayland / Win32) — we just hand egui the string.
+                DrawCommand::CopyToClipboard { text } => {
+                    ui.ctx().copy_text(text);
+                }
                 // MeasureText is handled here (not in routing.rs) because it
                 // needs `ui` to access egui font metrics on the UI thread.
                 DrawCommand::MeasureText {
@@ -969,6 +976,23 @@ impl App for ProcessApp {
                     }
                     consumed = true;
                 }
+                egui::Event::Paste(text) => {
+                    // Forward OS-clipboard paste to the focused app pane.
+                    // egui emits this for both Cmd+V chords and the
+                    // OS-menu / right-click → Paste action; both paths
+                    // land here as a single event with the decoded UTF-8
+                    // payload. Apps subscribe via `on_paste` in the SDK
+                    // (or by checking `t == "paste"` directly).
+                    //
+                    // Queue rather than `send_event` so the event order
+                    // matches frame boundaries — `flush_outbound_events`
+                    // drains on the next `ui()` tick and writes the
+                    // Paste line ahead of the Render that follows.
+                    self.outbound_events.push_back(PlexiEvent::Paste {
+                        text: text.clone(),
+                    });
+                    consumed = true;
+                }
                 _ => {}
             }
         }
@@ -993,6 +1017,119 @@ impl App for ProcessApp {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod clipboard_tests {
+    //! Behavioural tests for the v3.2 clipboard / paste plumbing (#200, #146).
+    //!
+    //!   1. `egui::Event::Paste(text)` translates into `PlexiEvent::Paste`
+    //!      on the outbound queue (paste_event_forwarded_as_plexi_event).
+    //!   2. `DrawCommand::CopyToClipboard { text }` reaches egui's output
+    //!      command queue as `OutputCommand::CopyText` so the platform
+    //!      backend writes to the OS clipboard
+    //!      (copy_to_clipboard_drawcommand_calls_egui_copy).
+    //!
+    //! These exercise the host-side translation logic. End-to-end clipboard
+    //! integration with NSPasteboard / X11 / Wayland is verified via the
+    //! human-verification checklist in the PR — egui's backend is opaque
+    //! from a unit-test standpoint.
+    use super::*;
+    use crate::app_protocol::PlexiEvent;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    /// Build a minimal `ProcessApp` for tests. Mirrors the helper in
+    /// `text_input_tests` — spawns `/bin/sh -c "sleep 1"` so lifecycle
+    /// machinery is happy, then ignores the subprocess.
+    fn make_app() -> Option<ProcessApp> {
+        let sh = ["/bin/sh", "/usr/bin/sh"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(PathBuf::from)?;
+        let workspace_root = std::env::temp_dir();
+        ProcessApp::launch(
+            "test_clipboard",
+            "Test Clipboard",
+            &sh,
+            &workspace_root,
+            &["-c".to_string(), "sleep 1".to_string()],
+            workspace_root.clone(),
+            HashSet::new(),
+            false,
+        )
+        .ok()
+    }
+
+    #[test]
+    fn paste_event_forwarded_as_plexi_event() {
+        // Drive a synthesised `egui::Event::Paste("hello")` through the
+        // pane's `handle_key`. The expected outcome is one
+        // `PlexiEvent::Paste { text: "hello" }` on the outbound event
+        // queue. No `Key`/`Text` events should be synthesised.
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+
+        let mut input = egui::InputState::default();
+        input.events.push(egui::Event::Paste("hello".to_string()));
+
+        let consumed = app.handle_key(&input);
+        assert!(consumed, "handle_key must consume Paste events");
+
+        let paste_events: Vec<_> = app
+            .outbound_events
+            .iter()
+            .filter(|e| matches!(e, PlexiEvent::Paste { .. }))
+            .collect();
+        assert_eq!(
+            paste_events.len(),
+            1,
+            "expected exactly one Paste event, got {paste_events:?}"
+        );
+        match paste_events[0] {
+            PlexiEvent::Paste { text } => assert_eq!(text, "hello"),
+            other => panic!("expected Paste, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copy_to_clipboard_drawcommand_calls_egui_copy() {
+        // Verify the wired path: `DrawCommand::CopyToClipboard { text }` →
+        // `egui::Context::copy_text(text)` → `OutputCommand::CopyText` on
+        // the platform output. We construct a fresh egui Context, mirror
+        // the one-line dispatch from `ProcessApp::ui()`, and inspect the
+        // platform output for the CopyText command. If the dispatch ever
+        // changes shape (e.g. a different egui method), this test forces
+        // the breakage to surface.
+        let ctx = egui::Context::default();
+        let cmd = DrawCommand::CopyToClipboard {
+            text: "selected snippet".to_string(),
+        };
+
+        // This mirrors the exact branch in `ProcessApp::ui()`. Keep it
+        // in sync — if you refactor the dispatch, refactor this too.
+        match cmd {
+            DrawCommand::CopyToClipboard { text } => ctx.copy_text(text),
+            _ => panic!("test setup error"),
+        }
+
+        // Drain platform output and look for CopyText.
+        let mut found = None;
+        ctx.output_mut(|o| {
+            for cmd in &o.commands {
+                if let egui::OutputCommand::CopyText(text) = cmd {
+                    found = Some(text.clone());
+                }
+            }
+        });
+        assert_eq!(
+            found.as_deref(),
+            Some("selected snippet"),
+            "CopyToClipboard must emit OutputCommand::CopyText with the right text"
+        );
+    }
+}
 
 #[cfg(test)]
 mod text_input_tests {

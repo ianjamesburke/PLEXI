@@ -165,6 +165,17 @@ pub enum PlexiEvent {
     /// buffer for `id` after emitting this event so the field is empty for
     /// the next input.
     TextSubmitted { id: String, value: String },
+    /// Clipboard paste forwarded into the focused app pane.
+    ///
+    /// Emitted whenever the host observes `egui::Event::Paste(text)` while an
+    /// app pane has keyboard focus. The text is the OS clipboard contents at
+    /// paste time, already decoded to UTF-8 by egui. Apps receive this both
+    /// for Cmd+V chords and for OS-menu / right-click → Paste actions.
+    ///
+    /// Pre-#200 apps shelled out to `pbpaste` for this; that workaround is
+    /// macOS-only and races with focus changes. This event is the portable
+    /// path.
+    Paste { text: String },
 }
 
 /// A simple rectangle (logical coordinates).
@@ -238,6 +249,13 @@ pub enum DrawCommand {
     /// `max_width` — when `Some(w)`, the text is clipped at `w` pixels.
     /// `elide` — when `true`, a `…` is appended at the clip point; when
     ///           `false`, the text is hard-clipped with no marker.
+    /// `selectable` — when `true`, the host renders this text as a
+    ///                selectable egui label so the user can drag-select
+    ///                inside it and Cmd+C copies the selection. When
+    ///                `false` (default for pre-#200 callers), the text
+    ///                paints via the painter and cannot be selected.
+    ///                Required field — no `serde(default)`. Apps must
+    ///                set it explicitly; omitting it fails deserialisation.
     Text {
         x: f32,
         y: f32,
@@ -252,6 +270,7 @@ pub enum DrawCommand {
         align: String,
         max_width: Option<f32>,
         elide: bool,
+        selectable: bool,
     },
     /// Draw a line segment.
     Line {
@@ -575,6 +594,15 @@ pub enum DrawCommand {
         monospace: bool,
     },
 
+    /// Write `text` to the OS clipboard.
+    ///
+    /// Routed through `egui::Context::copy_text`, which handles platform-
+    /// specific clipboard backends (NSPasteboard / X11 / Wayland / Win32).
+    /// Synchronous from the app's perspective — no acknowledgement event.
+    /// No capability flag required: clipboard write is low-risk and the
+    /// app already controls when it fires (key handler, button, etc.).
+    CopyToClipboard { text: String },
+
     /// Single-line text input field (host-owned buffer, submit-only).
     ///
     /// Emitted by the app each frame at `(x, y)` with width `w`. The host
@@ -702,4 +730,79 @@ fn default_buffer_size() -> u32 {
 
 fn default_llm_model() -> String {
     "claude-haiku-4-5-20251001".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Wire-format round-trip tests for the v3.2 clipboard / paste / selectable
+    //! text additions (#200 + #146). These pin the on-the-wire shape — every
+    //! field is required and must be present. No `#[serde(default)]` papering
+    //! over missing fields.
+    use super::*;
+
+    #[test]
+    fn paste_event_round_trips_serde() {
+        let json = r#"{"type":"paste","text":"hello world"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::Paste { text } => assert_eq!(text, "hello world"),
+            other => panic!("expected Paste, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"paste""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""text":"hello world""#),
+            "text missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn copy_to_clipboard_round_trips_serde() {
+        let json = r#"{"type":"copy_to_clipboard","text":"snippet"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::CopyToClipboard { text } => assert_eq!(text, "snippet"),
+            other => panic!("expected CopyToClipboard, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"copy_to_clipboard""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn text_drawcommand_with_selectable_round_trips() {
+        let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":true,"selectable":true}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Text {
+                text, selectable, ..
+            } => {
+                assert_eq!(text, "hi");
+                assert!(*selectable, "selectable should be true");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""selectable":true"#),
+            "selectable flag missing on wire: {serialised}"
+        );
+    }
+
+    #[test]
+    fn text_drawcommand_missing_selectable_fails_deserialise() {
+        // No `selectable` field — must fail because the field is required
+        // (no `#[serde(default)]` on it).
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"x","size":14.0,"color":"#fff","max_width":null,"elide":true}"##;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `selectable` field"
+        );
+    }
 }
