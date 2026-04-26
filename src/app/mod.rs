@@ -22,6 +22,9 @@ pub(crate) enum FocusLayer {
     CommandPalette,
     RunPalette,
     RenamePane,
+    /// "New Agent Workspace…" modal (#349) — CLI dropdown, repo picker, task
+    /// textarea.
+    AgentWorkspaceModal,
 }
 
 #[derive(Clone)]
@@ -175,6 +178,11 @@ pub struct PlexiApp {
     /// existing `AppPane` envelope.
     pub(crate) hot_reload: crate::hot_reload::HotReloadWatcher,
     pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::hot_reload::ReloadRequest>,
+    /// Active "New Agent Workspace…" modal state (#349). `None` when closed.
+    pub(crate) agent_workspace_modal: Option<crate::agent_workspace_modal::AgentWorkspaceModal>,
+    /// Cached last-CLI-per-repo map. Loaded at startup, persisted on every
+    /// successful spawn. The modal consults this to pre-select the dropdown.
+    pub(crate) last_cli_map: crate::agent_workspace::persistence::LastCliMap,
 }
 
 impl PlexiApp {
@@ -468,6 +476,8 @@ impl PlexiApp {
                     directed_pipes: HashMap::new(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
+                    agent_workspace_modal: None,
+                    last_cli_map: crate::agent_workspace::persistence::load(),
                 };
             }
         }
@@ -544,6 +554,8 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher2,
             hot_reload_rx: hr_rx2,
+            agent_workspace_modal: None,
+            last_cli_map: crate::agent_workspace::persistence::load(),
         }
     }
 
@@ -905,6 +917,7 @@ impl eframe::App for PlexiApp {
         self.sync_command_palette_focus();
         self.sync_run_palette_focus();
         self.sync_rename_pane_focus();
+        self.sync_agent_workspace_modal_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind, the palette's
@@ -931,6 +944,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::RenamePane) => {
                     self.draw_rename_pane_overlay(ctx);
                 }
+                Some(FocusLayer::AgentWorkspaceModal) => {
+                    self.draw_agent_workspace_modal(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
@@ -943,6 +959,7 @@ impl eframe::App for PlexiApp {
             self.sync_command_palette_focus();
             self.sync_run_palette_focus();
             self.sync_rename_pane_focus();
+            self.sync_agent_workspace_modal_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -1874,6 +1891,7 @@ impl PlexiApp {
                 | Some(FocusLayer::CommandPalette)
                 | Some(FocusLayer::RunPalette)
                 | Some(FocusLayer::RenamePane)
+                | Some(FocusLayer::AgentWorkspaceModal)
         )
     }
 

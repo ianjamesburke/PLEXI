@@ -567,6 +567,19 @@ impl PlexiApp {
             crate::agent_workspace::AgentWorkspaceError::NotAGitRepository(cwd.clone())
         })?;
 
+        self.spawn_agent_workspace_with_repo(cli, repo_root, task_label)
+    }
+
+    /// Modal-driven variant (#349) — caller supplies the resolved repo root
+    /// directly (the modal accepts arbitrary subdirs and resolves to the
+    /// nearest `.git` ancestor before calling).
+    pub(crate) fn spawn_agent_workspace_with_repo(
+        &mut self,
+        cli: crate::agent_workspace::AgentCli,
+        repo_root: PathBuf,
+        task_label: String,
+    ) -> Result<(), crate::agent_workspace::AgentWorkspaceError> {
+        let active = self.active_context;
         let new_id = self.host.alloc_pane_id();
         let env = crate::shell::build_env();
         let dynamic_colors = crate::theme::terminal_dynamic_colors(&self.colors);
