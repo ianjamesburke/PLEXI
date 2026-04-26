@@ -138,7 +138,12 @@ impl PlexiApp {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
-        let config = config::PlexiConfig::load();
+        // Resolve the active workspace (explicit `plexi <path>` arg, then
+        // CWD-walk fallback) and overlay its `.plexi/config.toml` on top of
+        // the global config. Project values win on a per-field basis; unset
+        // project fields preserve the global value.
+        let active_workspace = config::active_workspace_root();
+        let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
         let features = crate::features::FeatureFlags::from_config(&config);
         let quit_confirm_required = config.confirm_quit
             .unwrap_or_else(|| config.beta.as_ref().and_then(|b| b.quit_confirm).unwrap_or(true));
@@ -1299,6 +1304,7 @@ impl eframe::App for PlexiApp {
                     colors: self.colors,
                     pane_names,
                     drag_cursor_pos,
+                    workspace_root: crate::config::active_workspace_root(),
                 };
                 ctx.tree.ui(&mut behavior, ui);
 

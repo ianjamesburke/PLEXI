@@ -58,7 +58,39 @@ fn main() -> eframe::Result {
     crate::config::set_profile(profile);
     crate::config::ensure_profile_initialized();
 
-    let log_level = crate::config::PlexiConfig::load()
+    // Adopt an explicit workspace root from `plexi <path>` if one was given.
+    // Errors out if the path exists but has no `.plexi/` ancestor — the user
+    // can run `plexi workspace init` to create one. Bare `plexi` continues to
+    // resolve via CWD-walk later in `PlexiApp::new`.
+    let adopted_root = match parse_workspace_path_arg(&raw_args) {
+        Ok(root) => root,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+    crate::config::set_adopted_workspace_root(adopted_root.clone());
+
+    // When the user runs `plexi <path>`, treat that path as the new CWD so
+    // every downstream consumer (AppRegistry, event log, default pane cwd)
+    // sees the adopted workspace as its starting point. Mirrors VS Code's
+    // "open folder" semantics. Bare `plexi` leaves CWD untouched.
+    if let Some(root) = adopted_root.as_ref() {
+        if let Err(e) = std::env::set_current_dir(root) {
+            eprintln!(
+                "warning: failed to chdir into workspace {}: {e}",
+                root.display()
+            );
+        }
+    }
+
+    // Merge global config with the workspace's `.plexi/config.toml` if a
+    // workspace is in scope. The `log` level needs the merged value so a
+    // project-level `[log] level = "debug"` actually takes effect.
+    let merged_config_root = adopted_root
+        .clone()
+        .or_else(|| crate::config::active_workspace_root());
+    let log_level = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref())
         .log
         .and_then(|l| l.level_filter())
         .unwrap_or(log::LevelFilter::Info);
@@ -299,6 +331,68 @@ fn main() -> eframe::Result {
     )
 }
 
+/// Scan argv for the first positional that points at an existing directory
+/// — the `plexi <path>` "open folder" arg, modelled on VS Code. Returns
+/// `Ok(Some(workspace_root))` when an ancestor `.plexi/` is found,
+/// `Ok(None)` when no path arg was given, and `Err(_)` when the user passed
+/// a path that has no `.plexi/` workspace anywhere up the tree.
+///
+/// Anything starting with `--` is skipped (flags) and so are values that
+/// follow a known value-bearing flag (`--profile`). Recognized CLI
+/// subcommands (`run`, `secret`, `app`, `workspace`, `notify`) are also
+/// skipped — those are dispatched separately later in `main`.
+fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf>, String> {
+    const SUBCOMMANDS: &[&str] = &[
+        "run", "secret", "app", "workspace", "notify", "--render",
+    ];
+    let mut iter = args.iter().enumerate();
+    // Skip argv[0] (binary name).
+    let _ = iter.next();
+    while let Some((_, a)) = iter.next() {
+        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" || a == "--level" {
+            // Skip the value paired with this flag.
+            let _ = iter.next();
+            continue;
+        }
+        if a.starts_with("--") {
+            continue;
+        }
+        if SUBCOMMANDS.contains(&a.as_str()) {
+            return Ok(None);
+        }
+        // First positional that isn't a known subcommand — interpret as a
+        // workspace path.
+        let candidate = std::path::PathBuf::from(a);
+        if !candidate.exists() {
+            return Err(format!(
+                "workspace path does not exist: {}",
+                candidate.display()
+            ));
+        }
+        if !candidate.is_dir() {
+            return Err(format!(
+                "workspace path is not a directory: {}",
+                candidate.display()
+            ));
+        }
+        let canonical = match candidate.canonicalize() {
+            Ok(p) => p,
+            Err(e) => return Err(format!("canonicalize {}: {e}", candidate.display())),
+        };
+        match crate::app_registry::resolve_workspace_root(&canonical) {
+            Some(root) => return Ok(Some(root)),
+            None => {
+                return Err(format!(
+                    "no .plexi/ workspace found at or above {}.\n\
+                     Run `plexi workspace init` in that directory first.",
+                    canonical.display()
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Scan argv for `--profile <name>`. Returns the name if present.
 fn parse_profile_flag(args: &[String]) -> Option<String> {
     let mut iter = args.iter();
@@ -357,5 +451,69 @@ fn render_cli() {
     if let Err(e) = std::io::stdout().write_all(&png_bytes) {
         eprintln!("plexi --render: failed to write PNG to stdout: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::parse_workspace_path_arg;
+    use std::fs;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        std::iter::once("plexi")
+            .chain(parts.iter().copied())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn plexi_path_arg_adopts_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        let path_str = workspace.path().to_string_lossy().to_string();
+
+        let resolved = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
+            .expect("path arg should resolve")
+            .expect("workspace root should be Some");
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn plexi_path_arg_with_no_dotplexi_errors() {
+        let bare = tempfile::tempdir().unwrap();
+        let path_str = bare.path().to_string_lossy().to_string();
+
+        let err = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
+            .expect_err("missing .plexi/ should error");
+        assert!(
+            err.contains("no .plexi/ workspace found"),
+            "expected workspace-not-found error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn plexi_path_arg_skips_known_subcommands() {
+        // `plexi workspace init` must NOT be interpreted as a path arg.
+        let resolved = parse_workspace_path_arg(&argv(&["workspace", "init"]))
+            .expect("subcommand path should resolve");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn plexi_with_no_args_returns_none() {
+        let resolved = parse_workspace_path_arg(&argv(&[]))
+            .expect("no args should resolve");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn plexi_path_arg_skips_profile_flag_value() {
+        // `plexi --profile alpha` must not treat "alpha" as a path.
+        let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
+            .expect("flag-only argv should resolve");
+        assert!(resolved.is_none());
     }
 }
