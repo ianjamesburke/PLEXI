@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "video-player"
+type = "app"
+name = "Video Player"
+version = "0.1.0"
+description = "POC for #345 - exercises the video substrate via the procedural mock decoder. Set PLEXI_VIDEO=mock://gradient before launching the host. Play / Pause / Seek work; frame counter increments at the configured fps."
+entry = "video_player.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+capabilities = ["video.playback"]
+
+[launch]
+background = false

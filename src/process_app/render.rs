@@ -374,7 +374,9 @@ pub(super) fn render_draw_commands(
             | DrawCommand::IqQuery { .. }
             | DrawCommand::CdRequest { .. }
             | DrawCommand::Image { .. }
-            | DrawCommand::VideoPlayer { .. }
+            | DrawCommand::OpenVideo { .. }
+            | DrawCommand::SetVideoState { .. }
+            | DrawCommand::CloseVideo { .. }
             | DrawCommand::AudioMeter { .. }
             | DrawCommand::AudioPlay { .. }
             | DrawCommand::AudioCapture { .. }
