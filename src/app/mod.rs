@@ -297,6 +297,48 @@ impl PlexiApp {
                         pane_entry = Some(crate::pane::Pane::Agent(Box::new(pane)));
                     }
 
+                    if pane_entry.is_none()
+                        && matches!(
+                            saved_pane.kind,
+                            crate::workspace::SavedPaneKind::AgentWorkspace
+                        )
+                    {
+                        if let Some(meta) = saved_pane.agent_workspace.clone() {
+                            let env = crate::shell::build_env();
+                            let dynamic_colors =
+                                crate::theme::terminal_dynamic_colors(&colors);
+                            if let Some(pane) =
+                                crate::agent_workspace::AgentWorkspacePane::restore(
+                                    saved_pane.id,
+                                    meta.cli,
+                                    meta.repo_path,
+                                    meta.branch_name,
+                                    meta.worktree_path,
+                                    meta.task_label,
+                                    cc.egui_ctx.clone(),
+                                    tx.clone(),
+                                    env,
+                                    dynamic_colors,
+                                    default_font_size,
+                                )
+                            {
+                                pane_entry = Some(crate::pane::Pane::AgentWorkspace(
+                                    Box::new(pane),
+                                ));
+                            } else {
+                                log::warn!(
+                                    "agent_workspace restore: PTY spawn failed for pane {}",
+                                    saved_pane.id
+                                );
+                            }
+                        } else {
+                            log::warn!(
+                                "agent_workspace restore: pane {} has kind=AgentWorkspace but no metadata",
+                                saved_pane.id
+                            );
+                        }
+                    }
+
                     if pane_entry.is_none() {
                         let settings = Self::make_backend_settings(cwd, &colors);
                         if let Some(mut pane) = TerminalPane::new(
@@ -961,6 +1003,7 @@ impl eframe::App for PlexiApp {
                             crate::pane::Pane::Agent(_) => "agent",
                             crate::pane::Pane::App(_) => "app",
                             crate::pane::Pane::Terminal(_) => "terminal",
+                            crate::pane::Pane::AgentWorkspace(_) => "agent_workspace",
                         });
                     match target_kind {
                         Some("agent") | Some("app") => {
@@ -1865,6 +1908,9 @@ fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str)
             crate::agent_pane::AgentBackend::InProcess(_) => None,
         },
         crate::pane::Pane::Terminal(_) => None,
+        // AgentWorkspace panes (#348) are PTY shells running a CLI binary —
+        // no PGAP process registry, so directed pipes have nothing to bind to.
+        crate::pane::Pane::AgentWorkspace(_) => None,
     };
     let Some(registry) = registry else {
         return false;

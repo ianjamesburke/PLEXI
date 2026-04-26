@@ -13,6 +13,10 @@ pub enum Pane {
     Terminal(Box<TerminalPane>),
     App(Box<AppPane>),
     Agent(Box<AgentPane>),
+    /// Agent Workspace (#348): a CLI (Claude Code / Codex / Gemini CLI) running
+    /// inside an auto-created git worktree. State lives in
+    /// `crate::agent_workspace::AgentWorkspacePane`.
+    AgentWorkspace(Box<crate::agent_workspace::AgentWorkspacePane>),
 }
 
 impl Pane {
@@ -21,6 +25,7 @@ impl Pane {
             Pane::Terminal(t) => t.id,
             Pane::App(a) => a.id,
             Pane::Agent(a) => a.id,
+            Pane::AgentWorkspace(w) => w.id,
         }
     }
 
@@ -62,6 +67,22 @@ impl Pane {
     pub fn as_agent_mut(&mut self) -> Option<&mut AgentPane> {
         match self {
             Pane::Agent(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_agent_workspace(&self) -> Option<&crate::agent_workspace::AgentWorkspacePane> {
+        match self {
+            Pane::AgentWorkspace(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    pub fn as_agent_workspace_mut(
+        &mut self,
+    ) -> Option<&mut crate::agent_workspace::AgentWorkspacePane> {
+        match self {
+            Pane::AgentWorkspace(w) => Some(w),
             _ => None,
         }
     }
