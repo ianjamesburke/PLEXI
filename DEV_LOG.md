@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-26 — [GOTCHA] Info.plist.fragment must NOT include full plist wrapper
+
+`cargo-bundle 0.9.0` handles `osx_info_plist_exts` by doing a raw text insert inside the `<dict>` of the generated Info.plist. The fragment file must contain only bare key-value pairs — **no** `<?xml?>` declaration, no `<!DOCTYPE>`, no `<plist>` or `<dict>` wrappers. Including the full plist boilerplate (as the #277 sub-agent wrote) embeds a second XML document inside the `<dict>`, producing malformed XML that macOS rejects as "damaged or incomplete" at launch. Fix: `assets/Info.plist.fragment` is now just the two `<key>`/`<string>` lines. Re-sign with `codesign --force --deep --sign -` after install.
+
 ## 2026-04-25 — [CHANGED] Agent-as-app foundation — manifest type field + protocol variants + broker widening (#285 part 1 → alpha)
 
 First slice of #285 (v3.3 P1 headline "Agent-as-app"). Lands the wire and schema additions that the host integration in part 2 will consume; does NOT yet spawn subprocess agents into `Pane::Agent` or ship the SDK Agent class. Scoped down deliberately to keep the PR reviewable — the host integration ripples through `process_app/routing.rs`, `agent_pane.rs`, `pane.rs`, and the SDK simultaneously, and is its own commit.
