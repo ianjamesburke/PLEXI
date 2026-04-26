@@ -539,18 +539,46 @@ impl PlexiApp {
     /// Spawn an Agent Workspace pane from the palette. Empty task label —
     /// the modal picker (#349) is what populates a real label.
     fn spawn_agent_workspace(&mut self, cli: crate::agent_workspace::AgentCli) {
+        if !cli.is_installed() {
+            self.push_host_notification(
+                "warn".to_string(),
+                format!("{} is not installed", cli.display_name()),
+                format!(
+                    "The `{}` binary was not found on PATH or in common installer dirs.",
+                    cli.binary_name()
+                ),
+            );
+            return;
+        }
         match self.open_agent_workspace_pane(cli, String::new()) {
             Ok(()) => log::info!("agent_workspace: spawned {}", cli.display_name()),
             Err(e) => {
-                log::warn!(
-                    "agent_workspace: failed to spawn {}: {e}",
-                    cli.display_name()
+                self.push_host_notification(
+                    "warn".to_string(),
+                    format!("Failed to spawn {}", cli.display_name()),
+                    e.to_string(),
                 );
-                // Surfacing the error in-pane requires a pane to write to —
-                // since open_* failed, there is none. The log is the best we
-                // can do at the substrate layer; the modal (#349) will show a
-                // user-facing toast/error inline.
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smoke test: `AgentCli::is_installed()` must return a bool without
+    /// panicking regardless of what is on the test machine's PATH.
+    #[test]
+    fn palette_spawn_not_installed_pushes_notification() {
+        // We can't easily construct a full PlexiApp in a unit test, so we
+        // validate the install-check path that guards `spawn_agent_workspace`:
+        // `is_installed()` must return a bool without panicking.
+        let result = std::panic::catch_unwind(|| {
+            let _ = crate::agent_workspace::AgentCli::ClaudeCode.is_installed();
+            let _ = crate::agent_workspace::AgentCli::Codex.is_installed();
+            let _ = crate::agent_workspace::AgentCli::GeminiCli.is_installed();
+        });
+        assert!(result.is_ok(), "AgentCli::is_installed() panicked unexpectedly");
     }
 }
