@@ -88,6 +88,11 @@ pub enum Action {
     ToggleNotificationModal,
     NotificationCycleNext,
     NotificationCyclePrev,
+    /// Force-reload the focused app pane (#83). Bound to Cmd+Option+R.
+    /// Cmd+R is the Run palette and Cmd+Shift+R is RenamePane, so the
+    /// Option (Alt) modifier is the next free chord. No-op when the
+    /// focused pane isn't a process-backed app.
+    ForceReloadApp,
 }
 
 /// Poll global keyboard actions.
@@ -270,8 +275,22 @@ pub fn poll_actions(
             actions.push(Action::OpenSecretsManager);
         }
 
+        // Force-reload focused app (Cmd+Option+R, #83). Check before plain
+        // Cmd+R so the modifier-rich variant matches first. Plain Cmd+R is
+        // the Run palette; Cmd+Shift+R is RenamePane. Option (alt) is the
+        // next free chord.
+        let cmd_alt = egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::COMMAND
+        };
+        if input.consume_key(cmd_alt, egui::Key::R) {
+            actions.push(Action::ForceReloadApp);
+        }
+
         // Run palette (Cmd+R — plain, not Cmd+Shift+R which is RenamePane)
-        if !input.modifiers.shift && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R) {
+        if !input.modifiers.shift && !input.modifiers.alt
+            && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R)
+        {
             actions.push(Action::ToggleRunPalette);
         }
 

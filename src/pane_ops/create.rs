@@ -162,7 +162,105 @@ impl PlexiApp {
             new_app_pane(new_id, process, workspace_root, group, linked_pane_id, None),
         );
 
+        // Hot reload (#83): if the manifest opted in AND the app was
+        // discovered from a workspace-local install, begin watching its
+        // directory for source-change events.
+        if self.registry.watch_eligible(app_id) {
+            if let Some(app_dir) = self.registry.app_dir_for(app_id) {
+                self.hot_reload.watch(new_id, &app_dir);
+            }
+        }
+
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
+    }
+
+    /// Reload the `ProcessApp` inside the AppPane at `pane_id` (#83).
+    ///
+    /// Sends `Shutdown` to the existing subprocess (via `Drop` on the old
+    /// `ProcessApp`), relaunches a fresh subprocess via `AppRegistry::launch_process`
+    /// using the same `manifest_id` + `workspace_root`, and swaps the
+    /// runtime field on the existing `AppPane`. The pane envelope (id,
+    /// position, focus, linked terminal) is preserved — only the inner
+    /// subprocess is replaced.
+    ///
+    /// State is not transferred — apps must accept that hot reload starts
+    /// fresh. This is documented in the issue body as acceptable for dev.
+    ///
+    /// Returns true if the reload was attempted (pane found and was a
+    /// process-backed AppPane). Returns false otherwise (pane gone, not an
+    /// app pane, or builtin runtime).
+    pub(crate) fn reload_app_pane(&mut self, pane_id: PaneId, reason: &str) -> bool {
+        let active = self.active_context;
+        let ctx = &self.contexts[active];
+        let Some(app_pane) = ctx.panes.get(&pane_id).and_then(|p| p.as_app()) else {
+            log::debug!("reload_app_pane({pane_id}): not an app pane — ignoring");
+            return false;
+        };
+        if !matches!(app_pane.runtime, crate::pane::AppRuntime::Process(_)) {
+            log::debug!("reload_app_pane({pane_id}): builtin runtime — cannot reload");
+            return false;
+        }
+        let manifest_id = app_pane.manifest_id.clone();
+        let workspace_root = app_pane.workspace_root.clone();
+
+        log::info!(
+            "app::{manifest_id} reload triggered ({reason}) for pane {pane_id}"
+        );
+
+        // Launch the replacement first — if launch fails, leave the old
+        // subprocess running so the pane stays usable.
+        let cwd = workspace_root.clone();
+        let Some(mut new_process) = self.registry.launch_process(&manifest_id, &cwd, &[]) else {
+            log::warn!(
+                "reload_app_pane({pane_id}): launch_process returned None — keeping old instance"
+            );
+            return false;
+        };
+        new_process.set_pane_id(pane_id);
+
+        // Swap the runtime. The old `ProcessApp` drops at end-of-scope —
+        // its `Drop` impl sends `Shutdown` and waits/kills the child.
+        let ctx_mut = &mut self.contexts[active];
+        if let Some(pane) = ctx_mut.panes.get_mut(&pane_id) {
+            if let Some(app_pane) = pane.as_app_mut() {
+                let new_perms = new_process.permissions.clone();
+                let old_runtime = std::mem::replace(
+                    &mut app_pane.runtime,
+                    crate::pane::AppRuntime::Process(Box::new(new_process)),
+                );
+                app_pane.permissions = new_perms;
+                drop(old_runtime); // explicit — fires Shutdown + reaps child
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Drain pending `ReloadRequest`s from the watcher channel and reload
+    /// the matching panes. Called once per frame from the host update loop.
+    pub(crate) fn drain_hot_reload_requests(&mut self) {
+        loop {
+            match self.hot_reload_rx.try_recv() {
+                Ok(req) => {
+                    self.reload_app_pane(req.pane_id, "watcher");
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Force-reload the focused app pane (manual trigger via Cmd+Option+R).
+    /// No-op when the focused pane isn't a process-backed AppPane.
+    pub(crate) fn force_reload_focused_app(&mut self) {
+        let active = self.active_context;
+        let Some(focused_tile) = self.contexts[active].focused_pane else {
+            return;
+        };
+        let Some(Tile::Pane(pane_id)) = self.contexts[active].tree.tiles.get(focused_tile) else {
+            return;
+        };
+        let pane_id = *pane_id;
+        self.reload_app_pane(pane_id, "manual");
     }
 
     pub(crate) fn open_builtin_app_pane(

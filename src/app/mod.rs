@@ -167,6 +167,13 @@ pub struct PlexiApp {
     /// map first: hits route ONLY to the non-sender member of the pair;
     /// misses fall back to the legacy peer-broadcast (`has_reader`) path.
     pub(crate) directed_pipes: HashMap<String, (u64, u64)>,
+    /// Hot-reload watcher set (#83). Owns one notify watcher per pane that
+    /// opted-in via manifest `[app] watch = true` (workspace-local only).
+    /// `hot_reload_rx` is drained each frame; pending requests trigger a
+    /// `reload_pane` call which replaces the `ProcessApp` inside the
+    /// existing `AppPane` envelope.
+    pub(crate) hot_reload: crate::hot_reload::HotReloadWatcher,
+    pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::hot_reload::ReloadRequest>,
 }
 
 impl PlexiApp {
@@ -177,6 +184,14 @@ impl PlexiApp {
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+
+        // Hot-reload watcher set (#83). Constructed once per host instance.
+        // The receiver lives on `self.hot_reload_rx`; `update()` drains it
+        // each frame and reloads the matching pane. Both branches of `new()`
+        // (workspace-restore and default) use the same instance via shadow
+        // names — kept on stack until consumed by `Self {..}`.
+        let (hr_watcher, hr_rx) = crate::hot_reload::HotReloadWatcher::new();
+        let (hr_watcher2, hr_rx2) = crate::hot_reload::HotReloadWatcher::new();
 
         // Resolve the active workspace (explicit `plexi <path>` arg, then
         // CWD-walk fallback) and overlay its `.plexi/config.toml` on top of
@@ -450,6 +465,8 @@ impl PlexiApp {
                     host_services: crate::host::services::HostServices::new(),
                     background_apps: HashMap::new(),
                     directed_pipes: HashMap::new(),
+                    hot_reload: hr_watcher,
+                    hot_reload_rx: hr_rx,
                 };
             }
         }
@@ -524,6 +541,8 @@ impl PlexiApp {
             host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
             directed_pipes: HashMap::new(),
+            hot_reload: hr_watcher2,
+            hot_reload_rx: hr_rx2,
         }
     }
 
@@ -1412,8 +1431,17 @@ impl eframe::App for PlexiApp {
                 Action::OpenAgentPane => {
                     self.open_agent_pane();
                 }
+                Action::ForceReloadApp => {
+                    self.force_reload_focused_app();
+                }
             }
         }
+
+        // Hot reload (#83): drain any pending file-watcher reload requests.
+        // Each `ReloadRequest` causes the matching pane's ProcessApp to be
+        // dropped (sending Shutdown + reaping the child) and replaced with
+        // a fresh subprocess. Idempotent if the pane was closed since.
+        self.drain_hot_reload_requests();
 
         // Handle window close request (X button / system shutdown) — always quit
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {

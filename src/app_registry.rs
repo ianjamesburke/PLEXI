@@ -106,6 +106,17 @@ pub struct AppManifestApp {
     /// the user regardless of which context is active (e.g. stand-up-reminder).
     #[serde(default)]
     pub default_notification_scope: DefaultNotifyScope,
+    /// Hot-reload opt-in (#83). When true AND the app was discovered from a
+    /// workspace-local `.plexi/apps/`, the host watches the app dir and
+    /// reloads the subprocess on save. Off by default — global installs
+    /// never auto-reload regardless of this field.
+    ///
+    /// Modelled as `Option<bool>` (no `serde(default)`): missing → `None`,
+    /// which the host treats as `false`. Standard pattern for an explicitly
+    /// optional field whose absence has a meaningful default. Distinct from
+    /// `serde(default)`, which would conflate "absent" with "false" at the
+    /// type level and lose the diagnostic that the field was never set.
+    pub watch: Option<bool>,
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for
@@ -460,6 +471,31 @@ impl AppRegistry {
                 "overlay" => "overlay".to_string(),
                 _ => "split_v".to_string(),
             })
+    }
+
+    /// Hot-reload eligibility for an installed app (#83). True when the
+    /// manifest sets `[app] watch = true` AND the app was discovered from
+    /// a workspace-local `.plexi/apps/` (or `.plexi/agents/`). Global
+    /// installs never auto-reload regardless of the manifest field —
+    /// watching a global install is out of scope.
+    pub fn watch_eligible(&self, app_id: &str) -> bool {
+        let Some(installed) = self.apps.get(app_id) else {
+            return false;
+        };
+        let opted_in = installed.manifest.watch.unwrap_or(false);
+        let local = matches!(
+            installed.source,
+            RegistrySource::LocalApp | RegistrySource::LocalAgent
+        );
+        opted_in && local
+    }
+
+    /// Path to the app's installation directory (parent of `bin_path`).
+    /// Used by the file watcher; returns `None` when the app id is unknown.
+    pub fn app_dir_for(&self, app_id: &str) -> Option<PathBuf> {
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.bin_path.parent().map(Path::to_path_buf))
     }
 
     /// Get the manifest-declared layout_hint.split fraction (None if unset).
@@ -884,6 +920,123 @@ system_prompt = \"You are terse.\"
             agent.launch.system_prompt.as_deref(),
             Some("You are terse."),
             "system_prompt must round-trip from manifest"
+        );
+    }
+
+    // ── #83 hot reload — manifest `[app] watch` field ────────────────────
+
+    #[test]
+    fn manifest_with_watch_true_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("watching-app");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"watching-app\"
+type = \"app\"
+name = \"Watching\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+watch = true
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let app = registry.get("watching-app").expect("manifest with watch=true should load");
+        assert_eq!(app.manifest.watch, Some(true));
+    }
+
+    #[test]
+    fn manifest_with_watch_field_absent_treats_as_false() {
+        // The default `write_app` helper omits `watch` — exercise that path.
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app(global.path(), "no-watch", "No Watch");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let app = registry.get("no-watch").expect("default manifest should load");
+        assert_eq!(app.manifest.watch, None);
+        // And `watch_eligible` returns false (also exercises the absent
+        // path on the public API).
+        assert!(!registry.watch_eligible("no-watch"));
+    }
+
+    #[test]
+    fn watch_field_only_engages_for_workspace_local_apps() {
+        // A global-installed manifest with `watch = true` must NOT be
+        // eligible for hot reload — workspace-local installs only.
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let local_apps = workspace.path().join(".plexi").join("apps");
+        fs::create_dir_all(&local_apps).unwrap();
+
+        // Global copy with watch=true.
+        let g_dir = global.path().join("dual-install");
+        fs::create_dir_all(&g_dir).unwrap();
+        let manifest_g = "\
+schema_version = 1
+
+[app]
+id = \"global-watcher\"
+type = \"app\"
+name = \"Global Watcher\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+watch = true
+";
+        fs::write(g_dir.join("manifest.toml"), manifest_g).unwrap();
+        let entry_g = g_dir.join("run.sh");
+        fs::write(&entry_g, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry_g).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry_g, perms).unwrap();
+        }
+
+        // Local copy with watch=true (different id so they don't shadow).
+        let l_dir = local_apps.join("local-watcher");
+        fs::create_dir_all(&l_dir).unwrap();
+        let manifest_l = "\
+schema_version = 1
+
+[app]
+id = \"local-watcher\"
+type = \"app\"
+name = \"Local Watcher\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+watch = true
+";
+        fs::write(l_dir.join("manifest.toml"), manifest_l).unwrap();
+        let entry_l = l_dir.join("run.sh");
+        fs::write(&entry_l, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry_l).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry_l, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        assert!(
+            !registry.watch_eligible("global-watcher"),
+            "global install with watch=true must not be eligible"
+        );
+        assert!(
+            registry.watch_eligible("local-watcher"),
+            "workspace-local install with watch=true must be eligible"
         );
     }
 
