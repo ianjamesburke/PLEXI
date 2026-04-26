@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "lifecycle-tester"
+type = "app"
+name = "Lifecycle Tester"
+version = "0.1.0"
+description = "Triggers crash / hang / malformed JSON / clean exit on demand. POC for the observable app lifecycle pill (#316)."
+entry = "lifecycle_tester.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+background = false
