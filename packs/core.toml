@@ -89,3 +89,20 @@ version = "0.1.0"
 id      = "canvas-terminal-bindings-test"
 source  = "local:canvas-terminal-bindings-test"
 version = "0.1.0"
+
+# GUI↔Terminal media bridge (#79 / v3.4 P2). Spawned by the file
+# browser when the user opens an audio file. Echoes the equivalent
+# ffplay/ffmpeg command into a linked terminal for every transport
+# action. Capabilities: `terminal.bindings`.
+[[app]]
+id      = "audio-player"
+source  = "local:audio-player"
+version = "0.1.0"
+
+# Audio bridge demo (#79 / v3.4 P2). Mic capture + live waveform +
+# linked-terminal echo of the equivalent ffmpeg command. Capabilities:
+# `audio.record`, `terminal.bindings`.
+[[app]]
+id      = "audio-bridge-test"
+source  = "local:audio-bridge-test"
+version = "0.1.0"
