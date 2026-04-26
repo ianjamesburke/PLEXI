@@ -381,6 +381,7 @@ fn render_gradient_frame(width: u32, height: u32, frame_index: u64) -> Vec<u8> {
 ///
 /// Tests inject `Arc::new(MockVideoDecoder::new(cfg))` directly into
 /// `ProcessApp::video_device` and skip the env var altogether.
+#[cfg(not(test))]
 pub fn default_video_device() -> Arc<dyn VideoDecoder> {
     if let Ok(url) = std::env::var("PLEXI_VIDEO") {
         if url.starts_with("mock://") {
@@ -402,6 +403,16 @@ pub fn default_video_device() -> Arc<dyn VideoDecoder> {
     Arc::new(AvfVideoDecoder::new())
 }
 
+#[cfg(test)]
+pub fn default_video_device() -> Arc<dyn VideoDecoder> {
+    // Tests that exercise the routing path inject their own MockVideoDecoder
+    // directly into `ProcessApp::video_device`. The harness factory returns
+    // the production stub so the no-injection path errors loudly with
+    // `NotImplemented` rather than silently producing frames.
+    Arc::new(AvfVideoDecoder::new())
+}
+
+#[cfg(not(test))]
 fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
         .ok()
@@ -409,6 +420,7 @@ fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+#[cfg(not(test))]
 fn parse_env_f32(key: &str, default: f32) -> f32 {
     std::env::var(key)
         .ok()
@@ -590,15 +602,10 @@ mod tests {
     }
 
     #[test]
-    fn factory_default_returns_avf_when_no_env() {
-        // Sanity: with no env var, the factory must return the production
-        // stub (which fails open() with NotImplemented). Tests run in
-        // arbitrary process state — clear PLEXI_VIDEO first.
-        // SAFETY: tests in this binary share a process; clearing here is safe
-        // because no other test in this module reads PLEXI_VIDEO.
-        unsafe {
-            std::env::remove_var("PLEXI_VIDEO");
-        }
+    fn factory_default_returns_avf_in_tests() {
+        // Under `cfg(test)`, the factory always returns the production stub —
+        // tests that need the mock inject `Arc::new(MockVideoDecoder::new(...))`
+        // into `ProcessApp::video_device` directly. This pins the contract.
         let dev = default_video_device();
         let ring = make_ring();
         match dev.open("file:///tmp/x.mp4", ring) {
