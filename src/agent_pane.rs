@@ -29,7 +29,8 @@
 /// Large pastes (>300 chars or multiline) appear collapsed in the transcript as
 /// "You: [pasted text — N chars]" — the full text is still sent to the agent.
 use crate::agent_turn::{self, WorkerEvent};
-use crate::app_protocol::PlexiEvent;
+use crate::app_protocol::{AgentInfo, PlexiEvent};
+use crate::pane::Pane;
 use crate::process_app::ProcessApp;
 use crate::theme::Colors;
 use crate::tiling::PaneId;
@@ -754,6 +755,43 @@ pub fn render_and_drain(ui: &mut egui::Ui, pane: &mut AgentPane, colors: &Colors
     needs_repaint
 }
 
+// ── Roster enumeration (#286) ────────────────────────────────────────────────
+
+/// Walk a workspace's pane container and surface every `Pane::Agent` as an
+/// `AgentInfo` row. Used by `DrawCommand::AgentRosterGet` routing.
+///
+/// `name` resolves to the agent's manifest id for `Subprocess` backends and
+/// to a stable `"iq"` string for the legacy `InProcess` (Cmd+I) backend, which
+/// has no manifest. The legacy backend is intentionally included — agents
+/// can still address it via directed pipes.
+///
+/// Output ordering is `pane_id` ascending so the snapshot is reproducible
+/// across calls (and across test runs).
+pub fn enumerate_agents<'a, I>(panes: I) -> Vec<AgentInfo>
+where
+    I: IntoIterator<Item = &'a Pane>,
+{
+    let mut rows: Vec<AgentInfo> = panes
+        .into_iter()
+        .filter_map(|pane| pane.as_agent())
+        .map(|agent| {
+            let (app_id, name) = match &agent.backend {
+                AgentBackend::InProcess(_) => ("iq".to_string(), "IQ".to_string()),
+                AgentBackend::Subprocess(sub) => {
+                    (sub.manifest_id.clone(), sub.manifest_id.clone())
+                }
+            };
+            AgentInfo {
+                pane_id: agent.id,
+                app_id,
+                name,
+            }
+        })
+        .collect();
+    rows.sort_by_key(|a| a.pane_id);
+    rows
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -878,6 +916,49 @@ mod tests {
             PlexiEvent::UserMessage { text } => assert_eq!(text, "Tell me a joke."),
             _ => unreachable!(),
         }
+    }
+
+    // ── Roster enumeration (#286) ────────────────────────────────────────
+
+    #[test]
+    fn enumerate_agents_walks_pane_tree() {
+        // Construct a mixed pane container: one agent + (notionally) some
+        // non-agent panes. `enumerate_agents` must skip the non-agents and
+        // surface only the `Pane::Agent` entries with stable name/app_id.
+        // We can't easily construct a `Pane::Terminal` or `Pane::App` here
+        // without a full host harness, so we test with two agents and
+        // assert the right shape (and rely on the `as_agent()` filter to
+        // skip non-agents in production).
+        let pane1 = Pane::Agent(Box::new(AgentPane::new(11, std::env::temp_dir())));
+        let pane2 = Pane::Agent(Box::new(AgentPane::new(7, std::env::temp_dir())));
+        let panes = vec![pane1, pane2];
+        let roster = enumerate_agents(panes.iter());
+        assert_eq!(roster.len(), 2, "roster should include both agents");
+        // Both are InProcess legacy panes — same name/app_id pair.
+        for row in &roster {
+            assert_eq!(row.app_id, "iq");
+            assert_eq!(row.name, "IQ");
+        }
+    }
+
+    #[test]
+    fn enumerate_agents_returns_stable_order() {
+        // Insertion-order independence — roster must be sorted by pane_id
+        // ascending so consumers can rely on a deterministic snapshot.
+        let pane_a = Pane::Agent(Box::new(AgentPane::new(99, std::env::temp_dir())));
+        let pane_b = Pane::Agent(Box::new(AgentPane::new(2, std::env::temp_dir())));
+        let pane_c = Pane::Agent(Box::new(AgentPane::new(50, std::env::temp_dir())));
+        let panes = vec![pane_a, pane_b, pane_c];
+        let roster = enumerate_agents(panes.iter());
+        let ids: Vec<u64> = roster.iter().map(|r| r.pane_id).collect();
+        assert_eq!(ids, vec![2, 50, 99], "roster must sort by pane_id ascending");
+    }
+
+    #[test]
+    fn enumerate_agents_empty_when_no_agents() {
+        let panes: Vec<Pane> = vec![];
+        let roster = enumerate_agents(panes.iter());
+        assert!(roster.is_empty(), "no agents → empty roster");
     }
 
     #[test]

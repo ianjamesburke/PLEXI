@@ -66,3 +66,17 @@ version = "0.1.0"
 id      = "video-player"
 source  = "local:video-player"
 version = "0.1.0"
+
+# Agent roster + inter-agent pipes POCs (#286 / v3.3 P2). Open both
+# panes, ask the coordinator to delegate to the worker, and watch the
+# round-trip surface in both conversation histories. Requires
+# ANTHROPIC_API_KEY in the Plexi secrets store.
+[[app]]
+id      = "agent-coordinator"
+source  = "local:agent-coordinator"
+version = "0.1.0"
+
+[[app]]
+id      = "agent-worker"
+source  = "local:agent-worker"
+version = "0.1.0"

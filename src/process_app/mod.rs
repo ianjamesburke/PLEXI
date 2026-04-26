@@ -622,7 +622,9 @@ impl ProcessApp {
                 | DrawCommand::RunComplete { .. }
                 | DrawCommand::Notify { .. }
                 | DrawCommand::PipeOpen { .. }
+                | DrawCommand::PipeOpenDirected { .. }
                 | DrawCommand::PipeSend { .. }
+                | DrawCommand::AgentRosterGet { .. }
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
@@ -820,7 +822,9 @@ impl App for ProcessApp {
                 | DrawCommand::RunComplete { .. }
                 | DrawCommand::Notify { .. }
                 | DrawCommand::PipeOpen { .. }
+                | DrawCommand::PipeOpenDirected { .. }
                 | DrawCommand::PipeSend { .. }
+                | DrawCommand::AgentRosterGet { .. }
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
@@ -1978,6 +1982,157 @@ mod video_tests {
         assert!(
             !app.video_pipe_ids.contains_key(&ack_handle_id),
             "close must unregister the pipe id mapping"
+        );
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    //! Routing-layer tests for the v3.3 P2 agent roster (#286).
+    use super::*;
+    use crate::app_permissions::Capability;
+    use crate::app_protocol::{DrawCommand, PlexiEvent};
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn make_app(caps: HashSet<Capability>) -> Option<ProcessApp> {
+        let sh = ["/bin/sh", "/usr/bin/sh"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(PathBuf::from)?;
+        let workspace_root = std::env::temp_dir();
+        ProcessApp::launch(
+            "test_roster",
+            "Test Roster",
+            &sh,
+            &workspace_root,
+            &["-c".to_string(), "sleep 1".to_string()],
+            workspace_root.clone(),
+            caps,
+            false,
+        )
+        .ok()
+    }
+
+    #[test]
+    fn granted_app_gets_full_roster() {
+        let mut caps = HashSet::new();
+        caps.insert(Capability::AgentsList);
+        let Some(mut app) = make_app(caps) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.route_command(DrawCommand::AgentRosterGet {
+            request_id: "req-roster".to_string(),
+        });
+        let saw_roster_event = app
+            .outbound_events
+            .iter()
+            .any(|e| matches!(e, PlexiEvent::AgentRoster { .. }));
+        assert!(
+            !saw_roster_event,
+            "granted path must defer to host — no synchronous roster event"
+        );
+        let saw_pending = app
+            .pending_commands
+            .iter()
+            .any(|c| matches!(c, AppCommand::AgentRosterGet { .. }));
+        assert!(
+            saw_pending,
+            "granted path must enqueue an AppCommand::AgentRosterGet for the host"
+        );
+    }
+
+    #[test]
+    fn pipe_open_directed_enqueues_open_directed_pipe_command() {
+        let mut caps = HashSet::new();
+        caps.insert(Capability::PipeOpen);
+        let Some(mut app) = make_app(caps) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.pane_id = 11;
+
+        app.route_command(DrawCommand::PipeOpenDirected {
+            pipe_id: "coord-to-worker".to_string(),
+            target_pane_id: 42,
+        });
+
+        assert!(
+            app.pipe_registry.lock().unwrap().has_reader("coord-to-worker"),
+            "directed pipe must be registered on caller side as duplex"
+        );
+
+        let pending = app
+            .pending_commands
+            .iter()
+            .find_map(|c| match c {
+                AppCommand::OpenDirectedPipe {
+                    sender_pane_id,
+                    pipe_id,
+                    target_pane_id,
+                } => Some((*sender_pane_id, pipe_id.clone(), *target_pane_id)),
+                _ => None,
+            })
+            .expect("AppCommand::OpenDirectedPipe must be enqueued");
+        assert_eq!(pending.0, 11);
+        assert_eq!(pending.1, "coord-to-worker");
+        assert_eq!(pending.2, 42);
+    }
+
+    #[test]
+    fn pipe_open_directed_denied_without_pipe_open_capability() {
+        let Some(mut app) = make_app(HashSet::new()) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.route_command(DrawCommand::PipeOpenDirected {
+            pipe_id: "x".to_string(),
+            target_pane_id: 99,
+        });
+        assert!(
+            !app.pipe_registry.lock().unwrap().has_reader("x"),
+            "denied path must not register the pipe"
+        );
+        assert!(
+            !app.pending_commands
+                .iter()
+                .any(|c| matches!(c, AppCommand::OpenDirectedPipe { .. })),
+            "denied path must not enqueue host command"
+        );
+    }
+
+    #[test]
+    fn ungranted_app_gets_empty_roster_not_error() {
+        let Some(mut app) = make_app(HashSet::new()) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.route_command(DrawCommand::AgentRosterGet {
+            request_id: "req-empty".to_string(),
+        });
+        let event = app
+            .outbound_events
+            .iter()
+            .find(|e| matches!(e, PlexiEvent::AgentRoster { .. }))
+            .expect("ungranted path must emit AgentRoster synchronously");
+        match event {
+            PlexiEvent::AgentRoster { request_id, agents } => {
+                assert_eq!(request_id, "req-empty");
+                assert!(
+                    agents.is_empty(),
+                    "ungranted roster must be empty (not error): got {agents:?}"
+                );
+            }
+            other => panic!("expected AgentRoster, got {other:?}"),
+        }
+        let saw_pending = app
+            .pending_commands
+            .iter()
+            .any(|c| matches!(c, AppCommand::AgentRosterGet { .. }));
+        assert!(
+            !saw_pending,
+            "ungranted path must NOT enqueue AppCommand::AgentRosterGet"
         );
     }
 }

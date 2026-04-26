@@ -444,6 +444,22 @@ class VideoHandle:
     duration_ms: int
     pipe: "Pipe"
 
+
+# ── agents.list (#286) types ──────────────────────────────────────────────────
+
+@dataclass
+class AgentInfo:
+    """One row of the agent roster returned by `Emitter.agent_roster`.
+
+    `pane_id` is the host's stable id for the agent pane; pass it to
+    `Emitter.pipe_open_directed(pipe_id, pane_id)` to wire an inter-agent
+    channel. `app_id` is the manifest id for subprocess agents (or the
+    sentinel `"iq"` for the legacy in-process Cmd+I agent backend).
+    """
+    pane_id: int
+    app_id: str
+    name: str
+
 # ── Theme constants ───────────────────────────────────────────────────────────
 TITLE   = 22.0; HEADING = 18.0; BODY = 15.0; CAPTION = 13.0; HINT = 12.0
 MONO_BODY = 14.0; MONO_SMALL = 12.0
@@ -964,6 +980,66 @@ class Emitter:
                "mode": mode, "direction": direction})
         return p
 
+    def pipe_open_directed(self, pipe_id: str, target_pane_id: int) -> "Pipe":
+        """Open a *directed* JSON pipe to one specific target pane (#286).
+
+        Mirrors `pipe_open` but the host scopes `PipeMessage` delivery so
+        only the caller and `target_pane_id` see traffic on `pipe_id` —
+        peers that coincidentally `pipe_open` the same id stay isolated.
+        Always JSON-mode duplex; `pipe.send(payload)` is symmetric on
+        either end. Used to wire inter-agent channels after discovering
+        a target via `emit.agent_roster()`.
+
+        Capability: `pipe.open` (same as `pipe_open`). The target pane
+        does NOT need `agents.list` to be subscribed — only to be
+        addressable via the roster.
+        """
+        p = Pipe(pipe_id=pipe_id, mode="json", direction="duplex", app=self._app)
+        self._app._pipes[pipe_id] = p
+        _emit({
+            "type": "pipe_open_directed",
+            "pipe_id": pipe_id,
+            "target_pane_id": int(target_pane_id),
+        })
+        return p
+
+    def pipe_send(self, pipe_id: str, payload: Any) -> None:
+        """Send a JSON payload on an already-open pipe by id (#286).
+
+        Use this when you don't own a `Pipe` handle locally — for example
+        when replying on a directed pipe a *peer* opened (you're the target;
+        the host subscribed you, but the SDK doesn't auto-build a handle).
+        Sends a `pipe_send` DrawCommand; the host routes per the existing
+        directed-pipe pair table.
+        """
+        _emit({"type": "pipe_send", "pipe_id": pipe_id, "payload": payload})
+
+    def agent_roster(self) -> "list[AgentInfo]":
+        """Blocking query for live agent panes in the workspace (#286).
+
+        Returns a list of `AgentInfo` rows sorted by `pane_id` ascending.
+        Each row carries `pane_id`, `app_id`, and `name`. Pass the
+        `pane_id` back to `pipe_open_directed(...)` to address an
+        inter-agent pipe.
+
+        Capability: `agents.list`. Apps without it receive an EMPTY
+        list (NOT an error) — the host returns an empty roster on the
+        wire so the caller can't probe the workspace via this surface.
+        """
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[list[dict]]" = queue.Queue()
+        self._app._pending_agent_roster[req_id] = q
+        _emit({"type": "agent_roster_get", "request_id": req_id})
+        rows = q.get()
+        return [
+            AgentInfo(
+                pane_id=int(r.get("pane_id", 0)),
+                app_id=str(r.get("app_id", "")),
+                name=str(r.get("name", "")),
+            )
+            for r in rows
+        ]
+
 
 # ── Pipe ──────────────────────────────────────────────────────────────────────
 
@@ -1423,6 +1499,9 @@ class App:
         # VideoOpenError keyed on request_id. Each entry is consumed by a
         # single open_video() call.
         self._pending_video_open: dict[str, queue.Queue] = {}
+        # v3.3 P2 agents.list (#286): blocks on PlexiEvent::AgentRoster keyed
+        # on request_id. Each entry is consumed by a single agent_roster() call.
+        self._pending_agent_roster: dict[str, queue.Queue] = {}
         self._pending_notify: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
@@ -1686,6 +1765,17 @@ class App:
                 if q:
                     q.put(ev)
 
+            elif t == "agent_roster":
+                # v3.3 P2 agents.list (#286). The `agents` field is always
+                # a list (empty when the app lacks the `agents.list`
+                # capability — the host returns an empty roster, not an
+                # error). Forwarded as-is to the queue waiting in
+                # `Emitter.agent_roster`.
+                req_id = ev.get("request_id", "")
+                q = self._pending_agent_roster.pop(req_id, None)
+                if q:
+                    q.put(ev.get("agents", []) or [])
+
             elif t == "notify_action":
                 # notify_choice / notify_input: put the value back.
                 # notify / notify_and_wait: put action_label back.
@@ -1854,3 +1944,38 @@ class Agent(App):
     def append_system_message(self, text: str) -> None:
         """Append a system / error status row. NOT mirrored into history."""
         _emit({"type": "append_conversation", "role": "system", "content": text})
+
+    # ── Inter-agent helpers (#286) ──────────────────────────────────────────
+    def list_agents(self) -> "list[AgentInfo]":
+        """Blocking helper — returns the workspace's live agent roster.
+
+        Thin wrapper around `self.emit.agent_roster()`. Apps without the
+        `agents.list` capability receive an EMPTY list (not an error).
+
+        Pass an entry's `pane_id` to `open_pipe_to(pane_id, ...)` to start
+        an inter-agent channel.
+        """
+        return self.emit.agent_roster()
+
+    def open_pipe_to(self, pane_id: int, pipe_id: "str | None" = None) -> Pipe:
+        """Open a duplex JSON pipe to another agent pane (#286).
+
+        `pipe_id` defaults to a fresh uuid4 — pass an explicit id only when
+        both ends agreed on one out-of-band. The pipe is duplex; either
+        side calls `pipe.send(payload)` and the other receives it via
+        `on_pipe_message(ctx, pipe_id, payload)`.
+
+        Capability: `pipe.open`.
+        """
+        pid = pipe_id or f"agent-{uuid.uuid4()}"
+        return self.emit.pipe_open_directed(pid, int(pane_id))
+
+    def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> None:
+        """Override to receive directed inter-agent messages.
+
+        The default `App.on_pipe_message` is a no-op. Override on `Agent`
+        subclasses that act as workers / fan-out targets to handle
+        delegated requests.
+        """
+        # Same default as App.on_pipe_message — overridable by subclasses.
+        del ctx, pipe_id, payload
