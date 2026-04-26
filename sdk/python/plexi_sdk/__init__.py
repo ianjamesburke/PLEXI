@@ -428,6 +428,22 @@ class MidiDeviceList:
     inputs: list[MidiPortInfo]
     outputs: list[MidiPortInfo]
 
+
+# ── Video substrate (#345) types ──────────────────────────────────────────────
+
+@dataclass
+class VideoHandle:
+    """Result of `Emitter.open_video`. `handle_id` is opaque — pass it back to
+    `set_video_state` and `close_video`. The associated `Pipe` delivers
+    decoded RGBA8 frames (one frame per `pipe.read_frame()`) of length
+    `width * height * 4`."""
+    handle_id: int
+    width: int
+    height: int
+    fps: float
+    duration_ms: int
+    pipe: "Pipe"
+
 # ── Theme constants ───────────────────────────────────────────────────────────
 TITLE   = 22.0; HEADING = 18.0; BODY = 15.0; CAPTION = 13.0; HINT = 12.0
 MONO_BODY = 14.0; MONO_SMALL = 12.0
@@ -842,6 +858,93 @@ class Emitter:
         # JSON wire shape: array of integers. The host accepts any ints in
         # 0..=255 and rejects empty arrays.
         _emit({"type": "send_midi", "port_id": port_id, "bytes": data})
+
+    def open_video(
+        self,
+        source: str,
+        pipe_id: str,
+        timeout: float = 10.0,
+    ) -> "VideoHandle":
+        """Open a video decoder against `source` and return a VideoHandle
+        carrying the negotiated width/height/fps/duration_ms plus the
+        attached Pipe (#345). Requires `video.playback` capability.
+
+        Decoded frames flow as raw RGBA8 packets on the Pipe — one packet
+        per video frame, length `width * height * 4`. Apps spin a reader
+        thread that calls `handle.pipe.read_frame()` and either renders
+        the bytes (if a frame-render API is available) or surfaces a
+        frame counter.
+
+        Source schemes:
+          - `mock://gradient` — procedural mock decoder (always works).
+          - `file:///...` — production decoder; returns NotImplemented
+            until #346 lands AVFoundation backing.
+
+        Raises CapabilityDeniedError if `video.playback` is not declared.
+        Raises RuntimeError on any other failure (NotImplemented, bad
+        source, decoder error, timeout).
+        """
+        # Open the binary pipe FIRST so the App's `_pipes` registry has it
+        # before PipeOpened arrives. The host emits PipeOpened, then
+        # VideoOpenAck. The Pipe auto-connects to its socket on PipeOpened.
+        pipe = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
+        self._app._pipes[pipe_id] = pipe
+
+        req_id = str(uuid.uuid4())
+        q: "queue.Queue[dict]" = queue.Queue()
+        self._app._pending_video_open[req_id] = q
+        _emit({
+            "type": "open_video",
+            "request_id": req_id,
+            "source": source,
+            "pipe_id": pipe_id,
+        })
+        try:
+            ev = q.get(timeout=timeout)
+        except queue.Empty:
+            self._app._pending_video_open.pop(req_id, None)
+            raise RuntimeError(
+                f"open_video timed out after {timeout}s — host did not respond"
+            )
+        error = ev.get("error")
+        if error is not None:
+            if "capability denied" in error:
+                raise CapabilityDeniedError(error)
+            raise RuntimeError(f"open_video failed: {error}")
+        return VideoHandle(
+            handle_id=int(ev.get("handle_id", 0)),
+            width=int(ev.get("width", 0)),
+            height=int(ev.get("height", 0)),
+            fps=float(ev.get("fps", 0.0)),
+            duration_ms=int(ev.get("duration_ms", 0)),
+            pipe=pipe,
+        )
+
+    def set_video_state(self, handle_id: int, state: str, position_ms: int = 0) -> None:
+        """Drive playback for a video opened with `open_video` (#345).
+        `state` is one of `"play"`, `"pause"`, `"seek"`. For `"seek"`,
+        `position_ms` is the absolute target position in milliseconds.
+        Fire-and-forget — no response event."""
+        if state == "seek":
+            payload: dict[str, Any] = {"kind": "seek", "position_ms": int(position_ms)}
+        elif state == "play":
+            payload = {"kind": "play"}
+        elif state == "pause":
+            payload = {"kind": "pause"}
+        else:
+            raise ValueError(
+                f"set_video_state: unknown state {state!r} (expected play|pause|seek)"
+            )
+        _emit({
+            "type": "set_video_state",
+            "handle_id": int(handle_id),
+            "state": payload,
+        })
+
+    def close_video(self, handle_id: int) -> None:
+        """Close a previously-opened video handle (#345). The host tears down
+        the decoder and drains the binary pipe. No response event."""
+        _emit({"type": "close_video", "handle_id": int(handle_id)})
 
     def set_timer(self, timer_id: str, after_ms: int) -> None:
         """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
@@ -1316,6 +1419,10 @@ class App:
         # v3.4 CoreMIDI (#320): blocks on PlexiEvent::MidiDevicesListed keyed
         # on request_id. Each entry is consumed by a single list_midi_devices().
         self._pending_midi_devices: dict[str, queue.Queue] = {}
+        # v3.4 video substrate (#345): blocks on PlexiEvent::VideoOpenAck /
+        # VideoOpenError keyed on request_id. Each entry is consumed by a
+        # single open_video() call.
+        self._pending_video_open: dict[str, queue.Queue] = {}
         self._pending_notify: dict[str, queue.Queue] = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
@@ -1562,6 +1669,22 @@ class App:
                     f"midi_send_error port_id={ev.get('port_id')} "
                     f"error={ev.get('error')}"
                 )
+
+            elif t == "video_open_ack":
+                # v3.4 video substrate (#345). Forward to Emitter.open_video().
+                req_id = str(ev.get("request_id", ""))
+                q = self._pending_video_open.pop(req_id, None)
+                if q:
+                    q.put(ev)
+
+            elif t == "video_open_error":
+                # OpenVideo failed (capability denied, NotImplemented from the
+                # production stub, bad source). Forward the error event so
+                # `open_video()` can raise CapabilityDeniedError / RuntimeError.
+                req_id = str(ev.get("request_id", ""))
+                q = self._pending_video_open.pop(req_id, None)
+                if q:
+                    q.put(ev)
 
             elif t == "notify_action":
                 # notify_choice / notify_input: put the value back.
