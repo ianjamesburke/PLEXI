@@ -43,8 +43,17 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// The current manifest schema version. Bumped whenever a required field is
+/// added/removed/renamed so older or newer manifests fail loud at install
+/// rather than silently behave wrong. (Issue #308 Phase 2.)
+pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct AppManifest {
+    /// Required schema version — refuses to load if greater than
+    /// `MANIFEST_SCHEMA_VERSION`. No serde-default: a manifest that omits
+    /// `schema_version` is rejected so contributors notice the contract.
+    pub schema_version: u32,
     pub app: AppManifestApp,
     #[serde(default)]
     pub launch: LaunchSection,
@@ -327,6 +336,14 @@ impl AppRegistry {
         let manifest: AppManifest =
             toml::from_str(&manifest_str).map_err(|e| format!("invalid manifest: {e}"))?;
 
+        if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
+            return Err(format!(
+                "manifest schema_version = {} is newer than this Plexi build supports (max {}); \
+                 update Plexi to install this app",
+                manifest.schema_version, MANIFEST_SCHEMA_VERSION
+            ));
+        }
+
         // STEP-7: refuse to install an app whose declared capabilities include
         // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
         // this replaces it with a loud install-time failure.
@@ -553,7 +570,7 @@ mod tests {
         let app_dir = dir.join(id);
         fs::create_dir_all(&app_dir).unwrap();
         let manifest = format!(
-            "[app]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
         );
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         let entry = app_dir.join("run.sh");
@@ -631,6 +648,61 @@ mod tests {
             .get("code-reviewer")
             .expect("agent should be discovered");
         assert_eq!(agent.source, RegistrySource::LocalAgent);
+    }
+
+    #[test]
+    fn manifest_with_schema_version_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app(global.path(), "ok-app", "Ok App");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(registry.get("ok-app").is_some());
+    }
+
+    #[test]
+    fn manifest_with_future_schema_version_refuses() {
+        let global = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("future-app");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = format!(
+            "schema_version = {}\n\n[app]\nid = \"future-app\"\nname = \"Future\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n",
+            MANIFEST_SCHEMA_VERSION + 1
+        );
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let bare = tempfile::tempdir().unwrap();
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            registry.get("future-app").is_none(),
+            "future schema_version manifest must be skipped"
+        );
+    }
+
+    #[test]
+    fn manifest_missing_schema_version_errors() {
+        // Direct unit test of the manifest deserialiser: a manifest without
+        // `schema_version` must fail to parse — no serde-default fallback.
+        let raw = r#"
+[app]
+id = "no-version"
+name = "No Version"
+version = "0.0.1"
+entry = "run.sh"
+"#;
+        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "manifest missing schema_version must be rejected, got: {parsed:?}"
+        );
     }
 
     #[test]

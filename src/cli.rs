@@ -576,6 +576,228 @@ pub fn app_list() -> i32 {
     0
 }
 
+// ── Top-level package manager subcommands (#308 Phase 2) ──────────────────────
+
+/// `plexi install <source-spec>[@ref]` — clone + place one app into the
+/// channel apps dir. Source spec follows `packs::parse_source_spec`.
+pub fn install_cli(spec: &str) -> i32 {
+    let (source_str, git_ref) = crate::install::split_source_and_ref(spec);
+    let source = match crate::packs::parse_source_spec(&source_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let target_root = crate::app_registry::apps_dir();
+    let cloner = crate::install::GitCloner;
+    match crate::install::install_one(&cloner, &source, git_ref.as_deref(), &target_root) {
+        Ok(outcome) => match outcome.status {
+            crate::install::InstallStatus::Installed(path) => {
+                println!("installed '{}' at {}", outcome.id, path.display());
+                0
+            }
+            crate::install::InstallStatus::AlreadyAtVersion => {
+                println!("already at requested version");
+                0
+            }
+            crate::install::InstallStatus::SkippedOtherVersion {
+                installed,
+                requested,
+            } => {
+                eprintln!(
+                    "'{}' already installed at {installed} (requested {requested}); \
+                     uninstall first or use `plexi update`",
+                    outcome.id
+                );
+                1
+            }
+            crate::install::InstallStatus::Failed(msg) => {
+                eprintln!("error: {msg}");
+                1
+            }
+        },
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi install --pack <path|core>` — apply a whole pack file.
+pub fn install_pack_cli(spec: &str) -> i32 {
+    let pack = if spec == "core" {
+        match crate::packs::Pack::from_toml_str(crate::install::CORE_PACK_TOML) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: bundled core pack invalid: {e}");
+                return 1;
+            }
+        }
+    } else {
+        match crate::packs::Pack::from_path(std::path::Path::new(spec)) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    };
+    let target_root = crate::app_registry::apps_dir();
+    if let Err(e) = std::fs::create_dir_all(&target_root) {
+        eprintln!("error: create apps dir {}: {e}", target_root.display());
+        return 1;
+    }
+    let cloner = crate::install::GitCloner;
+    let outcomes = crate::install::apply_pack(&cloner, &pack, &target_root);
+    let mut any_failed = false;
+    for o in &outcomes {
+        match &o.status {
+            crate::install::InstallStatus::Installed(p) => {
+                println!("  installed  {:30} → {}", o.id, p.display());
+            }
+            crate::install::InstallStatus::AlreadyAtVersion => {
+                println!("  up-to-date {:30}", o.id);
+            }
+            crate::install::InstallStatus::SkippedOtherVersion {
+                installed,
+                requested,
+            } => {
+                println!(
+                    "  skipped    {:30} (installed {installed}, requested {requested})",
+                    o.id
+                );
+            }
+            crate::install::InstallStatus::Failed(msg) => {
+                eprintln!("  FAILED     {:30} {msg}", o.id);
+                any_failed = true;
+            }
+        }
+    }
+    if any_failed {
+        1
+    } else {
+        0
+    }
+}
+
+/// `plexi uninstall <id> [--yes]` — remove a globally installed app after
+/// a confirmation prompt (skipped with `--yes`).
+pub fn uninstall_cli(id: &str, assume_yes: bool) -> i32 {
+    let target_root = crate::app_registry::apps_dir();
+    let dest = target_root.join(id);
+    if !dest.exists() {
+        eprintln!("error: '{id}' is not installed at {}", dest.display());
+        return 1;
+    }
+    if !assume_yes {
+        eprint!("Remove {} ? [y/N]: ", dest.display());
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() {
+            eprintln!("error: failed to read confirmation");
+            return 1;
+        }
+        let trimmed = answer.trim().to_lowercase();
+        if trimmed != "y" && trimmed != "yes" {
+            eprintln!("aborted");
+            return 1;
+        }
+    }
+    match crate::install::uninstall_one(id, &target_root) {
+        Ok(()) => {
+            println!("uninstalled '{id}'");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi update [<id>]` — git-pull one installed app, or all of them.
+/// Apps that aren't git checkouts (e.g. bundled core entries) are skipped
+/// with a debug-level log line and reported but not failed.
+pub fn update_cli(maybe_id: Option<&str>) -> i32 {
+    let target_root = crate::app_registry::apps_dir();
+    let cloner = crate::install::GitCloner;
+    let ids: Vec<String> = match maybe_id {
+        Some(id) => vec![id.to_string()],
+        None => crate::install::installed_versions(&target_root)
+            .into_keys()
+            .collect(),
+    };
+    if ids.is_empty() {
+        println!("no apps installed");
+        return 0;
+    }
+    let mut any_failed = false;
+    for id in ids {
+        match crate::install::update_one(&cloner, &id, &target_root) {
+            Ok(()) => println!("  updated  {id}"),
+            Err(e) if e.contains("not a git checkout") => {
+                println!("  skipped  {id} (not a git checkout)");
+            }
+            Err(e) => {
+                eprintln!("  FAILED   {id}: {e}");
+                any_failed = true;
+            }
+        }
+    }
+    if any_failed {
+        1
+    } else {
+        0
+    }
+}
+
+/// `plexi list` — show installed apps grouped by scope (global vs. workspace).
+pub fn list_cli() -> i32 {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let registry = crate::app_registry::AppRegistry::load(&cwd);
+    let installed = registry.list();
+    if installed.is_empty() {
+        println!("no apps installed");
+        println!("install one with: plexi install <source>[@ref]");
+        return 0;
+    }
+    // Read versions directly from the global apps dir for the source-of-truth
+    // version field — the registry only carries `manifest.version` at load time.
+    let global_versions = crate::install::installed_versions(&crate::app_registry::apps_dir());
+    let workspace_root = crate::app_registry::resolve_workspace_root(&cwd);
+    let mut globals = Vec::new();
+    let mut workspace = Vec::new();
+    for app in installed {
+        let version = global_versions
+            .get(&app.manifest.id)
+            .cloned()
+            .unwrap_or_else(|| app.manifest.version.clone());
+        let row = (app.manifest.id.clone(), app.manifest.name.clone(), version);
+        match app.source {
+            crate::app_registry::RegistrySource::Global => globals.push(row),
+            crate::app_registry::RegistrySource::LocalApp
+            | crate::app_registry::RegistrySource::LocalAgent => workspace.push(row),
+        }
+    }
+    if !globals.is_empty() {
+        println!("Global apps ({})", crate::app_registry::apps_dir().display());
+        for (id, name, version) in &globals {
+            println!("  {:30} {:30} {}", id, name, version);
+        }
+    }
+    if !workspace.is_empty() {
+        if let Some(root) = workspace_root {
+            println!();
+            println!("Workspace apps ({})", root.display());
+            for (id, name, version) in &workspace {
+                println!("  {:30} {:30} {}", id, name, version);
+            }
+        }
+    }
+    0
+}
+
 /// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]`.
 /// Writes a JSON file to the notify queue dir; the running host polls and ingests it.
 pub fn notify_cli(title: &str, body: &str, level: &str) -> i32 {

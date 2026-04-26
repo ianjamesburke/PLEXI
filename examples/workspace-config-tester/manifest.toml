@@ -1,3 +1,5 @@
+schema_version = 1
+
 [app]
 id = "workspace-config-tester"
 name = "Workspace Config Tester"
