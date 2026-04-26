@@ -378,6 +378,7 @@ pub(super) fn render_draw_commands(
             | DrawCommand::AudioMeter { .. }
             | DrawCommand::AudioPlay { .. }
             | DrawCommand::AudioCapture { .. }
+            | DrawCommand::ListAudioDevices { .. }
             | DrawCommand::Ready { .. }
             | DrawCommand::ScheduleRender { .. }
             | DrawCommand::SetTimer { .. }

@@ -192,6 +192,54 @@ pub enum PlexiEvent {
         tokens_out: u32,
         error: Option<String>,
     },
+    /// Response to a `DrawCommand::ListAudioDevices` request (#277).
+    /// Both vectors are always present — empty when enumeration finds no
+    /// devices of that direction. `error` is set only when device
+    /// enumeration itself failed (host without an audio host driver, etc).
+    AudioDevicesListed {
+        request_id: String,
+        inputs: Vec<AudioDeviceWire>,
+        outputs: Vec<AudioDeviceWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Sent when a `DrawCommand::AudioCapture` successfully opened the device
+    /// and started delivering PCM frames on `pipe_id`. The `sample_rate`,
+    /// `channels`, and `buffer_size` are the actual negotiated values — the
+    /// app must use these (not its requested values) when interpreting frames.
+    AudioCaptureStarted {
+        pipe_id: String,
+        sample_rate: u32,
+        channels: u16,
+        buffer_size: u32,
+        device_name: String,
+    },
+    /// Sent when a `DrawCommand::AudioCapture` could not be honoured —
+    /// permission denied, bad device id, no devices, cpal failure.
+    AudioCaptureError {
+        pipe_id: String,
+        error: String,
+    },
+}
+
+/// On-the-wire shape of one audio device. Mirrors `audio::AudioDeviceInfo`
+/// but lives on the protocol surface so SDKs in other languages can map it
+/// without depending on the audio module.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AudioDeviceWire {
+    pub id: String,
+    pub name: String,
+    pub default: bool,
+}
+
+impl From<crate::audio::AudioDeviceInfo> for AudioDeviceWire {
+    fn from(info: crate::audio::AudioDeviceInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            default: info.default,
+        }
+    }
 }
 
 /// One message in an `IqQuery` conversation. Wire shape mirrors Anthropic
@@ -513,13 +561,22 @@ pub enum DrawCommand {
         state: String,
     },
     /// Host-owned audio capture: mic PCM delivered on a binary pipe.
+    /// `device_id` selects which input device (from `ListAudioDevices`); when
+    /// `None` the host opens the OS default input. The negotiated parameters
+    /// arrive in `PlexiEvent::AudioCaptureStarted`; failures arrive in
+    /// `PlexiEvent::AudioCaptureError`.
     AudioCapture {
         pipe_id: String,
-        #[serde(default = "default_sample_rate")]
+        #[serde(default)]
+        device_id: Option<String>,
         sample_rate: u32,
-        #[serde(default = "default_buffer_size")]
         buffer_size: u32,
     },
+    /// Request enumeration of audio devices (#277). Host responds with
+    /// `PlexiEvent::AudioDevicesListed { request_id, inputs, outputs }`. No
+    /// capability gate — enumeration discloses only device names already
+    /// visible to any macOS app.
+    ListAudioDevices { request_id: String },
 
     /// SDK ready handshake. Sent once by the app after receiving Init.
     /// Host captures sdk and features_used; the message is otherwise a no-op.
@@ -785,14 +842,6 @@ fn default_volume() -> f32 {
     1.0
 }
 
-fn default_sample_rate() -> u32 {
-    48_000
-}
-
-fn default_buffer_size() -> u32 {
-    1024
-}
-
 fn default_llm_model() -> String {
     "claude-haiku-4-5-20251001".to_string()
 }
@@ -969,5 +1018,71 @@ mod tests {
             result.is_err(),
             "deserialise should fail without `tools` field"
         );
+    }
+
+    // ── v3.4 audio capture wire shape (#277) ─────────────────────────────
+    // Pin the on-the-wire shape for ListAudioDevices / AudioDevicesListed /
+    // AudioCapture. Required fields fail to deserialise when absent.
+
+    #[test]
+    fn list_audio_devices_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"list_audio_devices","request_id":"req-9"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::ListAudioDevices { request_id } => {
+                assert_eq!(request_id, "req-9");
+            }
+            other => panic!("expected ListAudioDevices, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"list_audio_devices""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn audio_devices_listed_event_round_trips_serde() {
+        let json = r#"{"type":"audio_devices_listed","request_id":"req-9","inputs":[{"id":"abc","name":"Built-in Mic","default":true}],"outputs":[{"id":"def","name":"Built-in Speakers","default":true}]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AudioDevicesListed { request_id, inputs, outputs, error } => {
+                assert_eq!(request_id, "req-9");
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(inputs[0].id, "abc");
+                assert!(inputs[0].default);
+                assert_eq!(outputs.len(), 1);
+                assert_eq!(outputs[0].name, "Built-in Speakers");
+                assert!(error.is_none());
+            }
+            other => panic!("expected AudioDevicesListed, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"audio_devices_listed""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn audio_capture_drawcommand_required_fields() {
+        // `sample_rate` and `buffer_size` are now required (no serde-default).
+        // `device_id` is the only optional field.
+        let bad = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required sample_rate/buffer_size"
+        );
+        let good = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null,"sample_rate":48000,"buffer_size":512}"#;
+        let cmd: DrawCommand = serde_json::from_str(good).expect("deserialise");
+        match &cmd {
+            DrawCommand::AudioCapture { pipe_id, device_id, sample_rate, buffer_size } => {
+                assert_eq!(pipe_id, "mic");
+                assert!(device_id.is_none());
+                assert_eq!(*sample_rate, 48_000);
+                assert_eq!(*buffer_size, 512);
+            }
+            other => panic!("expected AudioCapture, got {other:?}"),
+        }
     }
 }

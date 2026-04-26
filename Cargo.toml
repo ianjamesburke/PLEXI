@@ -9,6 +9,10 @@ identifier = "com.ianjamesburke.plexi"
 icon = ["assets/app-icon.icns"]
 short_description = "Spatial terminal window manager"
 osx_minimum_system_version = "12.0"
+# macOS TCC: triggers the system mic-permission prompt on the first
+# `cpal::Stream::play()` call. Without this string the prompt is suppressed
+# and capture silently records zeros (#277).
+osx_info_plist_exts = ["assets/Info.plist.fragment"]
 
 [dependencies]
 egui = "0.31"
@@ -41,6 +45,8 @@ fontdue = "0.9"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 # FD CLOEXEC (step 9e). fcntl for close-on-exec on pipe sockets.
 libc = "0.2"
+# CoreAudio capture + device enumeration (#277). Cross-platform PCM I/O.
+cpal = "0.17"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
