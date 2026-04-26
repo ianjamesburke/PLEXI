@@ -24,6 +24,7 @@ use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::audio::{AudioDevice, CaptureSession};
 use crate::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
+use crate::video::{VideoDecoder, VideoHandle};
 use crate::event_log::{self, HostEvent};
 use crate::host::services::{NetService, UreqNetService};
 use crate::plexi_iq::broker::{IqBroker, LiveIqBroker};
@@ -127,6 +128,21 @@ pub struct ProcessApp {
     /// `SendMidi` to a given port_id creates the handle; subsequent sends
     /// reuse it. Dropped on app shutdown.
     pub(crate) midi_output_handles: HashMap<String, MidiOutputHandle>,
+    /// Video decoder backend (#345). `Arc<dyn VideoDecoder>` so production
+    /// panes share an `AvfVideoDecoder` while tests inject `MockVideoDecoder`.
+    /// The factory selects `MockVideoDecoder` when `PLEXI_VIDEO=mock://...`
+    /// is set, so the POC `examples/video-player/` app can exercise the
+    /// substrate without AVFoundation. Production `AvfVideoDecoder::open`
+    /// returns `Err(NotImplemented)` until #346 lands real backing.
+    pub(crate) video_device: Arc<dyn VideoDecoder>,
+    /// Live video handles, keyed on `handle_id` returned in `VideoOpenAck`.
+    /// Dropping a handle tears down the decoder thread (mock) and closes
+    /// the underlying binary pipe. The map is drained on app shutdown.
+    pub(crate) video_handles: HashMap<u64, VideoHandle>,
+    /// Per-handle pipe id, so `CloseVideo { handle_id }` can locate the
+    /// pipe to close in the registry. Populated on `OpenVideo` success;
+    /// drained alongside `video_handles`.
+    pub(crate) video_pipe_ids: HashMap<u64, String>,
     /// Cancel flags for pending timers. Key = timer_id, value = Arc<AtomicBool> set to true to cancel.
     pub(crate) pending_timers: HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Observable lifecycle state (issue #316). Written by the stdout/stderr
@@ -352,6 +368,9 @@ impl ProcessApp {
             midi_device: default_midi_device(),
             midi_input_sessions: HashMap::new(),
             midi_output_handles: HashMap::new(),
+            video_device: crate::video::default_video_device(),
+            video_handles: HashMap::new(),
+            video_pipe_ids: HashMap::new(),
             pending_timers: HashMap::new(),
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,

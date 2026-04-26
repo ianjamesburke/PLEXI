@@ -273,6 +273,26 @@ pub enum PlexiEvent {
         port_id: String,
         error: String,
     },
+    /// Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has
+    /// allocated the binary pipe (look for the preceding `PipeOpened`),
+    /// started the decoder, and is now pumping RGBA8 frames into the pipe.
+    /// `handle_id` is the opaque handle the app passes to subsequent
+    /// `SetVideoState` / `CloseVideo` commands.
+    VideoOpenAck {
+        request_id: String,
+        handle_id: u64,
+        width: u32,
+        height: u32,
+        fps: f32,
+        duration_ms: u64,
+    },
+    /// Sent when `DrawCommand::OpenVideo` could not be honoured (#345) —
+    /// capability denied, source not found, decoder error, or the
+    /// production stub's `NotImplemented` (until #346 ships).
+    VideoOpenError {
+        request_id: String,
+        error: String,
+    },
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -613,13 +633,33 @@ pub enum DrawCommand {
         #[serde(default = "default_image_fit")]
         fit: String,
     },
-    /// Host-owned video decoder: emits frames on a binary pipe.
-    VideoPlayer {
+    /// Open a video decoder (#345). The host responds with
+    /// `PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,
+    /// fps, duration_ms }` on success or `PlexiEvent::VideoOpenError
+    /// { request_id, error }` on failure (capability denied, source not
+    /// found, decoder error, NotImplemented from the production stub).
+    /// Decoded RGBA8 frames flow over the binary pipe at `pipe_id`; one
+    /// pipe frame = one video frame, packed `[R,G,B,A,...]` of length
+    /// `width * height * 4`.
+    ///
+    /// Requires `video.playback` capability. All fields required —
+    /// no `serde(default)`.
+    OpenVideo {
+        request_id: String,
         source: String,
-        rect: Rect,
-        /// One of: "playing" | "paused" | "stopped".
-        state: String,
+        pipe_id: String,
     },
+    /// Drive playback state for a previously-opened video handle (#345).
+    /// `handle_id` is the value returned in `VideoOpenAck`. State variants:
+    /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
+    SetVideoState {
+        handle_id: u64,
+        state: crate::video::VideoState,
+    },
+    /// Close a previously-opened video handle (#345). Tears down the
+    /// decoder thread and the associated binary pipe drains. No response
+    /// event — fire-and-forget.
+    CloseVideo { handle_id: u64 },
     /// Render an amplitude meter reading from a binary pipe.
     AudioMeter { rect: Rect, pipe_id: String },
     /// Host-owned audio playback via `rodio`.

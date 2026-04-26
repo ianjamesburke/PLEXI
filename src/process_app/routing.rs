@@ -790,11 +790,75 @@ impl ProcessApp {
                     self.type_id
                 );
             }
-            DrawCommand::VideoPlayer { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: VideoPlayer not yet implemented (v3.1)",
-                    self.type_id
-                );
+            DrawCommand::OpenVideo {
+                request_id,
+                source,
+                pipe_id,
+            } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::VideoPlayback)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenVideo denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::VideoOpenError {
+                        request_id,
+                        error: format!("capability denied: {reason}"),
+                    });
+                    return;
+                }
+                self.start_video(request_id, source, pipe_id);
+            }
+            DrawCommand::SetVideoState { handle_id, state } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::VideoPlayback)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: SetVideoState denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
+                match self.video_handles.get_mut(&handle_id) {
+                    Some(h) => {
+                        if let Err(e) = h.set_state(state) {
+                            log::warn!(
+                                "ProcessApp[{}]: SetVideoState handle_id={handle_id} failed: {e}",
+                                self.type_id
+                            );
+                        }
+                    }
+                    None => {
+                        log::warn!(
+                            "ProcessApp[{}]: SetVideoState on unknown handle_id={handle_id}",
+                            self.type_id
+                        );
+                    }
+                }
+            }
+            DrawCommand::CloseVideo { handle_id } => {
+                // Drop the handle (its Drop impl tears down the worker /
+                // decoder) and close the associated binary pipe so the
+                // drain thread exits. Fire-and-forget — no response event.
+                if let Some(h) = self.video_handles.remove(&handle_id) {
+                    drop(h);
+                    if let Some(pipe_id) = self.video_pipe_ids.remove(&handle_id) {
+                        self.pipe_registry
+                            .lock()
+                            .expect("pipe_registry poisoned")
+                            .close(&pipe_id);
+                    }
+                    log::info!(
+                        "app::{} video.close: handle_id={handle_id}",
+                        self.type_id
+                    );
+                } else {
+                    log::debug!(
+                        "ProcessApp[{}]: CloseVideo on inactive handle_id={handle_id} (no-op)",
+                        self.type_id
+                    );
+                }
             }
             DrawCommand::AudioMeter { .. } => {
                 log::warn!(
@@ -1135,6 +1199,104 @@ impl ProcessApp {
                 port_id,
                 error: format!("{e}"),
             });
+        }
+    }
+
+    /// Allocate a binary pipe for `pipe_id`, open the video decoder against
+    /// `source`, and wire decoded RGBA8 frames into the pipe ring (#345).
+    /// On any failure emits `PlexiEvent::VideoOpenError` and frees the pipe
+    /// so the app's `pipe_open` queue stays consistent.
+    pub(super) fn start_video(
+        &mut self,
+        request_id: String,
+        source: String,
+        pipe_id: String,
+    ) {
+        // Allocate the binary pipe first — without a destination the decoder
+        // would have nowhere to push frames. Mirrors the audio / MIDI flow.
+        let socket_path = match self
+            .pipe_registry
+            .lock()
+            .expect("pipe_registry poisoned")
+            .open_binary(pipe_id.clone(), PipeDirection::In)
+        {
+            Ok(alloc) => alloc.socket_path,
+            Err(e) => {
+                log::warn!(
+                    "ProcessApp[{}]: OpenVideo pipe alloc failed for {pipe_id}: {e}",
+                    self.type_id
+                );
+                self.outbound_events.push_back(PlexiEvent::VideoOpenError {
+                    request_id,
+                    error: format!("pipe alloc failed: {e}"),
+                });
+                return;
+            }
+        };
+
+        let ring = match self
+            .pipe_registry
+            .lock()
+            .expect("pipe_registry poisoned")
+            .binary_ring(&pipe_id)
+        {
+            Some(r) => r,
+            None => {
+                self.pipe_registry
+                    .lock()
+                    .expect("pipe_registry poisoned")
+                    .close(&pipe_id);
+                self.outbound_events.push_back(PlexiEvent::VideoOpenError {
+                    request_id,
+                    error: "pipe ring missing after open".to_owned(),
+                });
+                return;
+            }
+        };
+
+        // Notify the app that the pipe is open BEFORE the decoder starts so
+        // the app can connect to the unix socket before the first frame.
+        self.outbound_events.push_back(PlexiEvent::PipeOpened {
+            pipe_id: pipe_id.clone(),
+            socket_path,
+        });
+
+        match self.video_device.open(&source, std::sync::Arc::clone(&ring)) {
+            Ok((ack, handle)) => {
+                log::info!(
+                    "app::{} video.open: handle_id={}, source={source:?}, {}x{} @ {} fps, duration_ms={}",
+                    self.type_id,
+                    ack.handle_id,
+                    ack.width,
+                    ack.height,
+                    ack.fps,
+                    ack.duration_ms,
+                );
+                self.video_handles.insert(ack.handle_id, handle);
+                self.video_pipe_ids.insert(ack.handle_id, pipe_id);
+                self.outbound_events.push_back(PlexiEvent::VideoOpenAck {
+                    request_id,
+                    handle_id: ack.handle_id,
+                    width: ack.width,
+                    height: ack.height,
+                    fps: ack.fps,
+                    duration_ms: ack.duration_ms,
+                });
+            }
+            Err(e) => {
+                log::warn!(
+                    "ProcessApp[{}]: OpenVideo failed for source={source:?}: {e}",
+                    self.type_id
+                );
+                self.pipe_registry
+                    .lock()
+                    .expect("pipe_registry poisoned")
+                    .close(&pipe_id);
+                self.outbound_events.push_back(PlexiEvent::VideoOpenError {
+                    request_id,
+                    error: format!("{e}"),
+                });
+            }
         }
     }
 }
