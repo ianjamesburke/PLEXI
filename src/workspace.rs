@@ -36,7 +36,7 @@ pub struct SavedPane {
     pub app_state: Option<serde_json::Value>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum SavedPaneKind {
     #[default]
@@ -81,6 +81,40 @@ impl WorkspaceFile {
                 let _ = std::fs::rename(&path, &backup);
                 None
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `SavedPaneKind` must serialise every Pane variant produced by mirror-split
+    /// (Cmd+N / Cmd+Shift+N): Terminal, App, Agent. Round-tripping through JSON
+    /// preserves the kind so a workspace saved after a split restores the same
+    /// pane type on next launch.
+    #[test]
+    fn workspace_save_restore_preserves_split_panes() {
+        let kinds = [
+            SavedPaneKind::Terminal,
+            SavedPaneKind::App,
+            SavedPaneKind::Agent,
+        ];
+        for kind in kinds {
+            let pane = SavedPane {
+                id: 42,
+                kind,
+                cwd: PathBuf::from("/tmp"),
+                name: Some("split-pane".to_string()),
+                app_id: matches!(kind, SavedPaneKind::App)
+                    .then(|| "snake".to_string()),
+                app_state: None,
+            };
+            let json = serde_json::to_string(&pane).expect("serialize");
+            let restored: SavedPane = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(restored.kind, kind, "kind {kind:?} must round-trip");
+            assert_eq!(restored.id, 42);
+            assert_eq!(restored.cwd, PathBuf::from("/tmp"));
         }
     }
 }

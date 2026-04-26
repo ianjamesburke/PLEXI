@@ -198,3 +198,55 @@ impl HostModel {
 }
 
 // Shorthand to avoid repeating the long path in new_context().
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::services::{EventSink, HostServices};
+
+    /// Test sink that drops every effect — no audit trail required for unit tests.
+    struct NullSink;
+    impl EventSink for NullSink {
+        fn emit(&mut self, _: &HostEffect) {}
+    }
+
+    fn services() -> HostServices {
+        HostServices {
+            event_sink: Box::new(NullSink),
+        }
+    }
+
+    /// Cmd+N is wired to `HostCommand::SplitVertical` (semantically: side-by-side,
+    /// new pane on the right). Confirm the host emits `Placement::Right`.
+    #[test]
+    fn cmd_n_splits_right_of_focused_pane() {
+        let mut model = HostModel::new();
+        let mut svc = services();
+        let effects = model.handle_command(HostCommand::SplitVertical, &mut svc);
+        let placement = effects
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::SplitOpened { placement, .. } => Some(*placement),
+                _ => None,
+            })
+            .expect("SplitOpened effect must be emitted");
+        assert_eq!(placement, Placement::Right);
+    }
+
+    /// Cmd+Shift+N is wired to `HostCommand::SplitHorizontal` (stacked, new
+    /// pane below). Confirm the host emits `Placement::Below`.
+    #[test]
+    fn cmd_shift_n_splits_below_focused_pane() {
+        let mut model = HostModel::new();
+        let mut svc = services();
+        let effects = model.handle_command(HostCommand::SplitHorizontal, &mut svc);
+        let placement = effects
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::SplitOpened { placement, .. } => Some(*placement),
+                _ => None,
+            })
+            .expect("SplitOpened effect must be emitted");
+        assert_eq!(placement, Placement::Below);
+    }
+}

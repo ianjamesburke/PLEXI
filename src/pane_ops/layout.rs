@@ -124,6 +124,93 @@ impl PlexiApp {
         Some(new_tile)
     }
 
+    /// Split the focused pane in the requested direction, creating a new pane
+    /// that mirrors the focused pane's type:
+    ///
+    /// - Terminal → new terminal in the same cwd
+    /// - App      → fresh instance of the same app (`launch_app_by_id`)
+    /// - Agent    → new agent
+    ///
+    /// If no pane is focused, falls back to creating a full-size terminal.
+    pub(crate) fn split_focused_mirror(&mut self, placement: Placement) {
+        let active = self.active_context;
+        let Some(focused_tile) = self.contexts[active].focused_pane else {
+            // No focused pane → create a full-size terminal in the active context.
+            // The empty-context path: if the context has no panes at all, replace
+            // the tree. If it has panes but none focused (rare), drop into the
+            // standard terminal split path which will no-op for now.
+            if self.contexts[active].panes.is_empty() {
+                if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(None) {
+                    self.contexts[active].tree = tree;
+                    self.contexts[active].panes = panes;
+                    self.contexts[active].focused_pane = Some(root_tile);
+                }
+            }
+            return;
+        };
+
+        let Some(Tile::Pane(focused_pane_id)) =
+            self.contexts[active].tree.tiles.get(focused_tile)
+        else {
+            return;
+        };
+        let focused_pane_id = *focused_pane_id;
+
+        // Determine the focused pane's type for the mirror decision.
+        // Capture app manifest_id up front so we can drop the immutable borrow
+        // before mutating in the App branch.
+        enum Kind {
+            Terminal,
+            App(String),
+            Agent,
+        }
+        let kind = match self.contexts[active].panes.get(&focused_pane_id) {
+            Some(Pane::Terminal(_)) => Kind::Terminal,
+            Some(Pane::App(a)) => Kind::App(a.manifest_id.clone()),
+            Some(Pane::Agent(_)) => Kind::Agent,
+            None => return,
+        };
+
+        // `vertical` parameter for `split_with_new_pane` / `split_focused`:
+        //   true  → side-by-side (new pane on the right) → Placement::Right
+        //   false → stacked      (new pane below)         → Placement::Below
+        let vertical = matches!(placement, Placement::Right);
+
+        match kind {
+            Kind::Terminal => {
+                // Reuse the existing terminal split path.
+                self.split_focused(vertical);
+            }
+            Kind::App(manifest_id) => {
+                // Fresh instance of the same app at the requested placement.
+                // The layout hint maps directly to the split direction:
+                //   Placement::Right → "split_v" (side-by-side, new pane right)
+                //   Placement::Below → "split_h" (stacked,      new pane below)
+                let layout = if vertical { "split_v" } else { "split_h" };
+                self.launch_app_by_id_with_layout(
+                    &manifest_id,
+                    Some(layout.to_string()),
+                    &[],
+                );
+            }
+            Kind::Agent => {
+                let cwd = self.contexts[active]
+                    .get_focused_pane_cwd(focused_tile)
+                    .unwrap_or_else(|| {
+                        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"))
+                    });
+                let new_id = self.host.alloc_pane_id();
+                let pane = crate::agent_pane::AgentPane::new(new_id, cwd);
+                self.contexts[active]
+                    .panes
+                    .insert(new_id, Pane::Agent(Box::new(pane)));
+                let share = crate::host::command::ShareRatio::new(1.0, 1.0)
+                    .expect("1:1 is valid");
+                let _ = self.split_with_new_pane(new_id, vertical, share, false);
+            }
+        }
+    }
+
     pub(crate) fn split_focused(&mut self, vertical: bool) {
         let Some(focused) = self.contexts[self.active_context].focused_pane else {
             return;

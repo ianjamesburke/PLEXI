@@ -1018,7 +1018,15 @@ impl eframe::App for PlexiApp {
                     self.contexts[self.active_context].zoomed_pane = None;
                     self.split_focused(true);
                 }
-                Action::Navigate(dir) => {
+                Action::SplitRight => {
+                    self.contexts[self.active_context].zoomed_pane = None;
+                    self.split_focused_mirror(crate::host::command::Placement::Right);
+                }
+                Action::SplitDown => {
+                    self.contexts[self.active_context].zoomed_pane = None;
+                    self.split_focused_mirror(crate::host::command::Placement::Below);
+                }
+                Action::Navigate(dir) | Action::LateralFocus(dir) => {
                     let was_zoomed = self.contexts[self.active_context].zoomed_pane.is_some();
                     self.navigate(dir);
                     if was_zoomed {
@@ -1092,9 +1100,6 @@ impl eframe::App for PlexiApp {
                             self.renaming_pane = Some(pane_id);
                         }
                     }
-                }
-                Action::NewContext => {
-                    self.new_context();
                 }
                 Action::SwitchContext(n) => {
                     if n < self.contexts.len() {
