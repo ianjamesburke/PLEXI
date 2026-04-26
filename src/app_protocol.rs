@@ -241,6 +241,58 @@ pub enum PlexiEvent {
         pipe_id: String,
         error: String,
     },
+    /// Response to a `DrawCommand::ListMidiDevices` request (#320).
+    /// Both vectors are always present — empty when CoreMIDI finds no
+    /// endpoints of that direction. `error` is set only when MIDI subsystem
+    /// itself failed to enumerate (CoreMIDI unavailable, etc).
+    MidiDevicesListed {
+        request_id: String,
+        inputs: Vec<MidiPortWire>,
+        outputs: Vec<MidiPortWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Sent when a `DrawCommand::OpenMidiInput` successfully opened the port
+    /// and started forwarding incoming MIDI byte streams to the binary pipe
+    /// at `pipe_id`. The host emitted `PipeOpened { pipe_id, socket_path }`
+    /// just before this event so the app can connect to the socket.
+    MidiInputOpened {
+        pipe_id: String,
+        port_id: String,
+        port_name: String,
+    },
+    /// Sent when `DrawCommand::OpenMidiInput` could not be honoured —
+    /// permission denied, port not found, CoreMIDI failure.
+    MidiInputError {
+        pipe_id: String,
+        error: String,
+    },
+    /// Sent when `DrawCommand::SendMidi` could not be honoured. Successful
+    /// sends produce no event (fire-and-forget); only failures surface.
+    MidiSendError {
+        port_id: String,
+        error: String,
+    },
+}
+
+/// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
+/// on the protocol surface so SDKs in other languages can map it without
+/// depending on the midi module.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MidiPortWire {
+    pub id: String,
+    pub name: String,
+    pub default: bool,
+}
+
+impl From<crate::midi::MidiPortInfo> for MidiPortWire {
+    fn from(info: crate::midi::MidiPortInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            default: info.default,
+        }
+    }
 }
 
 /// On-the-wire shape of one audio device. Mirrors `audio::AudioDeviceInfo`
@@ -598,6 +650,35 @@ pub enum DrawCommand {
     /// capability gate — enumeration discloses only device names already
     /// visible to any macOS app.
     ListAudioDevices { request_id: String },
+
+    /// Request enumeration of MIDI ports (#320). Host responds with
+    /// `PlexiEvent::MidiDevicesListed { request_id, inputs, outputs }`. No
+    /// capability gate — enumeration discloses only port names already
+    /// visible in Audio MIDI Setup.
+    ListMidiDevices { request_id: String },
+
+    /// Open a MIDI input port and forward every incoming message as a binary
+    /// pipe frame on `pipe_id`. Each frame is a single MIDI 1.0 byte stream
+    /// (1–3 bytes for channel-voice / system real-time). Requires `midi.in`.
+    /// Host emits `PlexiEvent::PipeOpened` then `PlexiEvent::MidiInputOpened`
+    /// on success, or `PlexiEvent::MidiInputError` on failure (port not found,
+    /// capability denied, CoreMIDI error).
+    OpenMidiInput {
+        port_id: String,
+        pipe_id: String,
+    },
+
+    /// Close the MIDI input previously opened on `port_id`. The host
+    /// disconnects from the port and closes the associated binary pipe.
+    /// No-op if the port is not currently open. No response event.
+    CloseMidiInput { port_id: String },
+
+    /// Send one MIDI 1.0 byte stream to `port_id`. Fire-and-forget — the host
+    /// only emits `PlexiEvent::MidiSendError` if the send failed (port not
+    /// open, CoreMIDI error). Requires `midi.out`. The host opens the output
+    /// port lazily on the first `SendMidi` call and keeps it open until the
+    /// app exits.
+    SendMidi { port_id: String, bytes: Vec<u8> },
 
     /// SDK ready handshake. Sent once by the app after receiving Init.
     /// Host captures sdk and features_used; the message is otherwise a no-op.
@@ -1196,6 +1277,83 @@ mod tests {
         assert!(
             serialised.contains(r#""type":"audio_devices_listed""#),
             "wire tag missing: {serialised}"
+        );
+    }
+
+    // ── v3.4 CoreMIDI wire shape (#320) ─────────────────────────────────
+    // Pin the on-the-wire shape for ListMidiDevices / MidiDevicesListed /
+    // OpenMidiInput / SendMidi. Required fields fail to deserialise when absent.
+
+    #[test]
+    fn list_midi_devices_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"list_midi_devices","request_id":"req-m1"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::ListMidiDevices { request_id } => {
+                assert_eq!(request_id, "req-m1");
+            }
+            other => panic!("expected ListMidiDevices, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"list_midi_devices""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn midi_devices_listed_event_round_trips_serde() {
+        let json = r#"{"type":"midi_devices_listed","request_id":"req-m1","inputs":[{"id":"123","name":"Mock Controller","default":true}],"outputs":[{"id":"456","name":"Mock Synth","default":true}]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::MidiDevicesListed {
+                request_id,
+                inputs,
+                outputs,
+                error,
+            } => {
+                assert_eq!(request_id, "req-m1");
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(inputs[0].id, "123");
+                assert!(inputs[0].default);
+                assert_eq!(outputs.len(), 1);
+                assert_eq!(outputs[0].name, "Mock Synth");
+                assert!(error.is_none());
+            }
+            other => panic!("expected MidiDevicesListed, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"midi_devices_listed""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn send_midi_drawcommand_round_trips() {
+        // SendMidi carries a Vec<u8> on the wire. JSON encoding is a JSON
+        // array of numbers — the human-readable shape (no base64) keeps the
+        // wire debuggable and side-steps SDK plumbing for binary payloads.
+        let json = r#"{"type":"send_midi","port_id":"123","bytes":[144,60,100]}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::SendMidi { port_id, bytes } => {
+                assert_eq!(port_id, "123");
+                assert_eq!(bytes, &vec![0x90u8, 0x3C, 0x64]);
+            }
+            other => panic!("expected SendMidi, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"send_midi""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline: dropping `bytes` fails deserialisation.
+        let bad = r#"{"type":"send_midi","port_id":"123"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `bytes` field"
         );
     }
 

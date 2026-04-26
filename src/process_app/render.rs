@@ -379,6 +379,10 @@ pub(super) fn render_draw_commands(
             | DrawCommand::AudioPlay { .. }
             | DrawCommand::AudioCapture { .. }
             | DrawCommand::ListAudioDevices { .. }
+            | DrawCommand::ListMidiDevices { .. }
+            | DrawCommand::OpenMidiInput { .. }
+            | DrawCommand::CloseMidiInput { .. }
+            | DrawCommand::SendMidi { .. }
             | DrawCommand::Ready { .. }
             | DrawCommand::ScheduleRender { .. }
             | DrawCommand::SetTimer { .. }
