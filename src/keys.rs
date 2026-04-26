@@ -1,24 +1,26 @@
 // ─── Reserved Plexi shortcuts (apps must NOT consume these) ───────────────
 //
-// Cmd+D / Cmd+Shift+D  — split horizontal / vertical
-// Cmd+W                 — close pane
-// Cmd+H/J/K/L          — navigate panes
-// Cmd+T                 — new tab
-// Cmd+] / Cmd+[         — cycle tabs
-// Cmd+Q                 — quit
-// Cmd+B                 — toggle sidebar
-// Cmd+Enter             — toggle zoom
-// Cmd+/                 — toggle shortcuts overlay
-// Cmd+P                 — command palette
-// Cmd+Shift+R           — rename pane
-// Cmd+N                 — new context
-// Cmd+Up / Cmd+Down     — scroll
-// Cmd+= / Cmd+-         — font size
-// Cmd+E                 — file browser
-// Cmd+0                 — quick note
-// Cmd+1–9               — switch context
-// Escape (app active)   — close app
-// Tab (app active)      — navigate to linked terminal
+// Cmd+D / Cmd+Shift+D       — split horizontal / vertical (terminal)
+// Cmd+N                       — split focused pane to the right (mirror type)
+// Cmd+Shift+N                 — split focused pane below (mirror type)
+// Cmd+W                       — close pane
+// Cmd+H/J/K/L                 — navigate panes
+// Cmd+Shift+H/J/K/L           — lateral focus jump (geometrically-nearest neighbor)
+// Cmd+T                       — new tab
+// Cmd+] / Cmd+[               — cycle tabs
+// Cmd+Q                       — quit
+// Cmd+B                       — toggle sidebar
+// Cmd+Enter                   — toggle zoom
+// Cmd+/                       — toggle shortcuts overlay
+// Cmd+P                       — command palette
+// Cmd+Shift+R                 — rename pane
+// Cmd+Up / Cmd+Down           — scroll
+// Cmd+= / Cmd+-               — font size
+// Cmd+E                       — file browser
+// Cmd+0                       — quick note
+// Cmd+1–9                     — switch context
+// Escape (app active)         — close app
+// Tab (app active)            — navigate to linked terminal
 //
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
@@ -41,7 +43,16 @@ pub enum Direction {
 pub enum Action {
     SplitHorizontal,
     SplitVertical,
+    /// Split the focused pane to the right; new pane mirrors the focused pane's type.
+    /// Bound to Cmd+N. If no pane is focused, creates a full-size terminal.
+    SplitRight,
+    /// Split the focused pane below; new pane mirrors the focused pane's type.
+    /// Bound to Cmd+Shift+N. If no pane is focused, creates a full-size terminal.
+    SplitDown,
     Navigate(Direction),
+    /// Lateral focus jump (geometrically-nearest neighbor, no wrap-around).
+    /// Bound to Shift+Cmd+H/J/K/L.
+    LateralFocus(Direction),
     ClosePane,
     NewTab,
     SwitchContext(usize),
@@ -53,7 +64,6 @@ pub enum Action {
     ToggleZoom,
     ToggleCommandPalette,
     RenamePane,
-    NewContext,
     IncreasePaneFontSize,
     DecreasePaneFontSize,
     ScrollUp,
@@ -119,6 +129,21 @@ pub fn poll_actions(
             actions.push(Action::SplitVertical);
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
             actions.push(Action::SplitHorizontal);
+        }
+
+        // Lateral focus jump (Shift+Cmd+HJKL) — check before plain Cmd+HJKL
+        // so the shifted variants are matched first.
+        if input.consume_key(cmd_shift, egui::Key::H) {
+            actions.push(Action::LateralFocus(Direction::Left));
+        }
+        if input.consume_key(cmd_shift, egui::Key::J) {
+            actions.push(Action::LateralFocus(Direction::Down));
+        }
+        if input.consume_key(cmd_shift, egui::Key::K) {
+            actions.push(Action::LateralFocus(Direction::Up));
+        }
+        if input.consume_key(cmd_shift, egui::Key::L) {
+            actions.push(Action::LateralFocus(Direction::Right));
         }
 
         // Focus navigation (Cmd+HJKL)
@@ -188,9 +213,13 @@ pub fn poll_actions(
             actions.push(Action::RenamePane);
         }
 
-        // New context (Cmd+N)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
-            actions.push(Action::NewContext);
+        // Pane split (Cmd+N = right, Cmd+Shift+N = below). Mirror focused
+        // pane's type. Check Cmd+Shift+N before Cmd+N so the shifted variant
+        // is matched first.
+        if input.consume_key(cmd_shift, egui::Key::N) {
+            actions.push(Action::SplitDown);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+            actions.push(Action::SplitRight);
         }
 
         // Scrollback (Cmd+Up / Cmd+Down)
