@@ -446,6 +446,52 @@ impl PlexiApp {
         let _ = self.split_with_new_pane(new_id, true, share, false);
     }
 
+    /// Open an Agent Workspace pane (#348): create a git worktree, spawn the
+    /// CLI inside it, drop the pane into a vertical split alongside the
+    /// focused pane.
+    ///
+    /// On `Err`, no pane is inserted — the worktree was either never created
+    /// (non-git repo) or has been rolled back (PTY spawn failure). The error
+    /// is logged; a higher layer (the modal in #349) is responsible for any
+    /// user-facing surfacing.
+    pub(crate) fn open_agent_workspace_pane(
+        &mut self,
+        cli: crate::agent_workspace::AgentCli,
+        task_label: String,
+    ) -> Result<(), crate::agent_workspace::AgentWorkspaceError> {
+        let active = self.active_context;
+        let cwd = self.contexts[active]
+            .focused_pane
+            .and_then(|fp| self.contexts[active].get_focused_pane_cwd(fp))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        let repo_root = crate::agent_workspace::find_git_repo_root(&cwd).ok_or_else(|| {
+            crate::agent_workspace::AgentWorkspaceError::NotAGitRepository(cwd.clone())
+        })?;
+
+        let new_id = self.host.alloc_pane_id();
+        let env = crate::shell::build_env();
+        let dynamic_colors = crate::theme::terminal_dynamic_colors(&self.colors);
+        let pane = crate::agent_workspace::AgentWorkspacePane::create(
+            new_id,
+            cli,
+            repo_root,
+            task_label,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            env,
+            dynamic_colors,
+            self.default_font_size,
+        )?;
+
+        self.contexts[active]
+            .panes
+            .insert(new_id, Pane::AgentWorkspace(Box::new(pane)));
+        let share = crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
+        let _ = self.split_with_new_pane(new_id, true, share, false);
+        Ok(())
+    }
+
     /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
     pub(crate) fn open_secrets_manager(&mut self) {
         // Toggle: if already open, close it.

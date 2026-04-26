@@ -163,11 +163,17 @@ impl PlexiApp {
             Terminal,
             App(String),
             Agent,
+            /// Mirror-split for an Agent Workspace pane is a no-op in this PR
+            /// (#348). The modal picker lands in #349 and is the right surface
+            /// for "spawn another agent" — silently dropping the request here
+            /// would be confusing, so we fall back to a plain terminal split.
+            AgentWorkspace,
         }
         let kind = match self.contexts[active].panes.get(&focused_pane_id) {
             Some(Pane::Terminal(_)) => Kind::Terminal,
             Some(Pane::App(a)) => Kind::App(a.manifest_id.clone()),
             Some(Pane::Agent(_)) => Kind::Agent,
+            Some(Pane::AgentWorkspace(_)) => Kind::AgentWorkspace,
             None => return,
         };
 
@@ -207,6 +213,12 @@ impl PlexiApp {
                 let share = crate::host::command::ShareRatio::new(1.0, 1.0)
                     .expect("1:1 is valid");
                 let _ = self.split_with_new_pane(new_id, vertical, share, false);
+            }
+            Kind::AgentWorkspace => {
+                // Substrate-only: mirror-split of an Agent Workspace falls
+                // through to a plain terminal split. The modal picker (#349)
+                // owns "spawn another agent in a new worktree".
+                self.split_focused(vertical);
             }
         }
     }
@@ -523,17 +535,38 @@ impl PlexiApp {
         };
 
         // ctx borrow is released — park background ProcessApps; drop everything else.
-        if let Some(Pane::App(app_pane)) = removed_pane {
-            if let crate::pane::AppRuntime::Process(mut process_app) = app_pane.runtime {
-                let type_id = process_app.type_id.clone();
-                if self.registry.is_background(&type_id) {
-                    process_app.send_event(&crate::app_protocol::PlexiEvent::Suspend);
-                    log::info!("parking background app '{type_id}'");
-                    self.background_apps.insert(type_id, process_app);
+        match removed_pane {
+            Some(Pane::App(app_pane)) => {
+                if let crate::pane::AppRuntime::Process(mut process_app) = app_pane.runtime {
+                    let type_id = process_app.type_id.clone();
+                    if self.registry.is_background(&type_id) {
+                        process_app.send_event(&crate::app_protocol::PlexiEvent::Suspend);
+                        log::info!("parking background app '{type_id}'");
+                        self.background_apps.insert(type_id, process_app);
+                    }
+                    // else: process_app drops here — Drop impl sends Shutdown + kills process
                 }
-                // else: process_app drops here — Drop impl sends Shutdown + kills process
+                // else: builtin app pane drops here
             }
-            // else: builtin app pane drops here
+            Some(Pane::AgentWorkspace(workspace)) => {
+                // Tear down the worktree so the directory disappears. The
+                // branch survives — review/merge happens after pane close.
+                let repo = workspace.repo_path.clone();
+                let wt = workspace.worktree_path.clone();
+                let branch = workspace.branch_name.clone();
+                drop(workspace); // release PTY (TerminalBackend Drop kills child)
+                match crate::agent_workspace::remove_worktree(&repo, &wt) {
+                    Ok(()) => log::info!(
+                        "agent_workspace: removed worktree {} (branch '{branch}' kept for review)",
+                        wt.display()
+                    ),
+                    Err(e) => log::warn!(
+                        "agent_workspace: failed to remove worktree {}: {e}",
+                        wt.display()
+                    ),
+                }
+            }
+            _ => {}
         }
     }
 
