@@ -297,6 +297,12 @@ pub(super) fn render_draw_commands(
             // it is never a frame-scoped visual command.
             DrawCommand::MeasureText { .. } => {}
 
+            // TextInput is rendered as an interactive egui widget by
+            // `process_app::mod` after this painter pass finishes — it
+            // can't share the painter-only path because it needs a
+            // mutable buffer + focus tracking. See `render_text_inputs`.
+            DrawCommand::TextInput { .. } => {}
+
             // These are handled at the App trait level or routed upstream — never rendered.
             DrawCommand::Log { .. }
             | DrawCommand::FrameDone { .. }

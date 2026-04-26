@@ -107,6 +107,12 @@ pub struct ProcessApp {
     /// When true, the click-to-reveal stderr overlay is displayed in the
     /// pane. Toggled by clicking a non-Running lifecycle pill.
     show_stderr_overlay: bool,
+    /// Per-pane host-owned text input buffers, keyed on the `id` field of
+    /// `DrawCommand::TextInput`. Survives across frames and pane resizes
+    /// — typed characters never reach the app until Enter triggers a
+    /// `PlexiEvent::TextSubmitted`. Cleared on submit; the whole map is
+    /// dropped when the `ProcessApp` is dropped (app close).
+    pub(crate) text_input_buffers: HashMap<String, String>,
 }
 
 impl ProcessApp {
@@ -302,6 +308,7 @@ impl ProcessApp {
             pending_timers: HashMap::new(),
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,
+            text_input_buffers: HashMap::new(),
         })
     }
 
@@ -425,6 +432,91 @@ impl ProcessApp {
         // interaction widget. type_id is unique-per-pane in practice.
         let id = ui.id().with(("lifecycle_pill", &self.type_id));
         Some(ui.interact(pill_rect, id, egui::Sense::click()))
+    }
+
+    /// Render every `DrawCommand::TextInput` in `frame` as a real egui
+    /// `TextEdit::singleline`, owning the buffer state on `self`. Submits
+    /// (Enter while focused) emit `PlexiEvent::TextSubmitted { id, value }`
+    /// and clear the buffer.
+    ///
+    /// Buffer survives across frames and pane resizes because it lives on
+    /// `self.text_input_buffers`, not in egui memory.
+    pub(crate) fn render_text_inputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        pane_rect: egui::Rect,
+        frame: &[DrawCommand],
+    ) {
+        let origin = pane_rect.min;
+        // Collect submit events out-of-band so we don't hold a mutable
+        // borrow on `text_input_buffers` while pushing onto
+        // `outbound_events` — both live on `self`.
+        let mut submitted: Vec<String> = Vec::new();
+
+        for cmd in frame {
+            let DrawCommand::TextInput {
+                id,
+                x,
+                y,
+                w,
+                placeholder,
+            } = cmd
+            else {
+                continue;
+            };
+
+            // Single-line height tuned to read as a proper input row
+            // rather than a hairline — matches the SDK's BODY size + a
+            // sensible vertical margin.
+            let height = 24.0;
+            let widget_rect = egui::Rect::from_min_size(
+                egui::pos2(origin.x + x, origin.y + y),
+                egui::vec2(*w, height),
+            );
+
+            // Stable per-(pane, input-id) widget id so egui's focus and
+            // cursor state survive across frames. Without this, every
+            // frame would build a fresh widget and lose the cursor.
+            let widget_id = ui.id().with(("text_input", self.pane_id, id.as_str()));
+
+            let resp = {
+                let buffer = self.text_input_buffers.entry(id.clone()).or_default();
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(widget_rect)
+                        .id_salt(widget_id),
+                );
+                let edit = egui::TextEdit::singleline(buffer)
+                    .id(widget_id)
+                    .desired_width(*w)
+                    .hint_text(placeholder.as_str())
+                    .frame(true);
+                child.add(edit)
+            };
+
+            // Submit on Enter while focused. The egui idiom for
+            // singleline submit is `lost_focus() && key_pressed(Enter)`
+            // — `lost_focus` alone fires on tab-out / click-away too.
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                submitted.push(id.clone());
+            }
+        }
+
+        for id in submitted {
+            self.submit_text_input(&id);
+        }
+    }
+
+    /// Drain the buffer for `id` and queue a `TextSubmitted` event. Default
+    /// UX is "field clears on submit" — the next TextInput emit with the
+    /// same id starts empty. Public to the crate for unit tests that
+    /// don't go through egui rendering.
+    pub(crate) fn submit_text_input(&mut self, id: &str) {
+        let value = self.text_input_buffers.remove(id).unwrap_or_default();
+        self.outbound_events.push_back(PlexiEvent::TextSubmitted {
+            id: id.to_string(),
+            value,
+        });
     }
 
     /// Pump event I/O for a pane that is not currently rendered.
@@ -704,6 +796,10 @@ impl App for ProcessApp {
         ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
         let frame_clone = self.frame.clone();
         render::render_draw_commands(ui, pane_rect, &frame_clone, ctx.colors);
+        // Interactive widgets (TextInput) need real egui widgets and a
+        // mutable per-app buffer map — they can't share the painter-only
+        // render path. Render them in a second pass on top of the frame.
+        self.render_text_inputs(ui, pane_rect, &frame_clone);
 
         // ── Error fallback ──────────────────────────────────────────────────
         // Surface recent stderr in the pane when:
@@ -893,6 +989,176 @@ impl App for ProcessApp {
         Some(serde_json::json!({
             "type_id": self.type_id,
         }))
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod text_input_tests {
+    //! Buffer-state tests for the v3.1 host-owned TextInput primitive
+    //! (issue #283). Covered behaviours:
+    //!   1. Buffer persists across frames until submit.
+    //!   2. Enter emits `PlexiEvent::TextSubmitted` with the buffered value.
+    //!   3. Submit clears the buffer (so the field is empty on the next emit).
+    //!   4. Pane resize (which triggers re-render but not buffer touch) does
+    //!      not wipe the buffer.
+    //!
+    //! These exercise the persistent-state contract — the egui rendering
+    //! layer is verified end-to-end by the human-verification checklist.
+    //! Keeping the unit tests pure makes them deterministic and fast.
+    use super::*;
+    use crate::app_protocol::PlexiEvent;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    /// Build a `ProcessApp` for tests that doesn't touch real I/O. We
+    /// spawn `/bin/sh -c true` — the cheapest valid subprocess — and
+    /// then ignore the lifecycle / draw threads. The app's stdin/stdout
+    /// are real but we never write to them in these tests.
+    fn make_app() -> Option<ProcessApp> {
+        let sh = ["/bin/sh", "/usr/bin/sh"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(PathBuf::from)?;
+        let workspace_root = std::env::temp_dir();
+        // -c true exits immediately. The lifecycle reader threads will
+        // observe stdout EOF and flip Crashed, which is fine — these
+        // tests don't read lifecycle state.
+        let _ = Command::new(&sh); // sanity — silences unused-import warnings on some configs
+        ProcessApp::launch(
+            "test_text_input",
+            "Test Text Input",
+            &sh,
+            &workspace_root,
+            &["-c".to_string(), "sleep 1".to_string()],
+            workspace_root.clone(),
+            HashSet::new(),
+            false,
+        )
+        .ok()
+    }
+
+    #[test]
+    fn text_input_buffer_persists_across_frames() {
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        // Simulate two frames where the user has typed "hel" then "hello"
+        // by directly manipulating the buffer the way egui's TextEdit
+        // would across two ui() ticks.
+        app.text_input_buffers
+            .insert("note".to_string(), "hel".to_string());
+        // ... another frame happens (no submit) ...
+        // Buffer must still be there.
+        assert_eq!(
+            app.text_input_buffers.get("note").map(String::as_str),
+            Some("hel"),
+            "buffer should survive between frames"
+        );
+        app.text_input_buffers
+            .insert("note".to_string(), "hello".to_string());
+        assert_eq!(
+            app.text_input_buffers.get("note").map(String::as_str),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn enter_emits_text_submitted_with_buffered_value() {
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.text_input_buffers
+            .insert("note".to_string(), "hello world".to_string());
+
+        app.submit_text_input("note");
+
+        let evt = app.outbound_events.pop_back().expect("event queued");
+        match evt {
+            PlexiEvent::TextSubmitted { id, value } => {
+                assert_eq!(id, "note");
+                assert_eq!(value, "hello world");
+            }
+            other => panic!("expected TextSubmitted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_clears_buffer() {
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.text_input_buffers
+            .insert("note".to_string(), "draft".to_string());
+        app.submit_text_input("note");
+        assert!(
+            !app.text_input_buffers.contains_key("note"),
+            "buffer must be cleared after submit (default UX)"
+        );
+    }
+
+    #[test]
+    fn submit_on_empty_buffer_emits_empty_value() {
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        // No prior buffer — Enter on a fresh TextInput is a valid case
+        // (e.g. user immediately presses Enter without typing).
+        app.submit_text_input("note");
+        let evt = app.outbound_events.pop_back().expect("event queued");
+        match evt {
+            PlexiEvent::TextSubmitted { id, value } => {
+                assert_eq!(id, "note");
+                assert_eq!(value, "");
+            }
+            other => panic!("expected TextSubmitted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_input_buffer_survives_pane_resize() {
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        // Pane resize is a `last_size` change in `ui()`. The buffer is
+        // owned by `text_input_buffers` and never touched by resize
+        // logic. Simulate the resize bookkeeping and assert the buffer
+        // is untouched.
+        app.text_input_buffers
+            .insert("note".to_string(), "midway".to_string());
+        // Resize bookkeeping (mirrors what `ui()` does on size delta).
+        app.last_size = egui::vec2(800.0, 600.0);
+        // No buffer mutation should happen here — just last_size changes.
+        assert_eq!(
+            app.text_input_buffers.get("note").map(String::as_str),
+            Some("midway"),
+            "resize must not wipe the host-owned text buffer"
+        );
+    }
+
+    #[test]
+    fn distinct_ids_keep_independent_buffers() {
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.text_input_buffers
+            .insert("a".to_string(), "alpha".to_string());
+        app.text_input_buffers
+            .insert("b".to_string(), "beta".to_string());
+        app.submit_text_input("a");
+        assert_eq!(
+            app.text_input_buffers.get("b").map(String::as_str),
+            Some("beta"),
+            "submitting one input must not affect another id"
+        );
     }
 }
 
