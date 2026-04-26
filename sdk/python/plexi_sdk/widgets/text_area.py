@@ -192,8 +192,13 @@ class TextArea:
                 "y": text_y,
                 "text": lines[row],
                 "size": t.font_size,
-                "fill": t.foreground,
+                "color": t.foreground,
                 "monospace": t.monospace,
+                "bold": False,
+                "align": "top_left",
+                "max_width": None,
+                "elide": True,
+                "selectable": False,
             })
 
         # 4. Cursor rect: 2px wide, line_height tall.
