@@ -11,9 +11,12 @@
 //! - `render.rs`   — `render_draw_commands()`: paint committed frames into egui
 //! - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
 
+mod lifecycle;
 mod prompts;
 mod render;
 mod routing;
+
+pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 
 use crate::app_permissions::{AppPermissions, Capability};
 use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
@@ -97,6 +100,13 @@ pub struct ProcessApp {
     http_rx: Receiver<PlexiEvent>,
     /// Cancel flags for pending timers. Key = timer_id, value = Arc<AtomicBool> set to true to cancel.
     pub(crate) pending_timers: HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Observable lifecycle state (issue #316). Written by the stdout/stderr
+    /// reader threads and the UI thread's per-frame `try_wait` poll; read
+    /// by the UI thread to render the in-pane pill.
+    pub(crate) lifecycle: Arc<LifecycleTracker>,
+    /// When true, the click-to-reveal stderr overlay is displayed in the
+    /// pane. Toggled by clicking a non-Running lifecycle pill.
+    show_stderr_overlay: bool,
 }
 
 impl ProcessApp {
@@ -171,12 +181,16 @@ impl ProcessApp {
         let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
 
-        // Background thread: forward subprocess stderr to Plexi's logger
-        // AND capture into the recent-stderr ring buffer used by the
-        // in-pane error fallback.
+        // Background thread: forward subprocess stderr to Plexi's logger,
+        // capture into the recent-stderr ring buffer used by the in-pane
+        // error fallback, AND scan each line for `Traceback` / `PANIC` /
+        // `panicked at` so the lifecycle pill flips to Crashed without
+        // waiting for `try_wait` to observe the eventual exit.
         let stderr_type_id = type_id.clone();
         let recent_stderr_capture = Arc::new(Mutex::new(VecDeque::<String>::new()));
         let recent_stderr_thread = Arc::clone(&recent_stderr_capture);
+        let lifecycle_tracker = Arc::new(LifecycleTracker::new());
+        let lifecycle_stderr = Arc::clone(&lifecycle_tracker);
         thread::spawn(move || {
             const STDERR_RING_CAP: usize = 32;
             let reader = std::io::BufReader::new(stderr);
@@ -185,6 +199,7 @@ impl ProcessApp {
                     Ok(l) if !l.trim().is_empty() => {
                         let target = format!("app::{stderr_type_id}");
                         log::warn!(target: &target, "stderr: {l}");
+                        lifecycle_stderr.observe_stderr_line(&l);
                         if let Ok(mut buf) = recent_stderr_thread.lock() {
                             if buf.len() >= STDERR_RING_CAP {
                                 buf.pop_front();
@@ -199,7 +214,12 @@ impl ProcessApp {
         });
 
         // Background thread: read draw commands line-by-line and forward via channel.
+        // Also feeds the lifecycle tracker:
+        //   - Malformed JSON → on_parse_error() (counts toward ProtocolError).
+        //   - Stdout EOF / read error → on_stdout_closed() (sticky Crashed).
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
+        let lifecycle_stdout = Arc::clone(&lifecycle_tracker);
+        let stdout_type_id = type_id.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -212,17 +232,29 @@ impl ProcessApp {
                                 }
                             }
                             Err(e) => {
-                                log::warn!("ProcessApp: malformed draw command: {e} — line: {l}");
+                                log::warn!(
+                                    "ProcessApp[{stdout_type_id}]: malformed draw command: {e} — line: {l}"
+                                );
+                                if lifecycle_stdout.on_parse_error() {
+                                    log::error!(
+                                        "ProcessApp[{stdout_type_id}]: protocol-error threshold reached — flipping pane state"
+                                    );
+                                }
                             }
                         }
                     }
                     Err(e) => {
-                        log::debug!("ProcessApp stdout closed: {e}");
+                        log::debug!("ProcessApp[{stdout_type_id}] stdout closed: {e}");
+                        lifecycle_stdout.on_stdout_closed();
                         break;
                     }
                     _ => {}
                 }
             }
+            // Natural EOF (loop exit without an Err) also signals the
+            // subprocess closed its stdout — flip Crashed unless already
+            // terminal.
+            lifecycle_stdout.on_stdout_closed();
         });
 
         let permissions = AppPermissions {
@@ -268,6 +300,8 @@ impl ProcessApp {
             http_tx,
             http_rx,
             pending_timers: HashMap::new(),
+            lifecycle: lifecycle_tracker,
+            show_stderr_overlay: false,
         })
     }
 
@@ -320,6 +354,77 @@ impl ProcessApp {
             }
         }
         cmds
+    }
+
+    /// Draw the lifecycle pill in the top-right corner of `pane_rect` and
+    /// return its interaction response. Returns `None` for `Running` —
+    /// the healthy state is intentionally invisible.
+    ///
+    /// Colour rules:
+    /// - Booting        — faint blue/grey
+    /// - Hung           — yellow
+    /// - Crashed        — red
+    /// - ProtocolError  — red
+    fn draw_lifecycle_pill(
+        &self,
+        ui: &mut egui::Ui,
+        pane_rect: egui::Rect,
+        state: LifecycleState,
+    ) -> Option<egui::Response> {
+        let (label, fill_hex, fg_hex) = match state {
+            LifecycleState::Running => return None,
+            LifecycleState::Booting => ("starting", "#3a4a5a", "#cfd6e0"),
+            LifecycleState::Hung => ("hung", "#d4a017", "#1e1e2e"),
+            LifecycleState::Crashed => ("crashed", "#cc3838", "#ffffff"),
+            LifecycleState::ProtocolError => ("protocol error", "#cc3838", "#ffffff"),
+        };
+
+        // Anchor the pill to the top-right corner with a small inset so it
+        // doesn't sit flush against the pane edge. We measure the label
+        // width with the same font metrics `render_badge` uses, then
+        // position the pill's *left edge* such that its right edge lands
+        // at `pane_rect.max.x - inset`.
+        let font_size = 11.0;
+        let radius = 6.0;
+        let inset = 8.0;
+        let font_id = egui::FontId::proportional(font_size);
+        let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, egui::Color32::BLACK));
+        let text_w = galley.size().x;
+        let text_h = galley.size().y;
+        let pill_w = (text_w + crate::style::BADGE_PAD_H * 2.0).max(crate::style::BADGE_MIN_W);
+        let pill_h = text_h + crate::style::BADGE_PAD_V * 2.0;
+        let pill_x_abs = pane_rect.max.x - inset - pill_w;
+        let pill_y_center_abs = pane_rect.min.y + inset + pill_h / 2.0;
+
+        // render_badge expects pane-relative `x` (left edge) and `y_center`,
+        // and adds `origin` itself. Pass `pane_rect.min` as origin so the
+        // helper paints inside the pane.
+        let origin = pane_rect.min;
+        let x_rel = pill_x_abs - origin.x;
+        let y_center_rel = pill_y_center_abs - origin.y;
+        // Clip to the pane rect so a pill near a tight pane edge doesn't
+        // bleed into a neighbouring pane.
+        render::render_badge(
+            ui,
+            origin,
+            pane_rect,
+            x_rel,
+            y_center_rel,
+            label,
+            fill_hex,
+            fg_hex,
+            font_size,
+            radius,
+        );
+
+        let pill_rect = egui::Rect::from_min_size(
+            egui::pos2(pill_x_abs, pill_y_center_abs - pill_h / 2.0),
+            egui::vec2(pill_w, pill_h),
+        );
+        // Stable id so toggling state across frames doesn't rebuild the
+        // interaction widget. type_id is unique-per-pane in practice.
+        let id = ui.id().with(("lifecycle_pill", &self.type_id));
+        Some(ui.interact(pill_rect, id, egui::Sense::click()))
     }
 
     /// Pump event I/O for a pane that is not currently rendered.
@@ -399,6 +504,42 @@ impl App for ProcessApp {
 
         self.flush_outbound_events();
 
+        // Lifecycle: per-frame try_wait poll. `try_wait` is non-blocking on
+        // macOS — `Ok(Some(_))` means the child has exited; `Ok(None)` means
+        // still running; `Err(_)` is fatal-for-this-process and treated as
+        // "we can't observe it any more, assume crashed". Exited child is
+        // sticky Crashed.
+        if let Some(child) = self.process.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_status)) => self.lifecycle.on_process_exited(),
+                Ok(None) => {}
+                Err(e) => {
+                    log::warn!(
+                        "ProcessApp[{}]: try_wait failed: {e} — marking Crashed",
+                        self.type_id
+                    );
+                    self.lifecycle.on_process_exited();
+                }
+            }
+        }
+
+        // Lifecycle: track user-input recency on this pane. Only required
+        // for the Hung detector — we just need a "did the user touch this
+        // window in the last N seconds" signal, not a per-event log. egui's
+        // per-frame input snapshot exposes that directly.
+        let had_input = ui.input(|i| {
+            !i.events.is_empty()
+                || i.pointer.any_pressed()
+                || i.pointer.any_down()
+                || i.pointer.is_moving()
+        });
+        if had_input {
+            self.lifecycle.on_user_input();
+        }
+
+        // Lifecycle: drive the time-based Hung check once per frame.
+        self.lifecycle.tick_check_hung();
+
         if !self.initialized {
             self.initialized = true;
             self.last_size = size;
@@ -459,6 +600,8 @@ impl App for ProcessApp {
                     }
                     std::mem::swap(&mut self.frame, &mut self.pending_frame);
                     self.pending_frame.clear();
+                    // Lifecycle: a frame just landed → Running (unless terminal).
+                    self.lifecycle.on_frame_done();
                 }
                 DrawCommand::Log { level, message } => {
                     let target = format!("app::{}", self.type_id);
@@ -563,12 +706,21 @@ impl App for ProcessApp {
         render::render_draw_commands(ui, pane_rect, &frame_clone, ctx.colors);
 
         // ── Error fallback ──────────────────────────────────────────────────
-        // If the app emitted no draw commands (crashed during init, threw an
-        // unhandled exception in on_render, or just never started rendering),
-        // surface its recent stderr in the pane instead of a silent blank
-        // screen. Apps that render normally never see this — empty frame +
-        // empty stderr means "still starting up", not "broken".
-        if frame_clone.is_empty() {
+        // Surface recent stderr in the pane when:
+        //   1. The app emitted no draw commands at all (still booting / never
+        //      started rendering), OR
+        //   2. The lifecycle says Crashed or Hung — overlays even if the app
+        //      had previously committed a frame, so a kill -9 of an app
+        //      mid-run shows the failure rather than a frozen last frame.
+        //   3. The user clicked the lifecycle pill (show_stderr_overlay).
+        let lifecycle_state = self.lifecycle.state();
+        let stderr_overlay_active = self.show_stderr_overlay
+            || frame_clone.is_empty()
+            || matches!(
+                lifecycle_state,
+                LifecycleState::Crashed | LifecycleState::Hung | LifecycleState::ProtocolError
+            );
+        if stderr_overlay_active {
             let stderr_lines: Vec<String> = self
                 .recent_stderr
                 .lock()
@@ -577,10 +729,18 @@ impl App for ProcessApp {
             if !stderr_lines.is_empty() {
                 let painter = ui.painter();
                 let title_pos = pane_rect.min + egui::vec2(16.0, 16.0);
+                let header = match lifecycle_state {
+                    LifecycleState::Crashed => format!("⚠  {} crashed — recent stderr:", self.type_id),
+                    LifecycleState::Hung => format!("⚠  {} hung — recent stderr:", self.type_id),
+                    LifecycleState::ProtocolError => {
+                        format!("⚠  {} protocol error — recent stderr:", self.type_id)
+                    }
+                    _ => format!("⚠  {} emitted no frames — recent stderr:", self.type_id),
+                };
                 painter.text(
                     title_pos,
                     egui::Align2::LEFT_TOP,
-                    format!("⚠  {} emitted no frames — recent stderr:", self.type_id),
+                    header,
                     egui::FontId::proportional(13.0),
                     egui::Color32::from_rgb(0xff, 0x55, 0x55),
                 );
@@ -602,21 +762,39 @@ impl App for ProcessApp {
             }
         }
 
+        // ── Lifecycle pill ──────────────────────────────────────────────────
+        // Top-right corner. Hidden in Running. Click toggles the stderr
+        // overlay (in addition to the auto-overlay rules above).
+        let pill_response = self.draw_lifecycle_pill(ui, pane_rect, lifecycle_state);
+        let pill_consumed_click = if let Some(response) = pill_response {
+            if response.clicked() {
+                self.show_stderr_overlay = !self.show_stderr_overlay;
+            }
+            // Even hover/down over the pill suppresses the pane click —
+            // we don't want a click that targeted the pill to ALSO get
+            // forwarded as a PlexiEvent::Click into the app behind it.
+            response.clicked() || response.is_pointer_button_down_on()
+        } else {
+            false
+        };
+
         // Detect clicks over the pane and forward them as PlexiEvent::Click.
         let click_response = ui.interact(pane_rect, ui.id(), egui::Sense::click());
-        if let Some(pos) = click_response.interact_pointer_pos() {
-            let origin = pane_rect.min;
-            let button = if click_response.secondary_clicked() {
-                crate::app_protocol::MouseButton::Secondary
-            } else {
-                crate::app_protocol::MouseButton::Primary
-            };
-            if click_response.clicked() || click_response.secondary_clicked() {
-                self.send_event(&PlexiEvent::Click {
-                    x: pos.x - origin.x,
-                    y: pos.y - origin.y,
-                    button,
-                });
+        if !pill_consumed_click {
+            if let Some(pos) = click_response.interact_pointer_pos() {
+                let origin = pane_rect.min;
+                let button = if click_response.secondary_clicked() {
+                    crate::app_protocol::MouseButton::Secondary
+                } else {
+                    crate::app_protocol::MouseButton::Primary
+                };
+                if click_response.clicked() || click_response.secondary_clicked() {
+                    self.send_event(&PlexiEvent::Click {
+                        x: pos.x - origin.x,
+                        y: pos.y - origin.y,
+                        button,
+                    });
+                }
             }
         }
 
