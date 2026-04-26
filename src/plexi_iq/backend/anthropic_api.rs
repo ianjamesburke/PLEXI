@@ -15,7 +15,7 @@
 use std::sync::mpsc;
 use std::thread;
 
-use super::{BillingModel, LlmBackend, LlmError, LlmRequest, StreamEvent};
+use super::{LlmBackend, LlmError, LlmRequest, StreamEvent};
 
 /// Direct Anthropic Messages API backend.
 pub struct AnthropicApiBackend {
@@ -34,36 +34,19 @@ impl std::fmt::Debug for AnthropicApiBackend {
 }
 
 impl AnthropicApiBackend {
-    /// Construct from an explicit API key.
-    pub fn new(api_key: impl Into<String>) -> Self {
+    /// Construct with an explicit API key + model id. Used by the `iq.query`
+    /// broker (#284) where the model is resolved per-call from `ModelTier`.
+    pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
-            model: "claude-sonnet-4-5".to_string(),
+            model: model.into(),
         }
-    }
-
-    /// Construct from `ANTHROPIC_API_KEY` env var. Returns `None` if unset.
-    pub fn from_env() -> Option<Self> {
-        let key = std::env::var("ANTHROPIC_API_KEY").ok()?;
-        if key.is_empty() {
-            return None;
-        }
-        Some(Self::new(key))
     }
 }
 
 impl LlmBackend for AnthropicApiBackend {
     fn name(&self) -> &str {
         "anthropic-api (native)"
-    }
-
-    fn supports_tool_dispatch(&self) -> bool {
-        // Native mode — Plexi IQ owns the tool loop.
-        true
-    }
-
-    fn billing_model(&self) -> BillingModel {
-        BillingModel::Metered
     }
 
     fn stream_to_channel(
@@ -184,6 +167,5 @@ async fn stream_native(
     let _ = tx.send(StreamEvent::Done {
         input_tokens,
         output_tokens,
-        session_id: None,
     });
 }

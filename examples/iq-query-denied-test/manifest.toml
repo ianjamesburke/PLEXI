@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "iq-query-denied-test"
+name = "IQ Query Denied Test"
+version = "0.1.0"
+description = "POC for #284 — proves the iq.query capability gate. This app does NOT declare iq.query, so every call returns capability_denied."
+entry = "iq_query_denied_test.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+background = false

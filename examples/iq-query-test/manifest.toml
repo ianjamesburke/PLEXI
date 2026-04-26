@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "iq-query-test"
+name = "IQ Query Test"
+version = "0.1.0"
+description = "POC for #284 — exercises the iq.query broker across all three model tiers (Haiku / Sonnet / Opus)."
+entry = "iq_query_test.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+capabilities = ["iq.query"]
+
+[launch]
+background = false

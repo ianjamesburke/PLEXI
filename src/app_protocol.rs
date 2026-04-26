@@ -176,6 +176,55 @@ pub enum PlexiEvent {
     /// macOS-only and races with focus changes. This event is the portable
     /// path.
     Paste { text: String },
+    /// Response to a `DrawCommand::IqQuery`. Either `content` is `Some` (success)
+    /// or `error` is `Some` (failure) — the two are mutually exclusive. Token
+    /// counts are zero on error.
+    ///
+    /// `error` is set when:
+    ///   - the app does not declare the `iq.query` capability ("capability denied")
+    ///   - the host backend cannot be reached (e.g. missing API key, claude CLI
+    ///     not installed)
+    ///   - the upstream backend returned an error mid-stream
+    IqResponse {
+        request_id: String,
+        content: Option<String>,
+        tokens_in: u32,
+        tokens_out: u32,
+        error: Option<String>,
+    },
+}
+
+/// One message in an `IqQuery` conversation. Wire shape mirrors Anthropic
+/// Messages API: `role` ∈ {"user", "assistant"}, `content` is plain text.
+/// (Multimodal content blocks are future-scope.)
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct IqMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// Tool definition for a future tool-use turn loop. The current broker only
+/// supports text-only turns; if `tools` is non-empty the broker returns
+/// an error response. Reserved on the wire so that v3.4+ can add tool
+/// dispatch without changing the protocol.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IqTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// Coarse model tier requested by the app. The host maps each tier to a
+/// concrete model identifier per backend (spec §iq.query):
+///   - `Low`    → Haiku
+///   - `Medium` → Sonnet
+///   - `High`   → Opus
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTier {
+    Low,
+    Medium,
+    High,
 }
 
 /// A simple rectangle (logical coordinates).
@@ -415,6 +464,22 @@ pub enum DrawCommand {
         model: String,
         #[serde(default)]
         system: Option<String>,
+    },
+    /// v3.3 brokered LLM call. Requires `iq.query` capability.
+    ///
+    /// The host routes this to the active Plexi IQ backend, appends an
+    /// `AgentTurn` row to `ledger.jsonl`, and replies with
+    /// `PlexiEvent::IqResponse { request_id, content, tokens_in, tokens_out, error }`.
+    ///
+    /// All fields are required — no `serde(default)`. `tools` may be empty;
+    /// non-empty `tools` is accepted on the wire but rejected at the broker
+    /// (returns an error response) until v3.4 adds tool dispatch.
+    IqQuery {
+        request_id: String,
+        model_tier: ModelTier,
+        system: String,
+        messages: Vec<IqMessage>,
+        tools: Vec<IqTool>,
     },
     /// Draw an image from a workspace-scoped path or data URL.
     Image {
@@ -803,6 +868,106 @@ mod tests {
         assert!(
             result.is_err(),
             "deserialise should fail without `selectable` field"
+        );
+    }
+
+    // ── v3.3 iq.query wire shape (#284) ──────────────────────────────────
+    // Pin the on-the-wire shape for IqQuery / IqResponse. All fields are
+    // required — no `serde(default)`.
+
+    #[test]
+    fn iq_query_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"iq_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::IqQuery {
+                request_id,
+                model_tier,
+                system,
+                messages,
+                tools,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(*model_tier, ModelTier::Medium);
+                assert_eq!(system, "You are helpful.");
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].role, "user");
+                assert_eq!(messages[0].content, "hi");
+                assert!(tools.is_empty());
+            }
+            other => panic!("expected IqQuery, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"iq_query""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""model_tier":"medium""#),
+            "model_tier missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn iq_response_round_trips_serde() {
+        let json = r#"{"type":"iq_response","request_id":"req-1","content":"Hello!","tokens_in":12,"tokens_out":4,"error":null}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::IqResponse {
+                request_id,
+                content,
+                tokens_in,
+                tokens_out,
+                error,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(content.as_deref(), Some("Hello!"));
+                assert_eq!(*tokens_in, 12);
+                assert_eq!(*tokens_out, 4);
+                assert!(error.is_none());
+            }
+            other => panic!("expected IqResponse, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"iq_response""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn iq_response_with_error_serde() {
+        let json = r#"{"type":"iq_response","request_id":"req-2","content":null,"tokens_in":0,"tokens_out":0,"error":"capability denied: iq.query not declared in manifest"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::IqResponse {
+                content,
+                error,
+                tokens_in,
+                tokens_out,
+                ..
+            } => {
+                assert!(content.is_none(), "content must be None on error");
+                assert_eq!(
+                    error.as_deref(),
+                    Some("capability denied: iq.query not declared in manifest")
+                );
+                assert_eq!(*tokens_in, 0);
+                assert_eq!(*tokens_out, 0);
+            }
+            other => panic!("expected IqResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iq_query_missing_required_field_fails_deserialise() {
+        // No `tools` field — must fail because the field is required
+        // (no `#[serde(default)]` on it).
+        let json = r#"{"type":"iq_query","request_id":"r","model_tier":"low","system":"","messages":[]}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `tools` field"
         );
     }
 }
