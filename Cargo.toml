@@ -32,6 +32,8 @@ tokio = { version = "1", features = ["rt", "macros"] }
 tokio-stream = "0.1"
 toml = "0.8"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+# Base64 decode for inline notification image attachments (#74).
+base64 = "0.22"
 crossbeam-queue = "0.3"
 hound = "3"
 include_dir = "0.7"

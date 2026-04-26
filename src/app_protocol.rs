@@ -597,6 +597,18 @@ pub enum DrawCommand {
         /// Typical values: 0 (background info), 50 (normal), 100 (important),
         /// 200 (critical/required).
         priority: u32,
+        /// Inline image attachment (PNG / JPEG, base64-encoded). Rendered above
+        /// the action buttons. Decoded size > 50 KB triggers a placeholder.
+        /// `Option` is the natural empty/missing wire shape — no
+        /// `#[serde(default)]` shim. Mutually exclusive with `image_pipe_id`;
+        /// when both set, inline wins and the pipe is ignored (logged warn).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        image_inline: Option<NotificationImage>,
+        /// Pipe-referenced image. Host drains the binary ring lazily when the
+        /// notification is visible. Payload format: `width: u32 LE`,
+        /// `height: u32 LE`, then `width * height * 4` bytes of RGBA.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        image_pipe_id: Option<String>,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
@@ -1147,6 +1159,16 @@ pub enum NotifyKind {
     Message,
     Choice,
     Input,
+}
+
+/// Inline image attachment on a Notify command. `mime` is the MIME type
+/// (`image/png` or `image/jpeg`), `base64` is the raw image bytes
+/// base64-encoded. Decoded size cap (50 KB) is enforced host-side at render
+/// time; oversized images render a placeholder badge instead of decoding.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct NotificationImage {
+    pub mime: String,
+    pub base64: String,
 }
 
 /// One option in a `kind = "choice"` notification.
@@ -2015,5 +2037,111 @@ mod tests {
             serde_json::from_str::<PlexiEvent>(bad).is_err(),
             "must fail without required `request_id`"
         );
+    }
+
+    // ── v3.5 P2 rich notification panel (#74) ─────────────────────────────
+    // Image attachments — inline base64 + pipe reference. Both are optional;
+    // missing them deserialises to None via serde's natural Option handling
+    // (no `#[serde(default)]` shim). Mutually exclusive at render time.
+
+    #[test]
+    fn notify_choice_action_round_trips_serde() {
+        // Choice action shape: each NotifyOption carries a label, a value
+        // (the structured `payload` from issue #74), and an optional
+        // single-char hotkey (`shortcut`, the `key` from issue #74).
+        let json = r#"{"type":"notify","level":"info","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}],"priority":100}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Notify {
+                kind,
+                options,
+                priority,
+                image_inline,
+                image_pipe_id,
+                ..
+            } => {
+                assert_eq!(*kind, NotifyKind::Choice);
+                assert_eq!(options.len(), 2);
+                assert_eq!(options[0].value, "sidebar");
+                assert_eq!(options[0].shortcut.as_deref(), Some("1"));
+                assert_eq!(options[1].value, "fullwidth");
+                assert_eq!(*priority, 100);
+                assert!(image_inline.is_none(), "image_inline should default to None");
+                assert!(image_pipe_id.is_none(), "image_pipe_id should default to None");
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""kind":"choice""#), "kind missing: {serialised}");
+        assert!(serialised.contains(r#""value":"sidebar""#), "payload missing: {serialised}");
+    }
+
+    #[test]
+    fn notify_with_inline_image_round_trips_serde() {
+        // 4-byte base64 payload — well under the 50 KB cap. The host will
+        // attempt to decode + render; tiny or invalid images render a
+        // placeholder, never crash.
+        let json = r#"{"type":"notify","level":"info","title":"Pic","body":"see image","kind":"message","priority":50,"image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Notify {
+                image_inline,
+                image_pipe_id,
+                ..
+            } => {
+                let img = image_inline.as_ref().expect("inline image present");
+                assert_eq!(img.mime, "image/png");
+                assert_eq!(img.base64, "AAAA");
+                assert!(image_pipe_id.is_none());
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""image_inline":{"mime":"image/png","base64":"AAAA"}"#),
+            "image_inline missing: {serialised}"
+        );
+        // Skip-serializing-if-none means image_pipe_id is absent on the wire
+        // when None — keeps existing notifications byte-identical.
+        assert!(
+            !serialised.contains("image_pipe_id"),
+            "absent fields should not appear: {serialised}"
+        );
+    }
+
+    #[test]
+    fn notify_with_image_pipe_id_round_trips_serde() {
+        let json = r#"{"type":"notify","level":"info","title":"Pic","body":"piped","kind":"message","priority":50,"image_pipe_id":"render-out"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Notify {
+                image_pipe_id,
+                image_inline,
+                ..
+            } => {
+                assert_eq!(image_pipe_id.as_deref(), Some("render-out"));
+                assert!(image_inline.is_none());
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn notify_without_image_fields_round_trips_serde() {
+        // Existing apps that never set image fields must continue to work.
+        // Missing `image_inline` / `image_pipe_id` deserialise as None.
+        let json = r#"{"type":"notify","level":"info","title":"Plain","body":"no image","kind":"message","priority":50}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match cmd {
+            DrawCommand::Notify {
+                image_inline,
+                image_pipe_id,
+                ..
+            } => {
+                assert!(image_inline.is_none());
+                assert!(image_pipe_id.is_none());
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
     }
 }
