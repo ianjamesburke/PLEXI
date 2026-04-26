@@ -1,5 +1,6 @@
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use zeroize::Zeroizing;
 
 const SERVICE_NAME: &str = "plexi";
@@ -10,11 +11,103 @@ pub struct SecretEntry {
     pub app_id: String,
     pub directory: String,
     pub key: String,
+    /// Workspace root this secret is scoped to (v3). None for legacy v1/v2 secrets.
+    #[serde(default)]
+    pub workspace_root: Option<String>,
+    /// When true, this secret is injected as an env var into every new shell session.
+    #[serde(default)]
+    pub inject: bool,
 }
 
-/// Build the Keychain account string: "{app_id}/{directory}/{key}"
+/// Build the v1/v2 Keychain account string: "{app_id}/{directory}/{key}"
 fn account_key(key: &str, app_id: &str, directory: &str) -> String {
     format!("{app_id}/{directory}/{key}")
+}
+
+/// Build the v3 Keychain account string: "plexi/{workspace_root}/{key}"
+/// Workspace-scoped; app_id is NOT part of the key (secrets are workspace-owned, not app-owned).
+fn account_key_scoped(key: &str, workspace_root: &Path) -> String {
+    format!("plexi/{}/{}", workspace_root.display(), key)
+}
+
+// ── v3 workspace-scoped secret API ───────────────────────────────────────────
+
+/// Retrieve a workspace-scoped secret.
+///
+/// **Hard invariant:** `workspace_root` must be a non-empty, absolute path.
+/// If not, this logs an error and returns `None` — no secret is ever returned
+/// from an invalid scope.
+///
+/// Keychain key format: `plexi/{workspace_root}/{key}`
+#[cfg(target_os = "macos")]
+pub fn get_secret_scoped(
+    key: &str,
+    app_id: &str,
+    workspace_root: &Path,
+) -> Option<Zeroizing<String>> {
+    use std::process::Command;
+
+    if !validate_workspace_root(workspace_root, "get_secret_scoped", app_id, key) {
+        return None;
+    }
+
+    let account = account_key_scoped(key, workspace_root);
+    match Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+            "-w",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => Some(Zeroizing::new(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        )),
+        Ok(_) => None,
+        Err(e) => {
+            error!(
+                "secrets::get_secret_scoped failed for app={app_id} workspace={} key={key}: {e}",
+                workspace_root.display()
+            );
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn get_secret_scoped(
+    key: &str,
+    app_id: &str,
+    workspace_root: &Path,
+) -> Option<Zeroizing<String>> {
+    warn!(
+        "secrets::get_secret_scoped({key}, {app_id}, {}): Keychain not available on this platform",
+        workspace_root.display()
+    );
+    None
+}
+
+/// Validate workspace_root for secret operations. Returns false and logs an error on failure.
+fn validate_workspace_root(workspace_root: &Path, op: &str, app_id: &str, key: &str) -> bool {
+    if workspace_root.as_os_str().is_empty() {
+        error!(
+            "secrets::{op}: workspace_root is empty for app={app_id} key={key}. \
+             Secret denied — workspace_root must be set from Init.workspace_root only."
+        );
+        return false;
+    }
+    if !workspace_root.is_absolute() {
+        error!(
+            "secrets::{op}: workspace_root '{}' is not absolute for app={app_id} key={key}. \
+             Secret denied.",
+            workspace_root.display()
+        );
+        return false;
+    }
+    true
 }
 
 // ── Index file (keys only — values stay in Keychain) ──────────────────
@@ -58,12 +151,20 @@ fn write_index(entries: &[SecretEntry]) {
 
 fn index_add(key: &str, app_id: &str, directory: &str) {
     let mut entries = read_index();
+    // Preserve inject flag if an entry already exists with this triple.
+    let existing_inject = entries
+        .iter()
+        .find(|e| e.key == key && e.app_id == app_id && e.directory == directory)
+        .map(|e| e.inject)
+        .unwrap_or(false);
     // Remove any existing entry with the same triple to avoid duplicates.
     entries.retain(|e| !(e.key == key && e.app_id == app_id && e.directory == directory));
     entries.push(SecretEntry {
         app_id: app_id.to_string(),
         directory: directory.to_string(),
         key: key.to_string(),
+        workspace_root: None, // v1/v2 legacy path — no workspace scoping
+        inject: existing_inject,
     });
     write_index(&entries);
 }
@@ -74,7 +175,9 @@ fn index_remove(key: &str, app_id: &str, directory: &str) {
     write_index(&entries);
 }
 
-// ── macOS Keychain implementation ──────────────────────────────────────
+// ── v1/v2 app-scoped secret API ───────────────────────────────────────────────
+// v1/v2 app-scoped secret API. v3 uses get_secret_scoped/set_secret_scoped keyed by workspace_root.
+// Call sites migrate in layer 3.
 
 #[cfg(target_os = "macos")]
 pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bool {
@@ -84,15 +187,24 @@ pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bo
 
     // Delete existing entry first (ignore errors if it doesn't exist)
     let _ = Command::new("security")
-        .args(["delete-generic-password", "-s", SERVICE_NAME, "-a", &account])
+        .args([
+            "delete-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+        ])
         .output();
 
     match Command::new("security")
         .args([
             "add-generic-password",
-            "-s", SERVICE_NAME,
-            "-a", &account,
-            "-w", value,
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+            "-w",
+            value,
         ])
         .output()
     {
@@ -123,15 +235,17 @@ pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroi
     match Command::new("security")
         .args([
             "find-generic-password",
-            "-s", SERVICE_NAME,
-            "-a", &account,
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
             "-w",
         ])
         .output()
     {
-        Ok(output) if output.status.success() => {
-            Some(Zeroizing::new(String::from_utf8_lossy(&output.stdout).trim().to_string()))
-        }
+        Ok(output) if output.status.success() => Some(Zeroizing::new(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        )),
         Ok(_) => None, // not found is normal, not an error
         Err(e) => {
             error!("secrets::retrieve_secret failed to run security CLI: {e}");
@@ -147,7 +261,13 @@ pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
     let account = account_key(key, app_id, directory);
 
     match Command::new("security")
-        .args(["delete-generic-password", "-s", SERVICE_NAME, "-a", &account])
+        .args([
+            "delete-generic-password",
+            "-s",
+            SERVICE_NAME,
+            "-a",
+            &account,
+        ])
         .output()
     {
         Ok(output) if output.status.success() => {
@@ -181,6 +301,24 @@ pub fn list_secrets(app_id: &str) -> Vec<String> {
 /// List every Plexi secret across all app_ids — reads from the index.
 pub fn list_all_secrets() -> Vec<SecretEntry> {
     read_index()
+}
+
+/// Return all secrets flagged with inject=true.
+pub fn list_inject_secrets() -> Vec<SecretEntry> {
+    read_index().into_iter().filter(|e| e.inject).collect()
+}
+
+/// Toggle the inject flag for the given key+app_id+directory triple.
+/// Returns the new inject value, or None if the entry was not found.
+pub fn toggle_inject_secret(key: &str, app_id: &str, directory: &str) -> Option<bool> {
+    let mut entries = read_index();
+    let entry = entries
+        .iter_mut()
+        .find(|e| e.key == key && e.app_id == app_id && e.directory == directory)?;
+    entry.inject = !entry.inject;
+    let new_value = entry.inject;
+    write_index(&entries);
+    Some(new_value)
 }
 
 /// Walk up from `launch_dir` to the user's home directory, returning the first

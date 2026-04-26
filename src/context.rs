@@ -1,5 +1,5 @@
 use crate::keys::Direction;
-use crate::pane::TerminalPane;
+use crate::pane::Pane;
 use crate::shell;
 use crate::tiling::PaneId;
 use egui_tiles::{Container, Tile, TileId, Tree};
@@ -18,7 +18,7 @@ pub struct Context {
     pub name: String,
     pub path: PathBuf,
     pub tree: Tree<PaneId>,
-    pub panes: HashMap<PaneId, TerminalPane>,
+    pub panes: HashMap<PaneId, Pane>,
     pub focused_pane: Option<TileId>,
     pub zoomed_pane: Option<TileId>,
 }
@@ -41,9 +41,7 @@ impl Context {
     pub(crate) fn activate_tab_for(&mut self, tile_id: TileId) {
         let result = self.find_ancestor_tabs(tile_id);
         if let Some((tabs_id, child_tile)) = result {
-            if let Some(Tile::Container(Container::Tabs(tabs))) =
-                self.tree.tiles.get_mut(tabs_id)
-            {
+            if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(tabs_id) {
                 tabs.set_active(child_tile);
             }
         }
@@ -97,7 +95,11 @@ impl Context {
             .find(|&id| id != excluding && matches!(self.tree.tiles.get(id), Some(Tile::Pane(_))))
     }
 
-    pub(crate) fn find_pane_in_direction_from(&self, from: TileId, dir: Direction) -> Option<TileId> {
+    pub(crate) fn find_pane_in_direction_from(
+        &self,
+        from: TileId,
+        dir: Direction,
+    ) -> Option<TileId> {
         let from_rect = self.tree.tiles.rect(from)?;
         let center = from_rect.center();
 
@@ -125,10 +127,12 @@ impl Context {
 
             if valid {
                 let (has_overlap, primary_dist) = if is_horizontal {
-                    let overlap = from_rect.top() < rect.bottom() && rect.top() < from_rect.bottom();
+                    let overlap =
+                        from_rect.top() < rect.bottom() && rect.top() < from_rect.bottom();
                     (overlap, (other.x - center.x).abs())
                 } else {
-                    let overlap = from_rect.left() < rect.right() && rect.left() < from_rect.right();
+                    let overlap =
+                        from_rect.left() < rect.right() && rect.left() < from_rect.right();
                     (overlap, (other.y - center.y).abs())
                 };
 
@@ -184,18 +188,11 @@ impl Context {
             _ => return None,
         };
         let pane = self.panes.get(&pane_id)?;
-        shell::get_pid_cwd(pane.backend.child_pid())
-    }
-
-    /// Returns (pane_id, &mut TerminalPane) for the currently focused pane, if any.
-    pub(crate) fn focused_pane_mut(&mut self) -> Option<(PaneId, &mut TerminalPane)> {
-        let tile_id = self.focused_pane?;
-        let pane_id = match self.tree.tiles.get(tile_id)? {
-            Tile::Pane(id) => *id,
-            _ => return None,
-        };
-        let pane = self.panes.get_mut(&pane_id)?;
-        Some((pane_id, pane))
+        if let Some(terminal) = pane.as_terminal() {
+            shell::get_pid_cwd(terminal.backend.child_pid())
+        } else {
+            pane.as_app().map(|app| app.workspace_root.clone())
+        }
     }
 }
 

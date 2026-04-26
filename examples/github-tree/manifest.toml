@@ -1,0 +1,12 @@
+[app]
+id = "github-tree"
+name = "Commit Graph"
+version = "0.3.0"
+description = "Subway-style git commit history for the pane's repo."
+entry = "commit_graph.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "above", split = 0.5 }

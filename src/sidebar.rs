@@ -73,13 +73,14 @@ impl PlexiApp {
 
             // Reserve the row rect first for the background interaction
             let row_rect = ui.cursor();
-            let row_rect = Rect::from_min_size(
-                row_rect.min,
-                Vec2::new(sidebar_width, 26.0),
-            );
+            let row_rect = Rect::from_min_size(row_rect.min, Vec2::new(sidebar_width, 26.0));
 
             // Create the row interaction FIRST so buttons painted later get priority
-            let row_response = ui.interact(row_rect, egui::Id::new(("ctx_row", i)), egui::Sense::click());
+            let row_response = ui.interact(
+                row_rect,
+                egui::Id::new(("ctx_row", i)),
+                egui::Sense::click(),
+            );
             if row_response.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
@@ -98,8 +99,7 @@ impl PlexiApp {
                     } else {
                         Color32::TRANSPARENT
                     };
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::ZERO, fill);
+                    ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
 
                     if is_active {
                         ui.painter().rect_filled(
@@ -140,10 +140,12 @@ impl PlexiApp {
                         if te.gained_focus() || !te.has_focus() {
                             te.request_focus();
                             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                                    egui::text::CCursor::new(0),
-                                    egui::text::CCursor::new(self.rename_buffer.len()),
-                                )));
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(self.rename_buffer.len()),
+                                    )));
                                 state.store(ui.ctx(), te_id);
                             }
                         }
@@ -161,14 +163,41 @@ impl PlexiApp {
                                     .color(self.colors.text_dim),
                             );
                         }
-                        let label_resp = ui.add(
-                            egui::Label::new(
-                                RichText::new(&self.contexts[i].name)
-                                    .size(12.0)
-                                    .color(text_color),
+                        let label_resp = ui
+                            .add(
+                                egui::Label::new(
+                                    RichText::new(&self.contexts[i].name)
+                                        .size(12.0)
+                                        .color(text_color),
+                                )
+                                .sense(egui::Sense::click()),
                             )
-                            .sense(egui::Sense::click()),
-                        ).on_hover_cursor(egui::CursorIcon::PointingHand);
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                        // Per-context notification badge.
+                        // Active context: count visible notifs (context-scoped for active + globals).
+                        // Inactive contexts: count only context-scoped notifs for that context
+                        // (globals appear only on the active badge to avoid triple-counting).
+                        let badge_count = if is_active {
+                            self.visible_notification_count()
+                        } else {
+                            self.context_notification_count(i)
+                        };
+                        if badge_count > 0 && !hover {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_space(8.0);
+                                let badge_text = if badge_count > 9 {
+                                    "9+".to_string()
+                                } else {
+                                    badge_count.to_string()
+                                };
+                                ui.label(
+                                    RichText::new(badge_text)
+                                        .size(10.0)
+                                        .color(self.colors.accent),
+                                );
+                            });
+                        }
 
                         // Delete button on hover when 2+ contexts
                         if hover && num_contexts > 1 {
@@ -215,9 +244,7 @@ impl PlexiApp {
                                 ui.close_menu();
                             }
                         }
-                        if i < num_contexts - 1
-                            && ui.button("Move Down").clicked()
-                        {
+                        if i < num_contexts - 1 && ui.button("Move Down").clicked() {
                             menu_action = Some((i, ContextMenuAction::MoveDown));
                             ui.close_menu();
                         }

@@ -1,0 +1,13 @@
+[app]
+id = "tetris"
+name = "Tetris"
+version = "0.1.0"
+description = "Classic Tetris — demonstrates ScheduleRender game loop at 60 fps."
+entry = "tetris.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
+keyboard_capture = true

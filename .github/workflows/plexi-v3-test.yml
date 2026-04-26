@@ -1,0 +1,27 @@
+name: v3 build
+
+on:
+  push:
+    branches: [v3]
+  pull_request:
+    branches: [v3]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      PLEXI_AUDIO: "mock://"
+      PLEXI_VIDEO: "mock://"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo build
+        run: cargo build --release
+
+      - name: Post-install smoke test (host starts + renders without panic)
+        run: bash scripts/smoke-test.sh

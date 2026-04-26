@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::SystemTime;
 
 #[derive(Clone)]
@@ -7,7 +6,6 @@ pub(crate) struct Entry {
     pub path: std::path::PathBuf,
     pub is_dir: bool,
     pub is_image: bool,
-    pub is_audio: bool,
     pub size_bytes: Option<u64>,
     pub modified: Option<SystemTime>,
 }
@@ -37,8 +35,12 @@ pub(crate) fn format_size(bytes: Option<u64>) -> String {
 }
 
 pub(crate) fn format_modified(modified: Option<SystemTime>) -> String {
-    let Some(modified) = modified else { return "\u{2014}".to_string() };
-    let Ok(elapsed) = SystemTime::now().duration_since(modified) else { return "\u{2014}".to_string() };
+    let Some(modified) = modified else {
+        return "\u{2014}".to_string();
+    };
+    let Ok(elapsed) = SystemTime::now().duration_since(modified) else {
+        return "\u{2014}".to_string();
+    };
     let secs = elapsed.as_secs();
     if secs < 60 {
         "just now".to_string()
@@ -53,17 +55,4 @@ pub(crate) fn format_modified(modified: Option<SystemTime>) -> String {
     } else {
         format!("{}mo ago", secs / (86400 * 30))
     }
-}
-
-pub(crate) fn is_text_file(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) else {
-        return false;
-    };
-    matches!(
-        ext.as_str(),
-        "txt" | "md" | "markdown" | "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "go"
-        | "java" | "swift" | "kt" | "c" | "h" | "cpp" | "hpp" | "sh" | "zsh" | "bash"
-        | "fish" | "lua" | "rb" | "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5"
-        | "ini" | "cfg" | "conf" | "env" | "log" | "rtf" | "rst" | "mdx"
-    )
 }

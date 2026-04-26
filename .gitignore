@@ -36,6 +36,11 @@ here.md
 examples/*/target/
 sdk/*/target/
 worktrees/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
 sdk/python/**/__pycache__/
 sdk/python/*.egg-info/
 sdk/python/tests/

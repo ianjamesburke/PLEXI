@@ -1,9 +1,0 @@
-[app]
-id = "hello-app"
-name = "Hello App"
-version = "0.1.0"
-description = "Example Plexi app — demonstrates the draw protocol"
-
-[app.capabilities]
-file_types = ["hello"]
-# keybinding = "cmd+shift+h"  # optional

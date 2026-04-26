@@ -1,24 +1,61 @@
 Always confirm best practices by researching the docs.
 
+## Source of Truth for Project State
+
+**CLAUDE.md does not track in-progress work or completion status.** It goes stale immediately and will mislead future sessions.
+
+- **What shipped and why** → `DEV_LOG.md` (read the first 100 lines at session start)
+- **What's currently in flight** → `git log --oneline -20` and `git status`
+- **What's planned** → `.plexi/backlog`
+
+Before reporting anything as "done" or "missing", verify against `git log`. Never trust a status list in this file.
+
+## North Star
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — vision, target architecture diagram, key invariants. Read first.
+- [`docs/specs/releases/plexi-v3.0.md`](docs/specs/releases/plexi-v3.0.md) — the v3 spec. Single source of truth for the protocol, pane ADT, secrets invariant, media, Plexi IQ, example apps.
+- [`docs/specs/README.md`](docs/specs/README.md) — spec index.
+- [`docs/specs/subsystems/host-architecture.md`](docs/specs/subsystems/host-architecture.md) — HostModel state machine, renderer layer, security model, WASM path, multi-agent.
+- [`docs/specs/subsystems/testing-infrastructure.md`](docs/specs/subsystems/testing-infrastructure.md) — three-layer test strategy: app protocol, host state machine, headless PNG renderer.
+- [`docs/AGENTS.md`](docs/AGENTS.md) — agent development guide: build, test, install, commit rules.
+
+Vision (why we're building this, long-term direction) lives in `ARCHITECTURE.md §0`.
+
+If a doc outside these contradicts them, the doc is wrong. Fix or delete it.
+
+## Terminology
+
+**PGAP** — Plexi Generic App Protocol. Newline-delimited JSON over stdin/stdout. `PlexiEvent` flows host→app, `DrawCommand` flows app→host. Binary data (audio PCM, video frames, raw bytes) travels on typed pipes, not stdio. PGAP is the isolation boundary — no shared memory, no inherited FDs.
+
+## Branches
+
+- `alpha` — active development. All PRs land here.
+- `beta` — staging/release channel. Promoted from alpha when ready.
+- `main` — stable releases only.
+
+Feature branch naming: `feature/<issue-number>-short-description`. Sub-agent workflow: `isolation: "worktree"` off `alpha`, PR back to `alpha`. Never push directly to `main` or `beta`.
+
 ## GitHub Issue Labels
 
-Every issue gets exactly one **type** and one **priority**. Optionally add a **status** label.
+Every issue gets one **type**, one **priority**, one **version**.
 
-**Type** (mutually exclusive):
-- **bug** — something broken
-- **enhancement** — concrete improvement scoped for active development
-- **idea** — speculative feature, out of scope for MVP. Use liberally — if it's not needed to ship a usable terminal multiplexer, it's an idea.
+- **type:** `bug` | `enhancement` | `idea`
+- **priority:** `P1` (shipping blocker) | `P2` | `P3` | `P4`
+- **version:** `v3.0` | `v3.1+` | `future`
+- **status** (optional): `in-progress` | `ready` | `blocked`
 
-**Priority** (P1–P4):
-- **P1** — MVP / shipping blocker. Fix before anything else.
-- **P2** — important, not blocking. Next up after P1s are clear.
-- **P3** — nice to have. Do when there's breathing room.
-- **P4** — backlog / someday. Revisit when users ask for it.
+## App Installation Paths
 
-**Status** (optional):
-- **in progress** — currently being worked on
-- **ready** — fully researched, can be picked up immediately
-- **blocked** — waiting on an external dependency or upstream fix
+Build-specific, resolved at runtime by binary name:
+
+| Build | Apps directory |
+|---|---|
+| Alpha (frozen) | `~/.plexi-alpha/apps/` |
+| Beta | `~/.plexi-beta/apps/` |
+| Stable | `~/.plexi/apps/` |
+| v3 dev build | `~/.plexi-v3/apps/` |
+
+Each app is a subdirectory with `manifest.toml` and an executable entry point. Installing to the wrong directory silently does nothing.
 
 ## Branch Workflow
 
@@ -42,59 +79,65 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 
 ## Build & Install
 
-`just install` uses `cargo bundle --release` to produce a proper macOS `.app` bundle (reads metadata from `Cargo.toml`), then copies it to `/Applications/Plexi.app` and extracts the binary to `/usr/local/bin/plexi`. The `install.sh` curl script does the same thing for fresh installs from GitHub.
+`just install` runs `cargo bundle --release`, copies the `.app` to `/Applications`, extracts the binary to `/usr/local/bin/plexi`, then runs `lsregister -f <bundle>` and `pbs -update` to refresh macOS Services.
 
-**After every completed code change, run the install command for the active branch:**
-- `alpha` branch → `just install-alpha`
-- `main` branch → `just install`
-
-Do this before reporting a task complete so the user can immediately test in the running app.
+**After every completed code change, install for the active branch** before reporting the task complete:
+- `alpha` → `just install-alpha`
+- `main` → `just install`
 
 ## Logging
 
-### Log file
-Plexi writes to `~/.plexi-alpha/plexi.log` (or `~/.plexi/plexi.log` on stable). Rotates to `plexi.log.1` at startup if over 10 MB. Also printed to stderr during CLI/dev runs.
+Build-specific log file:
+- Alpha: `~/.plexi-alpha/plexi.log`
+- Stable: `~/.plexi/plexi.log`
 
-### Log level
-Set in `config.toml`:
-```toml
-[log]
-level = "info"  # error | warn | info | debug
-```
-Default: `info`. Use `debug` during development — it emits detailed event traces. Third-party crates (egui, wgpu, etc.) are always clamped to `warn` regardless of this setting.
+Rotates to `plexi.log.1` at 10 MB. Level set in `config.toml` (`error | warn | info | debug`). Third-party crates clamped to `warn`.
 
-### App logs (external apps → Plexi log)
-External apps can forward log messages into Plexi's log file via the draw protocol. Plexi tags them with `app::<app_id>` as the log target.
+App logs forward into the host log tagged `app::<app_id>`. Python SDK: `ctx.info/warn/error/debug(...)` inside a frame; `emit.info(...)` outside. App stderr forwards as `warn`-level `app::<app_id>` entries.
 
-**Python SDK:**
-```python
-# Inside a render frame (via RenderContext):
-ctx.info("rendered 42 items")
-ctx.warn("no data found")
-ctx.error("subprocess failed")
-ctx.debug("selected index: 3")
+**When debugging, check the log file first.**
 
-# Outside a frame (via Emitter — e.g. in on_key, on_command):
-emit.info("user pressed enter")
-emit.log("warn", "fallback triggered")
-```
+## Configuration Philosophy
 
-**Rust SDK:**
-Emit a `DrawCommand::Log { level, message }` — the `log()` method on `RenderContext` and `Emitter` handles this.
+Required fields have no defaults — fail fast with a clear error. Optional fields are clearly marked. Never paper over ambiguity with invisible magic. Prefer a verbose generated config with all options visible over a sparse one with hidden behavior.
 
-### App stderr
-External app stderr is piped and forwarded to Plexi's log as `warn`-level entries tagged `app::<app_id>`. Python tracebacks and Rust panics from external apps will appear in `plexi.log`.
+## Python Tooling
 
-### Reading logs during development
-```sh
-tail -f ~/.plexi-alpha/plexi.log           # live stream
-grep "app::git-log" ~/.plexi-alpha/plexi.log   # filter by app
-grep "ERROR\|WARN" ~/.plexi-alpha/plexi.log    # errors only
-```
+Use `uv` for all Python projects. `pyproject.toml` with `requires-python = ">=3.11"`, `uv sync`, `uv run`. Bootstrap with `curl -LsSf https://astral.sh/uv/install.sh | sh` if absent. Never write manual venv creation loops.
 
-Sub-agents working in any worktree can read the same log file at the fixed path above.
+## Error Handling
 
-## Lessons
+Try-catch on all I/O, network, external API calls, and anything that can reasonably fail. Every catch logs where + what failed with enough context to diagnose. Never swallow errors silently. If a failure can't be meaningfully recovered from, propagate or re-throw.
 
-- **Coupled state:** When adding new state that derives from or shadows existing state (e.g., `zoomed_pane` tracking `focused_pane`), grep for all mutation sites of the original state and update each one to handle the new state.
-- **Pane focus guards:** The focus condition in `pane_ui` (tiling.rs) combines a spatial guard (`rect_contains_pointer` / `max_rect().contains(pos)`) with an intent check (click or drag). Any refactor of this condition must keep the spatial guard on every branch independently.
+## Implementation Discipline (no half-refactors)
+
+**Define done by the test, not the code.** Before writing any new module or refactoring an existing one, write the test that must pass when the work is complete. A PR is done when `cargo test` is green — not when the code looks right.
+
+**Test-first for host logic.** Any new `HostCommand` or `HostEffect` gets a `HostHarness` test written before the implementation. The test failing is the starting state; making it pass is the work. This prevents stubs: a stub that makes the test pass is an implementation.
+
+**No partial merges.** A PR that adds a new capability, module, or feature must be complete end-to-end. If it's too large to complete in one pass, scope it down — don't merge half of it. Split at natural seams where each piece is independently testable and independently useful.
+
+## Panic Discipline (stubs must not crash the host)
+
+`todo!()` and `unimplemented!()` are **banned outside `#[cfg(test)]`** — enforced by `#![deny(clippy::todo, clippy::unimplemented)]` in `src/main.rs`. They compile clean but panic at runtime, and a panic on the UI thread freezes the whole GUI.
+
+**Factory rule:** any impl returned from a factory function (e.g. `audio_device()`, `video_decoder()`) must never panic in a trait method. Unimplemented methods return `Err(NotImplemented)` / `None` / noop — never `todo!()`. When you add a new prod stub, add a `prod_stub_tests` unit test that calls every trait method and asserts no panic.
+
+**Post-install smoke test:** `just install-v3` runs `scripts/smoke-test.sh`, which (1) feeds a PGAP Init to every installed app and asserts `ready` appears within 3s, (2) launches the host for 2s and scans the log for panics. If the smoke test fails, the install is broken — do not report the task complete.
+
+## Lessons Carried Into v3
+
+- **Python version in GUI app bundles:** macOS GUI bundles do NOT inherit shell PATH. `#!/usr/bin/env python3` → Apple's frozen `/usr/bin/python3` 3.9.6. Always add `from __future__ import annotations` as the first line of every app Python file so `str | None` is safe on 3.7+.
+- **Install doesn't chmod:** `just install-*` syncs files but doesn't set executable bits. Run `chmod +x ~/.plexi-*/apps/*/*.py` after install, or fix the recipe.
+- **Coupled state:** When adding state that derives from or shadows existing state, grep every mutation site of the original and update each one.
+- **Fallback chain audit:** When a value looks correct on the surface but behavior is stale, enumerate every fallback source in priority order (cookies, env vars, caches, defaults). Fix the chain, not the surface.
+- **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
+
+## General Rules
+
+- Before SSH/networking setup, ask if machines are on the same LAN or remote. Before any multi-step infra task, clarify topology first.
+- When the user reports a bug, fix what they asked for first. Don't pivot to QA, refactoring, or tangential improvements until the primary request is resolved.
+- When the user provides multiple distinct ideas, file them separately. Don't combine unrelated concepts.
+- Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Always do the work: delete unused code, wire it up, or move it to a feature-flagged module. If fixing a warning takes a long time, that's the job — do not paper over it with an allow attribute.
+- always run cargo build after work to make sure it passes.
+

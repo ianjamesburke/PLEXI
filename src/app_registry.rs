@@ -1,31 +1,31 @@
-/// App registry — discovers and loads Plexi apps from `~/.plexi/apps/`.
-///
-/// # App directory layout
-///
-/// ```
-/// ~/.plexi/apps/
-///   my-pdf-viewer/
-///     manifest.toml
-///     bin/              # or just an executable named after the app id
-///       plexi-app       # the app binary (must be executable)
-///   file-browser/
-///     manifest.toml
-///     bin/plexi-app
-/// ```
-///
-/// # manifest.toml
-///
-/// ```toml
-/// [app]
-/// id = "my-pdf-viewer"
-/// name = "PDF Viewer"
-/// version = "0.1.0"
-/// description = "View PDF files inline"
-///
-/// [app.capabilities]
-/// file_types = ["pdf"]       # file extensions this app opens
-/// keybinding = "cmd+shift+p" # optional global keybinding (not yet wired)
-/// ```
+//! App registry — discovers and loads Plexi apps from `~/.plexi/apps/`.
+//!
+//! # App directory layout
+//!
+//! ```
+//! ~/.plexi/apps/
+//!   my-pdf-viewer/
+//!     manifest.toml
+//!     bin/              # or just an executable named after the app id
+//!       plexi-app       # the app binary (must be executable)
+//!   file-browser/
+//!     manifest.toml
+//!     bin/plexi-app
+//! ```
+//!
+//! # manifest.toml
+//!
+//! ```toml
+//! [app]
+//! id = "my-pdf-viewer"
+//! name = "PDF Viewer"
+//! version = "0.1.0"
+//! description = "View PDF files inline"
+//!
+//! [app.capabilities]
+//! file_types = ["pdf"]       # file extensions this app opens
+//! keybinding = "cmd+shift+p" # optional global keybinding (not yet wired)
+//! ```
 
 use crate::app_trait::App;
 use crate::process_app::ProcessApp;
@@ -36,6 +36,8 @@ use std::path::PathBuf;
 #[derive(Deserialize, Debug, Clone)]
 pub struct AppManifest {
     pub app: AppManifestApp,
+    #[serde(default)]
+    pub launch: LaunchSection,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -49,51 +51,98 @@ pub struct AppManifestApp {
     pub description: String,
     #[serde(default)]
     pub capabilities: AppCapabilities,
+    /// Default notification scope for this app. Optional — defaults to
+    /// `NotifyScope::Context` when unset (safe default: local confirmations
+    /// are local). Set to "global" in manifest for apps that must interrupt
+    /// the user regardless of which context is active (e.g. stand-up-reminder).
+    #[serde(default)]
+    pub default_notification_scope: DefaultNotifyScope,
 }
 
+/// Newtype for the manifest `default_notification_scope` field so it
+/// deserialises from a snake_case string ("context" | "global") and has a
+/// sensible `Default` impl without pulling `NotifyScope` into the serde
+/// derive chain.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultNotifyScope {
+    #[default]
+    Context,
+    Global,
+}
+
+impl From<DefaultNotifyScope> for crate::app_protocol::NotifyScope {
+    fn from(d: DefaultNotifyScope) -> Self {
+        match d {
+            DefaultNotifyScope::Context => crate::app_protocol::NotifyScope::Context,
+            DefaultNotifyScope::Global => crate::app_protocol::NotifyScope::Global,
+        }
+    }
+}
+
+/// v3 capability section — `[app.capabilities]`. Holds only the capability
+/// string list and the optional `file_types` extension map. Launch-time
+/// layout + grouping moved to `[launch]` (see `LaunchSection`).
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct AppCapabilities {
     #[serde(default)]
     pub file_types: Vec<String>,
+    /// v3 capability strings. Valid values: fs.read, fs.write, net.http,
+    /// secrets.get, pipe.open, spawn.app, audio.record, audio.playback,
+    /// video.playback. Unknown values cause install to fail (STEP-7).
     #[serde(default)]
-    pub keybinding: Option<String>,
-    /// Can send commands to the linked terminal PTY.
+    pub capabilities: Vec<String>,
+    /// Hosts this app is allowed to reach via net.http.
+    /// Empty list = unrestricted (allow any host).
+    /// Patterns: exact hostname ("api.github.com") or wildcard ("*.wikipedia.org").
     #[serde(default)]
-    pub terminal_write: bool,
-    /// Filesystem access: "none", "read_only", "read_write". Default: "read_only".
-    #[serde(default = "default_fs_permission")]
-    pub filesystem: String,
-    /// Can read .env / credentials files.
-    #[serde(default)]
-    pub env_file_access: bool,
-    /// Can make network requests.
-    #[serde(default)]
-    pub network: bool,
-    /// Can write secrets to Keychain via the API.
-    #[serde(default)]
-    pub secrets_write: bool,
+    pub allowed_hosts: Vec<String>,
 }
 
-fn default_fs_permission() -> String {
-    "read_only".to_string()
+/// v3 launch section — `[launch]`. Controls pane placement, share, grouping,
+/// and keyboard capture when the host spawns this app. All fields optional.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct LaunchSection {
+    /// Pane group this app joins at spawn. When any pane in the group reports
+    /// a CWD change, every member receives `PlexiEvent::PathChanged { cwd }`.
+    /// Convention: "cwd" for generic directory-synced apps.
+    #[serde(default)]
+    pub join_group: Option<String>,
+    /// Preferred pane layout. Default: `LayoutHint { side: "right", split: 0.5 }`.
+    #[serde(default)]
+    pub layout_hint: Option<LayoutHint>,
+    /// If true, this app captures all keyboard input when focused. Host
+    /// shortcuts (Cmd+HJKL, Cmd+Enter, etc.) are suppressed; only Cmd+Q and
+    /// Cmd+W remain.
+    #[serde(default)]
+    pub keyboard_capture: bool,
+    /// If true, this app's process survives pane close and can be re-attached.
+    /// The host will not kill the subprocess when the pane is closed;
+    /// instead it parks the process in a background registry keyed by app_id.
+    #[serde(default)]
+    pub background: bool,
+}
+
+/// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
+/// `split` is the fraction of the parent container given to the new pane
+/// on open — must be in (0.0, 1.0). Default: 0.5.
+#[derive(Deserialize, Debug, Clone)]
+pub struct LayoutHint {
+    pub side: String,
+    #[serde(default = "default_split")]
+    pub split: f32,
+}
+
+fn default_split() -> f32 {
+    0.5
 }
 
 impl AppCapabilities {
     /// Convert manifest-declared capabilities to runtime permissions.
     pub fn to_permissions(&self) -> crate::app_permissions::AppPermissions {
-        use crate::app_permissions::{AppPermissions, FsPermission, TrustLevel};
-        AppPermissions {
-            trust_level: TrustLevel::Sandboxed, // manifest apps are always sandboxed
-            terminal_write: self.terminal_write,
-            filesystem: match self.filesystem.as_str() {
-                "none" => FsPermission::None,
-                "read_write" => FsPermission::ReadWrite,
-                _ => FsPermission::ReadOnly,
-            },
-            env_file_access: self.env_file_access,
-            network: self.network,
-            secrets_write: self.secrets_write,
-        }
+        let mut perms = crate::app_permissions::AppPermissions::from_capability_strings(&self.capabilities);
+        perms.allowed_hosts = self.allowed_hosts.clone();
+        perms
     }
 }
 
@@ -101,8 +150,8 @@ impl AppCapabilities {
 #[derive(Debug, Clone)]
 pub struct InstalledApp {
     pub manifest: AppManifestApp,
+    pub launch: LaunchSection,
     pub bin_path: PathBuf,
-    pub app_dir: PathBuf,
 }
 
 pub struct AppRegistry {
@@ -158,10 +207,15 @@ impl AppRegistry {
 
             match self.load_app(&app_dir) {
                 Ok(installed) => {
-                    log::info!("AppRegistry: loaded app '{}' from {:?}", installed.manifest.id, apps_dir);
+                    log::info!(
+                        "AppRegistry: loaded app '{}' from {:?}",
+                        installed.manifest.id,
+                        apps_dir
+                    );
                     for ext in &installed.manifest.capabilities.file_types {
                         // Plain insert — local apps override global for extension map too.
-                        self.extension_map.insert(ext.to_lowercase(), installed.manifest.id.clone());
+                        self.extension_map
+                            .insert(ext.to_lowercase(), installed.manifest.id.clone());
                     }
                     self.apps.insert(installed.manifest.id.clone(), installed);
                 }
@@ -177,15 +231,47 @@ impl AppRegistry {
         let manifest_str = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("no manifest.toml: {e}"))?;
 
-        let manifest: AppManifest = toml::from_str(&manifest_str)
-            .map_err(|e| format!("invalid manifest: {e}"))?;
+        let manifest: AppManifest =
+            toml::from_str(&manifest_str).map_err(|e| format!("invalid manifest: {e}"))?;
+
+        // STEP-7: refuse to install an app whose declared capabilities include
+        // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
+        // this replaces it with a loud install-time failure.
+        if let Err(e) = crate::app_permissions::parse_capability_strings(
+            &manifest.app.capabilities.capabilities,
+        ) {
+            return Err(format!(
+                "manifest lists {e}; valid values: fs.read, fs.write, net.http, \
+                 secrets.get, pipe.open, spawn.app, audio.record, audio.playback, \
+                 video.playback"
+            ));
+        }
+
+        // STEP-8: validate layout_hint.side now so bad manifests fail at
+        // install rather than at first pane open.
+        if let Some(hint) = &manifest.launch.layout_hint {
+            match hint.side.as_str() {
+                "right" | "below" | "above" | "overlay" => {}
+                other => {
+                    return Err(format!(
+                        "layout_hint.side must be 'right', 'below', 'above', or 'overlay'; got '{other}'"
+                    ));
+                }
+            }
+            if !(0.0 < hint.split && hint.split < 1.0) {
+                return Err(format!(
+                    "layout_hint.split must be in (0.0, 1.0); got {}",
+                    hint.split
+                ));
+            }
+        }
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
         Ok(InstalledApp {
             manifest: manifest.app,
+            launch: manifest.launch,
             bin_path,
-            app_dir: app_dir.clone(),
         })
     }
 
@@ -196,36 +282,76 @@ impl AppRegistry {
         apps
     }
 
-    /// Find the app registered for a file extension.
-    pub fn app_for_extension(&self, ext: &str) -> Option<&InstalledApp> {
-        let id = self.extension_map.get(&ext.to_lowercase())?;
-        self.apps.get(id)
+    /// Returns true if the app's process should survive pane close (`[launch].background`).
+    pub fn is_background(&self, app_id: &str) -> bool {
+        self.apps.get(app_id).map(|a| a.launch.background).unwrap_or(false)
     }
 
-    /// Look up an app by id.
-    pub fn app_by_id(&self, id: &str) -> Option<&InstalledApp> {
-        self.apps.get(id)
+    /// Get the manifest-declared pane group (`[launch].join_group`).
+    pub fn group_for(&self, app_id: &str) -> Option<String> {
+        self.apps.get(app_id).and_then(|a| a.launch.join_group.clone())
     }
 
-    /// Get the manifest-declared permissions for an app.
-    pub fn permissions_for(&self, app_id: &str) -> Option<crate::app_permissions::AppPermissions> {
-        self.apps.get(app_id).map(|app| app.manifest.capabilities.to_permissions())
+    /// Get the launch-time layout side hint: "right" | "below" | "above" | "overlay".
+    /// Internally mapped to the `split_v` / `split_h` / `split_above` strings pane_ops uses.
+    pub fn layout_hint_for(&self, app_id: &str) -> Option<String> {
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.launch.layout_hint.as_ref())
+            .map(|h| match h.side.as_str() {
+                "below" => "split_h".to_string(),
+                "above" => "split_above".to_string(),
+                "overlay" => "overlay".to_string(),
+                _ => "split_v".to_string(),
+            })
     }
 
-    /// Launch an app and return a boxed `App` trait object.
-    pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
+    /// Get the manifest-declared layout_hint.split fraction (None if unset).
+    pub fn share_for(&self, app_id: &str) -> Option<f32> {
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.launch.layout_hint.as_ref())
+            .map(|h| h.split)
+    }
+
+    /// Return the manifest-declared default notification scope for an app.
+    /// Used by operators and the host to understand the app's intent;
+    /// the actual scope is set per-notification by the app via the SDK.
+    pub fn default_notification_scope_for(
+        &self,
+        app_id: &str,
+    ) -> crate::app_protocol::NotifyScope {
+        self.apps
+            .get(app_id)
+            .map(|a| a.manifest.default_notification_scope.clone().into())
+            .unwrap_or(crate::app_protocol::NotifyScope::Context)
+    }
+
+    /// Launch an app process for the given id.
+    pub fn launch_process(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<ProcessApp> {
         let installed = self.apps.get(id)?;
+        let perms = installed.manifest.capabilities.to_permissions();
+        let caps = perms.capabilities.clone();
+        let keyboard_capture = installed.launch.keyboard_capture;
+        let default_scope = self.default_notification_scope_for(id);
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
-            installed.manifest.capabilities.file_types.iter().cloned().collect(),
             &installed.bin_path,
             cwd,
             args,
+            cwd.clone(),
+            caps,
+            keyboard_capture,
         ) {
             Ok(app) => {
-                log::info!("AppRegistry: launched '{}' from {:?}", id, installed.bin_path);
-                Some(Box::new(app))
+                log::info!(
+                    "AppRegistry: launched '{}' from {:?} (default_notification_scope={:?})",
+                    id,
+                    installed.bin_path,
+                    default_scope,
+                );
+                Some(app)
             }
             Err(e) => {
                 log::error!("AppRegistry: failed to launch '{}': {e}", id);
@@ -234,12 +360,10 @@ impl AppRegistry {
         }
     }
 
-    /// Launch the app associated with a file extension, passing the file path as argv[1].
-    pub fn launch_for_file(&self, file_path: &PathBuf, cwd: &PathBuf) -> Option<Box<dyn App>> {
-        let ext = file_path.extension()?.to_string_lossy().to_lowercase();
-        let id = self.extension_map.get(&ext)?.clone();
-        let args = vec![file_path.display().to_string()];
-        self.launch(&id, cwd, &args)
+    /// Launch an app and return a boxed `App` trait object.
+    pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
+        self.launch_process(id, cwd, args)
+            .map(|app| Box::new(app) as Box<dyn App>)
     }
 }
 
@@ -290,7 +414,9 @@ fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
             .map(|m| m.permissions().mode())
             .unwrap_or(0);
         if mode & 0o111 == 0 {
-            return Err(format!("entry '{entry}' exists but is not executable (run: chmod +x {entry})"));
+            return Err(format!(
+                "entry '{entry}' exists but is not executable (run: chmod +x {entry})"
+            ));
         }
     }
 

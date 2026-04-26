@@ -1,14 +1,15 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::io::{self, Write};
 use std::process::Command;
 
 const APP_ID: &str = "plexi-run";
 const COMMANDS_FILE: &str = ".plexi/commands.toml";
 
 // Embed the Python SDK at compile time so `plexi app init` can write it out.
-const PYTHON_SDK: &str = include_str!("../sdk/python/plexi_sdk.py");
+// Source is now sdk/python/plexi_sdk/__init__.py (package layout); the file
+// written into scaffolded apps remains plexi_sdk.py for flat single-file import.
+const PYTHON_SDK: &str = include_str!("../sdk/python/plexi_sdk/__init__.py");
 
 /// Parsed .plexi/commands.toml
 #[derive(Deserialize)]
@@ -47,10 +48,7 @@ pub fn run_command(command_name: &str) -> i32 {
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(_) => {
-            eprintln!(
-                "error: no {COMMANDS_FILE} found in {}",
-                cwd.display()
-            );
+            eprintln!("error: no {COMMANDS_FILE} found in {}", cwd.display());
             eprintln!("Create a .plexi/commands.toml to define runnable commands.");
             return 1;
         }
@@ -205,7 +203,10 @@ pub fn list_secrets() -> i32 {
             if let Some(last_slash) = rest.rfind('/') {
                 let dir = &rest[..last_slash];
                 let key = &rest[last_slash + 1..];
-                by_dir.entry(dir.to_string()).or_default().push(key.to_string());
+                by_dir
+                    .entry(dir.to_string())
+                    .or_default()
+                    .push(key.to_string());
             }
         }
     }
@@ -235,7 +236,10 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
 
     let app_dir = cwd.join(".plexi").join("apps").join(name);
@@ -251,7 +255,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 
     let result = match lang {
         "rust" => scaffold_rust_app(&app_dir, name),
-        _      => scaffold_python_app(&app_dir, name),
+        _ => scaffold_python_app(&app_dir, name),
     };
 
     match result {
@@ -276,12 +280,12 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
     }
 }
 
-fn scaffold_python_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
+fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
+        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
@@ -305,10 +309,10 @@ fn scaffold_python_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn scaffold_rust_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
+fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\nfile_types = []\nterminal_write = true\nfilesystem = \"read_only\"\n",
+        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
@@ -333,7 +337,10 @@ fn scaffold_rust_app(app_dir: &PathBuf, name: &str) -> io::Result<()> {
 
 /// `plexi app install <github-shorthand-or-url>` — clone + build an app from GitHub.
 pub fn app_install(source: &str) -> i32 {
-    let url = if source.starts_with("http://") || source.starts_with("https://") || source.starts_with("git@") {
+    let url = if source.starts_with("http://")
+        || source.starts_with("https://")
+        || source.starts_with("git@")
+    {
         source.to_string()
     } else {
         // Treat as github shorthand: "user/repo"
@@ -356,7 +363,10 @@ pub fn app_install(source: &str) -> i32 {
 
     let dest = apps_dir.join(repo_name);
     if dest.exists() {
-        eprintln!("error: {} already exists. Remove it first to reinstall.", dest.display());
+        eprintln!(
+            "error: {} already exists. Remove it first to reinstall.",
+            dest.display()
+        );
         return 1;
     }
 
@@ -451,16 +461,46 @@ pub fn app_uninstall(id: &str) -> i32 {
 
 /// `plexi app list` — list installed apps.
 pub fn app_list() -> i32 {
-    let registry = crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+    let registry =
+        crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
     let apps = registry.list();
     if apps.is_empty() {
         println!("No apps installed.");
         println!("Install one with: plexi app install <github-user/repo>");
     } else {
         for app in apps {
-            println!("{:20} {}  {}", app.manifest.id, app.manifest.version, app.manifest.description);
+            println!(
+                "{:20} {}  {}",
+                app.manifest.id, app.manifest.version, app.manifest.description
+            );
         }
     }
+    0
+}
+
+/// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]`.
+/// Writes a JSON file to the notify queue dir; the running host polls and ingests it.
+pub fn notify_cli(title: &str, body: &str, level: &str) -> i32 {
+    let queue_dir = crate::config::config_dir().join("notify-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        eprintln!("error: could not create notify queue: {e}");
+        return 1;
+    }
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file = queue_dir.join(format!("{id}.json"));
+    let payload = serde_json::json!({
+        "level": level,
+        "title": title,
+        "body": body,
+    });
+    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+        eprintln!("error: could not write notification: {e}");
+        return 1;
+    }
+    println!("notification queued");
     0
 }
 
@@ -492,16 +532,12 @@ fn to_struct_name(s: &str) -> String {
 /// Read a line from stdin with echo disabled (for password-style input).
 fn read_secret_from_stdin() -> io::Result<String> {
     // Disable echo via stty (avoids libc dependency).
-    let _ = std::process::Command::new("stty")
-        .arg("-echo")
-        .status();
+    let _ = std::process::Command::new("stty").arg("-echo").status();
 
     let result = read_line_plain();
 
     // Restore echo.
-    let _ = std::process::Command::new("stty")
-        .arg("echo")
-        .status();
+    let _ = std::process::Command::new("stty").arg("echo").status();
     // Print newline since echo was off during input.
     eprintln!();
 
@@ -511,5 +547,8 @@ fn read_secret_from_stdin() -> io::Result<String> {
 fn read_line_plain() -> io::Result<String> {
     let mut buf = String::new();
     io::stdin().read_line(&mut buf)?;
-    Ok(buf.trim_end_matches('\n').trim_end_matches('\r').to_string())
+    Ok(buf
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string())
 }

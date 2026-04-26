@@ -16,21 +16,6 @@ pub struct TextEditorApp {
 }
 
 impl TextEditorApp {
-    pub fn new_scratch(cwd: PathBuf) -> Self {
-        let _ = cwd; // available for future use
-        let content = String::new();
-        Self {
-            file_path: None,
-            content: content.clone(),
-            saved_content: content,
-            edit_mode: true,
-            dirty: false,
-            was_focused: false,
-            cursor_init_pending: true,
-            pending_cmds: Vec::new(),
-        }
-    }
-
     pub fn from_file(path: PathBuf) -> Self {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -230,17 +215,6 @@ impl App for TextEditorApp {
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_cmds)
-    }
-
-    fn accepted_extensions(&self) -> &[&str] {
-        &[
-            "txt", "md", "markdown", "toml", "yaml", "yml", "json", "csv", "log", "conf", "cfg",
-            "ini", "sh", "bash", "zsh", "fish", "env", "gitignore", "dockerignore", "editorconfig",
-            "rs", "py", "js", "ts", "tsx", "jsx", "html", "css", "scss", "xml", "svg", "sql",
-            "rb", "go", "c", "h", "cpp", "hpp", "java", "kt", "swift", "lua", "vim", "el",
-            "lisp", "zig", "nim", "r", "jl", "ex", "exs", "erl", "hs", "ml", "mli", "nix",
-            "tf", "hcl", "just", "makefile", "cmake",
-        ]
     }
 
     fn wants_close(&self) -> bool {

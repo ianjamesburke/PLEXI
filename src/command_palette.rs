@@ -1,8 +1,9 @@
 use crate::shell;
-use egui::{Align, Align2, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui::{Align2, Color32, CornerRadius, RichText, Stroke, Vec2};
 
 use crate::app::PlexiApp;
 use crate::overlays::MODAL_WIDTH;
+use crate::widgets::selectable_row;
 
 enum PaletteEntry {
     Pane {
@@ -28,13 +29,16 @@ impl PlexiApp {
 
         for (ci, context) in self.contexts.iter().enumerate() {
             for (&pane_id, pane) in &context.panes {
-                let Some(display_name) = pane.name.clone() else { continue };
-                let cwd = shell::get_pid_cwd(pane.backend.child_pid())
+                let Some(t) = pane.as_terminal() else {
+                    continue;
+                };
+                let Some(display_name) = t.name.clone() else {
+                    continue;
+                };
+                let cwd = shell::get_pid_cwd(t.backend.child_pid())
                     .as_deref()
                     .map(crate::app::PlexiApp::abbreviate_home_path)
-                    .unwrap_or_else(|| {
-                        crate::app::PlexiApp::abbreviate_home_path(&context.path)
-                    });
+                    .unwrap_or_else(|| crate::app::PlexiApp::abbreviate_home_path(&context.path));
                 if let Some(tile_id) = context.tree.tiles.find_pane(&pane_id) {
                     if query.is_empty()
                         || display_name.to_lowercase().contains(&query)
@@ -56,7 +60,9 @@ impl PlexiApp {
         // Sort panes by visit history
         entries.sort_by(|a, b| {
             let rank = |e: &PaletteEntry| match e {
-                PaletteEntry::Pane { ctx_idx, tile_id, .. } => self
+                PaletteEntry::Pane {
+                    ctx_idx, tile_id, ..
+                } => self
                     .pane_visit_history
                     .iter()
                     .position(|&(c, t)| c == *ctx_idx && t == *tile_id)
@@ -67,7 +73,6 @@ impl PlexiApp {
         });
 
         // ── App entries (appended after panes) ─────────────────────────────
-        // Collect outside the borrow of self.registry to avoid borrow conflicts
         let app_entries: Vec<(String, String, String)> = self
             .registry
             .list()
@@ -78,11 +83,21 @@ impl PlexiApp {
                     || app.manifest.id.to_lowercase().contains(&query)
                     || app.manifest.description.to_lowercase().contains(&query)
             })
-            .map(|app| (app.manifest.id.clone(), app.manifest.name.clone(), app.manifest.description.clone()))
+            .map(|app| {
+                (
+                    app.manifest.id.clone(),
+                    app.manifest.name.clone(),
+                    app.manifest.description.clone(),
+                )
+            })
             .collect();
 
         for (id, name, description) in app_entries {
-            entries.push(PaletteEntry::App { id, name, description });
+            entries.push(PaletteEntry::App {
+                id,
+                name,
+                description,
+            });
         }
 
         let total = entries.len();
@@ -99,13 +114,21 @@ impl PlexiApp {
             LaunchApp(String),
         }
         let mut action: Option<Action> = None;
+        let prev_selected = self.palette_selected;
 
         ctx.input_mut(|input| {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
+            // Cmd+P toggles the palette closed without re-dispatching through
+            // `poll_actions` (which runs after the keyboard drain). Consuming
+            // here keeps open→close symmetric with the open keybind.
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
+                self.show_command_palette = false;
+            }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                && total > 0 && self.palette_selected < total - 1
+                && total > 0
+                && self.palette_selected < total - 1
             {
                 self.palette_selected += 1;
             }
@@ -116,7 +139,9 @@ impl PlexiApp {
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 match entries.get(self.palette_selected) {
-                    Some(PaletteEntry::Pane { ctx_idx, tile_id, .. }) => {
+                    Some(PaletteEntry::Pane {
+                        ctx_idx, tile_id, ..
+                    }) => {
                         action = Some(Action::JumpPane(*ctx_idx, *tile_id));
                     }
                     Some(PaletteEntry::App { id, .. }) => {
@@ -153,10 +178,16 @@ impl PlexiApp {
 
         // ── Render ─────────────────────────────────────────────────────────
         let screen_rect = ctx.screen_rect();
+        // Scale the list viewport with the window. 80 = anchor offset above,
+        // 120 = breathing room below + search input + frame padding. Every
+        // other ScrollArea in the codebase uses auto_shrink([false, false]);
+        // this one used [false, true] and collapsed to ~1 row inside an Area.
+        let palette_max_list_h = (screen_rect.height() - 80.0 - 120.0).max(200.0);
         egui::Area::new(egui::Id::new("palette_scrim"))
             .fixed_pos(screen_rect.min)
             .show(ctx, |ui| {
-                ui.painter().rect_filled(screen_rect, 0.0, Color32::from_black_alpha(120));
+                ui.painter()
+                    .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(120));
                 let scrim_response = ui.allocate_rect(screen_rect, egui::Sense::click());
                 if scrim_response.clicked() {
                     self.show_command_palette = false;
@@ -183,95 +214,177 @@ impl PlexiApp {
                                 .hint_text("Jump to pane or launch app...")
                                 .font(egui::TextStyle::Body),
                         );
-                        if !te.has_focus() { te.request_focus(); }
-                        if te.changed() { self.palette_selected = 0; }
+                        if !te.has_focus() {
+                            te.request_focus();
+                        }
+                        if te.changed() {
+                            self.palette_selected = 0;
+                        }
 
                         ui.add_space(6.0);
 
+                        if entries.is_empty() {
+                            ui.label(
+                                RichText::new("No matching panes or apps")
+                                    .size(11.0)
+                                    .color(self.colors.text_dim),
+                            );
+                            return;
+                        }
+
                         let current_ctx = self.active_context;
                         let current_focused = self.contexts[self.active_context].focused_pane;
-
-                        // Track whether we've drawn the Apps section header
                         let mut shown_apps_header = false;
                         let mut click_action: Option<Action> = None;
+                        let mut hover_select: Option<usize> = None;
+                        let colors = self.colors;
+                        // Only let hover drive selection when the pointer moved this frame.
+                        // A stationary mouse means keyboard navigation owns the index.
+                        let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
+                        // Scroll the selected row into view when keyboard navigation moved it.
+                        let should_scroll = self.palette_selected != prev_selected;
 
-                        for (i, entry) in entries.iter().enumerate() {
-                            let is_selected = i == self.palette_selected;
+                        // `max_height` alone caps the viewport but doesn't
+                        // *reserve* it — when the filtered result set is
+                        // short (e.g. a single pane + a handful of apps),
+                        // egui collapses the scrollable region to the
+                        // content's natural height, producing the "tiny
+                        // sliver showing one row" bug. `min_scrolled_height`
+                        // forces the viewport to stay at the computed
+                        // target height, so the palette always reads as a
+                        // full-size list.
+                        egui::ScrollArea::vertical()
+                            .max_height(palette_max_list_h)
+                            .min_scrolled_height(palette_max_list_h)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_width(MODAL_WIDTH);
 
-                            match entry {
-                                PaletteEntry::Pane { ctx_idx, ctx_name, tile_id, name, cwd } => {
-                                    let is_current = *ctx_idx == current_ctx
-                                        && current_focused == Some(*tile_id);
-                                    let fill = if is_selected { self.colors.bg_active } else { Color32::TRANSPARENT };
+                                for (i, entry) in entries.iter().enumerate() {
+                                    let is_selected = i == self.palette_selected;
 
-                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(MODAL_WIDTH, 36.0));
-                                    ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
+                                    match entry {
+                                        PaletteEntry::Pane {
+                                            ctx_idx,
+                                            ctx_name,
+                                            tile_id,
+                                            name,
+                                            cwd,
+                                        } => {
+                                            let is_current = *ctx_idx == current_ctx
+                                                && current_focused == Some(*tile_id);
+                                            let name_color = if is_current {
+                                                colors.accent
+                                            } else {
+                                                colors.text_primary
+                                            };
 
-                                    ui.allocate_ui_with_layout(
-                                        Vec2::new(MODAL_WIDTH, 36.0),
-                                        Layout::left_to_right(Align::Center),
-                                        |ui| {
-                                            ui.add_space(8.0);
-                                            ui.vertical(|ui| {
+                                            let (r, _) = selectable_row(
+                                                ui,
+                                                is_selected,
+                                                &colors,
+                                                |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new(ctx_name.as_str())
+                                                                .size(10.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new("\u{203A}")
+                                                                .size(10.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(name.as_str())
+                                                                .size(12.0)
+                                                                .color(name_color),
+                                                        );
+                                                    });
+                                                    if !cwd.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(cwd.as_str())
+                                                                .size(9.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                    }
+                                                },
+                                            );
+
+                                            if is_selected && should_scroll {
+                                                r.scroll_to_me(None);
+                                            }
+                                            if r.clicked() {
+                                                click_action =
+                                                    Some(Action::JumpPane(*ctx_idx, *tile_id));
+                                            }
+                                            if r.hovered() {
+                                                hover_select = Some(i);
+                                            }
+                                        }
+
+                                        PaletteEntry::App {
+                                            id,
+                                            name,
+                                            description,
+                                        } => {
+                                            if !shown_apps_header {
+                                                shown_apps_header = true;
+                                                ui.add_space(4.0);
+                                                ui.label(
+                                                    RichText::new("APPS")
+                                                        .size(9.0)
+                                                        .color(colors.text_dim),
+                                                );
                                                 ui.add_space(2.0);
-                                                ui.horizontal(|ui| {
-                                                    ui.label(RichText::new(ctx_name).size(10.0).color(self.colors.text_dim));
-                                                    ui.label(RichText::new("\u{203A}").size(10.0).color(self.colors.text_dim));
-                                                    let name_color = if is_current { self.colors.accent } else { self.colors.text_primary };
-                                                    ui.label(RichText::new(name).size(12.0).color(name_color));
-                                                });
-                                                if !cwd.is_empty() {
-                                                    ui.label(RichText::new(cwd).size(9.0).color(self.colors.text_dim));
-                                                }
-                                            });
-                                        },
-                                    );
+                                            }
 
-                                    let r = ui.interact(row_rect, egui::Id::new(("palette_row", i)), egui::Sense::click());
-                                    if r.clicked() {
-                                        click_action = Some(Action::JumpPane(*ctx_idx, *tile_id));
+                                            let (r, _) = selectable_row(
+                                                ui,
+                                                is_selected,
+                                                &colors,
+                                                |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new("⬡")
+                                                                .size(10.0)
+                                                                .color(colors.accent),
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        ui.label(
+                                                            RichText::new(name.as_str())
+                                                                .size(12.0)
+                                                                .color(colors.text_primary),
+                                                        );
+                                                    });
+                                                    if !description.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(description.as_str())
+                                                                .size(9.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                    }
+                                                },
+                                            );
+
+                                            if is_selected && should_scroll {
+                                                r.scroll_to_me(None);
+                                            }
+                                            if r.clicked() {
+                                                click_action =
+                                                    Some(Action::LaunchApp(id.clone()));
+                                            }
+                                            if r.hovered() {
+                                                hover_select = Some(i);
+                                            }
+                                        }
                                     }
-                                    if r.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
                                 }
+                            });
 
-                                PaletteEntry::App { id, name, description } => {
-                                    // Section header on first app entry
-                                    if !shown_apps_header {
-                                        shown_apps_header = true;
-                                        ui.add_space(4.0);
-                                        ui.label(RichText::new("APPS").size(9.0).color(self.colors.text_dim));
-                                        ui.add_space(2.0);
-                                    }
-
-                                    let fill = if is_selected { self.colors.bg_active } else { Color32::TRANSPARENT };
-                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(MODAL_WIDTH, 36.0));
-                                    ui.painter().rect_filled(row_rect, CornerRadius::same(4), fill);
-
-                                    ui.allocate_ui_with_layout(
-                                        Vec2::new(MODAL_WIDTH, 36.0),
-                                        Layout::left_to_right(Align::Center),
-                                        |ui| {
-                                            ui.add_space(8.0);
-                                            ui.vertical(|ui| {
-                                                ui.add_space(2.0);
-                                                ui.horizontal(|ui| {
-                                                    ui.label(RichText::new("⬡").size(10.0).color(self.colors.accent));
-                                                    ui.add_space(4.0);
-                                                    ui.label(RichText::new(name).size(12.0).color(self.colors.text_primary));
-                                                });
-                                                if !description.is_empty() {
-                                                    ui.label(RichText::new(description).size(9.0).color(self.colors.text_dim));
-                                                }
-                                            });
-                                        },
-                                    );
-
-                                    let r = ui.interact(row_rect, egui::Id::new(("palette_row", i)), egui::Sense::click());
-                                    if r.clicked() {
-                                        click_action = Some(Action::LaunchApp(id.clone()));
-                                    }
-                                    if r.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
-                                }
+                        if let Some(i) = hover_select {
+                            if mouse_moved {
+                                self.palette_selected = i;
                             }
                         }
 
@@ -292,10 +405,6 @@ impl PlexiApp {
                                     self.launch_app_by_id(&id);
                                 }
                             }
-                        }
-
-                        if entries.is_empty() {
-                            ui.label(RichText::new("No matching panes or apps").size(11.0).color(self.colors.text_dim));
                         }
                     });
             });

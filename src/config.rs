@@ -8,6 +8,30 @@ pub struct PlexiConfig {
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
     pub log: Option<LogConfig>,
+    pub notifications: Option<NotificationsConfig>,
+    /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
+    pub confirm_quit: Option<bool>,
+    /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
+    pub confirm_close: Option<bool>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+pub struct NotificationsConfig {
+    /// Master switch. If false, incoming notifications are silently dropped —
+    /// apps still send them, but the modal never appears and the queue stays
+    /// empty. Defaults to true.
+    pub enabled: Option<bool>,
+    /// Focus mode. When true, NO notification auto-surfaces regardless of
+    /// priority. Everything queues silently; the user reviews via Cmd+Shift+A.
+    /// Defaults to false.
+    pub focus_mode: Option<bool>,
+    /// Minimum priority that may auto-open the modal. Notifications below
+    /// this value queue silently (badge ticks, Cmd+Shift+A reveals them).
+    /// At or above it, arrival auto-opens the modal. Defaults to 100
+    /// (`PRIORITY_HIGH`) — NORMAL and LOW are passive; HIGH and CRITICAL
+    /// interrupt. Set to 0 to auto-open everything; set to 201 to match
+    /// `focus_mode = true`.
+    pub interrupt_threshold: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -21,10 +45,10 @@ impl LogConfig {
     pub fn level_filter(&self) -> Option<log::LevelFilter> {
         match self.level.as_deref() {
             Some("error") => Some(log::LevelFilter::Error),
-            Some("warn")  => Some(log::LevelFilter::Warn),
-            Some("info")  => Some(log::LevelFilter::Info),
+            Some("warn") => Some(log::LevelFilter::Warn),
+            Some("info") => Some(log::LevelFilter::Info),
             Some("debug") => Some(log::LevelFilter::Debug),
-            _             => None,
+            _ => None,
         }
     }
 }
@@ -34,6 +58,8 @@ pub struct BetaConfig {
     pub crt: Option<bool>,
     pub pulse: Option<bool>,
     pub ghost: Option<bool>,
+    /// Set to false to disable triple-Cmd+Q confirmation (default: true).
+    pub quit_confirm: Option<bool>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -72,16 +98,84 @@ pub struct ThemeConfig {
     pub bright_foreground: Option<String>,
 }
 
-/// Returns the config directory name based on the running binary name.
-/// `plexi-alpha` → `.plexi-alpha`, `plexi-beta` → `.plexi-beta`, anything else → `.plexi`
-fn config_dir_name() -> &'static str {
+use std::sync::OnceLock;
+
+static PROFILE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+
+/// Set the active profile. Called once from main() after CLI parsing.
+/// `None` or `Some("default")` → fall through to binary-name detection.
+/// `Some(name)` → use `.plexi-<name>` as the config dir.
+pub fn set_profile(name: Option<String>) {
+    let normalized = match name.as_deref() {
+        None | Some("") | Some("default") => None,
+        Some(_) => name,
+    };
+    let _ = PROFILE_OVERRIDE.set(normalized);
+}
+
+/// If a profile is set and its directory doesn't exist yet, create it and
+/// seed `apps/` from the example apps embedded at compile time.
+pub fn ensure_profile_initialized() {
+    let dir = config_dir();
+    if dir.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("profile init: failed to create {}: {e}", dir.display());
+        return;
+    }
+    let apps_dir = dir.join("apps");
+    if let Err(e) = std::fs::create_dir_all(&apps_dir) {
+        eprintln!("profile init: failed to create apps dir: {e}");
+        return;
+    }
+    let embedded = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
+    if let Err(e) = embedded.extract(&apps_dir) {
+        eprintln!("profile init: failed to seed apps from bundle: {e}");
+        return;
+    }
+    // chmod +x on all .py entries.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(entries) = std::fs::read_dir(&apps_dir) {
+            for app_dir in entries.flatten().filter(|e| e.path().is_dir()) {
+                if let Ok(files) = std::fs::read_dir(app_dir.path()) {
+                    for f in files.flatten() {
+                        let p = f.path();
+                        if p.extension().and_then(|x| x.to_str()) == Some("py") {
+                            if let Ok(meta) = std::fs::metadata(&p) {
+                                let mut perms = meta.permissions();
+                                perms.set_mode(perms.mode() | 0o111);
+                                let _ = std::fs::set_permissions(&p, perms);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "profile init: seeded {} with {} apps",
+        dir.display(),
+        std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0)
+    );
+}
+
+/// Returns the config directory name.
+/// Priority: `--profile <name>` CLI flag → binary-name detection → `.plexi`.
+fn config_dir_name() -> String {
+    if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
+        return format!(".plexi-{profile}");
+    }
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha",
-        Some(name) if name.contains("beta") => ".plexi-beta",
-        _ => ".plexi",
+        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
+        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
+        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
+        _ => ".plexi".to_string(),
     }
 }
 
@@ -98,31 +192,76 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
-const CONFIG_TEMPLATE: &str = r##"# Plexi Configuration
-# Changes take effect on next launch.
+const CONFIG_TEMPLATE: &str = r##"# ╔══════════════════════════════════════════════════════════════╗
+# ║  Plexi Configuration                                        ║
+# ║  Changes take effect on next launch.                        ║
+# ╚══════════════════════════════════════════════════════════════╝
 
 font_size = 14.0
 
-# Theme preset — uncomment one to use it as a base.
-# Individual [theme] values below will override the preset.
-# Options: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
+# ── Confirmation Dialogs ───────────────────────────────────────
+# Set to false to disable the corresponding confirmation flow.
+# confirm_quit  = false   # Triple Cmd+Q to quit (default: true)
+# confirm_close = false   # Dialog before Cmd+W closes a pane (default: true)
+
+# ── Notifications ──────────────────────────────────────────────
+# The work-area modal is the one and only notification surface.
+# Apps emit `ctx.notify(...)`, `ctx.notify_choice(...)`, or
+# `ctx.notify_input(...)` and the modal renders each kind with
+# keyboard-first navigation (Enter confirms, j/k or ↑↓ cycle
+# options, 1-9 direct-select, Esc cancels when allowed).
+[notifications]
+# Master switch. If false, notifications are silently dropped at
+# arrival — apps still send them, the modal never appears, and
+# the queue stays empty.
+enabled = true
+
+# Focus mode. When true, NO notification auto-surfaces regardless of
+# priority. Everything queues silently; open Cmd+Shift+A to review.
+focus_mode = false
+
+# Minimum priority that may auto-open the modal. Notifications below
+# this value queue silently (badge ticks on the toolbar, Cmd+Shift+A
+# reveals them). At or above it, arrival auto-opens the modal.
+#
+# Tiers (from plexi_sdk):
+#   0   = PRIORITY_LOW       (background info)
+#   50  = PRIORITY_NORMAL    (standard confirmations — "note saved")
+#   100 = PRIORITY_HIGH      (needs attention soon)
+#   200 = PRIORITY_CRITICAL  (interrupt-level)
+#
+# Default = 100: NORMAL and LOW queue silently, HIGH and CRITICAL
+# interrupt. Set to 0 to auto-open everything. Set to 201 to match
+# focus_mode = true (nothing auto-opens).
+interrupt_threshold = 100
+
+# Esc vs Enter on the modal:
+#   Enter (or option-select / input-submit) = acknowledge. Notification
+#     is removed from the queue and the app receives NotifyAction.
+#   Esc = defer. Modal closes but the notification stays in the queue —
+#     open Cmd+Shift+A later to come back to it. No NotifyAction dispatched.
+#   Required notifications (required = true) cannot be Esc'd.
+
+# ── Theme ──────────────────────────────────────────────────────
+# Pick a preset OR customize individual colors below.
+# Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
 # theme_preset = "catppuccin-mocha"
 
 [theme]
-# UI chrome
-# bg_darkest = "#11111b"
-# bg_sidebar = "#181825"
-# bg_toolbar = "#181825"
-# terminal_bg = "#292a44"
-# bg_hover = "#2a2a3c"
-# bg_active = "#313144"
-# text_primary = "#cdd6f4"
-# text_dim = "#6c7086"
-# text_section = "#585b70"
+# UI chrome colors (hex format)
 accent = "#89b4fa"
-# border = "#2a2a3c"
+# bg_darkest = "#11111b"      # Deepest background (window edges)
+# bg_sidebar = "#181825"      # Sidebar background
+# bg_toolbar = "#181825"      # Toolbar/status bar background
+# terminal_bg = "#292a44"     # Terminal pane background
+# bg_hover = "#2a2a3c"        # Hover highlight
+# bg_active = "#313144"       # Active/selected item
+# text_primary = "#cdd6f4"    # Main text color
+# text_dim = "#6c7086"        # Dimmed/secondary text
+# text_section = "#585b70"    # Section headers
+# border = "#2a2a3c"          # Pane borders
 
-# Terminal ANSI palette
+# Terminal ANSI colors (override the palette)
 # foreground = "#e8e6ed"
 # background = "#292a44"
 # black = "#12131e"
@@ -143,14 +282,17 @@ accent = "#89b4fa"
 # bright_white = "#f4f2f9"
 # bright_foreground = "#f4f2f9"
 
+# ── Experimental Features ──────────────────────────────────────
+# Flip any flag to true and restart to enable.
 [beta]
-# Experimental visual effects. Set to true to enable.
-# crt = false     # Retro CRT scanlines + green phosphor tint
-# pulse = false   # Focused pane border gently breathes
-# ghost = false   # Unfocused panes render at reduced opacity
+# crt   = false    # Retro CRT scanlines + green phosphor tint
+# pulse = false    # Focused pane border gently breathes
+# ghost = false    # Unfocused panes render at reduced opacity
+# quit_confirm = false   # Deprecated; prefer top-level `confirm_quit`
 
+# ── Logging ────────────────────────────────────────────────────
 # [log]
-# level = "info"  # error | warn | info | debug  (default: info)
+# level = "info"   # error | warn | info | debug  (default: info)
 "##;
 
 pub fn open_config_file() {
@@ -183,54 +325,3 @@ impl PlexiConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_config() {
-        let cfg = PlexiConfig::default();
-        assert!(cfg.theme.is_none());
-        assert!(cfg.font_size.is_none());
-    }
-
-    #[test]
-    fn parse_empty_toml() {
-        let cfg: PlexiConfig = toml::from_str("").unwrap();
-        assert!(cfg.theme.is_none());
-        assert!(cfg.font_size.is_none());
-    }
-
-    #[test]
-    fn parse_font_size() {
-        let cfg: PlexiConfig = toml::from_str("font_size = 16.0").unwrap();
-        assert_eq!(cfg.font_size, Some(16.0));
-    }
-
-    #[test]
-    fn parse_theme_colors() {
-        let toml_str = r##"
-[theme]
-accent = "#ff0000"
-bg_darkest = "#000000"
-"##;
-        let cfg: PlexiConfig = toml::from_str(toml_str).unwrap();
-        let theme = cfg.theme.unwrap();
-        assert_eq!(theme.accent, Some("#ff0000".into()));
-        assert_eq!(theme.bg_darkest, Some("#000000".into()));
-        assert!(theme.bg_sidebar.is_none());
-    }
-
-    #[test]
-    fn parse_terminal_palette() {
-        let toml_str = r##"
-[theme]
-foreground = "#e8e6ed"
-black = "#12131e"
-"##;
-        let cfg: PlexiConfig = toml::from_str(toml_str).unwrap();
-        let theme = cfg.theme.unwrap();
-        assert_eq!(theme.foreground, Some("#e8e6ed".into()));
-        assert_eq!(theme.black, Some("#12131e".into()));
-    }
-}

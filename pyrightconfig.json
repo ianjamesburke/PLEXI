@@ -1,0 +1,12 @@
+{
+  "include": [
+    "sdk/python",
+    "examples"
+  ],
+  "extraPaths": [
+    "sdk/python"
+  ],
+  "pythonVersion": "3.11",
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": "none"
+}
