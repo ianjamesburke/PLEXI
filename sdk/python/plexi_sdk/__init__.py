@@ -1350,6 +1350,12 @@ class App:
         want the byte stream typically read directly from the binary pipe
         opened alongside this event — Plexi sends `pipe_opened` first."""
         pass
+
+    # ── Agent-as-app hooks (#338, type = "agent" manifests only) ────────────
+    # `Agent` subclass wires these. Plain `App` subclasses get no-op defaults
+    # so a misclassified manifest doesn't crash on the host's emit.
+    def on_agent_init(self, _system_prompt: "str | None") -> None: pass
+    def on_user_message(self, _ctx: "RenderContext", _text: str) -> None: pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
@@ -1573,6 +1579,26 @@ class App:
                     else:
                         q.put(action_label or "acknowledge")
 
+            elif t == "agent_init":
+                # v3.3 agent-as-app (#338): the host forwards the manifest's
+                # `[launch].system_prompt` once at startup. Apps that subclass
+                # `Agent` consume this in `_on_agent_init`; plain App
+                # subclasses can override `on_agent_init` to receive it.
+                try:
+                    self.on_agent_init(ev.get("system_prompt"))
+                except Exception as e:
+                    sys.stderr.write(f"on_agent_init handler raised: {e}\n")
+
+            elif t == "user_message":
+                # v3.3 agent-as-app (#338): the user submitted text in the
+                # host-rendered conversation input box. Forwarded to
+                # `on_user_message`. Only delivered to type=agent panes.
+                ctx = self._make_ctx()
+                try:
+                    self.on_user_message(ctx, ev.get("text", ""))
+                except Exception as e:
+                    sys.stderr.write(f"on_user_message handler raised: {e}\n")
+
             elif t == "text_submitted":
                 # Host-owned text input: the user pressed Enter on a
                 # `DrawCommand::TextInput` field. Stash the value keyed
@@ -1604,3 +1630,104 @@ class App:
         # Ensure all pipes are closed cleanly
         for p in self._pipes.values():
             p.close()
+
+
+# ── Agent base class (issue #338) ────────────────────────────────────────────
+
+class Agent(App):
+    """Subclass for `type = "agent"` manifests. Wires the conversation loop.
+
+    The host renders the conversation UI (history scrollback + input box).
+    The agent owns the dialogue logic. The contract is symmetric:
+
+        Host → Agent      PlexiEvent::AgentInit  { system_prompt }   (once)
+        Host → Agent      PlexiEvent::UserMessage { text }            (per submit)
+        Agent → Host      DrawCommand::AppendConversation { role, content }
+
+    Author writes a single `on_user_message(text) -> str | None` callback.
+    Returning a string auto-emits an assistant `AppendConversation`. Returning
+    `None` means "I'll append manually" — useful for agents that emit
+    multiple rows per turn (tool use, partial replies).
+
+    Conversation history (`self.history`) is auto-built from `append_*`
+    helpers — pass it directly to `emit.iq_query(...)` for multi-turn.
+
+    Example:
+
+        class JokeAgent(Agent):
+            def on_user_message(self, text: str) -> str:
+                resp = self.emit.iq_query(
+                    model_tier="medium",
+                    system=self.system_prompt or "",
+                    messages=self.history,
+                )
+                return resp.content
+
+        if __name__ == "__main__":
+            JokeAgent().run()
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Populated by AgentInit. None until the host emits it (or forever
+        # if the manifest omits `[launch].system_prompt`).
+        self.system_prompt: "str | None" = None
+        # Conversation history in Anthropic Messages shape — built by the
+        # `append_*` helpers and passed straight to `emit.iq_query`.
+        self.history: list = []
+
+    # ── Wire-up (do not override) ───────────────────────────────────────────
+    def on_agent_init(self, system_prompt: "str | None") -> None:  # type: ignore[override]
+        self.system_prompt = system_prompt
+        self.emit.info(
+            f"agent: AgentInit received (system_prompt={'set' if system_prompt else 'unset'})"
+        )
+
+    def on_user_message(self, ctx: "RenderContext", text: str) -> None:  # type: ignore[override]
+        # Append the user turn before invoking the override so `self.history`
+        # already contains it when the override calls `emit.iq_query`.
+        self.append_user_message(text)
+        try:
+            reply = self.respond(text)
+        except Exception as e:
+            self.emit.error(f"agent: respond() raised: {e}")
+            self.append_system_message(f"Error: {e}")
+            return
+        # `None` means "I'll handle appends myself" — common for agents that
+        # stream multiple rows (tool use, partial replies). A returned string
+        # is the conventional one-shot reply path.
+        if reply is not None:
+            self.append_assistant_message(reply)
+
+    # ── User override ───────────────────────────────────────────────────────
+    def respond(self, _text: str) -> "str | None":
+        """Override this. Called once per `user_message` event.
+
+        Return a string to auto-append as the assistant turn. Return `None`
+        if you've already called `append_assistant_message` (or other
+        `append_*` helpers) yourself — useful for tool-use loops.
+        """
+        raise NotImplementedError(
+            "Agent subclasses must override `respond(text) -> str | None`"
+        )
+
+    # ── Conversation surface ────────────────────────────────────────────────
+    def append_user_message(self, text: str) -> None:
+        """Append a user row to the transcript. Updates `self.history` so the
+        next `emit.iq_query` call sees the turn."""
+        self.history.append({"role": "user", "content": text})
+        _emit({"type": "append_conversation", "role": "user", "content": text})
+
+    def append_assistant_message(self, text: str) -> None:
+        """Append an assistant row. Mirrors into `self.history`."""
+        self.history.append({"role": "assistant", "content": text})
+        _emit({"type": "append_conversation", "role": "assistant", "content": text})
+
+    def append_tool_message(self, text: str) -> None:
+        """Append a tool-use status row. Tool messages are NOT mirrored into
+        `self.history` (they're not part of the LLM-visible conversation)."""
+        _emit({"type": "append_conversation", "role": "tool", "content": text})
+
+    def append_system_message(self, text: str) -> None:
+        """Append a system / error status row. NOT mirrored into history."""
+        _emit({"type": "append_conversation", "role": "system", "content": text})
