@@ -12,6 +12,7 @@ mod app_permissions;
 mod app_protocol;
 mod app_registry;
 mod app_trait;
+mod audio;
 mod cli;
 mod command_palette;
 mod config;

@@ -22,6 +22,7 @@ pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use crate::app_permissions::{AppPermissions, Capability};
 use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
+use crate::audio::{AudioDevice, CaptureSession};
 use crate::event_log::{self, HostEvent};
 use crate::host::services::{NetService, UreqNetService};
 use crate::plexi_iq::broker::{IqBroker, LiveIqBroker};
@@ -104,6 +105,16 @@ pub struct ProcessApp {
     /// a `LiveIqBroker` while tests can inject a `CannedBroker`. Dispatch runs
     /// on a worker thread so the UI never blocks on the LLM call.
     pub(crate) iq_broker: Arc<dyn IqBroker>,
+    /// Audio device backend (#277). `Arc<dyn AudioDevice>` so production
+    /// panes share a `CoreAudioDevice` while tests inject `MockAudioDevice`.
+    /// Enumeration is synchronous; capture spawns a cpal stream that drives
+    /// frames into the binary-pipe ring on the cpal callback thread.
+    pub(crate) audio_device: Arc<dyn AudioDevice>,
+    /// Live capture sessions, keyed on the binary `pipe_id` they're
+    /// streaming into. Dropping a session tears down the cpal stream; we
+    /// drop the entry on `pipe_close`, on app shutdown, or when the pipe
+    /// allocation fails.
+    pub(crate) audio_capture_sessions: HashMap<String, CaptureSession>,
     /// Cancel flags for pending timers. Key = timer_id, value = Arc<AtomicBool> set to true to cancel.
     pub(crate) pending_timers: HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Observable lifecycle state (issue #316). Written by the stdout/stderr
@@ -324,6 +335,8 @@ impl ProcessApp {
                 type_id_for_broker.clone(),
                 workspace_root_for_broker.clone(),
             )),
+            audio_device: default_audio_device(),
+            audio_capture_sessions: HashMap::new(),
             pending_timers: HashMap::new(),
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,
@@ -582,6 +595,7 @@ impl ProcessApp {
                 | DrawCommand::LlmRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
+                | DrawCommand::ListAudioDevices { .. }
                 | DrawCommand::CdRequest { .. }
                 | DrawCommand::SetTimer { .. }
                 | DrawCommand::CancelTimer { .. }) => {
@@ -775,6 +789,7 @@ impl App for ProcessApp {
                 | DrawCommand::LlmRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
+                | DrawCommand::ListAudioDevices { .. }
                 | DrawCommand::CdRequest { .. }
                 | DrawCommand::SetTimer { .. }
                 | DrawCommand::CancelTimer { .. }) => {
@@ -1046,6 +1061,21 @@ fn default_live_broker(type_id: String, workspace_root: PathBuf) -> LiveIqBroker
         crate::secrets::resolve_secret("ANTHROPIC_API_KEY", &type_id, workspace_str)
             .map(|z| z.as_str().to_string())
     })
+}
+
+/// Build the production audio device. cpal in non-test builds; the mock
+/// device under `cfg(test)` since cpal pulls in real CoreAudio APIs that
+/// are unsuitable for unit tests. Tests that exercise the audio routing
+/// path inject `Arc::new(MockAudioDevice::new())` directly into
+/// `ProcessApp::audio_device`.
+#[cfg(not(test))]
+fn default_audio_device() -> Arc<dyn AudioDevice> {
+    Arc::new(crate::audio::CoreAudioDevice::new())
+}
+
+#[cfg(test)]
+fn default_audio_device() -> Arc<dyn AudioDevice> {
+    Arc::new(crate::audio::MockAudioDevice::new())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

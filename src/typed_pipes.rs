@@ -67,6 +67,10 @@ struct BinaryPipeEntry {
     socket_path: String,
     shutdown: Arc<AtomicBool>,
     drain_handle: Option<thread::JoinHandle<()>>,
+    /// Frame ring shared with the drain thread. Producers (e.g. the audio
+    /// capture callback) clone this `Arc` and push frames; the drain thread
+    /// pops and writes them to the socket.
+    ring: Arc<ArrayQueue<Vec<u8>>>,
 }
 
 struct JsonPipeEntry {
@@ -195,8 +199,8 @@ impl TypedPipeRegistry {
             socket_path: socket_path.clone(),
             shutdown,
             drain_handle: Some(drain_handle),
+            ring: Arc::clone(&ring),
         };
-        let _ = ring; // ring lives in the drain thread via ring_drain
 
         self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
 
@@ -241,6 +245,21 @@ impl TypedPipeRegistry {
                 Err(PipeError::WriteFailed("pipe is binary mode".to_owned()))
             }
             None => Err(PipeError::NotFound(pipe_id.to_owned())),
+        }
+    }
+
+    /// Borrow a clone of the binary pipe's frame ring, suitable for handing
+    /// to a real-time producer (e.g. the cpal capture callback). Returns
+    /// `None` if the pipe doesn't exist or is JSON-mode.
+    ///
+    /// The producer pushes raw payload bytes via `Arc<ArrayQueue<Vec<u8>>>::push`;
+    /// the drain thread length-prefixes and writes them to the unix socket.
+    /// On a full ring `push` returns `Err(rejected)` so producers should not
+    /// block — drop the frame and (optionally) emit a `PipeOverrun` event.
+    pub fn binary_ring(&self, pipe_id: &str) -> Option<Arc<ArrayQueue<Vec<u8>>>> {
+        match self.pipes.get(pipe_id) {
+            Some(PipeEntry::Binary(b)) => Some(Arc::clone(&b.ring)),
+            _ => None,
         }
     }
 
