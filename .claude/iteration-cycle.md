@@ -58,10 +58,10 @@ Before writing code, sub-agents must briefly skim the docs of any non-trivial de
 Before dispatching any sub-agent, the orchestrator runs a stale-state audit on the issue:
 1. `gh issue view <N> --json state,closedAt` — confirm `OPEN`.
 2. `git log --oneline --all -200 | grep -iE "<issue-number>|<keyword>"` — look for shipped PRs without a `Closes #N` trailer (orphan-open issues).
-3. Spot-check the codebase: grep for the names of types/functions the issue would introduce. If they exist, the work likely shipped.
-4. If shipped: close issue + tick milestone box + skip dispatch. If not shipped: dispatch.
+3. **Spot-check the codebase: grep for the names of types/functions the issue claims exist.** If the issue body says "X is a stub today" — verify by `grep -rn "X" src/`. The issue body may be referencing a deleted-branch artifact. If `grep` returns nothing, the substrate doesn't exist on alpha and the dispatch needs a wider scope or a split.
+4. If shipped: close issue + tick milestone box + skip dispatch. If genuinely unstarted: dispatch with accurate scope. If the substrate the issue body assumes is also missing, redrew the brief and split into substrate + extension.
 
-This audit takes under a minute. Skipping it wastes a sub-agent run on shipped work — happened with #312, #314, #317 during the v3.1 kickoff.
+This audit takes under a minute. Skipping it wastes a sub-agent run on shipped work (happened with #312/#314/#317 during v3.1 kickoff) or sends a sub-agent into work whose substrate doesn't exist (happened with #278 in the v3.4 batch — the AvfVideoDecoder stub the issue referenced was on an abandoned branch, not alpha).
 
 ## Sub-agent dispatch (orchestrator workflow)
 See `docs/specs/process/release-orchestration.md` for the full spec.
