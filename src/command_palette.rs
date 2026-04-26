@@ -18,6 +18,13 @@ enum PaletteEntry {
         name: String,
         description: String,
     },
+    /// Static action — flat command not tied to a pane or installed app.
+    /// First use case: "New Agent Workspace: <CLI>" entries (#348).
+    Action {
+        id: String,
+        name: String,
+        description: String,
+    },
 }
 
 impl PlexiApp {
@@ -68,6 +75,7 @@ impl PlexiApp {
                     .position(|&(c, t)| c == *ctx_idx && t == *tile_id)
                     .unwrap_or(usize::MAX),
                 PaletteEntry::App { .. } => usize::MAX,
+                PaletteEntry::Action { .. } => usize::MAX,
             };
             rank(a).cmp(&rank(b))
         });
@@ -100,6 +108,37 @@ impl PlexiApp {
             });
         }
 
+        // ── Static actions (#348 — flat commands, no modal in this PR) ─────
+        let action_specs: &[(&str, &str, &str)] = &[
+            (
+                "agent_workspace:claude_code",
+                "New Agent Workspace: Claude Code",
+                "Spawn Claude Code in a fresh git worktree",
+            ),
+            (
+                "agent_workspace:codex",
+                "New Agent Workspace: Codex",
+                "Spawn Codex in a fresh git worktree",
+            ),
+            (
+                "agent_workspace:gemini_cli",
+                "New Agent Workspace: Gemini CLI",
+                "Spawn Gemini CLI in a fresh git worktree",
+            ),
+        ];
+        for (id, name, description) in action_specs {
+            if query.is_empty()
+                || name.to_lowercase().contains(&query)
+                || id.to_lowercase().contains(&query)
+            {
+                entries.push(PaletteEntry::Action {
+                    id: (*id).to_string(),
+                    name: (*name).to_string(),
+                    description: (*description).to_string(),
+                });
+            }
+        }
+
         let total = entries.len();
 
         // Clamp selection
@@ -112,6 +151,7 @@ impl PlexiApp {
         enum Action {
             JumpPane(usize, egui_tiles::TileId),
             LaunchApp(String),
+            RunAction(String),
         }
         let mut action: Option<Action> = None;
         let prev_selected = self.palette_selected;
@@ -147,6 +187,9 @@ impl PlexiApp {
                     Some(PaletteEntry::App { id, .. }) => {
                         action = Some(Action::LaunchApp(id.clone()));
                     }
+                    Some(PaletteEntry::Action { id, .. }) => {
+                        action = Some(Action::RunAction(id.clone()));
+                    }
                     None => {}
                 }
             }
@@ -167,6 +210,12 @@ impl PlexiApp {
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 self.launch_app_by_id(&id);
+                return;
+            }
+            Some(Action::RunAction(id)) => {
+                self.show_command_palette = false;
+                self.palette_query.clear();
+                self.run_palette_action(&id);
                 return;
             }
             None => {}
@@ -378,6 +427,50 @@ impl PlexiApp {
                                                 hover_select = Some(i);
                                             }
                                         }
+
+                                        PaletteEntry::Action {
+                                            id,
+                                            name,
+                                            description,
+                                        } => {
+                                            let (r, _) = selectable_row(
+                                                ui,
+                                                is_selected,
+                                                &colors,
+                                                |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new("⚡")
+                                                                .size(10.0)
+                                                                .color(colors.accent),
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        ui.label(
+                                                            RichText::new(name.as_str())
+                                                                .size(12.0)
+                                                                .color(colors.text_primary),
+                                                        );
+                                                    });
+                                                    if !description.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(description.as_str())
+                                                                .size(9.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                            if is_selected && should_scroll {
+                                                r.scroll_to_me(None);
+                                            }
+                                            if r.clicked() {
+                                                click_action =
+                                                    Some(Action::RunAction(id.clone()));
+                                            }
+                                            if r.hovered() {
+                                                hover_select = Some(i);
+                                            }
+                                        }
                                     }
                                 }
                             });
@@ -404,9 +497,51 @@ impl PlexiApp {
                                     self.palette_query.clear();
                                     self.launch_app_by_id(&id);
                                 }
+                                Action::RunAction(id) => {
+                                    self.show_command_palette = false;
+                                    self.palette_query.clear();
+                                    self.run_palette_action(&id);
+                                }
                             }
                         }
                     });
             });
+    }
+
+    /// Dispatch a static palette action (#348). Adding a new action means
+    /// (1) appending to `action_specs` above, and (2) extending this match.
+    pub(crate) fn run_palette_action(&mut self, id: &str) {
+        match id {
+            "agent_workspace:claude_code" => self.spawn_agent_workspace(
+                crate::agent_workspace::AgentCli::ClaudeCode,
+            ),
+            "agent_workspace:codex" => self.spawn_agent_workspace(
+                crate::agent_workspace::AgentCli::Codex,
+            ),
+            "agent_workspace:gemini_cli" => self.spawn_agent_workspace(
+                crate::agent_workspace::AgentCli::GeminiCli,
+            ),
+            other => {
+                log::warn!("run_palette_action: unknown action id '{other}'");
+            }
+        }
+    }
+
+    /// Spawn an Agent Workspace pane from the palette. Empty task label —
+    /// the modal picker (#349) is what populates a real label.
+    fn spawn_agent_workspace(&mut self, cli: crate::agent_workspace::AgentCli) {
+        match self.open_agent_workspace_pane(cli, String::new()) {
+            Ok(()) => log::info!("agent_workspace: spawned {}", cli.display_name()),
+            Err(e) => {
+                log::warn!(
+                    "agent_workspace: failed to spawn {}: {e}",
+                    cli.display_name()
+                );
+                // Surfacing the error in-pane requires a pane to write to —
+                // since open_* failed, there is none. The log is the best we
+                // can do at the substrate layer; the modal (#349) will show a
+                // user-facing toast/error inline.
+            }
+        }
     }
 }
