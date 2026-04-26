@@ -638,7 +638,13 @@ impl ProcessApp {
                 | DrawCommand::SendMidi { .. }
                 | DrawCommand::CdRequest { .. }
                 | DrawCommand::SetTimer { .. }
-                | DrawCommand::CancelTimer { .. }) => {
+                | DrawCommand::CancelTimer { .. }
+                // Canvas Terminal Binding Primitives (#78).
+                | DrawCommand::RequestLinkedTerminal { .. }
+                | DrawCommand::RunInLinkedTerminal { .. }
+                | DrawCommand::InsertPathToken { .. }
+                | DrawCommand::RequestCommandPreview { .. }
+                | DrawCommand::OpenArtifact { .. }) => {
                     self.route_command(cmd);
                 }
                 // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
@@ -838,7 +844,13 @@ impl App for ProcessApp {
                 | DrawCommand::SendMidi { .. }
                 | DrawCommand::CdRequest { .. }
                 | DrawCommand::SetTimer { .. }
-                | DrawCommand::CancelTimer { .. }) => {
+                | DrawCommand::CancelTimer { .. }
+                // Canvas Terminal Binding Primitives (#78).
+                | DrawCommand::RequestLinkedTerminal { .. }
+                | DrawCommand::RunInLinkedTerminal { .. }
+                | DrawCommand::InsertPathToken { .. }
+                | DrawCommand::RequestCommandPreview { .. }
+                | DrawCommand::OpenArtifact { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),

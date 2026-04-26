@@ -304,6 +304,30 @@ pub enum PlexiEvent {
         request_id: String,
         agents: Vec<AgentInfo>,
     },
+    /// Response to `DrawCommand::RequestLinkedTerminal` (#78). Carries the
+    /// pane id of the freshly-opened terminal so subsequent
+    /// `RunInLinkedTerminal` / `InsertPathToken` / etc. calls can reference
+    /// it. `terminal_pane_id` is the same `PaneId` (`u64`) the host uses
+    /// internally — pass it back verbatim.
+    ///
+    /// Apps without `terminal.bindings` never receive this event; the
+    /// request is dropped at the routing layer with a capability-denied
+    /// log line.
+    LinkedTerminalReady {
+        request_id: String,
+        terminal_pane_id: u64,
+    },
+    /// Response to `DrawCommand::RequestCommandPreview` (#78). Returns the
+    /// command verbatim plus the linked terminal's current cwd so the app
+    /// can render a confirmation modal that says "this would run in
+    /// /tmp/foo". `would_run_in_cwd` is the host's best-effort snapshot of
+    /// the terminal child's cwd at request time — never an expansion of
+    /// shell history or alias.
+    CommandPreview {
+        request_id: String,
+        command: String,
+        would_run_in_cwd: String,
+    },
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -951,6 +975,125 @@ pub enum DrawCommand {
         w: f32,
         placeholder: String,
     },
+
+    // ── Canvas Terminal Binding Primitives (#78) ─────────────────────────
+    //
+    // The binding-primitive surface that lets a Canvas app drive a linked
+    // terminal pane. All commands require the `terminal.bindings` capability
+    // — apps without it get capability-denied responses on each call.
+    //
+    // The lifecycle: app emits `RequestLinkedTerminal` once at startup; host
+    // opens a fresh `Pane::Terminal` next to the app and replies with
+    // `PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id }`.
+    // From then on every primitive references the terminal via
+    // `terminal_pane_id`.
+
+    /// Ask the host to open a fresh terminal pane next to this Canvas app
+    /// and link it. Host responds with `PlexiEvent::LinkedTerminalReady
+    /// { request_id, terminal_pane_id }`. `cwd` defaults to the app's
+    /// workspace root when `None`. `label` is reserved for future pane-
+    /// chrome decoration; currently unused by the host but pinned on the
+    /// wire so apps and the host evolve together.
+    ///
+    /// Capability: `terminal.bindings`. Required fields — no `serde(default)`.
+    RequestLinkedTerminal {
+        request_id: String,
+        cwd: Option<String>,
+        label: Option<String>,
+    },
+
+    /// Execute `command` in a linked terminal pane.
+    ///
+    /// `echo: true` — the command is typed into the terminal so the user
+    /// sees it (followed by a newline so the shell executes it). This is
+    /// the default behaviour for click-driven UIs where the user wants to
+    /// know what just ran.
+    /// `echo: false` — the command is still written to the PTY, but the
+    /// caller is signalling intent that the terminal is being driven
+    /// programmatically (the terminal still echoes input by default at
+    /// the PTY level — silent execution is best-effort).
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    RunInLinkedTerminal {
+        terminal_pane_id: u64,
+        command: String,
+        echo: bool,
+    },
+
+    /// Insert `path` into the linked terminal at the cursor position.
+    ///
+    /// `Replace` mode: write a Ctrl-W (kill-word, shell readline default)
+    /// before the path — replaces the partial word the user is typing.
+    /// `Append` mode: write the path verbatim — handy for completing
+    /// drag-and-drop / file-picker style flows where the user is composing
+    /// a command.
+    ///
+    /// The host wraps the path in single quotes (POSIX) when it contains
+    /// shell metacharacters so the shell doesn't expand or split it.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    InsertPathToken {
+        terminal_pane_id: u64,
+        path: String,
+        mode: PathTokenMode,
+    },
+
+    /// Ask the host to compute the command that *would* run for a given
+    /// command string in the linked terminal. Doesn't execute. Used for
+    /// confirmation modals before destructive operations.
+    ///
+    /// Host responds with `PlexiEvent::CommandPreview { request_id, command,
+    /// would_run_in_cwd }`. `would_run_in_cwd` is the terminal's current
+    /// working directory at request time — useful for "rm -rf .git in
+    /// /tmp/foo" style confirmations.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    RequestCommandPreview {
+        request_id: String,
+        terminal_pane_id: u64,
+        command: String,
+    },
+
+    /// Open a workspace artifact (file or directory) via the host.
+    ///
+    /// Modes:
+    ///   - `OpenInPane`        — open the path in a new app pane, e.g. a
+    ///                           file browser at a directory or a text
+    ///                           editor on a file. Implementation: routes
+    ///                           through the file-browser app for
+    ///                           directories; falls through to the OS
+    ///                           default for files in this PR.
+    ///   - `RevealInFinder`    — `open -R <path>` on macOS.
+    ///   - `OpenWithDefault`   — `open <path>` on macOS — uses Launch
+    ///                           Services to pick the registered app for
+    ///                           the file's UTI.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    OpenArtifact { path: String, mode: ArtifactOpenMode },
+}
+
+/// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PathTokenMode {
+    /// Send Ctrl-W (kill-word) before the path so the shell's readline
+    /// removes the partial word the user was typing, then write the path.
+    Replace,
+    /// Write the path verbatim at the cursor position.
+    Append,
+}
+
+/// Routing target for `DrawCommand::OpenArtifact`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactOpenMode {
+    /// Open the path in a new Plexi pane (file browser for directories;
+    /// OS default for files in v3.5).
+    OpenInPane,
+    /// `open -R <path>` — reveal in Finder.
+    RevealInFinder,
+    /// `open <path>` — Launch Services default app.
+    OpenWithDefault,
 }
 
 /// One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips
@@ -1669,6 +1812,190 @@ mod tests {
         assert!(
             serde_json::from_str::<PlexiEvent>(bad).is_err(),
             "must fail without required `request_id`"
+        );
+    }
+
+    // ── v3.5 Canvas Terminal Binding Primitives (#78) ─────────────────────
+    // Pin the on-the-wire shape for the new primitives. All fields are
+    // required — no `serde(default)`. Enums round-trip as snake_case.
+
+    #[test]
+    fn request_linked_terminal_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"request_linked_terminal","request_id":"req-1","cwd":"/tmp/foo","label":"bindings demo"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::RequestLinkedTerminal { request_id, cwd, label } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(cwd.as_deref(), Some("/tmp/foo"));
+                assert_eq!(label.as_deref(), Some("bindings demo"));
+            }
+            other => panic!("expected RequestLinkedTerminal, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"request_linked_terminal""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline — no `serde(default)` on `request_id`.
+        let bad = r#"{"type":"request_linked_terminal","cwd":null,"label":null}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
+
+        // Optional fields: explicit null deserialises to None.
+        let null_json = r#"{"type":"request_linked_terminal","request_id":"r2","cwd":null,"label":null}"#;
+        let cmd: DrawCommand = serde_json::from_str(null_json).expect("deserialise null");
+        match &cmd {
+            DrawCommand::RequestLinkedTerminal { cwd, label, .. } => {
+                assert!(cwd.is_none());
+                assert!(label.is_none());
+            }
+            other => panic!("expected RequestLinkedTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn linked_terminal_ready_event_round_trips_serde() {
+        let json = r#"{"type":"linked_terminal_ready","request_id":"req-1","terminal_pane_id":42}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(*terminal_pane_id, 42);
+            }
+            other => panic!("expected LinkedTerminalReady, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"linked_terminal_ready""#),
+            "wire tag missing: {serialised}"
+        );
+        let bad = r#"{"type":"linked_terminal_ready","request_id":"r"}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `terminal_pane_id`"
+        );
+    }
+
+    #[test]
+    fn run_in_linked_terminal_round_trips_serde() {
+        let json = r#"{"type":"run_in_linked_terminal","terminal_pane_id":42,"command":"ls -la","echo":true}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
+                assert_eq!(*terminal_pane_id, 42);
+                assert_eq!(command, "ls -la");
+                assert!(*echo);
+            }
+            other => panic!("expected RunInLinkedTerminal, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"run_in_linked_terminal""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline — `echo` has no default.
+        let bad = r#"{"type":"run_in_linked_terminal","terminal_pane_id":1,"command":"ls"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `echo`"
+        );
+    }
+
+    #[test]
+    fn insert_path_token_mode_enum_serde() {
+        let replace_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/x","mode":"replace"}"#;
+        let cmd: DrawCommand = serde_json::from_str(replace_json).expect("deserialise replace");
+        match &cmd {
+            DrawCommand::InsertPathToken { mode, path, terminal_pane_id } => {
+                assert_eq!(*mode, PathTokenMode::Replace);
+                assert_eq!(path, "/tmp/x");
+                assert_eq!(*terminal_pane_id, 7);
+            }
+            other => panic!("expected InsertPathToken, got {other:?}"),
+        }
+
+        let append_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/y","mode":"append"}"#;
+        let cmd: DrawCommand = serde_json::from_str(append_json).expect("deserialise append");
+        if let DrawCommand::InsertPathToken { mode, .. } = &cmd {
+            assert_eq!(*mode, PathTokenMode::Append);
+        } else {
+            panic!("expected InsertPathToken, got {cmd:?}");
+        }
+
+        // Round-trip serialise → snake_case on the wire.
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""mode":"append""#),
+            "mode must serialise as snake_case: {serialised}"
+        );
+
+        // Bad mode rejected loudly.
+        let bad = r#"{"type":"insert_path_token","terminal_pane_id":1,"path":"/x","mode":"INSERT"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "unknown mode must fail to deserialise"
+        );
+    }
+
+    #[test]
+    fn request_command_preview_round_trips_serde() {
+        let json = r#"{"type":"request_command_preview","request_id":"req-9","terminal_pane_id":3,"command":"rm -rf .git"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::RequestCommandPreview { request_id, terminal_pane_id, command } => {
+                assert_eq!(request_id, "req-9");
+                assert_eq!(*terminal_pane_id, 3);
+                assert_eq!(command, "rm -rf .git");
+            }
+            other => panic!("expected RequestCommandPreview, got {other:?}"),
+        }
+
+        let preview_json = r#"{"type":"command_preview","request_id":"req-9","command":"rm -rf .git","would_run_in_cwd":"/tmp/foo"}"#;
+        let event: PlexiEvent = serde_json::from_str(preview_json).expect("deserialise event");
+        match &event {
+            PlexiEvent::CommandPreview { request_id, command, would_run_in_cwd } => {
+                assert_eq!(request_id, "req-9");
+                assert_eq!(command, "rm -rf .git");
+                assert_eq!(would_run_in_cwd, "/tmp/foo");
+            }
+            other => panic!("expected CommandPreview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_artifact_mode_enum_serde() {
+        let cases = [
+            ("open_in_pane", ArtifactOpenMode::OpenInPane),
+            ("reveal_in_finder", ArtifactOpenMode::RevealInFinder),
+            ("open_with_default", ArtifactOpenMode::OpenWithDefault),
+        ];
+        for (wire, expected) in cases {
+            let json = format!(
+                r#"{{"type":"open_artifact","path":"/tmp/x","mode":"{wire}"}}"#
+            );
+            let cmd: DrawCommand = serde_json::from_str(&json).expect("deserialise");
+            match &cmd {
+                DrawCommand::OpenArtifact { path, mode } => {
+                    assert_eq!(path, "/tmp/x");
+                    assert_eq!(*mode, expected, "wire {wire} → {expected:?}");
+                }
+                other => panic!("expected OpenArtifact, got {other:?}"),
+            }
+        }
+
+        // Round-trip serialise → snake_case on the wire.
+        let cmd = DrawCommand::OpenArtifact {
+            path: "/tmp/x".to_string(),
+            mode: ArtifactOpenMode::RevealInFinder,
+        };
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""mode":"reveal_in_finder""#),
+            "snake_case missing: {serialised}"
         );
     }
 

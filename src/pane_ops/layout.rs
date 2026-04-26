@@ -46,7 +46,7 @@ impl PlexiApp {
         self.host.handle_command(cmd, &mut self.host_services)
     }
 
-    pub(super) fn split_with_new_pane(
+    pub(crate) fn split_with_new_pane(
         &mut self,
         new_pane_id: PaneId,
         vertical: bool,

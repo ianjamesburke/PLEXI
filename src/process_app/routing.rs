@@ -973,6 +973,108 @@ impl ProcessApp {
                 }
             }
 
+            // ── Canvas Terminal Binding Primitives (#78) ───────────────────
+            // All five gate on `terminal.bindings`. The host-side state
+            // (creating the terminal pane, finding the linked terminal,
+            // injecting bytes into its PTY) lives at the `PlexiApp`
+            // dispatch site — the routing layer just enforces the
+            // capability gate, logs, and forwards an `AppCommand`.
+            DrawCommand::RequestLinkedTerminal { request_id, cwd, label } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::TerminalBindings)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: RequestLinkedTerminal {request_id} denied — {reason}",
+                        self.type_id
+                    );
+                    // No event-shape on the wire for "denied" on this call —
+                    // mirror the iq.query precedent: respond with an explicit
+                    // error event so the SDK's blocking helper unblocks.
+                    self.outbound_events.push_back(
+                        PlexiEvent::LinkedTerminalReady {
+                            request_id,
+                            // pane_id 0 sentinel = "no terminal opened". The
+                            // SDK helper checks for 0 and raises
+                            // CapabilityDeniedError.
+                            terminal_pane_id: 0,
+                        },
+                    );
+                    return;
+                }
+                self.pending_commands.push(AppCommand::RequestLinkedTerminal {
+                    sender_pane_id: self.pane_id,
+                    request_id,
+                    cwd,
+                    label,
+                });
+            }
+            DrawCommand::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::TerminalBindings)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: RunInLinkedTerminal denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
+                self.pending_commands.push(AppCommand::RunInLinkedTerminal {
+                    terminal_pane_id,
+                    command,
+                    echo,
+                });
+            }
+            DrawCommand::InsertPathToken { terminal_pane_id, path, mode } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::TerminalBindings)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: InsertPathToken denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
+                self.pending_commands.push(AppCommand::InsertPathToken {
+                    terminal_pane_id,
+                    path,
+                    mode,
+                });
+            }
+            DrawCommand::RequestCommandPreview { request_id, terminal_pane_id, command } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::TerminalBindings)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: RequestCommandPreview {request_id} denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::CommandPreview {
+                        request_id,
+                        command,
+                        would_run_in_cwd: String::new(),
+                    });
+                    return;
+                }
+                self.pending_commands.push(AppCommand::RequestCommandPreview {
+                    sender_pane_id: self.pane_id,
+                    request_id,
+                    terminal_pane_id,
+                    command,
+                });
+            }
+            DrawCommand::OpenArtifact { path, mode } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::TerminalBindings)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenArtifact denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
+                self.pending_commands.push(AppCommand::OpenArtifact { path, mode });
+            }
+
             _ => unreachable!("route_command called with non-control command"),
         }
     }

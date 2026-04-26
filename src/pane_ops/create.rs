@@ -165,7 +165,7 @@ impl PlexiApp {
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
     }
 
-    fn open_builtin_app_pane(
+    pub(crate) fn open_builtin_app_pane(
         &mut self,
         app: Box<dyn App>,
         permissions: crate::app_permissions::AppPermissions,
