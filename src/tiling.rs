@@ -5,6 +5,7 @@ use egui::Color32;
 use egui_term::{BackendCommand, TerminalTheme};
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub type PaneId = u64;
 
@@ -45,6 +46,10 @@ pub struct PlexiBehavior<'a> {
     pub colors: Colors,
     pub pane_names: HashMap<PaneId, String>,
     pub drag_cursor_pos: Option<egui::Pos2>,
+    /// The active workspace root (or `None` when running outside a workspace).
+    /// Used by `terminal_pane::render` to flag terminal panes whose CWD has
+    /// drifted outside the workspace tree. See issue #308 Phase 1.
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -113,6 +118,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &self.colors,
                 &self.pane_names,
                 &self.tab_info,
+                self.workspace_root.as_deref(),
             );
             if close_exited {
                 self.close_exited = Some(tile_id);
