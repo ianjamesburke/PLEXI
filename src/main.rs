@@ -345,12 +345,26 @@ fn main() -> eframe::Result {
                 std::process::exit(cli::list_cli());
             }
             "pack" => {
-                // Reserved for `plexi pack export` etc. (Phase 3). Stub now.
-                eprintln!(
-                    "`plexi pack` subcommands are reserved for Phase 3 (registry browse + export). \
-                     For now, use `plexi install --pack <path|core>` to apply a pack."
-                );
-                std::process::exit(2);
+                // `plexi pack export <path>` (#308 Phase 3) — write a
+                // pack.toml describing the currently-installed app set.
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi pack export <path>");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "export" => {
+                        if args.len() < 4 {
+                            eprintln!("Usage: plexi pack export <path>");
+                            std::process::exit(1);
+                        }
+                        std::process::exit(cli::pack_export_cli(&args[3]));
+                    }
+                    other => {
+                        eprintln!("Unknown pack subcommand: {other}");
+                        eprintln!("Usage: plexi pack export <path>");
+                        std::process::exit(1);
+                    }
+                }
             }
             "notify" => {
                 let mut title = String::new();
