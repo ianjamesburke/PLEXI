@@ -1151,13 +1151,13 @@ mod tests {
         let dev = default_video_device();
         let ring = make_ring();
         let res = dev.open("/tmp/definitely-does-not-exist-plexi-factory-test.mp4", ring);
-        assert!(
-            matches!(
-                res,
-                Err(VideoError::Decoder(_)) | Err(VideoError::NotImplemented)
-            ),
-            "expected Decoder or NotImplemented error, got {res:?}"
-        );
+        let ok = match &res {
+            Err(VideoError::Decoder(_)) => true,
+            #[cfg(not(target_os = "macos"))]
+            Err(VideoError::NotImplemented) => true,
+            _ => false,
+        };
+        assert!(ok, "expected Decoder error (or NotImplemented off-mac), got {res:?}");
     }
 
     #[test]

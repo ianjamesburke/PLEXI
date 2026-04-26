@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
-"""Video Player - POC for #345.
+"""Video Player - POC for #345 substrate + #346 AVFoundation backing.
 
-Exercises the host's video substrate via the procedural mock decoder.
-The production AvfVideoDecoder still returns NotImplemented (#346 will
-swap in real AVFoundation backing); to drive this app, launch the host
-with `PLEXI_VIDEO=mock://gradient` so the factory returns the mock.
+Exercises the host's video subsystem. Two modes:
+  - Mock: launch the host with `PLEXI_VIDEO=mock://gradient` and press `o`.
+    Source defaults to "mock://gradient", the procedural-gradient decoder
+    pumps frames at 30 fps.
+  - Real H.264: set `PLEXI_VIDEO_PATH=/abs/path/to/clip.mp4` on the app
+    (NOT the host - this app reads it at startup). Press `f` to use the
+    file path as the source instead of mock://gradient. Requires #346
+    AVFoundation backing on the host.
 
 Substrate flow:
   - emit.open_video(source, pipe_id) -> VideoHandle (handle_id, w/h/fps,
     duration_ms, attached Pipe).
   - A reader thread pulls RGBA8 frames from the Pipe and increments a
     frame counter. The SDK has no rgba-blit primitive yet, so we surface
-    "frames decoded" + "last frame size" instead of painting the gradient.
+    "frames decoded" + "last frame size" instead of painting frames.
   - emit.set_video_state(handle_id, "play"|"pause"|"seek", position_ms=...)
-    drives playback. The mock pauses / seeks / resumes inside its worker
-    thread; the frame counter visibly stalls / resumes.
+    drives playback.
   - emit.close_video(handle_id) tears the decoder down.
 
 Keys:
-  o - Open mock://gradient (requires PLEXI_VIDEO=mock://gradient on host)
+  o - Open the current source (mock://gradient by default)
+  f - Toggle source between mock://gradient and PLEXI_VIDEO_PATH (if set)
   p - Pause
   r - Resume play
   [ - Seek -5s
@@ -31,6 +35,7 @@ CapabilityDeniedError immediately and the app surfaces it in the log.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -48,7 +53,8 @@ from plexi_sdk.ui import (
 )
 
 
-SOURCE = "mock://gradient"
+MOCK_SOURCE = "mock://gradient"
+FILE_SOURCE = os.environ.get("PLEXI_VIDEO_PATH", "")
 PIPE_ID = "video-stream"
 SEEK_STEP_MS = 5_000
 MAX_LOG_LINES = 200
@@ -61,12 +67,17 @@ class VideoPlayerApp(App):
         self._last_frame_bytes: int = 0
         self._position_ms: int = 0
         self._state: str = "(closed)"
+        self._source: str = MOCK_SOURCE
         self._log_lines: list[str] = []
         self._log_lock = threading.Lock()
         self._reader_stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
-        ctx.status_summary("Video Player - press o to open, p/r to pause/resume, [/] to seek")
-        self.emit.info("Video Player started - launch host with PLEXI_VIDEO=mock://gradient")
+        ctx.status_summary("Video Player - press o to open, f to toggle file/mock, p/r pause/resume, [/] seek")
+        self.emit.info("Video Player started")
+        if FILE_SOURCE:
+            self.emit.info(f"PLEXI_VIDEO_PATH={FILE_SOURCE} - press f to switch to it")
+        else:
+            self.emit.info("PLEXI_VIDEO_PATH not set - mock://gradient only. Set it to drive AVFoundation.")
 
     # -- Open / close ----------------------------------------------------------
 
@@ -74,11 +85,11 @@ class VideoPlayerApp(App):
         if self._handle is not None:
             self._append_log("already open - close (x) first")
             return
-        self._append_log(f"opening {SOURCE} ...")
+        self._append_log(f"opening {self._source} ...")
 
         def runner() -> None:
             try:
-                handle = self.emit.open_video(source=SOURCE, pipe_id=PIPE_ID)
+                handle = self.emit.open_video(source=self._source, pipe_id=PIPE_ID)
                 self._handle = handle
                 self._state = "play"
                 self._position_ms = 0
@@ -181,6 +192,15 @@ class VideoPlayerApp(App):
         k = key.lower()
         if k == "o":
             self._open()
+        elif k == "f":
+            if self._handle is not None:
+                self._append_log("close (x) before switching source")
+            elif not FILE_SOURCE:
+                self._append_log("PLEXI_VIDEO_PATH is not set - relaunch with it pointing to an MP4")
+            else:
+                self._source = FILE_SOURCE if self._source == MOCK_SOURCE else MOCK_SOURCE
+                self._append_log(f"source -> {self._source}")
+                self.emit.schedule_render(after_ms=20)
         elif k == "x":
             self._close()
         elif k == "p":
@@ -204,11 +224,13 @@ class VideoPlayerApp(App):
     def _status_card(self) -> Card:
         rows: list = [Section("Status")]
         if self._handle is None:
-            rows.append(Label("(closed - press o to open the mock decoder)"))
+            rows.append(Label(f"(closed - press o to open: {self._source})"))
+            if FILE_SOURCE and self._source == MOCK_SOURCE:
+                rows.append(Label(f"  press f to switch to {FILE_SOURCE}"))
         else:
             h = self._handle
             rows.append(Label(f"  handle_id   {h.handle_id}"))
-            rows.append(Label(f"  source      {SOURCE}"))
+            rows.append(Label(f"  source      {self._source}"))
             rows.append(Label(f"  size        {h.width} x {h.height}"))
             rows.append(Label(f"  fps         {h.fps:.1f}"))
             rows.append(Label(f"  duration    {h.duration_ms} ms"))
@@ -224,12 +246,13 @@ class VideoPlayerApp(App):
 
         children: list = [
             AppBar(title="Video Player"),
-            Label("v3.4 video substrate (#345) - mock decoder demo"),
+            Label("v3.4 video subsystem (#345 substrate + #346 AVFoundation)"),
             Label("(SDK has no RGBA blit yet - showing frame counter instead.)"),
             self._status_card(),
             Section("Keys"),
             Card([
-                KeyRow("o", "Open mock://gradient"),
+                KeyRow("o", f"Open {self._source}"),
+                KeyRow("f", "Toggle source (mock <-> PLEXI_VIDEO_PATH)"),
                 KeyRow("x", "Close current video"),
                 KeyRow("p", "Pause"),
                 KeyRow("r", "Resume play"),
@@ -240,7 +263,7 @@ class VideoPlayerApp(App):
             Section(f"Log ({len(log_snapshot)})"),
             Spacer(grow=True),
             ScrollLog(lines=log_snapshot, empty_text="(no events - press o to open)"),
-            Footer("Launch host with PLEXI_VIDEO=mock://gradient to drive the mock decoder."),
+            Footer("Mock: launch host with PLEXI_VIDEO=mock://gradient. AVFoundation: set PLEXI_VIDEO_PATH on the app."),
         ]
         ctx.render(Column(children))
 
