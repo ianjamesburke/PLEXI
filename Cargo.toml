@@ -47,6 +47,10 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 libc = "0.2"
 # CoreAudio capture + device enumeration (#277). Cross-platform PCM I/O.
 cpal = "0.17"
+# Hot reload (#83). Cross-platform fs watcher; on macOS uses FSEvents.
+# `macos_fsevent` is the recommended backend (kqueue is the alt, slower for
+# nested dirs). default-features disabled to avoid pulling crossbeam-channel.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl

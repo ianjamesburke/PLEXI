@@ -37,6 +37,7 @@ mod plexi_iq;
 mod render;
 mod process_app;
 mod headless_renderer;
+mod hot_reload;
 mod install;
 mod protocol;
 mod quick_note_app;

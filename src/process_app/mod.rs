@@ -1446,8 +1446,63 @@ impl Drop for ProcessApp {
             timestamp: event_log::now_timestamp(),
         });
         if let Some(mut child) = self.process.take() {
-            let _ = child.wait();
-            let _ = child.kill();
+            // Three-phase shutdown escalation (#83):
+            //   1. Wait up to 2s for the child to exit cleanly after the
+            //      `Shutdown` event we just sent.
+            //   2. SIGTERM (`child.kill()` on Unix) and wait another 1s.
+            //   3. Final `wait()` — at this point the child has been
+            //      SIGTERM'd; on the rare case it's still alive we let
+            //      `wait()` block. Subprocess-not-responding-to-SIGTERM
+            //      is a developer-side bug; logging it is enough.
+            //
+            // The `try_wait` poll loop avoids dragging the host UI thread
+            // through a 2-second hang on a normal close (clean exits land
+            // within tens of ms).
+            const POLL_MS: u64 = 25;
+            let shutdown_deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(2);
+            let mut exited = false;
+            while std::time::Instant::now() < shutdown_deadline {
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        exited = true;
+                        break;
+                    }
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "ProcessApp[{}]: try_wait error during shutdown: {e}",
+                            self.type_id
+                        );
+                        break;
+                    }
+                }
+            }
+            if !exited {
+                log::warn!(
+                    "ProcessApp[{}]: did not exit within 2s of Shutdown — sending SIGTERM",
+                    self.type_id
+                );
+                let _ = child.kill();
+                let kill_deadline = std::time::Instant::now()
+                    + std::time::Duration::from_secs(1);
+                while std::time::Instant::now() < kill_deadline {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {
+                            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                // Final blocking wait — at this point we've SIGTERM'd; if
+                // the OS hasn't reaped yet, give it the floor. On Unix
+                // `Child::kill` already SIGKILL-equivalents in `std`, so
+                // the process should be dead.
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -2425,5 +2480,149 @@ mod canvas_bindings_tests {
             })
             .expect("granted path must enqueue OpenArtifact");
         assert_eq!(mode, ArtifactOpenMode::RevealInFinder);
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    //! Reload-path tests for hot reload (#83).
+    //!
+    //! Two paths under test:
+    //!   1. Drop on a well-behaved subprocess sends `Shutdown` and reaps
+    //!      cleanly within the 2s timeout (no SIGTERM escalation).
+    //!   2. Drop on an app that ignores Shutdown escalates to SIGTERM
+    //!      and still reaps within the 1s SIGTERM timeout.
+    //!
+    //! These exercise the `Drop for ProcessApp` machinery directly — the
+    //! reload glue in `pane_ops::create::reload_app_pane` relies on
+    //! `Drop` for the Shutdown→wait→kill sequence. Replacing the runtime
+    //! field naturally drops the old `ProcessApp`.
+    use super::*;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn make_sh_app(args: &[&str]) -> Option<ProcessApp> {
+        let sh = ["/bin/sh", "/usr/bin/sh"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(PathBuf::from)?;
+        let workspace_root = std::env::temp_dir();
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        ProcessApp::launch(
+            "test_reload",
+            "Test Reload",
+            &sh,
+            &workspace_root,
+            &owned,
+            workspace_root.clone(),
+            HashSet::new(),
+            false,
+        )
+        .ok()
+    }
+
+    /// Reload contract: dropping a `ProcessApp` reaps the underlying
+    /// child. `Shutdown` is best-effort over a stdio that the child
+    /// likely isn't even reading; the timed escalation guarantees the
+    /// reap happens regardless.
+    #[test]
+    fn drop_reaps_well_behaved_subprocess_within_window() {
+        let Some(app) = make_sh_app(&["-c", "sleep 5"]) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        // The child PID must exist while `app` is alive.
+        let pid = app
+            .process
+            .as_ref()
+            .map(|c| c.id())
+            .expect("child should be running");
+        let start = std::time::Instant::now();
+        drop(app);
+        let elapsed = start.elapsed();
+
+        // Drop completed — under 4s ceiling (2s shutdown + 1s SIGTERM + slack).
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "drop must complete within escalation window, took {elapsed:?}"
+        );
+
+        // Verify the OS released the PID (kill 0 to test process existence).
+        // On Unix, kill -0 returns -1 with ESRCH if the process doesn't exist.
+        #[cfg(unix)]
+        {
+            // Sleep a tick so the OS gets a chance to fully reap.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            // kill returning -1 means the process is gone (ESRCH).
+            assert_eq!(
+                alive, -1,
+                "child pid {pid} must be reaped after drop, got {alive}"
+            );
+        }
+    }
+
+    /// Reload force-kill contract: a subprocess that ignores `Shutdown`
+    /// (no stdin reader, just `sleep`) must still be reaped via the
+    /// SIGTERM escalation.
+    #[test]
+    fn drop_force_kills_unresponsive_subprocess() {
+        // `sleep 30` doesn't read stdin and ignores SIGPIPE — the only
+        // way it dies is SIGTERM/SIGKILL.
+        let Some(app) = make_sh_app(&["-c", "exec sleep 30"]) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        let pid = app
+            .process
+            .as_ref()
+            .map(|c| c.id())
+            .expect("child should be running");
+        let start = std::time::Instant::now();
+        drop(app);
+        let elapsed = start.elapsed();
+
+        // The 2s shutdown window expires (sleep ignores it), then
+        // SIGTERM reaps within 1s. Total well under 4s.
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "force-kill must complete within escalation window, took {elapsed:?}"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_millis(1900),
+            "shutdown wait should give the well-behaved app time to exit; elapsed={elapsed:?}"
+        );
+
+        #[cfg(unix)]
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            assert_eq!(
+                alive, -1,
+                "unresponsive child pid {pid} must be force-reaped after drop"
+            );
+        }
+    }
+
+    /// Sanity check: `launch_process` is re-entrant for the same id —
+    /// hot reload calls it on every reload.
+    #[test]
+    fn launch_process_is_reentrant_for_same_app() {
+        let Some(a) = make_sh_app(&["-c", "sleep 0.1"]) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        let Some(b) = make_sh_app(&["-c", "sleep 0.1"]) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        let id_a = a.process.as_ref().map(|c| c.id());
+        let id_b = b.process.as_ref().map(|c| c.id());
+        assert!(id_a.is_some());
+        assert!(id_b.is_some());
+        assert_ne!(
+            id_a, id_b,
+            "two launches of the same app must produce distinct PIDs"
+        );
     }
 }

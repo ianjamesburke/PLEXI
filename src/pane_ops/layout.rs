@@ -537,6 +537,10 @@ impl PlexiApp {
         // ctx borrow is released — park background ProcessApps; drop everything else.
         match removed_pane {
             Some(Pane::App(app_pane)) => {
+                let pane_id = app_pane.id;
+                // Hot reload (#83): drop any active watcher for this pane.
+                // Idempotent — no-op when the pane wasn't being watched.
+                self.hot_reload.unwatch(pane_id);
                 if let crate::pane::AppRuntime::Process(mut process_app) = app_pane.runtime {
                     let type_id = process_app.type_id.clone();
                     if self.registry.is_background(&type_id) {
