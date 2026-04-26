@@ -49,6 +49,7 @@ mod text_editor_app;
 mod theme;
 mod tiling;
 mod typed_pipes;
+mod video;
 mod widgets;
 mod workspace;
 

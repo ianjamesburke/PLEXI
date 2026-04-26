@@ -273,6 +273,26 @@ pub enum PlexiEvent {
         port_id: String,
         error: String,
     },
+    /// Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has
+    /// allocated the binary pipe (look for the preceding `PipeOpened`),
+    /// started the decoder, and is now pumping RGBA8 frames into the pipe.
+    /// `handle_id` is the opaque handle the app passes to subsequent
+    /// `SetVideoState` / `CloseVideo` commands.
+    VideoOpenAck {
+        request_id: String,
+        handle_id: u64,
+        width: u32,
+        height: u32,
+        fps: f32,
+        duration_ms: u64,
+    },
+    /// Sent when `DrawCommand::OpenVideo` could not be honoured (#345) —
+    /// capability denied, source not found, decoder error, or the
+    /// production stub's `NotImplemented` (until #346 ships).
+    VideoOpenError {
+        request_id: String,
+        error: String,
+    },
     /// Response to `DrawCommand::AgentRosterGet` (#286). Lists every live
     /// `Pane::Agent` in the same workspace context.
     ///
@@ -663,13 +683,33 @@ pub enum DrawCommand {
         #[serde(default = "default_image_fit")]
         fit: String,
     },
-    /// Host-owned video decoder: emits frames on a binary pipe.
-    VideoPlayer {
+    /// Open a video decoder (#345). The host responds with
+    /// `PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,
+    /// fps, duration_ms }` on success or `PlexiEvent::VideoOpenError
+    /// { request_id, error }` on failure (capability denied, source not
+    /// found, decoder error, NotImplemented from the production stub).
+    /// Decoded RGBA8 frames flow over the binary pipe at `pipe_id`; one
+    /// pipe frame = one video frame, packed `[R,G,B,A,...]` of length
+    /// `width * height * 4`.
+    ///
+    /// Requires `video.playback` capability. All fields required —
+    /// no `serde(default)`.
+    OpenVideo {
+        request_id: String,
         source: String,
-        rect: Rect,
-        /// One of: "playing" | "paused" | "stopped".
-        state: String,
+        pipe_id: String,
     },
+    /// Drive playback state for a previously-opened video handle (#345).
+    /// `handle_id` is the value returned in `VideoOpenAck`. State variants:
+    /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
+    SetVideoState {
+        handle_id: u64,
+        state: crate::video::VideoState,
+    },
+    /// Close a previously-opened video handle (#345). Tears down the
+    /// decoder thread and the associated binary pipe drains. No response
+    /// event — fire-and-forget.
+    CloseVideo { handle_id: u64 },
     /// Render an amplitude meter reading from a binary pipe.
     AudioMeter { rect: Rect, pipe_id: String },
     /// Host-owned audio playback via `rodio`.
@@ -1503,5 +1543,150 @@ mod tests {
             }
             other => panic!("expected AudioCapture, got {other:?}"),
         }
+    }
+
+    // ── v3.4 video substrate (#345) ────────────────────────────────────────
+    // Pin the on-the-wire shape for OpenVideo / SetVideoState / CloseVideo
+    // and the matching VideoOpenAck / VideoOpenError events. All fields
+    // required — no `serde(default)`.
+
+    #[test]
+    fn open_video_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"open_video","request_id":"req-1","source":"mock://gradient","pipe_id":"video-stream"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::OpenVideo { request_id, source, pipe_id } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(source, "mock://gradient");
+                assert_eq!(pipe_id, "video-stream");
+            }
+            other => panic!("expected OpenVideo, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"open_video""#), "wire tag missing: {serialised}");
+
+        // Required-field discipline — dropping any field fails.
+        let bad = r#"{"type":"open_video","source":"mock://gradient","pipe_id":"video-stream"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
+        let bad = r#"{"type":"open_video","request_id":"r","pipe_id":"p"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `source`"
+        );
+        let bad = r#"{"type":"open_video","request_id":"r","source":"mock://x"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `pipe_id`"
+        );
+    }
+
+    #[test]
+    fn set_video_state_drawcommand_round_trips_serde() {
+        let play_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"play"}}"#;
+        let cmd: DrawCommand = serde_json::from_str(play_json).expect("deserialise play");
+        match &cmd {
+            DrawCommand::SetVideoState { handle_id, state } => {
+                assert_eq!(*handle_id, 7);
+                assert_eq!(*state, crate::video::VideoState::Play);
+            }
+            other => panic!("expected SetVideoState, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"set_video_state""#),
+            "wire tag missing: {serialised}"
+        );
+
+        let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
+        let cmd: DrawCommand = serde_json::from_str(pause_json).expect("deserialise pause");
+        if let DrawCommand::SetVideoState { state, .. } = &cmd {
+            assert_eq!(*state, crate::video::VideoState::Pause);
+        } else {
+            panic!("expected SetVideoState pause, got {cmd:?}");
+        }
+
+        let seek_json =
+            r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"seek","position_ms":1500}}"#;
+        let cmd: DrawCommand = serde_json::from_str(seek_json).expect("deserialise seek");
+        if let DrawCommand::SetVideoState { state, .. } = &cmd {
+            assert_eq!(
+                *state,
+                crate::video::VideoState::Seek { position_ms: 1500 }
+            );
+        } else {
+            panic!("expected SetVideoState seek, got {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn close_video_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"close_video","handle_id":42}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::CloseVideo { handle_id } => assert_eq!(*handle_id, 42),
+            other => panic!("expected CloseVideo, got {other:?}"),
+        }
+        let bad = r#"{"type":"close_video"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `handle_id`"
+        );
+    }
+
+    #[test]
+    fn video_open_ack_round_trips_serde() {
+        let json = r#"{"type":"video_open_ack","request_id":"req-1","handle_id":3,"width":640,"height":360,"fps":30.0,"duration_ms":12000}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::VideoOpenAck {
+                request_id,
+                handle_id,
+                width,
+                height,
+                fps,
+                duration_ms,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(*handle_id, 3);
+                assert_eq!(*width, 640);
+                assert_eq!(*height, 360);
+                assert!((*fps - 30.0).abs() < 0.01);
+                assert_eq!(*duration_ms, 12_000);
+            }
+            other => panic!("expected VideoOpenAck, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"video_open_ack""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline.
+        let bad = r#"{"type":"video_open_ack","handle_id":3,"width":1,"height":1,"fps":30.0,"duration_ms":0}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
+    }
+
+    #[test]
+    fn video_open_error_round_trips_serde() {
+        let json = r#"{"type":"video_open_error","request_id":"req-1","error":"video decoder not implemented"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::VideoOpenError { request_id, error } => {
+                assert_eq!(request_id, "req-1");
+                assert!(error.contains("not implemented"));
+            }
+            other => panic!("expected VideoOpenError, got {other:?}"),
+        }
+        let bad = r#"{"type":"video_open_error","error":"x"}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
     }
 }

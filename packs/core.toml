@@ -58,6 +58,15 @@ id      = "agent-tester"
 source  = "local:agent-tester"
 version = "0.1.0"
 
+# Video substrate POC (#345). Drives the mock decoder via
+# `video.playback`. Production AvfVideoDecoder still returns
+# NotImplemented until #346 lands real backing — launch with
+# `PLEXI_VIDEO=mock://gradient` to exercise the mock end to end.
+[[app]]
+id      = "video-player"
+source  = "local:video-player"
+version = "0.1.0"
+
 # Agent roster + inter-agent pipes POCs (#286 / v3.3 P2). Open both
 # panes, ask the coordinator to delegate to the worker, and watch the
 # round-trip surface in both conversation histories. Requires
