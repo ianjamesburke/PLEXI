@@ -57,6 +57,26 @@ Build-specific, resolved at runtime by binary name:
 
 Each app is a subdirectory with `manifest.toml` and an executable entry point. Installing to the wrong directory silently does nothing.
 
+## Branch Workflow
+
+- `alpha` — active development. All PRs land here. Use `just install-alpha` to test.
+- `beta` — staging/release channel. Promoted from alpha when ready. Use `just install-beta` to test.
+- `main` — stable releases only.
+
+Feature branches are cut from `alpha`, worked in `worktrees/`, and merged back to `alpha` via PR. Never commit directly to `main` or `beta`.
+
+Worktrees:
+- `worktrees/alpha` — alpha branch
+- `worktrees/beta` — beta branch
+
+## Releases
+
+Before tagging a release (`just bump` + `just release`):
+1. Update `CHANGELOG.md` at the repo root — add a new `## [x.y.z] — YYYY-MM-DD` section with a brief summary of what changed (features, fixes, breaking changes).
+2. Entries are newest-first. Keep them user-facing (not internal refactor detail).
+
+If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the first entry.
+
 ## Build & Install
 
 `just install` runs `cargo bundle --release`, copies the `.app` to `/Applications`, extracts the binary to `/usr/local/bin/plexi`, then runs `lsregister -f <bundle>` and `pbs -update` to refresh macOS Services.

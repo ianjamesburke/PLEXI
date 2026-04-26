@@ -11,7 +11,8 @@ docs/scratch/
 
 # AI tool configs (local only)
 .agents/
-.claude/
+.claude/*
+!.claude/iteration-cycle.md
 .kiro/
 skills/
 skills-lock.json
