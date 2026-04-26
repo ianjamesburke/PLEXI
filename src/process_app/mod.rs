@@ -11,6 +11,7 @@
 //! - `render.rs`   — `render_draw_commands()`: paint committed frames into egui
 //! - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
 
+mod agent;
 mod lifecycle;
 mod prompts;
 mod render;
@@ -129,6 +130,11 @@ pub struct ProcessApp {
     /// `PlexiEvent::TextSubmitted`. Cleared on submit; the whole map is
     /// dropped when the `ProcessApp` is dropped (app close).
     pub(crate) text_input_buffers: HashMap<String, String>,
+    /// Test-only seam used by `process_app::agent` unit tests to inject
+    /// `DrawCommand`s without spinning up a real subprocess pipeline.
+    /// Drained on every `agent_tick` (and thus invisible in production).
+    #[cfg(test)]
+    pub(crate) test_injected_commands: Arc<Mutex<VecDeque<DrawCommand>>>,
 }
 
 impl ProcessApp {
@@ -335,6 +341,8 @@ impl ProcessApp {
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,
             text_input_buffers: HashMap::new(),
+            #[cfg(test)]
+            test_injected_commands: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
