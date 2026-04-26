@@ -1,0 +1,42 @@
+# Plexi core pack (#308 Phase 2). Embedded at compile time; applied
+# automatically on first launch when the channel apps dir is empty.
+#
+# Each entry sources from `local:<example-name>` — the host copies the
+# example tree out of the binary (`include_dir!("examples")`) into the
+# channel apps dir. No network required.
+#
+# This list is intentionally minimal: a few representative apps so a fresh
+# install has *something* working out of the box. Everything else is
+# discoverable via `plexi install <git-url>` or future registry browse.
+
+schema_version = 1
+
+[[app]]
+id      = "secrets-routing-tester"
+source  = "local:secrets-routing-tester"
+version = "bundled"
+
+[[app]]
+id      = "notification-tester"
+source  = "local:notification-tester"
+version = "bundled"
+
+[[app]]
+id      = "stand-up-reminder"
+source  = "local:stand-up-reminder"
+version = "bundled"
+
+[[app]]
+id      = "quick-note"
+source  = "local:quick-note"
+version = "bundled"
+
+[[app]]
+id      = "todo"
+source  = "local:todo"
+version = "bundled"
+
+[[app]]
+id      = "ui-playground"
+source  = "local:ui-playground"
+version = "bundled"

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Workspace Config Tester — POC for #308 Phase 1.
+"""Workspace Config Tester — POC for #308 Phase 1 + Phase 2.
 
-Surfaces three things at a glance:
+Surfaces:
   1. The resolved workspace root path (or "(no workspace)").
   2. The workspace UUID, parsed out of <root>/.plexi/workspace.toml.
   3. Whether <root>/.plexi/config.toml exists, and a few representative keys
      pulled from it so the user can verify project-level overrides land.
-
-The point is to demo global → project config overlay end-to-end: drop a
-`[log] level = "debug"` line into <root>/.plexi/config.toml, hit `r` to
-reload, and watch the value change. The host's merge logic decides which
-value wins; this app just shows the source-of-truth files.
+  4. Phase 2: every app installed under ~/.plexi-<channel>/apps/ with its
+     manifest version + schema_version — so `plexi install <repo>`
+     verification is one keystroke (`r`) instead of a shell hop.
 
 Keys:
   r — Reload from disk
@@ -75,6 +73,7 @@ class WorkspaceConfigTesterApp(App):
         self._workspace_id: str = ""
         self._project_config_present: bool = False
         self._project_keys: dict[str, str] = {}
+        self._installed_apps: list[tuple[str, str, str]] = self._scan_installed_apps()
 
         if not root:
             return
@@ -99,6 +98,33 @@ class WorkspaceConfigTesterApp(App):
                 "theme.accent": str(theme_section.get("accent", "(unset)") or "(unset)"),
                 "theme_preset": str(cfg_data.get("theme_preset", "(unset)") or "(unset)"),
             }
+
+    def _scan_installed_apps(self) -> list[tuple[str, str, str]]:
+        """Walk every ~/.plexi-*/apps/<id>/manifest.toml and harvest
+        (id, version, schema_version). Channel-agnostic — picks whichever
+        ~/.plexi-* dir is the parent of this app's directory.
+
+        Returns a list sorted by id. On any error, returns []."""
+        try:
+            here = Path(__file__).resolve()
+            # apps_dir = ~/.plexi-<channel>/apps
+            apps_dir = here.parent.parent
+            if apps_dir.name != "apps":
+                return []
+            rows: list[tuple[str, str, str]] = []
+            for entry in sorted(apps_dir.iterdir()):
+                manifest = entry / "manifest.toml"
+                if not manifest.is_file():
+                    continue
+                data = _read_simple_toml(manifest)
+                app_section = data.get("app") or {}
+                app_id = str(app_section.get("id", entry.name))
+                version = str(app_section.get("version", "(unset)"))
+                schema = str(data.get("schema_version", "(missing)"))
+                rows.append((app_id, version, schema))
+            return rows
+        except OSError:
+            return []
 
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if key.lower() == "r":
@@ -125,9 +151,16 @@ class WorkspaceConfigTesterApp(App):
             for k, v in self._project_keys.items():
                 config_card_rows.append(Label(f"{k} = {v}"))
 
+        installed_rows: list = []
+        if not self._installed_apps:
+            installed_rows.append(Label("(no apps found in ~/.plexi-<channel>/apps/)"))
+        else:
+            for app_id, version, schema in self._installed_apps:
+                installed_rows.append(Label(f"{app_id:30} v{version:10} schema={schema}"))
+
         ctx.render(Column([
             AppBar(title="Workspace Config Tester"),
-            Label("Phase 1 of #308 — workspace + project config overlay."),
+            Label("Phase 1 + 2 of #308 — workspace overlay + installed apps."),
             Section("Workspace"),
             Card([
                 Label(f"root: {root_label}"),
@@ -135,12 +168,14 @@ class WorkspaceConfigTesterApp(App):
             ]),
             Section(".plexi/config.toml (project-level overrides)"),
             Card(config_card_rows),
+            Section(f"Installed apps ({len(self._installed_apps)} in ~/.plexi-*/apps/)"),
+            Card(installed_rows),
             Section("Actions"),
             Card([
                 KeyRow("r", "Reload from disk"),
             ]),
             Spacer(grow=True),
-            Footer("Project values overlay the global config in ~/.plexi-<channel>/config.toml."),
+            Footer("Reload picks up new `plexi install`s without restarting the host."),
         ]))
 
 

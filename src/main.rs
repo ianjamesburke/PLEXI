@@ -25,11 +25,13 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 mod overlays;
+mod packs;
 mod pane;
 mod pane_ops;
 mod render;
 mod process_app;
 mod headless_renderer;
+mod install;
 mod protocol;
 mod quick_note_app;
 mod runs;
@@ -57,6 +59,27 @@ fn main() -> eframe::Result {
     let profile = parse_profile_flag(&raw_args);
     crate::config::set_profile(profile);
     crate::config::ensure_profile_initialized();
+
+    // #308 Phase 2: idempotently apply the bundled core pack to a freshly-
+    // empty apps dir. `ensure_profile_initialized` already seeds the dir on
+    // first profile creation; this catches the secondary case where someone
+    // wiped their apps dir but kept the rest of the profile config.
+    {
+        let apps_dir = crate::app_registry::apps_dir();
+        let cloner = crate::install::GitCloner;
+        if let Some(outcomes) = crate::install::apply_core_pack_if_empty(&cloner, &apps_dir) {
+            let n_ok = outcomes
+                .iter()
+                .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
+                .count();
+            eprintln!("core pack: applied {} apps to {}", n_ok, apps_dir.display());
+            for o in &outcomes {
+                if let crate::install::InstallStatus::Failed(msg) = &o.status {
+                    eprintln!("core pack: FAILED {}: {msg}", o.id);
+                }
+            }
+        }
+    }
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
     // Errors out if the path exists but has no `.plexi/` ancestor — the user
@@ -253,6 +276,81 @@ fn main() -> eframe::Result {
                     }
                 }
             }
+            "install" => {
+                // `plexi install <source-spec>[@ref]`
+                // `plexi install --pack <path|core>`
+                let mut pack: Option<String> = None;
+                let mut positional: Option<String> = None;
+                let mut i = 2;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--pack" if i + 1 < args.len() => {
+                            pack = Some(args[i + 1].clone());
+                            i += 2;
+                        }
+                        other if !other.starts_with("--") && positional.is_none() => {
+                            positional = Some(other.to_string());
+                            i += 1;
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+                if let Some(p) = pack {
+                    std::process::exit(cli::install_pack_cli(&p));
+                }
+                match positional {
+                    Some(spec) => std::process::exit(cli::install_cli(&spec)),
+                    None => {
+                        eprintln!(
+                            "Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>"
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "uninstall" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi uninstall <id> [--yes]");
+                    std::process::exit(1);
+                }
+                let mut id: Option<String> = None;
+                let mut assume_yes = false;
+                for a in &args[2..] {
+                    if a == "--yes" || a == "-y" {
+                        assume_yes = true;
+                    } else if !a.starts_with("--") && id.is_none() {
+                        id = Some(a.clone());
+                    }
+                }
+                match id {
+                    Some(id) => std::process::exit(cli::uninstall_cli(&id, assume_yes)),
+                    None => {
+                        eprintln!("Usage: plexi uninstall <id> [--yes]");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "update" => {
+                let id = args
+                    .iter()
+                    .skip(2)
+                    .find(|a| !a.starts_with("--"))
+                    .cloned();
+                std::process::exit(cli::update_cli(id.as_deref()));
+            }
+            "list" => {
+                std::process::exit(cli::list_cli());
+            }
+            "pack" => {
+                // Reserved for `plexi pack export` etc. (Phase 3). Stub now.
+                eprintln!(
+                    "`plexi pack` subcommands are reserved for Phase 3 (registry browse + export). \
+                     For now, use `plexi install --pack <path|core>` to apply a pack."
+                );
+                std::process::exit(2);
+            }
             "notify" => {
                 let mut title = String::new();
                 let mut body = String::new();
@@ -343,7 +441,18 @@ fn main() -> eframe::Result {
 /// skipped — those are dispatched separately later in `main`.
 fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf>, String> {
     const SUBCOMMANDS: &[&str] = &[
-        "run", "secret", "app", "workspace", "notify", "--render",
+        "run",
+        "secret",
+        "app",
+        "workspace",
+        "notify",
+        "--render",
+        // #308 Phase 2 — top-level package manager subcommands
+        "install",
+        "uninstall",
+        "update",
+        "list",
+        "pack",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
