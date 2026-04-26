@@ -4,8 +4,9 @@
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
 use crate::app_permissions::{check, Capability, PermissionCheck};
-use crate::app_protocol::{DrawCommand, PlexiEvent};
+use crate::app_protocol::{AudioDeviceWire, DrawCommand, PlexiEvent};
 use crate::app_trait::AppCommand;
+use crate::audio::AudioCaptureRequest;
 use crate::event_log::{self, HostEvent};
 use crate::plexi_iq::broker::IqBrokerRequest;
 use crate::typed_pipes::PipeDirection;
@@ -668,7 +669,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
-            DrawCommand::AudioCapture { .. } => {
+            DrawCommand::AudioCapture {
+                pipe_id,
+                device_id,
+                sample_rate,
+                buffer_size,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::AudioRecord)
                 {
@@ -676,12 +682,37 @@ impl ProcessApp {
                         "ProcessApp[{}]: AudioCapture denied — {reason}",
                         self.type_id
                     );
+                    self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
+                        pipe_id,
+                        error: format!("capability denied: {reason}"),
+                    });
                     return;
                 }
-                log::warn!(
-                    "ProcessApp[{}]: AudioCapture not yet implemented (v3.1)",
-                    self.type_id
-                );
+                self.start_audio_capture(pipe_id, device_id, sample_rate, buffer_size);
+            }
+            DrawCommand::ListAudioDevices { request_id } => {
+                // Enumeration is not gated — device names are already visible
+                // to any macOS app via System Information. The per-device
+                // capture call goes through the `AudioRecord` gate.
+                let inputs = self
+                    .audio_device
+                    .list_input_devices()
+                    .into_iter()
+                    .map(AudioDeviceWire::from)
+                    .collect();
+                let outputs = self
+                    .audio_device
+                    .list_output_devices()
+                    .into_iter()
+                    .map(AudioDeviceWire::from)
+                    .collect();
+                self.outbound_events
+                    .push_back(PlexiEvent::AudioDevicesListed {
+                        request_id,
+                        inputs,
+                        outputs,
+                        error: None,
+                    });
             }
             DrawCommand::Image { .. } => {
                 log::warn!(
@@ -736,6 +767,149 @@ impl ProcessApp {
             }
 
             _ => unreachable!("route_command called with non-control command"),
+        }
+    }
+
+    /// Allocate a binary pipe for `pipe_id`, spin up the audio capture
+    /// stream, and wire the cpal callback to push f32 PCM frames into the
+    /// pipe ring. On any failure emits `PlexiEvent::AudioCaptureError` and
+    /// frees the pipe so the app's `pipe_open` queue stays consistent.
+    pub(super) fn start_audio_capture(
+        &mut self,
+        pipe_id: String,
+        device_id: Option<String>,
+        sample_rate: u32,
+        buffer_size: u32,
+    ) {
+        if self.audio_capture_sessions.contains_key(&pipe_id) {
+            log::warn!(
+                "ProcessApp[{}]: AudioCapture pipe_id={pipe_id} already capturing",
+                self.type_id
+            );
+            self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
+                pipe_id,
+                error: "already capturing on this pipe_id".to_owned(),
+            });
+            return;
+        }
+
+        // Allocate the binary pipe first — without a destination the cpal
+        // callback would have nowhere to push frames. The pipe-allocation
+        // failure path returns early so we never start a stream we can't
+        // drain.
+        let socket_path = match self
+            .pipe_registry
+            .lock()
+            .expect("pipe_registry poisoned")
+            .open_binary(pipe_id.clone(), PipeDirection::In)
+        {
+            Ok(alloc) => alloc.socket_path,
+            Err(e) => {
+                log::warn!(
+                    "ProcessApp[{}]: AudioCapture pipe alloc failed for {pipe_id}: {e}",
+                    self.type_id
+                );
+                self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
+                    pipe_id,
+                    error: format!("pipe alloc failed: {e}"),
+                });
+                return;
+            }
+        };
+
+        // Grab a clone of the ring so the cpal callback can push without
+        // touching the registry mutex on the audio thread.
+        let ring = match self
+            .pipe_registry
+            .lock()
+            .expect("pipe_registry poisoned")
+            .binary_ring(&pipe_id)
+        {
+            Some(r) => r,
+            None => {
+                // Should not happen — we just opened it. Defensive cleanup.
+                self.pipe_registry
+                    .lock()
+                    .expect("pipe_registry poisoned")
+                    .close(&pipe_id);
+                self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
+                    pipe_id,
+                    error: "pipe ring missing after open".to_owned(),
+                });
+                return;
+            }
+        };
+
+        // Notify the app that the pipe is open BEFORE starting the stream
+        // — apps connect to the unix socket on `pipe_opened`, and we want
+        // them ready before the first cpal callback fires.
+        self.outbound_events.push_back(PlexiEvent::PipeOpened {
+            pipe_id: pipe_id.clone(),
+            socket_path,
+        });
+
+        // Build the frame sink. Each callback invocation gets a fresh
+        // `Vec<u8>` (4 × frames × channels) and tries to push it into the
+        // ring. A full ring drops the frame; we don't emit a `PipeOverrun`
+        // event from the audio thread to avoid contending on the outbound
+        // queue mutex from a real-time context.
+        let ring_for_cb = std::sync::Arc::clone(&ring);
+        let sink: crate::audio::FrameSink = std::sync::Arc::new(move |frames: &[f32]| {
+            let mut buf = Vec::with_capacity(frames.len() * 4);
+            for &s in frames {
+                buf.extend_from_slice(&s.to_le_bytes());
+            }
+            // Push fails when the ring is full — drop the frame, signal
+            // backpressure to the producer (cpal). cpal handles `Err(())`
+            // by stopping the stream; we want to keep streaming through a
+            // brief congestion, so always return Ok.
+            let _ = ring_for_cb.push(buf);
+            Ok(())
+        });
+
+        let request = AudioCaptureRequest {
+            device_id,
+            requested_sample_rate: sample_rate,
+            requested_buffer_size: buffer_size,
+        };
+
+        match self.audio_device.start_capture(request, sink) {
+            Ok(session) => {
+                let neg = session.negotiated.clone();
+                log::info!(
+                    "app::{} audio.capture started: device={}, rate={}, channels={}, buffer={}",
+                    self.type_id,
+                    neg.device_name,
+                    neg.sample_rate,
+                    neg.channels,
+                    neg.buffer_size,
+                );
+                self.audio_capture_sessions.insert(pipe_id.clone(), session);
+                self.outbound_events
+                    .push_back(PlexiEvent::AudioCaptureStarted {
+                        pipe_id,
+                        sample_rate: neg.sample_rate,
+                        channels: neg.channels,
+                        buffer_size: neg.buffer_size,
+                        device_name: neg.device_name,
+                    });
+            }
+            Err(e) => {
+                log::warn!(
+                    "ProcessApp[{}]: AudioCapture start failed for {pipe_id}: {e}",
+                    self.type_id
+                );
+                // Capture failed — close the pipe so the app's bookkeeping
+                // and the drain thread don't hang waiting for frames.
+                self.pipe_registry
+                    .lock()
+                    .expect("pipe_registry poisoned")
+                    .close(&pipe_id);
+                self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
+                    pipe_id,
+                    error: format!("{e}"),
+                });
+            }
         }
     }
 }
