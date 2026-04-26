@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-26 — [FIX] GUI hang when spawning apps — stdin write blocked egui main thread
+
+Root cause: `ProcessApp::send_event` called `stdin.write_all()` directly on the egui render loop thread. During the "starting" window (Python process importing modules, not reading stdin yet), pipe buffer fills fast. The first `Render` event write blocks indefinitely → macOS hang report → forced kill. Symptom: app shows "starting" pill then the entire host dies.
+
+Fix: background writer thread owns `ChildStdin` and blocks on writes there. GUI thread pushes to a bounded `sync_channel(1024)` via `try_send` — non-blocking in all cases. `cbf2799`.
+
 ## 2026-04-26 — [GOTCHA] Info.plist.fragment must NOT include full plist wrapper
 
 `cargo-bundle 0.9.0` handles `osx_info_plist_exts` by doing a raw text insert inside the `<dict>` of the generated Info.plist. The fragment file must contain only bare key-value pairs — **no** `<?xml?>` declaration, no `<!DOCTYPE>`, no `<plist>` or `<dict>` wrappers. Including the full plist boilerplate (as the #277 sub-agent wrote) embeds a second XML document inside the `<dict>`, producing malformed XML that macOS rejects as "damaged or incomplete" at launch. Fix: `assets/Info.plist.fragment` is now just the two `<key>`/`<string>` lines. Re-sign with `codesign --force --deep --sign -` after install.
