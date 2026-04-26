@@ -33,7 +33,7 @@ use crate::typed_pipes::TypedPipeRegistry;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::process::{Child, ChildStdout, Stdio};
 use std::sync::{
     mpsc::{self, Receiver, Sender, TryRecvError},
     Arc, Mutex,
@@ -64,7 +64,11 @@ pub struct ProcessApp {
     pub pane_id: u64,
     display_name: String,
     process: Option<Child>,
-    pub(crate) stdin: Option<ChildStdin>,
+    /// Non-blocking channel to the stdin-writer background thread. The writer
+    /// owns the actual `ChildStdin` and blocks on writes there — the GUI
+    /// thread never touches the pipe directly. `try_send` so a slow-starting
+    /// app never freezes the render loop.
+    event_tx: Option<std::sync::mpsc::SyncSender<String>>,
     /// Receives draw commands from the subprocess on a background thread.
     draw_rx: Option<Receiver<DrawCommand>>,
     /// The last fully committed frame (commands between two FrameDones).
@@ -241,6 +245,24 @@ impl ProcessApp {
         let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
 
+        // Stdin writer thread — owns the pipe and blocks on write_all.
+        // The GUI thread pushes serialised event strings into `event_tx`
+        // via try_send (never blocks); this thread drains them.
+        let (event_tx, event_rx) = std::sync::mpsc::sync_channel::<String>(1024);
+        let stdin_type_id = type_id.clone();
+        {
+            use std::io::Write as _;
+            thread::spawn(move || {
+                let mut stdin = stdin;
+                for line in event_rx {
+                    if stdin.write_all(line.as_bytes()).is_err() {
+                        log::debug!("ProcessApp[{stdin_type_id}]: stdin write failed — writer thread exiting");
+                        break;
+                    }
+                }
+            });
+        }
+
         // Background thread: forward subprocess stderr to Plexi's logger,
         // capture into the recent-stderr ring buffer used by the in-pane
         // error fallback, AND scan each line for `Traceback` / `PANIC` /
@@ -336,7 +358,7 @@ impl ProcessApp {
             pane_id: 0,
             display_name,
             process: Some(child),
-            stdin: Some(stdin),
+            event_tx: Some(event_tx),
             draw_rx: Some(draw_rx),
             frame: Vec::new(),
             pending_frame: Vec::new(),
@@ -388,15 +410,21 @@ impl ProcessApp {
     }
 
     pub(crate) fn send_event(&mut self, event: &PlexiEvent) {
-        let Some(stdin) = self.stdin.as_mut() else {
+        let Some(tx) = self.event_tx.as_ref() else {
             return;
         };
         match serde_json::to_string(event) {
             Ok(mut line) => {
                 line.push('\n');
-                if let Err(e) = stdin.write_all(line.as_bytes()) {
-                    log::error!("ProcessApp[{}]: failed to write event to stdin — process died: {e}", self.type_id);
-                    self.stdin = None;
+                match tx.try_send(line) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        log::warn!("ProcessApp[{}]: stdin channel full — dropping event (app slow to read)", self.type_id);
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        log::debug!("ProcessApp[{}]: stdin writer thread exited", self.type_id);
+                        self.event_tx = None;
+                    }
                 }
             }
             Err(e) => log::error!("ProcessApp: failed to serialize event: {e}"),
