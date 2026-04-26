@@ -25,6 +25,11 @@ scripts/smoke-test.sh
 
 Smoke test (1) feeds PGAP Init to every installed app and asserts `ready` within 3s, (2) launches the host for 2s and scans the log for panics. Failure = install is broken = task is not done.
 
+**Known smoke-test issue (track separately):** `scripts/smoke-test.sh` currently points at `~/.plexi-v3/` and `/usr/local/bin/plexi-v3`, not alpha paths. On a machine that only ever installs alpha, the host check silently skips. File a follow-up issue to either name-derive the paths or add an `install-v3`-only branch.
+
+## Cargo test invocation
+There is no `lib` target in this repo. Run tests with `cargo test --bin plexi`, **not** `cargo test --lib` or bare `cargo test`. Sub-agents must use the `--bin plexi` form.
+
 ## Logs
 - Alpha: `~/.plexi-alpha/plexi.log`
 - Stable: `~/.plexi/plexi.log`
