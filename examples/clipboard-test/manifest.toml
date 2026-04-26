@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "clipboard-test"
+type = "app"
 name = "Clipboard Demo"
 version = "0.1.0"
 description = "Exercises clipboard write, paste, and selectable text (#200, #146)."

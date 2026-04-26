@@ -39,10 +39,20 @@ pub enum StreamEvent {
 }
 
 /// Conversation turn passed to `LlmBackend::stream_to_channel`.
+///
+/// `messages` carries the full conversation history as a structured array —
+/// the same shape the Anthropic Messages API uses. Each entry has `role` ∈
+/// {`"user"`, `"assistant"`} and a plain-text `content`. Backends MUST honour
+/// the array (no flattening to a single prompt string) so multi-turn agent
+/// conversations work correctly.
+///
+/// `system` is the system prompt; injected on every call. Empty string =
+/// no system prompt.
 #[derive(Debug, Clone, Default)]
 pub struct LlmRequest {
-    /// User message for this turn.
-    pub prompt: String,
+    /// Full structured conversation history. Wire shape mirrors the Anthropic
+    /// Messages API — see `app_protocol::IqMessage`.
+    pub messages: Vec<crate::app_protocol::IqMessage>,
     /// System prompt (injected on every call for the native API).
     pub system: String,
 }

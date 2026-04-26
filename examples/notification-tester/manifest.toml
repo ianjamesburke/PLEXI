@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "notification-tester"
+type = "app"
 name = "Notification Tester"
 version = "0.1.0"
 description = "Fires each Notify kind (message / choice / input) on demand. Proof-of-concept playground for the notification modal."

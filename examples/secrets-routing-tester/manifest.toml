@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "secrets-routing-tester"
+type = "app"
 name = "Secrets Routing Tester"
 version = "0.1.0"
 description = "POC for #322 — resolves declared canonical secrets via .plexi/secrets.toml routing and shows masked previews."

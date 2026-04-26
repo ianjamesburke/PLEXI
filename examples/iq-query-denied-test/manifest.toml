@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "iq-query-denied-test"
+type = "app"
 name = "IQ Query Denied Test"
 version = "0.1.0"
 description = "POC for #284 — proves the iq.query capability gate. This app does NOT declare iq.query, so every call returns capability_denied."

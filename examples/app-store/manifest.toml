@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "app-store"
+type = "app"
 name = "App Store"
 version = "1.0.0"
 description = "Browse, install, update, and export Plexi apps. Phase 3 of #308."

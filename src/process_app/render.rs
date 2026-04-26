@@ -382,7 +382,13 @@ pub(super) fn render_draw_commands(
             | DrawCommand::ScheduleRender { .. }
             | DrawCommand::SetTimer { .. }
             | DrawCommand::CancelTimer { .. }
-            | DrawCommand::CopyToClipboard { .. } => {}
+            | DrawCommand::CopyToClipboard { .. }
+            // AppendConversation is consumed by the host's agent-pane conversation
+            // history surface (issue #285); it never paints into the draw canvas.
+            // The host integration (forthcoming follow-up PR) drains it from the
+            // command stream before this painter sees it; this arm is the safety
+            // net for the wire-only landing.
+            | DrawCommand::AppendConversation { .. } => {}
         }
     }
 

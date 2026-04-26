@@ -16,6 +16,7 @@
 
 use std::sync::mpsc;
 
+use crate::app_protocol::IqMessage;
 use crate::plexi_iq::backend::{LlmBackend, LlmError, LlmRequest, StreamEvent};
 
 /// Outcome of a completed turn.
@@ -54,16 +55,20 @@ impl std::fmt::Display for TurnError {
 /// Synchronous — blocks until the backend delivers `StreamEvent::Done` or
 /// `StreamEvent::Error`. For UI use, call from a dedicated worker thread.
 ///
+/// `messages` is the full structured conversation history (Anthropic shape:
+/// alternating user/assistant turns). Multi-turn conversations now flow
+/// natively through this path — no flattening at the broker.
+///
 /// `on_token` is called with each text chunk as it arrives. Pass a no-op
 /// closure if streaming is not needed (e.g. in tests).
 pub fn run_turn(
     backend: &dyn LlmBackend,
-    prompt: impl Into<String>,
+    messages: Vec<IqMessage>,
     system: impl Into<String>,
     mut on_token: impl FnMut(&str),
 ) -> Result<TurnResult, TurnError> {
     let request = LlmRequest {
-        prompt: prompt.into(),
+        messages,
         system: system.into(),
     };
 

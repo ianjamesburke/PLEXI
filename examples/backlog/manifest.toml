@@ -2,6 +2,7 @@ schema_version = 1
 
 [app]
 id = "backlog"
+type = "app"
 name = "Backlog"
 version = "0.1.0"
 description = "Browse, preview, open, archive, and delete .plexi/backlog items."

@@ -95,19 +95,45 @@ async fn stream_native(
 
     let client = async_anthropic::Client::from_api_key(api_key);
 
-    let user_msg = match MessageBuilder::default()
-        .role(MessageRole::User)
-        .content(request.prompt.as_str())
-        .build()
-    {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format!(
-                "failed to build user message: {e}"
-            )));
-            return;
-        }
-    };
+    // Translate the structured `IqMessage` array directly to the Anthropic
+    // SDK's `Message` shape. Empty array is a programmer error; surface it
+    // loudly rather than silently calling the API with no messages.
+    if request.messages.is_empty() {
+        let _ = tx.send(StreamEvent::Error(
+            "LlmRequest.messages is empty — backend requires at least one message"
+                .to_string(),
+        ));
+        return;
+    }
+
+    let mut api_messages = Vec::with_capacity(request.messages.len());
+    for m in &request.messages {
+        let role = match m.role.as_str() {
+            "user" => MessageRole::User,
+            "assistant" => MessageRole::Assistant,
+            other => {
+                let _ = tx.send(StreamEvent::Error(format!(
+                    "unsupported message role '{other}' (expected 'user' or 'assistant')"
+                )));
+                return;
+            }
+        };
+        let built = match MessageBuilder::default()
+            .role(role)
+            .content(m.content.as_str())
+            .build()
+        {
+            Ok(msg) => msg,
+            Err(e) => {
+                let _ = tx.send(StreamEvent::Error(format!(
+                    "failed to build message (role={}): {e}",
+                    m.role
+                )));
+                return;
+            }
+        };
+        api_messages.push(built);
+    }
 
     // Build the request. The system prompt field takes `&str`, so we keep a
     // local binding for the string value before starting the builder chain.
@@ -115,7 +141,7 @@ async fn stream_native(
     let api_request = {
         let mut b = CreateMessagesRequestBuilder::default();
         b.model(model);
-        b.messages(vec![user_msg]);
+        b.messages(api_messages);
         if !system_str.is_empty() {
             b.system(system_str.as_str());
         }
