@@ -124,6 +124,18 @@ When the user says "promote alpha":
 
 If any step fails, the promotion is aborted. Fix lands on alpha first, then the promotion is re-attempted.
 
+## POC test apps (mandatory for user-visible features)
+
+Every PR that ships a user-visible host or SDK capability — secret management, capability gates, lifecycle indicators, MIDI/audio plumbing, `--plexi` flag, etc. — must also drop or extend a small **proof-of-concept app** under `examples/<feature>-test/` that exercises the new surface end-to-end.
+
+- The POC app installs via `just install-alpha` and shows up in the command palette automatically.
+- The PR's **Human verification** checklist references the POC app by name. The user opens the app and clicks through; no test scaffolding required.
+- Pure protocol changes with no caller don't need one (rare). User-facing changes always do.
+- A natural showcase migration (e.g. #283 TextInput migrating into the existing `backlog` app) counts in lieu of a fresh POC, but the orchestrator must call it out in the brief.
+- POC apps are minimal: one or two panels, one or two buttons, surface the new behavior. Polish is wrong here; clarity is right. They live as siblings of production examples under `examples/`.
+
+If a sub-agent ships a feature without a POC app, the orchestrator files a follow-up issue for the missing POC and tracks it in `docs/specs/releases/pending-verification.md` until landed. Don't merge a feature where the user can't see it.
+
 ## PR description template
 
 Every PR opened by a sub-agent must use this shape:
