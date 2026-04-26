@@ -4,6 +4,14 @@ Items merged to alpha that haven't yet been visually/manually confirmed by the u
 
 Newest at the top. Completed items get archived to `DEV_LOG.md` as part of the next release-level verification gate.
 
+## POC test app gaps (retroactive — pre-rule features)
+
+Items that shipped before the "every user-visible feature ships a POC app" rule was codified. Each needs a small `examples/<feature>-test/` follow-up so the user can verify without manually setting up scaffolding:
+
+- [ ] **#316 lifecycle pill** — needs `examples/lifecycle-tester/` with one-click buttons: "crash now" (raise), "hang now" (infinite loop), "spam malformed JSON", "exit cleanly".
+- [ ] **#287 directory-scoped registry** — needs `examples/.plexi-registry-tester/` (or a docs page in `docs/`) showing how to drop a manifest into a workspace's `.plexi/apps/` and have it appear. Probably just docs + a sample manifest, not a runtime app.
+- [ ] **#322 workspace secret routing** *(in flight — sub-agent will not include the POC since the brief predates the rule)* — needs `examples/secrets-routing-tester/` post-merge: declares `[secrets] FOO_KEY = required` in its manifest, has a "fetch" button that calls `ctx.secret('FOO_KEY')` and displays the resolved value plus which Keychain entry was used.
+
 ## Pending
 
 - [ ] **2026-04-25 — PR #327 (`e3c7f06`) — directory-scoped registry (#287).** Create `~/work-test/.plexi/apps/test-app/manifest.toml` with a valid manifest. Launch Plexi Alpha from `~/work-test/`. test-app appears in command palette. Same id present globally — local wins; an `info` line `shadows global entry from …` appears in `~/.plexi-alpha/plexi.log`. Launch from `~/`; local app gone, global apps still work. Drop `.plexi/agents/test-agent/manifest.toml`; agent is discoverable.
