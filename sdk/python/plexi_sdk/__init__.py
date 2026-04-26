@@ -159,6 +159,21 @@ thread if the app needs to stay interactive).
   ctx.notify_input(title, prompt="", body="", required=False, priority=...) -> str
       Blocking text input. Returns the typed string, or "__cancel__".
 
+  ctx.notify_with_image(title, body, image_bytes, mime, priority=...,
+                        choices=None) -> str | None
+      Convenience wrapper that handles base64 encoding + 50 KB cap.
+      `image_bytes` > 50 KB raises ValueError locally. With `choices=None`
+      this is fire-and-forget (returns None); with `choices` set it routes
+      to notify_choice and blocks for the user's pick. `mime` must be
+      "image/png" or "image/jpeg".
+
+Image attachments (#74) — pass `image_inline={"mime", "base64"}` to any of
+the notify* methods, or use `notify_with_image` for the convenience wrap.
+Inline images cap at 50 KB decoded; oversized images render a placeholder
+badge instead of the bitmap. The `image_pipe_id` field is reserved for a
+future host-side rendering primitive — apps cannot publish frames through
+it today. Use the inline path for now.
+
 Priority — required kwarg on every call. Use the named constants:
 
   PRIORITY_LOW      = 0     Background info. Stacks at the bottom of the queue.
@@ -538,7 +553,9 @@ class Emitter:
     # the user chooses whether to be interrupted across contexts.
     def notify(self, title: str, body: str = "", level: str = "info",
                priority: int | None = None,
-               actions: list | None = None) -> None:
+               actions: list | None = None,
+               image_inline: dict | None = None,
+               image_pipe_id: str | None = None) -> None:
         """Post a message notification. The modal shows title + body and a
         single Acknowledge button; Enter / Space acknowledge, Esc dismisses
         (unless required=True — use `notify_and_wait` for that flow).
@@ -546,25 +563,40 @@ class Emitter:
         `priority` is required (int, higher = more urgent).
         `actions` is the legacy side-effect list (action_type =
         resume_run | open_intent | run_command). It does NOT render UI.
+        `image_inline` (#74): {"mime": "image/png"|"image/jpeg",
+        "base64": str}. Decoded host-side; >50KB triggers a placeholder.
+        `image_pipe_id` (#74): pipe id of a binary ring carrying RGBA frames
+        prefixed with width/height u32-LE. Mutually exclusive with
+        `image_inline` — host warns + drops the pipe ref if both set.
         """
         if priority is None:
             raise TypeError("notify() requires 'priority' (int, higher = more urgent)")
-        _emit({"type": "notify", "level": level, "title": title,
-               "body": body, "kind": "message",
-               "priority": int(priority),
-               "actions": actions or []})
+        payload = {"type": "notify", "level": level, "title": title,
+                   "body": body, "kind": "message",
+                   "priority": int(priority),
+                   "actions": actions or []}
+        if image_inline is not None:
+            payload["image_inline"] = image_inline
+        if image_pipe_id is not None:
+            payload["image_pipe_id"] = image_pipe_id
+        _emit(payload)
 
     # kind = "choice"
     def notify_choice(self, title: str, options: list, body: str = "",
                       level: str = "info", required: bool = False,
-                      priority: int | None = None) -> str:
+                      priority: int | None = None,
+                      image_inline: dict | None = None,
+                      image_pipe_id: str | None = None) -> str:
         """Post a choice notification and block until the user picks one.
 
         `options` is a list of dicts: {"label": str, "value": str (optional),
         "shortcut": str (optional, single char)}. If `value` is omitted, the
-        label is returned.
+        label is returned. Issue #74's structured-choice spec maps directly:
+        `key` → `shortcut`, `payload` → `value`.
 
         `priority` is required (int, higher = more urgent).
+        `image_inline` (#74): {"mime", "base64"} — same shape as `notify`.
+        `image_pipe_id` (#74): pipe id of a binary ring carrying RGBA frames.
         Returns the chosen option's value (or the label if no value set). If
         `required=False` the user may cancel with Esc — this returns the string
         `"__cancel__"`.
@@ -575,11 +607,61 @@ class Emitter:
         notify_id = str(uuid.uuid4())
         q: "queue.Queue[str]" = queue.Queue()
         self._app._pending_notify[notify_id] = q
-        _emit({"type": "notify", "level": level, "title": title, "body": body,
-               "kind": "choice", "options": options, "required": required,
-               "priority": int(priority),
-               "notify_id": notify_id})
+        payload = {"type": "notify", "level": level, "title": title, "body": body,
+                   "kind": "choice", "options": options, "required": required,
+                   "priority": int(priority),
+                   "notify_id": notify_id}
+        if image_inline is not None:
+            payload["image_inline"] = image_inline
+        if image_pipe_id is not None:
+            payload["image_pipe_id"] = image_pipe_id
+        _emit(payload)
         return q.get()
+
+    # Convenience wrapper for the inline-image case (#74). Handles base64
+    # encoding + size-cap enforcement client-side so we never spend wire
+    # bytes on payloads the host will only reject.
+    def notify_with_image(self, title: str, body: str, image_bytes: bytes,
+                          mime: str, level: str = "info",
+                          priority: int | None = None,
+                          choices: list | None = None) -> str | None:
+        """Post a notification with an inline base64-encoded image attachment.
+
+        `image_bytes` must be ≤ 50_000 bytes — anything larger raises
+        `ValueError` here so the app sees a fast, local failure instead of
+        having the host silently render a placeholder. Use the pipe-ref
+        path (`emit.notify(..., image_pipe_id=...)`) for larger images.
+
+        `mime` must be `"image/png"` or `"image/jpeg"`.
+
+        `choices` is optional. When None this posts a fire-and-forget
+        message-kind notification (returns None). When set, this routes to
+        `notify_choice` and blocks until the user picks one (returns the
+        chosen value, or `"__cancel__"`).
+        """
+        if priority is None:
+            raise TypeError("notify_with_image() requires 'priority' (int, higher = more urgent)")
+        if mime not in ("image/png", "image/jpeg"):
+            raise ValueError(f"notify_with_image() mime must be image/png or image/jpeg, got {mime!r}")
+        # 50 KB cap: matches the host's `MAX_INLINE_IMAGE_BYTES`. Apps that
+        # exceed this should use the pipe-ref path. Failing locally is the
+        # least surprising behaviour.
+        MAX_INLINE_BYTES = 50 * 1024
+        if len(image_bytes) > MAX_INLINE_BYTES:
+            raise ValueError(
+                f"notify_with_image(): image is {len(image_bytes)} bytes, "
+                f"exceeds {MAX_INLINE_BYTES}-byte cap. Use image_pipe_id for large images."
+            )
+        import base64
+        encoded = base64.standard_b64encode(image_bytes).decode("ascii")
+        image_inline = {"mime": mime, "base64": encoded}
+        if choices is None:
+            self.notify(title=title, body=body, level=level,
+                        priority=priority, image_inline=image_inline)
+            return None
+        return self.notify_choice(title=title, options=choices, body=body,
+                                  level=level, priority=priority,
+                                  image_inline=image_inline)
 
     # kind = "input"
     def notify_input(self, title: str, prompt: str = "", body: str = "",
@@ -1531,23 +1613,43 @@ class RenderContext:
 
     def notify(self, title: str, body: str = "", level: str = "info",
                priority: int | None = None,
-               actions: list | None = None) -> None:
+               actions: list | None = None,
+               image_inline: dict | None = None,
+               image_pipe_id: str | None = None) -> None:
         """Post a message notification. See Emitter.notify.
         `priority` is required (int, higher = more urgent).
+        `image_inline` / `image_pipe_id` (#74) optionally attach an image.
         Scope is resolved from the app's manifest — not an argument."""
         self.emit.notify(title=title, body=body, level=level,
-                         priority=priority, actions=actions)
+                         priority=priority, actions=actions,
+                         image_inline=image_inline, image_pipe_id=image_pipe_id)
 
     def notify_choice(self, title: str, options: list, body: str = "",
                       level: str = "info", required: bool = False,
-                      priority: int | None = None) -> str:
+                      priority: int | None = None,
+                      image_inline: dict | None = None,
+                      image_pipe_id: str | None = None) -> str:
         """Post a choice notification and block until the user picks.
         `priority` is required (int, higher = more urgent).
+        `image_inline` / `image_pipe_id` (#74) optionally attach an image.
         Returns the chosen option's value (or label if no value set),
         or "__cancel__" if the user dismissed."""
         return self.emit.notify_choice(title=title, options=options, body=body,
                                        level=level, required=required,
-                                       priority=priority)
+                                       priority=priority,
+                                       image_inline=image_inline,
+                                       image_pipe_id=image_pipe_id)
+
+    def notify_with_image(self, title: str, body: str, image_bytes: bytes,
+                          mime: str, level: str = "info",
+                          priority: int | None = None,
+                          choices: list | None = None) -> "str | None":
+        """Convenience: post a notification with an inline base64 image.
+        See Emitter.notify_with_image — handles base64 + 50KB cap."""
+        return self.emit.notify_with_image(title=title, body=body,
+                                           image_bytes=image_bytes, mime=mime,
+                                           level=level, priority=priority,
+                                           choices=choices)
 
     def notify_input(self, title: str, prompt: str = "", body: str = "",
                      level: str = "info", required: bool = False,

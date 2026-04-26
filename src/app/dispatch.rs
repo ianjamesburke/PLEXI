@@ -124,6 +124,8 @@ impl PlexiApp {
                         input_prompt,
                         required,
                         priority,
+                        image_inline,
+                        image_pipe_id,
                         ..
                     } => {
                         deferred.push(AppCommand::ShowNotification {
@@ -139,6 +141,8 @@ impl PlexiApp {
                             required,
                             priority,
                             scope: resolved_scope,
+                            image_inline,
+                            image_pipe_id,
                         });
                     }
                     AppCommand::DeliverNotifyAction { .. } => deferred.push(cmd),

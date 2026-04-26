@@ -75,6 +75,15 @@ pub enum AppCommand {
         /// Visibility scope. `Global` notifications are always visible;
         /// `Context` notifications are only visible in their source context.
         scope: crate::app_protocol::NotifyScope,
+        /// Inline base64-encoded image attachment (#74). Decoded + cached
+        /// into a texture on first render. Decoded size > 50 KB triggers a
+        /// placeholder badge instead — never crash the host on bad input.
+        image_inline: Option<crate::app_protocol::NotificationImage>,
+        /// Pipe-referenced image (#74). Drained from the binary ring lazily
+        /// when the notification is visible. Layout: `width: u32 LE`,
+        /// `height: u32 LE`, then RGBA bytes. Mutually exclusive with
+        /// `image_inline` — if both set, inline wins.
+        image_pipe_id: Option<String>,
     },
     /// Route a NotifyAction event back to the app pane that sent the Notify.
     DeliverNotifyAction {
