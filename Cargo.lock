@@ -2965,7 +2965,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
-name = "plexi-alpha"
+name = "plexi"
 version = "3.0.0-beta.1"
 dependencies = [
  "async-anthropic",
@@ -2997,6 +2997,7 @@ dependencies = [
  "tokio-stream",
  "toml",
  "ureq",
+ "uuid",
  "zeroize",
 ]
 
@@ -4433,6 +4434,17 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+
+[[package]]
+name = "uuid"
+version = "1.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
+dependencies = [
+ "getrandom 0.4.2",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "version_check"

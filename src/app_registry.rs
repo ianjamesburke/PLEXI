@@ -48,6 +48,21 @@ pub struct AppManifest {
     pub app: AppManifestApp,
     #[serde(default)]
     pub launch: LaunchSection,
+    /// Canonical secret names this app reads via `ctx.secret(...)`. The host
+    /// uses this to validate workspace routes at launch and to surface the
+    /// missing-secret modal proactively. Empty when omitted.
+    #[serde(default)]
+    pub secrets: HashMap<String, SecretDecl>,
+}
+
+/// A `[secrets]` table entry from manifest.toml. `required` is **required**
+/// (no serde default) — apps must explicitly state whether the host should
+/// block on the missing-secret modal at launch.
+#[derive(Deserialize, Debug, Clone)]
+pub struct SecretDecl {
+    pub required: bool,
+    #[serde(default)]
+    pub description: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -183,6 +198,10 @@ impl RegistrySource {
 pub struct InstalledApp {
     pub manifest: AppManifestApp,
     pub launch: LaunchSection,
+    /// Canonical secret names this app declares in its `[secrets]` table
+    /// (issue #322). Used by the host to validate workspace routes and
+    /// surface the missing-secret prompt at first launch.
+    pub secrets: HashMap<String, SecretDecl>,
     pub bin_path: PathBuf,
     /// Which discovery layer this entry came from. Set by `scan_dir`; the
     /// value returned by `load_app` is a placeholder and is overwritten at
@@ -342,14 +361,25 @@ impl AppRegistry {
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
+        for (name, decl) in &manifest.secrets {
+            log::info!(
+                "AppRegistry: {} declares secret '{name}' (required={}, description=\"{}\")",
+                manifest.app.id,
+                decl.required,
+                decl.description,
+            );
+        }
+
         Ok(InstalledApp {
             manifest: manifest.app,
             launch: manifest.launch,
+            secrets: manifest.secrets,
             bin_path,
             // Placeholder — `scan_dir` overwrites this with the real source.
             source: RegistrySource::Global,
         })
     }
+
 
     /// List all installed apps.
     pub fn list(&self) -> Vec<&InstalledApp> {
@@ -410,6 +440,23 @@ impl AppRegistry {
         let caps = perms.capabilities.clone();
         let keyboard_capture = installed.launch.keyboard_capture;
         let default_scope = self.default_notification_scope_for(id);
+
+        // Issue #322: log declared-but-routed status for visibility. The
+        // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
+        // this just makes the manifest's contract observable in the host log.
+        if !installed.secrets.is_empty() {
+            let required: Vec<&str> = installed
+                .secrets
+                .iter()
+                .filter(|(_, d)| d.required)
+                .map(|(k, _)| k.as_str())
+                .collect();
+            log::info!(
+                "AppRegistry: launching '{id}' with declared secrets {:?} (required: {:?})",
+                installed.secrets.keys().collect::<Vec<_>>(),
+                required,
+            );
+        }
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),

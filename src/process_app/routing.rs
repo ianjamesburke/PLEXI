@@ -70,25 +70,101 @@ impl ProcessApp {
 
                 #[cfg(target_os = "macos")]
                 {
-                    match crate::secrets::get_secret_scoped(
-                        &key,
-                        &self.type_id,
-                        &self.workspace_root,
-                    ) {
-                        Some(value) => {
-                            self.outbound_events.push_back(PlexiEvent::SecretValue {
-                                key,
-                                value: Some(value.to_string()),
-                            });
-                        }
-                        None => {
-                            event_log::emit(HostEvent::SecretPrompted {
-                                app_id: self.type_id.clone(),
-                                key: key.clone(),
-                                timestamp: event_log::now_timestamp(),
-                            });
-                            self.pending_prompts
-                                .push_back(super::PendingPrompt::Secret { key });
+                    use crate::workspace_secrets::{
+                        resolve, MacKeychain, ResolveOutcome, WorkspaceConfig,
+                        WorkspaceSecrets,
+                    };
+                    // Step 0: load workspace.toml + secrets.toml. Both must
+                    // exist for routed lookup; missing either falls back to
+                    // the legacy global-scoped secrets path so that apps
+                    // running outside an initialized workspace still work
+                    // until the user runs `plexi workspace init`.
+                    let ws_cfg = WorkspaceConfig::load(&self.workspace_root)
+                        .ok()
+                        .flatten();
+                    let router = WorkspaceSecrets::load(&self.workspace_root)
+                        .map_err(|e| {
+                            log::error!(
+                                "ProcessApp[{}]: invalid {}/.plexi/secrets.toml: {e}",
+                                self.type_id,
+                                self.workspace_root.display()
+                            );
+                            e
+                        })
+                        .ok()
+                        .flatten();
+                    let store = MacKeychain::new();
+                    match (ws_cfg, router) {
+                        (Some(cfg), Some(r)) => match resolve(
+                            &cfg.id,
+                            &self.type_id,
+                            &key,
+                            &r,
+                            &store,
+                        ) {
+                            ResolveOutcome::Found(value) => {
+                                self.outbound_events.push_back(
+                                    PlexiEvent::SecretValue {
+                                        key,
+                                        value: Some(value.to_string()),
+                                    },
+                                );
+                            }
+                            ResolveOutcome::HardMissing { reason } => {
+                                log::warn!(
+                                    "ProcessApp[{}]: SecretGet '{key}' hard-missing: {reason}",
+                                    self.type_id
+                                );
+                                event_log::emit(HostEvent::SecretDenied {
+                                    app_id: self.type_id.clone(),
+                                    key: key.clone(),
+                                    reason: format!("hard_missing: {reason}"),
+                                    timestamp: event_log::now_timestamp(),
+                                });
+                                self.outbound_events.push_back(
+                                    PlexiEvent::SecretValue { key, value: None },
+                                );
+                            }
+                            ResolveOutcome::PromptUser => {
+                                event_log::emit(HostEvent::SecretPrompted {
+                                    app_id: self.type_id.clone(),
+                                    key: key.clone(),
+                                    timestamp: event_log::now_timestamp(),
+                                });
+                                self.pending_prompts.push_back(
+                                    super::PendingPrompt::Secret { key },
+                                );
+                            }
+                        },
+                        _ => {
+                            // No workspace config / router yet — fall back
+                            // to the legacy v3.0 path (workspace_root-keyed
+                            // single-namespace lookup). Logs the gap so the
+                            // user knows to run `plexi workspace init`.
+                            match crate::secrets::get_secret_scoped(
+                                &key,
+                                &self.type_id,
+                                &self.workspace_root,
+                            ) {
+                                Some(value) => {
+                                    self.outbound_events.push_back(
+                                        PlexiEvent::SecretValue {
+                                            key,
+                                            value: Some(value.to_string()),
+                                        },
+                                    );
+                                }
+                                None => {
+                                    event_log::emit(HostEvent::SecretPrompted {
+                                        app_id: self.type_id.clone(),
+                                        key: key.clone(),
+                                        timestamp: event_log::now_timestamp(),
+                                    });
+                                    self.pending_prompts.push_back(
+                                        super::PendingPrompt::Secret { key },
+                                    );
+                                }
+                            }
                         }
                     }
                 }
