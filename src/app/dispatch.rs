@@ -50,17 +50,35 @@ impl PlexiApp {
         let mut per_pane: Vec<(usize, u64, String, Vec<AppCommand>)> = Vec::new();
         for (ctx_idx, context) in self.contexts.iter_mut().enumerate() {
             for (pane_id, pane) in context.panes.iter_mut() {
-                let Some(app_pane) = pane.as_app_mut() else { continue };
-                // Active-context panes are already fully updated by ui() this frame.
-                // Non-active panes need a headless tick so their timer/async events
-                // reach the subprocess and control commands (notifications, etc.) flow out.
-                if ctx_idx != active {
-                    app_pane.runtime.background_tick();
+                if let Some(app_pane) = pane.as_app_mut() {
+                    // Active-context panes are already fully updated by ui()
+                    // this frame. Non-active panes need a headless tick so
+                    // timer/async events reach the subprocess and control
+                    // commands flow out.
+                    if ctx_idx != active {
+                        app_pane.runtime.background_tick();
+                    }
+                    let type_id = app_pane.runtime.type_id().to_string();
+                    let cmds = app_pane.runtime.take_pending_commands();
+                    if !cmds.is_empty() {
+                        per_pane.push((ctx_idx, *pane_id, type_id, cmds));
+                    }
+                    continue;
                 }
-                let type_id = app_pane.runtime.type_id().to_string();
-                let cmds = app_pane.runtime.take_pending_commands();
-                if !cmds.is_empty() {
-                    per_pane.push((ctx_idx, *pane_id, type_id, cmds));
+                // Subprocess agent panes (#286) — the agent emits AppCommands
+                // (e.g. AgentRosterGet, OpenDirectedPipe, DeliverPipeMessage)
+                // through its inner ProcessApp. Drain those here so the host
+                // dispatch loop sees them.
+                if let Some(agent_pane) = pane.as_agent_mut() {
+                    if let crate::agent_pane::AgentBackend::Subprocess(sub) =
+                        &mut agent_pane.backend
+                    {
+                        let type_id = sub.manifest_id.clone();
+                        let cmds = std::mem::take(&mut sub.process.pending_commands);
+                        if !cmds.is_empty() {
+                            per_pane.push((ctx_idx, *pane_id, type_id, cmds));
+                        }
+                    }
                 }
             }
         }
@@ -78,6 +96,8 @@ impl PlexiApp {
                 match cmd {
                     AppCommand::SpawnApp { .. }
                     | AppCommand::DeliverPipeMessage { .. }
+                    | AppCommand::OpenDirectedPipe { .. }
+                    | AppCommand::AgentRosterGet { .. }
                     | AppCommand::DeliverRunUpdate { .. } => deferred.push(cmd),
                     AppCommand::CdRequest { cwd, .. } => {
                         deferred.push(AppCommand::CdRequest { cwd, sender_pane_id: pane_id });

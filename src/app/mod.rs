@@ -127,6 +127,12 @@ pub struct PlexiApp {
     /// Parked background ProcessApps — kept alive when their pane is closed.
     /// Keyed by app type_id. Re-attached by B3 when the app is reopened.
     pub(crate) background_apps: HashMap<String, Box<crate::process_app::ProcessApp>>,
+    /// Directed inter-agent / inter-app pipes (#286). Keyed by `pipe_id`,
+    /// value is the `(sender_pane_id, target_pane_id)` pair the host must
+    /// scope `PipeMessage` deliveries to. `DeliverPipeMessage` consults this
+    /// map first: hits route ONLY to the non-sender member of the pair;
+    /// misses fall back to the legacy peer-broadcast (`has_reader`) path.
+    pub(crate) directed_pipes: HashMap<String, (u64, u64)>,
 }
 
 impl PlexiApp {
@@ -366,6 +372,7 @@ impl PlexiApp {
                     host,
                     host_services: crate::host::services::HostServices::new(),
                     background_apps: HashMap::new(),
+                    directed_pipes: HashMap::new(),
                 };
             }
         }
@@ -438,6 +445,7 @@ impl PlexiApp {
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
+            directed_pipes: HashMap::new(),
         }
     }
 
@@ -869,6 +877,41 @@ impl eframe::App for PlexiApp {
                 }
                 AppCommand::DeliverPipeMessage { sender_pane_id, pipe_id, payload } => {
                     let active = self.active_context;
+                    // Directed pipe (#286) — only the non-sender member of
+                    // the pair receives. Falls through to the legacy peer
+                    // broadcast when the pipe was not opened directed.
+                    if let Some(&(a, b)) = self.directed_pipes.get(&pipe_id) {
+                        let target_pid = if sender_pane_id == a {
+                            Some(b)
+                        } else if sender_pane_id == b {
+                            Some(a)
+                        } else {
+                            // Neither side — wire mismatch. Log + drop.
+                            log::warn!(
+                                "DeliverPipeMessage: directed pipe '{pipe_id}' \
+                                 sender {sender_pane_id} not in pair ({a}, {b}); dropping"
+                            );
+                            None
+                        };
+                        if let Some(tid) = target_pid {
+                            if let Some(pane) = self.contexts[active].panes.get_mut(&tid) {
+                                let event = crate::app_protocol::PlexiEvent::PipeMessage {
+                                    pipe_id: pipe_id.clone(),
+                                    payload: payload.clone(),
+                                };
+                                if let Some(app) = pane.as_app_mut() {
+                                    app.runtime.queue_outbound_event(event);
+                                } else if let Some(agent) = pane.as_agent_mut() {
+                                    if let crate::agent_pane::AgentBackend::Subprocess(sub) =
+                                        &mut agent.backend
+                                    {
+                                        sub.process.queue_outbound_event_direct(event);
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
                     for pid in pane_ids {
                         if pid == sender_pane_id {
@@ -895,6 +938,78 @@ impl eframe::App for PlexiApp {
                                         },
                                     );
                                 }
+                            }
+                        }
+                    }
+                }
+                AppCommand::OpenDirectedPipe {
+                    sender_pane_id,
+                    pipe_id,
+                    target_pane_id,
+                } => {
+                    // Subscribe both sides + record the pair so subsequent
+                    // `DeliverPipeMessage` for this pipe routes ONLY between
+                    // them (#286). The sender already registered the pipe
+                    // locally inside its own ProcessApp; we need to register
+                    // it on the target so its `has_reader` returns true and
+                    // its SDK has a Pipe handle if it sends in reverse.
+                    let active = self.active_context;
+                    let target_kind = self.contexts[active]
+                        .panes
+                        .get(&target_pane_id)
+                        .map(|p| match p {
+                            crate::pane::Pane::Agent(_) => "agent",
+                            crate::pane::Pane::App(_) => "app",
+                            crate::pane::Pane::Terminal(_) => "terminal",
+                        });
+                    match target_kind {
+                        Some("agent") | Some("app") => {
+                            // Register pipe on target's registry so it can
+                            // PipeSend back through the same id.
+                            let registered = if let Some(pane) =
+                                self.contexts[active].panes.get_mut(&target_pane_id)
+                            {
+                                register_directed_pipe_on_target(pane, &pipe_id)
+                            } else {
+                                false
+                            };
+                            if !registered {
+                                log::warn!(
+                                    "OpenDirectedPipe: failed to register '{pipe_id}' on target {target_pane_id}"
+                                );
+                                continue;
+                            }
+                            self.directed_pipes
+                                .insert(pipe_id.clone(), (sender_pane_id, target_pane_id));
+                            log::info!(
+                                "OpenDirectedPipe: '{pipe_id}' subscribed pane {sender_pane_id} ↔ pane {target_pane_id}"
+                            );
+                        }
+                        Some(other) => log::warn!(
+                            "OpenDirectedPipe: target {target_pane_id} is a {other}; expected agent/app — pipe '{pipe_id}' not subscribed"
+                        ),
+                        None => log::warn!(
+                            "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped"
+                        ),
+                    }
+                }
+                AppCommand::AgentRosterGet { sender_pane_id, request_id } => {
+                    let active = self.active_context;
+                    let agents = crate::agent_pane::enumerate_agents(
+                        self.contexts[active].panes.values(),
+                    );
+                    let event = crate::app_protocol::PlexiEvent::AgentRoster {
+                        request_id,
+                        agents,
+                    };
+                    if let Some(pane) = self.contexts[active].panes.get_mut(&sender_pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            app.runtime.queue_outbound_event(event);
+                        } else if let Some(agent) = pane.as_agent_mut() {
+                            if let crate::agent_pane::AgentBackend::Subprocess(sub) =
+                                &mut agent.backend
+                            {
+                                sub.process.queue_outbound_event_direct(event);
                             }
                         }
                     }
@@ -1725,6 +1840,47 @@ impl PlexiApp {
             }
         } else {
             raw
+        }
+    }
+}
+
+// ── Directed pipe helpers (#286) ─────────────────────────────────────────────
+
+/// Register a duplex JSON pipe on the target pane's typed-pipe registry so
+/// `has_reader` returns `true` and the SDK can `pipe_send` back through the
+/// same id. Returns `true` on success, `false` if the target pane has no
+/// process-app registry to register against (terminals — should never reach
+/// this path; logged at the call site).
+fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str) -> bool {
+    use crate::typed_pipes::PipeDirection;
+    let registry = match pane {
+        crate::pane::Pane::App(app) => match &app.runtime {
+            crate::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
+            crate::pane::AppRuntime::Builtin(_) => None,
+        },
+        crate::pane::Pane::Agent(agent) => match &agent.backend {
+            crate::agent_pane::AgentBackend::Subprocess(sub) => {
+                Some(sub.process.pipe_registry.clone())
+            }
+            crate::agent_pane::AgentBackend::InProcess(_) => None,
+        },
+        crate::pane::Pane::Terminal(_) => None,
+    };
+    let Some(registry) = registry else {
+        return false;
+    };
+    let result = registry
+        .lock()
+        .unwrap()
+        .open_json(pipe_id.to_string(), PipeDirection::Duplex);
+    match result {
+        Ok(()) => true,
+        // Already open is acceptable — agents may have called `pipe_open` or
+        // received a prior directed pipe with the same id; treat as success.
+        Err(crate::typed_pipes::PipeError::AlreadyOpen(_)) => true,
+        Err(e) => {
+            log::warn!("register_directed_pipe_on_target: open_json failed: {e}");
+            false
         }
     }
 }

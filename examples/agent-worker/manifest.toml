@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "agent-worker"
+type = "agent"
+name = "Agent Worker"
+version = "0.1.0"
+description = "POC for #286 — focused worker agent that replies to delegated requests over inter-agent pipes."
+entry = "agent_worker.py"
+
+[app.capabilities]
+capabilities = ["iq.query", "pipe.open"]
+
+[launch]
+system_prompt = "You are a focused, terse worker agent. You receive delegated requests from a coordinator agent over a JSON pipe. Reply in one sentence, plain text only."

@@ -393,7 +393,13 @@ pub(super) fn render_draw_commands(
             // The host integration (forthcoming follow-up PR) drains it from the
             // command stream before this painter sees it; this arm is the safety
             // net for the wire-only landing.
-            | DrawCommand::AppendConversation { .. } => {}
+            | DrawCommand::AppendConversation { .. }
+            // PipeOpenDirected and AgentRosterGet are control commands routed
+            // by `route_command`; they never paint and the painter sees them
+            // only as a safety net (the dispatcher should already have peeled
+            // them off via the routing path).
+            | DrawCommand::PipeOpenDirected { .. }
+            | DrawCommand::AgentRosterGet { .. } => {}
         }
     }
 

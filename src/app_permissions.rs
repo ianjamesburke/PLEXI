@@ -51,6 +51,11 @@ pub enum Capability {
     /// host CoreMIDI broker (#320). Per-port; the SendMidi dispatch validates
     /// the gate.
     MidiOut,
+    /// Query the workspace-scoped agent roster (`agents.list`, #286). Allows an
+    /// app to discover other live agent panes via `DrawCommand::AgentRosterGet`.
+    /// Apps without this capability receive an EMPTY roster (per spec) — not
+    /// a denial error. Pair with `pipe.open` to open directed inter-agent pipes.
+    AgentsList,
 }
 
 impl fmt::Display for Capability {
@@ -76,6 +81,7 @@ impl Capability {
             Self::IqQuery => "iq.query",
             Self::MidiIn => "midi.in",
             Self::MidiOut => "midi.out",
+            Self::AgentsList => "agents.list",
         }
     }
 }
@@ -113,6 +119,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "iq.query" => Ok(Self::IqQuery),
             "midi.in" => Ok(Self::MidiIn),
             "midi.out" => Ok(Self::MidiOut),
+            "agents.list" => Ok(Self::AgentsList),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -222,6 +229,29 @@ mod tests {
         );
         assert!(matches!(
             check(&perms, Capability::IqQuery),
+            PermissionCheck::Allowed
+        ));
+    }
+
+    #[test]
+    fn agents_list_capability_recognized() {
+        // The new v3.3 P2 capability (#286) must round-trip through
+        // `Capability::try_from` / `as_str` and end up in the granted set
+        // when declared. Note: the *runtime* contract for an undeclared
+        // `agents.list` is "empty roster" (not denial) — that is enforced
+        // in the routing layer, not here. This test pins only the parser
+        // layer recognising the capability string.
+        let parsed = Capability::try_from("agents.list").expect("agents.list must parse");
+        assert_eq!(parsed, Capability::AgentsList);
+        assert_eq!(parsed.as_str(), "agents.list");
+
+        let perms = AppPermissions::from_capability_strings(&["agents.list".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::AgentsList),
+            "agents.list must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::AgentsList),
             PermissionCheck::Allowed
         ));
     }
