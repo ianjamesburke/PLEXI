@@ -250,6 +250,8 @@ impl ProcessApp {
                 actions,
                 notify_id,
                 priority,
+                image_inline,
+                image_pipe_id,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
@@ -331,6 +333,19 @@ impl ProcessApp {
                 // provided (enables NotifyAction round-trips), otherwise use the auto-
                 // generated notif_id so the panel entry is always created.
                 let panel_id = notify_id.unwrap_or_else(|| notif_id.clone());
+                // Mutually exclusive image attachments — inline wins. Loud
+                // warn when both set so SDK users notice and clean up the
+                // call site rather than silently shipping ambiguous data.
+                let (image_inline, image_pipe_id) = match (image_inline, image_pipe_id) {
+                    (Some(inline), Some(pipe_id)) => {
+                        log::warn!(
+                            "ProcessApp[{}]: Notify '{title}' has both image_inline and image_pipe_id='{pipe_id}'; inline wins, pipe ignored",
+                            self.type_id
+                        );
+                        (Some(inline), None)
+                    }
+                    pair => pair,
+                };
                 self.pending_commands.push(AppCommand::ShowNotification {
                     notify_id: panel_id,
                     sender_pane_id: 0, // stamped by dispatch.rs with the real pane_id
@@ -347,6 +362,8 @@ impl ProcessApp {
                     // manifest-declared default for this app's type_id.
                     // Apps never set scope; users control it via manifest.
                     scope: crate::app_protocol::NotifyScope::Context,
+                    image_inline,
+                    image_pipe_id,
                 });
                 // `actions` intentionally dropped: they were already processed
                 // as server-side side effects above (resume_run / open_intent /

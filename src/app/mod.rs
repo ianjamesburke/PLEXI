@@ -1,5 +1,6 @@
 mod canvas_bindings;
 mod dispatch;
+pub(crate) mod notification_image;
 mod sync;
 
 /// Which layer currently owns keyboard input.
@@ -42,6 +43,30 @@ pub(crate) struct PendingNotification {
     pub priority: u32,
     /// Visibility scope. Affects which contexts the notification appears in.
     pub scope: crate::app_protocol::NotifyScope,
+    /// Optional inline image attachment (#74). Decoded lazily on first
+    /// render; oversized payloads (> 50 KB decoded) surface a placeholder
+    /// instead of decoding. The decoded texture is cached separately on
+    /// `PlexiApp::notification_images` keyed by `notify_id` — this struct
+    /// stays Clone-cheap (no GPU handles inside it).
+    pub image_inline: Option<crate::app_protocol::NotificationImage>,
+    /// Optional pipe-referenced image attachment (#74). The host drains the
+    /// matching binary ring on first render and caches the texture under
+    /// `PlexiApp::notification_images`.
+    pub image_pipe_id: Option<String>,
+}
+
+/// Render state for a notification's image attachment. Computed once and
+/// cached on `PlexiApp::notification_images` keyed by `notify_id`.
+#[derive(Clone)]
+pub(crate) enum NotificationImageState {
+    /// Image is ready to draw. `(handle, w, h)`.
+    Ready(egui::TextureHandle, u32, u32),
+    /// Decoded payload exceeded the 50 KB cap, or decoding failed; render a
+    /// placeholder badge with the explanation in `reason`.
+    Placeholder { reason: String },
+    /// Pipe pending — no frame yet drained from the binary ring. Render
+    /// nothing this frame; retry next frame.
+    Pending,
 }
 
 use crate::app_registry::AppRegistry;
@@ -113,6 +138,14 @@ pub struct PlexiApp {
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
+    /// Lazily-decoded image-render state for notifications that carry an
+    /// `image_inline` or `image_pipe_id` attachment (#74). Keyed by
+    /// `notify_id`. Populated on first render of the notification; entries
+    /// are NOT explicitly evicted on dismiss — egui's TextureHandle drop
+    /// cleanup, plus the small upper bound on concurrent visible
+    /// notifications, makes this acceptable. A future PR can add eviction
+    /// if memory becomes a concern.
+    pub(crate) notification_images: HashMap<String, NotificationImageState>,
     /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
     pub(crate) notifications_enabled: bool,
     pub(crate) notifications_focus_mode: bool,
@@ -407,6 +440,7 @@ impl PlexiApp {
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
                     modal_state_notify_id: String::new(),
+                    notification_images: HashMap::new(),
                     notifications_enabled,
                     notifications_focus_mode,
                     notifications_interrupt_threshold,
@@ -480,6 +514,7 @@ impl PlexiApp {
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
             modal_state_notify_id: String::new(),
+            notification_images: HashMap::new(),
             notifications_enabled,
             notifications_focus_mode,
             notifications_interrupt_threshold,
@@ -556,6 +591,8 @@ impl PlexiApp {
                 input_prompt: None,
                 required: false,
                 priority: 0,
+                image_inline: None,
+                image_pipe_id: None,
             });
             // Host-originated notifications are always LOW (priority 0) —
             // below any reasonable interrupt threshold — so they queue
@@ -854,6 +891,8 @@ impl eframe::App for PlexiApp {
                     required,
                     priority,
                     scope,
+                    image_inline,
+                    image_pipe_id,
                 } => {
                     if !self.notifications_enabled {
                         // Silently drop — master switch off.
@@ -876,6 +915,8 @@ impl eframe::App for PlexiApp {
                         required,
                         priority,
                         scope,
+                        image_inline,
+                        image_pipe_id,
                     });
                     // Auto-open rules:
                     //   1. Visibility (Global or in active context) — else

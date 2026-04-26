@@ -513,6 +513,7 @@ impl PlexiApp {
     ///   Enter        — submit (only if non-empty OR `required == false`)
     pub(crate) fn draw_notification_modal(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         use crate::app_protocol::NotifyKind;
+        use crate::app::notification_image;
 
         let mut cmds: Vec<AppCommand> = Vec::new();
 
@@ -561,6 +562,12 @@ impl PlexiApp {
             self.modal_focused_option = 0;
             self.modal_input_buffer.clear();
         }
+
+        // Resolve the image attachment (#74) once per frame, before borrowing
+        // any other `self` field into the egui closure. `notification_image::resolve`
+        // is idempotent — it caches into `self.notification_images` keyed by
+        // `notify_id`, so subsequent frames reuse the same TextureHandle.
+        let image_state = notification_image::resolve(self, ctx, &notif);
 
         let screen_rect = ctx.screen_rect();
 
@@ -766,6 +773,18 @@ impl PlexiApp {
                                         .size(style::TEXT_BODY)
                                         .color(self.colors.text_primary),
                                 );
+                            });
+                        }
+
+                        // Image attachment (#74) — renders above the
+                        // kind-specific body / action buttons. Sized to fit
+                        // the modal width with aspect ratio preserved, max
+                        // height 200 px. Placeholder badges render the
+                        // user-visible reason text.
+                        if let Some(state) = &image_state {
+                            ui.add_space(style::SPACE_MD);
+                            ui.vertical_centered(|ui| {
+                                draw_notification_image(ui, state, &self.colors);
                             });
                         }
 
@@ -1169,4 +1188,70 @@ fn primary_button(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp
+}
+
+/// Maximum displayed image height inside the notification card. Width is
+/// constrained by the card's available width; aspect ratio is preserved.
+const NOTIFICATION_IMAGE_MAX_H: f32 = 200.0;
+
+/// Render an attached notification image — either the loaded texture (with
+/// aspect-preserving scaling) or a placeholder badge with the failure
+/// reason. Called from the modal renderer above the kind-specific body.
+fn draw_notification_image(
+    ui: &mut egui::Ui,
+    state: &crate::app::NotificationImageState,
+    colors: &Colors,
+) {
+    use crate::app::NotificationImageState as S;
+    match state {
+        S::Ready(texture, w, h) => {
+            // Fit within the card's available width and the global
+            // 200 px height cap, preserving aspect ratio.
+            let avail_w = ui.available_width();
+            let (orig_w, orig_h) = (*w as f32, *h as f32);
+            let scale = (avail_w / orig_w).min(NOTIFICATION_IMAGE_MAX_H / orig_h);
+            // Only ever shrink — never upscale a small image and pixelate it.
+            let scale = scale.min(1.0).max(0.0);
+            let display = Vec2::new(orig_w * scale, orig_h * scale);
+            ui.add(egui::Image::new((texture.id(), display)).corner_radius(style::RADIUS_MD));
+        }
+        S::Placeholder { reason } => {
+            // Draw a small badge so the user sees that an image was attached
+            // but couldn't be rendered. Keeps the modal layout stable.
+            let badge_w = 220.0;
+            let badge_h = 36.0;
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::new(badge_w, badge_h),
+                egui::Sense::hover(),
+            );
+            ui.painter()
+                .rect_filled(rect, style::RADIUS_MD, colors.bg_hover);
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                format!("[image: {reason}]"),
+                egui::FontId::proportional(style::TEXT_CAPTION),
+                colors.text_dim,
+            );
+        }
+        S::Pending => {
+            // Show a placeholder so the layout doesn't jump on the next frame
+            // when the texture arrives. "loading" is the user-visible label.
+            let badge_w = 160.0;
+            let badge_h = 36.0;
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::new(badge_w, badge_h),
+                egui::Sense::hover(),
+            );
+            ui.painter()
+                .rect_filled(rect, style::RADIUS_MD, colors.bg_hover);
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                "[image: loading…]",
+                egui::FontId::proportional(style::TEXT_CAPTION),
+                colors.text_dim,
+            );
+        }
+    }
 }
