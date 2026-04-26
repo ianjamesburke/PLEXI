@@ -5,11 +5,17 @@
 //!   * `image_inline: NotificationImage { mime, base64 }` — small (≤ 50 KB
 //!     decoded) PNG / JPEG bytes shipped on the wire. Decoded once via the
 //!     `image` crate and cached as an egui `TextureHandle`.
-//!   * `image_pipe_id: String` — references a binary typed pipe owned by the
-//!     sender pane's `ProcessApp::pipe_registry`. The host drains the latest
-//!     frame the moment the notification first renders. Frame layout:
+//!   * `image_pipe_id: String` — references a binary typed pipe whose ring
+//!     the host can drain to fetch the latest RGBA frame. Frame layout:
 //!     `width: u32 LE`, `height: u32 LE`, then `width * height * 4` bytes of
-//!     RGBA8.
+//!     RGBA8. **v3.5 status:** the wire shape and host-side resolve path
+//!     are in place, but the ring producer is host-internal — apps cannot
+//!     publish image frames through this surface yet (binary pipes today
+//!     flow host → app, not app → host). The path is reserved for the
+//!     headless-renderer use case in #74's "agent renders two UI options
+//!     as PNGs" flow once the host gains a render-to-pipe primitive.
+//!     Pipe-referenced notifications are accepted but render the
+//!     `Pending` placeholder until a frame appears.
 //!
 //! Both paths fail loudly into a `Placeholder { reason }` state — never
 //! panic. The caller renders a small badge ("image too large", "image
