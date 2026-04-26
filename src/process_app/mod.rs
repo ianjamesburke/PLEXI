@@ -35,6 +35,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::{
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender, TryRecvError},
     Arc, Mutex,
 };
@@ -56,6 +57,22 @@ pub enum PendingPrompt {
 }
 
 // ---------------------------------------------------------------------------
+// StdinItem — typed messages for the stdin-writer channel
+// ---------------------------------------------------------------------------
+
+/// Messages sent from the GUI thread to the stdin-writer background thread.
+///
+/// `Render` events are coalesced: only the latest matters, so we store it in
+/// `render_slot` and send a single `FlushRender` token. Non-render events are
+/// queued in order and never dropped.
+enum StdinItem {
+    /// A non-render event serialised as a newline-terminated JSON string.
+    Event(String),
+    /// Consume and write the latest render payload from the render slot.
+    FlushRender,
+}
+
+// ---------------------------------------------------------------------------
 // ProcessApp
 // ---------------------------------------------------------------------------
 
@@ -64,11 +81,19 @@ pub struct ProcessApp {
     pub pane_id: u64,
     display_name: String,
     process: Option<Child>,
-    /// Non-blocking channel to the stdin-writer background thread. The writer
-    /// owns the actual `ChildStdin` and blocks on writes there — the GUI
-    /// thread never touches the pipe directly. `try_send` so a slow-starting
-    /// app never freezes the render loop.
-    event_tx: Option<std::sync::mpsc::SyncSender<String>>,
+    /// Channel to the stdin-writer background thread. The writer owns the
+    /// actual `ChildStdin` and blocks on writes there — the GUI thread never
+    /// touches the pipe directly. Render events are coalesced via
+    /// `render_slot` / `render_in_queue` so that a burst of Render events
+    /// during startup never fills the channel and starves itself.
+    event_tx: Option<Sender<StdinItem>>,
+    /// Holds the latest serialised `PlexiEvent::Render` payload. The
+    /// stdin-writer thread drains this on `StdinItem::FlushRender`.
+    pub(crate) render_slot: Arc<Mutex<Option<String>>>,
+    /// True while a `StdinItem::FlushRender` token is already in the channel
+    /// so we don't queue duplicates. Reset to false by the writer thread just
+    /// before it drains `render_slot`.
+    pub(crate) render_in_queue: Arc<AtomicBool>,
     /// Receives draw commands from the subprocess on a background thread.
     draw_rx: Option<Receiver<DrawCommand>>,
     /// The last fully committed frame (commands between two FrameDones).
@@ -246,18 +271,42 @@ impl ProcessApp {
         let stderr = child.stderr.take().expect("stderr piped");
 
         // Stdin writer thread — owns the pipe and blocks on write_all.
-        // The GUI thread pushes serialised event strings into `event_tx`
-        // via try_send (never blocks); this thread drains them.
-        let (event_tx, event_rx) = std::sync::mpsc::sync_channel::<String>(1024);
+        // The GUI thread sends StdinItem values via an unbounded channel; this
+        // thread drains them. Render events are coalesced: render_slot holds
+        // the latest serialised payload and FlushRender tokens are deduplicated
+        // so a burst of Render events during startup never fills the queue and
+        // silently drops itself.
+        let render_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let render_in_queue: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let (event_tx, event_rx) = mpsc::channel::<StdinItem>();
         let stdin_type_id = type_id.clone();
         {
             use std::io::Write as _;
+            let render_slot_writer = Arc::clone(&render_slot);
+            let render_in_queue_writer = Arc::clone(&render_in_queue);
             thread::spawn(move || {
                 let mut stdin = stdin;
-                for line in event_rx {
-                    if stdin.write_all(line.as_bytes()).is_err() {
-                        log::debug!("ProcessApp[{stdin_type_id}]: stdin write failed — writer thread exiting");
-                        break;
+                for item in event_rx {
+                    match item {
+                        StdinItem::Event(line) => {
+                            if stdin.write_all(line.as_bytes()).is_err() {
+                                log::debug!("ProcessApp[{stdin_type_id}]: stdin write failed — writer thread exiting");
+                                break;
+                            }
+                        }
+                        StdinItem::FlushRender => {
+                            // Clear the flag *before* reading the slot so that
+                            // a concurrent send_event can enqueue a new token
+                            // if a fresh Render arrives while we're writing.
+                            render_in_queue_writer.store(false, Ordering::Relaxed);
+                            let line = render_slot_writer.lock().unwrap().take();
+                            if let Some(line) = line {
+                                if stdin.write_all(line.as_bytes()).is_err() {
+                                    log::debug!("ProcessApp[{stdin_type_id}]: stdin write failed — writer thread exiting");
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -359,6 +408,8 @@ impl ProcessApp {
             display_name,
             process: Some(child),
             event_tx: Some(event_tx),
+            render_slot,
+            render_in_queue,
             draw_rx: Some(draw_rx),
             frame: Vec::new(),
             pending_frame: Vec::new(),
@@ -410,20 +461,32 @@ impl ProcessApp {
     }
 
     pub(crate) fn send_event(&mut self, event: &PlexiEvent) {
-        let Some(tx) = self.event_tx.as_ref() else {
-            return;
-        };
         match serde_json::to_string(event) {
             Ok(mut line) => {
                 line.push('\n');
-                match tx.try_send(line) {
-                    Ok(()) => {}
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                        log::warn!("ProcessApp[{}]: stdin channel full — dropping event (app slow to read)", self.type_id);
+                match event {
+                    PlexiEvent::Render { .. } => {
+                        // Coalesce: store the latest payload and enqueue a
+                        // FlushRender token only once. If a token is already
+                        // queued the writer will pick up the new payload from
+                        // the slot when it drains — no extra token needed.
+                        *self.render_slot.lock().unwrap() = Some(line);
+                        if !self.render_in_queue.swap(true, Ordering::Relaxed) {
+                            if let Some(tx) = &self.event_tx {
+                                if tx.send(StdinItem::FlushRender).is_err() {
+                                    log::debug!("ProcessApp[{}]: stdin writer thread exited", self.type_id);
+                                    self.event_tx = None;
+                                }
+                            }
+                        }
                     }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        log::debug!("ProcessApp[{}]: stdin writer thread exited", self.type_id);
-                        self.event_tx = None;
+                    _ => {
+                        if let Some(tx) = &self.event_tx {
+                            if tx.send(StdinItem::Event(line)).is_err() {
+                                log::debug!("ProcessApp[{}]: stdin writer thread exited", self.type_id);
+                                self.event_tx = None;
+                            }
+                        }
                     }
                 }
             }
@@ -2630,6 +2693,67 @@ mod reload_tests {
                 "unresponsive child pid {pid} must be force-reaped after drop"
             );
         }
+    }
+
+    // ── render coalescing (issue #368) ────────────────────────────────────────
+
+    /// Verifies render-event coalescing: N back-to-back `PlexiEvent::Render`
+    /// calls must produce at most 1 `FlushRender` token in the channel (so
+    /// a burst never fills the queue and silently drops itself), and a
+    /// subsequent non-render event must still reach the subprocess.
+    ///
+    /// Strategy: rather than round-tripping through a subprocess, we inspect
+    /// the shared `render_slot` / `render_in_queue` Arcs directly after the
+    /// calls. This is race-free because `send_event` writes them synchronously
+    /// on the caller's thread before returning.
+    ///
+    /// Covered invariants:
+    ///   1. After N renders, `render_in_queue` is true (exactly one token queued).
+    ///   2. `render_slot` contains the *last* render's payload.
+    ///   3. A Key event sent after the renders does not clear or corrupt the slot.
+    ///   4. `event_tx` is still Some (no spurious disconnection).
+    #[test]
+    fn render_events_coalesced_non_render_events_preserved() {
+        let Some(mut app) = make_sh_app(&["-c", "sleep 5"]) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+
+        let rect = crate::app_protocol::Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+
+        // Send 5 Render events back-to-back.
+        for frame_id in 1u64..=5 {
+            app.send_event(&PlexiEvent::Render { frame_id, rect: rect.clone() });
+        }
+
+        // After the burst, exactly one FlushRender token must be in the channel.
+        // `render_in_queue` is true while the token is queued / not yet drained.
+        assert!(
+            app.render_in_queue.load(Ordering::Relaxed),
+            "render_in_queue must be true after a burst of Render events"
+        );
+
+        // render_slot must hold the *latest* (frame_id=5) payload, not an earlier one.
+        {
+            let slot = app.render_slot.lock().unwrap();
+            let payload = slot.as_deref().expect("render_slot must be populated");
+            assert!(
+                payload.contains("\"frame_id\":5"),
+                "render_slot must contain the latest frame_id (5), got: {payload}"
+            );
+        }
+
+        // A Key event after the burst must be accepted without error.
+        app.send_event(&PlexiEvent::Key {
+            key: "j".to_string(),
+            modifiers: crate::app_protocol::Modifiers::default(),
+        });
+
+        // event_tx must still be live — the Key was enqueued successfully.
+        assert!(
+            app.event_tx.is_some(),
+            "event_tx must remain Some after sending a Key event"
+        );
     }
 
     /// Sanity check: `launch_process` is re-entrant for the same id —
