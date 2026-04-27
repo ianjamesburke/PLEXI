@@ -43,22 +43,31 @@ impl PlexiApp {
     /// Create a new page immediately to the right of the active page on the
     /// same grid row, then switch to it.
     pub(crate) fn new_page_right(&mut self) {
-        let active_y = self.contexts[self.active_context].grid_y;
-        let max_x_on_row = self
-            .contexts
-            .iter()
-            .filter(|c| c.grid_y == active_y)
+        let sidebar_ctx_id = self.contexts[self.active_sidebar_context].context_id;
+        // If already on a spatial page, add to its row. Otherwise start at row 0.
+        let active_y = if self.contexts[self.active_context].spatial {
+            self.contexts[self.active_context].grid_y
+        } else {
+            0
+        };
+        // Only consider pages belonging to this sidebar context — don't let the
+        // sidebar context's own grid_x bleed into the calculation.
+        let max_x = self.contexts.iter()
+            .filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id && c.grid_y == active_y)
             .map(|c| c.grid_x)
-            .max()
-            .unwrap_or(0);
-        self.create_page_at(max_x_on_row + 1, active_y);
+            .max();
+        self.create_page_at(max_x.map_or(0, |x| x + 1), active_y);
     }
 
     /// Create a new page at `(0, max_y + 1)` — starts a new row below all
     /// existing rows — then switch to it.
     pub(crate) fn new_page_next_row(&mut self) {
-        let max_y = self.contexts.iter().map(|c| c.grid_y).max().unwrap_or(0);
-        self.create_page_at(0, max_y + 1);
+        let sidebar_ctx_id = self.contexts[self.active_sidebar_context].context_id;
+        let max_y = self.contexts.iter()
+            .filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id)
+            .map(|c| c.grid_y)
+            .max();
+        self.create_page_at(0, max_y.map_or(0, |y| y + 1));
     }
 
     /// Shared creation helper: create a single-pane context at `(grid_x, grid_y)`
