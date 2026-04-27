@@ -50,13 +50,17 @@ impl PlexiApp {
         } else {
             0
         };
-        // Only consider pages belonging to this sidebar context — don't let the
-        // sidebar context's own grid_x bleed into the calculation.
+        // The home view occupies (0, 0). Spatial pages start at x=1 in row 0
+        // so home stays visible as its own cell. Deeper rows start at x=0.
         let max_x = self.contexts.iter()
             .filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id && c.grid_y == active_y)
             .map(|c| c.grid_x)
             .max();
-        self.create_page_at(max_x.map_or(0, |x| x + 1), active_y);
+        let new_x = match max_x {
+            Some(x) => x + 1,
+            None => 0,
+        };
+        self.create_page_at(new_x, active_y);
     }
 
     /// Create a new page at `(0, max_y + 1)` — starts a new row below all
@@ -67,7 +71,8 @@ impl PlexiApp {
             .filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id)
             .map(|c| c.grid_y)
             .max();
-        self.create_page_at(0, max_y.map_or(0, |y| y + 1));
+        // Row 0 is occupied by home + any right-side pages. New rows start at y=1+.
+        self.create_page_at(0, max_y.map_or(1, |y| y + 1));
     }
 
     /// Shared creation helper: create a single-pane context at `(grid_x, grid_y)`
@@ -96,14 +101,8 @@ impl PlexiApp {
         });
         self.next_context_id += 1;
         self.active_context = self.contexts.len() - 1;
-        // Auto-show minimap once there are 2+ spatial pages for this sidebar context.
-        let sidebar_ctx_id = self.contexts[self.active_sidebar_context].context_id;
-        let spatial_count = self.contexts.iter()
-            .filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id)
-            .count();
-        if spatial_count >= 2 {
-            self.minimap.visible = true;
-        }
+        self.minimap.visible = true;
+        self.minimap.on_activity();
     }
 
     pub(crate) fn reset_active_context(&mut self) {
@@ -204,7 +203,8 @@ impl PlexiApp {
             .get(self.active_sidebar_context)
             .map(|c| c.context_id)
             .unwrap_or(0);
-        if self.contexts.iter().filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id).count() < 2 {
+        // Hide minimap when no spatial pages remain (home alone doesn't need it).
+        if self.contexts.iter().filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id).count() == 0 {
             self.minimap.visible = false;
         }
     }

@@ -661,13 +661,9 @@ impl PlexiApp {
         let active_panes = self.contexts[self.active_context].panes.len();
         if active_panes > 1 {
             self.close_focused();
-            false
-        } else if self.contexts.len() > 1 {
-            self.delete_context(self.active_context);
-            false
-        } else {
-            self.save_workspace();
-            true
         }
+        // Last pane: do nothing. Cmd+W stops at one window.
+        // Cmd+Q is the quit path. Blank-canvas empty context is a TODO.
+        false
     }
 }

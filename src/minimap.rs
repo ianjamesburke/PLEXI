@@ -71,8 +71,7 @@ pub fn render_minimap(
     colors: &Colors,
     sidebar_ctx_id: u64,
 ) -> Option<usize> {
-    // Build a filtered list of (original_index, ctx) — only spatial pages
-    // belonging to the current sidebar context.
+    // Only render spatial pages belonging to the current sidebar context.
     let visible: Vec<(usize, &Context)> = contexts
         .iter()
         .enumerate()

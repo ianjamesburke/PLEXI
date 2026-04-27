@@ -1,5 +1,35 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-27 — [FUTURE] Per-context minimap: open bugs after this session
+
+Three bugs remain after this session. Documenting clearly so the next session doesn't repeat the failed approaches.
+
+**Bug 1 — Minimap count off by one (shows N+1 cells, needs two Cmd+N to appear)**
+
+Root cause attempt 1: Added home context as a synthetic cell at (0,0) in `render_minimap`, alongside spatial pages at (1+,0). Threshold lowered to 1 spatial page. Result: minimap showed 3 cells after 2 Cmd+N (correct = home + 2 spatial), but didn't appear after 1st press. The reason for the delay is still unknown — `minimap.visible = true` + `on_activity()` are called in `create_page_at` which runs on Cmd+N. **Reverted.**
+
+Likely correct approach: the minimap should show the home cell (sidebar context itself) as cell (0,0). Spatial pages should continue starting at x=1 for row 0 (so home at 0 and pages at 1+). The rendering bug probably lies in how `render_minimap` determines the panel bounding box when home is included — max_x based only on spatial pages may produce a panel too narrow to show both home and page(1,0) without a gap. The panel bounding box must include column 0 (home) explicitly, regardless of spatial page positions.
+
+**Bug 2 — Grid gaps after deletion (pages don't collapse inward)**
+
+When a spatial page is deleted, sibling pages to its right keep their `grid_x` unchanged. The minimap renders each page at its stored `grid_x`, leaving empty columns where deleted pages were.
+
+Correct fix: on deletion of a spatial page at `(del_x, del_y)`, decrement `grid_x` of every sibling with `parent_context_id == parent_id && grid_y == del_y && grid_x > del_x`. Same logic for rows when a full row is deleted.
+
+**Bug 3 — Cmd+W on last pane stops here (no blank canvas)**
+
+Current state: Cmd+W on the last pane does nothing (no quit, no context delete — correct). But the intended behavior is: closing the last pane leaves an empty context (blank canvas) and the user presses Cmd+N to create a spatial page. This requires the UI to handle a context with zero panes gracefully — currently untested. The `execute_close_pane` function currently just bails on the last pane; the blank-canvas state and its rendering path need to be designed and built.
+
+**What was changed this session and kept:**
+- `create_page_at`: `minimap.visible = true` + `on_activity()` on first spatial page (threshold was 2, now 1)
+- `execute_close_pane`: removed the quit path (last pane no longer closes app)
+- Spatial pages now start at `grid_x = 0` (was 1 for row 0), eliminating the phantom gap column
+- Per-context minimap with `context_id`/`parent_context_id` filtering is stable
+
+**What was tried and reverted:**
+- Home cell at (0,0) in `render_minimap` with `sidebar_context_idx` extra param — count was wrong and minimap didn't show on first press
+- `spatial.rs` home fallback (navigate left from x=0 → sidebar context) — removed because spatial pages now start at x=0, making left-from-first-page go to tx=-1 which already returns early; the fallback was unreachable
+
 ## 2026-04-26 — [FIX] Four regressions from spatial workspace commit → alpha
 
 Mouse blocked app-wide: `draw_minimap_overlay` allocated the full screen with `Sense::hover()` inside a `Foreground` Area, which captured all pointer events before any pane or sidebar widget could see them. Fixed by removing the full-screen `allocate_exact_size` — the Area now auto-sizes to the minimap panel cells via `ui.interact()` calls inside `render_minimap`.

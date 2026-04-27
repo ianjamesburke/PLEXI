@@ -1559,7 +1559,18 @@ impl eframe::App for PlexiApp {
                 }
                 Action::SwitchContext(n) => {
                     if n < self.contexts.len() {
+                        self.per_context_last_active.insert(self.active_sidebar_context, self.active_context);
                         self.active_context = n;
+                        // Keep active_sidebar_context in sync: if target is a
+                        // spatial page, resolve to its parent workspace.
+                        if self.contexts[n].spatial {
+                            let parent_id = self.contexts[n].parent_context_id;
+                            if let Some(idx) = self.contexts.iter().position(|c| !c.spatial && c.context_id == parent_id) {
+                                self.active_sidebar_context = idx;
+                            }
+                        } else {
+                            self.active_sidebar_context = n;
+                        }
                     }
                 }
                 Action::NextTab => {
