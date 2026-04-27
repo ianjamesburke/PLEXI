@@ -29,6 +29,11 @@ pub struct Context {
     /// navigated through the minimap and page-nav keys; they do not appear as
     /// tabs in the sidebar context list.
     pub spatial: bool,
+    /// Stable unique ID for this context, assigned at creation and never reused.
+    pub context_id: u64,
+    /// For spatial pages: the `context_id` of the owning sidebar context.
+    /// For sidebar contexts: 0 (they are roots).
+    pub parent_context_id: u64,
 }
 
 impl Context {

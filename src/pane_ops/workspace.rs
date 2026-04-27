@@ -33,7 +33,10 @@ impl PlexiApp {
             grid_x: 0,
             grid_y,
             spatial: false,
+            context_id: self.next_context_id,
+            parent_context_id: 0,
         });
+        self.next_context_id += 1;
         self.active_context = self.contexts.len() - 1;
     }
 
@@ -68,6 +71,7 @@ impl PlexiApp {
             return;
         };
         let name = format!("Page {},{}", grid_x, grid_y);
+        let parent_context_id = self.contexts[self.active_sidebar_context].context_id;
         self.contexts.push(Context {
             name,
             path: home,
@@ -78,10 +82,16 @@ impl PlexiApp {
             grid_x,
             grid_y,
             spatial: true,
+            context_id: self.next_context_id,
+            parent_context_id,
         });
+        self.next_context_id += 1;
         self.active_context = self.contexts.len() - 1;
-        // Auto-show minimap once there are 2+ spatial pages.
-        let spatial_count = self.contexts.iter().filter(|c| c.spatial).count();
+        // Auto-show minimap once there are 2+ spatial pages for this sidebar context.
+        let sidebar_ctx_id = self.contexts[self.active_sidebar_context].context_id;
+        let spatial_count = self.contexts.iter()
+            .filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id)
+            .count();
         if spatial_count >= 2 {
             self.minimap.visible = true;
         }
@@ -106,6 +116,33 @@ impl PlexiApp {
         if self.contexts.len() <= 1 {
             return;
         }
+
+        // If deleting a sidebar context, first remove all its spatial pages.
+        if !self.contexts[index].spatial {
+            let parent_id = self.contexts[index].context_id;
+            let spatial_indices: Vec<usize> = self.contexts
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.spatial && c.parent_context_id == parent_id)
+                .map(|(i, _)| i)
+                .collect();
+            // Remove in reverse order to keep indices valid.
+            for &i in spatial_indices.iter().rev() {
+                self.contexts.remove(i);
+                // Adjust active_context if needed.
+                if self.active_context > i && self.active_context > 0 {
+                    self.active_context -= 1;
+                } else if self.active_context == i {
+                    self.active_context = 0;
+                }
+            }
+        }
+
+        // Guard again: cascaded removals may have left only 1 context.
+        if self.contexts.len() <= 1 {
+            return;
+        }
+
         // Capture the removed page's grid coords before removal so we can find
         // the spatially nearest remaining page afterwards.
         let removed_x = self.contexts[index].grid_x;
@@ -153,8 +190,12 @@ impl PlexiApp {
                 self.current_notify_id = None;
             }
         }
-        // Auto-hide minimap when fewer than 2 spatial pages remain.
-        if self.contexts.iter().filter(|c| c.spatial).count() < 2 {
+        // Auto-hide minimap when fewer than 2 spatial pages remain for the current sidebar context.
+        let sidebar_ctx_id = self.contexts
+            .get(self.active_sidebar_context)
+            .map(|c| c.context_id)
+            .unwrap_or(0);
+        if self.contexts.iter().filter(|c| c.spatial && c.parent_context_id == sidebar_ctx_id).count() < 2 {
             self.minimap.visible = false;
         }
     }
@@ -224,6 +265,8 @@ impl PlexiApp {
                 grid_x: context.grid_x,
                 grid_y: context.grid_y,
                 spatial: context.spatial,
+                context_id: context.context_id,
+                parent_context_id: context.parent_context_id,
             });
         }
 

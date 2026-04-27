@@ -415,7 +415,9 @@ impl PlexiApp {
 
         if confirmed {
             self.pending_close = false;
-            self.execute_close_pane();
+            if self.execute_close_pane() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         } else if cancelled {
             self.pending_close = false;
         }
@@ -1264,6 +1266,10 @@ impl PlexiApp {
         let content_rect = ctx.screen_rect();
         let active_context = self.active_context;
         let colors = self.colors;
+        let sidebar_ctx_id = self.contexts
+            .get(self.active_sidebar_context)
+            .map(|c| c.context_id)
+            .unwrap_or(0);
 
         egui::Area::new(egui::Id::new("minimap_overlay"))
             .order(egui::Order::Foreground)
@@ -1278,6 +1284,7 @@ impl PlexiApp {
                     &self.minimap,
                     &self.last_page_x_per_row,
                     &colors,
+                    sidebar_ctx_id,
                 ) {
                     // Record old position before switching.
                     let old = &self.contexts[self.active_context];

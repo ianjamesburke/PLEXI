@@ -69,8 +69,17 @@ pub fn render_minimap(
     state: &MinimapState,
     last_visited: &std::collections::HashMap<u32, u32>,
     colors: &Colors,
+    sidebar_ctx_id: u64,
 ) -> Option<usize> {
-    if contexts.is_empty() {
+    // Build a filtered list of (original_index, ctx) — only spatial pages
+    // belonging to the current sidebar context.
+    let visible: Vec<(usize, &Context)> = contexts
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.spatial && c.parent_context_id == sidebar_ctx_id)
+        .collect();
+
+    if visible.is_empty() {
         return None;
     }
 
@@ -78,8 +87,8 @@ pub fn render_minimap(
 
     // Compute bounding box of the grid in grid-coordinate space so we can
     // determine the pixel dimensions of the minimap panel.
-    let max_x = contexts.iter().map(|c| c.grid_x).max().unwrap_or(0);
-    let max_y = contexts.iter().map(|c| c.grid_y).max().unwrap_or(0);
+    let max_x = visible.iter().map(|(_, c)| c.grid_x).max().unwrap_or(0);
+    let max_y = visible.iter().map(|(_, c)| c.grid_y).max().unwrap_or(0);
     let cols = max_x + 1;
     let rows = max_y + 1;
 
@@ -108,7 +117,8 @@ pub fn render_minimap(
     let grid_origin = egui::pos2(panel_min.x + padding, panel_min.y + padding);
     let mut clicked: Option<usize> = None;
 
-    for (idx, ctx) in contexts.iter().enumerate() {
+    for (original_idx, ctx) in &visible {
+        let idx = *original_idx;
         let cell_x = grid_origin.x + ctx.grid_x as f32 * (CELL_W + CELL_GAP);
         let cell_y = grid_origin.y + ctx.grid_y as f32 * (CELL_H + CELL_GAP);
         let cell_rect = egui::Rect::from_min_size(

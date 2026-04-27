@@ -653,13 +653,21 @@ impl PlexiApp {
 
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
-    pub(crate) fn execute_close_pane(&mut self) {
+    ///
+    /// Returns `true` if the caller should quit the application (last pane in
+    /// the last context was closed). Returns `false` in all other cases.
+    pub(crate) fn execute_close_pane(&mut self) -> bool {
         self.contexts[self.active_context].zoomed_pane = None;
         let active_panes = self.contexts[self.active_context].panes.len();
         if active_panes > 1 {
             self.close_focused();
+            false
+        } else if self.contexts.len() > 1 {
+            self.delete_context(self.active_context);
+            false
         } else {
-            self.reset_active_context();
+            self.save_workspace();
+            true
         }
     }
 }

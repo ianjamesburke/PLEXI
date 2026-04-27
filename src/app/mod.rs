@@ -201,6 +201,9 @@ pub struct PlexiApp {
     /// (which may be a spatial page). Restored when clicking back to that
     /// sidebar context, so the user returns to wherever they were.
     pub(crate) per_context_last_active: HashMap<usize, usize>,
+    /// Monotonically increasing counter. Assigned to each new `Context` as its
+    /// stable `context_id`. Never reused — only increments.
+    pub(crate) next_context_id: u64,
 }
 
 impl PlexiApp {
@@ -446,9 +449,22 @@ impl PlexiApp {
                     grid_x: saved_ctx.grid_x,
                     grid_y: saved_ctx.grid_y,
                     spatial: saved_ctx.spatial,
+                    context_id: saved_ctx.context_id,
+                    parent_context_id: saved_ctx.parent_context_id,
                 });
             }
             if !contexts.is_empty() {
+                // Repair context_ids: old workspace files have context_id=0.
+                // Assign sequential IDs so every context has a stable unique ID.
+                let mut next_id: u64 = 1;
+                for ctx in &mut contexts {
+                    if ctx.context_id == 0 {
+                        ctx.context_id = next_id;
+                        next_id += 1;
+                    } else {
+                        next_id = next_id.max(ctx.context_id + 1);
+                    }
+                }
                 let active = ws.active_context.min(contexts.len() - 1);
                 let mut host = crate::host::model::HostModel::new();
                 host.seed_next_pane_id(ws.next_pane_id);
@@ -503,6 +519,7 @@ impl PlexiApp {
                     last_page_x_per_row: HashMap::new(),
                     active_sidebar_context: 0,
                     per_context_last_active: HashMap::new(),
+                    next_context_id: next_id,
                 };
             }
         }
@@ -544,6 +561,8 @@ impl PlexiApp {
                 grid_x: 0,
                 grid_y: 0,
                 spatial: false,
+                context_id: 1,
+                parent_context_id: 0,
             }],
             active_context: 0,
             sidebar_visible: true,
@@ -588,6 +607,7 @@ impl PlexiApp {
             last_page_x_per_row: HashMap::new(),
             active_sidebar_context: 0,
             per_context_last_active: HashMap::new(),
+            next_context_id: 2,
         }
     }
 
@@ -1473,8 +1493,8 @@ impl eframe::App for PlexiApp {
                 Action::ClosePane => {
                     if self.confirm_close {
                         self.pending_close = true;
-                    } else {
-                        self.execute_close_pane();
+                    } else if self.execute_close_pane() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
                 Action::NewTab => self.new_tab(),

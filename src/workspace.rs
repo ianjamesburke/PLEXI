@@ -31,6 +31,14 @@ pub struct SavedContext {
     /// Whether this context is a spatial page (created by `Cmd+N` / `Cmd+Shift+N`).
     /// Spatial pages are not shown in the sidebar.
     pub spatial: bool,
+    /// Stable unique ID. Defaults to 0 so old workspace files load cleanly;
+    /// the restore path assigns real IDs after loading.
+    #[serde(default)]
+    pub context_id: u64,
+    /// For spatial pages: the `context_id` of the owning sidebar context.
+    /// For sidebar contexts: 0 (they are roots). Defaults to 0 for legacy files.
+    #[serde(default)]
+    pub parent_context_id: u64,
 }
 
 #[derive(Serialize, Deserialize)]

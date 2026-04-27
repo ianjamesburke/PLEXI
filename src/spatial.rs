@@ -24,16 +24,17 @@ impl PlexiApp {
     pub(crate) fn navigate_page(&mut self, dx: i32, dy: i32) {
         let cur_x = self.contexts[self.active_context].grid_x;
         let cur_y = self.contexts[self.active_context].grid_y;
+        let parent_id = self.contexts[self.active_context].parent_context_id;
 
         let new_idx = if dx != 0 {
-            // Horizontal: exact match only.
+            // Horizontal: exact match only, scoped to the same parent context.
             let tx = cur_x as i32 + dx;
             if tx < 0 {
                 return;
             }
             self.contexts
                 .iter()
-                .position(|c| c.grid_x == tx as u32 && c.grid_y == cur_y)
+                .position(|c| c.grid_x == tx as u32 && c.grid_y == cur_y && c.parent_context_id == parent_id)
         } else if dy != 0 {
             let ty = cur_y as i32 + dy;
             if ty < 0 {
@@ -47,7 +48,7 @@ impl PlexiApp {
             self.contexts
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| c.grid_y == ty)
+                .filter(|(_, c)| c.grid_y == ty && c.parent_context_id == parent_id)
                 .min_by_key(|(_, c)| (c.grid_x as i64 - preferred_x as i64).unsigned_abs())
                 .map(|(i, _)| i)
         } else {
