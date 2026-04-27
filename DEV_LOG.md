@@ -1,10 +1,46 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-26 — [FIX] Render event coalescing — try_send drops during slow Python startup (#368 → PR #378)
+
+Root cause: `sync_channel(1024)` + `try_send` filled with `PlexiEvent::Render` bursts during Python import phase. When the channel was full, every subsequent render event was silently dropped → apps appeared frozen, scroll (#371) never re-rendered. The earlier stdin-writer-thread fix (`cbf2799`) moved writes off the GUI thread but left the bounded channel and `try_send` in place.
+
+Fix: introduced `StdinItem` enum (`Event(String)` | `FlushRender`). Channel is now unbounded (`mpsc::channel`). Render events are coalesced: latest payload stored in `Arc<Mutex<Option<String>>> render_slot`; a single `FlushRender` token is queued via `Arc<AtomicBool> render_in_queue` guard. Writer thread resets the flag *before* draining the slot so a concurrent `send_event` can re-queue without a race. Non-render events pass through in-order, never dropped. #371 (scroll broken) resolves as a downstream effect.
+**Breaks if:** apps start up but don't respond to key events or scroll after the first render.
+
+## 2026-04-26 — [FIX] Secret not persisted after granting via prompt — re-prompt loop every launch (#372 → PR #377)
+
+Root cause: `show_prompt_modal` in `src/process_app/prompts.rs` sent `PlexiEvent::SecretValue` to the app on grant but never called `MacKeychain::set()`. Every new launch hit an empty keychain and re-prompted.
+
+Fix: `persist_granted_secret(workspace_root, app_id, key, value, store: &dyn SecretStore)` called immediately after grant. Routing mirrors `routing.rs`: explicit route in `workspace.toml` + `secrets.toml` → workspace-namespaced account (`plexi:<ws-id>:<friendly>`); no route / fallback=true → `plexi:user:<key>`. Guarded by `#[cfg(target_os = "macos")]` using `MacKeychain::new()`. Tests cover no-workspace, explicit-route, fallback, and deny paths.
+**Breaks if:** granting a secret prompt still re-prompts on the next app launch.
+
+## 2026-04-26 — [FIX] Agent workspace modal TextInput ignores keyboard input (#370 → PR #376)
+
+Root cause: auto-focus condition `!r.has_focus() && modal.task.is_empty()` was checked every frame. `request_focus()` is deferred one frame in egui, so `has_focus()` is false when the request fires — the condition re-triggers every frame and fights the user's own focus choices. Once the user typed anything, `task.is_empty()` also permanently prevented re-focus after a tab.
+
+Fix: `focus_initialized: bool` field on `AgentWorkspaceModal`, set `false` in `open()`. `request_focus()` called exactly once on the first render frame; after that the user's explicit focus choices are not overridden.
+**Breaks if:** opening the modal and typing immediately produces no input in the repo path field.
+
+## 2026-04-26 — [FIX] Agent workspace palette commands give no feedback when CLI not installed (#369 → PR #375)
+
+Root cause: `spawn_agent_workspace()` in `command_palette.rs` called `open_agent_workspace_pane()` without first checking `cli.is_installed()`. On failure it only logged — no host notification, so the user saw nothing.
+
+Fix: `is_installed()` checked at the top of `spawn_agent_workspace()`; calls `push_host_notification` on both the not-installed path and the `open_agent_workspace_pane` error path. Mirrors the pattern already used in `spawn_agent_workspace_from_modal`.
+**Breaks if:** clicking "New Agent Workspace: Claude Code" with Claude Code uninstalled produces no visible feedback.
+
+## 2026-04-26 — [FIX] AppBar descender clipping — title text bottom pixel cut off (#373 → PR #374)
+
+Root cause: `text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0 - 1.0` in `sdk/python/plexi_sdk/ui.py`. The `-1.0` nudge shifted the text 1px toward the top clip boundary, clipping descenders (g, p, y, etc.) at 16pt.
+
+Fix: removed the nudge — `text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0`. The original nudge comment described it as "empirical compensation for proportional-font descent bias"; it was wrong and the true centre is correct.
+**Breaks if:** AppBar title sits visibly off-centre vertically.
+
 ## 2026-04-26 — [FIX] GUI hang when spawning apps — stdin write blocked egui main thread
 
 Root cause: `ProcessApp::send_event` called `stdin.write_all()` directly on the egui render loop thread. During the "starting" window (Python process importing modules, not reading stdin yet), pipe buffer fills fast. The first `Render` event write blocks indefinitely → macOS hang report → forced kill. Symptom: app shows "starting" pill then the entire host dies.
 
 Fix: background writer thread owns `ChildStdin` and blocks on writes there. GUI thread pushes to a bounded `sync_channel(1024)` via `try_send` — non-blocking in all cases. `cbf2799`.
+
 ## 2026-04-26 — [GOTCHA] Info.plist.fragment must NOT include full plist wrapper
 
 `cargo-bundle 0.9.0` handles `osx_info_plist_exts` by doing a raw text insert inside the `<dict>` of the generated Info.plist. The fragment file must contain only bare key-value pairs — **no** `<?xml?>` declaration, no `<!DOCTYPE>`, no `<plist>` or `<dict>` wrappers. Including the full plist boilerplate (as the #277 sub-agent wrote) embeds a second XML document inside the `<dict>`, producing malformed XML that macOS rejects as "damaged or incomplete" at launch. Fix: `assets/Info.plist.fragment` is now just the two `<key>`/`<string>` lines. Re-sign with `codesign --force --deep --sign -` after install.
