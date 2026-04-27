@@ -1255,3 +1255,50 @@ fn draw_notification_image(
         }
     }
 }
+
+impl PlexiApp {
+    /// Render the spatial-grid minimap in the top-right corner of the work
+    /// area. Uses an `egui::Area` so it floats above all content.
+    pub(crate) fn draw_minimap_overlay(&mut self, ctx: &egui::Context) {
+        // Approximate the content rect: full screen minus toolbar height.
+        // The minimap is positioned via INSET inside render_minimap, so a
+        // coarse content_rect is fine — pixel-perfect layout is not required.
+        let content_rect = ctx.screen_rect();
+
+        let active_context = self.active_context;
+        let colors = self.colors;
+
+        egui::Area::new(egui::Id::new("minimap_overlay"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(content_rect.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                // Allocate the full screen so render_minimap can compute the
+                // top-right-inset position correctly.
+                ui.set_clip_rect(content_rect);
+                let (_, response) = ui.allocate_exact_size(
+                    content_rect.size(),
+                    egui::Sense::hover(),
+                );
+                let _ = response; // click handling is done inside render_minimap via sub-rects
+
+                if let Some(clicked_idx) = crate::minimap::render_minimap(
+                    ui,
+                    content_rect,
+                    &self.contexts,
+                    active_context,
+                    &self.minimap,
+                    &colors,
+                ) {
+                    self.active_context = clicked_idx;
+                    self.minimap.on_activity();
+                }
+            });
+
+        // Request a repaint during the fade window so the alpha transition is
+        // smooth. Once fully faded we can stop asking.
+        if !self.minimap.is_faded() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+}

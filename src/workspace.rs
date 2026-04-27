@@ -21,6 +21,13 @@ pub struct SavedContext {
     pub tree: Tree<PaneId>,
     pub panes: Vec<SavedPane>,
     pub focused_pane: Option<TileId>,
+    /// Spatial grid position. Defaults to `(0, 0)` so old workspace files
+    /// without these fields load cleanly — all legacy contexts land at the
+    /// origin, which is degenerate but not broken.
+    #[serde(default)]
+    pub grid_x: u32,
+    #[serde(default)]
+    pub grid_y: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -171,6 +178,37 @@ mod tests {
             PathBuf::from("/repo/.git/worktrees/plexi-abcd1234")
         );
         assert_eq!(aw.task_label, "fix the auth bug");
+    }
+
+    /// Legacy workspace files that omit `grid_x` / `grid_y` must deserialize
+    /// cleanly with both fields defaulting to 0. This guards the `#[serde(default)]`
+    /// annotation on `SavedContext`.
+    #[test]
+    fn grid_coords_default_to_zero_on_legacy_load() {
+        use egui_tiles::Tree;
+
+        // Build a minimal valid tree and round-trip through JSON so we get a
+        // real serialized form without needing to hard-code egui_tiles internals.
+        let tree: Tree<PaneId> = Tree::empty("test");
+        let tree_json = serde_json::to_string(&tree).expect("tree must serialize");
+
+        // Compose a SavedContext JSON without grid_x / grid_y — simulates a
+        // workspace written by a Plexi version before spatial pages were added.
+        let legacy_json = format!(
+            r#"{{
+                "name": "Default",
+                "path": "/tmp",
+                "tree": {},
+                "panes": [],
+                "focused_pane": null
+            }}"#,
+            tree_json
+        );
+
+        let restored: SavedContext = serde_json::from_str(&legacy_json)
+            .expect("legacy SavedContext without grid_x/grid_y must deserialize");
+        assert_eq!(restored.grid_x, 0, "grid_x must default to 0");
+        assert_eq!(restored.grid_y, 0, "grid_y must default to 0");
     }
 
     /// Regression guard: existing variants still round-trip after the new

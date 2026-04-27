@@ -16,6 +16,12 @@ impl PlexiApp {
             return;
         };
 
+        // Place sidebar-created contexts at (0, max_y + 1) so they don't
+        // collide with any existing page. The spatial grid can grow in both
+        // dimensions; sidebar creation always adds a new row.
+        let max_y = self.contexts.iter().map(|c| c.grid_y).max().unwrap_or(0);
+        let grid_y = if self.contexts.is_empty() { 0 } else { max_y + 1 };
+
         let name = format!("Context {}", self.contexts.len() + 1);
         self.contexts.push(Context {
             name,
@@ -24,6 +30,52 @@ impl PlexiApp {
             panes,
             focused_pane: Some(root_tile),
             zoomed_pane: None,
+            grid_x: 0,
+            grid_y,
+        });
+        self.active_context = self.contexts.len() - 1;
+    }
+
+    /// Create a new page immediately to the right of the active page on the
+    /// same grid row, then switch to it.
+    pub(crate) fn new_page_right(&mut self) {
+        let active_y = self.contexts[self.active_context].grid_y;
+        let max_x_on_row = self
+            .contexts
+            .iter()
+            .filter(|c| c.grid_y == active_y)
+            .map(|c| c.grid_x)
+            .max()
+            .unwrap_or(0);
+        self.create_page_at(max_x_on_row + 1, active_y);
+    }
+
+    /// Create a new page at `(0, max_y + 1)` — starts a new row below all
+    /// existing rows — then switch to it.
+    pub(crate) fn new_page_next_row(&mut self) {
+        let max_y = self.contexts.iter().map(|c| c.grid_y).max().unwrap_or(0);
+        self.create_page_at(0, max_y + 1);
+    }
+
+    /// Shared creation helper: create a single-pane context at `(grid_x, grid_y)`
+    /// and make it the active context.
+    fn create_page_at(&mut self, grid_x: u32, grid_y: u32) {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))
+        else {
+            log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
+            return;
+        };
+        let name = format!("Page {},{}", grid_x, grid_y);
+        self.contexts.push(Context {
+            name,
+            path: home,
+            tree,
+            panes,
+            focused_pane: Some(root_tile),
+            zoomed_pane: None,
+            grid_x,
+            grid_y,
         });
         self.active_context = self.contexts.len() - 1;
     }
@@ -47,9 +99,23 @@ impl PlexiApp {
         if self.contexts.len() <= 1 {
             return;
         }
+        // Capture the removed page's grid coords before removal so we can find
+        // the spatially nearest remaining page afterwards.
+        let removed_x = self.contexts[index].grid_x;
+        let removed_y = self.contexts[index].grid_y;
+        let was_active = self.active_context == index;
+
         self.contexts.remove(index);
-        if self.active_context >= self.contexts.len() {
+
+        // Adjust active_context: if the active page was deleted, jump to the
+        // spatially nearest remaining page. Otherwise, just fix the index if
+        // the removal shifted it.
+        if was_active {
+            self.active_context = self.nearest_context_after_delete(removed_x, removed_y);
+        } else if self.active_context >= self.contexts.len() {
             self.active_context = self.contexts.len() - 1;
+        } else if self.active_context > index {
+            self.active_context -= 1;
         }
         // Clear rename state if it referenced the deleted context
         if self.renaming_context == Some(index) {
@@ -144,6 +210,8 @@ impl PlexiApp {
                 tree: context.tree.clone(),
                 panes: saved_panes,
                 focused_pane: context.focused_pane,
+                grid_x: context.grid_x,
+                grid_y: context.grid_y,
             });
         }
 

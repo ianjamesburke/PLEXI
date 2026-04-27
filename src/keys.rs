@@ -1,11 +1,14 @@
 // ─── Reserved Plexi shortcuts (apps must NOT consume these) ───────────────
 //
 // Cmd+D / Cmd+Shift+D       — split horizontal / vertical (terminal)
-// Cmd+N                       — split focused pane to the right (mirror type)
-// Cmd+Shift+N                 — split focused pane below (mirror type)
+// Cmd+\                       — split focused pane to the right (mirror type)
+// Cmd+Shift+\                 — split focused pane below (mirror type)
+// Cmd+N                       — new page to the right on the current grid row
+// Cmd+Shift+N                 — new page on a new row below
 // Cmd+W                       — close pane
 // Cmd+H/J/K/L                 — navigate panes
-// Cmd+Shift+H/J/K/L           — lateral focus jump (geometrically-nearest neighbor)
+// Cmd+Shift+H/J/K/L           — navigate to adjacent page (spatial grid)
+// Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
 // Cmd+] / Cmd+[               — cycle tabs
 // Cmd+Q                       — quit
@@ -44,15 +47,12 @@ pub enum Action {
     SplitHorizontal,
     SplitVertical,
     /// Split the focused pane to the right; new pane mirrors the focused pane's type.
-    /// Bound to Cmd+N. If no pane is focused, creates a full-size terminal.
+    /// Bound to Cmd+\. If no pane is focused, creates a full-size terminal.
     SplitRight,
     /// Split the focused pane below; new pane mirrors the focused pane's type.
-    /// Bound to Cmd+Shift+N. If no pane is focused, creates a full-size terminal.
+    /// Bound to Cmd+Shift+\. If no pane is focused, creates a full-size terminal.
     SplitDown,
     Navigate(Direction),
-    /// Lateral focus jump (geometrically-nearest neighbor, no wrap-around).
-    /// Bound to Shift+Cmd+H/J/K/L.
-    LateralFocus(Direction),
     ClosePane,
     NewTab,
     SwitchContext(usize),
@@ -93,6 +93,20 @@ pub enum Action {
     /// Option (Alt) modifier is the next free chord. No-op when the
     /// focused pane isn't a process-backed app.
     ForceReloadApp,
+    /// Create a new page (context) to the right of the active one on the same
+    /// grid row. Bound to Cmd+N.
+    NewPageRight,
+    /// Create a new page (context) at (0, max_y + 1) — starts a new grid row.
+    /// Bound to Cmd+Shift+N.
+    NewPageNextRow,
+    /// Navigate to the adjacent page in the spatial grid. Bound to
+    /// Cmd+Shift+H/J/K/L (left/down/up/right).
+    PageLeft,
+    PageDown,
+    PageUp,
+    PageRight,
+    /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
+    ToggleMinimap,
 }
 
 /// Poll global keyboard actions.
@@ -136,19 +150,20 @@ pub fn poll_actions(
             actions.push(Action::SplitHorizontal);
         }
 
-        // Lateral focus jump (Shift+Cmd+HJKL) — check before plain Cmd+HJKL
-        // so the shifted variants are matched first.
+        // Page navigation (Shift+Cmd+HJKL) — check before plain Cmd+HJKL
+        // so the shifted variants are matched first. These now navigate the
+        // spatial grid rather than doing lateral focus jumps within a page.
         if input.consume_key(cmd_shift, egui::Key::H) {
-            actions.push(Action::LateralFocus(Direction::Left));
+            actions.push(Action::PageLeft);
         }
         if input.consume_key(cmd_shift, egui::Key::J) {
-            actions.push(Action::LateralFocus(Direction::Down));
+            actions.push(Action::PageDown);
         }
         if input.consume_key(cmd_shift, egui::Key::K) {
-            actions.push(Action::LateralFocus(Direction::Up));
+            actions.push(Action::PageUp);
         }
         if input.consume_key(cmd_shift, egui::Key::L) {
-            actions.push(Action::LateralFocus(Direction::Right));
+            actions.push(Action::PageRight);
         }
 
         // Focus navigation (Cmd+HJKL)
@@ -218,13 +233,27 @@ pub fn poll_actions(
             actions.push(Action::RenamePane);
         }
 
-        // Pane split (Cmd+N = right, Cmd+Shift+N = below). Mirror focused
-        // pane's type. Check Cmd+Shift+N before Cmd+N so the shifted variant
+        // Pane split (Cmd+\ = right, Cmd+Shift+\ = below). Mirror focused
+        // pane's type. Check Cmd+Shift+\ before Cmd+\ so the shifted variant
+        // is matched first.
+        if input.consume_key(cmd_shift, egui::Key::Backslash) {
+            actions.push(Action::SplitDown);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backslash) {
+            actions.push(Action::SplitRight);
+        }
+
+        // New page (Cmd+Shift+N = new row, Cmd+N = new page right on current
+        // row). Check Cmd+Shift+N before Cmd+N so the shifted variant
         // is matched first.
         if input.consume_key(cmd_shift, egui::Key::N) {
-            actions.push(Action::SplitDown);
+            actions.push(Action::NewPageNextRow);
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
-            actions.push(Action::SplitRight);
+            actions.push(Action::NewPageRight);
+        }
+
+        // Minimap toggle (Cmd+Shift+M).
+        if input.consume_key(cmd_shift, egui::Key::M) {
+            actions.push(Action::ToggleMinimap);
         }
 
         // Scrollback (Cmd+Up / Cmd+Down)

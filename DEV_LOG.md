@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-26 — [CHANGED] Spatial 2D page grid + minimap overlay (PR → alpha)
+
+Added `grid_x / grid_y` to `Context` and `SavedContext` (`#[serde(default)]` for backward compat). `Cmd+N` / `Cmd+Shift+N` now create pages on the grid instead of splitting panes — splits moved to `Cmd+\` / `Cmd+Shift+\`. `Cmd+Shift+H/J/K/L` navigate between pages (was LateralFocus — no free chord available so repurposed). Minimap overlay (`src/minimap.rs`) renders in top-right corner, fades after 3 s idle, pinned by `Cmd+Shift+M`. Page creation and spatial helpers live in `pane_ops/workspace.rs` (co-located with `new_context` for access to `pub(super) create_single_pane_tree`). Navigation-only helpers in `src/spatial.rs`.
+
+Decision: `LateralFocus` variant removed entirely (was never constructed after keybind repurposing — keeping dead code violates project rules). Apps that depended on lateral-focus shortcuts will need to adjust if any existed; none are known.
+
+**Breaks if:** `Cmd+N` opens a pane split instead of a new page, or `Cmd+\` does nothing, or the minimap doesn't appear after creating 2+ pages.
+
 ## 2026-04-26 — [FIX] Render event coalescing — try_send drops during slow Python startup (#368 → PR #378)
 
 Root cause: `sync_channel(1024)` + `try_send` filled with `PlexiEvent::Render` bursts during Python import phase. When the channel was full, every subsequent render event was silently dropped → apps appeared frozen, scroll (#371) never re-rendered. The earlier stdin-writer-thread fix (`cbf2799`) moved writes off the GUI thread but left the bounded channel and `try_send` in place.

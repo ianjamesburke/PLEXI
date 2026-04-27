@@ -21,6 +21,10 @@ pub struct Context {
     pub panes: HashMap<PaneId, Pane>,
     pub focused_pane: Option<TileId>,
     pub zoomed_pane: Option<TileId>,
+    /// Spatial grid coordinates. `(0, 0)` is the origin (top-left page).
+    /// `grid_x` grows rightward, `grid_y` grows downward.
+    pub grid_x: u32,
+    pub grid_y: u32,
 }
 
 impl Context {

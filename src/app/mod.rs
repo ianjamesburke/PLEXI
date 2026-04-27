@@ -183,6 +183,9 @@ pub struct PlexiApp {
     /// Cached last-CLI-per-repo map. Loaded at startup, persisted on every
     /// successful spawn. The modal consults this to pre-select the dropdown.
     pub(crate) last_cli_map: crate::agent_workspace::persistence::LastCliMap,
+    /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
+    /// and the `Cmd+Shift+M` override-visible flag.
+    pub(crate) minimap: crate::minimap::MinimapState,
 }
 
 impl PlexiApp {
@@ -425,6 +428,8 @@ impl PlexiApp {
                     panes,
                     focused_pane: saved_ctx.focused_pane,
                     zoomed_pane: None,
+                    grid_x: saved_ctx.grid_x,
+                    grid_y: saved_ctx.grid_y,
                 });
             }
             if !contexts.is_empty() {
@@ -478,6 +483,7 @@ impl PlexiApp {
                     hot_reload_rx: hr_rx,
                     agent_workspace_modal: None,
                     last_cli_map: crate::agent_workspace::persistence::load(),
+                    minimap: crate::minimap::MinimapState::new(),
                 };
             }
         }
@@ -516,6 +522,8 @@ impl PlexiApp {
                 panes,
                 focused_pane: Some(root_tile),
                 zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 0,
             }],
             active_context: 0,
             sidebar_visible: true,
@@ -556,6 +564,7 @@ impl PlexiApp {
             hot_reload_rx: hr_rx2,
             agent_workspace_modal: None,
             last_cli_map: crate::agent_workspace::persistence::load(),
+            minimap: crate::minimap::MinimapState::new(),
         }
     }
 
@@ -1430,7 +1439,7 @@ impl eframe::App for PlexiApp {
                     self.contexts[self.active_context].zoomed_pane = None;
                     self.split_focused_mirror(crate::host::command::Placement::Below);
                 }
-                Action::Navigate(dir) | Action::LateralFocus(dir) => {
+                Action::Navigate(dir) => {
                     let was_zoomed = self.contexts[self.active_context].zoomed_pane.is_some();
                     self.navigate(dir);
                     if was_zoomed {
@@ -1575,6 +1584,33 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ForceReloadApp => {
                     self.force_reload_focused_app();
+                }
+                Action::NewPageRight => {
+                    self.minimap.on_activity();
+                    self.new_page_right();
+                }
+                Action::NewPageNextRow => {
+                    self.minimap.on_activity();
+                    self.new_page_next_row();
+                }
+                Action::PageLeft => {
+                    self.minimap.on_activity();
+                    self.navigate_page(-1, 0);
+                }
+                Action::PageRight => {
+                    self.minimap.on_activity();
+                    self.navigate_page(1, 0);
+                }
+                Action::PageUp => {
+                    self.minimap.on_activity();
+                    self.navigate_page(0, -1);
+                }
+                Action::PageDown => {
+                    self.minimap.on_activity();
+                    self.navigate_page(0, 1);
+                }
+                Action::ToggleMinimap => {
+                    self.minimap.toggle();
                 }
             }
         }
@@ -1847,6 +1883,11 @@ impl eframe::App for PlexiApp {
         // Shortcuts overlay
         if self.show_shortcuts {
             self.draw_shortcuts_overlay(ctx);
+        }
+
+        // Minimap overlay — shown when there are 2+ pages, fades after 3 s idle.
+        if self.contexts.len() > 1 || self.minimap.override_visible {
+            self.draw_minimap_overlay(ctx);
         }
 
         // Command palette, run palette, rename-pane overlay, notification
