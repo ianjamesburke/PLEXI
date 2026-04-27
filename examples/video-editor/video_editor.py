@@ -130,7 +130,6 @@ class VideoEditor(App):
         # Toolbar transport
         if y < TOOLBAR_H:
             bcx = W / 2
-            bcy = TOOLBAR_H / 2
             hit = [
                 (bcx - 72, self._go_start),
                 (bcx - 44, lambda: self._step(-1)),
