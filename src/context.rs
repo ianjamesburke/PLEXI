@@ -25,6 +25,10 @@ pub struct Context {
     /// `grid_x` grows rightward, `grid_y` grows downward.
     pub grid_x: u32,
     pub grid_y: u32,
+    /// True for pages created via `Cmd+N` / `Cmd+Shift+N`. Spatial pages are
+    /// navigated through the minimap and page-nav keys; they do not appear as
+    /// tabs in the sidebar context list.
+    pub spatial: bool,
 }
 
 impl Context {

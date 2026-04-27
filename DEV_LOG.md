@@ -1,5 +1,19 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-26 — [FIX] Four regressions from spatial workspace commit → alpha
+
+Mouse blocked app-wide: `draw_minimap_overlay` allocated the full screen with `Sense::hover()` inside a `Foreground` Area, which captured all pointer events before any pane or sidebar widget could see them. Fixed by removing the full-screen `allocate_exact_size` — the Area now auto-sizes to the minimap panel cells via `ui.interact()` calls inside `render_minimap`.
+
+`Cmd+Shift+M` toggled opacity instead of show/hide: `MinimapState` had `override_visible: bool` intended to pin full opacity; `toggle()` flipped it, making the minimap brighter/dimmer but never hiding it. Renamed to `visible: bool` (default `true`), `toggle()` now flips show/hide, `draw_minimap_overlay` returns early when `!visible`.
+
+Spatial pages in sidebar: sidebar loop iterated all contexts with no filter. Added `if self.contexts[i].spatial { continue; }` guard. Pages (`Cmd+N` / `Cmd+Shift+N`) now set `spatial: true`; sidebar contexts set `spatial: false`.
+
+Minimap covering `?` button: `INSET = 8.0` left the panel overlapping the toolbar and shortcuts button (~44px from top). Split into `INSET_TOP = 52.0` / `INSET_RIGHT = 16.0`.
+
+Also: removed `#[serde(default)]` from `spatial` in `SavedContext` — old workspace files without the field will fail to parse, trigger the existing backup-rename logic in `WorkspaceFile::load()`, and start fresh. No backward compat shim needed.
+
+**Breaks if:** clicking in panes or sidebar does nothing (mouse regression), or `Cmd+Shift+M` makes the minimap dimmer rather than hiding it, or spatial pages appear as tabs in the sidebar.
+
 ## 2026-04-26 — [CHANGED] Spatial 2D page grid + minimap overlay (PR → alpha)
 
 Added `grid_x / grid_y` to `Context` and `SavedContext` (`#[serde(default)]` for backward compat). `Cmd+N` / `Cmd+Shift+N` now create pages on the grid instead of splitting panes — splits moved to `Cmd+\` / `Cmd+Shift+\`. `Cmd+Shift+H/J/K/L` navigate between pages (was LateralFocus — no free chord available so repurposed). Minimap overlay (`src/minimap.rs`) renders in top-right corner, fades after 3 s idle, pinned by `Cmd+Shift+M`. Page creation and spatial helpers live in `pane_ops/workspace.rs` (co-located with `new_context` for access to `pub(super) create_single_pane_tree`). Navigation-only helpers in `src/spatial.rs`.

@@ -12,16 +12,15 @@ use std::time::Instant;
 
 /// Runtime state for the minimap overlay.
 pub struct MinimapState {
-    /// Whether the minimap is pinned visible via `Cmd+Shift+M`. When `true`
-    /// the overlay is always at full opacity regardless of idle time.
-    pub override_visible: bool,
+    /// Whether the minimap is shown at all. `Cmd+Shift+M` toggles this.
+    pub visible: bool,
     last_activity: Instant,
 }
 
 impl MinimapState {
     pub fn new() -> Self {
         Self {
-            override_visible: false,
+            visible: true,
             last_activity: Instant::now(),
         }
     }
@@ -33,14 +32,14 @@ impl MinimapState {
     }
 
     /// Returns `true` when the minimap should render at reduced opacity
-    /// (>3 s since last activity and not pinned visible).
+    /// (>3 s since last activity).
     pub fn is_faded(&self) -> bool {
         self.last_activity.elapsed().as_secs_f32() > 3.0
     }
 
-    /// Toggle the pinned-visible flag (`Cmd+Shift+M`).
+    /// Toggle show/hide (`Cmd+Shift+M`).
     pub fn toggle(&mut self) {
-        self.override_visible = !self.override_visible;
+        self.visible = !self.visible;
     }
 }
 
@@ -48,7 +47,9 @@ impl MinimapState {
 const CELL_W: f32 = 16.0;
 const CELL_H: f32 = 12.0;
 const CELL_GAP: f32 = 2.0;
-const INSET: f32 = 8.0;
+const INSET_RIGHT: f32 = 16.0;
+/// Top inset clears the toolbar (~34px) plus the `?` shortcuts button (~44px).
+const INSET_TOP: f32 = 52.0;
 const CORNER_RADIUS: f32 = 4.0;
 
 /// Render the minimap overlay into `ui`. Returns `Some(index)` if the user
@@ -68,12 +69,7 @@ pub fn render_minimap(
         return None;
     }
 
-    // Decide alpha multiplier based on faded/pinned state.
-    let alpha_mult = if state.override_visible || !state.is_faded() {
-        1.0_f32
-    } else {
-        0.15_f32
-    };
+    let alpha_mult = if state.is_faded() { 0.15_f32 } else { 1.0_f32 };
 
     // Compute bounding box of the grid in grid-coordinate space so we can
     // determine the pixel dimensions of the minimap panel.
@@ -90,8 +86,8 @@ pub fn render_minimap(
 
     // Top-right inset position.
     let panel_min = egui::pos2(
-        content_rect.right() - panel_w - INSET,
-        content_rect.top() + INSET,
+        content_rect.right() - panel_w - INSET_RIGHT,
+        content_rect.top() + INSET_TOP,
     );
     let panel_rect = egui::Rect::from_min_size(panel_min, egui::Vec2::new(panel_w, panel_h));
 

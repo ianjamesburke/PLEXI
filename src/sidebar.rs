@@ -68,6 +68,11 @@ impl PlexiApp {
         let mut menu_action: Option<(usize, ContextMenuAction)> = None;
 
         for i in 0..num_contexts {
+            // Spatial pages (Cmd+N / Cmd+Shift+N) are navigated via the
+            // minimap — they do not appear in the sidebar context list.
+            if self.contexts[i].spatial {
+                continue;
+            }
             let is_active = i == self.active_context;
             let is_renaming = self.renaming_context == Some(i);
 

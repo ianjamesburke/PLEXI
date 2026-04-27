@@ -32,6 +32,7 @@ impl PlexiApp {
             zoomed_pane: None,
             grid_x: 0,
             grid_y,
+            spatial: false,
         });
         self.active_context = self.contexts.len() - 1;
     }
@@ -76,6 +77,7 @@ impl PlexiApp {
             zoomed_pane: None,
             grid_x,
             grid_y,
+            spatial: true,
         });
         self.active_context = self.contexts.len() - 1;
     }
@@ -212,6 +214,7 @@ impl PlexiApp {
                 focused_pane: context.focused_pane,
                 grid_x: context.grid_x,
                 grid_y: context.grid_y,
+                spatial: context.spatial,
             });
         }
 

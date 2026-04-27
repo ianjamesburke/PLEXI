@@ -28,6 +28,9 @@ pub struct SavedContext {
     pub grid_x: u32,
     #[serde(default)]
     pub grid_y: u32,
+    /// Whether this context is a spatial page (created by `Cmd+N` / `Cmd+Shift+N`).
+    /// Spatial pages are not shown in the sidebar.
+    pub spatial: bool,
 }
 
 #[derive(Serialize, Deserialize)]

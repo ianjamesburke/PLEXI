@@ -430,6 +430,7 @@ impl PlexiApp {
                     zoomed_pane: None,
                     grid_x: saved_ctx.grid_x,
                     grid_y: saved_ctx.grid_y,
+                    spatial: saved_ctx.spatial,
                 });
             }
             if !contexts.is_empty() {
@@ -524,6 +525,7 @@ impl PlexiApp {
                 zoomed_pane: None,
                 grid_x: 0,
                 grid_y: 0,
+                spatial: false,
             }],
             active_context: 0,
             sidebar_visible: true,
@@ -1885,8 +1887,8 @@ impl eframe::App for PlexiApp {
             self.draw_shortcuts_overlay(ctx);
         }
 
-        // Minimap overlay — shown when there are 2+ pages, fades after 3 s idle.
-        if self.contexts.len() > 1 || self.minimap.override_visible {
+        // Minimap overlay — shown when there are 2+ spatial pages.
+        if self.contexts.iter().filter(|c| c.spatial).count() > 0 {
             self.draw_minimap_overlay(ctx);
         }
 
