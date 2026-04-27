@@ -14,44 +14,51 @@ impl PlexiApp {
     ///
     /// `dx` = +1 right, -1 left; `dy` = +1 down, -1 up.
     ///
-    /// **Horizontal moves**: exact match only; updates `preferred_page_x` to
-    /// the x of the page landed on.
+    /// **Horizontal moves**: exact match only.
     ///
-    /// **Vertical moves**: first tries the exact `(preferred_page_x, target_y)`
-    /// position, then falls back to the page on `target_y` whose `grid_x` is
-    /// closest to `preferred_page_x`. This lets navigation reach rows that
-    /// have no page at the current column while preserving the remembered
-    /// horizontal position across multiple up/down presses.
+    /// **Vertical moves**: consult `last_page_x_per_row` to land on the most
+    /// recently visited page in the target row. Falls back to the page whose
+    /// `grid_x` is closest to the current column when the target row has never
+    /// been visited. Records the current and destination positions in
+    /// `last_page_x_per_row` on every successful move.
     pub(crate) fn navigate_page(&mut self, dx: i32, dy: i32) {
-        let active = &self.contexts[self.active_context];
-        let cur_x = active.grid_x;
-        let cur_y = active.grid_y;
+        let cur_x = self.contexts[self.active_context].grid_x;
+        let cur_y = self.contexts[self.active_context].grid_y;
 
-        if dx != 0 {
-            // Horizontal: exact match required.
-            let target_x = cur_x as i32 + dx;
-            if target_x < 0 {
+        let new_idx = if dx != 0 {
+            // Horizontal: exact match only.
+            let tx = cur_x as i32 + dx;
+            if tx < 0 {
                 return;
             }
-            let tx = target_x as u32;
-            if let Some(idx) = self.contexts.iter().position(|c| c.grid_x == tx && c.grid_y == cur_y) {
-                self.active_context = idx;
-                self.preferred_page_x = tx;
-            }
+            self.contexts
+                .iter()
+                .position(|c| c.grid_x == tx as u32 && c.grid_y == cur_y)
         } else if dy != 0 {
-            // Vertical: land on the page at target_y closest to preferred_page_x.
-            let target_y = cur_y as i32 + dy;
-            if target_y < 0 {
+            let ty = cur_y as i32 + dy;
+            if ty < 0 {
                 return;
             }
-            let ty = target_y as u32;
-            let preferred_x = self.preferred_page_x;
-            if let Some((idx, _)) = self.contexts.iter().enumerate()
+            let ty = ty as u32;
+            // Record where we are on the current row before leaving.
+            self.last_page_x_per_row.insert(cur_y, cur_x);
+            // Use per-row history; fall back to cur_x if this row was never visited.
+            let preferred_x = self.last_page_x_per_row.get(&ty).copied().unwrap_or(cur_x);
+            self.contexts
+                .iter()
+                .enumerate()
                 .filter(|(_, c)| c.grid_y == ty)
                 .min_by_key(|(_, c)| (c.grid_x as i64 - preferred_x as i64).unsigned_abs())
-            {
-                self.active_context = idx;
-            }
+                .map(|(i, _)| i)
+        } else {
+            return;
+        };
+
+        if let Some(idx) = new_idx {
+            self.active_context = idx;
+            let c = &self.contexts[idx];
+            // Record where we landed on the destination row.
+            self.last_page_x_per_row.insert(c.grid_y, c.grid_x);
         }
     }
 

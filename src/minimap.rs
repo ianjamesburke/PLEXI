@@ -20,7 +20,7 @@ pub struct MinimapState {
 impl MinimapState {
     pub fn new() -> Self {
         Self {
-            visible: true,
+            visible: false,
             last_activity: Instant::now(),
         }
     }
@@ -57,12 +57,17 @@ const CORNER_RADIUS: f32 = 4.0;
 ///
 /// The minimap is positioned in the top-right corner of `content_rect` with
 /// `INSET` px of margin.
+///
+/// `last_visited` maps each `grid_y` row to the `grid_x` of the last page
+/// visited there. Cells matching this map (but not the active cell) receive a
+/// subtle trail highlight so the user can see where they came from.
 pub fn render_minimap(
     ui: &mut egui::Ui,
     content_rect: egui::Rect,
     contexts: &[Context],
     active_context: usize,
     state: &MinimapState,
+    last_visited: &std::collections::HashMap<u32, u32>,
     colors: &Colors,
 ) -> Option<usize> {
     if contexts.is_empty() {
@@ -112,6 +117,18 @@ pub fn render_minimap(
         );
 
         let is_active = idx == active_context;
+        let is_trail = !is_active
+            && last_visited.get(&ctx.grid_y).copied() == Some(ctx.grid_x);
+
+        // Trail cells get a subtle accent-colored background drawn first.
+        if is_trail {
+            let trail_bg = apply_alpha(colors.accent, alpha_mult * 0.12);
+            ui.painter().rect_filled(
+                cell_rect,
+                egui::CornerRadius::same(2),
+                trail_bg,
+            );
+        }
 
         // Fill: active page = accent @ 80%, inactive = bg_active @ 60%.
         let fill = if is_active {
@@ -120,8 +137,9 @@ pub fn render_minimap(
             apply_alpha(colors.bg_active, alpha_mult * 0.60)
         };
 
-        // Border color.
-        let border_color = apply_alpha(colors.border, alpha_mult * 0.40);
+        // Border: trail cells get a slightly brighter border.
+        let border_alpha = if is_trail { 0.60 } else { 0.40 };
+        let border_color = apply_alpha(colors.border, alpha_mult * border_alpha);
 
         ui.painter().rect(
             cell_rect,

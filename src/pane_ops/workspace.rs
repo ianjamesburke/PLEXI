@@ -80,6 +80,11 @@ impl PlexiApp {
             spatial: true,
         });
         self.active_context = self.contexts.len() - 1;
+        // Auto-show minimap once there are 2+ spatial pages.
+        let spatial_count = self.contexts.iter().filter(|c| c.spatial).count();
+        if spatial_count >= 2 {
+            self.minimap.visible = true;
+        }
     }
 
     pub(crate) fn reset_active_context(&mut self) {
@@ -147,6 +152,10 @@ impl PlexiApp {
             if !still_present {
                 self.current_notify_id = None;
             }
+        }
+        // Auto-hide minimap when fewer than 2 spatial pages remain.
+        if self.contexts.iter().filter(|c| c.spatial).count() < 2 {
+            self.minimap.visible = false;
         }
     }
 

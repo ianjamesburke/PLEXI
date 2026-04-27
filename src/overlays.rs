@@ -1276,9 +1276,16 @@ impl PlexiApp {
                     &self.contexts,
                     active_context,
                     &self.minimap,
+                    &self.last_page_x_per_row,
                     &colors,
                 ) {
+                    // Record old position before switching.
+                    let old = &self.contexts[self.active_context];
+                    self.last_page_x_per_row.insert(old.grid_y, old.grid_x);
                     self.active_context = clicked_idx;
+                    // Record new position.
+                    let new = &self.contexts[clicked_idx];
+                    self.last_page_x_per_row.insert(new.grid_y, new.grid_x);
                     self.minimap.on_activity();
                 }
             });

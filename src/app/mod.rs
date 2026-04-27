@@ -186,10 +186,21 @@ pub struct PlexiApp {
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
     /// and the `Cmd+Shift+M` override-visible flag.
     pub(crate) minimap: crate::minimap::MinimapState,
-    /// Remembered column (grid_x) for vertical page navigation. Updated on
-    /// every horizontal move; vertical moves try to restore this x, picking
-    /// the closest page on the target row when an exact match doesn't exist.
-    pub(crate) preferred_page_x: u32,
+    /// Per-row navigation history for the spatial page grid. Maps `grid_y`
+    /// to the `grid_x` of the last page visited on that row. Vertical moves
+    /// consult this to land on the most recently accessed page in the target
+    /// row rather than the spatially closest one.
+    pub(crate) last_page_x_per_row: HashMap<u32, u32>,
+    /// The sidebar context that is currently "home" — the last non-spatial
+    /// context the user explicitly clicked. Spatial page navigation doesn't
+    /// change this value, so switching back to a sidebar context always
+    /// knows which one was home.
+    pub(crate) active_sidebar_context: usize,
+    /// Remembers the last `active_context` index that was set while each
+    /// sidebar context was home. Maps sidebar context index → context index
+    /// (which may be a spatial page). Restored when clicking back to that
+    /// sidebar context, so the user returns to wherever they were.
+    pub(crate) per_context_last_active: HashMap<usize, usize>,
 }
 
 impl PlexiApp {
@@ -489,7 +500,9 @@ impl PlexiApp {
                     agent_workspace_modal: None,
                     last_cli_map: crate::agent_workspace::persistence::load(),
                     minimap: crate::minimap::MinimapState::new(),
-                    preferred_page_x: 0,
+                    last_page_x_per_row: HashMap::new(),
+                    active_sidebar_context: 0,
+                    per_context_last_active: HashMap::new(),
                 };
             }
         }
@@ -572,7 +585,9 @@ impl PlexiApp {
             agent_workspace_modal: None,
             last_cli_map: crate::agent_workspace::persistence::load(),
             minimap: crate::minimap::MinimapState::new(),
-            preferred_page_x: 0,
+            last_page_x_per_row: HashMap::new(),
+            active_sidebar_context: 0,
+            per_context_last_active: HashMap::new(),
         }
     }
 
@@ -1893,8 +1908,8 @@ impl eframe::App for PlexiApp {
             self.draw_shortcuts_overlay(ctx);
         }
 
-        // Minimap overlay — shown when there are 2+ spatial pages.
-        if self.contexts.iter().filter(|c| c.spatial).count() > 0 {
+        // Minimap overlay — auto-hidden with <2 spatial pages; user-toggle above that.
+        if self.contexts.iter().filter(|c| c.spatial).count() >= 2 {
             self.draw_minimap_overlay(ctx);
         }
 

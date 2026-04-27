@@ -318,7 +318,11 @@ impl PlexiApp {
             self.renaming_context = Some(i);
             self.rename_buffer = self.contexts[i].name.clone();
         } else if let Some(i) = clicked_context {
-            self.active_context = i;
+            // Remember where we were in the old sidebar context, then restore
+            // where we were in the new one (defaulting to the context itself).
+            self.per_context_last_active.insert(self.active_sidebar_context, self.active_context);
+            self.active_sidebar_context = i;
+            self.active_context = self.per_context_last_active.get(&i).copied().unwrap_or(i);
         }
 
         if add_clicked {
