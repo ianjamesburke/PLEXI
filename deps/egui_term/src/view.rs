@@ -310,12 +310,19 @@ impl<'a> TerminalView<'a> {
         painter: &Painter,
     ) {
         let content = self.backend.sync();
-        let layout_min = layout.rect.min;
+        let ppp = painter.pixels_per_point();
+        // Snap origin and cell dimensions to device pixels so that
+        // cell_width * col_idx always lands on a pixel boundary. Without this,
+        // fractional cell sizes accumulate sub-pixel drift as the pane resizes.
+        let layout_min = egui::Pos2::new(
+            (layout.rect.min.x * ppp).round() / ppp,
+            (layout.rect.min.y * ppp).round() / ppp,
+        );
         let layout_max = layout.rect.max;
         let cols = content.terminal_size.columns() as f32;
         let lines = content.terminal_size.screen_lines() as f32;
-        let cell_height = layout.rect.height() / lines;
-        let cell_width = layout.rect.width() / cols;
+        let cell_height = (layout.rect.height() / lines * ppp).floor() / ppp;
+        let cell_width = (layout.rect.width() / cols * ppp).floor() / ppp;
         let global_bg =
             self.theme.get_color(Color::Named(NamedColor::Background));
 
