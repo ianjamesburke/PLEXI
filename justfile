@@ -282,7 +282,7 @@ install-alpha:
     rm -rf ~/.plexi-alpha/sdk/plexi_sdk.py ~/.plexi-alpha/sdk/plexi_sdk
     cp -R sdk/python/plexi_sdk ~/.plexi-alpha/sdk/plexi_sdk
     find ~/.plexi-alpha/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    cp -R examples/. ~/.plexi-alpha/apps/
+    rsync -a --delete examples/ ~/.plexi-alpha/apps/
     find ~/.plexi-alpha/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
     find ~/.plexi-alpha/apps -name '*.py' -exec chmod +x {} \;
 
@@ -344,7 +344,7 @@ install-v3:
     rm -rf ~/.plexi-v3/sdk/plexi_sdk.py ~/.plexi-v3/sdk/plexi_sdk
     cp -R sdk/python/plexi_sdk ~/.plexi-v3/sdk/plexi_sdk
     find ~/.plexi-v3/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    cp -R examples/. ~/.plexi-v3/apps/
+    rsync -a --delete examples/ ~/.plexi-v3/apps/
     # Remove any stale per-app SDK copies; apps import from ~/.plexi-v3/sdk/ via PYTHONPATH.
     find ~/.plexi-v3/apps -maxdepth 2 -name 'plexi_sdk.py' -delete
     find ~/.plexi-v3/apps -name '*.py' -exec chmod +x {} \;
@@ -408,7 +408,7 @@ install-beta:
     rm -rf ~/.plexi-beta/sdk/plexi_sdk.py ~/.plexi-beta/sdk/plexi_sdk
     cp -R sdk/python/plexi_sdk ~/.plexi-beta/sdk/plexi_sdk
     find ~/.plexi-beta/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    cp -R examples/. ~/.plexi-beta/apps/
+    rsync -a --delete examples/ ~/.plexi-beta/apps/
     find ~/.plexi-beta/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
     find ~/.plexi-beta/apps -name '*.py' -exec chmod +x {} \;
 
