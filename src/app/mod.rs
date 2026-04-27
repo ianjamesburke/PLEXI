@@ -186,6 +186,10 @@ pub struct PlexiApp {
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
     /// and the `Cmd+Shift+M` override-visible flag.
     pub(crate) minimap: crate::minimap::MinimapState,
+    /// Remembered column (grid_x) for vertical page navigation. Updated on
+    /// every horizontal move; vertical moves try to restore this x, picking
+    /// the closest page on the target row when an exact match doesn't exist.
+    pub(crate) preferred_page_x: u32,
 }
 
 impl PlexiApp {
@@ -485,6 +489,7 @@ impl PlexiApp {
                     agent_workspace_modal: None,
                     last_cli_map: crate::agent_workspace::persistence::load(),
                     minimap: crate::minimap::MinimapState::new(),
+                    preferred_page_x: 0,
                 };
             }
         }
@@ -567,6 +572,7 @@ impl PlexiApp {
             agent_workspace_modal: None,
             last_cli_map: crate::agent_workspace::persistence::load(),
             minimap: crate::minimap::MinimapState::new(),
+            preferred_page_x: 0,
         }
     }
 

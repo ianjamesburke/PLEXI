@@ -14,20 +14,24 @@ impl PlexiApp {
         ui.horizontal(|ui| {
             let active_ctx = &self.contexts[self.active_context];
 
-            // Context dots (page indicators)
-            if self.contexts.len() > 1 {
+            // Sidebar-visible context dots (spatial pages excluded — they're
+            // in the minimap instead).
+            let sidebar_contexts: Vec<usize> = (0..self.contexts.len())
+                .filter(|&i| !self.contexts[i].spatial)
+                .collect();
+            if sidebar_contexts.len() > 1 {
                 let dot_radius = 3.5;
                 let dot_spacing = 10.0;
-                let total_width = (self.contexts.len() as f32) * dot_spacing;
+                let total_width = (sidebar_contexts.len() as f32) * dot_spacing;
                 let (rect, _) = ui.allocate_exact_size(
                     Vec2::new(total_width, ui.available_height()),
                     egui::Sense::hover(),
                 );
                 let y = rect.center().y;
                 let start_x = rect.left() + dot_radius;
-                for i in 0..self.contexts.len() {
-                    let cx = start_x + (i as f32) * dot_spacing;
-                    let color = if i == self.active_context {
+                for (dot_i, ctx_i) in sidebar_contexts.iter().enumerate() {
+                    let cx = start_x + (dot_i as f32) * dot_spacing;
+                    let color = if *ctx_i == self.active_context {
                         self.colors.accent
                     } else {
                         self.colors.bg_active
@@ -38,28 +42,21 @@ impl PlexiApp {
                 ui.add_space(4.0);
             }
 
-            // Context info
+            // Title: "Name (x,y)" when spatial pages exist, just "Name" otherwise.
+            let has_spatial = self.contexts.iter().any(|c| c.spatial);
+            let title = if has_spatial {
+                format!(
+                    "{} ({},{})",
+                    active_ctx.name, active_ctx.grid_x, active_ctx.grid_y
+                )
+            } else {
+                active_ctx.name.clone()
+            };
             ui.label(
-                RichText::new(&active_ctx.name)
+                RichText::new(title)
                     .size(12.0)
                     .color(self.colors.text_primary)
                     .strong(),
-            );
-            ui.label(
-                RichText::new(active_ctx.path.display().to_string())
-                    .size(11.0)
-                    .color(self.colors.text_dim)
-                    .family(egui::FontFamily::Monospace),
-            );
-            let pane_count = active_ctx.panes.len();
-            ui.label(
-                RichText::new(format!(
-                    "{} pane{}",
-                    pane_count,
-                    if pane_count == 1 { "" } else { "s" }
-                ))
-                .size(11.0)
-                .color(self.colors.text_section),
             );
 
             // Right side — help button + notification badge
