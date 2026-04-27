@@ -310,19 +310,14 @@ impl<'a> TerminalView<'a> {
         painter: &Painter,
     ) {
         let content = self.backend.sync();
-        let ppp = painter.pixels_per_point();
-        // Snap origin and cell dimensions to device pixels so that
-        // cell_width * col_idx always lands on a pixel boundary. Without this,
-        // fractional cell sizes accumulate sub-pixel drift as the pane resizes.
-        let layout_min = egui::Pos2::new(
-            (layout.rect.min.x * ppp).round() / ppp,
-            (layout.rect.min.y * ppp).round() / ppp,
-        );
+        let layout_min = layout.rect.min;
         let layout_max = layout.rect.max;
-        let cols = content.terminal_size.columns() as f32;
-        let lines = content.terminal_size.screen_lines() as f32;
-        let cell_height = (layout.rect.height() / lines * ppp).floor() / ppp;
-        let cell_width = (layout.rect.width() / cols * ppp).floor() / ppp;
+        // Use font-metric-based cell dimensions from the committed terminal
+        // size rather than recomputing from the pane rect. Recomputing gives
+        // pane_width / committed_cols, which stretches cells continuously as
+        // the pane resizes between SIGWINCH events — causing the jitter.
+        let cell_width = content.terminal_size.cell_width as f32;
+        let cell_height = content.terminal_size.cell_height as f32;
         let global_bg =
             self.theme.get_color(Color::Named(NamedColor::Background));
 
