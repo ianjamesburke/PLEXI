@@ -78,6 +78,19 @@ Feature branches are cut from `alpha`, worked in `worktrees/`, and merged back t
 
 **Before creating a worktree:** check `git status` in `worktrees/alpha`. If there are uncommitted changes, ask the user whether to commit them to alpha first or carry the dirty HEAD into the new branch. Never silently drop uncommitted work.
 
+**Full done cycle (every PR, no exceptions):**
+1. Commit and push the feature branch
+2. Open a PR targeting `alpha`
+3. Wait for user approval — do not merge unilaterally
+4. Squash-merge the PR into `alpha` via `gh pr merge <number> --squash --delete-branch`
+5. Pull the merged commit into `worktrees/alpha`: `git pull` from inside `worktrees/alpha/`
+6. Run `just install-alpha` from inside `worktrees/alpha/` to confirm the build is clean
+7. Remove the feature worktree: `wtp remove <branch-name>`
+
+Steps 4–7 are mandatory. Skipping them is how uncommitted work gets silently lost on the next merge.
+
+**Small-changes batch PR:** When a session produces multiple small, related fixes that each touch different areas but share a single theme (e.g. "polish pass", "welcome screen tweaks"), they may land in one PR. Rule of thumb: if they can share one commit message and one `Breaks if:` line, they belong together. If they're unrelated or could conflict, keep them separate.
+
 Worktrees:
 - `worktrees/alpha` — alpha branch
 - `worktrees/beta` — beta branch
@@ -98,7 +111,7 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 - `alpha` → `just install-alpha` (run from inside `worktrees/alpha/`, not the repo root — the recipe builds from CWD, so running from the wrong directory installs from the wrong branch)
 - `main` → `just install`
 
-**Never claim a task complete based on an install from a feature worktree.** `just install-alpha` builds from source files in CWD — uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. Installing from a feature worktree is only valid during development iteration. The full done cycle is: commit → push → PR → merge to alpha → pull alpha → `just install-alpha` from `worktrees/alpha/`.
+**Never claim a task complete based on an install from a feature worktree.** `just install-alpha` builds from source files in CWD — uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. Installing from a feature worktree is only valid during development iteration. The full done cycle is: commit → push → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just install-alpha` from `worktrees/alpha/`.
 
 ## Logging
 
