@@ -686,15 +686,12 @@ impl PlexiApp {
             self.close_focused();
         }
 
-        // If closing the last pane emptied this context, remove it — unless it
-        // is the only context left at (0,0), which is the welcome-screen slot.
+        // If closing the last pane emptied this context and it isn't the only
+        // one left, remove it. Keeping at least one context avoids UI panics
+        // and preserves the welcome-screen slot.
         let active = self.active_context;
-        if self.contexts[active].panes.is_empty() {
-            let is_origin = self.contexts[active].grid_x == 0 && self.contexts[active].grid_y == 0;
-            let is_last = self.contexts.len() == 1;
-            if !(is_origin && is_last) {
-                self.delete_context(active);
-            }
+        if self.contexts[active].panes.is_empty() && self.contexts.len() > 1 {
+            self.delete_context(active);
         }
 
         false
