@@ -1365,14 +1365,14 @@ impl PlexiApp {
                                     .size(style::TEXT_BODY)
                                     .color(colors.text_dim),
                             );
-                            ui.add_space(4.0);
+                            ui.add_space(style::SPACE_SM / 2.0);
                             ui.label(
                                 RichText::new(*tip)
                                     .size(style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                             );
                         });
-                        ui.add_space(4.0);
+                        ui.add_space(style::SPACE_SM / 2.0);
                     }
 
                     ui.add_space(style::SPACE_XL);
@@ -1385,18 +1385,17 @@ impl PlexiApp {
                                 .size(style::TEXT_CAPTION)
                                 .color(colors.text_dim),
                         );
-                        ui.add_space(4.0);
+                        ui.add_space(style::SPACE_SM / 2.0);
                         ui.label(
                             RichText::new("If you'd like to support the project:")
                                 .size(style::TEXT_CAPTION)
                                 .color(colors.text_dim),
                         );
                         ui.add_space(style::SPACE_SM);
-                        if ui.button(RichText::new("☕  Buy Me a Coffee").size(style::TEXT_BODY)).clicked() {
-                            let _ = std::process::Command::new("open")
-                                .arg("https://buymeacoffee.com/ianjamesbu8")
-                                .spawn();
-                        }
+                        ui.hyperlink_to(
+                            RichText::new("☕  Buy Me a Coffee").size(style::TEXT_BODY),
+                            "https://buymeacoffee.com/ianjamesbu8",
+                        );
                     });
                 });
         });
