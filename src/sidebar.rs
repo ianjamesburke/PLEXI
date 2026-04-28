@@ -238,9 +238,15 @@ impl PlexiApp {
                                 ui.close_menu();
                             }
                         }
-                        if i < num_workspaces - 1 && ui.button("Move Down").clicked() {
-                            menu_action = Some((i, ContextMenuAction::MoveDown));
-                            ui.close_menu();
+                        if i < num_workspaces - 1 {
+                            if ui.button("Move Down").clicked() {
+                                menu_action = Some((i, ContextMenuAction::MoveDown));
+                                ui.close_menu();
+                            }
+                            if ui.button("Move to Bottom").clicked() {
+                                menu_action = Some((i, ContextMenuAction::MoveToBottom));
+                                ui.close_menu();
+                            }
                         }
                         if num_workspaces > 1 {
                             ui.separator();
@@ -288,6 +294,16 @@ impl PlexiApp {
                         self.active_context = i + 1;
                     } else if self.active_context == i + 1 {
                         self.active_context = i;
+                    }
+                }
+                ContextMenuAction::MoveToBottom => {
+                    let last = num_workspaces - 1;
+                    let ctx = self.contexts.remove(i);
+                    self.contexts.push(ctx);
+                    if self.active_context == i {
+                        self.active_context = last;
+                    } else if self.active_context > i {
+                        self.active_context -= 1;
                     }
                 }
                 ContextMenuAction::Delete => {

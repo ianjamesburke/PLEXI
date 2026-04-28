@@ -11,6 +11,7 @@ pub(crate) enum ContextMenuAction {
     MoveToTop,
     MoveUp,
     MoveDown,
+    MoveToBottom,
     Delete,
 }
 
