@@ -84,10 +84,11 @@ All changes, no matter how small, follow this cycle:
 2. **Implement** and commit inside that worktree
 3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
 4. **Wait for user approval** — do not merge unilaterally
-5. **Squash-merge on GitHub** (UI or `gh pr merge <number> --squash --delete-branch`) — this lands one clean commit on `origin/alpha`
+5. **Squash-merge on GitHub** (`gh pr merge <number> --squash`) — this lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch that is checked out by a worktree, and the flag will cause the merge command to fail.
 6. **Sync the local alpha worktree**: `git pull` from inside `worktrees/alpha/` — this is how the local copy catches up to what was just merged on GitHub
 7. **Install and verify**: `just install-alpha` from inside `worktrees/alpha/`
-8. **Remove the feature worktree**: `wtp remove <branch-name>`
+8. **Remove the feature worktree**: `wtp remove <branch-name>` — this must happen *before* branch deletion
+9. **Delete the remote branch**: `git push origin --delete <branch-name>`
 
 Steps 5–8 are mandatory after every merge. Skipping `git pull` + install is how uncommitted-looking work gets silently lost when the next PR lands.
 
