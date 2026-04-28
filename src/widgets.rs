@@ -78,17 +78,17 @@ pub(crate) fn selectable_row<R>(
 //     key_combo_list(ui, &[["⌘", "["], ["⌘", "]"]], colors, "to cycle");
 
 /// Padding around the key label text inside the chip.
-const KEYCAP_PAD_H: f32 = 5.0;
-const KEYCAP_PAD_V: f32 = 1.0;
+const KEYCAP_PAD_H: f32 = 6.0;
+const KEYCAP_PAD_V: f32 = 3.0;
 /// Minimum chip width — keeps single-char keys like `[` from looking cramped.
-const KEYCAP_MIN_W: f32 = 16.0;
+const KEYCAP_MIN_W: f32 = 18.0;
 
 /// Render a single keycap chip. Allocates its own exact-size rect and
 /// returns the egui Response so callers can compose with other widgets.
 pub(crate) fn key_chip(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui::Response {
-    let font_id = egui::FontId::monospace(style::TEXT_HINT);
+    let font_id = egui::FontId::monospace(style::TEXT_CAPTION);
     let galley = ui
-        .fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_dim));
+        .fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_primary));
     let text_w = galley.size().x;
     let text_h = galley.size().y;
     let chip_w = (text_w + KEYCAP_PAD_H * 2.0).max(KEYCAP_MIN_W);
@@ -105,12 +105,11 @@ pub(crate) fn key_chip(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui:
         Stroke::new(1.0, colors.border),
         StrokeKind::Inside,
     );
-    // Centre the text horizontally inside the chip.
     let text_pos = Pos2::new(
         rect.center().x - text_w / 2.0,
         rect.min.y + KEYCAP_PAD_V,
     );
-    painter.galley(text_pos, galley, colors.text_dim);
+    painter.galley(text_pos, galley, colors.text_primary);
     response
 }
 
