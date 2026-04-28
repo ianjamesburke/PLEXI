@@ -4,7 +4,7 @@
 // Cmd+\                       — split focused pane to the right (mirror type)
 // Cmd+Shift+\                 — split focused pane below (mirror type)
 // Cmd+N                       — new page to the right on the current grid row
-// Cmd+Shift+N                 — new page on a new row below
+// Cmd+Shift+N                 — new sidebar context
 // Cmd+W                       — close pane
 // Cmd+H/J/K/L                 — navigate panes
 // Cmd+Shift+H/J/K/L           — navigate to adjacent page (spatial grid)
@@ -96,9 +96,9 @@ pub enum Action {
     /// Create a new page (context) to the right of the active one on the same
     /// grid row. Bound to Cmd+N.
     NewPageRight,
-    /// Create a new page (context) at (0, max_y + 1) — starts a new grid row.
+    /// Create a new sidebar context and immediately open the rename modal.
     /// Bound to Cmd+Shift+N.
-    NewPageNextRow,
+    NewContext,
     /// Navigate to the adjacent page in the spatial grid. Bound to
     /// Cmd+Shift+H/J/K/L (left/down/up/right).
     PageLeft,
@@ -107,6 +107,8 @@ pub enum Action {
     PageRight,
     /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
     ToggleMinimap,
+    /// Reload configuration from disk. Bound to Cmd+Shift+,.
+    ReloadConfig,
 }
 
 /// Poll global keyboard actions.
@@ -242,11 +244,10 @@ pub fn poll_actions(
             actions.push(Action::SplitRight);
         }
 
-        // New page (Cmd+Shift+N = new row, Cmd+N = new page right on current
-        // row). Check Cmd+Shift+N before Cmd+N so the shifted variant
-        // is matched first.
+        // New context (Cmd+Shift+N) vs new spatial page (Cmd+N). Check shifted
+        // first so Cmd+Shift+N doesn't fall through to the Cmd+N branch.
         if input.consume_key(cmd_shift, egui::Key::N) {
-            actions.push(Action::NewPageNextRow);
+            actions.push(Action::NewContext);
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
             actions.push(Action::NewPageRight);
         }
@@ -297,6 +298,11 @@ pub fn poll_actions(
         // Open config (Cmd+,)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma) {
             actions.push(Action::OpenConfig);
+        }
+
+        // Reload configuration (Cmd+Shift+,)
+        if input.consume_key(cmd_shift, egui::Key::Comma) {
+            actions.push(Action::ReloadConfig);
         }
 
         // Open secrets manager (Cmd+Shift+S)

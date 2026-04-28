@@ -654,16 +654,18 @@ impl PlexiApp {
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
     ///
-    /// Returns `true` if the caller should quit the application (last pane in
-    /// the last context was closed). Returns `false` in all other cases.
+    /// Currently always returns `false`; the application does not quit when the
+    /// last pane is closed. The intended behaviour is to leave an empty context
+    /// (blank canvas) so the user can create a new spatial page with Cmd+N.
     pub(crate) fn execute_close_pane(&mut self) -> bool {
         self.contexts[self.active_context].zoomed_pane = None;
         let active_panes = self.contexts[self.active_context].panes.len();
         if active_panes > 1 {
             self.close_focused();
+        } else {
+            // Last pane in this window: close the window (context).
+            self.delete_context(self.active_context);
         }
-        // Last pane: do nothing. Cmd+W stops at one window.
-        // Cmd+Q is the quit path. Blank-canvas empty context is a TODO.
         false
     }
 }

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
     pub font_size: Option<f32>,
     pub theme_preset: Option<String>,
@@ -34,7 +34,7 @@ pub struct NotificationsConfig {
     pub interrupt_threshold: Option<u32>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct LogConfig {
     pub level: Option<String>,
 }
@@ -53,13 +53,11 @@ impl LogConfig {
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct BetaConfig {
     pub crt: Option<bool>,
     pub pulse: Option<bool>,
     pub ghost: Option<bool>,
-    /// Set to false to disable triple-Cmd+Q confirmation (default: true).
-    pub quit_confirm: Option<bool>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -200,9 +198,10 @@ const CONFIG_TEMPLATE: &str = r##"# ╔═════════════�
 font_size = 14.0
 
 # ── Confirmation Dialogs ───────────────────────────────────────
-# Set to false to disable the corresponding confirmation flow.
-# confirm_quit  = false   # Triple Cmd+Q to quit (default: true)
-# confirm_close = false   # Dialog before Cmd+W closes a pane (default: true)
+# confirm_quit requires triple Cmd+Q to exit (safer than a single press).
+# confirm_close shows a dialog before Cmd+W closes a pane.
+confirm_quit  = true
+confirm_close = false
 
 # ── Notifications ──────────────────────────────────────────────
 # The work-area modal is the one and only notification surface.
@@ -288,7 +287,6 @@ accent = "#89b4fa"
 # crt   = false    # Retro CRT scanlines + green phosphor tint
 # pulse = false    # Focused pane border gently breathes
 # ghost = false    # Unfocused panes render at reduced opacity
-# quit_confirm = false   # Deprecated; prefer top-level `confirm_quit`
 
 # ── Logging ────────────────────────────────────────────────────
 # [log]
@@ -443,9 +441,6 @@ impl BetaConfig {
         }
         if other.ghost.is_some() {
             self.ghost = other.ghost;
-        }
-        if other.quit_confirm.is_some() {
-            self.quit_confirm = other.quit_confirm;
         }
     }
 }

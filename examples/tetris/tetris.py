@@ -80,6 +80,8 @@ PIECES: dict[str, dict] = {
 
 PIECE_KEYS = list(PIECES.keys())
 
+CLEAR_FLASH_DURATION = 0.35  # seconds — rows flash before collapsing
+
 # Wall-kick offsets tried in order for non-I pieces
 KICKS = [(0, 0), (0, -1), (0, 1), (0, -2), (0, 2)]
 # I-piece has wider kick table
@@ -129,6 +131,7 @@ class TetrisApp(App):
         self.next = self._spawn()
         self.last_drop = time.time()
         self.lock_delay: float | None = None  # time when current piece should lock
+        self.clear_anim: tuple[list[int], float] | None = None  # (rows, start_time)
 
     def _spawn(self) -> Piece:
         return Piece(random.choice(PIECE_KEYS), row=0, col=3)
@@ -171,24 +174,30 @@ class TetrisApp(App):
         for r, c in self.current.cells():
             if r >= 0:
                 self.board[r][c] = color
-        self._clear_lines()
+        self.lock_delay = None
+        full = [r for r in range(ROWS) if all(cell is not None for cell in self.board[r])]
+        if full:
+            self.clear_anim = (full, time.time())
+            # Piece advance deferred until flash completes in _finish_clear
+        else:
+            self._advance_piece()
+
+    def _finish_clear(self, rows: list[int]) -> None:
+        n = len(rows)
+        for r in sorted(rows, reverse=True):
+            del self.board[r]
+            self.board.insert(0, [None] * COLS)
+        self.score += _score_for_lines(n, self.level)
+        self.lines += n
+        self.level = self.lines // 10 + 1
+        self._advance_piece()
+
+    def _advance_piece(self) -> None:
         self.current = self.next
         self.next = self._spawn()
         self.last_drop = time.time()
-        self.lock_delay = None
         if not self._valid(self.current):
             self.game_over = True
-
-    def _clear_lines(self) -> None:
-        full = [r for r in range(ROWS) if all(cell is not None for cell in self.board[r])]
-        for r in full:
-            del self.board[r]
-            self.board.insert(0, [None] * COLS)
-        n = len(full)
-        if n:
-            self.score += _score_for_lines(n, self.level)
-            self.lines += n
-            self.level = self.lines // 10 + 1
 
     def _hard_drop(self) -> None:
         g = self._ghost()
@@ -211,7 +220,14 @@ class TetrisApp(App):
     def on_render(self, ctx: RenderContext) -> None:
         now = time.time()
 
-        if not self.game_over and not self.paused:
+        # Tick line-clear animation
+        if self.clear_anim is not None:
+            rows, anim_start = self.clear_anim
+            if now - anim_start >= CLEAR_FLASH_DURATION:
+                self.clear_anim = None
+                self._finish_clear(rows)
+
+        if not self.game_over and not self.paused and self.clear_anim is None:
             # Gravity
             if now - self.last_drop >= _drop_interval(self.level):
                 moved = self.current.copy()
@@ -245,13 +261,24 @@ class TetrisApp(App):
                      color="#1a1a33", width=0.5)
 
         # Placed cells
+        clearing_rows: set[int] = set()
+        flash_on = False
+        if self.clear_anim is not None:
+            rows, anim_start = self.clear_anim
+            clearing_rows = set(rows)
+            t = (now - anim_start) / CLEAR_FLASH_DURATION
+            flash_on = (int(t * 8) % 2) == 0  # 4 white/dark cycles
+
         for row in range(ROWS):
             for col in range(COLS):
-                color = self.board[row][col]
-                if color:
+                if row in clearing_rows:
+                    if flash_on:
+                        self._cell(ctx, bx + col * cell, by + row * cell, cell, "#ffffff")
+                    # else: leave dark (show grid background) for blink effect
+                elif color := self.board[row][col]:
                     self._cell(ctx, bx + col * cell, by + row * cell, cell, color)
 
-        if not self.game_over:
+        if not self.game_over and self.clear_anim is None:
             # Ghost piece (dim outline)
             ghost = self._ghost()
             gc = self.current.color()
@@ -299,8 +326,8 @@ class TetrisApp(App):
         py += ps * 4 + 24
 
         # Controls
-        for line in ["← → move", "↑  rotate", "↓  soft drop",
-                     "SPC hard drop", "P  pause", "R  restart"]:
+        for line in ["← → / H L  move", "↑ / K  rotate", "↓ / J  soft drop",
+                     "SPC/↵ hard drop", "P     pause", "R     restart"]:
             ctx.text(px, py, line, size=10, color="#45475a")
             py += 14
 
@@ -325,11 +352,12 @@ class TetrisApp(App):
 
         # Controls hint below board
         hint_y = by + board_h + 6
-        ctx.text(bx, hint_y, "← → move  ↑ rotate  ↓ soft  SPC hard drop  P pause",
+        ctx.text(bx, hint_y, "← → / H L move  ↑ / K rotate  ↓ / J soft  SPC/↵ hard  P pause",
                  size=10, color="#313244")
 
-        # Drive the game loop — ~60 fps when active, ~10 fps when paused/over.
-        ctx.emit.schedule_render(16 if not self.game_over and not self.paused else 100)
+        # Drive the game loop — ~60 fps when active or animating, ~10 fps when paused/over.
+        active = not self.game_over and (not self.paused or self.clear_anim is not None)
+        ctx.emit.schedule_render(16 if active else 100)
 
     def _cell(self, ctx: RenderContext, x: float, y: float, size: float,
                color: str) -> None:
@@ -341,6 +369,11 @@ class TetrisApp(App):
     # ── Input ─────────────────────────────────────────────────────────────────
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+        # TODO: add sound effects once AudioPlay is exposed in the Python SDK
+        #   - line clear: short synth chord (pitch scales with number of lines cleared)
+        #   - hard drop: thud / impact tone
+        #   - game over: descending tone
+
         if self.game_over:
             if key == "r":
                 self._new_game()
@@ -350,28 +383,28 @@ class TetrisApp(App):
             self.paused = not self.paused
             return
 
-        if self.paused:
+        if self.paused or self.clear_anim is not None:
             return
 
-        if key == "ArrowLeft":
+        if key in ("ArrowLeft", "h"):
             moved = self.current.copy()
             moved.col -= 1
             if self._valid(moved):
                 self.current = moved
 
-        elif key == "ArrowRight":
+        elif key in ("ArrowRight", "l"):
             moved = self.current.copy()
             moved.col += 1
             if self._valid(moved):
                 self.current = moved
 
-        elif key == "ArrowDown":
+        elif key in ("ArrowDown", "j"):
             self._soft_drop()
 
-        elif key == "ArrowUp" or key == "x":
+        elif key in ("ArrowUp", "k", "x"):
             self._try_rotate()
 
-        elif key == " ":
+        elif key in (" ", "Enter"):
             self._hard_drop()
 
         elif key == "r":

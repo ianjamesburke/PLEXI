@@ -4,6 +4,7 @@ use objc2::runtime::{AnyObject, NSObject, Sel};
 use objc2::{sel, ClassType};
 use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
 use objc2_foundation::{MainThreadMarker, NSString};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 /// Wrapper to store a raw pointer to the handler in a static.
@@ -13,6 +14,15 @@ unsafe impl Send for JsonHandler {}
 unsafe impl Sync for JsonHandler {}
 
 static HANDLER: OnceLock<JsonHandler> = OnceLock::new();
+
+/// Set by the "Reload Configuration" menu item; polled each frame in
+/// `PlexiApp::update()`.
+static RELOAD_CONFIG_FLAG: AtomicBool = AtomicBool::new(false);
+
+/// Check and clear the reload flag. Called from the main app loop.
+pub fn take_reload_config_flag() -> bool {
+    RELOAD_CONFIG_FLAG.swap(false, Ordering::SeqCst)
+}
 
 fn register_handler_class() -> &'static objc2::runtime::AnyClass {
     static CLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
@@ -25,10 +35,18 @@ fn register_handler_class() -> &'static objc2::runtime::AnyClass {
             crate::config::open_config_file();
         }
 
+        unsafe extern "C" fn reload_config(_this: &AnyObject, _cmd: Sel, _sender: *mut AnyObject) {
+            RELOAD_CONFIG_FLAG.store(true, Ordering::SeqCst);
+        }
+
         unsafe {
             builder.add_method(
                 sel!(openConfig:),
                 open_config as unsafe extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(reloadConfig:),
+                reload_config as unsafe extern "C" fn(_, _, _),
             );
         }
 
@@ -77,8 +95,21 @@ pub fn customize_app_menu() {
     // Remove "Quit" (Cmd+Q) so it reaches egui's consume_key for proper save-on-quit
     remove_items_with_action(&app_menu, sel!(terminate:));
 
-    // Add "Open Config" item at the top of the app menu
+    // Add "Reload Config" and "Open Config" items at the top of the app menu
     let handler = get_handler();
+
+    let reload_title = NSString::from_str("Reload Configuration");
+    let reload_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &reload_title,
+            Some(sel!(reloadConfig:)),
+            &NSString::from_str(""),
+        )
+    };
+    unsafe { reload_item.setTarget(Some(&*handler)) };
+    app_menu.addItem(&reload_item);
+
     let title = NSString::from_str("Open Config\u{2026}");
     let key_equiv = NSString::from_str(",");
     let item = unsafe {

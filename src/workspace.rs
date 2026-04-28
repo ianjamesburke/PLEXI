@@ -2,16 +2,29 @@ use crate::agent_workspace::AgentCli;
 use crate::tiling::PaneId;
 use egui_tiles::{TileId, Tree};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct WorkspaceFile {
     pub version: u32,
-    pub active_context: usize,
+    /// Active workspace index (sidebar context).
+    pub active_workspace: usize,
     pub sidebar_visible: bool,
     pub next_pane_id: u64,
+    pub workspaces: Vec<SavedWorkspaceMeta>,
     pub contexts: Vec<SavedContext>,
+    /// workspace_id → last active context_id for that workspace.
+    #[serde(default)]
+    pub workspace_active_window: HashMap<u64, u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SavedWorkspaceMeta {
+    pub name: String,
+    pub path: PathBuf,
+    pub context_id: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -21,24 +34,14 @@ pub struct SavedContext {
     pub tree: Tree<PaneId>,
     pub panes: Vec<SavedPane>,
     pub focused_pane: Option<TileId>,
-    /// Spatial grid position. Defaults to `(0, 0)` so old workspace files
-    /// without these fields load cleanly — all legacy contexts land at the
-    /// origin, which is degenerate but not broken.
     #[serde(default)]
     pub grid_x: u32,
     #[serde(default)]
     pub grid_y: u32,
-    /// Whether this context is a spatial page (created by `Cmd+N` / `Cmd+Shift+N`).
-    /// Spatial pages are not shown in the sidebar.
-    pub spatial: bool,
-    /// Stable unique ID. Defaults to 0 so old workspace files load cleanly;
-    /// the restore path assigns real IDs after loading.
     #[serde(default)]
     pub context_id: u64,
-    /// For spatial pages: the `context_id` of the owning sidebar context.
-    /// For sidebar contexts: 0 (they are roots). Defaults to 0 for legacy files.
     #[serde(default)]
-    pub parent_context_id: u64,
+    pub workspace_id: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,8 +108,8 @@ impl WorkspaceFile {
             Ok(d) => d,
             Err(_) => return None,
         };
-        match serde_json::from_str(&data) {
-            Ok(ws) => Some(ws),
+        let ws: Self = match serde_json::from_str(&data) {
+            Ok(ws) => ws,
             Err(e) => {
                 log::warn!("Failed to parse workspace file: {e}");
                 let backup = path.with_extension(format!(
@@ -117,9 +120,23 @@ impl WorkspaceFile {
                         .unwrap_or(0)
                 ));
                 let _ = std::fs::rename(&path, &backup);
-                None
+                return None;
             }
+        };
+        if ws.version != 2 {
+            log::info!("Ignoring old workspace file version {}; starting fresh", ws.version);
+            let backup = path.with_extension(format!(
+                "backup-v{}-{}.json",
+                ws.version,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            ));
+            let _ = std::fs::rename(&path, &backup);
+            return None;
         }
+        Some(ws)
     }
 }
 
@@ -191,21 +208,15 @@ mod tests {
         assert_eq!(aw.task_label, "fix the auth bug");
     }
 
-    /// Legacy workspace files that omit `grid_x` / `grid_y` must deserialize
-    /// cleanly with both fields defaulting to 0. This guards the `#[serde(default)]`
-    /// annotation on `SavedContext`.
+    /// SavedContext omits `grid_x` / `grid_y` defaults cleanly.
     #[test]
-    fn grid_coords_default_to_zero_on_legacy_load() {
+    fn grid_coords_default_to_zero_on_load() {
         use egui_tiles::Tree;
 
-        // Build a minimal valid tree and round-trip through JSON so we get a
-        // real serialized form without needing to hard-code egui_tiles internals.
         let tree: Tree<PaneId> = Tree::empty("test");
         let tree_json = serde_json::to_string(&tree).expect("tree must serialize");
 
-        // Compose a SavedContext JSON without grid_x / grid_y — simulates a
-        // workspace written by a Plexi version before spatial pages were added.
-        let legacy_json = format!(
+        let json = format!(
             r#"{{
                 "name": "Default",
                 "path": "/tmp",
@@ -216,8 +227,8 @@ mod tests {
             tree_json
         );
 
-        let restored: SavedContext = serde_json::from_str(&legacy_json)
-            .expect("legacy SavedContext without grid_x/grid_y must deserialize");
+        let restored: SavedContext = serde_json::from_str(&json)
+            .expect("SavedContext without grid_x/grid_y must deserialize");
         assert_eq!(restored.grid_x, 0, "grid_x must default to 0");
         assert_eq!(restored.grid_y, 0, "grid_y must default to 0");
     }

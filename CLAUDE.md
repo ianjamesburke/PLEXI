@@ -65,6 +65,10 @@ Each app is a subdirectory with `manifest.toml` and an executable entry point. I
 
 Feature branches are cut from `alpha`, worked in `worktrees/`, and merged back to `alpha` via PR. Never commit directly to `main` or `beta`.
 
+**Always run `wtp add` from inside `worktrees/alpha/`**, not from the repo root or any other worktree. This ensures the new branch forks from alpha's current HEAD — including uncommitted changes — so PRs merge cleanly back to alpha. Cutting from main silently orphans in-flight work.
+
+**Before creating a worktree:** check `git status` in `worktrees/alpha`. If there are uncommitted changes, ask the user whether to commit them to alpha first or carry the dirty HEAD into the new branch. Never silently drop uncommitted work.
+
 Worktrees:
 - `worktrees/alpha` — alpha branch
 - `worktrees/beta` — beta branch
@@ -82,7 +86,7 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 `just install` runs `cargo bundle --release`, copies the `.app` to `/Applications`, extracts the binary to `/usr/local/bin/plexi`, then runs `lsregister -f <bundle>` and `pbs -update` to refresh macOS Services.
 
 **After every completed code change, install for the active branch** before reporting the task complete:
-- `alpha` → `just install-alpha`
+- `alpha` → `just install-alpha` (run from inside `worktrees/alpha/`, not the repo root — the recipe builds from CWD, so running from the wrong directory installs from the wrong branch)
 - `main` → `just install`
 
 ## Logging

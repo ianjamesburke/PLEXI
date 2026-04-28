@@ -14,11 +14,8 @@ impl PlexiApp {
         ui.horizontal(|ui| {
             let active_ctx = &self.contexts[self.active_context];
 
-            // Sidebar-visible context dots (spatial pages excluded — they're
-            // in the minimap instead).
-            let sidebar_contexts: Vec<usize> = (0..self.contexts.len())
-                .filter(|&i| !self.contexts[i].spatial)
-                .collect();
+            // Workspace dots
+            let sidebar_contexts: Vec<usize> = (0..self.workspaces.len()).collect();
             if sidebar_contexts.len() > 1 {
                 let dot_radius = 3.5;
                 let dot_spacing = 10.0;
@@ -31,7 +28,7 @@ impl PlexiApp {
                 let start_x = rect.left() + dot_radius;
                 for (dot_i, ctx_i) in sidebar_contexts.iter().enumerate() {
                     let cx = start_x + (dot_i as f32) * dot_spacing;
-                    let color = if *ctx_i == self.active_context {
+                    let color = if *ctx_i == self.active_workspace {
                         self.colors.accent
                     } else {
                         self.colors.bg_active
@@ -42,15 +39,18 @@ impl PlexiApp {
                 ui.add_space(4.0);
             }
 
-            // Title: "Name (x,y)" when spatial pages exist, just "Name" otherwise.
-            let has_spatial = self.contexts.iter().any(|c| c.spatial);
-            let title = if has_spatial {
+            // Title: "Workspace (x,y)" when multiple windows exist,
+            // otherwise just the workspace name.
+            let ws = &self.workspaces[self.active_workspace];
+            let ws_id = ws.context_id;
+            let window_count = self.contexts.iter().filter(|c| c.workspace_id == ws_id).count();
+            let title = if window_count > 1 {
                 format!(
                     "{} ({},{})",
-                    active_ctx.name, active_ctx.grid_x, active_ctx.grid_y
+                    ws.name, active_ctx.grid_x, active_ctx.grid_y
                 )
             } else {
-                active_ctx.name.clone()
+                ws.name.clone()
             };
             ui.label(
                 RichText::new(title)
@@ -146,6 +146,8 @@ impl PlexiApp {
                                     (&["\u{2318}", "B"], "Toggle sidebar"),
                                     (&["\u{2318}", "\u{21A9}"], "Zoom pane"),
                                     (&["\u{2318}", "N"], "New context"),
+                                    (&["\u{2318}", ","], "Open config"),
+                                    (&["\u{2318}", "\u{21E7}", ","], "Reload config"),
                                     (&["\u{2318}", "/"], "This help"),
                                     (&["\u{2318}", "Q"], "Quit"),
                                 ];
@@ -1266,10 +1268,8 @@ impl PlexiApp {
         let content_rect = ctx.screen_rect();
         let active_context = self.active_context;
         let colors = self.colors;
-        let sidebar_ctx_id = self.contexts
-            .get(self.active_sidebar_context)
-            .map(|c| c.context_id)
-            .unwrap_or(0);
+        let ws_id = self.workspaces[self.active_workspace].context_id;
+        let ws_name = self.workspaces[self.active_workspace].name.clone();
 
         egui::Area::new(egui::Id::new("minimap_overlay"))
             .order(egui::Order::Foreground)
@@ -1281,24 +1281,57 @@ impl PlexiApp {
                     content_rect,
                     &self.contexts,
                     active_context,
-                    &self.minimap,
                     &self.last_page_x_per_row,
                     &colors,
-                    sidebar_ctx_id,
+                    ws_id,
+                    &ws_name,
                 ) {
-                    // Record old position before switching.
                     let old = &self.contexts[self.active_context];
                     self.last_page_x_per_row.insert(old.grid_y, old.grid_x);
                     self.active_context = clicked_idx;
-                    // Record new position.
                     let new = &self.contexts[clicked_idx];
                     self.last_page_x_per_row.insert(new.grid_y, new.grid_x);
-                    self.minimap.on_activity();
+                    self.workspace_active_window.insert(ws_id, new.context_id);
                 }
             });
+    }
 
-        if !self.minimap.is_faded() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        }
+    pub(crate) fn draw_welcome_screen(&self, ui: &mut egui::Ui) {
+        let colors = self.colors;
+        let available_height = ui.available_height();
+        ui.add_space(available_height * 0.28);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("PLEXI")
+                    .size(36.0)
+                    .color(colors.text_primary)
+                    .strong(),
+            );
+
+            ui.add_space(32.0);
+
+            let hint_color = colors.text_dim;
+            let key_color = colors.text_primary;
+
+            let hints: &[(&str, &str)] = &[
+                ("HJK", "move between panes"),
+                ("Cmd + HJKL", "move between windows"),
+                ("Cmd + Shift + HJKL", "navigate to / create a window"),
+                ("Cmd + N", "open a terminal"),
+            ];
+
+            for (keys, desc) in hints {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [200.0, 20.0],
+                        egui::Label::new(
+                            RichText::new(*keys).size(12.0).color(key_color).monospace(),
+                        ),
+                    );
+                    ui.label(RichText::new(*desc).size(12.0).color(hint_color));
+                });
+                ui.add_space(6.0);
+            }
+        });
     }
 }

@@ -6,60 +6,136 @@
 //! nearby pages after deletion. Page *creation* lives in
 //! `pane_ops/workspace.rs` (alongside `new_context`) so it can access
 //! the `pub(super)` `create_single_pane_tree` helper.
+//!
+//! # Navigation vs. Creation — the invariant
+//!
+//! `navigate_page` is a **pure navigation** function: it only switches
+//! `active_context` to an *existing* page. It never creates. The creation
+//! policy (e.g. "new rows start at column 0") lives exclusively in
+//! `navigate_or_create_page`. Never put creation semantics into
+//! `navigate_page` or `find_navigation_target`.
+//!
+//! This separation is enforced by `find_navigation_target` being a free
+//! function with no access to `&mut PlexiApp`. Unit tests in this module
+//! cover both contracts independently; any regression in either will
+//! immediately fail a test.
 
 use crate::app::PlexiApp;
+
+/// Pure navigation target search — no application state, fully unit-testable.
+///
+/// `pages` is a flat slice of `(grid_x, grid_y, workspace_id)` where the
+/// slice index matches the context index in `PlexiApp::contexts`.
+///
+/// **Horizontal** (`dx != 0`): exact column match in the current row.
+/// **Vertical** (`dy != 0`): closest-by-column in the target row, preferring
+/// the column recorded in `last_page_x_per_row` for that row (the most
+/// recently visited column), falling back to `cur_x` if the row is unvisited.
+///
+/// Returns `None` if no page exists in the target direction.
+fn find_navigation_target(
+    pages: &[(u32, u32, u64)],
+    workspace_id: u64,
+    cur_x: u32,
+    cur_y: u32,
+    dx: i32,
+    dy: i32,
+    last_page_x_per_row: &std::collections::HashMap<u32, u32>,
+) -> Option<usize> {
+    if dx != 0 {
+        let tx = cur_x as i32 + dx;
+        if tx < 0 {
+            return None;
+        }
+        let tx = tx as u32;
+        pages
+            .iter()
+            .position(|&(gx, gy, ws)| gx == tx && gy == cur_y && ws == workspace_id)
+    } else if dy != 0 {
+        let ty = cur_y as i32 + dy;
+        if ty < 0 {
+            return None;
+        }
+        let ty = ty as u32;
+        let preferred_x = last_page_x_per_row.get(&ty).copied().unwrap_or(cur_x);
+        pages
+            .iter()
+            .enumerate()
+            .filter(|(_, &(_, gy, ws))| gy == ty && ws == workspace_id)
+            .min_by_key(|(_, &(gx, _, _))| (gx as i64 - preferred_x as i64).unsigned_abs())
+            .map(|(i, _)| i)
+    } else {
+        None
+    }
+}
 
 impl PlexiApp {
     /// Navigate to the adjacent page in the given direction.
     ///
     /// `dx` = +1 right, -1 left; `dy` = +1 down, -1 up.
     ///
-    /// **Horizontal moves**: exact match only.
+    /// **Horizontal**: exact column match in the current row.
+    /// **Vertical**: closest-by-column in the target row, biased toward the
+    /// most recently visited column in that row (`last_page_x_per_row`).
     ///
-    /// **Vertical moves**: consult `last_page_x_per_row` to land on the most
-    /// recently visited page in the target row. Falls back to the page whose
-    /// `grid_x` is closest to the current column when the target row has never
-    /// been visited. Records the current and destination positions in
-    /// `last_page_x_per_row` on every successful move.
+    /// Does **not** create pages. For create-if-missing behaviour see
+    /// [`navigate_or_create_page`].
     pub(crate) fn navigate_page(&mut self, dx: i32, dy: i32) {
         let cur_x = self.contexts[self.active_context].grid_x;
         let cur_y = self.contexts[self.active_context].grid_y;
-        let parent_id = self.contexts[self.active_context].parent_context_id;
+        let ws_id = self.workspaces[self.active_workspace].context_id;
 
-        let new_idx = if dx != 0 {
-            // Horizontal: exact match only, scoped to the same parent context.
-            let tx = cur_x as i32 + dx;
-            if tx < 0 {
-                return;
-            }
-            self.contexts
-                .iter()
-                .position(|c| c.grid_x == tx as u32 && c.grid_y == cur_y && c.parent_context_id == parent_id)
-        } else if dy != 0 {
-            let ty = cur_y as i32 + dy;
-            if ty < 0 {
-                return;
-            }
-            let ty = ty as u32;
-            // Record where we are on the current row before leaving.
+        let pages: Vec<(u32, u32, u64)> = self
+            .contexts
+            .iter()
+            .map(|c| (c.grid_x, c.grid_y, c.workspace_id))
+            .collect();
+
+        // Record the current column before leaving this row so that returning
+        // to it later prefers the same column (the minimap trail indicator also
+        // reads this map).
+        if dy != 0 {
             self.last_page_x_per_row.insert(cur_y, cur_x);
-            // Use per-row history; fall back to cur_x if this row was never visited.
-            let preferred_x = self.last_page_x_per_row.get(&ty).copied().unwrap_or(cur_x);
-            self.contexts
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.grid_y == ty && c.parent_context_id == parent_id)
-                .min_by_key(|(_, c)| (c.grid_x as i64 - preferred_x as i64).unsigned_abs())
-                .map(|(i, _)| i)
-        } else {
-            return;
-        };
+        }
+
+        let new_idx =
+            find_navigation_target(&pages, ws_id, cur_x, cur_y, dx, dy, &self.last_page_x_per_row);
 
         if let Some(idx) = new_idx {
             self.active_context = idx;
             let c = &self.contexts[idx];
-            // Record where we landed on the destination row.
             self.last_page_x_per_row.insert(c.grid_y, c.grid_x);
+            self.workspace_active_window.insert(ws_id, c.context_id);
+        }
+    }
+
+    /// Navigate to the adjacent page, creating one at the target coordinates
+    /// if none exists.
+    ///
+    /// Creation policy: vertical moves start new rows at **column 0**;
+    /// horizontal moves extend the current row at the adjacent column.
+    pub(crate) fn navigate_or_create_page(&mut self, dx: i32, dy: i32) {
+        let cur_x = self.contexts[self.active_context].grid_x;
+        let cur_y = self.contexts[self.active_context].grid_y;
+
+        let tx = cur_x as i32 + dx;
+        let ty = cur_y as i32 + dy;
+        if tx < 0 || ty < 0 {
+            return;
+        }
+
+        let before = self.active_context;
+        self.navigate_page(dx, dy);
+        if self.active_context == before {
+            // Vertical: new rows always start at column 0.
+            // Horizontal: extend the current row at the adjacent column.
+            let create_x = if dy != 0 { 0 } else { tx as u32 };
+            self.create_page_at(create_x, ty as u32);
+            // Record the created page's position so no stale trail lingers on
+            // the source page. Without this, navigate_page's post-insert never
+            // fires (navigation failed), leaving last_page_x_per_row at the
+            // source's x — which renders the source cell as a trail indicator.
+            self.last_page_x_per_row.insert(ty as u32, create_x);
         }
     }
 
@@ -71,9 +147,11 @@ impl PlexiApp {
         removed_x: u32,
         removed_y: u32,
     ) -> usize {
+        let ws_id = self.workspaces[self.active_workspace].context_id;
         self.contexts
             .iter()
             .enumerate()
+            .filter(|(_, c)| c.workspace_id == ws_id)
             .min_by_key(|(_, c)| {
                 let dx = (c.grid_x as i64 - removed_x as i64).unsigned_abs();
                 let dy = (c.grid_y as i64 - removed_y as i64).unsigned_abs();
@@ -81,5 +159,154 @@ impl PlexiApp {
             })
             .map(|(i, _)| i)
             .unwrap_or(0)
+    }
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+//
+// These tests cover `find_navigation_target` directly. They are the
+// machine-enforced contract for navigation behaviour. If you change
+// `navigate_page` or `find_navigation_target` and a test breaks, you have
+// changed a documented behaviour — update the test intentionally rather than
+// silently.
+//
+// Creation policy (e.g. "vertical creates start at col 0") is NOT tested here
+// because it lives in `navigate_or_create_page`, not in this function.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Build a page list from (grid_x, grid_y) pairs, all in workspace 1.
+    fn pages(grid: &[(u32, u32)]) -> Vec<(u32, u32, u64)> {
+        grid.iter().map(|&(x, y)| (x, y, 1u64)).collect()
+    }
+
+    // ── Vertical navigation ───────────────────────────────────────────────
+
+    #[test]
+    fn up_prefers_same_column_when_unvisited() {
+        // row 0: [0,0] [1,0] [2,0]
+        // row 1: [0,1]  ← current
+        // Going up with no memory → falls back to cur_x=0 → lands on (0,0).
+        let ps = pages(&[(0, 0), (1, 0), (2, 0), (0, 1)]);
+        let result = find_navigation_target(&ps, 1, 0, 1, 0, -1, &HashMap::new());
+        assert_eq!(result, Some(0)); // (0,0)
+    }
+
+    #[test]
+    fn up_uses_last_page_x_per_row_memory() {
+        // row 0: [0,0] [1,0] [2,0]
+        // row 1: [0,1]  ← current
+        // Memory says row 0 was last at x=1 → should land on (1,0).
+        // This is the exact scenario from the reported bug: user was at (1,0),
+        // navigated down to (0,1), then pressed up — should return to (1,0).
+        let ps = pages(&[(0, 0), (1, 0), (2, 0), (0, 1)]);
+        let mut mem = HashMap::new();
+        mem.insert(0u32, 1u32);
+        let result = find_navigation_target(&ps, 1, 0, 1, 0, -1, &mem);
+        assert_eq!(result, Some(1)); // (1,0)
+    }
+
+    #[test]
+    fn down_prefers_same_column_when_unvisited() {
+        // row 0: [0,0]  ← current
+        // row 1: [0,1] [1,1] [2,1]
+        // Going down with no memory → falls back to cur_x=0 → lands on (0,1).
+        let ps = pages(&[(0, 0), (0, 1), (1, 1), (2, 1)]);
+        let result = find_navigation_target(&ps, 1, 0, 0, 0, 1, &HashMap::new());
+        assert_eq!(result, Some(1)); // (0,1)
+    }
+
+    #[test]
+    fn down_uses_last_page_x_per_row_memory() {
+        // row 0: [0,0]  ← current
+        // row 1: [0,1] [1,1]
+        // Memory says row 1 was last at x=1 → should land on (1,1).
+        let ps = pages(&[(0, 0), (0, 1), (1, 1)]);
+        let mut mem = HashMap::new();
+        mem.insert(1u32, 1u32);
+        let result = find_navigation_target(&ps, 1, 0, 0, 0, 1, &mem);
+        assert_eq!(result, Some(2)); // (1,1)
+    }
+
+    #[test]
+    fn vertical_picks_closest_when_memory_misses() {
+        // row 0: [0,0] [3,0]   — gap; nothing at x=1 or x=2
+        // row 1: [2,1]  ← current; no memory for row 0
+        // Falls back to cur_x=2; closest is (3,0) at distance 1 vs (0,0) at 2.
+        let ps = pages(&[(0, 0), (3, 0), (2, 1)]);
+        let result = find_navigation_target(&ps, 1, 2, 1, 0, -1, &HashMap::new());
+        assert_eq!(result, Some(1)); // (3,0)
+    }
+
+    #[test]
+    fn up_at_top_row_returns_none() {
+        let ps = pages(&[(0, 0)]);
+        assert_eq!(
+            find_navigation_target(&ps, 1, 0, 0, 0, -1, &HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn down_with_no_row_below_returns_none() {
+        let ps = pages(&[(0, 0)]);
+        assert_eq!(
+            find_navigation_target(&ps, 1, 0, 0, 0, 1, &HashMap::new()),
+            None
+        );
+    }
+
+    // ── Horizontal navigation ─────────────────────────────────────────────
+
+    #[test]
+    fn right_exact_match() {
+        // row 0: [0,0] [1,0] [2,0]  ← at (0,0)
+        let ps = pages(&[(0, 0), (1, 0), (2, 0)]);
+        let result = find_navigation_target(&ps, 1, 0, 0, 1, 0, &HashMap::new());
+        assert_eq!(result, Some(1)); // (1,0)
+    }
+
+    #[test]
+    fn left_exact_match() {
+        let ps = pages(&[(0, 0), (1, 0), (2, 0)]);
+        let result = find_navigation_target(&ps, 1, 2, 0, -1, 0, &HashMap::new());
+        assert_eq!(result, Some(1)); // (1,0)
+    }
+
+    #[test]
+    fn left_at_first_column_returns_none() {
+        let ps = pages(&[(0, 0), (1, 0)]);
+        assert_eq!(
+            find_navigation_target(&ps, 1, 0, 0, -1, 0, &HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn horizontal_skips_gap_returns_none() {
+        // [0,0] [2,0] — no page at (1,0)
+        let ps = pages(&[(0, 0), (2, 0)]);
+        // From (0,0), right → looks for (1,0) → not found.
+        assert_eq!(
+            find_navigation_target(&ps, 1, 0, 0, 1, 0, &HashMap::new()),
+            None
+        );
+    }
+
+    // ── Workspace isolation ───────────────────────────────────────────────
+
+    #[test]
+    fn ignores_pages_in_other_workspaces() {
+        // workspace 1: [0,0]
+        // workspace 2: [1,0]  ← in the same row/col but different workspace
+        let ps = vec![(0u32, 0u32, 1u64), (1u32, 0u32, 2u64)];
+        // From (0,0) in workspace 1, going right should find nothing.
+        assert_eq!(
+            find_navigation_target(&ps, 1, 0, 0, 1, 0, &HashMap::new()),
+            None
+        );
     }
 }

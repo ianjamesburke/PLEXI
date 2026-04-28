@@ -14,6 +14,18 @@ pub(crate) enum ContextMenuAction {
     Delete,
 }
 
+/// A workspace is a sidebar item — a project or directory scope.
+/// It does not own panes directly; pane layouts live in `Context` windows
+/// that reference this workspace via `workspace_id`.
+pub struct WorkspaceMeta {
+    pub name: String,
+    pub path: PathBuf,
+    /// Stable unique ID, assigned at creation and never reused.
+    pub context_id: u64,
+}
+
+/// A context is a single window — a pane layout with focus and zoom state.
+/// Every context belongs to a workspace (`workspace_id`).
 pub struct Context {
     pub name: String,
     pub path: PathBuf,
@@ -21,19 +33,15 @@ pub struct Context {
     pub panes: HashMap<PaneId, Pane>,
     pub focused_pane: Option<TileId>,
     pub zoomed_pane: Option<TileId>,
-    /// Spatial grid coordinates. `(0, 0)` is the origin (top-left page).
-    /// `grid_x` grows rightward, `grid_y` grows downward.
+    /// Spatial grid coordinates within the workspace's window grid.
+    /// `(0, 0)` is the origin (top-left). `grid_x` grows rightward,
+    /// `grid_y` grows downward.
     pub grid_x: u32,
     pub grid_y: u32,
-    /// True for pages created via `Cmd+N` / `Cmd+Shift+N`. Spatial pages are
-    /// navigated through the minimap and page-nav keys; they do not appear as
-    /// tabs in the sidebar context list.
-    pub spatial: bool,
-    /// Stable unique ID for this context, assigned at creation and never reused.
+    /// Stable unique ID for this context (window), assigned at creation.
     pub context_id: u64,
-    /// For spatial pages: the `context_id` of the owning sidebar context.
-    /// For sidebar contexts: 0 (they are roots).
-    pub parent_context_id: u64,
+    /// The workspace this window belongs to.
+    pub workspace_id: u64,
 }
 
 impl Context {

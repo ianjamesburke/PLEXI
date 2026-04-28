@@ -97,16 +97,19 @@ pub struct PlexiApp {
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
     pub(crate) ctx: egui::Context,
+    pub(crate) workspaces: Vec<crate::context::WorkspaceMeta>,
     pub(crate) contexts: Vec<Context>,
     pub(crate) active_context: usize,
+    pub(crate) active_workspace: usize,
     pub(crate) sidebar_visible: bool,
     pub(crate) show_shortcuts: bool,
     pub(crate) quitting: bool,
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
-    pub(crate) quit_confirm_required: bool,
-    pub(crate) confirm_close: bool,
     pub(crate) pending_close: bool,
+    /// Cached config so confirmation settings are read through the config
+    /// tunnel rather than duplicated as individual bool fields.
+    pub(crate) config: crate::config::PlexiConfig,
     pub(crate) renaming_context: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) registry: AppRegistry,
@@ -191,16 +194,12 @@ pub struct PlexiApp {
     /// consult this to land on the most recently accessed page in the target
     /// row rather than the spatially closest one.
     pub(crate) last_page_x_per_row: HashMap<u32, u32>,
-    /// The sidebar context that is currently "home" — the last non-spatial
-    /// context the user explicitly clicked. Spatial page navigation doesn't
-    /// change this value, so switching back to a sidebar context always
-    /// knows which one was home.
-    pub(crate) active_sidebar_context: usize,
-    /// Remembers the last `active_context` index that was set while each
-    /// sidebar context was home. Maps sidebar context index → context index
-    /// (which may be a spatial page). Restored when clicking back to that
-    /// sidebar context, so the user returns to wherever they were.
-    pub(crate) per_context_last_active: HashMap<usize, usize>,
+    /// workspace_id → last active context_id for that workspace.
+    pub(crate) workspace_active_window: HashMap<u64, u64>,
+    /// Per-workspace minimap visibility. Saved on workspace switch so each
+    /// workspace remembers its own minimap state across context changes.
+    /// Absent entry = first visit; defaults to `true` iff workspace has > 1 page.
+    pub(crate) minimap_visible_per_workspace: HashMap<u64, bool>,
     /// Monotonically increasing counter. Assigned to each new `Context` as its
     /// stable `context_id`. Never reused — only increments.
     pub(crate) next_context_id: u64,
@@ -230,9 +229,6 @@ impl PlexiApp {
         let active_workspace = config::active_workspace_root();
         let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
         let features = crate::features::FeatureFlags::from_config(&config);
-        let quit_confirm_required = config.confirm_quit
-            .unwrap_or_else(|| config.beta.as_ref().and_then(|b| b.quit_confirm).unwrap_or(true));
-        let confirm_close = config.confirm_close.unwrap_or(true);
         let notifications_enabled = config
             .notifications
             .as_ref()
@@ -448,9 +444,8 @@ impl PlexiApp {
                     zoomed_pane: None,
                     grid_x: saved_ctx.grid_x,
                     grid_y: saved_ctx.grid_y,
-                    spatial: saved_ctx.spatial,
                     context_id: saved_ctx.context_id,
-                    parent_context_id: saved_ctx.parent_context_id,
+                    workspace_id: saved_ctx.workspace_id,
                 });
             }
             if !contexts.is_empty() {
@@ -465,7 +460,20 @@ impl PlexiApp {
                         next_id = next_id.max(ctx.context_id + 1);
                     }
                 }
-                let active = ws.active_context.min(contexts.len() - 1);
+                let mut workspaces = Vec::new();
+                for saved_ws in ws.workspaces {
+                    workspaces.push(crate::context::WorkspaceMeta {
+                        name: saved_ws.name,
+                        path: saved_ws.path,
+                        context_id: saved_ws.context_id,
+                    });
+                }
+                let active_ws = ws.active_workspace.min(workspaces.len().saturating_sub(1));
+                let active_ws_id = workspaces[active_ws].context_id;
+                let active = ws.workspace_active_window.get(&active_ws_id)
+                    .and_then(|ctx_id| contexts.iter().position(|c| c.context_id == *ctx_id))
+                    .unwrap_or(0);
+                let window_count = contexts.iter().filter(|c| c.workspace_id == active_ws_id).count();
                 let mut host = crate::host::model::HostModel::new();
                 host.seed_next_pane_id(ws.next_pane_id);
                 return Self {
@@ -476,14 +484,15 @@ impl PlexiApp {
                     default_font_size,
                     ctx: cc.egui_ctx.clone(),
                     contexts,
+                    workspaces,
                     active_context: active,
+                    active_workspace: active_ws,
                     sidebar_visible: ws.sidebar_visible,
                     show_shortcuts: false,
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
-                    quit_confirm_required,
-                    confirm_close,
+                    config: config.clone(),
                     pending_close: false,
                     renaming_context: None,
                     rename_buffer: String::new(),
@@ -515,10 +524,10 @@ impl PlexiApp {
                     hot_reload_rx: hr_rx,
                     agent_workspace_modal: None,
                     last_cli_map: crate::agent_workspace::persistence::load(),
-                    minimap: crate::minimap::MinimapState::new(),
+                    minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
-                    active_sidebar_context: 0,
-                    per_context_last_active: HashMap::new(),
+                    workspace_active_window: ws.workspace_active_window,
+                    minimap_visible_per_workspace: HashMap::new(),
                     next_context_id: next_id,
                 };
             }
@@ -551,6 +560,11 @@ impl PlexiApp {
             colors,
             default_font_size,
             ctx: cc.egui_ctx.clone(),
+            workspaces: vec![crate::context::WorkspaceMeta {
+                name: "Default".into(),
+                path: path.clone(),
+                context_id: 1,
+            }],
             contexts: vec![Context {
                 name: "Default".into(),
                 path,
@@ -560,9 +574,8 @@ impl PlexiApp {
                 zoomed_pane: None,
                 grid_x: 0,
                 grid_y: 0,
-                spatial: false,
                 context_id: 1,
-                parent_context_id: 0,
+                workspace_id: 1,
             }],
             active_context: 0,
             sidebar_visible: true,
@@ -570,8 +583,7 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
-            quit_confirm_required,
-            confirm_close,
+            config,
             pending_close: false,
             renaming_context: None,
             rename_buffer: String::new(),
@@ -605,8 +617,9 @@ impl PlexiApp {
             last_cli_map: crate::agent_workspace::persistence::load(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
-            active_sidebar_context: 0,
-            per_context_last_active: HashMap::new(),
+            workspace_active_window: HashMap::new(),
+            minimap_visible_per_workspace: HashMap::new(),
+            active_workspace: 0,
             next_context_id: 2,
         }
     }
@@ -665,7 +678,7 @@ impl PlexiApp {
                 sender_pane_id: 0,
                 // Host-originated notifications are global (they originate
                 // outside any context) and always visible.
-                source_context: self.active_context,
+                source_context: self.active_workspace,
                 scope: crate::app_protocol::NotifyScope::Global,
                 level,
                 title,
@@ -749,14 +762,14 @@ impl PlexiApp {
     // push order (we never reorder the Vec; dismissal removes by id).
     //
     // Visibility: Context-scoped notifications are only visible when
-    // `source_context == self.active_context`. Global notifications are
+    // `source_context == self.active_workspace`. Global notifications are
     // always visible. The raw `pending_notifications` Vec stays flat;
-    // only the *view* changes with the active context.
+    // only the *view* changes with the active workspace.
 
-    /// True when this notification should appear in the current context view.
+    /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
         matches!(n.scope, crate::app_protocol::NotifyScope::Global)
-            || n.source_context == self.active_context
+            || n.source_context == self.active_workspace
     }
 
     /// Return ids of all *visible* notifications (for the current context),
@@ -929,7 +942,7 @@ impl PlexiApp {
         self.pending_notifications.push(PendingNotification {
             notify_id: internal_id.clone(),
             sender_pane_id: 0,
-            source_context: self.active_context,
+            source_context: self.active_workspace,
             scope: crate::app_protocol::NotifyScope::Global,
             level,
             title,
@@ -1430,9 +1443,17 @@ impl eframe::App for PlexiApp {
                         pane.as_app().map(|a| a.name.clone())
                     }
                 });
+            let ws = &self.workspaces[self.active_workspace];
+            let ws_id = ws.context_id;
+            let window_count = self.contexts.iter().filter(|c| c.workspace_id == ws_id).count();
+            let context_label = if window_count > 1 {
+                format!("{} ({},{})", ws.name, context.grid_x, context.grid_y)
+            } else {
+                ws.name.clone()
+            };
             let title = match pane_name {
-                Some(name) => format!("{} — {}", context.name, name),
-                None => context.name.clone(),
+                Some(name) => format!("{} — {}", context_label, name),
+                None => context_label,
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
@@ -1491,7 +1512,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ClosePane => {
-                    if self.confirm_close {
+                    if self.confirm_close() {
                         self.pending_close = true;
                     } else if self.execute_close_pane() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1509,7 +1530,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::Quit => {
-                    if !self.quit_confirm_required {
+                    if !self.confirm_quit() {
                         self.quitting = true;
                         self.save_workspace();
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1558,19 +1579,8 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SwitchContext(n) => {
-                    if n < self.contexts.len() {
-                        self.per_context_last_active.insert(self.active_sidebar_context, self.active_context);
-                        self.active_context = n;
-                        // Keep active_sidebar_context in sync: if target is a
-                        // spatial page, resolve to its parent workspace.
-                        if self.contexts[n].spatial {
-                            let parent_id = self.contexts[n].parent_context_id;
-                            if let Some(idx) = self.contexts.iter().position(|c| !c.spatial && c.context_id == parent_id) {
-                                self.active_sidebar_context = idx;
-                            }
-                        } else {
-                            self.active_sidebar_context = n;
-                        }
+                    if n < self.workspaces.len() {
+                        self.switch_workspace(n);
                     }
                 }
                 Action::NextTab => {
@@ -1608,6 +1618,9 @@ impl eframe::App for PlexiApp {
                 Action::OpenConfig => {
                     self.open_config_editor();
                 }
+                Action::ReloadConfig => {
+                    self.reload_config();
+                }
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
                 }
@@ -1640,28 +1653,22 @@ impl eframe::App for PlexiApp {
                     self.force_reload_focused_app();
                 }
                 Action::NewPageRight => {
-                    self.minimap.on_activity();
                     self.new_page_right();
                 }
-                Action::NewPageNextRow => {
-                    self.minimap.on_activity();
-                    self.new_page_next_row();
+                Action::NewContext => {
+                    self.new_context();
                 }
                 Action::PageLeft => {
-                    self.minimap.on_activity();
-                    self.navigate_page(-1, 0);
+                    self.navigate_or_create_page(-1, 0);
                 }
                 Action::PageRight => {
-                    self.minimap.on_activity();
-                    self.navigate_page(1, 0);
+                    self.navigate_or_create_page(1, 0);
                 }
                 Action::PageUp => {
-                    self.minimap.on_activity();
-                    self.navigate_page(0, -1);
+                    self.navigate_or_create_page(0, -1);
                 }
                 Action::PageDown => {
-                    self.minimap.on_activity();
-                    self.navigate_page(0, 1);
+                    self.navigate_or_create_page(0, 1);
                 }
                 Action::ToggleMinimap => {
                     self.minimap.toggle();
@@ -1675,16 +1682,34 @@ impl eframe::App for PlexiApp {
         // a fresh subprocess. Idempotent if the pane was closed since.
         self.drain_hot_reload_requests();
 
-        // Handle window close request (X button / system shutdown) — always quit
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
-            self.save_workspace();
+        // Reload configuration from disk when the user clicks
+        // "Reload Configuration" in the app menu.
+        if crate::macos_menu::take_reload_config_flag() {
+            self.reload_config();
         }
 
-        // All panes across all contexts exited
-        if self.contexts.iter().all(|c| c.panes.is_empty()) {
-            self.save_workspace();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
+        // Handle window close request (X button or macOS Cmd+Q OS event).
+        //
+        // On macOS, Cmd+Q fires BOTH a keyboard event (consumed by keys.rs →
+        // Action::Quit → triple-tap) AND a close_requested viewport event in the
+        // same frame. Without CancelClose here, the OS close wins the race,
+        // quitting immediately and bypassing the triple-tap entirely.
+        //
+        // We distinguish the two sources by whether a keyboard quit flow is in
+        // progress (quit_press_count > 0):
+        //   - quit_press_count > 0 → Cmd+Q initiated; cancel the OS close and let
+        //     the triple-tap flow own the quit path.
+        //   - quit_press_count == 0 → X button or system quit; save and allow close
+        //     immediately (no triple-tap for deliberate window close gestures).
+        //   - quitting == true → triple-tap completed; save and allow close.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.quitting {
+                self.save_workspace();
+            } else if self.confirm_quit() && self.quit_press_count > 0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else {
+                self.save_workspace();
+            }
         }
 
         // Toolbar
@@ -1724,7 +1749,7 @@ impl eframe::App for PlexiApp {
                 });
         }
 
-        // Central panel — terminal tiles
+        // Central panel — terminal tiles (or welcome screen when context is empty)
         egui::CentralPanel::default()
             .frame(egui::Frame {
                 fill: self.colors.bg_darkest,
@@ -1733,6 +1758,11 @@ impl eframe::App for PlexiApp {
                 ..Default::default()
             })
             .show(ctx, |ui| {
+                if self.contexts[self.active_context].panes.is_empty() {
+                    self.draw_welcome_screen(ui);
+                    return;
+                }
+
                 let ctx = &mut self.contexts[self.active_context];
 
                 // Resolve focused_pane if simplifier moved the tile
@@ -1939,9 +1969,13 @@ impl eframe::App for PlexiApp {
             self.draw_shortcuts_overlay(ctx);
         }
 
-        // Minimap overlay — auto-hidden with <2 spatial pages; user-toggle above that.
-        if self.contexts.iter().filter(|c| c.spatial).count() >= 2 {
+        // Minimap overlay — auto-hidden when current workspace has <2 windows.
+        let ws_id = self.workspaces[self.active_workspace].context_id;
+        let window_count = self.contexts.iter().filter(|c| c.workspace_id == ws_id).count();
+        if window_count >= 2 {
             self.draw_minimap_overlay(ctx);
+        } else {
+            self.minimap.visible = false;
         }
 
         // Command palette, run palette, rename-pane overlay, notification
@@ -1954,7 +1988,7 @@ impl eframe::App for PlexiApp {
         }
 
         // Quit confirmation overlay
-        if self.quit_confirm_required && self.quit_press_count > 0 {
+        if self.confirm_quit() && self.quit_press_count > 0 {
             // Reset on Escape or timeout
             let timed_out = self
                 .quit_last_press
@@ -2010,6 +2044,69 @@ impl PlexiApp {
     /// once per frame — the modal can open/close from many paths (arrival,
     /// Cmd+Shift+A, queue drains to empty mid-frame), so the source of truth is
     /// `show_notification_modal && !pending_notifications.is_empty()`.
+    /// Read `confirm_quit` from the config tunnel. Defaults to `true` so
+    /// users get the safer triple-tap behavior unless they explicitly opt out.
+    pub(crate) fn confirm_quit(&self) -> bool {
+        self.config.confirm_quit.unwrap_or(true)
+    }
+
+    /// Read `confirm_close` from the config tunnel. Defaults to `true` so
+    /// users get the confirmation dialog unless they explicitly opt out.
+    pub(crate) fn confirm_close(&self) -> bool {
+        self.config.confirm_close.unwrap_or(true)
+    }
+
+    /// Re-read configuration from disk and apply changes that can take
+    /// effect without a restart (theme, font size, notification settings,
+    /// confirmation toggles). Logs the reload so the user knows it worked.
+    pub(crate) fn reload_config(&mut self) {
+        let active_workspace = crate::config::active_workspace_root();
+        let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
+
+        // Theme
+        let theme_cfg = Self::resolve_theme_config(&fresh);
+        let new_colors = crate::theme::Colors::from_config(&theme_cfg);
+        if self.colors != new_colors {
+            self.colors = new_colors.clone();
+            crate::theme::setup_style(&self.ctx, &new_colors);
+        }
+
+        // Terminal theme
+        self.theme = crate::theme::terminal_theme(&theme_cfg);
+
+        // Font size
+        if let Some(size) = fresh.font_size {
+            if (size - self.default_font_size).abs() > 0.01 {
+                self.default_font_size = size;
+            }
+        }
+
+        // Notifications
+        self.notifications_enabled = fresh
+            .notifications
+            .as_ref()
+            .and_then(|n| n.enabled)
+            .unwrap_or(true);
+        self.notifications_focus_mode = fresh
+            .notifications
+            .as_ref()
+            .and_then(|n| n.focus_mode)
+            .unwrap_or(false);
+        self.notifications_interrupt_threshold = fresh
+            .notifications
+            .as_ref()
+            .and_then(|n| n.interrupt_threshold)
+            .unwrap_or(100);
+
+        // Feature flags
+        self.features = crate::features::FeatureFlags::from_config(&fresh);
+
+        // Replace the cached config
+        self.config = fresh;
+
+        log::info!("Configuration reloaded from disk.");
+    }
+
     /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors
     /// `sync_notification_modal_focus` — the source of truth is a boolean
     /// toggled from multiple paths, and the focus stack must follow it

@@ -128,10 +128,13 @@ impl PlexiApp {
                         image_pipe_id,
                         ..
                     } => {
+                        let ws_idx = self.contexts.get(ctx_idx)
+                            .and_then(|c| self.workspaces.iter().position(|w| w.context_id == c.workspace_id))
+                            .unwrap_or(0);
                         deferred.push(AppCommand::ShowNotification {
                             notify_id,
                             sender_pane_id: pane_id,
-                            source_context: ctx_idx,
+                            source_context: ws_idx,
                             level,
                             title,
                             body,
