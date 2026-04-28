@@ -1324,11 +1324,11 @@ impl PlexiApp {
                     // Each entry: (chip groups for one combo, description).
                     // Every modifier/key is a separate chip — no combined strings.
                     let shortcuts: &[(&[&str], &str)] = &[
-                        (&["⌘", "H", "J", "K", "L"], "move between panes"),
-                        (&["⌘", "⇧", "H", "J", "K", "L"], "move between windows"),
-                        (&["⌘", "N"], "open a terminal"),
-                        (&["⌘", "⇧", "N"], "new context"),
-                        (&["⌘", "/"], "keyboard shortcuts"),
+                        (&["Cmd", "H", "J", "K", "L"], "move between panes"),
+                        (&["Cmd", "Shift", "H", "J", "K", "L"], "move between windows"),
+                        (&["Cmd", "N"], "open a terminal"),
+                        (&["Cmd", "Shift", "N"], "new context"),
+                        (&["Cmd", "/"], "keyboard shortcuts"),
                     ];
 
                     for (keys, desc) in shortcuts {
