@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Default)]
 pub struct PlexiConfig {
@@ -8,6 +8,30 @@ pub struct PlexiConfig {
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
     pub log: Option<LogConfig>,
+    pub notifications: Option<NotificationsConfig>,
+    /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
+    pub confirm_quit: Option<bool>,
+    /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
+    pub confirm_close: Option<bool>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+pub struct NotificationsConfig {
+    /// Master switch. If false, incoming notifications are silently dropped —
+    /// apps still send them, but the modal never appears and the queue stays
+    /// empty. Defaults to true.
+    pub enabled: Option<bool>,
+    /// Focus mode. When true, NO notification auto-surfaces regardless of
+    /// priority. Everything queues silently; the user reviews via Cmd+Shift+A.
+    /// Defaults to false.
+    pub focus_mode: Option<bool>,
+    /// Minimum priority that may auto-open the modal. Notifications below
+    /// this value queue silently (badge ticks, Cmd+Shift+A reveals them).
+    /// At or above it, arrival auto-opens the modal. Defaults to 100
+    /// (`PRIORITY_HIGH`) — NORMAL and LOW are passive; HIGH and CRITICAL
+    /// interrupt. Set to 0 to auto-open everything; set to 201 to match
+    /// `focus_mode = true`.
+    pub interrupt_threshold: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -21,10 +45,10 @@ impl LogConfig {
     pub fn level_filter(&self) -> Option<log::LevelFilter> {
         match self.level.as_deref() {
             Some("error") => Some(log::LevelFilter::Error),
-            Some("warn")  => Some(log::LevelFilter::Warn),
-            Some("info")  => Some(log::LevelFilter::Info),
+            Some("warn") => Some(log::LevelFilter::Warn),
+            Some("info") => Some(log::LevelFilter::Info),
             Some("debug") => Some(log::LevelFilter::Debug),
-            _             => None,
+            _ => None,
         }
     }
 }
@@ -34,6 +58,8 @@ pub struct BetaConfig {
     pub crt: Option<bool>,
     pub pulse: Option<bool>,
     pub ghost: Option<bool>,
+    /// Set to false to disable triple-Cmd+Q confirmation (default: true).
+    pub quit_confirm: Option<bool>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -72,16 +98,84 @@ pub struct ThemeConfig {
     pub bright_foreground: Option<String>,
 }
 
-/// Returns the config directory name based on the running binary name.
-/// `plexi-alpha` → `.plexi-alpha`, `plexi-beta` → `.plexi-beta`, anything else → `.plexi`
-fn config_dir_name() -> &'static str {
+use std::sync::OnceLock;
+
+static PROFILE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+
+/// Set the active profile. Called once from main() after CLI parsing.
+/// `None` or `Some("default")` → fall through to binary-name detection.
+/// `Some(name)` → use `.plexi-<name>` as the config dir.
+pub fn set_profile(name: Option<String>) {
+    let normalized = match name.as_deref() {
+        None | Some("") | Some("default") => None,
+        Some(_) => name,
+    };
+    let _ = PROFILE_OVERRIDE.set(normalized);
+}
+
+/// If a profile is set and its directory doesn't exist yet, create it and
+/// seed `apps/` from the example apps embedded at compile time.
+pub fn ensure_profile_initialized() {
+    let dir = config_dir();
+    if dir.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("profile init: failed to create {}: {e}", dir.display());
+        return;
+    }
+    let apps_dir = dir.join("apps");
+    if let Err(e) = std::fs::create_dir_all(&apps_dir) {
+        eprintln!("profile init: failed to create apps dir: {e}");
+        return;
+    }
+    let embedded = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
+    if let Err(e) = embedded.extract(&apps_dir) {
+        eprintln!("profile init: failed to seed apps from bundle: {e}");
+        return;
+    }
+    // chmod +x on all .py entries.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(entries) = std::fs::read_dir(&apps_dir) {
+            for app_dir in entries.flatten().filter(|e| e.path().is_dir()) {
+                if let Ok(files) = std::fs::read_dir(app_dir.path()) {
+                    for f in files.flatten() {
+                        let p = f.path();
+                        if p.extension().and_then(|x| x.to_str()) == Some("py") {
+                            if let Ok(meta) = std::fs::metadata(&p) {
+                                let mut perms = meta.permissions();
+                                perms.set_mode(perms.mode() | 0o111);
+                                let _ = std::fs::set_permissions(&p, perms);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "profile init: seeded {} with {} apps",
+        dir.display(),
+        std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0)
+    );
+}
+
+/// Returns the config directory name.
+/// Priority: `--profile <name>` CLI flag → binary-name detection → `.plexi`.
+fn config_dir_name() -> String {
+    if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
+        return format!(".plexi-{profile}");
+    }
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha",
-        Some(name) if name.contains("beta") => ".plexi-beta",
-        _ => ".plexi",
+        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
+        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
+        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
+        _ => ".plexi".to_string(),
     }
 }
 
@@ -98,31 +192,76 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
-const CONFIG_TEMPLATE: &str = r##"# Plexi Configuration
-# Changes take effect on next launch.
+const CONFIG_TEMPLATE: &str = r##"# ╔══════════════════════════════════════════════════════════════╗
+# ║  Plexi Configuration                                        ║
+# ║  Changes take effect on next launch.                        ║
+# ╚══════════════════════════════════════════════════════════════╝
 
 font_size = 14.0
 
-# Theme preset — uncomment one to use it as a base.
-# Individual [theme] values below will override the preset.
-# Options: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
+# ── Confirmation Dialogs ───────────────────────────────────────
+# Set to false to disable the corresponding confirmation flow.
+# confirm_quit  = false   # Triple Cmd+Q to quit (default: true)
+# confirm_close = false   # Dialog before Cmd+W closes a pane (default: true)
+
+# ── Notifications ──────────────────────────────────────────────
+# The work-area modal is the one and only notification surface.
+# Apps emit `ctx.notify(...)`, `ctx.notify_choice(...)`, or
+# `ctx.notify_input(...)` and the modal renders each kind with
+# keyboard-first navigation (Enter confirms, j/k or ↑↓ cycle
+# options, 1-9 direct-select, Esc cancels when allowed).
+[notifications]
+# Master switch. If false, notifications are silently dropped at
+# arrival — apps still send them, the modal never appears, and
+# the queue stays empty.
+enabled = true
+
+# Focus mode. When true, NO notification auto-surfaces regardless of
+# priority. Everything queues silently; open Cmd+Shift+A to review.
+focus_mode = false
+
+# Minimum priority that may auto-open the modal. Notifications below
+# this value queue silently (badge ticks on the toolbar, Cmd+Shift+A
+# reveals them). At or above it, arrival auto-opens the modal.
+#
+# Tiers (from plexi_sdk):
+#   0   = PRIORITY_LOW       (background info)
+#   50  = PRIORITY_NORMAL    (standard confirmations — "note saved")
+#   100 = PRIORITY_HIGH      (needs attention soon)
+#   200 = PRIORITY_CRITICAL  (interrupt-level)
+#
+# Default = 100: NORMAL and LOW queue silently, HIGH and CRITICAL
+# interrupt. Set to 0 to auto-open everything. Set to 201 to match
+# focus_mode = true (nothing auto-opens).
+interrupt_threshold = 100
+
+# Esc vs Enter on the modal:
+#   Enter (or option-select / input-submit) = acknowledge. Notification
+#     is removed from the queue and the app receives NotifyAction.
+#   Esc = defer. Modal closes but the notification stays in the queue —
+#     open Cmd+Shift+A later to come back to it. No NotifyAction dispatched.
+#   Required notifications (required = true) cannot be Esc'd.
+
+# ── Theme ──────────────────────────────────────────────────────
+# Pick a preset OR customize individual colors below.
+# Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
 # theme_preset = "catppuccin-mocha"
 
 [theme]
-# UI chrome
-# bg_darkest = "#11111b"
-# bg_sidebar = "#181825"
-# bg_toolbar = "#181825"
-# terminal_bg = "#292a44"
-# bg_hover = "#2a2a3c"
-# bg_active = "#313144"
-# text_primary = "#cdd6f4"
-# text_dim = "#6c7086"
-# text_section = "#585b70"
+# UI chrome colors (hex format)
 accent = "#89b4fa"
-# border = "#2a2a3c"
+# bg_darkest = "#11111b"      # Deepest background (window edges)
+# bg_sidebar = "#181825"      # Sidebar background
+# bg_toolbar = "#181825"      # Toolbar/status bar background
+# terminal_bg = "#292a44"     # Terminal pane background
+# bg_hover = "#2a2a3c"        # Hover highlight
+# bg_active = "#313144"       # Active/selected item
+# text_primary = "#cdd6f4"    # Main text color
+# text_dim = "#6c7086"        # Dimmed/secondary text
+# text_section = "#585b70"    # Section headers
+# border = "#2a2a3c"          # Pane borders
 
-# Terminal ANSI palette
+# Terminal ANSI colors (override the palette)
 # foreground = "#e8e6ed"
 # background = "#292a44"
 # black = "#12131e"
@@ -143,14 +282,17 @@ accent = "#89b4fa"
 # bright_white = "#f4f2f9"
 # bright_foreground = "#f4f2f9"
 
+# ── Experimental Features ──────────────────────────────────────
+# Flip any flag to true and restart to enable.
 [beta]
-# Experimental visual effects. Set to true to enable.
-# crt = false     # Retro CRT scanlines + green phosphor tint
-# pulse = false   # Focused pane border gently breathes
-# ghost = false   # Unfocused panes render at reduced opacity
+# crt   = false    # Retro CRT scanlines + green phosphor tint
+# pulse = false    # Focused pane border gently breathes
+# ghost = false    # Unfocused panes render at reduced opacity
+# quit_confirm = false   # Deprecated; prefer top-level `confirm_quit`
 
+# ── Logging ────────────────────────────────────────────────────
 # [log]
-# level = "info"  # error | warn | info | debug  (default: info)
+# level = "info"   # error | warn | info | debug  (default: info)
 "##;
 
 pub fn open_config_file() {
@@ -167,70 +309,308 @@ pub fn open_config_file() {
 }
 
 impl PlexiConfig {
+    /// Load the global config only — no project-level merge. Most call sites
+    /// should prefer [`load_with_workspace`] so a workspace's
+    /// `.plexi/config.toml` can override.
     pub fn load() -> Self {
-        let path = config_path();
-        let data = match std::fs::read_to_string(&path) {
+        Self::load_from_path(&config_path()).unwrap_or_default()
+    }
+
+    /// Load `path` as a `PlexiConfig`. Returns `None` if the file is absent;
+    /// returns `Some(default)` after logging if the file exists but fails to
+    /// parse — matches the historical behavior of `load()`.
+    fn load_from_path(path: &Path) -> Option<Self> {
+        let data = match std::fs::read_to_string(path) {
             Ok(d) => d,
-            Err(_) => return Self::default(),
-        };
-        match toml::from_str(&data) {
-            Ok(cfg) => cfg,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
             Err(e) => {
-                log::warn!("Failed to parse config file: {e}");
-                Self::default()
+                log::warn!("Failed to read config file {}: {e}", path.display());
+                return None;
+            }
+        };
+        match toml::from_str::<Self>(&data) {
+            Ok(cfg) => Some(cfg),
+            Err(e) => {
+                log::warn!("Failed to parse config file {}: {e}", path.display());
+                Some(Self::default())
             }
         }
     }
+
+    /// Load the global config and overlay `<workspace_root>/.plexi/config.toml`
+    /// on top if it exists. Project-level values override globals on a
+    /// per-field basis; unset project fields preserve the global value.
+    pub fn load_with_workspace(workspace_root: Option<&Path>) -> Self {
+        let mut merged = Self::load();
+        let Some(root) = workspace_root else {
+            return merged;
+        };
+        let project_path = root.join(".plexi").join("config.toml");
+        if let Some(project) = Self::load_from_path(&project_path) {
+            merged.overlay(project);
+        }
+        merged
+    }
+
+    /// Field-level overlay of `other` on top of `self`. Any `Some(_)` value in
+    /// `other` replaces the corresponding field in `self`. Nested structs
+    /// (theme, beta, log, notifications) are overlaid recursively.
+    fn overlay(&mut self, other: Self) {
+        if other.font_size.is_some() {
+            self.font_size = other.font_size;
+        }
+        if other.theme_preset.is_some() {
+            self.theme_preset = other.theme_preset;
+        }
+        if other.confirm_quit.is_some() {
+            self.confirm_quit = other.confirm_quit;
+        }
+        if other.confirm_close.is_some() {
+            self.confirm_close = other.confirm_close;
+        }
+        match (self.theme.as_mut(), other.theme) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.theme = Some(incoming),
+            _ => {}
+        }
+        match (self.beta.as_mut(), other.beta) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.beta = Some(incoming),
+            _ => {}
+        }
+        match (self.log.as_mut(), other.log) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.log = Some(incoming),
+            _ => {}
+        }
+        match (self.notifications.as_mut(), other.notifications) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.notifications = Some(incoming),
+            _ => {}
+        }
+    }
+}
+
+impl ThemeConfig {
+    fn overlay(&mut self, other: Self) {
+        macro_rules! overlay_field {
+            ($field:ident) => {
+                if other.$field.is_some() {
+                    self.$field = other.$field;
+                }
+            };
+        }
+        overlay_field!(bg_darkest);
+        overlay_field!(bg_sidebar);
+        overlay_field!(bg_toolbar);
+        overlay_field!(terminal_bg);
+        overlay_field!(bg_hover);
+        overlay_field!(bg_active);
+        overlay_field!(text_primary);
+        overlay_field!(text_dim);
+        overlay_field!(text_section);
+        overlay_field!(accent);
+        overlay_field!(border);
+        overlay_field!(foreground);
+        overlay_field!(background);
+        overlay_field!(black);
+        overlay_field!(red);
+        overlay_field!(green);
+        overlay_field!(yellow);
+        overlay_field!(blue);
+        overlay_field!(magenta);
+        overlay_field!(cyan);
+        overlay_field!(white);
+        overlay_field!(bright_black);
+        overlay_field!(bright_red);
+        overlay_field!(bright_green);
+        overlay_field!(bright_yellow);
+        overlay_field!(bright_blue);
+        overlay_field!(bright_magenta);
+        overlay_field!(bright_cyan);
+        overlay_field!(bright_white);
+        overlay_field!(bright_foreground);
+    }
+}
+
+impl BetaConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.crt.is_some() {
+            self.crt = other.crt;
+        }
+        if other.pulse.is_some() {
+            self.pulse = other.pulse;
+        }
+        if other.ghost.is_some() {
+            self.ghost = other.ghost;
+        }
+        if other.quit_confirm.is_some() {
+            self.quit_confirm = other.quit_confirm;
+        }
+    }
+}
+
+impl LogConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.level.is_some() {
+            self.level = other.level;
+        }
+    }
+}
+
+impl NotificationsConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.enabled.is_some() {
+            self.enabled = other.enabled;
+        }
+        if other.focus_mode.is_some() {
+            self.focus_mode = other.focus_mode;
+        }
+        if other.interrupt_threshold.is_some() {
+            self.interrupt_threshold = other.interrupt_threshold;
+        }
+    }
+}
+
+// ── Adopted workspace root (set once by main when an explicit path arg is
+// given) ─────────────────────────────────────────────────────────────────────
+
+static ADOPTED_WORKSPACE_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Set the explicit workspace root adopted from a `plexi <path>` arg. Called
+/// once from `main()` after CLI parsing. Subsequent calls are silently ignored
+/// — the binary commits to one workspace per process.
+pub fn set_adopted_workspace_root(root: Option<PathBuf>) {
+    let _ = ADOPTED_WORKSPACE_ROOT.set(root);
+}
+
+/// Return the workspace root adopted via `plexi <path>` (the "open folder"
+/// arg). When unset, callers should fall back to walking up from CWD via
+/// [`crate::app_registry::resolve_workspace_root`].
+pub fn adopted_workspace_root() -> Option<PathBuf> {
+    ADOPTED_WORKSPACE_ROOT.get().and_then(|opt| opt.clone())
+}
+
+/// Convenience: the active workspace root for this process. Returns the
+/// adopted root if set, otherwise walks up from the current working
+/// directory looking for a `.plexi/` ancestor.
+pub fn active_workspace_root() -> Option<PathBuf> {
+    if let Some(adopted) = adopted_workspace_root() {
+        return Some(adopted);
+    }
+    let cwd = std::env::current_dir().ok()?;
+    crate::app_registry::resolve_workspace_root(&cwd)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
-    #[test]
-    fn default_config() {
-        let cfg = PlexiConfig::default();
-        assert!(cfg.theme.is_none());
-        assert!(cfg.font_size.is_none());
+    fn write(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
     }
 
     #[test]
-    fn parse_empty_toml() {
-        let cfg: PlexiConfig = toml::from_str("").unwrap();
-        assert!(cfg.theme.is_none());
-        assert!(cfg.font_size.is_none());
+    fn project_config_overrides_global() {
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_path = global_dir.path().join("config.toml");
+        write(
+            &global_path,
+            "font_size = 14.0\n[log]\nlevel = \"info\"\n[theme]\naccent = \"#aaaaaa\"\n",
+        );
+
+        let workspace = tempfile::tempdir().unwrap();
+        let project_path = workspace.path().join(".plexi").join("config.toml");
+        write(
+            &project_path,
+            "font_size = 18.0\n[log]\nlevel = \"debug\"\n",
+        );
+
+        let mut merged = PlexiConfig::load_from_path(&global_path).unwrap_or_default();
+        if let Some(project) = PlexiConfig::load_from_path(&project_path) {
+            merged.overlay(project);
+        }
+        assert_eq!(merged.font_size, Some(18.0));
+        assert_eq!(
+            merged.log.as_ref().and_then(|l| l.level.clone()),
+            Some("debug".to_string())
+        );
+        // Theme accent untouched by project — global value must survive.
+        assert_eq!(
+            merged.theme.as_ref().and_then(|t| t.accent.clone()),
+            Some("#aaaaaa".to_string())
+        );
     }
 
     #[test]
-    fn parse_font_size() {
-        let cfg: PlexiConfig = toml::from_str("font_size = 16.0").unwrap();
-        assert_eq!(cfg.font_size, Some(16.0));
+    fn missing_project_config_keeps_global() {
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_path = global_dir.path().join("config.toml");
+        write(
+            &global_path,
+            "font_size = 12.0\n[log]\nlevel = \"warn\"\n[theme]\naccent = \"#bbbbbb\"\n",
+        );
+
+        // Workspace exists but has no .plexi/config.toml.
+        let workspace = tempfile::tempdir().unwrap();
+        let project_path = workspace.path().join(".plexi").join("config.toml");
+        assert!(!project_path.exists());
+
+        let mut merged = PlexiConfig::load_from_path(&global_path).unwrap_or_default();
+        if let Some(project) = PlexiConfig::load_from_path(&project_path) {
+            merged.overlay(project);
+        }
+        assert_eq!(merged.font_size, Some(12.0));
+        assert_eq!(
+            merged.log.as_ref().and_then(|l| l.level.clone()),
+            Some("warn".to_string())
+        );
+        assert_eq!(
+            merged.theme.as_ref().and_then(|t| t.accent.clone()),
+            Some("#bbbbbb".to_string())
+        );
     }
 
     #[test]
-    fn parse_theme_colors() {
-        let toml_str = r##"
-[theme]
-accent = "#ff0000"
-bg_darkest = "#000000"
-"##;
-        let cfg: PlexiConfig = toml::from_str(toml_str).unwrap();
-        let theme = cfg.theme.unwrap();
-        assert_eq!(theme.accent, Some("#ff0000".into()));
-        assert_eq!(theme.bg_darkest, Some("#000000".into()));
-        assert!(theme.bg_sidebar.is_none());
-    }
+    fn project_partial_override_preserves_unset_global() {
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_path = global_dir.path().join("config.toml");
+        write(
+            &global_path,
+            "font_size = 14.0\nconfirm_close = true\n\
+             [theme]\naccent = \"#cccccc\"\nbg_darkest = \"#000000\"\n\
+             [log]\nlevel = \"info\"\n",
+        );
 
-    #[test]
-    fn parse_terminal_palette() {
-        let toml_str = r##"
-[theme]
-foreground = "#e8e6ed"
-black = "#12131e"
-"##;
-        let cfg: PlexiConfig = toml::from_str(toml_str).unwrap();
-        let theme = cfg.theme.unwrap();
-        assert_eq!(theme.foreground, Some("#e8e6ed".into()));
-        assert_eq!(theme.black, Some("#12131e".into()));
+        let workspace = tempfile::tempdir().unwrap();
+        let project_path = workspace.path().join(".plexi").join("config.toml");
+        // Only override [log] level. Everything else must remain global.
+        write(&project_path, "[log]\nlevel = \"debug\"\n");
+
+        let mut merged = PlexiConfig::load_from_path(&global_path).unwrap_or_default();
+        if let Some(project) = PlexiConfig::load_from_path(&project_path) {
+            merged.overlay(project);
+        }
+        // Project value wins.
+        assert_eq!(
+            merged.log.as_ref().and_then(|l| l.level.clone()),
+            Some("debug".to_string())
+        );
+        // Globals preserved.
+        assert_eq!(merged.font_size, Some(14.0));
+        assert_eq!(merged.confirm_close, Some(true));
+        assert_eq!(
+            merged.theme.as_ref().and_then(|t| t.accent.clone()),
+            Some("#cccccc".to_string())
+        );
+        assert_eq!(
+            merged.theme.as_ref().and_then(|t| t.bg_darkest.clone()),
+            Some("#000000".to_string())
+        );
     }
 }
+

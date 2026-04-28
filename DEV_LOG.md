@@ -1,5 +1,609 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-26 — [FIX] Four regressions from spatial workspace commit → alpha
+
+Mouse blocked app-wide: `draw_minimap_overlay` allocated the full screen with `Sense::hover()` inside a `Foreground` Area, which captured all pointer events before any pane or sidebar widget could see them. Fixed by removing the full-screen `allocate_exact_size` — the Area now auto-sizes to the minimap panel cells via `ui.interact()` calls inside `render_minimap`.
+
+`Cmd+Shift+M` toggled opacity instead of show/hide: `MinimapState` had `override_visible: bool` intended to pin full opacity; `toggle()` flipped it, making the minimap brighter/dimmer but never hiding it. Renamed to `visible: bool` (default `true`), `toggle()` now flips show/hide, `draw_minimap_overlay` returns early when `!visible`.
+
+Spatial pages in sidebar: sidebar loop iterated all contexts with no filter. Added `if self.contexts[i].spatial { continue; }` guard. Pages (`Cmd+N` / `Cmd+Shift+N`) now set `spatial: true`; sidebar contexts set `spatial: false`.
+
+Minimap covering `?` button: `INSET = 8.0` left the panel overlapping the toolbar and shortcuts button (~44px from top). Split into `INSET_TOP = 52.0` / `INSET_RIGHT = 16.0`.
+
+Also: removed `#[serde(default)]` from `spatial` in `SavedContext` — old workspace files without the field will fail to parse, trigger the existing backup-rename logic in `WorkspaceFile::load()`, and start fresh. No backward compat shim needed.
+
+**Breaks if:** clicking in panes or sidebar does nothing (mouse regression), or `Cmd+Shift+M` makes the minimap dimmer rather than hiding it, or spatial pages appear as tabs in the sidebar.
+
+## 2026-04-26 — [CHANGED] Spatial 2D page grid + minimap overlay (PR → alpha)
+
+Added `grid_x / grid_y` to `Context` and `SavedContext` (`#[serde(default)]` for backward compat). `Cmd+N` / `Cmd+Shift+N` now create pages on the grid instead of splitting panes — splits moved to `Cmd+\` / `Cmd+Shift+\`. `Cmd+Shift+H/J/K/L` navigate between pages (was LateralFocus — no free chord available so repurposed). Minimap overlay (`src/minimap.rs`) renders in top-right corner, fades after 3 s idle, pinned by `Cmd+Shift+M`. Page creation and spatial helpers live in `pane_ops/workspace.rs` (co-located with `new_context` for access to `pub(super) create_single_pane_tree`). Navigation-only helpers in `src/spatial.rs`.
+
+Decision: `LateralFocus` variant removed entirely (was never constructed after keybind repurposing — keeping dead code violates project rules). Apps that depended on lateral-focus shortcuts will need to adjust if any existed; none are known.
+
+**Breaks if:** `Cmd+N` opens a pane split instead of a new page, or `Cmd+\` does nothing, or the minimap doesn't appear after creating 2+ pages.
+
+## 2026-04-26 — [FIX] Render event coalescing — try_send drops during slow Python startup (#368 → PR #378)
+
+Root cause: `sync_channel(1024)` + `try_send` filled with `PlexiEvent::Render` bursts during Python import phase. When the channel was full, every subsequent render event was silently dropped → apps appeared frozen, scroll (#371) never re-rendered. The earlier stdin-writer-thread fix (`cbf2799`) moved writes off the GUI thread but left the bounded channel and `try_send` in place.
+
+Fix: introduced `StdinItem` enum (`Event(String)` | `FlushRender`). Channel is now unbounded (`mpsc::channel`). Render events are coalesced: latest payload stored in `Arc<Mutex<Option<String>>> render_slot`; a single `FlushRender` token is queued via `Arc<AtomicBool> render_in_queue` guard. Writer thread resets the flag *before* draining the slot so a concurrent `send_event` can re-queue without a race. Non-render events pass through in-order, never dropped. #371 (scroll broken) resolves as a downstream effect.
+**Breaks if:** apps start up but don't respond to key events or scroll after the first render.
+
+## 2026-04-26 — [FIX] Secret not persisted after granting via prompt — re-prompt loop every launch (#372 → PR #377)
+
+Root cause: `show_prompt_modal` in `src/process_app/prompts.rs` sent `PlexiEvent::SecretValue` to the app on grant but never called `MacKeychain::set()`. Every new launch hit an empty keychain and re-prompted.
+
+Fix: `persist_granted_secret(workspace_root, app_id, key, value, store: &dyn SecretStore)` called immediately after grant. Routing mirrors `routing.rs`: explicit route in `workspace.toml` + `secrets.toml` → workspace-namespaced account (`plexi:<ws-id>:<friendly>`); no route / fallback=true → `plexi:user:<key>`. Guarded by `#[cfg(target_os = "macos")]` using `MacKeychain::new()`. Tests cover no-workspace, explicit-route, fallback, and deny paths.
+**Breaks if:** granting a secret prompt still re-prompts on the next app launch.
+
+## 2026-04-26 — [FIX] Agent workspace modal TextInput ignores keyboard input (#370 → PR #376)
+
+Root cause: auto-focus condition `!r.has_focus() && modal.task.is_empty()` was checked every frame. `request_focus()` is deferred one frame in egui, so `has_focus()` is false when the request fires — the condition re-triggers every frame and fights the user's own focus choices. Once the user typed anything, `task.is_empty()` also permanently prevented re-focus after a tab.
+
+Fix: `focus_initialized: bool` field on `AgentWorkspaceModal`, set `false` in `open()`. `request_focus()` called exactly once on the first render frame; after that the user's explicit focus choices are not overridden.
+**Breaks if:** opening the modal and typing immediately produces no input in the repo path field.
+
+## 2026-04-26 — [FIX] Agent workspace palette commands give no feedback when CLI not installed (#369 → PR #375)
+
+Root cause: `spawn_agent_workspace()` in `command_palette.rs` called `open_agent_workspace_pane()` without first checking `cli.is_installed()`. On failure it only logged — no host notification, so the user saw nothing.
+
+Fix: `is_installed()` checked at the top of `spawn_agent_workspace()`; calls `push_host_notification` on both the not-installed path and the `open_agent_workspace_pane` error path. Mirrors the pattern already used in `spawn_agent_workspace_from_modal`.
+**Breaks if:** clicking "New Agent Workspace: Claude Code" with Claude Code uninstalled produces no visible feedback.
+
+## 2026-04-26 — [FIX] AppBar descender clipping — title text bottom pixel cut off (#373 → PR #374)
+
+Root cause: `text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0 - 1.0` in `sdk/python/plexi_sdk/ui.py`. The `-1.0` nudge shifted the text 1px toward the top clip boundary, clipping descenders (g, p, y, etc.) at 16pt.
+
+Fix: removed the nudge — `text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0`. The original nudge comment described it as "empirical compensation for proportional-font descent bias"; it was wrong and the true centre is correct.
+**Breaks if:** AppBar title sits visibly off-centre vertically.
+
+## 2026-04-26 — [FIX] GUI hang when spawning apps — stdin write blocked egui main thread
+
+Root cause: `ProcessApp::send_event` called `stdin.write_all()` directly on the egui render loop thread. During the "starting" window (Python process importing modules, not reading stdin yet), pipe buffer fills fast. The first `Render` event write blocks indefinitely → macOS hang report → forced kill. Symptom: app shows "starting" pill then the entire host dies.
+
+Fix: background writer thread owns `ChildStdin` and blocks on writes there. GUI thread pushes to a bounded `sync_channel(1024)` via `try_send` — non-blocking in all cases. `cbf2799`.
+
+## 2026-04-26 — [GOTCHA] Info.plist.fragment must NOT include full plist wrapper
+
+`cargo-bundle 0.9.0` handles `osx_info_plist_exts` by doing a raw text insert inside the `<dict>` of the generated Info.plist. The fragment file must contain only bare key-value pairs — **no** `<?xml?>` declaration, no `<!DOCTYPE>`, no `<plist>` or `<dict>` wrappers. Including the full plist boilerplate (as the #277 sub-agent wrote) embeds a second XML document inside the `<dict>`, producing malformed XML that macOS rejects as "damaged or incomplete" at launch. Fix: `assets/Info.plist.fragment` is now just the two `<key>`/`<string>` lines. Re-sign with `codesign --force --deep --sign -` after install.
+
+## 2026-04-25 — [CHANGED] Agent-as-app foundation — manifest type field + protocol variants + broker widening (#285 part 1 → alpha)
+
+First slice of #285 (v3.3 P1 headline "Agent-as-app"). Lands the wire and schema additions that the host integration in part 2 will consume; does NOT yet spawn subprocess agents into `Pane::Agent` or ship the SDK Agent class. Scoped down deliberately to keep the PR reviewable — the host integration ripples through `process_app/routing.rs`, `agent_pane.rs`, `pane.rs`, and the SDK simultaneously, and is its own commit.
+
+**Manifest schema (`src/app_registry.rs`)** — required `[app] type = "app" | "agent"` field on every manifest. Discipline matches `schema_version` (#308 Phase 2): no `serde(default)`, no fallback to `"app"`, missing field → loud parse error. New `ManifestType` enum (`App` | `Agent`). Optional `[launch] system_prompt: Option<String>` for agent manifests; the host forwards it to the agent subprocess via `PlexiEvent::AgentInit` once the host integration lands. All 18 example manifests migrated to add `type = "app"`. Inline manifest fixtures in `src/install.rs` test helpers also migrated.
+
+**Protocol additions (`src/app_protocol.rs`)** — three new variants, all required-field shape, no `serde(default)`:
+  - `PlexiEvent::AgentInit { system_prompt: Option<String> }` — sent once at agent startup with the manifest's `system_prompt`. Only delivered to `type = "agent"` panes. `Option` is explicit on the wire (`null` for unset).
+  - `PlexiEvent::UserMessage { text }` — sent when the user submits text in the host-rendered conversation input box. Only delivered to agent panes.
+  - `DrawCommand::AppendConversation { role, content }` — agent emits one per logical turn; host renders into the conversation history surface. `role` accepted as a string (`"user" | "assistant" | "tool" | "system"`) for forward-compat with future role kinds; unknown roles render as plain text.
+
+**Broker widening (`src/plexi_iq/{broker,loop,backend/{mod,anthropic_api}}.rs`)** — lifted the `flatten_messages` stop-gap from #284. `LlmRequest` now carries `messages: Vec<IqMessage>` directly (the structured Anthropic Messages shape) plus `system: String`. `AnthropicApiBackend::stream_native` translates each `IqMessage` to a `MessageBuilder`-built `Message` with the matching `MessageRole`; empty `messages` is a loud error (`"LlmRequest.messages is empty"`), unknown role values likewise. `turn_loop::run_turn` widened: `messages: Vec<IqMessage>` instead of `prompt: impl Into<String>`. Multi-turn agent conversations now flow natively — no more `[assistant previously]:` prefix joining.
+
+**Out of scope deliberately (filed as follow-up):**
+  - Host integration: spawning subprocess agents into `Pane::Agent` with conversation UI scaffolding from `agent_pane.rs` backed by subprocess `AppendConversation` events (vs. the legacy hardcoded `agent_turn` loop).
+  - SDK `Agent` base class with the `on_user_message(text) -> str` callback pattern.
+  - POC `examples/agent-tester/` end-to-end agent.
+  - `plexi app new --type agent` scaffolder.
+  - Deletion of `agent_turn.rs` / `agent_pane.rs` legacy in-pane turn loop.
+
+Test-first: 11 new tests across `app_protocol::tests` (5), `app_registry::tests` (5), `plexi_iq::broker::tests` (1, replacing the deleted `flatten_messages_joins_user_turns`). All 114 pass; clean `cargo build --release`.
+
+**Breaks if:** any existing manifest loads after this PR without `type = "app"` set; `cargo test --bin plexi` reports any test in `app_protocol::tests::user_message_*`, `agent_init_*`, `append_conversation_*`, or `app_registry::tests::manifest_with_type_*` failing; `LlmRequest.messages` empty no longer surfaces a stream error containing `"messages is empty"`; or an agent manifest's `[launch].system_prompt` field is silently ignored at load (verify by checking `~/.plexi-alpha/plexi.log` — every `launching '<id>'` line should now also log `type=...` and `system_prompt=...`).
+
+## 2026-04-26 — [CHANGED] `iq.query` brokered capability — first v3.3 milestone PR (#284 → alpha)
+
+Opens the v3.3 milestone (Agents as First-Class Citizens). Three new wire types in `src/app_protocol.rs`: `DrawCommand::IqQuery { request_id, model_tier, system, messages, tools }`, `PlexiEvent::IqResponse { request_id, content, tokens_in, tokens_out, error }`, and the `ModelTier` enum (`low | medium | high`). All fields required — no `serde(default)`. Adds `IqQuery` to the `Capability` enum (string `"iq.query"`); manifest validator and `from_capability_strings` recognise it.
+
+New `src/plexi_iq/broker.rs` module owns the brokered path. `IqBroker` trait + `LiveIqBroker` (production) + `CannedBroker` (tests). `route_command` synchronously emits the gate-denied response when the manifest doesn't declare `iq.query`, and otherwise spawns a worker thread that calls `broker.dispatch()` and forwards the response onto `http_tx`. `LiveIqBroker` resolves `ANTHROPIC_API_KEY` per-call through the existing workspace-scoped secrets store, maps `ModelTier` to a concrete model id (`low → claude-haiku-4-5`, `medium → claude-sonnet-4-5`, `high → claude-opus-4-5`), and routes through `AnthropicApiBackend::with_model` + `turn_loop::run_turn` so we re-use the existing streaming + ledger path rather than forking a second LLM client.
+
+`LedgerRow` extended with optional `app_id` and `model` (skipped when None so legacy `Pane::Agent` rows aren't polluted) plus a required `cost_cents: u64` (computed at row construction so dependents don't have to). `LedgerRow::with_attribution` is the new call site for `iq.query`; `LedgerRow::new` stays for the legacy in-process turn loop. The broker appends a row on every successful dispatch — failures are logged but never propagate (a billing miss must never break the conversation).
+
+`plexi_iq` was on disk but never registered as a module; added `mod plexi_iq;` to `main.rs`. Module also gains `pub mod broker`. The existing `src/process_app/routing.rs` `LlmRequest` handler (legacy `llm` capability via raw `ureq` Anthropic call) is left in place — `iq.query` is the v3.3 successor; #285 will eventually retire `LlmRequest`.
+
+Python SDK adds `Emitter.iq_query(model_tier, system, messages, tools=None) -> IqResponse`, an `IqResponse` dataclass, and a `CapabilityDeniedError` exception (raised when the host returns "capability denied" — apps that want to handle the gate-denied path explicitly can `except CapabilityDeniedError`). The blocking pattern matches `secret_get` / `http_request` / `measure_text` — UUID `request_id`, per-request `queue.Queue`, drained by the App's stdin event loop on `iq_response`. `tools` non-empty is rejected at the broker until v3.4 ships tool dispatch — explicit refusal beats a silent drop.
+
+Two POC apps land alongside the protocol work (mandatory per orchestration rule):
+- `examples/iq-query-test/` — manifest declares `iq.query`. Text input + l/m/h keys to dispatch at each tier; renders content + token counts on success, red error card on failure.
+- `examples/iq-query-denied-test/` — manifest declares no capabilities. Press `s` to verify the gate fires; the `CapabilityDeniedError` arrives within a frame.
+
+Test-first: 14 new tests across `app_protocol::tests` (4), `app_permissions::tests` (2), `plexi_iq::broker::tests` (4), `plexi_iq::ledger::ledger_tests` (2), `process_app::iq_tests` (2). The `process_app` tests inject `CannedBroker`/`PanicBroker` into the `iq_broker` field to drive the routing layer deterministically — no real LLM calls.
+
+**Out of scope for this PR (deliberately):** #285 agent-as-app refactor (the existing `Pane::Agent` hardcoded LLM still uses `agent_turn::run_turn` directly — replacing that with subprocess agents calling `iq.query` is the next dispatch); tool-use loops at the broker level (apps drive their own loops by re-calling `iq_query`); cost-cap enforcement / rate limiting beyond what the existing ledger does; streaming responses (spec calls for one `IqResponse` per query).
+
+**Breaks if:** an app whose manifest does NOT declare `iq.query` calls `emit.iq_query(...)` and gets back content instead of `CapabilityDeniedError`; an app declaring `iq.query` calls into Low/Medium/High tier and the response model doesn't differ between tiers (verify by asking the same prompt at Low and High — the wording should differ); `~/.plexi-alpha/ledger.jsonl` doesn't gain a new line per query with `app_id`, `model`, `tokens_in`, `tokens_out`, `cost_cents`; or `ANTHROPIC_API_KEY` ever appears verbatim in the log file or any app's stderr.
+
+## 2026-04-26 — [CHANGED] App package manager — top-level `install`/`uninstall`/`update`/`list`, manifest `schema_version`, bundled core pack (#308 Phase 2 → alpha)
+
+Phase 2 of the v3.2 headline. Adds a required `schema_version: u32` field to every `manifest.toml` (no `serde(default)` — missing → loud parse error; greater than `MANIFEST_SCHEMA_VERSION = 1` → install refused with a clear message), a new `packs.rs` module that parses `pack.toml` (requirements.txt-style app list with a tagged source-spec scheme: `github:owner/repo`, `git+https/ssh/file://...`, `local:<example-name>`), and a new `install.rs` that owns the install/uninstall/update flow plus a `Cloner` trait (mock for tests, `GitCloner` shells out to `git` in prod — no `git2` dependency).
+
+Five new top-level CLI subcommands route through `cli::install_cli` / `install_pack_cli` / `uninstall_cli` / `update_cli` / `list_cli`. `parse_workspace_path_arg::SUBCOMMANDS` was extended with `install`, `uninstall`, `update`, `list`, `pack` so `plexi install foo` isn't misinterpreted as a workspace-path adoption. Existing `plexi app install` (the older github-shorthand-or-URL path that builds Rust apps) stays in place — top-level `plexi install` is the new git-based flow.
+
+The bundled core pack lives at `packs/core.toml`, embedded via `include_str!`, and uses `local:<example-name>` sources that copy from the compile-time-baked `examples/` tree (re-uses `include_dir!` already in deps for `config::ensure_profile_initialized`). On every launch the host calls `apply_core_pack_if_empty` against the channel apps dir; idempotent, no-op when non-empty. Sources point at bundled examples rather than a yet-to-exist `plexi-apps` org repo to keep Phase 2 fully offline-first; once the org repo exists, swap `local:` for `github:` in `packs/core.toml`.
+
+Install staging uses a hand-rolled `.tmp-install-<pid>-<nanos>/clone` sibling dir inside the apps dir (same FS for atomic `rename`); `tempfile` is dev-only so we don't pull it into the release build for one path. Manifest is read out of the staging dir BEFORE the rename so the canonical `manifest.app.id` keys the final dest — the URL's repo name is never trusted. Failed clones cleanup via early-return helper.
+
+POC demo: extended `examples/workspace-config-tester/` (Phase 1's POC) to also walk `~/.plexi-<channel>/apps/*/manifest.toml` and surface every installed app's `id`, `version`, and `schema_version` in a Card. Hit `r` to reload after `plexi install <repo>` and the new app appears without a host restart. ~25 lines of additions; cheaper than a separate proposal doc.
+
+All 15 example manifests migrated to add `schema_version = 1`. 23 new tests across `app_registry::tests` (3), `packs::tests` (10), `install::install_tests` (4), `install::pack_tests` (3), `install::core_pack_tests` (3). Test-first: failing tests written before each code path, including `Cloner` mock pattern lifted from `workspace_secrets::SecretStore`.
+
+**Breaks if:** `plexi-alpha install <real-public-git-url>` doesn't produce `~/.plexi-alpha/apps/<id>/` with the manifest's id (not the repo's URL slug); or `plexi-alpha install` of a manifest with `schema_version = 99` succeeds instead of erroring with "newer than this Plexi build supports"; or `plexi-alpha uninstall <never-installed-id>` succeeds silently instead of erroring; or `plexi-alpha list` shows nothing on a fresh `~/.plexi-alpha/apps/` (core-pack auto-apply on empty); or running `plexi-alpha install --pack core` twice in a row second-time-installs the same apps instead of reporting "up-to-date"; or any existing example loses its `schema_version = 1` line and silently fails to load with a missing-field parse error.
+
+## 2026-04-26 — [CHANGED] Workspace model — config merge, path-arg adoption, outside-workspace badge, auto `.gitignore` (#308 Phase 1 → alpha)
+
+Phase 1 of the v3.2 headline issue. `<workspace_root>/.plexi/config.toml` now overlays the global `~/.plexi-<channel>/config.toml` on a per-field basis — every field is `Option<T>`, project values win, unset project fields preserve globals. Implementation lives entirely in `src/config.rs::PlexiConfig::load_with_workspace`; the existing `Config` shape was already all-Option so the overlay is a one-pass field walk with no struct refactor and no `serde(default)` tricks. Both `main()` (for log-level resolution) and `PlexiApp::new` (for the rest of the host) now route through `load_with_workspace(active_workspace_root().as_deref())` so a single source of truth feeds everything downstream.
+
+`plexi <path>` is parsed in `main()` via a small `parse_workspace_path_arg` that walks up to find the nearest `.plexi/` ancestor — re-uses the `app_registry::resolve_workspace_root` walker already in tree. On adoption we both record the explicit root via `config::set_adopted_workspace_root` and `chdir` into it, so all the existing "look up from CWD" code paths (`AppRegistry::load`, event log, default pane cwd) stay correct without per-callsite plumbing. Bare `plexi` is unchanged. A bad path (no `.plexi/` ancestor) errors and exits 1 before the GUI starts.
+
+Status-line indicator threads `workspace_root: Option<PathBuf>` into `PlexiBehavior`, then into `render::terminal_pane::render`. The check is host-only: `get_pid_cwd(child_pid).starts_with(workspace_root)` after canonicalizing both sides (macOS `/var → /private/var` would otherwise false-positive). When out-of-tree we paint a small amber "↗ outside workspace" badge into the existing name-bar strip; the strip widens to fit the badge when no name is set. No protocol changes.
+
+`plexi workspace init` now also writes `<root>/.plexi/.gitignore` with `secrets.toml` + `cache/` — but only when the file is absent. The check-then-write avoids stomping a user's edits on subsequent `init` runs, and the body of the auto-generated file says so explicitly. Touched `workspace_secrets::init_workspace`; the `init_workspace_creates_workspace_and_secrets_files` test from #322 still passes verbatim.
+
+POC app: `examples/workspace-config-tester/` — one pane, `r` to reload, surfaces the resolved workspace root, the workspace UUID, and a few representative `[log]/[theme]/font_size` keys read from `<root>/.plexi/config.toml` so the user can drop a project config and watch it pick up.
+
+**Breaks if:** dropping `[log] level = "debug"` into a workspace's `.plexi/config.toml` has no effect on the host's log level; or `plexi-alpha /path/to/workspace` doesn't adopt the path (CWD stays elsewhere, registry skips workspace apps); or `plexi-alpha /tmp` (no `.plexi/` ancestor) launches the GUI silently instead of exiting 1 with a clear error; or `plexi-alpha workspace init` does not produce `.plexi/.gitignore` with `secrets.toml` and `cache/`; or re-running `workspace init` overwrites a user-edited `.plexi/.gitignore`; or a terminal whose CWD is outside the workspace root never shows the `↗ outside workspace` badge.
+
+## 2026-04-25 — [CHANGED] Cmd+N / Cmd+Shift+N split-with-mirror + Shift+Cmd+H/J/K/L lateral focus (#306 → alpha)
+
+Cmd+N was previously bound to `Action::NewContext` (create a new context tab). It's now `SplitRight` — split the focused pane to the right with a new pane that mirrors the focused pane's type (terminal → terminal, app → fresh instance of same app, agent → new agent). Cmd+Shift+N adds `SplitDown` with the same mirror rule. Shift+Cmd+H/J/K/L adds explicit `LateralFocus(Direction)` bindings; they share the geometric direction-finder used by Cmd+H/J/K/L (one impl, two surfaces). The new-context shortcut is intentionally OUT OF SCOPE for this PR and was not re-bound — sidebar "+" and `new_context()` are unchanged. Cmd+T still maps to `NewTab` (within-context tab creation). The geometric direction-finder was refactored: pure-geometry logic extracted into `find_in_direction_geometric` (takes `from_rect` + `(T, Rect)` candidates iterator) so it's unit-testable without spinning up egui. Spec: tier 0 = candidates whose perpendicular axis range overlaps the source's; primary distance = source center to candidate's nearest edge along the requested axis; secondary tie-break = perpendicular-axis center distance. App-mirror dispatch reuses `launch_app_by_id_with_layout` with `split_v`/`split_h` layout overrides instead of constructing AppPane manually — keeps a single launch-with-permissions path. Rejected alternatives: per-launch ad-hoc AppPane construction (duplicated permissions/group/share logic); a separate `LateralFocus` direction-finder distinct from `Navigate` (would diverge over time).
+
+**Breaks if:** Cmd+N opens a sidebar/new-context tab instead of splitting the focused pane to the right; Cmd+Shift+N does anything other than split below; Shift+Cmd+L on a pane with a right neighbor lands on the wrong neighbor; splitting an app pane doesn't produce a fresh instance of the same app; existing Cmd+D / Cmd+Shift+D split shortcuts regress; sidebar "+" no longer creates a new context (would mean `new_context()` was accidentally affected).
+
+## 2026-04-25 — [CHANGED] Workspace-namespaced secret routing (#322 → alpha)
+
+Three layers landed: (1) Keychain entries under `plexi:<workspace-id>:<friendly>` (workspace) or `plexi:user:<friendly>` (cross-workspace fallback), workspace ID a UUID stored in `<root>/.plexi/workspace.toml`; (2) app manifests declare `[secrets] X = { required = ..., description = "..." }` (no serde-default on `required`); (3) `<root>/.plexi/secrets.toml` is the router with required `fallback` field plus `[apps.<id>]` and `[default]` route tables. Resolution is a 4-step pure function in `workspace_secrets::resolve`: app-route → default-route → user-scope-on-fallback → hard-miss-or-prompt. New `SecretStore` trait isolates Keychain so tests use `InMemoryKeychain` and never hit `security` CLI. CLI: `plexi workspace init`, `plexi secret {set,list,delete} <friendly>` are workspace-aware (replaces the legacy plexi-run-style flat layout — no compat shim).
+
+**Migration:** `secrets-index.json` schema flipped from `Vec<SecretEntry>` to `Vec<String>` (full account names). Legacy entries are re-stored under `plexi:user:<key>` on first GUI launch via `migrate_legacy_global_secrets`; idempotent, logged per migration. Old global Keychain entries (`plexi-run/<dir>/<key>`) are read once during migration and not deleted — they remain dormant.
+
+**Breaks if:** `plexi-alpha workspace init` doesn't create a `.plexi/workspace.toml` with a valid UUID; or two directories with `init` then different `[apps.<id>]` routes for the same canonical secret return the same Keychain value; or `fallback = false` with no route silently falls through instead of throwing the `hard_missing` SecretDenied event; or an app declaring `[secrets] X = {}` (missing `required`) installs without erroring.
+
+## 2026-04-25 — [GOTCHA] Squash-merged PRs without `Closes #N` trailer leave issues orphan-open
+
+Three v3.1 issues (#312, #314, #317) shipped to alpha in PRs that were squash-merged without `Closes #N` in the PR *body* — only in the title. GitHub's auto-close only scans the body of the squash commit message, so the issues stayed `OPEN` even though the work landed. Discovered when a sub-agent dispatch for #314 reset its worktree to current alpha and found the implementation already there. Cost: one wasted sub-agent run + an audit cycle. Fix: every PR body must include `Closes #N` on its own line (not just the title). Orchestrator pre-dispatch audit now also greps `git log --all -200` for shipped PRs that match the issue's keywords/number; codified in `.claude/iteration-cycle.md`. Also: DEV_LOG itself was not being updated for these shipped PRs — `git log` is the only reliable source for what shipped on alpha after 2026-04-11. This entry serves as a backfill anchor.
+
+## 2026-04-25 — [DECISION] Squash-merge + install-alpha per sub-agent PR (orchestrator merges unilaterally on alpha)
+
+User authorized the orchestrator to merge sub-agent PRs without waiting for human approval, on the condition that every merge is `gh pr merge --squash --delete-branch` so each PR lands as a single revertible commit on alpha. Bad PR → `git revert <sha>` removes it cleanly without unwinding others. Endgame: when v4 starts, alpha is not merged wholesale into v4; the squash history makes it cheap to cherry-pick the keepers. After every merge: orchestrator runs `just install-alpha` (no longer waits on user), pings user with the PR's Human verification checklist. Each new milestone branches from current alpha HEAD (cumulative).
+
+**Breaks if:** any sub-agent PR is merged with `--merge` or `--rebase` (multiple commits per PR breaks the cherry-pick model); or orchestrator skips `install-alpha` post-merge (user can't verify against the built binary).
+
+## 2026-04-25 — [DECISION] Alpha-train release orchestration through v3.5 (PR → alpha)
+
+Locked in the v3.1–v3.5 roadmap (5 milestones, 26 issues) and the orchestration model that will execute it. Specs landed: `docs/specs/process/release-orchestration.md` (durable spec — alpha-train flow, per-PR `Breaks if:` + Human verification + Test added requirements, three-strike rule for sub-agents, no backwards-compat shims, batched alpha→beta promotion only on explicit signal), `docs/specs/releases/v3.1.md`–`v3.5.md` (per-release issue lists + release-level human verification checklists), `.claude/iteration-cycle.md` (operational checklist Claude reads at session start). `.gitignore` flipped from `.claude/` to `.claude/*` + `!.claude/iteration-cycle.md` so the iteration spec is tracked while the rest of `.claude/` stays local.
+
+Rejected alternatives: per-release alpha→beta→main cycles (too much context-switching, batch promotion is cheaper); generic "next-up issue" loop without per-release human gates (verification debt accumulates and 3.5 ships unverifiable). Rejected because: alpha is the active dev branch and beta should only move when the user signals a batch promotion; verification has to be release-bounded so regressions don't compound silently across milestones.
+
+**Breaks if:** new PRs land on alpha without `Breaks if:` lines, without a release-level human verification checklist update in `docs/specs/releases/v3.x.md`, or without a test added — the orchestration spec calls these out as hard gates.
+
+## 2026-04-24 — [GOTCHA] `wtp add` always branches from main, not the active worktree
+
+`wtp add -b <name>` picks up the repo's default branch (main) as the base, not the worktree you're currently sitting in. Running it from the alpha worktree still produced a branch off main — 14 commits behind. Fix: after every `wtp add`, immediately run `git log --oneline -1` in the new worktree. If it doesn't match alpha HEAD, `git reset --hard alpha` before touching any files.
+
+## 2026-04-24 — [GOTCHA] `vertical_centered` + `horizontal_wrapped` doesn't actually center content
+
+In egui, `horizontal_wrapped` fills the full available width and wraps left-to-right, so wrapping a it in `vertical_centered` only centers the outer widget block — the chips/labels inside still left-align. Fix: use `horizontal` (no wrap) when the content is short enough to fit on one line. The notification modal's keyboard hint row had this bug; switching to `horizontal` centered it correctly.
+
+## 2026-04-24 — [GOTCHA] Custom Component subclasses crash if they don't inherit `Component`
+
+`Column` calls `child._render_clipped()` on every child. Inner classes used as layout children (`_CountdownRing` in stand-up-reminder, `_Body` in quick-note/todo/wikipedia) that implement `measure/is_grow/render` but don't inherit `Component` will crash at render time with `AttributeError: object has no attribute '_render_clipped'`. Rule: any object placed inside a `Column` or `Card` must be a `Component` subclass.
+
+## 2026-04-24 — [FIX] App code corrupted during AppBar migration — not caught until smoke test
+
+The Header→AppBar migration in this session produced silent corruption in two apps: `screen-time`'s `_chrome_tree` had the MODE_CLOCK branch reduced to a dangling `%B %-d')}")` fragment (the subtitle f-string was deleted but a closing fragment remained), and `notification-tester`'s `AppBar(title=...)` call had extra words appended after the string close, making it a syntax error. Both were only discovered by opening the apps and seeing them crash. The Scrollable.render method was also found outside the class body (orphaned past a `return`). These are syntax-level bugs — the right safeguard is `python3 -m py_compile` on every modified app file before committing.
+
+## 2026-04-23 — [CHANGED] Host-measured text layout primitives (issue #312, PR → alpha)
+Python SDK estimated text widths with `font_size × ratio` heuristics; the host renders with real egui font metrics. This produced mis-sized badge pills, wrongly-clipped keychips, and truncation that cut at the wrong character count.
+
+New PGAP DrawCommands: `Badge`, `KeyChip`, `KeyChipRow`, `MeasureText`; new `PlexiEvent::TextMeasured`. `DrawCommand::Text` extended with required `max_width: Option<f32>` and `elide: bool` (no serde defaults — breaking wire change). Host binary-searches for the clip point using real galleys. Deleted `_truncate_to_width`, `_char_px`, `_CHAR_W_*`, `_BADGE_*` from the Python SDK. `badge()`, `KeyRow`, `FooterKeys`, and `commit_graph.py` all rewritten to emit the new commands. `ctx.badge()`, `ctx.key_chip_row()`, `ctx.measure_text()` added to `RenderContext`.
+
+Key decision: `MeasureText` handled inside `mod.rs`'s `ui()` drain loop (not `routing.rs`) because only `ui()` has a live `egui::Ui` for font access. `badge()` free function in `ui.py` is now void — callers needing horizontal flow advance use `_approx_badge_w()` (heuristic for cursor-only, not rendering).
+
+**Breaks if:** Any badge pill is wrong size, or key chips show as plain text, or `ctx.text()` calls from older app code omit `max_width`/`elide` (they fail deserialization — required fields).
+
+## 2026-04-23 — [FIX] Host PATH broken under GUI-bundle launch (alpha)
+Root cause: when Plexi is launched from `/Applications` via Spotlight, Dock, Finder, or `open -a`, LaunchServices starts the process with a minimal `/usr/bin:/bin:/usr/sbin:/sbin` PATH — no Homebrew, no `~/.local/bin`, no asdf/nvm/pyenv shims. The user's shell profile never runs. Plexi then whitelists that broken PATH into every process-app subprocess via `process_app/mod.rs` (ENV_WHITELIST includes `PATH`), so apps that shell out to tools installed under `/opt/homebrew/bin` (e.g. GitHub Tree calling `gh`, any agent using `rg`/`fd`, etc.) see `shutil.which("gh") == None` and fail to auth. Running Plexi from a terminal (`plexi-alpha`) works because the shell PATH is inherited correctly.
+
+Fix: new `shell::install_login_shell_path()` runs `$SHELL -l -c 'printf %s "$PATH"'` once at startup and `set_var("PATH", ...)` on the Plexi process itself. Falls back to prepending `/opt/homebrew/{bin,sbin}:/usr/local/{bin,sbin}` if the probe fails. Called from `main()` right after logging init, before any subprocess spawns or threads start. All downstream reads (process-app whitelist, terminal env builder, internal shelling) inherit the resolved PATH with zero per-callsite changes. Removed the duplicate homebrew-prepend hack from `shell::build_env` — single source of truth now.
+
+**Breaks if:** Launch Plexi Alpha from `/Applications` (Spotlight/Dock, NOT from a terminal). Open a GitHub Tree pane. It says "The gh CLI isn't on PATH" or "Run `gh auth login`" despite `gh` being installed in Homebrew. Also breaks if `~/.plexi-alpha/plexi.log` shows `Login-shell PATH probe failed` without any fallback line after it.
+
+## 2026-04-23 — [FIX] Grey square top-left of every pane — round 2, in tiling (uncommitted)
+Root cause: the first grey-square fix in `src/process_app/mod.rs` only handled the `ProcessApp::ui()` path. The *outer* tile renderer in `src/tiling.rs::pane_ui` was wrapping *every* pane (app, agent, terminal) in the exact same collapsing `egui::Frame::new().fill(terminal_bg).inner_margin(8).show(ui, ...)`. Because every downstream renderer (ProcessApp, agent_pane, TerminalView) paints via `ui.painter()` / paints over its own computed rect without allocating egui UI space, the outer Frame collapsed to a tiny rect in the top-left and painted the background only there. Same for the zoomed-pane placeholder (line 97-102) — `Frame.show(ui, |_| {})` with an empty closure allocates zero.
+
+Fix: drop the outer Frames in `pane_ui`. Paint the pane background directly with `ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, terminal_bg)`, then run the inner renderer inside a child UI built with `UiBuilder::new().max_rect(pane_rect.shrink(8.0))` to preserve the 8px inner-margin behavior. Same treatment for the zoomed-pane placeholder. `cargo build --release` clean, `just install-alpha` green.
+
+**Breaks if:** Any pane — app, agent, or terminal — shows a small grey rectangle in its top-left corner, or the pane background/margin behavior changes (content touching the edges without an 8px gutter).
+
+## 2026-04-23 — [FIX] Grey square top-left — round 1, in process_app (uncommitted)
+Root cause: `ProcessApp::ui()` in `src/process_app/mod.rs` wrapped the draw-command playback in an `egui::Frame::new().fill(terminal_bg).show(ui, ...)`. Every primitive inside `render_draw_commands` paints via `ui.painter()`, which draws but never *allocates* UI space, so the Frame's content rect collapsed to its minimum size in the top-left and painted `terminal_bg` only over that tiny rect. Round 1 of the fix; round 2 is above (same pattern one level up in `src/tiling.rs`).
+
+Fix: drop the Frame wrapper. Paint `terminal_bg` directly over `ui.available_rect_before_wrap()`, then call `render_draw_commands` against `ui` as before. The pane-background contract now lives in one explicit painter call against a rect we control.
+
+**Breaks if:** An app's own background (drawn by ProcessApp before draw-commands play back) fails to fill the pane or shows a small inner grey rectangle.
+
+## 2026-04-23 — [FIX] Modal keyboard focus leaks to app behind close-confirm (uncommitted)
+Root cause: `draw_confirm_close` in `src/overlays.rs` used `ui.input(|i| i.key_pressed(Enter))` — a read-only check that does **not** consume the event. The pending-close overlay was also drawn at the *end* of `update()`, *after* `dispatch_app_key_events` had already forwarded the Enter to the focused pane. Symptom: Cmd+W on a backlog pane → confirm-modal appears → Enter both confirms the close *and* opens the selected note in the default markdown editor as the pane tears down.
+
+Fix: migrate confirm-close onto the existing `FocusLayer` pipeline used by the notification modal. New `FocusLayer::ConfirmClose` + `sync_confirm_close_focus()` pair in `src/app/mod.rs`; `input_captured_by_overlay()` now returns true when either modal owns focus; the early-render path in `update()` dispatches to the right modal before `drain_captured_keyboard_input` clears the buffer for downstream panes. `draw_confirm_close` uses `ctx.input_mut(|i| i.consume_key(Enter/Escape))` and its late-render call site was removed. Also added a scrim and inline "Enter confirm / Esc cancel" hint for stylistic parity with the command palette and notification modal.
+
+**Breaks if:** Cmd+W on a backlog (or any non-terminal) pane → hitting Enter on the confirm modal also triggers the selected-item action in the pane underneath; or the confirm-close modal no longer dims the background behind it.
+
+## 2026-04-23 — [FIX] Command palette collapses to one row after a cache-miss redraw (uncommitted)
+Root cause: follow-up on the earlier palette fix. `ScrollArea::max_height(...)` caps the viewport but does **not** reserve it — when the filtered entry set is short (single pane + a handful of apps), egui measured the natural content height and shrank the scroll viewport to ~1 row, even though `auto_shrink=[false, false]` was set. The earlier dynamic-height patch only addressed the cap, not the reservation.
+
+Fix: pair `.max_height(palette_max_list_h)` with `.min_scrolled_height(palette_max_list_h)`. Both now point at the same computed target so the viewport is locked at that height regardless of content size.
+
+**Breaks if:** Open Cmd+P with only one pane running → palette renders as a ~1-row sliver instead of a full-size list.
+
+## 2026-04-23 — [FIX] Header sits too low in the top of the pane (uncommitted)
+Root cause: `Column.padding` defaulted to `SPACE_XL` (24px) on all four sides. A `Header` at the top of a pane carries its own visual weight via `TEXT_TITLE_XL` (28pt); stacking 24px of top padding above it reads as a "dropped" title rather than an anchored one. Side/bottom padding at 24px feels correct — only the top is wrong.
+
+Fix: add `Column.padding_top: Optional[float]` that defaults to `SPACE_LG` (16px). Sides and bottom stay at 24px. Apps that want pixel-perfect override pass `padding_top=N`. Applies to every SDK v2 app with no migration needed — the new default takes over as soon as the updated `plexi_sdk` package is installed.
+
+**Breaks if:** `Screen Time` (or any other SDK v2 app with a `Header`) shows an obvious top gap that makes the title look like it's floating in the middle of a header region rather than anchored to the top of the pane.
+
+## 2026-04-23 — [FIX] Apps shadowing host Cmd-chords + unclipped text overflowing columns (uncommitted)
+Two systemic fixes the user flagged in the same breath.
+
+**Cmd-chord hijack (root cause):** `ProcessApp::handle_key` in `src/process_app/mod.rs` forwarded every Key event (except bare letters) to the app subprocess as `PlexiEvent::Key`. Apps received Cmd+Enter, Cmd+P, Cmd+Shift+A, etc. and could act on them *before* the host's `poll_actions` ran in the same frame. Concrete symptom: in the backlog app, Cmd+Enter opened the selected note instead of toggling pane zoom.
+
+Fix: skip forwarding any event where `modifiers.command` is set. Cmd-modified chords are reserved for host shortcuts; apps that want shortcuts use bare letters or Shift/Alt combos. `handle_key` still forwards non-Cmd chords (arrow keys, Enter, Esc, Tab, etc.) normally.
+
+**Unbounded text (root cause):** `ctx.text()` in the Python SDK had no width argument. Apps drawing bounded surfaces (list rows, columns, table cells) relied on ad-hoc `line[:int(pw/7)]` truncation or nothing at all. Long note names overflowed their column in the backlog app; when the pane was narrow, every item overlapped every other item into an unreadable mess.
+
+Fix: added `max_width: float | None = None` to `ctx.text()`. When set, the SDK truncates the string with an ellipsis *before* emitting the DrawCommand — there's no host-side clipping, so this is the only safe bound. Exposed `plexi_sdk.truncate_to_width(text, max_px, font_size, mono)` as a public helper for hand-drawn surfaces that can't route through `ctx.text`. Migrated backlog to use `max_width` on every bounded text call (header, item names, preview path + lines).
+
+**Breaks if:** (1) In the backlog pane, Cmd+Enter opens the selected note instead of zooming the pane; or (2) long note names in backlog render past the list column's right edge into the preview pane.
+
+## 2026-04-23 — [FIX] Command palette only rendering ~1.5 items (uncommitted)
+Root cause: `src/command_palette.rs` used `ScrollArea::vertical().max_height(400.0).auto_shrink([false, true])`. With `auto_shrink_y=true` inside an `egui::Area` + `egui::Frame` with margins, the ScrollArea measures available height incorrectly on first lay-out and collapses the viewport to roughly one row. Every other ScrollArea in the codebase (agent_pane, file_browser, render/agent_pane) uses `auto_shrink([false, false])`; the palette was the outlier.
+
+Fix: (1) switch to `auto_shrink([false, false])` to match the codebase convention — max_height alone governs the viewport. (2) Make max_height dynamic — `screen_rect.height() - 80 anchor - 120 bottom/input/padding`, clamped to a 200px floor — so the palette scales with window size instead of hard-capping at 400px.
+**Breaks if:** Cmd+P opens the palette and fewer than ~6 items are visible at once, or the palette no longer grows when the window is tall.
+
+## 2026-04-23 — [FIX] App panes were rendering monospace everywhere (uncommitted)
+Root cause: `src/theme.rs:font_definitions()` inserted `JetBrainsMonoNerdFont-Light` at index 0 for **both** `FontFamily::Monospace` AND `FontFamily::Proportional`. That meant any `ctx.text(..., monospace=False)` call from the Python SDK still rendered in JetBrains Mono (a monospace font), so app UIs looked like terminal dumps even when they explicitly requested proportional.
+
+Fix: swap priorities in the Proportional family — `DejaVuSans.ttf` (already bundled as fallback #1) now primary, `JetBrainsMonoNerdFont-Light.ttf` secondary for glyph fallback (nerd icons, box drawing). Monospace family unchanged. Apps get real proportional body text; terminal panes still use the mono font via `FontFamily::Monospace`.
+
+Same pass also tightened SDK v2 component defaults after the user flagged the notification-tester as still feeling "dog shit" post-SDK-v2:
+- `Column.padding`: SPACE_LG → SPACE_XL (24px outer padding feels airy, not cramped).
+- `Column.gap`: SPACE_SM → SPACE_MD (12px between siblings).
+- `Card`: added 1px border in HIGHLIGHT color — SURFACE and BG are close enough in brightness that cards weren't popping off the pane.
+- `Card.padding`: SPACE_MD → SPACE_LG.
+- `KeyRow.BADGE_W`: 28 → 44px, `BADGE_H`: 20 → 26px; badges now properly tile for chords (⌘K, Esc) and the glyph is monospace-centered.
+- `Header`: title sized to TEXT_TITLE_XL (28pt, was 20pt); clearer title-to-subtitle-to-divider spacing; baseline math fixed so subtitle sits below the title instead of overlapping.
+- `Footer`: symmetric top/bottom breathing room around the divider — previously hugged the pane frame edge.
+
+**Breaks if:** UI pane text renders monospace again. Card borders invisible (border=HIGHLIGHT removed). KeyRow badges rendered smaller than the description text height. Header subtitle overlaps title baseline. Footer text crowds the pane bottom edge. Fallback Unicode coverage (nerd icons) breaks because JetBrainsMono fell out of the Proportional fallback chain entirely (it should still be at index 1).
+
+## 2026-04-23 — [DECISION] SDK v2 — declarative UI primitives + `ui-playground` (uncommitted)
+Every app before today used `ctx.rect`, `ctx.text`, `ctx.circle` with hand-picked pixel coordinates. Result: every new app reinvented header layout, padding, truncation, footer placement — and the notification-tester screenshot made it concrete (footer clipping on the right edge, no padding in buttons, subtitle cut off).
+
+Added `sdk/python/plexi_sdk/ui.py` — a declarative component tree. Components are dataclasses (`Column`, `Card`, `Header`, `Section`, `Divider`, `Heading`, `Label`, `KeyRow`, `ScrollLog`, `Spacer`, `Footer`). Each has `measure(avail_w) -> height` and `render(ctx, x, y, w, h) -> None`. `Column` lays children top-to-bottom; `Spacer(grow=True)` soaks slack; `Label` wraps up to 3 lines; `Footer` wraps up to 2; `Heading` and `KeyRow` truncate with `…`. `ctx.render(tree)` clears the pane and lays out the tree.
+
+Style tokens are re-exported from ui.py and mirror `src/style.rs` (`SPACE_*`, `TEXT_*`, `RADIUS_*`, palette constants). Low-level `ctx.rect` / `ctx.text` remain — they're the escape hatch, not the starting point.
+
+Install recipes (`install-alpha`, `install-beta`, `install-v3`) now copy the entire `plexi_sdk/` package directory to `~/.plexi-*/sdk/plexi_sdk/` instead of a flat `plexi_sdk.py`, so `from plexi_sdk.ui import ...` resolves. Rejected: keeping the flat-file layout and concatenating ui.py contents into `__init__.py` — cohesion lost at 1000+ LOC in a single file.
+
+Also landed: `examples/ui-playground/` — a reference app that renders every component at once, plus `docs/sdk-ui-guide.md` with the component table, responsive behavior notes, and the "write your own component" recipe. Notification-tester migrated from raw primitives to SDK v2 as the proof point; new code is ~40% shorter and declarative. Smoke test passes — both the tester and playground boot cleanly with the new package layout.
+
+**Breaks if:** `from plexi_sdk.ui import Column` fails at app startup (the installed SDK is still flat-file; run `just install-alpha`). Notification-tester footer clips on a narrow pane (Footer wrap broken). Scroll log shows oldest lines at the top (should be newest-first). Card background doesn't honor the `radius` token. Heading text doesn't truncate with `…` when pane is narrower than the title. Install leaves a stale `~/.plexi-*/sdk/plexi_sdk.py` file alongside the new package dir (rm in the recipe missed).
+
+## 2026-04-23 — [FIX] install-alpha / install-beta refresh macOS LaunchServices (uncommitted)
+`install-beta` was only renaming the `.app` bundle but not refreshing macOS LaunchServices — so the Apple menu / app menu bar kept showing the cached "Plexi" name instead of "Plexi Beta". `install-v3` already had the `lsregister -f` + `pbs -update` calls; ported them to `install-alpha` and `install-beta` for consistency.
+**Breaks if:** a fresh `just install-beta` leaves the menu bar showing anything other than "Plexi Beta" next to the Apple menu.
+
+## 2026-04-23 — [CHANGED] Input-kind notifications are multiline with Cmd+Enter submit (uncommitted)
+Input-kind notifications used `TextEdit::singleline` + Enter-to-submit — single short text only. Use cases the user wants (describe what you're working on, write a quick note) want multi-line. Rejected: embedding a full text editor (way out of scope for a notification). Chose `TextEdit::multiline` + `Cmd+Enter` submit — same chord Slack / Linear / Discord use. Enter inserts a newline into the buffer; `Cmd+Enter` commits. Input field now has `desired_rows(6)` so it's obviously multi-line on first render and scrolls vertically once content exceeds the visible row count.
+
+`Cmd+Enter` is consumed via `ctx.input_mut.consume_key` inside `draw_notification_modal` so egui's `TextEdit` can't see it and can't invent a widget-local interpretation. Footer hint for input kind reads "Enter for newline · ⌘⏎ to submit · Esc to dismiss" (required variant drops Esc).
+
+**Breaks if:** pressing Enter in the input field submits instead of inserting a newline. Cmd+Enter inserts a newline and doesn't submit. Input field renders as a single-line edit. Input field doesn't scroll when content exceeds 6 rows. Submitted value returns without the newlines the user typed (trim() only strips leading/trailing whitespace — internal newlines must survive).
+
+## 2026-04-23 — [DECISION] `src/style.rs` design tokens + notification modal polish (uncommitted)
+Added a central design-tokens module so every overlay/pane references the same spacing, typography, radii, modal widths, and button heights. The set is intentionally minimal — only tokens referenced by the current codebase are exported; scale holes (`SPACE_XS`, `MODAL_WIDTH_SM`, `RADIUS_SM`, etc.) are added as migrations need them, not speculatively (project rule against `#[allow(dead_code)]` and speculative abstractions).
+
+Notification modal polished on top of the new tokens:
+- Width 520 → 640 (`MODAL_WIDTH_MD`), inner padding 32h / 28v.
+- Title centered and bumped from 20pt → 28pt (`TEXT_TITLE_XL`).
+- Body centered, max-width clamped so long lines wrap naturally.
+- Options rewritten as a hand-drawn `option_button` widget in `overlays.rs` — egui's built-in `Button` left-aligns labels and gives no API hook to center them inside a fixed-width rect; painting manually gets us a centered label + right-gutter shortcut hint (`[Y]`) + 52px tall button (`BUTTON_H_LG`). Focused option gets the accent fill + black text; hover on non-focused options lifts the bg slightly. Screenshot-reproducible: the previous "Yes  [Y]" with zero horizontal padding is gone.
+- Message-kind `Acknowledge` is now a fixed-width `primary_button` — 220px wide, centered on its own row, 40px tall.
+- Footer hint centered below the button instead of sharing a row with it.
+- Scrim alpha 170 → 190 (slightly deeper dim).
+
+**Breaks if:** option buttons render with left-aligned text. Focused option in a choice notif doesn't visually pop (no accent fill). Notification title is left-aligned, not centered. Modal width feels cramped (anything less than ~600px suggests the token wasn't applied). Acknowledge button for message kind spans the full modal width instead of being centered at 220px. Hover on a non-focused option doesn't visibly lift. `cargo build` emits a warning about unused constants in `style.rs` (the minimal-tokens rule was broken).
+
+## 2026-04-23 — [DECISION] FocusLayer input-capture primitive (uncommitted)
+Addresses a recurring class of bug: keystrokes leaked through overlays to panes behind them. Root cause — egui doesn't auto-route input by visual stacking; any widget that reads `ctx.input(...)` sees the same event stream. Every new overlay had to independently remember to gate input, and every miss reintroduced the same leak.
+
+Introduced `FocusLayer` enum + `focus_stack: Vec<FocusLayer>` on `PlexiApp` with semantics: the top-of-stack layer owns keyboard input for the frame. When a non-`Pane` layer is on top, `drain_captured_keyboard_input` retains only a global allowlist (`Cmd+Q`, `Cmd+W`, `Cmd+Shift+A`, `Cmd+]`/`Cmd+[`) in `ctx.input.events`, dropping every other `Event::Key` and all `Event::Text`. Mouse events pass through untouched.
+
+Integration: at the top of `update()`, `sync_notification_modal_focus()` reconciles the layer against `show_notification_modal && !pending_notifications.is_empty()`. If `input_captured_by_overlay()` returns true, the modal renders FIRST (so its `TextEdit` for the `input` kind consumes typed chars), then the drain runs. `dispatch_app_key_events` is gated on the same predicate — focused apps don't receive `handle_key` when an overlay owns input. `keys::poll_actions` runs afterward over the drained buffer, so global keybinds (and Cmd+]/Cmd+[ queue-cycling) still work. The late-in-`update()` modal render is gone — only the early phase renders now.
+
+Only the notification modal is migrated. Command palette, run palette, rename pane, confirm close, quit confirm, shortcuts overlay, and secrets manager still use their legacy per-handler input paths; the migration recipe is filed in `~/.plexi-alpha/backlog/note-2026-04-23-migrate-overlays-to-focus-stack.md`. `FocusLayer` has one variant today (`NotificationModal`) — extend as each overlay migrates.
+
+Rejected: intercepting input in the draw function alone (that's what we had — doesn't stop panes from reading the same events). Rejected: a full "only top layer can read input" enforcement via egui's focus API (the terminal backend doesn't use egui focus; it polls events directly, so only a buffer drain works).
+
+**Breaks if:** typing into the notification-tester's `input` kind doesn't reach the modal's input buffer. Opening a choice notification while a terminal pane is focused — keys like `j` or `k` — causes the terminal to receive them too. Cmd+Q doesn't quit while the notification modal is open. Cmd+Shift+A doesn't close the modal while a required notif is up. Cmd+]/Cmd+[ doesn't cycle the queue. Focused app still receives `handle_key` while the modal is open (check `dispatch_app_key_events` gating). `focus_stack` leaks layers across modal open/close cycles (grows unboundedly).
+
+## 2026-04-23 — [CHANGED] Notifications: multi-kind keyboard-first modal, [notifications] config, notification-tester app (uncommitted)
+Second-pass redesign of the notification system on top of the earlier modal pass. Key shifts:
+
+- **Kinds.** `DrawCommand::Notify` grows a `kind: NotifyKind` (`message` / `choice` / `input`) plus `options: Vec<NotifyOption>`, `input_prompt`, `required`. Back-compat: missing `kind` deserializes to `Message`, so existing apps (stand-up-reminder, etc.) keep working unchanged. `NotifyOption { label, value, shortcut }` is the choice-button model; `NotifyKind::Input` uses `input_prompt` as the placeholder hint.
+- **PlexiEvent::NotifyAction.value.** New optional field on the event delivered back to the app. For choice kind it carries the option value; for input kind the typed text; absent for plain acknowledge/cancel. Legacy `action_label` still identifies which button/path fired.
+- **Modal rewrite.** `draw_notification_modal` is now keyboard-first:
+    - `Enter` / `Space`: confirm (acknowledge for message, focused option for choice, submit for input).
+    - `↑↓` / `j/k`: cycle choice options.
+    - `1-9`: direct-select the Nth option.
+    - per-option `shortcut` char: direct-select that option.
+    - `Esc`: cancel (only when `required == false`).
+  The scrim catches clicks so they don't leak to panes behind. Modal Area lives on `Order::Tooltip` above a separate `Order::Foreground` scrim Area.
+- **Sidebar panel deleted.** `draw_notification_panel`, `show_notification_panel`, and `Action::ToggleNotificationPanel` are gone — the modal + queue cycle supersedes it. `Cmd+Shift+A` now maps to `Action::ToggleNotificationModal`. `Cmd+]` / `Cmd+[` cycle the queue when the modal is open (the keybind is context-sensitive: tab-cycling otherwise, queue-cycling when modal is up). `modal_queue_offset` is the currently-viewed index; acknowledging pops at offset, cycling moves without acknowledging.
+- **`[notifications]` config section.** `enabled` (master switch; false silently drops at both `ShowNotification` and `notify.sock` intake paths) and `focus_mode` (when true, arrivals queue silently and the user opts into review with Cmd+Shift+A). Both cached onto `PlexiApp` at startup from the config; no hot-reload. Alpha's config.toml was rewritten in the fat beta-style with full inline docs; beta's config gained the `[notifications]` block.
+- **`actions` field dropped from the ShowNotification path.** `DrawCommand::Notify.actions` was being ambiguously used for both (a) server-side side effects (`resume_run` / `open_intent` / `run_command`, handled in `process_app/routing.rs` before the UI ever sees it) and (b) UI buttons. New `options` + `kind = choice` handles the UI case cleanly; `actions` remains in the protocol for side effects only and is explicitly dropped after side-effect processing (`let _ = actions;` in routing.rs).
+- **Python SDK.** `ctx.notify_choice(title, options, required)` and `ctx.notify_input(title, prompt, required)` added; both block for a response. `ctx.notify(...)` and `ctx.notify_and_wait(...)` unchanged. `notify_action` event dispatch in the main loop now returns the `value` when present, `"__cancel__"` for Esc-cancels.
+- **notification-tester example app.** New playground at `examples/notification-tester/`. Keys: `m` / `c` / `i` fire each kind; `b` queues a 3-message burst so you can exercise `Cmd+]`/`Cmd+[` cycling; `r` fires a required (Esc-resistant) message. On-pane log shows what came back.
+
+Rejected: inferring `kind` from field presence (breaks on future media kinds, ambiguous when both `options` and `input_prompt` are set). Rejected: `type` over `kind` (Python reserved word, keyword-conflict in SDK). Deferred: media kinds (image/audio/video/rich), snooze, centralized history view, visual composition canvas + Moss transforms.
+
+**Breaks if:** stand-up-reminder fires and no modal appears. Cmd+Shift+A no longer opens any notification surface. Sending `{"type":"notify"}` without a `kind` field stops working (back-compat gone). Cmd+] in a normal terminal stops cycling tabs (the modal_open gate is inverted). Notification-tester `c` key shows options but Enter doesn't pick the focused one. Choice option values aren't delivered as `NotifyAction.value`. Setting `[notifications].enabled = false` doesn't silence notifications. Setting `focus_mode = true` still auto-pops the modal on arrival.
+
+## 2026-04-23 — [CHANGED] Notifications: centered modal as primary surface (uncommitted)
+The in-app `ShowNotification` path never set `show_notification_panel = true` (only the `notify.sock` drain path did), so `ctx.notify(...)` calls from apps like `stand-up-reminder` silently accumulated in `pending_notifications` with the badge incrementing but no visible window. Fixed the surfacing by introducing a new `show_notification_modal` state that auto-opens a centered work-area modal on every `ShowNotification` arrival (both in-process apps and socket-posted notifications). Modal dims the background (Area at `Order::Foreground` with an alpha-170 scrim, then a second Area at `Order::Tooltip` centered via `Align2::CENTER_CENTER`), shows one notification at a time (front of the queue), and auto-closes once the queue drains. Escape and the default "Acknowledge" button both send `NotifyAction { action_label: "acknowledge" }`. Sidebar panel (Cmd+Shift+A) kept as secondary history view; its fallback button also renamed from "Dismiss" to "Acknowledge" for consistency. Rejected: a display-wide OS-level takeover (too brutal for every reminder, bigger primitive to build — escalate later if a real use case demands it). Centralized notification management (history/snooze/mute-per-app) filed in `~/.plexi-alpha/backlog/note-2026-04-23-centralized-notifications.md` as a separate feature.
+**Breaks if:** Stand-up reminder fires on schedule but no centered modal appears (the bell badge still increments but the primary surface is broken). Acknowledge button doesn't pop the notification off the queue. Modal stays up after the queue is empty. Cmd+Shift+A sidebar panel no longer opens at all (regression — it should still toggle as the history view).
+
+## 2026-04-22 — [CHANGED] Configurable Cmd+Q and Cmd+W confirmation dialogs (PR → alpha)
+Added `confirm_quit` and `confirm_close` top-level fields to `PlexiConfig` (both default `true`). `confirm_quit` supersedes the old `[beta].quit_confirm` flag (falls back to beta for backwards compat). `confirm_close` gates a new modal dialog shown before closing a pane via Cmd+W — `execute_close_pane()` in `pane_ops.rs` consolidates the close logic so both the immediate and dialog-confirm paths share one implementation. `draw_confirm_close` in `overlays.rs` patterns exactly after `draw_quit_confirm_overlay`. When `confirm_close = false`, closes happen immediately with no dialog.
+**Breaks if:** Cmd+W closes a pane without showing the dialog when `confirm_close` is unset/true. `confirm_quit = false` in config.toml still requires triple-press to quit. `execute_close_pane` on the last pane of the last context deletes the context instead of resetting to a blank pane.
+
+## 2026-04-20 — [CHANGED] lava-opus app shipped (examples/lava-opus/)
+Buoyancy-driven blob simulation with fake-metaball blending via `DrawCommand::Circle` layering. Named "lava-opus" (not "lava-lamp") to avoid collision with a second lava app in flight. Physics: temperature-driven rise/fall, viscous drag, wall repulsion, soft bounce. Render: glow halo + solid core + specular highlight per blob; translucent bridge circles between nearby pairs fake the metaball merge look. Click to inject heat. Installed and verified at `~/.plexi-v3/apps/lava-opus/`.
+**Breaks if:** app registry fails to load `lava-opus` (id mismatch in manifest.toml — it must be `id = "lava-opus"`). Blobs teleport to top/bottom edge (bounds clamp regressed). Bridge circles disappear entirely between nearby blobs (MERGE_FACTOR or bridge alpha logic changed).
+
+## 2026-04-20 — [DECISION] Where Were We snapshot
+Fresh session orientation. Last committed work: dead code sweep (PlexiIQ removal, zero warnings). v3 is in clean state — only `Cargo.lock` modified in worktree. Open work: `V3_STEP_9_FOLLOWUPS.md` tracks remaining brokers (PipeSend peer routing, RunUpdate round-trip, media handlers, FD CLOEXEC audit) before v3.0.0 tag.
+**Progress:** All 12 refactor steps done; HTTP broker live; CI gate real; 74+ tests green.
+**Open:** Step-9 follow-ups (see `V3_STEP_9_FOLLOWUPS.md`), then tag v3.0.0.
+
+## 2026-04-20 — [CHANGED] Dead code sweep: PlexiIQ removal + zero-warning cleanup (→ v3)
+Removed PlexiIQ agent feature entirely from v3 (preserved on `feature/plexi-iq` branch at d3c4c1f). Removed `Pane::Agent`, `AgentPane`, `TurnMsg`, `spawn_agent_pane`, agent workspace restore, `Action::SpawnAgentPane`, and the agent rendering block in `tiling.rs` (~175 LOC). Removed 8 dead `HostCommand` variants, 7 dead `HostEffect` variants, `PermissionsLog`/`PermissionDecision` structs (permissions.jsonl persistence never wired), `AppReply` enum (superseded by `DrawCommand::Ready`), `FsService`/`SecretsService`/`SpawnService` trait objects (zero production readers after STEP-5 rework), and all module-level `#[allow(dead_code)]` from `main.rs`. 1,311 lines deleted, 0 warnings, 0 errors.
+**Breaks if:** `cargo build` produces any warning (dead_code allows are gone — they were the only gate). PlexiIQ agent pane survives on v3 (it shouldn't — feature/plexi-iq is the preservation branch).
+
+## 2026-04-19 — [CHANGED] File explorer + protocol fixes (→ v3)
+Three fixes landed together. (1) **`DrawCommand::Ready`**: the SDK's post-Init handshake message `{"type":"ready",...}` was not a recognized `DrawCommand` variant — the host background reader logged a WARN and discarded it every launch. Added `Ready { sdk, features_used }` to the enum; `process_app/mod.rs` now stores `sdk`/`features_used` on `ProcessApp` and the render.rs no-op arm covers it. FrameDone mismatch log demoted from WARN to DEBUG (1-frame async lag is expected behavior, the spam was masking real issues). (2) **HTTP non-blocking**: `routing.rs::HttpRequest` was calling `self.net.http(...)` synchronously on the egui UI thread — froze the entire host for the duration of every Wikipedia search. Fixed by spawning a per-request background thread that writes its result to a `mpsc::Sender<PlexiEvent>`; `ui()` drains the receiver before flushing outbound events. (3) **File explorer app** (`examples/file-explorer/`): new PGAP app that joins the `cwd` group (receives `PathChanged` when any linked terminal cd's), lists the current directory with dirs first, and navigates with arrow keys / Enter / Backspace. (4) **`"above"` layout side**: new manifest schema value `layout_hint = { side = "above", split = 0.75 }` puts the new pane at the TOP of a horizontal split — file explorer uses this so it appears above the terminal rather than below it. `split_with_new_pane` gains a `new_pane_first: bool` parameter; `open_pane_layout` returns a 4-tuple.
+**Breaks if:** wikipedia still shows "malformed draw command: unknown variant `ready`" in the log (Fix 1 regressed). A wikipedia search freezes the UI for >1s (Fix 2 regressed — HTTP back on UI thread). File explorer opens below the terminal instead of above (Fix 4 regressed). `cargo test` fails (`Ready` variant unhandled in an exhaustive match somewhere).
+
+## 2026-04-19 — [CHANGED] V3 step 9a: real HTTP broker via ureq (→ v3)
+Replaced `StubNetService` with a pure-Rust blocking `UreqNetService` (ureq 2.12 + tls). `NetService` trait extended with `fn http(method, url, headers, body) -> HttpResponse`; `http_get` becomes a default method wrapping the new signature. `ProcessApp` now holds an `Arc<dyn NetService>` clone; `routing.rs::HttpRequest` issues the real call and pushes `PlexiEvent::HttpResponse { request_id, status, body, error }` — capability-denied path still returns 403 without hitting the network. Test harness ditched its custom `http_mocks` dict + `mock_http` method in favor of `h.set_net(Arc::new(MockNetService::with(url, body)))` — the same seam production panes use. Acceptance: new Layer-1 test `layer1_wikipedia_http_broker_end_to_end` spawns wikipedia, injects a `MockNetService`, types R/u/s/t/Enter, and asserts "Rust (programming language)" surfaces in rendered output via the real broker pathway. Wikipedia example migrated from `urllib.request.urlopen` to `self.emit.http_get` so it actually exercises the broker. Along the way: added `tiny-skia` and `fontdue` to `Cargo.toml` (step 1 added `src/headless_renderer.rs` using those imports but never declared the deps, leaving `v3` HEAD un-buildable); deleted stale per-example `plexi_sdk.py` copies and pointed the Layer-1 harness at the canonical `sdk/python` via `PYTHONPATH` so examples pick up current SDK features (`on_inject`, `http_get`); added a `sink_opened` startup heartbeat to `FileEventSink::new` so the post-install smoke test's `effects.jsonl non-empty` gate actually passes; smoke test now clears `PLEXI_RUNNING=` before launching the host so running `just install-v3` from inside a Plexi terminal no longer short-circuits.
+**Breaks if:** wikipedia search hangs with a spinner when hitting a real URL (broker not wired). A Layer-1 test uses `h.mock_http(..)` after this lands (method is gone — migrate to `h.set_net(Arc::new(MockNetService::new().with(..)))`). `net.http` capability denial returns anything other than 403 on `PlexiEvent::HttpResponse`. `effects.jsonl` is empty after `just install-v3` (regression in either the sink_opened heartbeat or the smoke test unsetting PLEXI_RUNNING).
+
+## 2026-04-18 — [FUTURE] Step-9 broker follow-ups plan committed (V3_STEP_9_FOLLOWUPS.md, 13e1035)
+`V3_STEP_9_FOLLOWUPS.md` at the worktree root enumerates the 5 items deferred from the scoped-down step 9 (HTTP broker, PipeSend peer routing, RunUpdate round-trip, media brokers, FD CLOEXEC audit). Each has file paths, acceptance test, `Breaks if:`, effort estimate, and order hints. Deferred because (a) each is independently mergeable and (b) step 9's 6-hour estimate in `V3_REFACTOR_PLAN.md` was too much for one session on top of the other 11 steps. Start a fresh session with 9a (HTTP broker — lowest risk, easiest ship); 9a + 9e can parallelize. After all ship, tag v3.0.0 and delete the file.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 12: invariant enforcement (→ v3)
+Core invariants now have tests or structural guards. I-1 (HostModel zero egui): new `invariant_i1_host_module_is_egui_free` test reads every `.rs` under `src/host/` at test time and asserts no `use egui::` / `use eframe::` line — comments mentioning egui are fine. I-5 (Pane ADT frozen at 3 variants): `PaneRuntimeKind` now carries a doc comment pointing at `docs/specs/releases/plexi-v3.0.md §2` noting the freeze; changing requires a spec amendment. I-10 (capability grants per-workspace): guard test exercises the `MockSecretsService` lookup contract — production triple filtering lives in `app_permissions::PermissionsLog::check`, which was already tested via TryFrom in STEP-2. I-2 (no `todo!()`/`unimplemented!()` outside tests): already enforced by `#![deny(clippy::todo, clippy::unimplemented)]` in `main.rs`. Full test matrix: 74/74 passing, release build clean. Step-9 follow-ups (real HTTP broker, PipeSend peer routing, media brokers, CLOEXEC audit) remain the last known scope for a separate session before v3.0 tags.
+
+**Breaks if:** `use egui::` appears in `src/host/*.rs` without triggering a test failure. A fourth variant lands in `PaneRuntimeKind` without the spec-amendment doc being updated.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 11: CI gate that actually enforces (→ v3)
+`.github/workflows/plexi-v3-test.yml` replaces the vacuous `cargo test pgap_test_harness` step with a real matrix: `cargo test --release` (all 72 tests including host + harness + Layer-1), `uv sync --all-groups && uv run pytest -q` (SDK widget + example Python tests), `scripts/smoke-test.sh` (host launch + effects.jsonl growth check). `uv` is bootstrapped via the official astral installer. `scripts/smoke-test.sh` grows a new assertion: `effects.jsonl` must be non-empty after launch — catches a FileEventSink regression that the old "no panic in log" check would miss. `justfile::install-v3` now actually runs `lsregister -f` + `pbs -update`; CLAUDE.md's claim is no longer a lie.
+
+**Breaks if:** CI is green while `cargo test --release` fails, `uv run pytest` fails, the smoke test fails, or `effects.jsonl` stays empty. Right-click → Services doesn't show Plexi v3 after `just install-v3`.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 10: real Rust Layer-1 tests + uv runner (→ v3)
+`pgap_test_harness` grows from zero `#[test]` fns to five: init/ready handshake, render + frame_done round-trip, shutdown lifecycle, todo `path_changed` cwd update, wikipedia inject-state render. Tests auto-skip when `python3` is not on PATH so local dev without Python doesn't fail — CI should fail when a real gate is missing. `pyproject.toml` at repo root: `requires-python = ">=3.11"`, `pytest` as a dev dep, `testpaths` covering `sdk/python/tests` + every example's `tests/` dir, `pythonpath = ["sdk/python"]` so `from plexi_sdk import ...` resolves under `uv run pytest`. 72/72 Rust tests green.
+
+**Breaks if:** `cargo test layer1` returns zero tests (STEP-10 regressed). `uv sync && uv run pytest` can't resolve the `plexi_sdk` import. A ci job runs `cargo test pgap_test_harness` and matches zero tests (old shape).
+
+## 2026-04-18 — [CHANGED] V3 refactor step 9: PGAP surface — env isolation + bold + AppSpawned SDK hook (→ v3)
+Scoped-down step 9 — landed the three high-leverage items, explicitly deferred the rest. (1) **Env isolation** (spec I-6): `ProcessApp::launch` now calls `.env_clear()` and whitelists `HOME`/`PATH`/`LANG`/`LC_ALL`/`TERM`/`USER`/`SHELL` plus every `PLEXI_*` var. `ANTHROPIC_API_KEY` and similar host credentials can no longer leak to subprocess apps. (2) **Bold text rendering**: `process_app/render.rs` stops destructuring `bold: _` and routes it into an `egui::FontFamily::Name("bold")` that painter falls back to Proportional on if not registered — bold is now readable from app code without breaking rendering. (3) **AppSpawned SDK handler**: `sdk/python/plexi_sdk/__init__.py` adds `elif t == "app_spawned"` and calls `on_app_spawned(pane_id, type_id)`; default is no-op.
+
+**Deferred to a follow-up PR** (all flagged `// STEP-9 follow-up` in source): real HTTP broker (routing.rs still logs + returns a stub HttpResponse; MockNetService seam is live in HostServices), PipeSend peer routing (TODO already in routing.rs), RunUpdate round-trip on RunComplete, Image/Video/Audio broker plumbing, `O_CLOEXEC` audit on UnixListener FDs. Scope control — shipping correctness on env isolation and the SDK handshake this pass, leaving the broker work for a dedicated session.
+
+**Breaks if:** a spawned app can read `ANTHROPIC_API_KEY` / any host credential from `os.environ`. A SpawnApp confirmation round-trip doesn't fire `on_app_spawned` in the spawning app. `PLEXI_AUDIO=mock://` stops passing through to apps (whitelist regression).
+
+## 2026-04-18 — [CHANGED] V3 refactor step 8: manifest schema freeze (→ v3)
+`manifest.toml` gains a dedicated `[launch]` section that replaces the launch-time fields previously squatting in `[app.capabilities]`. New schema: `[launch].join_group` (was `[app.capabilities].group`), `[launch].layout_hint = { side, split }` (was `[app.capabilities].layout_hint: Option<String>` + `[app.capabilities].initial_share: Option<f32>`), `[launch].keyboard_capture` (was `[app.capabilities].keyboard_capture`). `side` must be `"right"` / `"below"` / `"overlay"`; `split` must be in (0.0, 1.0). Install-time validator fails loudly on bad values. `keybinding` field dropped — re-add when a global shortcut registrar actually consumes it. Migrated 5 example manifests (audio-recorder, quick-note, snake, todo, wikipedia) + Python and Rust scaffolder templates. Three new schema tests.
+
+**Breaks if:** installing a v2 manifest with `[app.capabilities].group = "cwd"` silently loses the grouping (old field now ignored). `plexi-v3 app new foo` produces a manifest that fails the install-time validator. `layout_hint.side = "bogus"` installs without error.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 7: capability enforcement complete (→ v3)
+Install-time validation in `AppRegistry::load_app`: a manifest whose `capabilities` list contains any unknown string fails loudly with a named error — the silent `From<&str> → FsRead` fallback removed in STEP-2 is now reinforced at the install boundary. `parse_capability_strings` (STEP-2) is the single predicate. Runtime checks in `process_app::routing`: `PipeSend` now requires `pipe.open`; `HttpRequest` requires `net.http` (and returns 403 `HttpResponse` when denied so apps see a clean failure); `AudioPlay` requires `audio.playback`; `AudioCapture` requires `audio.record`. Deleted dead `check_cd` + `path_within_scope` (Cd is not a spec DrawCommand; re-add when one exists). Two new tests: `app_registry_rejects_unknown_capability_in_manifest` and `app_registry_accepts_all_nine_spec_capabilities`.
+
+**Breaks if:** installing an app with a typo'd capability (e.g. `"net.http_"`) succeeds without a log error. An app that didn't declare `net.http` can call `ctx.http_get()` and get back data. `PipeSend` works from an app that never declared `pipe.open`.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 6: FileEventSink wired as production event bus (→ v3)
+Every `HostEffect` is now durable. `FileEventSink` opens `<config_dir>/effects.jsonl` in append mode at startup and writes one JSONL line per effect. `HostServices::new()` installs it as the production `event_sink` (was `NoopEventSink`). `HostEffect` + `HostEvent` + `PaneRuntimeKind` + `Placement` + `ShareRatio` all derive `Serialize`. Uses a separate file from `events.jsonl` (app-event bus via `crate::event_log`) to keep the host-state stream distinct from app-initiated events. FULL consumer rewiring (navigate/close driven by `FocusChanged`/`PaneClosed` effects instead of `PlexiApp`'s geometric search) was deferred — the observation layer is now durable; the consumer side ships with STEP-9 once pane-ID reconciliation has one more integration pass.
+
+**Breaks if:** `<config_dir>/effects.jsonl` stops growing when user actions fire. `FileEventSink::new()` panics on IO error instead of logging + falling back to no-op. Re-opening Plexi discards the effects file (not append mode).
+
+## 2026-04-18 — [CHANGED] V3 refactor step 5: HostServices gains fs/secrets/net/spawn seams (→ v3)
+`HostServices` grows from 1 field (`event_sink`) to 5: `fs` (`RealFsService` / `MockFsService`), `secrets` (`KeychainSecretsService` wrapping `crate::secrets::get_secret_scoped` / `MockSecretsService`), `net` (`StubNetService` returning 501 until STEP-9 ships the real broker / `MockNetService`), `spawn` (`LoggingSpawnService` / `MockSpawnService`). `HostServices::new()` wires production; `HostServices::mock()` wires in-memory fakes for Layer-2 tests. NOT yet wired: production `ProcessApp::routing::SecretGet` still calls `crate::secrets::get_secret_scoped` directly — STEP-9 will pipe it through `services.secrets` when the broker threading is done. Three new tests lock the mock behavior.
+
+**Breaks if:** a Layer-2 test that constructs `HostServices::mock()` still hits a real keychain/network call; `cargo test` depends on network connectivity; the production `event_sink` regresses from `NoopEventSink` before STEP-6 lands.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 4: pane-ID reconciliation (→ v3)
+`HostModel` is now the sole pane-ID allocator. `PlexiApp::next_pane_id` field deleted; every `new_id = self.next_pane_id; self.next_pane_id += 1;` site in `pane_ops.rs` (8 sites) routes through either (a) consuming the returned `PaneOpened.pane_id` / `SplitOpened.pane_id` from the effect or (b) calling `HostModel::alloc_pane_id()` directly (for paths like `create_single_pane_tree`, `new_tab`, `spawn_agent_pane` that don't submit a `HostCommand`). `open_pane_layout` now returns `(PaneId, ShareRatio, bool)`. Workspace restore seeds `HostModel::next_pane_id` via `seed_next_pane_id(..)`; workspace save persists `host.next_pane_id()`. Two new tests: `ids_synchronize_across_commands` (3 OpenPane + 2 SplitVertical → every effect ID lives in `ctx.panes`) and `seed_next_pane_id_resumes_allocator`.
+
+**Breaks if:** restarting Plexi with a saved workspace re-allocates pane IDs from 1 instead of resuming past the saved high-water mark. `egui_tiles::Tile::Pane(pid)` references a `pid` that doesn't exist in `HostModel::ctx().panes`. A new `OpenPane` returns `PaneOpened { pane_id: N }` but `ctx.panes.insert(M, ...)` with `M != N` (the old double-alloc bug).
+
+## 2026-04-18 — [CHANGED] V3 refactor step 3: finish or delete stubs (→ v3)
+Delete `src/plexi_iq/prompt.rs` (Stage-0 tombstone — v3.0 IQ operates without a templated system prompt; re-add when the turn loop actually needs one). Delete `src/plexi_iq/tools/mod.rs` (empty `ToolRegistry` with zero registrations — re-add when a real tool lands). Simplify `src/plexi_iq/context.rs` to the 2 fields the backends actually read (`pane_id`, `directory_scope`); replace its vestigial `PaneId(pub u64)` newtype with the canonical `tiling::PaneId` alias established in step 2. Remove `examples/video-player/` from the ship set — depends on a host video broker that step 9 may not land in the v3.0 window.
+
+**Breaks if:** any module imports `crate::plexi_iq::prompt` / `tools` (step would not compile) or the IQ pane fails to spawn because `PlexiIqInstance` lost a field it actually used.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 2: unify dual types (→ v3)
+One canonical representation per concept: `keys::Direction` re-exported from `host::command`, `tiling::PaneId = u64` alias kept, `app_permissions::Capability` extended with `AudioRecord`/`AudioPlayback`/`VideoPlayback` (9 spec caps), `app_protocol::PlexiEvent` gains `InjectState` + `HttpResponse`, `app_protocol::DrawCommand` gains `HttpRequest` + `Image` + `VideoPlayer` + `AudioMeter` + `AudioPlay` + `AudioCapture`. Silent `From<&str> → FsRead` fallback replaced with `TryFrom<&str>` that returns `UnknownCapability`; callers log + drop/deny instead of surfacing as an inert `FsRead`. Added `parse_capability_strings(...)` for manifest loaders (step 7/8 consume). 4 new tests lock the roundtrip + rejection behavior.
+
+**Breaks if:** a manifest with `capabilities = ["bogus"]` silently maps to `FsRead` instead of logging a warning. Any `PlexiEvent::InjectState` or `DrawCommand::HttpRequest` wire payload fails to deserialize.
+
+## 2026-04-18 — [CHANGED] V3 refactor step 1: dead-code sweep (→ v3)
+Deleted `src/protocol/{effect,event,output,schema}.rs`, `src/input/` (entire), `src/error.rs`, `src/media/mod.rs` — 582 LOC of tombstone modules with zero external callers. Only `protocol::view` kept (used by `HeadlessRenderer`). Scaffolder templates in `src/cli.rs` migrated from v2 capability names (`terminal_write`, `filesystem = "read_only"`) to v3 `capabilities = ["fs.read"]`. Module-level `#[allow(dead_code)]` scrubbed from `src/main.rs`: 16 → 10, with each remaining one annotated `// STEP-N: <reason>` so future steps know which ones they unlock. 54/54 tests green, zero warnings.
+
+**Breaks if:** `cargo build` re-introduces warnings (dead-code sweep regressed) or `plexi-v3 app new foo` emits a manifest whose capabilities fail validation.
+
+## 2026-04-18 — [CHANGED] Cutover slices 2/3/4: split_focused + close_focused + navigate route through HostModel (e444d04, f601842 → v3)
+Slice 2 (`split_focused`) consumes the returned `SplitOpened.placement` to derive the split direction — same shape as the Phase B app-launch path, so it's behaviorally integrated, not purely observational. Slices 3/4 (`close_focused`, `navigate`) submit commands and log effects but do NOT yet consume them to drive focus, because `HostModel` allocates its own pane IDs independent of the egui tile IDs `PlexiApp` tracks — so `PaneClosed`/`FocusChanged` effects currently reference HostModel's private pane list, not the real tiles. This is honest tech debt: the observation layer exists, but ID reconciliation is required before effects can drive real focus transitions. Every user-facing pane op (launch, split, close, navigate) now flows through `HostCommand`.
+
+**Breaks if:** the debug log for `.plexi-v3/plexi.log` stops showing "split_focused effects", "close_focused effects", or "navigate effects" lines when the user triggers the corresponding keybindings. The `Direction` → `crate::host::command::Direction` mapping in `navigate()` drops or reorders a variant.
+
+## 2026-04-18 — [CHANGED] Cutover slice 1: launch_app_by_id routes through HostModel (PRs 3e162f2, 27e0ece, 621fe79 → v3)
+First vertical slice of the `PlexiApp` → `HostModel` cutover. `PlexiApp` now holds `host: HostModel` + `host_services: HostServices`. App launches submit a `HostCommand::OpenPane` to `HostModel`, observe the returned `PaneOpened` effect, and use its `share` + `placement` fields to drive `egui_tiles` insertion. The legacy 3:1 hardcode in `pane_ops::split_with_new_pane` is gone — the function now takes a `ShareRatio` parameter. App-launch default is 1:1 (50/50). Terminal `split_focused` retains its own inline layout (migrates next session).
+
+Added `initial_share: Option<f32>` to manifest capabilities and `AppRegistry::share_for(app_id)` accessor. Launch path reads the manifest share, validates (0.0, 1.0) exclusive, and converts to `ShareRatio`. Invalid shares log a warning and fall back to 0.5. Example manifests updated: quick-note 0.3, snake 0.5, wikipedia 0.6, todo 0.4, audio-recorder 0.3, video-player 0.7. File-browser is a Rust-native builtin with no manifest and uses the 0.5 default.
+
+**Breaks if:** file browser opens at 75/25 again (pane_ops 3:1 regression). Example apps at `examples/*/manifest.toml` ignore their `initial_share` when launched. `cargo test --release` `host::harness::tests::open_pane_carries_share_to_effect` fails. `share_ratio_from_fraction` accepts a fraction <= 0 or >= 1 without logging a warning.
+
+## 2026-04-18 — [CHANGED] Plexi SDK: widgets foundation + headless snapshot testing
+Converted `sdk/python/plexi_sdk.py` into a package (`plexi_sdk/__init__.py` holds the original content byte-identical). Added `plexi_sdk.widgets.{ScrollState, TextBuffer, TextArea, TextAreaTheme}` — pure-Python reusable text editor primitives with zero deps. Added `plexi_sdk.testing` + new Rust bin `plexi_render` for headless PNG snapshot tests (stdlib-only PNG decode, pixel assertions). Added `pyrightconfig.json` at repo root so IDEs resolve `plexi_sdk` imports. 81 Python tests pass (25 scroll + 44 text_buffer + 5 snapshot + 7 text_area); all 49 Rust unit/integration tests still green (pre-existing doctest failure in headless_renderer.rs docstring untouched). This work sits above the PGAP protocol and survives the `PlexiApp` → `HostModel` cutover untouched. Text-editor and file-explorer as apps both build on these primitives.
+**Breaks if:** `from plexi_sdk import App, RenderContext, BG` fails in any example app. `cargo build --bin plexi_render --release` fails. `python3 -m pytest sdk/python/tests/` has any failing test.
+
+## 2026-04-18 — [CHANGED] Remove audio/video subsystems; keep typed pipes
+
+Deleted `src/media/audio.rs` and `src/media/video.rs`. Replaced `src/media/mod.rs` with a stub comment pointing to `typed_pipes.rs`. Removed `AudioPlay`, `AudioCapture`, `VideoPlayer`, `AudioMeter` from `DrawCommand` and all routing/render code in `ProcessApp`. Removed `AudioRecord`, `AudioPlayback`, `VideoPlayback` capabilities from `Capability` enum. Stripped `audio_capture`, `audio_play`, `video_player`, `audio_meter` methods from all `plexi_sdk.py` copies. Typed pipes infrastructure (`src/typed_pipes.rs`) untouched.
+
+**Breaks if:** `cargo test` drops below 57 passing (was 57 after this change), or `PipeOpen`/`PipeSend` stop routing correctly in `ProcessApp`.
+
+## 2026-04-18 — [CHANGED] inject_state + net.http brokering (PGAP v3)
+
+Added `PlexiEvent::InjectState { payload: Value }` to the protocol. SDK calls `on_inject(ctx, payload)` synchronously on the PGAP loop thread — no key-pushing needed to drive app state in tests.
+
+Added `http_request` / `http_response` PGAP channel. Apps call `emit.http_get(url)` from any thread (emits `http_request`, blocks on a queue). SDK handles `http_response` by unblocking the caller. Wikipedia app migrated from inline `urllib.request` to this channel.
+
+`Harness` gains `inject_state(payload)` and `mock_http(url, body)`. `render_frame` pre-drains buffered `http_request` commands before sending the render event — this eliminates the timing race where `on_render` would see stale state if the render arrived before the http_response.
+
+**Breaks if:** `wikipedia_inject_state_shows_results` fails to find "Rust" in rendered text, or `wikipedia_http_mock_intercept` panics waiting for `frame_done`.
+
+## 2026-04-18 — [CHANGED] Wire harness — agent dev loop produces PNG end-to-end (Layer 3)
+
+Added `render_pgap_frame(&[Value], width, height) -> Vec<u8>` to `HeadlessRenderer`. Parses PGAP wire format (CSS hex colors, flat JSON) directly — `rect`, `text`, `line`. `frame_done` and unsupported commands silently skipped.
+
+Added `Harness::render_to_png` in `pgap_test_harness.rs` — wraps `render_frame` + `render_pgap_frame` in one call. This is the agent dev loop API: spawn app → `render_to_png` → inspect/assert → iterate.
+
+`agent_dev_loop_produces_png` test: spawns snake subprocess, renders a frame, asserts output is valid PNG with visible pixels. 75/75 tests pass.
+
+**Breaks if:** `agent_dev_loop_produces_png` fails, or `Harness::render_to_png` is removed, or the headless renderer drops PGAP command support.
+
+## 2026-04-18 — [CHANGED] HostModel rebuild — full command/effect set (Layer 2)
+
+Rewrote all five `src/host/` files test-first. 26 tests covering every command and effect.
+
+New commands vs the stub: `Navigate(Direction)`, `SplitHorizontal`, `SplitVertical`, `NewContext`, `SwitchContext`, `SendKeyToFocusedApp`, `SimulatePathChanged`, `CheckCapability`, `GrantCapability`, `DenyCapability`. New effects: `SplitOpened`, `ContextCreated`, `ContextSwitched`, `AppKeyDispatched`, `PathBroadcasted`, `CapabilityGranted`, `CapabilityDenied`, `CapabilityPromptRequired`, `EventEmitted`.
+
+`HostServices` now has a `Box<dyn EventSink>` trait object (`NoopEventSink` default, `VecEventSink` for tests). `HostPane` tracks `declared_capabilities` and `group`. `HostContext` tracks `groups` and `permissions`.
+
+**Breaks if:** `cargo test host` drops below 26 passing tests, or any host file imports egui.
+
+## 2026-04-18 — [CHANGED] Headless PNG renderer shipped (Layer 3)
+
+`src/headless_renderer.rs` — `View::Canvas` → PNG via `tiny-skia` + `fontdue`. `HeadlessRenderer::render_to_pixmap` and `render_to_png`. Three tests: rect pixel assertion at exact coordinates, text rendering without panic, Document view → blank frame. No egui dependency. 50/50 tests pass.
+
+Added `tiny-skia = "0.11"` and `fontdue = "0.9"` to Cargo.toml. Bundled `fonts/DejaVuSans.ttf` used for text rasterization via `include_bytes!`.
+
+**Breaks if:** `cargo test headless` fails, or `src/headless_renderer.rs` gains an egui import.
+
+## 2026-04-18 — [DECISION] Doc overhaul + E2E testing architecture
+
+Rewrote doc layer to match the real north star. Key decisions:
+
+- `STATE_OF_PLEXI.md` → `ARCHITECTURE.md`. Removed temporal sections (port reality check, critical path checklist) — those belong in git log and DEV_LOG. Architecture doc should be timeless.
+- Deleted `VISION.md`, `V3_PROGRESS.md`, `docs/PRD-mvp.md`, `docs/PRD-future.md`, `docs/architecture-audit.md`, `docs/mvp-interaction-spec.md`, `docs/future-enhancements/` (6 files). All were pre-PGAP era or tracking docs with no permanent value.
+- Created `docs/specs/subsystems/host-architecture.md` and `testing-infrastructure.md` — these are the missing specs for the HostModel pure state machine, renderer layer, three-layer test strategy, and agent dev loop.
+- Rewrote `docs/AGENTS.md` completely — old version described Tauri + Playwright + TypeScript (pre-egui era).
+
+**E2E testing architecture decided:**
+1. **Headless PNG renderer** (`src/headless_renderer.rs`, tiny-skia) — draw commands → PNG, no egui. Unblocks agent dev loop.
+2. **HostModel rebuild** (`src/host/` gutted and rebuilt) — pure state machine, test-first via HostHarness, mocked HostServices at every real-system boundary. Existing `src/host/` is a stub with 5 commands; needs full command/effect set.
+3. **Wire harness** — extend `pgap_test_harness` to call headless renderer, producing PNGs after `render_frame()`.
+
+**WASM decision:** Python subprocess (honor-system capabilities) for v3.0. WASM v3.1+ for Rust apps when toolchain is ready. Protocol interface already maps cleanly to WASM component exports (init/render/on_key as typed functions) — transport change only, no protocol redesign.
+
+**Anti-stub rule added to CLAUDE.md:** define done by the test, not the code. No partial merges. HostHarness tests written before HostModel implementation.
+
+## 2026-04-18 — [CHANGED] Codebase refactor: module splits, unified error type, PGAP reference doc
+
+Split the two largest files into focused module directories. `process_app.rs` (1319 LOC) → `process_app/mod.rs` (590) + `routing.rs` (420) + `render.rs` (149) + `prompts.rs` (102). `app.rs` (1062 LOC) → `app/mod.rs` (864) + `dispatch.rs` (118) + `sync.rs` (85). Each sub-file has a single responsibility: routing dispatches DrawCommands to subsystems; render translates committed frames into egui calls; prompts owns the capability/secret modal UI; dispatch owns keyboard routing + AppCommand execution; sync owns CWD polling + PathChanged broadcast.
+
+Added `src/error.rs` with a `PlexiError` thiserror enum covering Io, Protocol, Permission, AppLaunch, Media, Pipe, Registry, NotImplemented — establishes a single error vocabulary for future refactoring of fragmented return types (currently `std::io::Error`, `String`, `Option<>` scattered across modules).
+
+Added `docs/pgap-reference.md` — canonical PGAP protocol reference covering all PlexiEvent and DrawCommand variants, handshake sequence, typed-pipe binary format, capability flow, manifest.toml schema, and SDK quick-start. No developer should need to read Rust source to build a Plexi app.
+
+All 39 tests pass; all 7 smoke-test app handshakes green post-install.
+
+**Breaks if:** `cargo test` fails any of the 39 tests. OR: `just install-v3` smoke test fails any handshake.
+
+## 2026-04-18 — [CHANGED] Keyboard ownership, pane management, spawn.app, events.jsonl init
+
+**Keyboard ownership**: Apps now declare `keyboard_capture = true` in `manifest.toml`. When set, all host shortcuts except Cmd+Q (quit) and Cmd+W (close pane) are suppressed while that app is focused. The `keyboard_capture()` method is on the `App` trait (default false); `ProcessApp` reads from manifest and returns it. `poll_actions` now takes `keyboard_capture_active: bool` as second param and gates via early return inside `input_mut()`.
+
+**Pane management**: Added `layout_hint: Option<String>` to `AppCapabilities` manifest schema. Values: `"split"` (default, linked terminal) or `"overlay"` (full pane, no terminal). `launch_app_by_id` now routes through `launch_app_by_id_with_layout` which reads this hint. `close_focused_app` was bypassing `close_tile` for the linked terminal pane — fixed to route through `close_tile` so sibling focus transfer runs correctly.
+
+**spawn.app DrawCommand**: `DrawCommand::SpawnApp { type_id, layout }` added to protocol. `PlexiEvent::AppSpawned { pane_id, type_id }` added as confirmation. `ProcessApp` pushes `AppCommand::SpawnApp` to pending_commands; `dispatch_app_key_events` returns these deferred (since they need host-level access); `update()` handles them and sends `AppSpawned` back via `queue_outbound_event()` on the `App` trait.
+
+**events.jsonl**: `event_log::init_global` now called in `PlexiApp::new`. Events are written to `~/.plexi-v3/events.jsonl` (and `.plexi/events.jsonl` if inside a workspace).
+
+**Fibonacci POC**: Example app at `~/.plexi-v3/apps/fibonacci/`. Declares `keyboard_capture = true` and `spawn.app` capability. On first render, auto-spawns the next Fibonacci pane via `SpawnApp`. Chain stops at index 10. Passes PGAP handshake smoke test.
+
+**Breaks if:** Focused app with `keyboard_capture = true` in manifest still lets Cmd+HJKL fire (keyboard ownership not working). events.jsonl file not created in `~/.plexi-v3/` after first launch. `close_focused_app` leaves zombie linked terminal pane after close (focus doesn't transfer to sibling).
+
+## 2026-04-18 — [CHANGED] HostEvent enum aligned to spec §6.1
+
+The event bus was implemented with variant names that drifted from the spec (NotificationEmitted vs NotificationPosted, RunCreated vs RunStarted, PermissionPrompted vs PermissionDecision) and two non-spec variants (ApiCall, CostReport) were forward-declared but never emitted. The spec §6.1 is SSoT per CLAUDE.md, so the code is the thing that moves.
+
+Renames: NotificationEmitted → NotificationPosted, NotificationActioned → NotificationActionInvoked, RunCreated → RunStarted, PermissionPrompted → PermissionDecision (also moved from before-prompt to after-decision so it carries `granted: bool`). Added SecretPrompted / SecretDenied / PipeOpened / PipeClosed. Dropped ApiCall (no host-side HTTP broker exists) and CostReport (redundant with AgentTurn's new cost_cents field). AgentTurn now carries `pane_id, tokens_in, tokens_out, cost_cents` per spec, with cost derived from LedgerRow rounding to whole cents. PipeWrite removed — the write path was firing one event per audio frame, which would have flooded the log during captures; PipeOpened at allocation + PipeClosed at teardown is sufficient.
+
+Guard test in `event_log::tests::host_event_wire_shape_matches_spec` locks the full variant set and JSON kind tags. Any future rename has to land in the spec first, then this test.
+
+**Breaks if:** `grep -E 'NotificationEmitted|NotificationActioned|RunCreated|PermissionPrompted|PipeWrite|ApiCall|CostReport' src/` returns a hit outside a comment or migration note. OR: `cargo test host_event_wire_shape_matches_spec` fails.
+
+## 2026-04-18 — [FIX] Drain thread blocking accept() deadlocked close() on failed start_capture
+
+After the `todo!()` fixes landed, pressing R in the audio recorder still froze the host. Root cause: when `start_capture` returns `Err`, the host calls `pipe_registry.close("pipe-id")`, which sets `shutdown=true` and joins the drain thread. But the drain thread was sitting in a blocking `listener.accept()` waiting for the app to connect — and the app never does, because `PipeOpened` was never emitted. `accept()` doesn't observe `shutdown` → `join()` blocks forever → UI thread freezes.
+
+**Fix:** `listener.set_nonblocking(true)` in `open_binary`, then rewrite the drain thread's accept as a 50ms poll loop that checks `shutdown` on `WouldBlock` and exits cleanly. On successful connect, switch the returned stream back to blocking mode for the write loop.
+
+**Regression test:** `typed_pipes::tests::close_without_client_does_not_deadlock` opens a binary pipe, closes immediately, asserts `close()` completes in <2s.
+
+**Breaks if:** a failed `AudioCapture` / `VideoCapture` DrawCommand (or any path that calls `pipe_registry.close()` on a pipe the app never connected to) freezes the UI for more than a second. OR: `cargo test typed_pipes::tests::close_without_client_does_not_deadlock` takes >2s or times out.
+
+## 2026-04-18 — [GOTCHA] `todo!()` in a prod factory froze the host GUI
+
+`CoreAudioDevice::start_capture` was `todo!("Layer 4")`. Compiled clean, passed every test (harness tests set `PLEXI_AUDIO=mock://`), then panicked the UI thread the first time the user pressed R in the audio recorder — freeze → force quit. Same pattern in `AvfVideoDecoder` (four `todo!()` methods).
+
+**Root cause:** factory functions can return an impl whose trait methods panic. Tests that go through mock variants never touch the panicking path.
+
+**Permanent fixes:**
+
+1. `#![deny(clippy::todo, clippy::unimplemented)]` in `src/main.rs` — clippy gate blocks new `todo!()` in non-test code.
+2. `prod_stub_tests` modules in `src/media/audio.rs` and `src/media/video.rs` — call every trait method on the prod impl, assert no panic. Catches the bug even without clippy.
+3. `scripts/smoke-test.sh` (wired into `just install-v3`): feeds PGAP Init to each installed app and asserts `ready` within 3s, then launches host for 2s and scans the log for panics. First post-install gate that exercises the real built bundle.
+
+**Do NOT:** leave `todo!()` or `unimplemented!()` in any factory-returned impl. A stub returns `Err(NotImplemented)`, `None`, or a noop — never a panic.
+
+**Breaks if:** `scripts/smoke-test.sh` after `just install-v3` reports anything other than green for all 6 apps and the host-launch check. OR: `cargo clippy --all-targets -- -D clippy::todo -D clippy::unimplemented` finds a violation in non-test code.
+
+## 2026-04-18 — [CHANGED] Pane groups + PathChanged broadcast + PGAP test harness (v3 critical-path #10 + #13)
+
+Added an opt-in `group` field to app manifests (`[app.capabilities] group = "cwd"`). At launch, an app inherits its group on the host `TerminalPane`. `App::sync_app_cwd` now polls each linked terminal's CWD via lsof, diffs against `last_synced_cwd`, and on change (a) sends `PlexiEvent::PathChanged { cwd }` to the source pane's app and (b) broadcasts the same event to every OTHER pane sharing the group. Todo app opts into `"cwd"` and reloads `./.plexi/todos.json` on PathChanged so its list tracks the focused terminal.
+
+PGAP protocol test harness lives at `src/pgap_test_harness.rs` (inline `#[cfg(test)]` module — egui binary crate has no lib target). Spawns each example app as a subprocess, drives NDJSON over stdin/stdout, asserts handshake + render. Nine tests: six app handshakes, snake frame render, todo PathChanged reload, MockAudioDevice WAV round-trip, MockVideoDecoder RGBA frames. CI gate at `.github/workflows/plexi-v3-test.yml` runs on push/PR to `v3` with `PLEXI_AUDIO=mock://` + `PLEXI_VIDEO=mock://`.
+
+Secrets scope (`workspace_root`) is unchanged by PathChanged — only the app's tracked cwd moves. `last_synced_cwd` on TerminalPane guards against per-frame PathChanged spam.
+
+**Breaks if:** Launching the Todo app in v3, then `cd`-ing in a linked terminal, does NOT update the path displayed in the Todo header and does NOT reload `.plexi/todos.json` from the new directory. OR: `cargo test pgap_test_harness` fails any of the 9 tests on a host with `python3` on PATH.
+
+## 2026-04-16 — [CHANGED] Layer 5: Python SDK v3 + six example apps
+
+Rewrote `sdk/python/plexi_sdk.py` from the v2 decorator pattern to a subclass pattern (`class MyApp(App)`). Key changes: `App.run()` now handles the PGAP v3 `Init` handshake (protocol validation, `Ready` reply); `RenderContext` carries `frame_id`, `rect`, `workspace_root`, `capabilities`, `feature_flags`; `FrameDone` is auto-emitted with `frame_id`; `Emitter` gains blocking `capability_request()`/`secret_get()` via `queue.Queue` + background stdin thread dispatch; `Pipe` class covers both binary (unix socket, length-prefixed frames) and JSON-mode pipes.
+
+Six apps shipped: `snake`, `wikipedia`, `todo`, `audio-recorder`, `video-player`, `quick-note`. All tested via stdin Init injection → stdout Ready. SDK copied into each app dir (no symlinks — avoids PYTHONPATH fragility). Cargo check and 18/18 tests unaffected (no Rust touched).
+
+The v2 alpha SDK used decorators (`@app.on_render`). The v3 subclass pattern was chosen for clarity in the spec examples and to make state management natural (instance variables on `self`). The decorator pattern is still possible but adds indirection without benefit in an SDK where apps are typically one class.
+
+**Breaks if:** Any of the six apps fails to print `{"type":"ready",...}` as the first stdout line when fed a PGAP v3 Init event on stdin.
+
 ## 2026-04-11 — [CHANGED] Secrets manager write UI, index-file listing, logging infrastructure
 
 Secrets manager upgraded from read-only viewer to full add/delete UI. Listing fixed by replacing `security dump-keychain` (triggers invisible macOS permission prompt) with a local `secrets-index.json`. Centralized file logging added via `fern` with config-driven log levels and `DrawCommand::Log` forwarding from external apps.

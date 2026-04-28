@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "snake"
+type = "app"
+name = "Snake"
+version = "0.1.0"
+description = "Classic snake game — proves input + draw primitives."
+entry = "snake.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }

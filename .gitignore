@@ -11,7 +11,8 @@ docs/scratch/
 
 # AI tool configs (local only)
 .agents/
-.claude/
+.claude/*
+!.claude/iteration-cycle.md
 .kiro/
 skills/
 skills-lock.json
@@ -35,6 +36,10 @@ here.md
 examples/*/target/
 sdk/*/target/
 worktrees/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
 sdk/python/**/__pycache__/
 sdk/python/*.egg-info/
-sdk/python/tests/

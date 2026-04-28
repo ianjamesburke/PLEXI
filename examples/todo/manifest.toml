@@ -1,0 +1,18 @@
+schema_version = 1
+
+[app]
+id = "todo"
+type = "app"
+name = "Todo"
+version = "0.1.0"
+description = "Simple todo list persisted to <workspace_root>/.plexi/todos.json."
+entry = "todo.py"
+
+[app.capabilities]
+capabilities = ["fs.read", "fs.write"]
+
+[launch]
+# Opt into the "cwd" pane group: receives PathChanged when any linked terminal
+# in the same group moves directories. Lets the todo list track the focused cwd.
+join_group = "cwd"
+layout_hint = { side = "right", split = 0.4 }

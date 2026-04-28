@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "agent-tester"
+type = "agent"
+name = "Agent Tester"
+version = "0.1.0"
+description = "POC for #338 — agent-as-app: subprocess-backed conversation pane driven by iq.query."
+entry = "agent_tester.py"
+
+[app.capabilities]
+capabilities = ["iq.query"]
+
+[launch]
+system_prompt = "You are a focused, terse assistant. Reply in one or two sentences."

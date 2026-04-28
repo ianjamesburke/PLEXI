@@ -1,0 +1,17 @@
+schema_version = 1
+
+[app]
+id = "canvas-terminal-bindings-test"
+type = "app"
+name = "Canvas Terminal Bindings Demo"
+version = "0.1.0"
+description = "POC for #78 — exercises all five Canvas Terminal Binding Primitives over a freshly-opened linked terminal."
+entry = "canvas_terminal_bindings_test.py"
+default_notification_scope = "context"
+layout_hint = "split_h"
+
+[app.capabilities]
+capabilities = ["terminal.bindings"]
+
+[launch]
+background = false

@@ -1,24 +1,29 @@
 // ─── Reserved Plexi shortcuts (apps must NOT consume these) ───────────────
 //
-// Cmd+D / Cmd+Shift+D  — split horizontal / vertical
-// Cmd+W                 — close pane
-// Cmd+H/J/K/L          — navigate panes
-// Cmd+T                 — new tab
-// Cmd+] / Cmd+[         — cycle tabs
-// Cmd+Q                 — quit
-// Cmd+B                 — toggle sidebar
-// Cmd+Enter             — toggle zoom
-// Cmd+/                 — toggle shortcuts overlay
-// Cmd+P                 — command palette
-// Cmd+Shift+R           — rename pane
-// Cmd+N                 — new context
-// Cmd+Up / Cmd+Down     — scroll
-// Cmd+= / Cmd+-         — font size
-// Cmd+E                 — file browser
-// Cmd+0                 — quick note
-// Cmd+1–9               — switch context
-// Escape (app active)   — close app
-// Tab (app active)      — navigate to linked terminal
+// Cmd+D / Cmd+Shift+D       — split horizontal / vertical (terminal)
+// Cmd+\                       — split focused pane to the right (mirror type)
+// Cmd+Shift+\                 — split focused pane below (mirror type)
+// Cmd+N                       — new page to the right on the current grid row
+// Cmd+Shift+N                 — new page on a new row below
+// Cmd+W                       — close pane
+// Cmd+H/J/K/L                 — navigate panes
+// Cmd+Shift+H/J/K/L           — navigate to adjacent page (spatial grid)
+// Cmd+Shift+M                 — toggle minimap overlay
+// Cmd+T                       — new tab
+// Cmd+] / Cmd+[               — cycle tabs
+// Cmd+Q                       — quit
+// Cmd+B                       — toggle sidebar
+// Cmd+Enter                   — toggle zoom
+// Cmd+/                       — toggle shortcuts overlay
+// Cmd+P                       — command palette
+// Cmd+Shift+R                 — rename pane
+// Cmd+Up / Cmd+Down           — scroll
+// Cmd+= / Cmd+-               — font size
+// Cmd+E                       — file browser
+// Cmd+0                       — quick note
+// Cmd+1–9                     — switch context
+// Escape (app active)         — close app
+// Tab (app active)            — navigate to linked terminal
 //
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
@@ -30,7 +35,7 @@
 // calling consume_key.
 // ───────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     Left,
     Right,
@@ -41,6 +46,12 @@ pub enum Direction {
 pub enum Action {
     SplitHorizontal,
     SplitVertical,
+    /// Split the focused pane to the right; new pane mirrors the focused pane's type.
+    /// Bound to Cmd+\. If no pane is focused, creates a full-size terminal.
+    SplitRight,
+    /// Split the focused pane below; new pane mirrors the focused pane's type.
+    /// Bound to Cmd+Shift+\. If no pane is focused, creates a full-size terminal.
+    SplitDown,
     Navigate(Direction),
     ClosePane,
     NewTab,
@@ -53,7 +64,6 @@ pub enum Action {
     ToggleZoom,
     ToggleCommandPalette,
     RenamePane,
-    NewContext,
     IncreasePaneFontSize,
     DecreasePaneFontSize,
     ScrollUp,
@@ -66,17 +76,51 @@ pub enum Action {
     OpenFileBrowser,
     /// Open the quick note app (full pane, no terminal split).
     OpenQuickNote,
-    /// Open the audio player app.
-    OpenAudioPlayer,
     /// Open config file in the text editor.
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
+    /// Toggle the Run palette (shows active runs, BlockedOnUser prompts).
+    ToggleRunPalette,
+    /// Open a new agent pane (Cmd+I).
+    OpenAgentPane,
+    /// Toggle the notification panel overlay (Cmd+Shift+A).
+    ToggleNotificationModal,
+    NotificationCycleNext,
+    NotificationCyclePrev,
+    /// Force-reload the focused app pane (#83). Bound to Cmd+Option+R.
+    /// Cmd+R is the Run palette and Cmd+Shift+R is RenamePane, so the
+    /// Option (Alt) modifier is the next free chord. No-op when the
+    /// focused pane isn't a process-backed app.
+    ForceReloadApp,
+    /// Create a new page (context) to the right of the active one on the same
+    /// grid row. Bound to Cmd+N.
+    NewPageRight,
+    /// Create a new page (context) at (0, max_y + 1) — starts a new grid row.
+    /// Bound to Cmd+Shift+N.
+    NewPageNextRow,
+    /// Navigate to the adjacent page in the spatial grid. Bound to
+    /// Cmd+Shift+H/J/K/L (left/down/up/right).
+    PageLeft,
+    PageDown,
+    PageUp,
+    PageRight,
+    /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
+    ToggleMinimap,
 }
 
-/// Poll global keyboard actions. `app_active` indicates whether the focused
-/// pane currently has an app surface open (affects Escape and Tab handling).
-pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
+/// Poll global keyboard actions.
+///
+/// `app_active` — focused pane has an active app surface (affects Escape/Tab).
+/// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
+///   When true, all host shortcuts are suppressed *except* Cmd+Q (quit) and Cmd+W (close pane),
+///   which are structural safety operations that must always work.
+pub fn poll_actions(
+    ctx: &egui::Context,
+    app_active: bool,
+    keyboard_capture_active: bool,
+    notification_modal_open: bool,
+) -> Vec<Action> {
     let mut actions = Vec::new();
     let cmd_shift = egui::Modifiers {
         shift: true,
@@ -84,6 +128,21 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
     };
 
     ctx.input_mut(|input| {
+        // Quit (Cmd+Q) — always active, even in keyboard capture mode.
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q) {
+            actions.push(Action::Quit);
+        }
+
+        // Close pane (Cmd+W) — always active, even in keyboard capture mode.
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
+            actions.push(Action::ClosePane);
+        }
+
+        // All remaining shortcuts are suppressed when an app has declared keyboard capture.
+        if keyboard_capture_active {
+            return;
+        }
+
         // Check Cmd+Shift+D before Cmd+D (more specific first)
         if input.consume_key(cmd_shift, egui::Key::D) {
             actions.push(Action::SplitVertical);
@@ -91,9 +150,20 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::SplitHorizontal);
         }
 
-        // Close pane (Ctrl+W on Linux; on macOS, Cmd+W goes through close_requested)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
-            actions.push(Action::ClosePane);
+        // Page navigation (Shift+Cmd+HJKL) — check before plain Cmd+HJKL
+        // so the shifted variants are matched first. These now navigate the
+        // spatial grid rather than doing lateral focus jumps within a page.
+        if input.consume_key(cmd_shift, egui::Key::H) {
+            actions.push(Action::PageLeft);
+        }
+        if input.consume_key(cmd_shift, egui::Key::J) {
+            actions.push(Action::PageDown);
+        }
+        if input.consume_key(cmd_shift, egui::Key::K) {
+            actions.push(Action::PageUp);
+        }
+        if input.consume_key(cmd_shift, egui::Key::L) {
+            actions.push(Action::PageRight);
         }
 
         // Focus navigation (Cmd+HJKL)
@@ -115,17 +185,22 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::NewTab);
         }
 
-        // Cycle tabs (Cmd+] / Cmd+[)
+        // Cycle tabs (Cmd+] / Cmd+[). When the notification modal is open,
+        // these cycle through the pending-notifications queue instead — the
+        // modal is the active context.
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) {
-            actions.push(Action::NextTab);
+            actions.push(if notification_modal_open {
+                Action::NotificationCycleNext
+            } else {
+                Action::NextTab
+            });
         }
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
-            actions.push(Action::PrevTab);
-        }
-
-        // Quit (Cmd+Q)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q) {
-            actions.push(Action::Quit);
+            actions.push(if notification_modal_open {
+                Action::NotificationCyclePrev
+            } else {
+                Action::PrevTab
+            });
         }
 
         // Toggle sidebar (Cmd+B)
@@ -148,14 +223,37 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::ToggleCommandPalette);
         }
 
+        // Open agent pane (Cmd+I)
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::I) {
+            actions.push(Action::OpenAgentPane);
+        }
+
         // Rename pane (Cmd+Shift+R)
         if input.consume_key(cmd_shift, egui::Key::R) {
             actions.push(Action::RenamePane);
         }
 
-        // New context (Cmd+N)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
-            actions.push(Action::NewContext);
+        // Pane split (Cmd+\ = right, Cmd+Shift+\ = below). Mirror focused
+        // pane's type. Check Cmd+Shift+\ before Cmd+\ so the shifted variant
+        // is matched first.
+        if input.consume_key(cmd_shift, egui::Key::Backslash) {
+            actions.push(Action::SplitDown);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backslash) {
+            actions.push(Action::SplitRight);
+        }
+
+        // New page (Cmd+Shift+N = new row, Cmd+N = new page right on current
+        // row). Check Cmd+Shift+N before Cmd+N so the shifted variant
+        // is matched first.
+        if input.consume_key(cmd_shift, egui::Key::N) {
+            actions.push(Action::NewPageNextRow);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+            actions.push(Action::NewPageRight);
+        }
+
+        // Minimap toggle (Cmd+Shift+M).
+        if input.consume_key(cmd_shift, egui::Key::M) {
+            actions.push(Action::ToggleMinimap);
         }
 
         // Scrollback (Cmd+Up / Cmd+Down)
@@ -167,7 +265,6 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         }
 
         // Per-pane font size (Cmd+= / Cmd+-)
-        // Use exact modifier checks to avoid matching Cmd+Shift variants.
         let cmd_only = egui::Modifiers::COMMAND;
         if !input.modifiers.shift && input.consume_key(cmd_only, egui::Key::Equals) {
             actions.push(Action::IncreasePaneFontSize);
@@ -177,8 +274,7 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         }
 
         // App surface: Escape closes app, Tab toggles terminal split.
-        // These are only intercepted at the global level when an app is active,
-        // so that Escape and Tab work normally in a plain terminal.
+        // Only intercepted when an app is active so Escape/Tab work normally in plain terminals.
         if app_active {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 actions.push(Action::CloseApp);
@@ -198,11 +294,6 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
             actions.push(Action::OpenQuickNote);
         }
 
-        // Open audio player (Cmd+Shift+A)
-        if input.consume_key(cmd_shift, egui::Key::A) {
-            actions.push(Action::OpenAudioPlayer);
-        }
-
         // Open config (Cmd+,)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma) {
             actions.push(Action::OpenConfig);
@@ -211,6 +302,31 @@ pub fn poll_actions(ctx: &egui::Context, app_active: bool) -> Vec<Action> {
         // Open secrets manager (Cmd+Shift+S)
         if input.consume_key(cmd_shift, egui::Key::S) {
             actions.push(Action::OpenSecretsManager);
+        }
+
+        // Force-reload focused app (Cmd+Option+R, #83). Check before plain
+        // Cmd+R so the modifier-rich variant matches first. Plain Cmd+R is
+        // the Run palette; Cmd+Shift+R is RenamePane. Option (alt) is the
+        // next free chord.
+        let cmd_alt = egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::COMMAND
+        };
+        if input.consume_key(cmd_alt, egui::Key::R) {
+            actions.push(Action::ForceReloadApp);
+        }
+
+        // Run palette (Cmd+R — plain, not Cmd+Shift+R which is RenamePane)
+        if !input.modifiers.shift && !input.modifiers.alt
+            && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R)
+        {
+            actions.push(Action::ToggleRunPalette);
+        }
+
+        // Notification modal (Cmd+Shift+A) — opens the queue on the front item,
+        // or closes the modal if already open.
+        if input.consume_key(cmd_shift, egui::Key::A) {
+            actions.push(Action::ToggleNotificationModal);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

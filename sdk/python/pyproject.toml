@@ -1,0 +1,30 @@
+[project]
+name = "plexi-sdk"
+version = "0.4.0"
+description = "Python SDK for building Plexi apps via the PGAP v3 protocol"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Ian Burke", email = "ianjamesburke@gmail.com" }]
+keywords = ["plexi", "pgap", "sdk", "tiling", "window-manager", "apps"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["plexi_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = ["plexi_sdk/", "README.md"]
