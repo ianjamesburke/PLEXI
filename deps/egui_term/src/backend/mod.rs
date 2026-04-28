@@ -270,10 +270,19 @@ impl TerminalBackend {
         terminal_size: &TerminalSize,
         display_offset: usize,
     ) -> Point {
-        let col = (x as usize) / (terminal_size.cell_width as usize);
+        // Use actual rendered cell dimensions (layout / grid count) so hit-testing
+        // matches what the renderer draws. The stored cell_height is the raw font
+        // metric; the renderer stretches cells to fill the rect, causing drift that
+        // compounds toward the bottom of the pane.
+        let rendered_cell_width = terminal_size.layout_size.width
+            / terminal_size.num_cols as f32;
+        let rendered_cell_height = terminal_size.layout_size.height
+            / terminal_size.num_lines as f32;
+
+        let col = (x / rendered_cell_width) as usize;
         let col = min(Column(col), Column(terminal_size.num_cols as usize - 1));
 
-        let line = (y as usize) / (terminal_size.cell_height as usize);
+        let line = (y / rendered_cell_height) as usize;
         let line = min(line, terminal_size.num_lines as usize - 1);
 
         viewport_to_point(display_offset, Point::new(line, col))
