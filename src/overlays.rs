@@ -1299,7 +1299,7 @@ impl PlexiApp {
     pub(crate) fn draw_welcome_screen(&self, ui: &mut egui::Ui) {
         let colors = self.colors;
         let center = ui.max_rect().center();
-        let box_rect = egui::Rect::from_center_size(center, egui::vec2(480.0, 400.0));
+        let box_rect = egui::Rect::from_center_size(center, egui::vec2(480.0, 560.0));
 
         ui.allocate_ui_at_rect(box_rect, |ui| {
             egui::Frame::new()
@@ -1343,6 +1343,60 @@ impl PlexiApp {
                         });
                         ui.add_space(style::SPACE_SM);
                     }
+
+                    ui.add_space(style::SPACE_XL);
+                    ui.label(
+                        RichText::new("Things to try")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim)
+                            .strong(),
+                    );
+                    ui.add_space(style::SPACE_SM);
+
+                    let tips: &[&str] = &[
+                        "Right-click a context → Move to Top to keep your most important projects first",
+                        "⌘P jumps to any pane across all contexts instantly",
+                        "⌘⇧N opens a fresh context — use it like a virtual desktop",
+                    ];
+                    for tip in tips {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("·")
+                                    .size(style::TEXT_BODY)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(style::SPACE_SM / 2.0);
+                            ui.label(
+                                RichText::new(*tip)
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim),
+                            );
+                        });
+                        ui.add_space(style::SPACE_SM / 2.0);
+                    }
+
+                    ui.add_space(style::SPACE_XL);
+                    ui.separator();
+                    ui.add_space(style::SPACE_MD);
+
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("My dream is to work on Plexi full-time.")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        );
+                        ui.add_space(style::SPACE_SM / 2.0);
+                        ui.label(
+                            RichText::new("If you'd like to support the project:")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        );
+                        ui.add_space(style::SPACE_SM);
+                        ui.hyperlink_to(
+                            RichText::new("☕  Buy Me a Coffee").size(style::TEXT_BODY),
+                            "https://buymeacoffee.com/ianjamesbu8",
+                        );
+                    });
                 });
         });
     }
