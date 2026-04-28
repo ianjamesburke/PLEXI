@@ -1611,8 +1611,9 @@ class RenderContext:
                "item_height": item_height})
 
     def text_input(self, id: str, x: float, y: float, w: float,
-                   placeholder: str = "") -> "str | None":
-        """Single-line text input — host-owned buffer, submit-only.
+                   placeholder: str = "",
+                   multiline: bool = False) -> "str | None":
+        """Text input — host-owned buffer, submit-only.
 
         Emits a `DrawCommand::TextInput` and returns the most recently
         submitted value for `id` if any landed since the previous frame,
@@ -1620,6 +1621,13 @@ class RenderContext:
         characters never reach the app between keystrokes. On Enter the
         host emits `PlexiEvent::TextSubmitted { id, value }` and clears
         its buffer.
+
+        The host auto-focuses the widget on its first visible frame so
+        the user can type immediately without clicking.
+
+        When `multiline=True`, Enter submits and Shift+Enter inserts a
+        newline. When `multiline=False` (default), Enter submits
+        immediately.
 
         Pattern (poll on every frame)::
 
@@ -1629,11 +1637,10 @@ class RenderContext:
                 save_note(submitted)
 
         Real-time validation (per-keystroke access) is out of scope —
-        see issue #283. Use `TextArea` for multi-line app-managed
-        editors instead.
+        see issue #283.
         """
         _emit({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
-               "placeholder": placeholder})
+               "placeholder": placeholder, "multiline": multiline})
         return self._app._take_text_submission(id)
 
     # Logging helpers (in-frame, forwarded to host logger)

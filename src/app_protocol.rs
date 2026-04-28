@@ -970,12 +970,17 @@ pub enum DrawCommand {
     /// but discouraged — emit on completion, not on dispatch.
     AppendConversation { role: String, content: String },
 
-    /// Single-line text input field (host-owned buffer, submit-only).
+    /// Text input field (host-owned buffer, submit-only).
     ///
     /// Emitted by the app each frame at `(x, y)` with width `w`. The host
     /// owns the underlying buffer keyed on `id` — typed characters never
     /// reach the app between frames. On Enter the host emits
     /// `PlexiEvent::TextSubmitted { id, value }` and clears its buffer.
+    ///
+    /// When `multiline` is `false` (the default), the host renders a
+    /// single-line `TextEdit` and Enter submits. When `multiline` is `true`,
+    /// the host renders a multi-line `TextEdit`; Enter still submits but
+    /// Shift+Enter inserts a newline.
     ///
     /// Real-time validation (per-keystroke value access) is intentionally
     /// out of scope — see issue #283 option A. Apps that need it must
@@ -986,6 +991,11 @@ pub enum DrawCommand {
         y: f32,
         w: f32,
         placeholder: String,
+        /// When `true`, render as a multi-line editor. Enter submits;
+        /// Shift+Enter inserts a newline. Defaults to `false` so existing
+        /// draw commands without this field continue to work.
+        #[serde(default)]
+        multiline: bool,
     },
 
     // ── Canvas Terminal Binding Primitives (#78) ─────────────────────────

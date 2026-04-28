@@ -187,6 +187,11 @@ pub struct ProcessApp {
     /// `PlexiEvent::TextSubmitted`. Cleared on submit; the whole map is
     /// dropped when the `ProcessApp` is dropped (app close).
     pub(crate) text_input_buffers: HashMap<String, String>,
+    /// IDs of `TextInput` widgets that were visible in the most recently
+    /// rendered frame. Used by `render_text_inputs` to detect newly-visible
+    /// inputs and call `request_focus()` on them so the user can type
+    /// immediately without clicking.
+    text_input_visible_prev: std::collections::HashSet<String>,
     /// Test-only seam used by `process_app::agent` unit tests to inject
     /// `DrawCommand`s without spinning up a real subprocess pipeline.
     /// Drained on every `agent_tick` (and thus invisible in production).
@@ -448,6 +453,7 @@ impl ProcessApp {
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,
             text_input_buffers: HashMap::new(),
+            text_input_visible_prev: std::collections::HashSet::new(),
             #[cfg(test)]
             test_injected_commands: Arc::new(Mutex::new(VecDeque::new())),
         })
@@ -594,12 +600,16 @@ impl ProcessApp {
     }
 
     /// Render every `DrawCommand::TextInput` in `frame` as a real egui
-    /// `TextEdit::singleline`, owning the buffer state on `self`. Submits
+    /// `TextEdit`, owning the buffer state on `self`. Submits
     /// (Enter while focused) emit `PlexiEvent::TextSubmitted { id, value }`
     /// and clear the buffer.
     ///
     /// Buffer survives across frames and pane resizes because it lives on
     /// `self.text_input_buffers`, not in egui memory.
+    ///
+    /// Auto-focus: when a `TextInput` id appears for the first time in a
+    /// frame (i.e. it was absent last frame), `request_focus()` is called so
+    /// the user can type immediately without clicking.
     pub(crate) fn render_text_inputs(
         &mut self,
         ui: &mut egui::Ui,
@@ -611,6 +621,10 @@ impl ProcessApp {
         // borrow on `text_input_buffers` while pushing onto
         // `outbound_events` — both live on `self`.
         let mut submitted: Vec<String> = Vec::new();
+        // Track which IDs are visible this frame so we can update
+        // `text_input_visible_prev` after the loop.
+        let mut visible_this_frame: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for cmd in frame {
             let DrawCommand::TextInput {
@@ -619,14 +633,20 @@ impl ProcessApp {
                 y,
                 w,
                 placeholder,
+                multiline,
             } = cmd
             else {
                 continue;
             };
 
+            visible_this_frame.insert(id.clone());
+            let newly_visible = !self.text_input_visible_prev.contains(id.as_str());
+
             // Single-line height tuned to read as a proper input row
             // rather than a hairline — matches the SDK's BODY size + a
-            // sensible vertical margin.
+            // sensible vertical margin. Multiline widgets use the app's
+            // declared height (derived from `w`/layout), but we keep the
+            // same 24px minimum so a zero-height rect doesn't collapse.
             let height = 24.0;
             let widget_rect = egui::Rect::from_min_size(
                 egui::pos2(origin.x + x, origin.y + y),
@@ -645,21 +665,57 @@ impl ProcessApp {
                         .max_rect(widget_rect)
                         .id_salt(widget_id),
                 );
-                let edit = egui::TextEdit::singleline(buffer)
-                    .id(widget_id)
-                    .desired_width(*w)
-                    .hint_text(placeholder.as_str())
-                    .frame(true);
-                child.add(edit)
+                let edit = if *multiline {
+                    egui::TextEdit::multiline(buffer)
+                        .id(widget_id)
+                        .desired_width(*w)
+                        .hint_text(placeholder.as_str())
+                        .frame(true)
+                } else {
+                    egui::TextEdit::singleline(buffer)
+                        .id(widget_id)
+                        .desired_width(*w)
+                        .hint_text(placeholder.as_str())
+                        .frame(true)
+                };
+                let r = child.add(edit);
+                // Auto-focus newly-visible inputs so the user can type
+                // immediately without clicking.
+                if newly_visible {
+                    r.request_focus();
+                }
+                r
             };
 
-            // Submit on Enter while focused. The egui idiom for
-            // singleline submit is `lost_focus() && key_pressed(Enter)`
-            // — `lost_focus` alone fires on tab-out / click-away too.
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                submitted.push(id.clone());
+            if *multiline {
+                // Multiline: Enter submits, Shift+Enter inserts newline.
+                // We check for Enter *without* Shift while the widget is
+                // focused. egui does not consume Enter for multiline edits
+                // (it inserts a newline), so we have to intercept it here.
+                if resp.has_focus()
+                    && ui.input(|i| {
+                        i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                    })
+                {
+                    // Strip the newline egui already inserted before we submit.
+                    if let Some(buf) = self.text_input_buffers.get_mut(id.as_str()) {
+                        if buf.ends_with('\n') {
+                            buf.pop();
+                        }
+                    }
+                    submitted.push(id.clone());
+                }
+            } else {
+                // Submit on Enter while focused. The egui idiom for
+                // singleline submit is `lost_focus() && key_pressed(Enter)`
+                // — `lost_focus` alone fires on tab-out / click-away too.
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submitted.push(id.clone());
+                }
             }
         }
+
+        self.text_input_visible_prev = visible_this_frame;
 
         for id in submitted {
             self.submit_text_input(&id);
