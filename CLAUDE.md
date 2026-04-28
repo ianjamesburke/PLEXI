@@ -98,6 +98,8 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 - `alpha` → `just install-alpha` (run from inside `worktrees/alpha/`, not the repo root — the recipe builds from CWD, so running from the wrong directory installs from the wrong branch)
 - `main` → `just install`
 
+**Never claim a task complete based on an install from a feature worktree.** `just install-alpha` builds from source files in CWD — uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. Installing from a feature worktree is only valid during development iteration. The full done cycle is: commit → push → PR → merge to alpha → pull alpha → `just install-alpha` from `worktrees/alpha/`.
+
 ## Logging
 
 Build-specific log file:
