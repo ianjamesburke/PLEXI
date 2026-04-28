@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
 
 from plexi_sdk import (
@@ -144,19 +145,27 @@ class DescriptorRendererApp(App):
 
         cli = self._descriptor.get("name", "?")
         ver = self._descriptor.get("version", "")
+        ctx.status_summary(f"{cli} {ver}  ·  connecting terminal…")
+        self._view = "list"
+        self.emit.info(f"descriptor-renderer: loaded {path!r}  cli={cli!r}  ver={ver!r}")
 
+        # request_linked_terminal blocks on a queue filled by the event loop.
+        # Calling it directly from on_init deadlocks the loop. Dispatch to a
+        # background thread so the event loop stays free to read the response.
+        threading.Thread(target=self._connect_terminal,
+                         args=(cli, ver), daemon=True).start()
+
+    def _connect_terminal(self, cli: str, ver: str) -> None:
         try:
-            self._terminal_pane_id = self.emit.request_linked_terminal(
+            pane_id = self.emit.request_linked_terminal(
                 cwd=None,
                 label=f"{cli} terminal",
             )
-            ctx.status_summary(f"{cli} {ver}  ·  terminal #{self._terminal_pane_id}")
+            self._terminal_pane_id = pane_id
+            self.emit.info(f"descriptor-renderer: linked terminal #{pane_id}")
         except CapabilityDeniedError as e:
             self.emit.warn(f"descriptor-renderer: terminal.bindings denied: {e}")
-            ctx.status_summary(f"{cli} {ver}  ·  no terminal")
-
-        self._view = "list"
-        self.emit.info(f"descriptor-renderer: loaded {path!r}  cli={cli!r}  ver={ver!r}")
+        self.emit.schedule_render(after_ms=16)
 
     # ── Render ────────────────────────────────────────────────────────────────
 
