@@ -5,13 +5,11 @@ Accepts a descriptor path as the first argv or --descriptor <path>.
 Requests a linked terminal at startup, then renders the CLI's command
 tree as a clickable GUI that drives the terminal.
 
-List view:   top-level commands as buttons; click drills into subgroups
-             or opens a form for leaf commands.
-Form view:   one text_input per arg/flag; Run button (or Enter on last
-             field) builds the shell command and runs it in the linked
-             terminal via run_in_linked_terminal.
-Keyboard:    Tab/Shift-Tab cycle fields; Enter submits a field value;
-             Escape navigates back; j/k or ↑/↓ scroll the command list.
+List view:   j/k or ↑/↓ move selection; Enter opens; Escape goes back.
+             Selected row is highlighted. Scroll auto-tracks the cursor.
+Form view:   host-managed text_input per arg/flag; first field auto-focused;
+             Tab cycles fields; Enter on last field runs the command.
+             Escape returns to list.
 """
 from __future__ import annotations
 
@@ -34,6 +32,7 @@ BTN_H: float = 44.0
 BTN_GAP: float = 8.0
 FIELD_H: float = 36.0
 FIELD_GAP: float = 24.0  # label (16px) + gap below field
+ROW_H: float = BTN_H + BTN_GAP
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -47,7 +46,6 @@ def _parse_descriptor_path(argv: list[str]) -> str | None:
     for arg in argv:
         if not arg.startswith("-"):
             return arg
-    # Default: sample.json bundled alongside this script
     sample = Path(__file__).parent / "sample.json"
     if sample.exists():
         return str(sample)
@@ -60,7 +58,6 @@ def _load_descriptor(path: str) -> dict:
 
 
 def _commands_at(descriptor: dict, path: list[str]) -> list[dict]:
-    """Return the commands list at the given path into the descriptor tree."""
     cmds = descriptor.get("commands", [])
     for segment in path:
         match = next((c for c in cmds if c["name"] == segment), None)
@@ -68,7 +65,6 @@ def _commands_at(descriptor: dict, path: list[str]) -> list[dict]:
             return []
         cmds = match.get("commands", [])
     return cmds
-
 
 
 def _shell_quote(s: str) -> str:
@@ -85,13 +81,12 @@ def _build_command(cli: str, path: list[str], field_values: dict[str, str],
         name = f["name"]
         val = field_values.get(name, "").strip()
         ftype = f.get("type", "string")
-        is_flag = name.startswith("--")
         if not val:
             continue
-        if is_flag and ftype == "bool":
+        if name.startswith("--") and ftype == "bool":
             if val.lower() in ("true", "1", "yes"):
                 parts.append(name)
-        elif is_flag:
+        elif name.startswith("--"):
             parts.append(f"{name}={_shell_quote(val)}")
         else:
             parts.append(_shell_quote(val))
@@ -109,13 +104,14 @@ class DescriptorRendererApp(App):
         # Navigation state
         self._view: str = "loading"   # loading | error | list | form
         self._cmd_path: list[str] = []
-        self._scroll: int = 0
+        self._selected_idx: int = 0   # cursor in current command list
+        self._scroll_offset: int = 0  # first visible row index (auto-tracked)
+        self._list_y0: float = 0.0    # y where list content starts (set each render)
         # Form state
         self._fields: list[dict] = []
         self._field_values: dict[str, str] = {}
         self._last_run: str = ""
-        # Hit regions updated on each render: list of (y_top, y_bot, tag)
-        # tag: int >= 0 = command index; "back" = back button; "run" = run button
+        # Hit regions: (y_top, y_bot, tag)
         self._hits: list[tuple[float, float, object]] = []
 
         path = _parse_descriptor_path(sys.argv[1:])
@@ -149,18 +145,14 @@ class DescriptorRendererApp(App):
         self._view = "list"
         self.emit.info(f"descriptor-renderer: loaded {path!r}  cli={cli!r}  ver={ver!r}")
 
-        # request_linked_terminal blocks on a queue filled by the event loop.
-        # Calling it directly from on_init deadlocks the loop. Dispatch to a
-        # background thread so the event loop stays free to read the response.
+        # request_linked_terminal blocks on the event-loop queue — must run
+        # on a background thread so the loop stays free to read the response.
         threading.Thread(target=self._connect_terminal,
                          args=(cli, ver), daemon=True).start()
 
     def _connect_terminal(self, cli: str, ver: str) -> None:
         try:
-            pane_id = self.emit.request_linked_terminal(
-                cwd=None,
-                label=f"{cli} terminal",
-            )
+            pane_id = self.emit.request_linked_terminal(cwd=None, label=f"{cli} terminal")
             self._terminal_pane_id = pane_id
             self.emit.info(f"descriptor-renderer: linked terminal #{pane_id}")
         except CapabilityDeniedError as e:
@@ -185,6 +177,7 @@ class DescriptorRendererApp(App):
         y = self._render_breadcrumb(ctx, y)
 
         if self._view == "list":
+            self._list_y0 = y
             self._render_list(ctx, y)
         else:
             self._render_form(ctx, y)
@@ -217,8 +210,7 @@ class DescriptorRendererApp(App):
         return y + 22
 
     def _render_error(self, ctx: RenderContext) -> None:
-        box_h = 80.0
-        ctx.rect(PAD, PAD, ctx.w - PAD * 2, box_h, SURFACE, radius=6.0)
+        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 80.0, SURFACE, radius=6.0)
         ctx.text(x=PAD + 14, y=PAD + 20, text="Error", size=HEADING, color=RED, bold=True)
         ctx.text(x=PAD + 14, y=PAD + 52, text=self._error,
                  size=CAPTION, color=FG, max_width=ctx.w - PAD * 2 - 28, elide=True)
@@ -237,34 +229,35 @@ class DescriptorRendererApp(App):
             self._hits.append((y, y + BTN_H, "back"))
             y += BTN_H + BTN_GAP
 
-        row_h = BTN_H + BTN_GAP
-        offset_y = self._scroll * row_h
-
         for i, cmd in enumerate(commands):
-            by = y + i * row_h - offset_y
+            by = y + (i - self._scroll_offset) * ROW_H
             self._hits.append((by, by + BTN_H, i))
             if by + BTN_H <= y0 or by >= ctx.h:
                 continue
+
+            selected = (i == self._selected_idx)
+            bg = HIGHLIGHT if selected else SURFACE
+            name_color = ACCENT if selected else FG
             is_group = bool(cmd.get("commands"))
             icon = cmd.get("icon", "")
             name_label = cmd["name"] + (" ›" if is_group else "")
             display = f"{icon}  {name_label}" if icon else name_label
             desc_text = cmd.get("description", "")
 
-            ctx.rect(PAD, by, btn_w, BTN_H, SURFACE, radius=6.0)
+            ctx.rect(PAD, by, btn_w, BTN_H, bg, radius=6.0)
             label_y = by + (BTN_H * 0.38 if desc_text else BTN_H / 2)
             ctx.text(x=PAD + 14, y=label_y, text=display,
-                     size=BODY, color=FG, bold=True, align="left_center")
+                     size=BODY, color=name_color, bold=True, align="left_center")
             if desc_text:
                 ctx.text(x=PAD + 14, y=by + BTN_H * 0.72, text=desc_text,
                          size=HINT, color=MUTED, align="left_center",
                          max_width=btn_w - 28, elide=True)
 
-        total_h = len(commands) * row_h
-        visible_h = ctx.h - y
-        if total_h > visible_h:
+        # Hint only when list overflows visible area
+        visible_rows = max(1, int((ctx.h - y) / ROW_H))
+        if len(commands) > visible_rows:
             ctx.text(x=ctx.w / 2, y=ctx.h - 16,
-                     text=f"↑↓  scroll  ({self._scroll + 1} / {len(commands)})",
+                     text=f"j/k  ·  {self._selected_idx + 1} / {len(commands)}",
                      size=HINT, color=MUTED, align="center")
 
     def _render_form(self, ctx: RenderContext, y0: float) -> None:
@@ -272,7 +265,6 @@ class DescriptorRendererApp(App):
         self._hits = []
         y = y0
 
-        # Back button
         ctx.rect(PAD, y, btn_w, BTN_H, SURFACE, radius=6.0)
         ctx.text(x=PAD + 14, y=y + BTN_H / 2, text="← Back",
                  size=BODY, color=ACCENT, bold=True, align="left_center")
@@ -280,38 +272,32 @@ class DescriptorRendererApp(App):
         y += BTN_H + BTN_GAP
 
         if not self._fields:
-            # No args: just a run button
-            by = y
-            ctx.rect(PAD, by, btn_w, BTN_H, ACCENT, radius=6.0)
-            ctx.text(x=PAD + btn_w / 2, y=by + BTN_H / 2, text="▶  Run",
+            ctx.rect(PAD, y, btn_w, BTN_H, ACCENT, radius=6.0)
+            ctx.text(x=PAD + btn_w / 2, y=y + BTN_H / 2, text="▶  Run",
                      size=BODY, color=BG, bold=True, align="center")
-            self._hits.append((by, by + BTN_H, "run"))
+            self._hits.append((y, y + BTN_H, "run"))
             y += BTN_H + BTN_GAP
         else:
             for field in self._fields:
                 name = field["name"]
                 req = " *" if field.get("required") else ""
-                ctx.text(x=PAD, y=y, text=f"{name}{req}",
-                         size=HINT, color=MUTED)
+                ctx.text(x=PAD, y=y, text=f"{name}{req}", size=HINT, color=MUTED)
                 y += 18
                 submitted = ctx.text_input(
-                    id=name,
-                    x=PAD, y=y, w=btn_w,
+                    id=name, x=PAD, y=y, w=btn_w,
                     placeholder=field.get("placeholder", field.get("default_str", "")),
                 )
                 if submitted is not None:
                     self._field_values[name] = submitted
-                    # Auto-run when last field is submitted
                     if name == self._fields[-1]["name"]:
                         self._run()
                 self._hits.append((y, y + FIELD_H, name))
                 y += FIELD_H + FIELD_GAP
 
-            by = y
-            ctx.rect(PAD, by, btn_w, BTN_H, ACCENT, radius=6.0)
-            ctx.text(x=PAD + btn_w / 2, y=by + BTN_H / 2, text="▶  Run",
+            ctx.rect(PAD, y, btn_w, BTN_H, ACCENT, radius=6.0)
+            ctx.text(x=PAD + btn_w / 2, y=y + BTN_H / 2, text="▶  Run",
                      size=BODY, color=BG, bold=True, align="center")
-            self._hits.append((by, by + BTN_H, "run"))
+            self._hits.append((y, y + BTN_H, "run"))
             y += BTN_H + BTN_GAP
 
         if self._last_run:
@@ -327,6 +313,9 @@ class DescriptorRendererApp(App):
             return
         for (y_top, y_bot, tag) in self._hits:
             if y_top <= y < y_bot:
+                # Sync selection cursor to clicked row so it stays coherent
+                if isinstance(tag, int) and self._view == "list":
+                    self._selected_idx = tag
                 self._handle(tag)
                 self.emit.schedule_render(after_ms=16)
                 return
@@ -336,10 +325,10 @@ class DescriptorRendererApp(App):
             if self._view == "form":
                 self._view = "list"
                 self._cmd_path.pop()
-                self._scroll = 0
             elif self._cmd_path:
                 self._cmd_path.pop()
-                self._scroll = 0
+            self._selected_idx = 0
+            self._scroll_offset = 0
             return
 
         if tag == "run":
@@ -352,9 +341,9 @@ class DescriptorRendererApp(App):
             if 0 <= tag < len(commands):
                 cmd = commands[tag]
                 self._cmd_path.append(cmd["name"])
-                if cmd.get("commands"):
-                    self._scroll = 0
-                else:
+                self._selected_idx = 0
+                self._scroll_offset = 0
+                if not cmd.get("commands"):
                     self._enter_form(cmd)
 
     def _enter_form(self, cmd: dict) -> None:
@@ -369,7 +358,6 @@ class DescriptorRendererApp(App):
                 "required": arg.get("required", False),
                 "placeholder": arg.get("placeholder") or arg.get("description", ""),
                 "default_str": "" if default is None else str(default),
-                "is_flag": False,
             })
             if default is not None:
                 self._field_values[arg["name"]] = str(default)
@@ -381,7 +369,6 @@ class DescriptorRendererApp(App):
                 "required": False,
                 "placeholder": flag.get("description", ""),
                 "default_str": "" if default is None else str(default),
-                "is_flag": True,
             })
             if default is not None:
                 self._field_values[flag["name"]] = str(default)
@@ -402,25 +389,39 @@ class DescriptorRendererApp(App):
             assert self._descriptor is not None
             commands = _commands_at(self._descriptor, self._cmd_path)
             total = len(commands)
+            visible_rows = max(1, int((ctx.h - self._list_y0) / ROW_H))
+
             if key in ("ArrowDown", "j"):
-                if self._scroll < max(0, total - 1):
-                    self._scroll += 1
-                    self.emit.schedule_render(after_ms=16)
+                self._selected_idx = min(self._selected_idx + 1, total - 1)
+                self._clamp_scroll(visible_rows)
+                self.emit.schedule_render(after_ms=16)
             elif key in ("ArrowUp", "k"):
-                if self._scroll > 0:
-                    self._scroll -= 1
-                    self.emit.schedule_render(after_ms=16)
+                self._selected_idx = max(self._selected_idx - 1, 0)
+                self._clamp_scroll(visible_rows)
+                self.emit.schedule_render(after_ms=16)
+            elif key in ("Return", "Enter"):
+                self._handle(self._selected_idx)
+                self.emit.schedule_render(after_ms=16)
             elif key == "Escape" and self._cmd_path:
                 self._cmd_path.pop()
-                self._scroll = 0
+                self._selected_idx = 0
+                self._scroll_offset = 0
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
             if key == "Escape":
                 self._view = "list"
                 self._cmd_path.pop()
-                self._scroll = 0
+                self._selected_idx = 0
+                self._scroll_offset = 0
                 self.emit.schedule_render(after_ms=16)
+
+    def _clamp_scroll(self, visible_rows: int) -> None:
+        """Keep _scroll_offset so _selected_idx is always in the visible window."""
+        if self._selected_idx < self._scroll_offset:
+            self._scroll_offset = self._selected_idx
+        elif self._selected_idx >= self._scroll_offset + visible_rows:
+            self._scroll_offset = self._selected_idx - visible_rows + 1
 
 
 if __name__ == "__main__":
