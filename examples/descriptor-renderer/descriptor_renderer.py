@@ -46,6 +46,10 @@ def _parse_descriptor_path(argv: list[str]) -> str | None:
     for arg in argv:
         if not arg.startswith("-"):
             return arg
+    # Default: sample.json bundled alongside this script
+    sample = Path(__file__).parent / "sample.json"
+    if sample.exists():
+        return str(sample)
     return None
 
 
