@@ -1644,7 +1644,11 @@ impl eframe::App for PlexiApp {
                     self.force_reload_focused_app();
                 }
                 Action::NewPageRight => {
-                    self.new_page_right();
+                    if self.contexts[self.active_context].panes.is_empty() {
+                        self.reset_active_context();
+                    } else {
+                        self.new_page_right();
+                    }
                 }
                 Action::NewContext => {
                     self.new_context();
