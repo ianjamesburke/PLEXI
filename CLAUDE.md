@@ -44,6 +44,15 @@ Every issue gets one **type**, one **priority**, one **version**.
 - **version:** `v3.0` | `v3.1+` | `future`
 - **status** (optional): `in-progress` | `ready` | `blocked`
 
+## Milestones
+
+Milestones (`v3.1`, `v3.2`, `v3.3`, …) define the actual release collections — the specific dot releases that ship work. They are distinct from version era labels:
+
+- **Version era label** (`v3.1+`) — "this belongs in the v3.x era." Accepted but not yet slotted.
+- **Milestone** (`v3.2`) — "this is committed to that specific release sprint."
+
+Issues without a milestone are accepted into an era but unslotted. Assign a milestone when the work is actively being planned for a release. An issue can carry `v3.1+` as its version label and a `v3.4` milestone simultaneously — the label is the era, the milestone is the slot.
+
 ## App Installation Paths
 
 Build-specific, resolved at runtime by binary name:
