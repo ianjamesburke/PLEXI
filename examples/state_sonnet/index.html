@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>state_sonnet</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+  canvas { display: block; cursor: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const GRAVITY        = 0.45;
+const GROUND_Y       = 460;     // world-space ground surface
+const FRICTION_AIR   = 0.995;
+const FRICTION_GROUND= 0.97;
+const MAX_VX         = 18;
+const LEAN_ACCEL     = 0.35;    // px/s² added per frame when leaning right
+const LEAN_BRAKE     = 0.45;    // decel when leaning left on ground
+const MAX_JUMP_HOLD  = 45;      // frames of crouch → multiplier cap
+const BASE_JUMP_VY   = -11;
+const CROUCH_BONUS   = -5;      // extra vy per MAX_JUMP_HOLD fraction
+const PUSH_BONUS     =  6;      // extra vx on push-release
+const SKATER_H_STAND = 72;      // standing skater height (px)
+const SKATER_H_CROUCH= 44;      // fully crouched skater height (px)
+
+// ── World ─────────────────────────────────────────────────────────────────────
+const WORLD_W = 4000;
+const boxes = [
+  { x: 800,  w: 120, h: 80  },
+  { x: 1500, w: 80,  h: 50  },
+  { x: 2100, w: 160, h: 110 },
+  { x: 2800, w: 100, h: 65  },
+];
+boxes.forEach(b => { b.y = GROUND_Y - b.h; });
+
+// ── Game State ────────────────────────────────────────────────────────────────
+let mode = 'start';   // 'start' | 'playing' | 'over'
+let distanceTraveled = 0;
+let bestDistance = 0;
+let frameCount = 0;
+
+const player = {
+  x: 150, y: GROUND_Y,
+  vx: 0, vy: 0,
+  onGround: true,
+  crouchFrames: 0,    // frames spacebar held while on ground
+  wasCrouching: false,
+  leanAngle: 0,       // visual lean (radians)
+  boardTilt: 0,       // board visual tilt
+};
+
+const camera = { x: 0 };
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+const keys = { ArrowLeft: false, ArrowRight: false, Space: false };
+
+document.addEventListener('keydown', e => {
+  if (e.code in keys) { keys[e.code] = true; e.preventDefault(); }
+  if (e.code === 'KeyF') toggleFullscreen();
+  if (mode === 'start' && (e.code === 'Space' || e.code === 'Enter')) startGame();
+  if (mode === 'over'  && (e.code === 'Space' || e.code === 'Enter')) startGame();
+});
+document.addEventListener('keyup', e => {
+  if (e.code in keys) {
+    keys[e.code] = false;
+    if (e.code === 'Space' && mode === 'playing') handleJump();
+  }
+});
+
+function startGame() {
+  mode = 'playing';
+  player.x = 150; player.y = GROUND_Y;
+  player.vx = 0; player.vy = 0;
+  player.onGround = true;
+  player.crouchFrames = 0;
+  player.wasCrouching = false;
+  player.leanAngle = 0;
+  player.boardTilt = 0;
+  camera.x = 0;
+  distanceTraveled = 0;
+  frameCount = 0;
+}
+
+function handleJump() {
+  if (!player.onGround) return;
+  const t = Math.min(player.crouchFrames / MAX_JUMP_HOLD, 1);
+  if (t < 0.05) { player.crouchFrames = 0; return; }  // tap — no jump
+  player.vy = BASE_JUMP_VY + CROUCH_BONUS * t;
+  // push bonus when leaning forward on release
+  if (keys.ArrowRight || player.leanAngle < -0.05) {
+    player.vx = Math.min(player.vx + PUSH_BONUS * t, MAX_VX);
+  }
+  player.crouchFrames = 0;
+  player.onGround = false;
+}
+
+// ── Physics ───────────────────────────────────────────────────────────────────
+function update(dt) {
+  if (mode !== 'playing') return;
+  frameCount++;
+
+  // Crouch tracking
+  if (keys.Space && player.onGround) {
+    player.crouchFrames++;
+    player.wasCrouching = true;
+  } else if (!keys.Space) {
+    player.wasCrouching = false;
+    if (!player.onGround) player.crouchFrames = 0;
+  }
+
+  // Lean / horizontal movement
+  if (keys.ArrowRight) {
+    if (player.onGround) {
+      player.vx = Math.min(player.vx + LEAN_ACCEL, MAX_VX);
+    }
+    player.leanAngle = Math.max(player.leanAngle - 0.04, -0.35);
+  } else if (keys.ArrowLeft) {
+    if (player.onGround) {
+      player.vx = Math.max(player.vx - LEAN_BRAKE, -MAX_VX / 2);
+    }
+    player.leanAngle = Math.min(player.leanAngle + 0.04, 0.35);
+  } else {
+    // return lean to neutral
+    player.leanAngle *= 0.88;
+  }
+
+  // Board tilt tracks lean with slight air independence
+  player.boardTilt += (player.leanAngle - player.boardTilt) * 0.2;
+
+  // Gravity
+  player.vy += GRAVITY;
+
+  // Friction
+  if (player.onGround) {
+    player.vx *= FRICTION_GROUND;
+    if (!keys.ArrowRight && !keys.ArrowLeft && Math.abs(player.vx) < 0.2) player.vx = 0;
+  } else {
+    player.vx *= FRICTION_AIR;
+  }
+
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // ── Collisions ──────────────────────────────────────────────────────────────
+  player.onGround = false;
+
+  // Boxes first — before ground snap so prevFeet is accurate
+  const HALF_W = 8;
+  for (const b of boxes) {
+    const bL = b.x, bR = b.x + b.w, bTop = b.y;
+    if (player.x + HALF_W <= bL || player.x - HALF_W >= bR) continue;
+
+    const prevFeet = player.y - player.vy;
+
+    // Land on top: was above box, now at/below, descending
+    if (player.vy >= 0 && prevFeet <= bTop + 1 && player.y >= bTop) {
+      player.y = bTop;
+      player.vy = 0;
+      player.onGround = true;
+      continue;
+    }
+
+    // Side collision: player feet below box top and not rising (rising players pop up and over)
+    if (player.y > bTop + 2 && player.vy >= 0) {
+      if (player.vx > 0) { player.x = bL - HALF_W; player.vx = 0; }
+      else if (player.vx < 0) { player.x = bR + HALF_W; player.vx = 0; }
+    }
+  }
+
+  // Ground
+  if (player.y >= GROUND_Y) {
+    player.y = GROUND_Y;
+    player.vy = 0;
+    player.onGround = true;
+  }
+
+  // World bounds
+  if (player.x < 50) { player.x = 50; player.vx = 0; }
+
+  // Distance
+  distanceTraveled = Math.max(distanceTraveled, Math.floor(player.x / 10));
+  if (distanceTraveled > bestDistance) bestDistance = distanceTraveled;
+
+  // Camera — smooth follow with look-ahead
+  const targetX = player.x - canvas.width * 0.3;
+  camera.x += (targetX - camera.x) * 0.1;
+  camera.x = Math.max(0, camera.x);
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────────
+function toScreen(wx, wy) {
+  return [wx - camera.x, wy];
+}
+
+function drawBackground() {
+  // Sky gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0,   '#0d1b2a');
+  grad.addColorStop(0.6, '#1b2838');
+  grad.addColorStop(1,   '#2d3a4a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Stars (fixed, not scrolling)
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  const starSeed = [
+    [80,40],[160,80],[240,30],[320,90],[400,55],[480,20],[560,75],
+    [640,45],[720,85],[800,35],[880,60],[960,25],[1040,70],[1120,50],
+  ];
+  for (const [sx, sy] of starSeed) {
+    ctx.beginPath();
+    ctx.arc(sx % canvas.width, sy, 1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Distant city silhouette
+  ctx.fillStyle = '#1a2535';
+  const buildings = [
+    [0,380,80,80],[90,340,60,120],[160,360,50,100],[220,300,70,160],
+    [300,350,55,110],[365,370,45,90],[420,320,80,140],[510,360,60,100],
+    [580,340,70,120],[660,380,50,80],[720,310,90,150],[820,360,55,100],
+    [885,330,75,130],[970,370,50,90],[1030,350,65,110],[1100,320,85,140],
+  ];
+  for (const [bx, by, bw, bh] of buildings) {
+    ctx.fillRect(bx % canvas.width, by, bw, bh);
+    // windows
+    ctx.fillStyle = 'rgba(255,220,100,0.15)';
+    for (let wy2 = by + 10; wy2 < by + bh - 10; wy2 += 18) {
+      for (let wx2 = bx % canvas.width + 8; wx2 < bx % canvas.width + bw - 8; wx2 += 14) {
+        if ((wx2 + wy2) % 3 !== 0) ctx.fillRect(wx2, wy2, 6, 8);
+      }
+    }
+    ctx.fillStyle = '#1a2535';
+  }
+}
+
+function drawGround() {
+  const [gx] = toScreen(0, GROUND_Y);
+
+  // Ground surface line
+  ctx.strokeStyle = '#4a9eff';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y);
+  ctx.lineTo(canvas.width, GROUND_Y);
+  ctx.stroke();
+
+  // Ground fill
+  const grad = ctx.createLinearGradient(0, GROUND_Y, 0, canvas.height);
+  grad.addColorStop(0, '#1a3050');
+  grad.addColorStop(1, '#0d1824');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+
+  // Ground markings (scrolling)
+  ctx.strokeStyle = 'rgba(74,158,255,0.2)';
+  ctx.lineWidth = 1;
+  const markSpacing = 200;
+  const startMark = Math.floor(camera.x / markSpacing) * markSpacing;
+  for (let mx = startMark; mx < camera.x + canvas.width + markSpacing; mx += markSpacing) {
+    const [sx] = toScreen(mx, 0);
+    ctx.beginPath();
+    ctx.moveTo(sx, GROUND_Y);
+    ctx.lineTo(sx, GROUND_Y + 20);
+    ctx.stroke();
+  }
+
+  // Distance markers
+  ctx.fillStyle = 'rgba(74,158,255,0.4)';
+  ctx.font = '10px monospace';
+  const markerSpacing = 500;
+  const startDist = Math.floor(camera.x / markerSpacing) * markerSpacing;
+  for (let d = startDist; d < camera.x + canvas.width + markerSpacing; d += markerSpacing) {
+    const [sx] = toScreen(d, 0);
+    ctx.fillText(`${Math.floor(d / 10)}m`, sx + 4, GROUND_Y + 15);
+  }
+}
+
+function drawBox(b) {
+  const [sx, sy] = toScreen(b.x, b.y);
+  if (sx + b.w < 0 || sx > canvas.width) return;
+
+  // Box body
+  const grad = ctx.createLinearGradient(sx, sy, sx, sy + b.h);
+  grad.addColorStop(0, '#3a5a8a');
+  grad.addColorStop(1, '#1d3355');
+  ctx.fillStyle = grad;
+  ctx.fillRect(sx, sy, b.w, b.h);
+
+  // Top face highlight
+  ctx.fillStyle = '#4a7ab0';
+  ctx.fillRect(sx, sy, b.w, 6);
+
+  // Edge lines
+  ctx.strokeStyle = '#5a9ad0';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(sx, sy, b.w, b.h);
+
+  // Grind rail on top
+  ctx.strokeStyle = '#aaddff';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(sx + 8, sy + 3);
+  ctx.lineTo(sx + b.w - 8, sy + 3);
+  ctx.stroke();
+}
+
+function drawSkater(p) {
+  const [sx, sy] = toScreen(p.x, p.y);
+  const lean = p.leanAngle;
+  const crouchT = (keys.Space && p.onGround)
+    ? Math.min(p.crouchFrames / MAX_JUMP_HOLD, 1)
+    : 0;
+
+  const standH = SKATER_H_STAND;
+  const crouchH = SKATER_H_CROUCH;
+  const bodyH = standH - (standH - crouchH) * crouchT;
+
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(lean);
+
+  // ── Skateboard ──────────────────────────────────────────────────────────────
+  const boardW = 52;
+  const boardH = 7;
+  const boardY = 0;
+  ctx.save();
+  ctx.rotate(lean * 0.5); // board tilts slightly more than body
+
+  // Deck
+  const deckGrad = ctx.createLinearGradient(-boardW/2, -boardH, boardW/2, 0);
+  deckGrad.addColorStop(0, '#cc7700');
+  deckGrad.addColorStop(1, '#884400');
+  ctx.fillStyle = deckGrad;
+  ctx.beginPath();
+  ctx.roundRect(-boardW/2, -boardH, boardW, boardH, [3]);
+  ctx.fill();
+
+  // Trucks (metal bars)
+  ctx.fillStyle = '#999';
+  ctx.fillRect(-boardW/2 + 6, -boardH - 3, 10, 4);
+  ctx.fillRect( boardW/2 - 16, -boardH - 3, 10, 4);
+
+  // Wheels
+  ctx.fillStyle = '#ddd';
+  [[-boardW/2 + 5], [boardW/2 - 15]].forEach(([wx]) => {
+    [boardH - 3, boardH - 3].forEach(() => {
+      ctx.beginPath();
+      ctx.arc(wx + 5, -boardH - 1, 5, 0, Math.PI * 2);
+      ctx.fill();
+      // wheel shine
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(wx + 5 - 1, -boardH - 2, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ddd';
+    });
+  });
+
+  ctx.restore();
+
+  // ── Skater body ──────────────────────────────────────────────────────────────
+  const hipY   = -bodyH * 0.45;
+  const torsoY = -bodyH;
+  const headY  = -bodyH - 14;
+  const neckY  = -bodyH - 2;
+
+  // Leg positions with knee bend
+  const kneeOffset = crouchT * 14;  // knees come forward when crouching
+  const ankleY = -boardH;
+
+  // Left leg
+  ctx.strokeStyle = '#3a7bd5';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-8, hipY);
+  ctx.quadraticCurveTo(-12 - kneeOffset, hipY * 0.5, -6, ankleY);
+  ctx.stroke();
+
+  // Right leg
+  ctx.beginPath();
+  ctx.moveTo(4, hipY);
+  ctx.quadraticCurveTo(8 + kneeOffset, hipY * 0.5, 2, ankleY);
+  ctx.stroke();
+
+  // Torso
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-2, hipY);
+  ctx.lineTo(-2, torsoY);
+  ctx.stroke();
+
+  // Left arm (trailing, extends back on speed)
+  const armSwing = Math.min(Math.abs(p.vx) / MAX_VX, 1) * 0.5;
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-2, torsoY + 10);
+  ctx.lineTo(-14 + armSwing * 5, torsoY + 24 - crouchT * 8);
+  ctx.stroke();
+
+  // Right arm (forward, pumping with speed)
+  ctx.beginPath();
+  ctx.moveTo(-2, torsoY + 10);
+  ctx.lineTo(12 - armSwing * 5, torsoY + 24 - crouchT * 8);
+  ctx.stroke();
+
+  // Head
+  ctx.fillStyle = '#f0c87a';
+  ctx.beginPath();
+  ctx.arc(-2, headY, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Helmet
+  ctx.fillStyle = '#cc3333';
+  ctx.beginPath();
+  ctx.arc(-2, headY - 1, 11, Math.PI, 0);
+  ctx.fill();
+  ctx.fillStyle = '#aa2222';
+  ctx.fillRect(-13, headY - 1, 22, 3);
+
+  // Eyes (face direction = right since vx > 0)
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(-2 + 5, headY + 1, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(-2 + 5 + 0.5, headY + 0.5, 0.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Crouch indicator: knee glow when charging jump
+  if (crouchT > 0.1) {
+    const glow = ctx.createRadialGradient(0, hipY * 0.5, 0, 0, hipY * 0.5, 18 * crouchT);
+    glow.addColorStop(0, `rgba(100,200,255,${crouchT * 0.4})`);
+    glow.addColorStop(1, 'transparent');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, hipY * 0.5, 18 * crouchT, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawHUD() {
+  // Distance
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(10, 10, 180, 56);
+  ctx.strokeStyle = 'rgba(74,158,255,0.4)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(10, 10, 180, 56);
+
+  ctx.fillStyle = '#4a9eff';
+  ctx.font = 'bold 11px monospace';
+  ctx.fillText('DISTANCE', 20, 28);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 22px monospace';
+  ctx.fillText(`${distanceTraveled}m`, 20, 52);
+
+  ctx.fillStyle = '#4a9eff';
+  ctx.font = '10px monospace';
+  ctx.fillText(`BEST: ${bestDistance}m`, 100, 28);
+
+  // Speed bar
+  const speed = Math.abs(player.vx);
+  const speedPct = speed / MAX_VX;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(10, 74, 180, 14);
+  const barColor = speedPct > 0.7 ? '#ff6644' : speedPct > 0.4 ? '#ffcc44' : '#44ccff';
+  ctx.fillStyle = barColor;
+  ctx.fillRect(10, 74, 180 * speedPct, 14);
+  ctx.strokeStyle = 'rgba(74,158,255,0.4)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(10, 74, 180, 14);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '9px monospace';
+  ctx.fillText('SPEED', 14, 85);
+
+  // Jump charge indicator (bottom center)
+  if (player.onGround && player.crouchFrames > 5) {
+    const t = Math.min(player.crouchFrames / MAX_JUMP_HOLD, 1);
+    const cx = canvas.width / 2;
+    const cy = canvas.height - 24;
+    const bw = 140;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(cx - bw/2, cy - 10, bw, 16);
+
+    const chargeColor = t > 0.8 ? '#ff4444' : t > 0.5 ? '#ffaa00' : '#44ff88';
+    ctx.fillStyle = chargeColor;
+    ctx.fillRect(cx - bw/2, cy - 10, bw * t, 16);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx - bw/2, cy - 10, bw, 16);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('JUMP CHARGE', cx, cy + 2);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawStartScreen() {
+  // Overlay
+  ctx.fillStyle = 'rgba(10,20,35,0.92)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+
+  // Title
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#4a9eff';
+  ctx.font = 'bold 52px monospace';
+  ctx.fillText('state_sonnet', cx, cy - 80);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '15px monospace';
+  ctx.fillText('a skateboarding simulator', cx, cy - 48);
+
+  // Controls
+  const controls = [
+    ['→  Arrow Right', 'Lean forward / push'],
+    ['←  Arrow Left',  'Lean back / brake'],
+    ['   Space  (hold)', 'Bend knees — charge jump'],
+    ['   Space  (release)', 'Pop! Jump / push off'],
+  ];
+
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(cx - 200, cy - 20, 400, 120);
+  ctx.strokeStyle = 'rgba(74,158,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - 200, cy - 20, 400, 120);
+
+  ctx.font = '13px monospace';
+  controls.forEach(([key, desc], i) => {
+    ctx.fillStyle = '#4a9eff';
+    ctx.fillText(key, cx - 90, cy + 8 + i * 26);
+    ctx.fillStyle = '#ccc';
+    ctx.fillText(desc, cx + 90, cy + 8 + i * 26);
+  });
+
+  // Start prompt
+  const pulse = (Math.sin(Date.now() / 400) + 1) / 2;
+  ctx.fillStyle = `rgba(255,255,255,${0.5 + pulse * 0.5})`;
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('PRESS SPACE TO SKATE', cx, cy + 130);
+
+  ctx.textAlign = 'left';
+}
+
+function drawGameOverScreen() {
+  ctx.fillStyle = 'rgba(10,20,35,0.85)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#ff6644';
+  ctx.font = 'bold 36px monospace';
+  ctx.fillText('BAILED!', cx, cy - 40);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px monospace';
+  ctx.fillText(`Distance: ${distanceTraveled}m`, cx, cy + 5);
+  ctx.fillStyle = '#4a9eff';
+  ctx.fillText(`Best: ${bestDistance}m`, cx, cy + 35);
+
+  const pulse = (Math.sin(Date.now() / 400) + 1) / 2;
+  ctx.fillStyle = `rgba(255,255,255,${0.5 + pulse * 0.5})`;
+  ctx.font = '13px monospace';
+  ctx.fillText('SPACE to try again', cx, cy + 80);
+  ctx.textAlign = 'left';
+}
+
+// ── Main Loop ─────────────────────────────────────────────────────────────────
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawBackground();
+  drawGround();
+  boxes.forEach(drawBox);
+  if (mode === 'playing' || mode === 'over') {
+    drawSkater(player);
+    drawHUD();
+  }
+  if (mode === 'start') drawStartScreen();
+  if (mode === 'over')  drawGameOverScreen();
+}
+
+let lastTime = 0;
+function loop(ts) {
+  const dt = Math.min((ts - lastTime) / 16.67, 3); // cap delta
+  lastTime = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ── Resize ────────────────────────────────────────────────────────────────────
+function resize() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── Fullscreen ────────────────────────────────────────────────────────────────
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+});
+
+// ── Deterministic time step (for Playwright testing) ─────────────────────────
+window.advanceTime = (ms) => {
+  const steps = Math.max(1, Math.round(ms / (1000 / 60)));
+  for (let i = 0; i < steps; i++) update(1 / 60);
+  render();
+};
+
+// ── Text state (for Playwright testing) ──────────────────────────────────────
+window.render_game_to_text = () => {
+  return JSON.stringify({
+    // Origin: world-space. X increases rightward. Y increases downward. Ground at y=460.
+    mode,
+    player: {
+      x: Math.round(player.x),
+      y: Math.round(player.y),
+      vx: +player.vx.toFixed(2),
+      vy: +player.vy.toFixed(2),
+      onGround: player.onGround,
+      crouchFrames: player.crouchFrames,
+      lean: +player.leanAngle.toFixed(3),
+    },
+    camera: { x: Math.round(camera.x) },
+    distance: distanceTraveled,
+    best: bestDistance,
+    obstacles: boxes.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })),
+  });
+};
+
+// Auto-start the start screen loop
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
