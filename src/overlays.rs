@@ -1298,40 +1298,52 @@ impl PlexiApp {
 
     pub(crate) fn draw_welcome_screen(&self, ui: &mut egui::Ui) {
         let colors = self.colors;
-        let available_height = ui.available_height();
-        ui.add_space(available_height * 0.28);
-        ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new("PLEXI")
-                    .size(36.0)
-                    .color(colors.text_primary)
-                    .strong(),
-            );
+        let center = ui.max_rect().center();
+        let box_rect = egui::Rect::from_center_size(center, egui::vec2(480.0, 400.0));
 
-            ui.add_space(32.0);
+        ui.allocate_ui_at_rect(box_rect, |ui| {
+            egui::Frame::new()
+                .fill(colors.bg_sidebar)
+                .stroke(Stroke::new(1.0, colors.border))
+                .corner_radius(style::RADIUS_MD)
+                .inner_margin(egui::Margin::symmetric(
+                    style::MODAL_PADDING_H,
+                    style::MODAL_PADDING_V,
+                ))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("PLEXI")
+                                .size(style::TEXT_TITLE_XL)
+                                .color(colors.text_primary)
+                                .strong(),
+                        );
+                    });
+                    ui.add_space(style::SPACE_XL);
 
-            let hint_color = colors.text_dim;
-            let key_color = colors.text_primary;
+                    // Each entry: (chip groups for one combo, description).
+                    // Every modifier/key is a separate chip — no combined strings.
+                    let shortcuts: &[(&[&str], &str)] = &[
+                        (&["⌘", "H", "J", "K", "L"], "move between panes"),
+                        (&["⌘", "⇧", "H", "J", "K", "L"], "move between windows"),
+                        (&["⌘", "N"], "open a terminal"),
+                        (&["⌘", "⇧", "N"], "new context"),
+                        (&["⌘", "/"], "keyboard shortcuts"),
+                    ];
 
-            let hints: &[(&str, &str)] = &[
-                ("HJK", "move between panes"),
-                ("Cmd + HJKL", "move between windows"),
-                ("Cmd + Shift + HJKL", "navigate to / create a window"),
-                ("Cmd + N", "open a terminal"),
-            ];
-
-            for (keys, desc) in hints {
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [200.0, 20.0],
-                        egui::Label::new(
-                            RichText::new(*keys).size(12.0).color(key_color).monospace(),
-                        ),
-                    );
-                    ui.label(RichText::new(*desc).size(12.0).color(hint_color));
+                    for (keys, desc) in shortcuts {
+                        ui.horizontal(|ui| {
+                            crate::widgets::key_combo(ui, keys, &colors);
+                            ui.add_space(style::SPACE_SM);
+                            ui.label(
+                                RichText::new(*desc)
+                                    .size(style::TEXT_BODY)
+                                    .color(colors.text_dim),
+                            );
+                        });
+                        ui.add_space(style::SPACE_SM);
+                    }
                 });
-                ui.add_space(6.0);
-            }
         });
     }
 }

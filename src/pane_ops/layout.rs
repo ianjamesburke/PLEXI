@@ -321,6 +321,29 @@ impl PlexiApp {
     }
 
     pub(crate) fn new_tab(&mut self) {
+        // Empty context (welcome screen): create the first pane as tree root.
+        if self.contexts[self.active_context].panes.is_empty() {
+            let new_id = self.host.alloc_pane_id();
+            let settings = Self::make_backend_settings(None, &self.colors);
+            let Some(pane) = TerminalPane::new(
+                new_id,
+                self.ctx.clone(),
+                self.pty_event_tx.clone(),
+                settings,
+                self.default_font_size,
+            ) else {
+                log::error!("Failed to create first terminal pane in empty context");
+                return;
+            };
+            let ctx = &mut self.contexts[self.active_context];
+            ctx.panes.insert(new_id, Pane::Terminal(Box::new(pane)));
+            let pane_tile = ctx.tree.tiles.insert_pane(new_id);
+            let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
+            ctx.tree.root = Some(tab_tile);
+            ctx.focused_pane = Some(pane_tile);
+            return;
+        }
+
         let Some(focused) = self.contexts[self.active_context].focused_pane else {
             return;
         };
@@ -659,12 +682,8 @@ impl PlexiApp {
     /// (blank canvas) so the user can create a new spatial page with Cmd+N.
     pub(crate) fn execute_close_pane(&mut self) -> bool {
         self.contexts[self.active_context].zoomed_pane = None;
-        let active_panes = self.contexts[self.active_context].panes.len();
-        if active_panes > 1 {
+        if !self.contexts[self.active_context].panes.is_empty() {
             self.close_focused();
-        } else {
-            // Last pane in this window: close the window (context).
-            self.delete_context(self.active_context);
         }
         false
     }
