@@ -272,38 +272,38 @@ impl PlexiApp {
                     self.rename_buffer = self.workspaces[i].name.clone();
                 }
                 ContextMenuAction::MoveToTop => {
-                    let ctx = self.contexts.remove(i);
-                    self.contexts.insert(0, ctx);
-                    if self.active_context == i {
-                        self.active_context = 0;
-                    } else if self.active_context < i {
-                        self.active_context += 1;
+                    let ws = self.workspaces.remove(i);
+                    self.workspaces.insert(0, ws);
+                    if self.active_workspace == i {
+                        self.active_workspace = 0;
+                    } else if self.active_workspace < i {
+                        self.active_workspace += 1;
                     }
                 }
                 ContextMenuAction::MoveUp => {
-                    self.contexts.swap(i, i - 1);
-                    if self.active_context == i {
-                        self.active_context = i - 1;
-                    } else if self.active_context == i - 1 {
-                        self.active_context = i;
+                    self.workspaces.swap(i, i - 1);
+                    if self.active_workspace == i {
+                        self.active_workspace = i - 1;
+                    } else if self.active_workspace == i - 1 {
+                        self.active_workspace = i;
                     }
                 }
                 ContextMenuAction::MoveDown => {
-                    self.contexts.swap(i, i + 1);
-                    if self.active_context == i {
-                        self.active_context = i + 1;
-                    } else if self.active_context == i + 1 {
-                        self.active_context = i;
+                    self.workspaces.swap(i, i + 1);
+                    if self.active_workspace == i {
+                        self.active_workspace = i + 1;
+                    } else if self.active_workspace == i + 1 {
+                        self.active_workspace = i;
                     }
                 }
                 ContextMenuAction::MoveToBottom => {
                     let last = num_workspaces - 1;
-                    let ctx = self.contexts.remove(i);
-                    self.contexts.push(ctx);
-                    if self.active_context == i {
-                        self.active_context = last;
-                    } else if self.active_context > i {
-                        self.active_context -= 1;
+                    let ws = self.workspaces.remove(i);
+                    self.workspaces.push(ws);
+                    if self.active_workspace == i {
+                        self.active_workspace = last;
+                    } else if self.active_workspace > i {
+                        self.active_workspace -= 1;
                     }
                 }
                 ContextMenuAction::Delete => {
