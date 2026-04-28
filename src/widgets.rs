@@ -121,11 +121,18 @@ const INTER_COMBO_GAP: f32 = 10.0;
 const TRAILING_GAP: f32 = 10.0;
 
 /// Render several chips forming a single key combo (e.g. ["⌘", "["]).
-/// Chips are laid out left-to-right with `INTRA_COMBO_GAP` between them.
+/// Chips are separated by a "+" label between each pair.
 pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = INTRA_COMBO_GAP;
-        for key in keys {
+        for (i, key) in keys.iter().enumerate() {
+            if i > 0 {
+                ui.label(
+                    egui::RichText::new("+")
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+            }
             key_chip(ui, key, colors);
         }
     });

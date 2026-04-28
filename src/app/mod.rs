@@ -537,22 +537,9 @@ impl PlexiApp {
             }
         }
 
-        // Default: single context with single pane
-        let settings = Self::make_backend_settings(None, &colors);
-        let pane = TerminalPane::new(
-            0,
-            cc.egui_ctx.clone(),
-            tx.clone(),
-            settings,
-            default_font_size,
-        )
-        .expect("failed to create initial terminal");
-        let mut panes = HashMap::new();
-        panes.insert(0u64, Pane::Terminal(Box::new(pane)));
-
-        let mut tiles = egui_tiles::Tiles::default();
-        let root_tile = tiles.insert_pane(0u64);
-        let tree = Tree::new("plexi", root_tile, tiles);
+        // Default: empty context — welcome screen is shown until the user creates a pane.
+        let panes: HashMap<u64, Pane> = HashMap::new();
+        let tree = Tree::empty("plexi");
 
         let path = std::env::current_dir()
             .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
@@ -574,7 +561,7 @@ impl PlexiApp {
                 path,
                 tree,
                 panes,
-                focused_pane: Some(root_tile),
+                focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 0,
                 grid_y: 0,
