@@ -68,28 +68,48 @@ Each app is a subdirectory with `manifest.toml` and an executable entry point. I
 
 ## Branch Workflow
 
-- `alpha` — active development. All PRs land here. Use `just install-alpha` to test.
-- `beta` — staging/release channel. Promoted from alpha when ready. Use `just install-beta` to test.
-- `main` — stable releases only.
+Three channels, each more stable than the last:
 
-Feature branches are cut from `alpha`, worked in `worktrees/`, and merged back to `alpha` via PR. Never commit directly to `main` or `beta`.
+- `alpha` — active development. All work lands here first.
+- `beta` — staging. Promoted from alpha when a batch of work is stable enough to share.
+- `main` — production. Promoted from beta when ready to release.
 
-**Always run `wtp add` from inside `worktrees/alpha/`**, not from the repo root or any other worktree. This ensures the new branch forks from alpha's current HEAD — including uncommitted changes — so PRs merge cleanly back to alpha. Cutting from main silently orphans in-flight work.
+Never commit directly to `beta` or `main`. All work flows through alpha.
 
-**Before creating a worktree:** check `git status` in `worktrees/alpha`. If there are uncommitted changes, ask the user whether to commit them to alpha first or carry the dirty HEAD into the new branch. Never silently drop uncommitted work.
+### Feature branch → alpha
 
-**Full done cycle (every PR, no exceptions):**
-1. Commit and push the feature branch
-2. Open a PR targeting `alpha`
-3. Wait for user approval — do not merge unilaterally
-4. Squash-merge the PR into `alpha` via `gh pr merge <number> --squash --delete-branch`
-5. Pull the merged commit into `worktrees/alpha`: `git pull` from inside `worktrees/alpha/`
-6. Run `just install-alpha` from inside `worktrees/alpha/` to confirm the build is clean
-7. Remove the feature worktree: `wtp remove <branch-name>`
+All changes, no matter how small, follow this cycle:
 
-Steps 4–7 are mandatory. Skipping them is how uncommitted work gets silently lost on the next merge.
+1. **Create a worktree** from inside `worktrees/alpha/`: `wtp add -b <branch-name>`
+2. **Implement** and commit inside that worktree
+3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
+4. **Wait for user approval** — do not merge unilaterally
+5. **Squash-merge on GitHub** (UI or `gh pr merge <number> --squash --delete-branch`) — this lands one clean commit on `origin/alpha`
+6. **Sync the local alpha worktree**: `git pull` from inside `worktrees/alpha/` — this is how the local copy catches up to what was just merged on GitHub
+7. **Install and verify**: `just install-alpha` from inside `worktrees/alpha/`
+8. **Remove the feature worktree**: `wtp remove <branch-name>`
 
-**Small-changes batch PR:** When a session produces multiple small, related fixes that each touch different areas but share a single theme (e.g. "polish pass", "welcome screen tweaks"), they may land in one PR. Rule of thumb: if they can share one commit message and one `Breaks if:` line, they belong together. If they're unrelated or could conflict, keep them separate.
+Steps 5–8 are mandatory after every merge. Skipping `git pull` + install is how uncommitted-looking work gets silently lost when the next PR lands.
+
+**Always run `wtp add` from inside `worktrees/alpha/`**, not the repo root. This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
+
+**Before creating a worktree:** check `git status` in `worktrees/alpha`. If there are uncommitted changes, ask whether to commit them first or carry the dirty HEAD into the new branch. Never silently drop uncommitted work.
+
+**Small-changes batch PR:** Multiple small related fixes may land in one PR if they share a single commit message and a single `Breaks if:` line. Unrelated changes go in separate PRs.
+
+### alpha → beta → main (channel promotion)
+
+When alpha has stabilised enough for broader testing:
+```
+git push origin alpha:beta
+```
+Run from `worktrees/alpha/` (or anywhere with origin access). This fast-forwards beta to alpha's current HEAD. Then `just install-beta` to verify the beta build.
+
+When beta is ready to ship as a release:
+```
+git push origin beta:main
+```
+Then tag the release: `just bump` + `just release`. Update `CHANGELOG.md` before tagging.
 
 Worktrees:
 - `worktrees/alpha` — alpha branch
