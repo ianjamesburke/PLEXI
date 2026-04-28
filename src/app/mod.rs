@@ -1758,7 +1758,13 @@ impl eframe::App for PlexiApp {
                 ..Default::default()
             })
             .show(ctx, |ui| {
-                if self.contexts[self.active_context].panes.is_empty() {
+                // Safety net: show the welcome screen when the sole remaining
+                // context is empty. Primary removal of empty non-last contexts
+                // happens in execute_close_pane; by the time we reach here
+                // there should never be more than one context left.
+                let active = self.active_context;
+                let is_last = self.contexts.len() == 1;
+                if is_last && self.contexts[active].panes.is_empty() {
                     self.draw_welcome_screen(ui);
                     return;
                 }
