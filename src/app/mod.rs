@@ -432,7 +432,11 @@ impl PlexiApp {
                         panes.insert(saved_pane.id, pane);
                     }
                 }
-                if panes.is_empty() {
+                // Skip only if there were saved panes that all failed to restore
+                // (corrupted state). An empty saved pane list means the user
+                // intentionally closed all panes — restore the empty context so
+                // the welcome screen appears on next launch.
+                if !saved_ctx.panes.is_empty() && panes.is_empty() {
                     continue;
                 }
                 contexts.push(Context {
