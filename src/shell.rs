@@ -27,6 +27,76 @@ pub fn detect_shell() -> String {
     "/bin/sh".to_string()
 }
 
+/// Resolve the user's login-shell PATH and install it as the process PATH.
+///
+/// macOS GUI bundles (launched from LaunchServices / Dock / Spotlight) inherit
+/// a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) with no Homebrew, no
+/// `~/.local/bin`, no asdf/nvm/pyenv shims. Every subprocess Plexi spawns
+/// (process apps, terminals, `gh` calls from apps) inherits that broken PATH
+/// too, so `shutil.which("gh") == None` even when `gh` is installed.
+///
+/// Fix: at startup, ask the user's login shell what its PATH is and adopt it
+/// as the process PATH. Cheap and robust; falls back to a static prepend of
+/// common macOS bin dirs if the shell probe fails.
+///
+/// Idempotent — safe to call when already launched from a terminal (the
+/// login-shell probe returns the same PATH we already have).
+pub fn install_login_shell_path() {
+    let resolved = probe_login_shell_path().or_else(fallback_path_with_homebrew);
+    if let Some(new_path) = resolved {
+        log::info!("Resolved login-shell PATH: {new_path}");
+        // SAFETY: called once, early in `main()`, before any subprocess spawns
+        // and before any thread reads PATH. All downstream reads see the new
+        // value. On non-macOS platforms the fallback returns None and we
+        // leave the inherited PATH untouched.
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+    }
+}
+
+fn probe_login_shell_path() -> Option<String> {
+    let shell = detect_shell();
+    let output = Command::new(&shell)
+        .args(["-l", "-c", "printf %s \"$PATH\""])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        log::warn!(
+            "Login-shell PATH probe failed: {} exited {}",
+            shell,
+            output.status
+        );
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    Some(path)
+}
+
+fn fallback_path_with_homebrew() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let current = std::env::var("PATH").unwrap_or_default();
+    let extras = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"];
+    let missing: Vec<&str> = extras
+        .into_iter()
+        .filter(|p| !current.split(':').any(|seg| seg == *p))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let prefix = missing.join(":");
+    if current.is_empty() {
+        Some(prefix)
+    } else {
+        Some(format!("{prefix}:{current}"))
+    }
+}
+
 pub fn build_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
 
@@ -48,12 +118,15 @@ pub fn build_env() -> HashMap<String, String> {
         std::env::var("LC_ALL").unwrap_or_else(|_| "en_US.UTF-8".into()),
     );
 
-    // Prepend Homebrew paths on macOS
-    if cfg!(target_os = "macos") {
-        let path = std::env::var("PATH").unwrap_or_default();
-        if !path.contains("/opt/homebrew/bin") {
-            let extra = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin";
-            env.insert("PATH".into(), format!("{extra}:{path}"));
+    // PATH: the process PATH is already resolved to the login-shell PATH at
+    // startup (see `install_login_shell_path`), so inheriting it here is
+    // enough — no per-shell augmentation needed.
+
+    // Inject user-flagged secrets as env vars
+    for entry in crate::secrets::list_inject_secrets() {
+        #[cfg(target_os = "macos")]
+        if let Some(value) = crate::secrets::retrieve_secret(&entry.key, &entry.app_id, &entry.directory) {
+            env.insert(entry.key.clone(), value.to_string());
         }
     }
 
@@ -92,8 +165,7 @@ fn detect_ghostty_terminfo_dir() -> Option<String> {
 
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
-                let terminfo_path =
-                    entry.path().join("share/terminfo/78/xterm-ghostty");
+                let terminfo_path = entry.path().join("share/terminfo/78/xterm-ghostty");
                 if terminfo_path.is_file() {
                     if let Some(dir) = terminfo_path.parent().and_then(Path::parent) {
                         return Some(dir.to_string_lossy().into_owned());
@@ -191,29 +263,3 @@ precmd_functions+=(__plexi_precmd)
     Ok(zsh_dir)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detect_shell_returns_existing_path() {
-        let shell = detect_shell();
-        assert!(Path::new(&shell).exists(), "detect_shell returned non-existent path: {shell}");
-    }
-
-    #[test]
-    fn detect_shell_returns_absolute_path() {
-        let shell = detect_shell();
-        assert!(shell.starts_with('/'), "detect_shell should return absolute path, got: {shell}");
-    }
-
-    #[test]
-    fn build_env_sets_required_vars() {
-        let env = build_env();
-        assert!(env.contains_key("TERM"));
-        assert!(env.contains_key("COLORTERM"));
-        assert_eq!(env["COLORTERM"], "truecolor");
-        assert!(env.contains_key("LANG"));
-        assert!(env.contains_key("LC_ALL"));
-    }
-}

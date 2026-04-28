@@ -1,0 +1,20 @@
+schema_version = 1
+
+[app]
+id = "secrets-routing-tester"
+type = "app"
+name = "Secrets Routing Tester"
+version = "0.1.0"
+description = "POC for #322 — resolves declared canonical secrets via .plexi/secrets.toml routing and shows masked previews."
+entry = "secrets_routing_tester.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+capabilities = ["secrets.get"]
+
+[secrets]
+OPENAI_API_KEY = { required = true, description = "Demo: workspace-routed key" }
+GITHUB_TOKEN = { required = false, description = "Demo: optional fallback-routed key" }
+
+[launch]
+background = false

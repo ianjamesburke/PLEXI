@@ -1,0 +1,18 @@
+schema_version = 1
+
+[app]
+id = "app-store"
+type = "app"
+name = "App Store"
+version = "1.0.0"
+description = "Browse, install, update, and export Plexi apps. Phase 3 of #308."
+entry = "app_store.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+# fs.read so we can scan ~/.plexi-<channel>/apps/. The host runs `git` and
+# `plexi-<channel> install` — the app itself doesn't need net.http.
+capabilities = ["fs.read"]
+
+[launch]
+background = false

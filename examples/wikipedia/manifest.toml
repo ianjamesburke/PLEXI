@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "wikipedia"
+type = "app"
+name = "Wikipedia"
+version = "0.1.0"
+description = "Search Wikipedia and browse article summaries."
+entry = "wikipedia.py"
+
+[app.capabilities]
+capabilities = ["net.http"]
+allowed_hosts = ["en.wikipedia.org"]
+
+[launch]
+layout_hint = { side = "right", split = 0.6 }

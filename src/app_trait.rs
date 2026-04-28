@@ -1,29 +1,155 @@
 use crate::theme::Colors;
-use crate::tiling::PaneId;
-use std::path::PathBuf;
 
 /// Context passed to an app during rendering.
 pub struct AppRenderContext<'a> {
     pub colors: &'a Colors,
     pub is_focused: bool,
-    pub linked_terminal: PaneId,
 }
 
 /// Commands an app can issue back to the system.
 pub enum AppCommand {
-    /// Write a shell command to the linked terminal.
-    RunInTerminal(String),
-    /// Change the terminal's working directory.
-    Cd(PathBuf),
     /// Post an ephemeral notification.
     Notify(String),
+    /// Request the host to spawn a new app pane.
+    /// `layout`: "split_v" (below, default), "split_h" (right), or "overlay".
+    /// `args`: passed as argv to the child process.
+    SpawnApp {
+        type_id: String,
+        layout: Option<String>,
+        args: Vec<String>,
+    },
+    /// Request the host to cd sibling terminals (same split container) to `cwd`.
+    CdRequest { cwd: String, sender_pane_id: u64 },
+    /// Deliver a JSON pipe message to all peer panes that have the given
+    /// pipe_id open with direction In or Duplex. The sender pane is excluded.
+    DeliverPipeMessage {
+        sender_pane_id: u64,
+        pipe_id: String,
+        payload: serde_json::Value,
+    },
+    /// Open a *directed* JSON pipe (#286) — only the sender and the named
+    /// target pane subscribe to subsequent `PipeMessage` deliveries.
+    /// Routed by the host because the target pane lives outside the sender's
+    /// process and the sender has no other way to subscribe peers.
+    OpenDirectedPipe {
+        sender_pane_id: u64,
+        pipe_id: String,
+        target_pane_id: u64,
+    },
+    /// Query the workspace agent roster (#286). The host enumerates every
+    /// `Pane::Agent` and emits `PlexiEvent::AgentRoster { request_id, agents }`
+    /// back to `sender_pane_id`. Apps without `agents.list` get an empty
+    /// roster (NOT an error) — see `app_permissions.rs::Capability::AgentsList`.
+    AgentRosterGet {
+        sender_pane_id: u64,
+        request_id: String,
+    },
+    /// Deliver a RunUpdate event to the pane that originally issued the run,
+    /// identified by its type_id.
+    DeliverRunUpdate {
+        originator_type_id: String,
+        event: crate::app_protocol::PlexiEvent,
+    },
+    /// A notification that carries a notify_id and awaits a user response.
+    /// The legacy server-side `NotificationAction` list is handled in
+    /// `routing.rs` as side effects (resume_run / open_intent / run_command)
+    /// BEFORE this command is emitted — it does not participate in the UI.
+    /// User-facing buttons are carried via `kind = "choice"` + `options`.
+    ShowNotification {
+        notify_id: String,
+        sender_pane_id: u64,
+        /// Context index the notification originated from. Stamped by
+        /// `drain_all_app_commands` with the index of the originating context.
+        source_context: usize,
+        level: String,
+        title: String,
+        body: String,
+        kind: crate::app_protocol::NotifyKind,
+        options: Vec<crate::app_protocol::NotifyOption>,
+        input_prompt: Option<String>,
+        required: bool,
+        /// Higher = more urgent. Used to pick the next front-most notification
+        /// after dismiss, and to order preview cycling via Cmd+] / Cmd+[.
+        /// Insertion order breaks ties (oldest first).
+        priority: u32,
+        /// Visibility scope. `Global` notifications are always visible;
+        /// `Context` notifications are only visible in their source context.
+        scope: crate::app_protocol::NotifyScope,
+        /// Inline base64-encoded image attachment (#74). Decoded + cached
+        /// into a texture on first render. Decoded size > 50 KB triggers a
+        /// placeholder badge instead — never crash the host on bad input.
+        image_inline: Option<crate::app_protocol::NotificationImage>,
+        /// Pipe-referenced image (#74). Drained from the binary ring lazily
+        /// when the notification is visible. Layout: `width: u32 LE`,
+        /// `height: u32 LE`, then RGBA bytes. Mutually exclusive with
+        /// `image_inline` — if both set, inline wins.
+        image_pipe_id: Option<String>,
+    },
+    /// Route a NotifyAction event back to the app pane that sent the Notify.
+    DeliverNotifyAction {
+        pane_id: u64,
+        notify_id: String,
+        action_label: String,
+        value: Option<String>,
+    },
+    /// Canvas Terminal Binding Primitives (#78). The host opens a fresh
+    /// terminal next to `sender_pane_id`, sets the new terminal as the
+    /// sender app's `linked_pane_id`, and emits
+    /// `PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id }`
+    /// back to the sender. `cwd` falls back to the sender's
+    /// `workspace_root` when `None`.
+    RequestLinkedTerminal {
+        sender_pane_id: u64,
+        request_id: String,
+        cwd: Option<String>,
+        label: Option<String>,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Inject `command` into the
+    /// referenced terminal's PTY. With `echo: true`, the command is
+    /// followed by `\n` so the shell executes it; the user sees the typed
+    /// command and its output. With `echo: false`, the host still writes
+    /// the command + newline (PTY-level echo is shell-controlled — we don't
+    /// suppress it from the host side; the flag is preserved on the wire
+    /// so a future revision can wire shell-aware silent-execute).
+    RunInLinkedTerminal {
+        terminal_pane_id: u64,
+        command: String,
+        echo: bool,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Inject a path token at
+    /// the referenced terminal's cursor. `Replace` mode prefixes a
+    /// Ctrl-W (kill-word) so the shell's readline removes the partial
+    /// word before the path is written. Paths containing shell
+    /// metacharacters are POSIX-quoted by the host before injection.
+    InsertPathToken {
+        terminal_pane_id: u64,
+        path: String,
+        mode: crate::app_protocol::PathTokenMode,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Compute a no-execute
+    /// preview of `command` for the referenced terminal. Host responds
+    /// with `PlexiEvent::CommandPreview { request_id, command,
+    /// would_run_in_cwd }` to `sender_pane_id`. `would_run_in_cwd` is the
+    /// host's best-effort snapshot of the terminal child's cwd.
+    RequestCommandPreview {
+        sender_pane_id: u64,
+        request_id: String,
+        terminal_pane_id: u64,
+        command: String,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Open a workspace
+    /// artifact via the host's pane router (OpenInPane → file browser
+    /// for dirs, Launch Services for files), or shell out to `open`
+    /// with `-R` (RevealInFinder) / no flag (OpenWithDefault) on macOS.
+    OpenArtifact {
+        path: String,
+        mode: crate::app_protocol::ArtifactOpenMode,
+    },
 }
 
 /// The trait all Plexi apps implement.
 ///
-/// Apps live inside a TerminalPane. The terminal shrinks to a command bar at the
-/// bottom of the pane while the app occupies the main area. Escape dismisses the
-/// app entirely; Tab toggles the terminal between a command bar and a 50% split.
+/// Apps live inside `Pane::App` runtimes.
 pub trait App: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
@@ -47,17 +173,11 @@ pub trait App: Send {
         vec![]
     }
 
-    /// Called when the user submits a command via the terminal command bar.
-    /// The app may interpret it and return a command to execute, or return `None`
-    /// to let it pass through to the terminal as a normal shell command.
-    fn on_command(&mut self, _cmd: &str) -> Option<AppCommand> {
-        None
-    }
-
-    /// File extensions this app handles (lowercase, no dot). Used for file-type
-    /// routing from the file browser. Empty slice means not file-driven.
-    fn accepted_extensions(&self) -> &[&str] {
-        &[]
+    /// Returns true if this app wants to capture all keyboard input, preventing
+    /// host shortcuts (Cmd+HJKL, Cmd+Enter, etc.) from firing while it is focused.
+    /// Only `Cmd+Q` and `Cmd+W` remain active when capture is true.
+    fn keyboard_capture(&self) -> bool {
+        false
     }
 
     /// Returns true if the app wants to close itself (e.g. after saving).
@@ -69,6 +189,11 @@ pub trait App: Send {
     /// Apps that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
 
+    /// Queue a PlexiEvent to be sent to the app on the next flush.
+    /// Used to deliver host-originated events (e.g. AppSpawned) back to
+    /// external process apps. Built-in apps ignore this by default.
+    fn queue_outbound_event(&mut self, _event: crate::app_protocol::PlexiEvent) {}
+
     /// Serialise app state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {
         None
@@ -77,26 +202,3 @@ pub trait App: Send {
     /// Restore app state from a previously serialised value.
     fn restore_state(&mut self, _state: &serde_json::Value) {}
 }
-
-/// Whether the app surface or the terminal command bar has keyboard focus.
-/// Only relevant when `SurfaceMode::AppActive`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceLayer {
-    /// App receives keyboard input. App is fully opaque.
-    App,
-    /// Terminal command bar receives keyboard input. App dims to signal background state.
-    Terminal,
-}
-
-/// Whether an app surface is active on this pane.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SurfaceMode {
-    /// No app active — terminal fills the whole pane.
-    FullTerminal,
-    /// App active — occupies pane minus a fixed command bar at the bottom.
-    /// `SurfaceLayer` controls which surface has keyboard focus.
-    AppActive,
-}
-
-/// Opacity applied to the app region when the terminal command bar has focus.
-pub const APP_DIM_OPACITY: f32 = 0.45;

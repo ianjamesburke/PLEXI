@@ -1,13 +1,13 @@
-/// Centralized file logger for Plexi.
-///
-/// Writes to `~/.plexi-alpha/plexi.log` (or the appropriate config dir) and
-/// also mirrors output to stderr so `cargo run` / CLI invocations stay usable.
-///
-/// Rolling on startup: if `plexi.log` exists and is over 10 MB, it is renamed
-/// to `plexi.log.1` (overwriting any previous backup) before the new log is opened.
-///
-/// Third-party crates (egui, wgpu, winit, etc.) are clamped to `warn` to avoid
-/// noise; everything under `plexi::` logs at the caller-supplied level.
+//! Centralized file logger for Plexi.
+//!
+//! Writes to `~/.plexi-alpha/plexi.log` (or the appropriate config dir) and
+//! also mirrors output to stderr so `cargo run` / CLI invocations stay usable.
+//!
+//! Rolling on startup: if `plexi.log` exists and is over 10 MB, it is renamed
+//! to `plexi.log.1` (overwriting any previous backup) before the new log is opened.
+//!
+//! Third-party crates (egui, wgpu, winit, etc.) are clamped to `warn` to avoid
+//! noise; everything under `plexi::` logs at the caller-supplied level.
 
 use std::path::PathBuf;
 
@@ -41,30 +41,35 @@ pub fn init(level: log::LevelFilter) {
     }
 
     // Build format: [YYYY-MM-DD HH:MM:SS] [LEVEL] [target] message
-    let formatter = |out: fern::FormatCallback, message: &std::fmt::Arguments, record: &log::Record| {
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        out.finish(format_args!(
-            "[{now}] [{level}] [{target}] {message}",
-            now = now,
-            level = record.level(),
-            target = record.target(),
-            message = message,
-        ))
-    };
+    let formatter =
+        |out: fern::FormatCallback, message: &std::fmt::Arguments, record: &log::Record| {
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            out.finish(format_args!(
+                "[{now}] [{level}] [{target}] {message}",
+                now = now,
+                level = record.level(),
+                target = record.target(),
+                message = message,
+            ))
+        };
 
     // Try to open the log file; if it fails, use stderr only.
     let file_result = fern::log_file(&log_file_path);
 
     let dispatch = fern::Dispatch::new()
         .format(formatter)
-        // plexi::* at the configured level
+        // plexi::*, plexi_v3::*, plexi_alpha::* (renamed crate for alpha
+        // builds), and app::<id> targets emitted by the SDK log bridge
+        // all follow the user-configured level. Everything else stays at
+        // Warn so third-party crates don't flood the log.
         .level(log::LevelFilter::Warn) // default for third-party
-        .level_for("plexi", level);
+        .level_for("plexi", level)
+        .level_for("plexi_v3", level)
+        .level_for("plexi_alpha", level)
+        .level_for("app", level);
 
     let dispatch = match file_result {
-        Ok(file) => dispatch
-            .chain(std::io::stderr())
-            .chain(file),
+        Ok(file) => dispatch.chain(std::io::stderr()).chain(file),
         Err(e) => {
             eprintln!("[plexi::logging] could not open log file {log_file_path:?}: {e}; falling back to stderr only");
             dispatch.chain(std::io::stderr())

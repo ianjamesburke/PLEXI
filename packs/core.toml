@@ -1,0 +1,108 @@
+# Plexi core pack (#308 Phase 2). Embedded at compile time; applied
+# automatically on first launch when the channel apps dir is empty.
+#
+# Each entry sources from `local:<example-name>` — the host copies the
+# example tree out of the binary (`include_dir!("examples")`) into the
+# channel apps dir. No network required.
+#
+# This list is intentionally minimal: a few representative apps so a fresh
+# install has *something* working out of the box. Everything else is
+# discoverable via `plexi install <git-url>` or future registry browse.
+
+schema_version = 1
+
+[[app]]
+id      = "secrets-routing-tester"
+source  = "local:secrets-routing-tester"
+version = "bundled"
+
+[[app]]
+id      = "notification-tester"
+source  = "local:notification-tester"
+version = "bundled"
+
+[[app]]
+id      = "stand-up-reminder"
+source  = "local:stand-up-reminder"
+version = "bundled"
+
+[[app]]
+id      = "quick-note"
+source  = "local:quick-note"
+version = "bundled"
+
+[[app]]
+id      = "todo"
+source  = "local:todo"
+version = "bundled"
+
+[[app]]
+id      = "ui-playground"
+source  = "local:ui-playground"
+version = "bundled"
+
+# The Installer App itself — fresh installs get the App Store for free
+# (#308 Phase 3). It shells out to `plexi-<channel>` for install / update /
+# uninstall / pack export, so the host is what runs `git`, not the app.
+[[app]]
+id      = "app-store"
+source  = "local:app-store"
+version = "1.0.0"
+
+# Agent-as-app POC (#338, part 2 of #285). Demonstrates the
+# `type = "agent"` manifest path: subprocess-backed conversation
+# pane driven by `iq.query`. Requires ANTHROPIC_API_KEY in the
+# Plexi secrets store at first launch.
+[[app]]
+id      = "agent-tester"
+source  = "local:agent-tester"
+version = "0.1.0"
+
+# Video substrate POC (#345). Drives the mock decoder via
+# `video.playback`. Production AvfVideoDecoder still returns
+# NotImplemented until #346 lands real backing — launch with
+# `PLEXI_VIDEO=mock://gradient` to exercise the mock end to end.
+[[app]]
+id      = "video-player"
+source  = "local:video-player"
+version = "0.1.0"
+
+# Agent roster + inter-agent pipes POCs (#286 / v3.3 P2). Open both
+# panes, ask the coordinator to delegate to the worker, and watch the
+# round-trip surface in both conversation histories. Requires
+# ANTHROPIC_API_KEY in the Plexi secrets store.
+[[app]]
+id      = "agent-coordinator"
+source  = "local:agent-coordinator"
+version = "0.1.0"
+
+[[app]]
+id      = "agent-worker"
+source  = "local:agent-worker"
+version = "0.1.0"
+
+# Canvas Terminal Binding Primitives demo (#78 / v3.5 P1). Click any
+# button to drive a freshly-opened linked terminal: run a command,
+# inject a path token, preview a destructive command, open an
+# artifact in a pane / Finder. Capability: `terminal.bindings`.
+[[app]]
+id      = "canvas-terminal-bindings-test"
+source  = "local:canvas-terminal-bindings-test"
+version = "0.1.0"
+
+# GUI↔Terminal media bridge (#79 / v3.4 P2). Spawned by the file
+# browser when the user opens an audio file. Echoes the equivalent
+# ffplay/ffmpeg command into a linked terminal for every transport
+# action. Capabilities: `terminal.bindings`.
+[[app]]
+id      = "audio-player"
+source  = "local:audio-player"
+version = "0.1.0"
+
+# Audio bridge demo (#79 / v3.4 P2). Mic capture + live waveform +
+# linked-terminal echo of the equivalent ffmpeg command. Capabilities:
+# `audio.record`, `terminal.bindings`.
+[[app]]
+id      = "audio-bridge-test"
+source  = "local:audio-bridge-test"
+version = "0.1.0"

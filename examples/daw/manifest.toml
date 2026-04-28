@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "daw"
+type = "app"
+name = "Parallax DAW"
+version = "0.1.0"
+description = "Techno loop DAW visual POC — physics-driven modulation, step sequencer, and arrangement view."
+entry = "daw.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.65 }

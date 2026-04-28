@@ -575,16 +575,132 @@ impl TerminalBackend {
 
     /// Based on alacritty/src/display/hint.rs > regex_match_at
     /// Retrieve the match, if the specified point is inside the content matching the regex.
+    ///
+    /// If the match terminates at the right edge of a row that is NOT marked
+    /// `WRAPLINE` (i.e. a client-wrapped row produced by tools like Claude Code,
+    /// git, bat, etc. that emit a literal `\n` at their own `$COLUMNS` boundary),
+    /// extend the match across the visual wrap so URLs stay clickable as a
+    /// single unit. See `extend_url_match_across_client_wraps`.
     fn regex_match_at(
         &self,
         terminal: &Term<EventProxy>,
         point: Point,
         regex: &mut RegexSearch,
     ) -> Option<Match> {
-        let x = visible_regex_match_iter(terminal, regex)
-            .find(|rm| rm.contains(&point));
-        x
+        let m = visible_regex_match_iter(terminal, regex)
+            .find(|rm| rm.contains(&point))?;
+        Some(extend_url_match_across_client_wraps(terminal, m))
     }
+}
+
+/// Return true if `c` is in the URL character set used by `url_regex` —
+/// i.e. it would be accepted by `[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩\`]`.
+/// Keep this in exact sync with the regex in `TerminalBackend::new`.
+///
+/// Note: inside a regex character class, `{-}` parses as the inclusive range
+/// `{` (U+007B) .. `}` (U+007D), which covers `{`, `|`, `}` — NOT a literal
+/// `-`. That is why plain hyphens ARE valid URL chars (e.g. `foo-bar.com`).
+fn is_url_char(c: char) -> bool {
+    // C0 / DEL / C1 control ranges.
+    if ('\u{0000}'..='\u{001F}').contains(&c)
+        || ('\u{007F}'..='\u{009F}').contains(&c)
+    {
+        return false;
+    }
+    // Explicit terminators from the regex char class.
+    // `{-}` in the class is the range `{`..=`}` = `{`, `|`, `}`.
+    if matches!(c, '<' | '>' | '"' | '{' | '|' | '}' | '^' | '⟨' | '⟩' | '`') {
+        return false;
+    }
+    // All whitespace (regex `\s`).
+    if c.is_whitespace() {
+        return false;
+    }
+    true
+}
+
+/// Extend a URL match across a "client-wrapped" visual boundary.
+///
+/// Many CLI tools (Claude Code, git, bat, etc.) wrap long lines themselves at
+/// `$COLUMNS` and emit a literal `\n`. Our backend correctly ingests that as a
+/// hard newline, so the cell at the right edge of the wrapped row does NOT
+/// carry `CellFlags::WRAPLINE`. Alacritty's `RegexIter` therefore stops the
+/// match at the newline and the URL is truncated.
+///
+/// This helper detects that specific pattern and walks the match end rightward
+/// across subsequent rows, appending cells as long as:
+///   * the row on which the match currently ends is at the terminal's right
+///     edge (`last_column`) AND does NOT have `WRAPLINE` set (so we're looking
+///     at a client wrap, not a normal soft wrap — alacritty already handles
+///     soft wraps internally via `line_search_right`),
+///   * the next row begins with a char accepted by the URL char class,
+///   * and we haven't yet hit a whitespace or URL-terminating character.
+///
+/// The heuristic is deliberately conservative: if any condition fails we stop
+/// extending. A false negative is just "link not clickable across the break",
+/// which is identical to today's behavior; a false positive would attach
+/// unrelated adjacent text to the URL.
+fn extend_url_match_across_client_wraps(
+    terminal: &Term<EventProxy>,
+    m: Match,
+) -> Match {
+    let grid = terminal.grid();
+    let last_col = terminal.last_column();
+    let bottom = terminal.bottommost_line();
+
+    let start = *m.start();
+    let mut end = *m.end();
+
+    loop {
+        // The match must currently end at the right edge of its row.
+        if end.column != last_col {
+            break;
+        }
+        // And the row's last cell must NOT be alacritty-soft-wrapped (if it
+        // were, alacritty's own `line_search_right` would have already
+        // followed it and the match would already span the join).
+        let end_cell: &Cell = &grid[end];
+        if end_cell.flags.contains(CellFlags::WRAPLINE) {
+            break;
+        }
+        // Don't walk past the last visible/scrollback row we can index.
+        let next_line = end.line + 1;
+        if next_line > bottom {
+            break;
+        }
+
+        // Peek the first cell of the next row. Only bridge if it looks like a
+        // direct continuation of the URL — i.e. a non-whitespace URL-valid
+        // character sits at column 0.
+        let first_point = Point::new(next_line, Column(0));
+        let first_cell: &Cell = &grid[first_point];
+        if !is_url_char(first_cell.c) {
+            break;
+        }
+
+        // Commit the bridge: advance end to (next_line, 0), then walk right
+        // along the new row until the URL char class breaks or we hit the
+        // right edge.
+        end = first_point;
+        let mut col = Column(0);
+        while col < last_col {
+            let peek = Column(col.0 + 1);
+            let peek_cell: &Cell = &grid[Point::new(next_line, peek)];
+            if !is_url_char(peek_cell.c) {
+                break;
+            }
+            col = peek;
+        }
+        end.column = col;
+
+        // If we stopped before the right edge, the URL has genuinely ended.
+        if col != last_col {
+            break;
+        }
+        // Otherwise loop: another client-wrap may continue the URL further.
+    }
+
+    start..=end
 }
 
 /// Copied from alacritty/src/display/hint.rs:
@@ -662,5 +778,36 @@ pub struct EventProxy(mpsc::Sender<Event>);
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
         let _ = self.0.send(event.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_url_char;
+
+    /// The URL char predicate must mirror the negated class in `url_regex`:
+    /// `[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩\`]`.
+    /// If these diverge, the cross-wrap extension will either stop too early
+    /// or swallow non-URL text — regression-guard the obvious cases here.
+    #[test]
+    fn is_url_char_accepts_typical_url_bytes() {
+        // `-` is a valid URL char (e.g. `foo-bar.com`); see the note in
+        // `is_url_char` about `{-}` actually meaning the range `{`..=`}`.
+        for c in [
+            'a', 'Z', '0', '/', ':', '.', '?', '=', '&', '%', '#', '_', '+',
+            '[', ']', '(', ')', '~', '-',
+        ] {
+            assert!(is_url_char(c), "expected {c:?} to be a URL char");
+        }
+    }
+
+    #[test]
+    fn is_url_char_rejects_terminators_and_whitespace() {
+        for c in [
+            ' ', '\t', '\n', '\r', '<', '>', '"', '{', '|', '}', '^', '⟨',
+            '⟩', '`', '\u{0000}', '\u{001F}', '\u{007F}', '\u{0085}',
+        ] {
+            assert!(!is_url_char(c), "expected {c:?} to NOT be a URL char");
+        }
     }
 }
