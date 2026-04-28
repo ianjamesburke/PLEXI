@@ -1758,7 +1758,17 @@ impl eframe::App for PlexiApp {
                 ..Default::default()
             })
             .show(ctx, |ui| {
-                if self.contexts[self.active_context].panes.is_empty() {
+                // Show the welcome screen only when the active context is the
+                // sole remaining context and is at the grid origin (0,0). The
+                // primary removal of empty non-last contexts happens in
+                // execute_close_pane; this is a safety net for any path that
+                // leaves an empty context at (0,0) legitimately.
+                let active = self.active_context;
+                let ctx_empty = self.contexts[active].panes.is_empty();
+                let is_origin =
+                    self.contexts[active].grid_x == 0 && self.contexts[active].grid_y == 0;
+                let is_last = self.contexts.len() == 1;
+                if ctx_empty && is_origin && is_last {
                     self.draw_welcome_screen(ui);
                     return;
                 }
