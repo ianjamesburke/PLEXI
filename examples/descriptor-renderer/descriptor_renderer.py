@@ -257,7 +257,8 @@ class DescriptorRendererApp(App):
                      size=BODY, color=FG, bold=True, align="left_center")
             if desc_text:
                 ctx.text(x=PAD + 14, y=by + BTN_H * 0.72, text=desc_text,
-                         size=HINT, color=MUTED, max_width=btn_w - 28, elide=True)
+                         size=HINT, color=MUTED, align="left_center",
+                         max_width=btn_w - 28, elide=True)
 
         total_h = len(commands) * row_h
         visible_h = ctx.h - y
