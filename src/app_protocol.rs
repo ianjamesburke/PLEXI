@@ -328,6 +328,10 @@ pub enum PlexiEvent {
         command: String,
         would_run_in_cwd: String,
     },
+    /// Emitted by host to app when Escape is pressed and the app's nav stack
+    /// depth is > 0. The app handles this by popping its own internal view
+    /// and emitting `DrawCommand::PopNav` to decrement the host counter.
+    NavBack {},
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -1092,6 +1096,18 @@ pub enum DrawCommand {
     ///
     /// Capability: `terminal.bindings`. All fields required.
     OpenArtifact { path: String, mode: ArtifactOpenMode },
+
+    // ── Navigation stack ─────────────────────────────────────────────────
+    /// App signals it has pushed a navigation level. The host increments its
+    /// per-pane nav stack depth counter. While depth > 0, pressing Escape
+    /// emits `PlexiEvent::NavBack` to the app instead of closing the pane.
+    ///
+    /// The optional `title` is reserved for future breadcrumb rendering and
+    /// is ignored by the host in this version.
+    PushNav { title: String },
+    /// App signals it has popped a navigation level. The host decrements its
+    /// per-pane nav stack depth counter (saturating — never below 0).
+    PopNav {},
 }
 
 /// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.

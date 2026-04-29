@@ -116,6 +116,10 @@ pub struct ProcessApp {
     pub(crate) run_registry: RunRegistry,
     pub(crate) pending_prompts: VecDeque<PendingPrompt>,
     pub(crate) status_summary: Option<String>,
+    /// Current navigation stack depth as reported by the app via
+    /// `DrawCommand::PushNav` / `DrawCommand::PopNav`. When > 0, Escape emits
+    /// `PlexiEvent::NavBack` to the app instead of closing the pane.
+    pub(crate) nav_stack_depth: usize,
     pub(crate) outbound_events: VecDeque<PlexiEvent>,
     pub(crate) secret_input_buf: String,
     /// Recent stderr lines from the subprocess. Capped at the last
@@ -430,6 +434,7 @@ impl ProcessApp {
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             status_summary: None,
+            nav_stack_depth: 0,
             outbound_events: VecDeque::new(),
             secret_input_buf: String::new(),
             recent_stderr: Arc::clone(&recent_stderr_capture),
@@ -464,6 +469,12 @@ impl ProcessApp {
     /// exclude the sending pane.
     pub fn set_pane_id(&mut self, id: u64) {
         self.pane_id = id;
+    }
+
+    /// Current nav stack depth as tracked by `PushNav`/`PopNav` commands.
+    /// Returns 0 for Builtin apps that never emit these commands.
+    pub fn nav_stack_depth(&self) -> usize {
+        self.nav_stack_depth
     }
 
     pub(crate) fn send_event(&mut self, event: &PlexiEvent) {
@@ -791,7 +802,9 @@ impl ProcessApp {
                 | DrawCommand::RunInLinkedTerminal { .. }
                 | DrawCommand::InsertPathToken { .. }
                 | DrawCommand::RequestCommandPreview { .. }
-                | DrawCommand::OpenArtifact { .. }) => {
+                | DrawCommand::OpenArtifact { .. }
+                | DrawCommand::PushNav { .. }
+                | DrawCommand::PopNav { .. }) => {
                     self.route_command(cmd);
                 }
                 // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
@@ -997,7 +1010,9 @@ impl App for ProcessApp {
                 | DrawCommand::RunInLinkedTerminal { .. }
                 | DrawCommand::InsertPathToken { .. }
                 | DrawCommand::RequestCommandPreview { .. }
-                | DrawCommand::OpenArtifact { .. }) => {
+                | DrawCommand::OpenArtifact { .. }
+                | DrawCommand::PushNav { .. }
+                | DrawCommand::PopNav { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),

@@ -1503,7 +1503,39 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ClosePane => {
-                    if self.confirm_close() {
+                    // If the focused app pane has declared internal navigation
+                    // depth (via PushNav), Escape routes NavBack to the app
+                    // instead of closing the pane.
+                    let nav_pane_id = {
+                        let active_ctx = &self.contexts[self.active_context];
+                        active_ctx.focused_pane.and_then(|tile_id| {
+                            if let Some(egui_tiles::Tile::Pane(pane_id)) =
+                                active_ctx.tree.tiles.get(tile_id)
+                            {
+                                active_ctx.panes.get(pane_id).and_then(|pane| {
+                                    pane.as_app().and_then(|app| {
+                                        if app.runtime.nav_stack_depth() > 0 {
+                                            Some(*pane_id)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                    };
+                    if let Some(pane_id) = nav_pane_id {
+                        let active = self.active_context;
+                        if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                            if let Some(app) = pane.as_app_mut() {
+                                app.runtime.queue_outbound_event(
+                                    crate::app_protocol::PlexiEvent::NavBack {},
+                                );
+                            }
+                        }
+                    } else if self.confirm_close() {
                         self.pending_close = true;
                     } else if self.execute_close_pane() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);

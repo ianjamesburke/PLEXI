@@ -537,6 +537,24 @@ impl ProcessApp {
                 self.status_summary = Some(text);
             }
 
+            // ── Navigation stack ───────────────────────────────────────────
+            DrawCommand::PushNav { title: _ } => {
+                self.nav_stack_depth = self.nav_stack_depth.saturating_add(1);
+                log::debug!(
+                    "ProcessApp[{}]: PushNav → depth={}",
+                    self.type_id,
+                    self.nav_stack_depth
+                );
+            }
+            DrawCommand::PopNav {} => {
+                self.nav_stack_depth = self.nav_stack_depth.saturating_sub(1);
+                log::debug!(
+                    "ProcessApp[{}]: PopNav → depth={}",
+                    self.type_id,
+                    self.nav_stack_depth
+                );
+            }
+
             // ── Spawn app ──────────────────────────────────────────────────
             DrawCommand::SpawnApp {
                 type_id,

@@ -229,7 +229,9 @@ impl ProcessApp {
                 | DrawCommand::AudioCapture { .. }
                 | DrawCommand::CdRequest { .. }
                 | DrawCommand::SetTimer { .. }
-                | DrawCommand::CancelTimer { .. }) => {
+                | DrawCommand::CancelTimer { .. }
+                | DrawCommand::PushNav { .. }
+                | DrawCommand::PopNav { .. }) => {
                     self.route_command(cmd);
                 }
                 // FrameDone, ScheduleRender, MeasureText, CopyToClipboard, and
