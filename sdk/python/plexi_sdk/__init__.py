@@ -11,14 +11,17 @@ QUICK START
     from plexi_sdk import App, BG, FG, BODY, ACCENT
 
     class CounterApp(App):
-        def on_init(self, ctx):
+        async def on_init(self, ctx):
             # Called once after the host completes the Init handshake.
             # ctx.workspace_root, ctx.capabilities, ctx.feature_flags are set.
+            # Hooks may be async def (to use await) or plain def (fire-and-forget).
             self.count = 0
             self.emit.info("CounterApp ready")
+            # Blocking helpers are coroutines — await them directly:
+            # api_key = await self.emit.secret_get("MY_API_KEY")
 
         def on_render(self, ctx):
-            # Called on every frame. Must not block — use threads for I/O.
+            # Pure-sync render hooks work unchanged — no await needed here.
             # ctx.w / ctx.h are the current pane dimensions.
             # ctx.elapsed is seconds since the previous render (0.0 on first frame).
             ctx.clear(BG)
@@ -397,9 +400,11 @@ Call MyApp().run() to start the PGAP event loop. This blocks until Shutdown.
 """
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
+import asyncio
+import inspect
 import json
 import queue
 import socket
@@ -522,6 +527,11 @@ def _emit(obj: dict) -> None:
         sys.stdout.flush()
 
 
+def _make_async_queue() -> asyncio.Queue:
+    """Return a fresh asyncio.Queue for one pending request slot."""
+    return asyncio.Queue(maxsize=1)
+
+
 # ── Emitter (always available, even outside a frame) ─────────────────────────
 
 class Emitter:
@@ -581,13 +591,36 @@ class Emitter:
             payload["image_pipe_id"] = image_pipe_id
         _emit(payload)
 
+    def run_sync(self, coro: "Any") -> Any:
+        """Run a coroutine from a background thread and return its result.
+
+        Use this when calling async Emitter methods from a non-async context
+        (e.g. inside a ``threading.Thread`` callback)::
+
+            def _worker(self) -> None:
+                result = self.emit.run_sync(self.emit.http_get(url))
+
+        Must NOT be called from within the event loop thread — it will deadlock.
+        Raises ``RuntimeError`` if there is no running event loop to dispatch to
+        (e.g. called before ``App.run()`` starts).
+        """
+        loop = self._app._loop
+        if loop is None:
+            raise RuntimeError(
+                "emit.run_sync() called before the event loop started. "
+                "Only call it after App.run() is running (e.g. from a "
+                "background thread started inside on_init or later)."
+            )
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
     # kind = "choice"
-    def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False,
-                      priority: int | None = None,
-                      image_inline: dict | None = None,
-                      image_pipe_id: str | None = None) -> str:
-        """Post a choice notification and block until the user picks one.
+    async def notify_choice(self, title: str, options: list, body: str = "",
+                            level: str = "info", required: bool = False,
+                            priority: int | None = None,
+                            image_inline: dict | None = None,
+                            image_pipe_id: str | None = None) -> str:
+        """Post a choice notification and await until the user picks one.
 
         `options` is a list of dicts: {"label": str, "value": str (optional),
         "shortcut": str (optional, single char)}. If `value` is omitted, the
@@ -600,12 +633,14 @@ class Emitter:
         Returns the chosen option's value (or the label if no value set). If
         `required=False` the user may cancel with Esc — this returns the string
         `"__cancel__"`.
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_choice(...))``.
         """
         if priority is None:
             raise TypeError("notify_choice() requires 'priority' (int, higher = more urgent)")
-        import uuid
         notify_id = str(uuid.uuid4())
-        q: "queue.Queue[str]" = queue.Queue()
+        q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
         payload = {"type": "notify", "level": level, "title": title, "body": body,
                    "kind": "choice", "options": options, "required": required,
@@ -616,15 +651,15 @@ class Emitter:
         if image_pipe_id is not None:
             payload["image_pipe_id"] = image_pipe_id
         _emit(payload)
-        return q.get()
+        return await q.get()
 
     # Convenience wrapper for the inline-image case (#74). Handles base64
     # encoding + size-cap enforcement client-side so we never spend wire
     # bytes on payloads the host will only reject.
-    def notify_with_image(self, title: str, body: str, image_bytes: bytes,
-                          mime: str, level: str = "info",
-                          priority: int | None = None,
-                          choices: list | None = None) -> str | None:
+    async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
+                                mime: str, level: str = "info",
+                                priority: int | None = None,
+                                choices: list | None = None) -> "str | None":
         """Post a notification with an inline base64-encoded image attachment.
 
         `image_bytes` must be ≤ 50_000 bytes — anything larger raises
@@ -636,8 +671,11 @@ class Emitter:
 
         `choices` is optional. When None this posts a fire-and-forget
         message-kind notification (returns None). When set, this routes to
-        `notify_choice` and blocks until the user picks one (returns the
+        `notify_choice` and awaits until the user picks one (returns the
         chosen value, or `"__cancel__"`).
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_with_image(...))``.
         """
         if priority is None:
             raise TypeError("notify_with_image() requires 'priority' (int, higher = more urgent)")
@@ -659,53 +697,57 @@ class Emitter:
             self.notify(title=title, body=body, level=level,
                         priority=priority, image_inline=image_inline)
             return None
-        return self.notify_choice(title=title, options=choices, body=body,
-                                  level=level, priority=priority,
-                                  image_inline=image_inline)
+        return await self.notify_choice(title=title, options=choices, body=body,
+                                        level=level, priority=priority,
+                                        image_inline=image_inline)
 
     # kind = "input"
-    def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False,
-                     priority: int | None = None) -> str:
-        """Post an input notification and block until the user submits or
+    async def notify_input(self, title: str, prompt: str = "", body: str = "",
+                           level: str = "info", required: bool = False,
+                           priority: int | None = None) -> str:
+        """Post an input notification and await until the user submits or
         cancels. Returns the typed text (possibly empty), or "__cancel__" if
         the user dismissed with Esc (only possible when required=False).
 
         `priority` is required (int, higher = more urgent).
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_input(...))``.
         """
         if priority is None:
             raise TypeError("notify_input() requires 'priority' (int, higher = more urgent)")
-        import uuid
         notify_id = str(uuid.uuid4())
-        q: "queue.Queue[str]" = queue.Queue()
+        q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "input", "input_prompt": prompt, "required": required,
                "priority": int(priority),
                "notify_id": notify_id})
-        return q.get()
+        return await q.get()
 
-    def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None,
-                        priority: int | None = None) -> str:
-        """Post a message notification and block until the user acknowledges
+    async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
+                              actions: list | None = None,
+                              priority: int | None = None) -> str:
+        """Post a message notification and await until the user acknowledges
         or cancels. Returns "acknowledge" on Enter/Space/button, "cancel" on Esc.
 
         For richer interaction, use `notify_choice` or `notify_input`.
         `priority` is required (int, higher = more urgent).
         `actions` is the legacy server-side side-effect list.
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_and_wait(...))``.
         """
         if priority is None:
             raise TypeError("notify_and_wait() requires 'priority' (int, higher = more urgent)")
-        import uuid
         notify_id = str(uuid.uuid4())
-        q: "queue.Queue[str]" = queue.Queue()
+        q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "message", "actions": actions or [],
                "priority": int(priority),
                "notify_id": notify_id})
-        return q.get()
+        return await q.get()
 
     # Terminal commands (legacy back-compat)
     def run_in_terminal(self, command: str) -> None:
@@ -744,23 +786,25 @@ class Emitter:
     # (typically inside `on_init`) and stash the returned pane id. Pass it
     # to every subsequent `run_in_linked_terminal` / `insert_path_token` /
     # `request_command_preview` call.
-    def request_linked_terminal(
+    async def request_linked_terminal(
         self,
         cwd: "str | None" = None,
         label: "str | None" = None,
     ) -> int:
         """Ask the host to open a fresh terminal pane next to this app and
-        return its `terminal_pane_id` (an integer). Blocks until the host
+        return its `terminal_pane_id` (an integer). Awaits until the host
         emits `LinkedTerminalReady`.
 
         Returns 0 if the host denied the request — this happens when the
         manifest doesn't declare `terminal.bindings`. Apps should treat 0
         as a hard error (no terminal to drive). Raises `CapabilityDeniedError`
         in that case so the failure is loud.
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.request_linked_terminal(...))``.
         """
-        import uuid
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[int]" = queue.Queue()
+        q: asyncio.Queue[int] = _make_async_queue()
         self._app._pending_linked_terminal[req_id] = q
         _emit({
             "type": "request_linked_terminal",
@@ -768,7 +812,7 @@ class Emitter:
             "cwd": cwd,
             "label": label,
         })
-        pane_id = q.get()
+        pane_id = await q.get()
         if pane_id == 0:
             raise CapabilityDeniedError(
                 "request_linked_terminal: capability 'terminal.bindings' "
@@ -822,7 +866,7 @@ class Emitter:
             "mode": mode,
         })
 
-    def request_command_preview(
+    async def request_command_preview(
         self,
         terminal_pane_id: int,
         command: str,
@@ -831,13 +875,16 @@ class Emitter:
         terminal. Doesn't execute. Useful for confirmation modals before
         destructive operations.
 
-        Blocking. If the host denies the request, `would_run_in_cwd` is
-        empty string; the SDK does NOT raise — apps that want to be loud
-        should check for empty cwd themselves (the most common failure
-        mode is a missing capability, which the host already logs)."""
-        import uuid
+        If the host denies the request, `would_run_in_cwd` is empty string;
+        the SDK does NOT raise — apps that want to be loud should check for
+        empty cwd themselves (the most common failure mode is a missing
+        capability, which the host already logs).
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.request_command_preview(...))``.
+        """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        q: asyncio.Queue[tuple[str, str]] = _make_async_queue()
         self._app._pending_command_preview[req_id] = q
         _emit({
             "type": "request_command_preview",
@@ -845,7 +892,7 @@ class Emitter:
             "terminal_pane_id": int(terminal_pane_id),
             "command": command,
         })
-        return q.get()
+        return await q.get()
 
     def open_artifact(
         self,
@@ -885,41 +932,58 @@ class Emitter:
                "payload": payload or {}})
         return run_id
 
-    # Blocking helpers — waits for host response on the stdin reader thread
-    def capability_request(self, capability: str) -> bool:
-        """Block until host grants or denies the capability. Returns True if granted."""
-        import uuid
+    # ── Async blocking helpers ────────────────────────────────────────────────
+    # Each of these is a coroutine — await them from async hooks, or call
+    # self.emit.run_sync(self.emit.method(...)) from a background thread.
+
+    async def capability_request(self, capability: str) -> bool:
+        """Await until host grants or denies the capability. Returns True if granted.
+
+        Await from async hooks. From background threads:
+        ``self.emit.run_sync(self.emit.capability_request(capability))``.
+        """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[bool]" = queue.Queue()
+        q: asyncio.Queue[bool] = _make_async_queue()
         self._app._pending_capability[req_id] = q
         _emit({"type": "capability_request", "request_id": req_id,
                "capability": capability})
-        return q.get()
+        return await q.get()
 
-    def secret_get(self, key: str) -> str | None:
-        """Block until host returns the secret value (or None if denied)."""
-        q: "queue.Queue[str | None]" = queue.Queue()
+    async def secret_get(self, key: str) -> "str | None":
+        """Await until host returns the secret value (or None if denied).
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.secret_get(key))``.
+        """
+        q: asyncio.Queue[str | None] = _make_async_queue()
         self._app._pending_secret[key] = q
         _emit({"type": "secret_get", "key": key})
-        return q.get()
+        return await q.get()
 
-    def get_secret(self, key: str) -> str | None:
+    async def get_secret(self, key: str) -> "str | None":
         """Alias for secret_get(). Preferred name going forward."""
-        return self.secret_get(key)
+        return await self.secret_get(key)
 
-    def http_get(self, url: str) -> str:
-        """Blocking HTTP GET brokered through the host. Requires net.http capability.
-        Call from any thread (background threads included). Raises RuntimeError on failure."""
-        return self.http_request(url)
+    async def http_get(self, url: str) -> str:
+        """HTTP GET brokered through the host. Requires net.http capability.
+        Raises RuntimeError on failure.
 
-    def http_request(self, url: str, method: str = "GET",
-                     headers: "dict[str, str] | None" = None,
-                     body: "str | None" = None) -> str:
-        """Blocking HTTP request brokered through the host. Requires net.http capability.
-        Supports custom method, headers, and body. Raises RuntimeError on failure."""
-        import uuid
+        From background threads:
+        ``self.emit.run_sync(self.emit.http_get(url))``.
+        """
+        return await self.http_request(url)
+
+    async def http_request(self, url: str, method: str = "GET",
+                           headers: "dict[str, str] | None" = None,
+                           body: "str | None" = None) -> str:
+        """HTTP request brokered through the host. Requires net.http capability.
+        Supports custom method, headers, and body. Raises RuntimeError on failure.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.http_request(...))``.
+        """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        q: asyncio.Queue[tuple[str, str]] = _make_async_queue()
         self._app._pending_http[req_id] = q
         payload: dict = {"type": "http_request", "request_id": req_id,
                          "method": method, "url": url}
@@ -928,33 +992,37 @@ class Emitter:
         if body is not None:
             payload["body"] = body
         _emit(payload)
-        status, value = q.get()
+        status, value = await q.get()
         if status == "error":
             raise RuntimeError(f"http_request {url!r}: {value}")
         return value
 
-    def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
-            system: str | None = None) -> str:
-        """Blocking LLM call brokered through the host. Requires llm capability.
+    async def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
+                  system: str | None = None) -> str:
+        """LLM call brokered through the host. Requires llm capability.
         Uses ANTHROPIC_API_KEY from the Plexi secrets store.
-        Returns the text response. Raises RuntimeError on failure."""
+        Returns the text response. Raises RuntimeError on failure.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.llm(prompt, model=model))``.
+        """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        q: asyncio.Queue[tuple[str, str]] = _make_async_queue()
         self._app._pending_llm[req_id] = q
         payload: dict = {"type": "llm_request", "request_id": req_id,
                          "prompt": prompt, "model": model}
         if system is not None:
             payload["system"] = system
         _emit(payload)
-        status, value = q.get()
+        status, value = await q.get()
         if status == "error":
             raise RuntimeError(f"llm call failed: {value}")
         return value
 
-    def iq_query(self, model_tier: str, system: str,
-                 messages: "list[dict]",
-                 tools: "list[dict] | None" = None) -> IqResponse:
-        """Blocking call into the host's Plexi IQ broker (#284). Requires the
+    async def iq_query(self, model_tier: str, system: str,
+                       messages: "list[dict]",
+                       tools: "list[dict] | None" = None) -> IqResponse:
+        """Call into the host's Plexi IQ broker (#284). Requires the
         `iq.query` capability declared in `manifest.toml`.
 
         Args:
@@ -972,13 +1040,16 @@ class Emitter:
             CapabilityDeniedError: app didn't declare `iq.query` in its manifest
                 (or the host returned any other "capability denied" error).
             RuntimeError: backend failed (e.g. missing API key, network error).
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.iq_query(...))``.
         """
         if model_tier not in ("low", "medium", "high"):
             raise ValueError(
                 f"iq_query: model_tier must be one of low|medium|high, got {model_tier!r}"
             )
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[dict]" = queue.Queue()
+        q: asyncio.Queue[dict] = _make_async_queue()
         self._app._pending_iq[req_id] = q
         payload: dict = {
             "type": "iq_query",
@@ -989,7 +1060,7 @@ class Emitter:
             "tools": tools or [],
         }
         _emit(payload)
-        ev = q.get()
+        ev = await q.get()
         error = ev.get("error")
         if error is not None:
             if "capability denied" in error:
@@ -1001,8 +1072,8 @@ class Emitter:
             tokens_out=int(ev.get("tokens_out", 0) or 0),
         )
 
-    def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
-        """Blocking enumeration of CoreMIDI input + output ports (#320).
+    async def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
+        """Enumerate CoreMIDI input + output ports (#320).
         No capability gate — port names are publicly visible in Audio MIDI
         Setup. Requires `midi.in` / `midi.out` only on subsequent open/send.
 
@@ -1010,14 +1081,17 @@ class Emitter:
         MidiPortInfo (id, name, default).
 
         Raises RuntimeError on host enumeration failure or timeout.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.list_midi_devices())``.
         """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[dict]" = queue.Queue()
+        q: asyncio.Queue[dict] = _make_async_queue()
         self._app._pending_midi_devices[req_id] = q
         _emit({"type": "list_midi_devices", "request_id": req_id})
         try:
-            ev = q.get(timeout=timeout)
-        except queue.Empty:
+            ev = await asyncio.wait_for(q.get(), timeout=timeout)
+        except asyncio.TimeoutError:
             self._app._pending_midi_devices.pop(req_id, None)
             raise RuntimeError(
                 f"list_midi_devices timed out after {timeout}s — host did not respond"
@@ -1095,7 +1169,7 @@ class Emitter:
         # 0..=255 and rejects empty arrays.
         _emit({"type": "send_midi", "port_id": port_id, "bytes": data})
 
-    def open_video(
+    async def open_video(
         self,
         source: str,
         pipe_id: str,
@@ -1119,6 +1193,9 @@ class Emitter:
         Raises CapabilityDeniedError if `video.playback` is not declared.
         Raises RuntimeError on any other failure (NotImplemented, bad
         source, decoder error, timeout).
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.open_video(source, pipe_id))``.
         """
         # Open the binary pipe FIRST so the App's `_pipes` registry has it
         # before PipeOpened arrives. The host emits PipeOpened, then
@@ -1127,7 +1204,7 @@ class Emitter:
         self._app._pipes[pipe_id] = pipe
 
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[dict]" = queue.Queue()
+        q: asyncio.Queue[dict] = _make_async_queue()
         self._app._pending_video_open[req_id] = q
         _emit({
             "type": "open_video",
@@ -1136,8 +1213,8 @@ class Emitter:
             "pipe_id": pipe_id,
         })
         try:
-            ev = q.get(timeout=timeout)
-        except queue.Empty:
+            ev = await asyncio.wait_for(q.get(), timeout=timeout)
+        except asyncio.TimeoutError:
             self._app._pending_video_open.pop(req_id, None)
             raise RuntimeError(
                 f"open_video timed out after {timeout}s — host did not respond"
@@ -1268,8 +1345,8 @@ class Emitter:
         """
         _emit({"type": "pipe_send", "pipe_id": pipe_id, "payload": payload})
 
-    def agent_roster(self) -> "list[AgentInfo]":
-        """Blocking query for live agent panes in the workspace (#286).
+    async def agent_roster(self) -> "list[AgentInfo]":
+        """Query for live agent panes in the workspace (#286).
 
         Returns a list of `AgentInfo` rows sorted by `pane_id` ascending.
         Each row carries `pane_id`, `app_id`, and `name`. Pass the
@@ -1279,12 +1356,15 @@ class Emitter:
         Capability: `agents.list`. Apps without it receive an EMPTY
         list (NOT an error) — the host returns an empty roster on the
         wire so the caller can't probe the workspace via this surface.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.agent_roster())``.
         """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[list[dict]]" = queue.Queue()
+        q: asyncio.Queue[list[dict]] = _make_async_queue()
         self._app._pending_agent_roster[req_id] = q
         _emit({"type": "agent_roster_get", "request_id": req_id})
-        rows = q.get()
+        rows = await q.get()
         return [
             AgentInfo(
                 pane_id=int(r.get("pane_id", 0)),
@@ -1527,42 +1607,25 @@ class RenderContext:
                "max_width": max_width, "pairs": wire_pairs,
                "font_size": font_size})
 
-    def measure_text(self, text: str, font_size: float,
-                     monospace: bool = False) -> "tuple[float, float]":
+    async def measure_text(self, text: str, font_size: float,
+                           monospace: bool = False) -> "tuple[float, float]":
         """Measure `text` at `font_size` using the host's real font metrics.
 
-        Sends a `MeasureText` DrawCommand and blocks until the host responds
-        with `TextMeasured`. Returns `(width, height)` in logical pixels.
+        Sends a `MeasureText` DrawCommand and awaits `TextMeasured` from the
+        host. Returns `(width, height)` in logical pixels.
 
         Use this only when layout depends on measured text width (e.g. flowing
         multiple badges horizontally). Avoid on hot render paths — prefer
         passing `max_width` on `ctx.text()` for simple truncation.
+
+        Must be called with ``await`` from an async hook.
         """
-        import uuid
         request_id = str(uuid.uuid4())
+        q: asyncio.Queue[tuple[float, float]] = _make_async_queue()
+        self._app._pending_measure_text[request_id] = q
         _emit({"type": "measure_text", "request_id": request_id,
                "text": text, "font_size": font_size, "monospace": monospace})
-        # Block until the matching TextMeasured response arrives on stdin.
-        # The App event loop reads from stdin; we need to read directly here
-        # because we're inside a frame callback. Use the shared stdin lock.
-        import sys as _sys
-        for line in _sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                import json as _json
-                event = _json.loads(line)
-            except Exception:
-                continue
-            if (event.get("type") == "text_measured"
-                    and event.get("request_id") == request_id):
-                return float(event.get("width", 0.0)), float(event.get("height", 0.0))
-            # Stash any non-matching events so the main loop sees them.
-            # NOTE: This is a best-effort flush for the common case (no other
-            # events expected mid-frame). A full async approach would require
-            # a separate thread; apps that need that should use DrawCommand::MeasureText
-            # with an explicit NotifyAction-style async pattern instead.
+        return await q.get()
 
     def push_clip(self, x: float, y: float, w: float, h: float) -> None:
         """Push a clip rect onto the host's clip stack.
@@ -1665,51 +1728,51 @@ class RenderContext:
                          priority=priority, actions=actions,
                          image_inline=image_inline, image_pipe_id=image_pipe_id)
 
-    def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False,
-                      priority: int | None = None,
-                      image_inline: dict | None = None,
-                      image_pipe_id: str | None = None) -> str:
-        """Post a choice notification and block until the user picks.
+    async def notify_choice(self, title: str, options: list, body: str = "",
+                            level: str = "info", required: bool = False,
+                            priority: int | None = None,
+                            image_inline: dict | None = None,
+                            image_pipe_id: str | None = None) -> str:
+        """Post a choice notification and await until the user picks.
         `priority` is required (int, higher = more urgent).
         `image_inline` / `image_pipe_id` (#74) optionally attach an image.
         Returns the chosen option's value (or label if no value set),
-        or "__cancel__" if the user dismissed."""
-        return self.emit.notify_choice(title=title, options=options, body=body,
-                                       level=level, required=required,
-                                       priority=priority,
-                                       image_inline=image_inline,
-                                       image_pipe_id=image_pipe_id)
+        or "__cancel__" if the user dismissed. Use with ``await``."""
+        return await self.emit.notify_choice(title=title, options=options, body=body,
+                                             level=level, required=required,
+                                             priority=priority,
+                                             image_inline=image_inline,
+                                             image_pipe_id=image_pipe_id)
 
-    def notify_with_image(self, title: str, body: str, image_bytes: bytes,
-                          mime: str, level: str = "info",
-                          priority: int | None = None,
-                          choices: list | None = None) -> "str | None":
+    async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
+                                mime: str, level: str = "info",
+                                priority: int | None = None,
+                                choices: list | None = None) -> "str | None":
         """Convenience: post a notification with an inline base64 image.
-        See Emitter.notify_with_image — handles base64 + 50KB cap."""
-        return self.emit.notify_with_image(title=title, body=body,
-                                           image_bytes=image_bytes, mime=mime,
-                                           level=level, priority=priority,
-                                           choices=choices)
+        See Emitter.notify_with_image — handles base64 + 50KB cap. Use with ``await``."""
+        return await self.emit.notify_with_image(title=title, body=body,
+                                                 image_bytes=image_bytes, mime=mime,
+                                                 level=level, priority=priority,
+                                                 choices=choices)
 
-    def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False,
-                     priority: int | None = None) -> str:
-        """Post an input notification and block until the user submits.
+    async def notify_input(self, title: str, prompt: str = "", body: str = "",
+                           level: str = "info", required: bool = False,
+                           priority: int | None = None) -> str:
+        """Post an input notification and await until the user submits.
         `priority` is required (int, higher = more urgent).
-        Returns the typed text, or "__cancel__" if dismissed."""
-        return self.emit.notify_input(title=title, prompt=prompt, body=body,
-                                      level=level, required=required,
-                                      priority=priority)
+        Returns the typed text, or "__cancel__" if dismissed. Use with ``await``."""
+        return await self.emit.notify_input(title=title, prompt=prompt, body=body,
+                                            level=level, required=required,
+                                            priority=priority)
 
-    def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None,
-                        priority: int | None = None) -> str:
-        """Post a message notification and block for acknowledge/cancel.
+    async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
+                              actions: list | None = None,
+                              priority: int | None = None) -> str:
+        """Post a message notification and await for acknowledge/cancel.
         `priority` is required (int, higher = more urgent).
-        See Emitter.notify_and_wait."""
-        return self.emit.notify_and_wait(title=title, body=body, level=level,
-                                         actions=actions, priority=priority)
+        See Emitter.notify_and_wait. Use with ``await``."""
+        return await self.emit.notify_and_wait(title=title, body=body, level=level,
+                                               actions=actions, priority=priority)
 
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
@@ -1720,21 +1783,20 @@ class RenderContext:
     def cancel_timer(self, timer_id: str) -> None:
         self.emit.cancel_timer(timer_id)
 
-    def get_secret(self, key: str) -> str | None:
-        """Request a secret by key. Alias for emit.get_secret(). Blocking."""
-        return self.emit.get_secret(key)
+    async def get_secret(self, key: str) -> "str | None":
+        """Request a secret by key. Alias for emit.get_secret(). Use with ``await``."""
+        return await self.emit.get_secret(key)
 
-    def http_request(self, url: str, method: str = "GET",
-                     headers: "dict[str, str] | None" = None,
-                     body: "str | None" = None) -> str:
-        """Blocking HTTP request with optional method, headers, body. Requires net.http capability."""
-        return self.emit.http_request(url, method=method, headers=headers, body=body)
+    async def http_request(self, url: str, method: str = "GET",
+                           headers: "dict[str, str] | None" = None,
+                           body: "str | None" = None) -> str:
+        """HTTP request brokered through the host. Requires net.http capability. Use with ``await``."""
+        return await self.emit.http_request(url, method=method, headers=headers, body=body)
 
-    def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
-            system: str | None = None) -> str:
-        """Blocking LLM call brokered through the host. Requires llm capability.
-        Uses ANTHROPIC_API_KEY from the Plexi secrets store."""
-        return self.emit.llm(prompt=prompt, model=model, system=system)
+    async def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
+                  system: str | None = None) -> str:
+        """LLM call brokered through the host. Requires llm capability. Use with ``await``."""
+        return await self.emit.llm(prompt=prompt, model=model, system=system)
 
     def frame_done(self) -> None:
         _emit({"type": "frame_done", "frame_id": self.frame_id})
@@ -1766,34 +1828,41 @@ class App:
         self.capabilities: list[str] = []
         self.feature_flags: list[str] = []
         self._rect: dict = {"x": 0.0, "y": 0.0, "w": 800.0, "h": 600.0}
-        self._pending_capability: dict[str, queue.Queue] = {}
-        self._pending_secret: dict[str, queue.Queue] = {}
-        self._pending_http: dict[str, queue.Queue] = {}
-        self._pending_llm: dict[str, queue.Queue] = {}
-        # v3.3 iq.query broker (#284): blocks on PlexiEvent::IqResponse keyed
+        # The running asyncio event loop. Set by run() before hooks are called.
+        # Background threads use this via emit.run_sync() to schedule coroutines.
+        self._loop: "asyncio.AbstractEventLoop | None" = None
+        # All pending-response maps now hold asyncio.Queue so the event loop
+        # coroutine can await them without blocking the stdin reader.
+        self._pending_capability: "dict[str, asyncio.Queue]" = {}
+        self._pending_secret: "dict[str, asyncio.Queue]" = {}
+        self._pending_http: "dict[str, asyncio.Queue]" = {}
+        self._pending_llm: "dict[str, asyncio.Queue]" = {}
+        # v3.3 iq.query broker (#284): awaits PlexiEvent::IqResponse keyed
         # on request_id. Each entry is consumed by a single iq_query() call.
-        self._pending_iq: dict[str, queue.Queue] = {}
-        # v3.4 CoreMIDI (#320): blocks on PlexiEvent::MidiDevicesListed keyed
+        self._pending_iq: "dict[str, asyncio.Queue]" = {}
+        # v3.4 CoreMIDI (#320): awaits PlexiEvent::MidiDevicesListed keyed
         # on request_id. Each entry is consumed by a single list_midi_devices().
-        self._pending_midi_devices: dict[str, queue.Queue] = {}
-        # v3.4 video substrate (#345): blocks on PlexiEvent::VideoOpenAck /
+        self._pending_midi_devices: "dict[str, asyncio.Queue]" = {}
+        # v3.4 video substrate (#345): awaits PlexiEvent::VideoOpenAck /
         # VideoOpenError keyed on request_id. Each entry is consumed by a
         # single open_video() call.
-        self._pending_video_open: dict[str, queue.Queue] = {}
-        # v3.3 P2 agents.list (#286): blocks on PlexiEvent::AgentRoster keyed
+        self._pending_video_open: "dict[str, asyncio.Queue]" = {}
+        # v3.3 P2 agents.list (#286): awaits PlexiEvent::AgentRoster keyed
         # on request_id. Each entry is consumed by a single agent_roster() call.
-        self._pending_agent_roster: dict[str, queue.Queue] = {}
-        self._pending_notify: dict[str, queue.Queue] = {}
+        self._pending_agent_roster: "dict[str, asyncio.Queue]" = {}
+        self._pending_notify: "dict[str, asyncio.Queue]" = {}
         # v3.5 Canvas Terminal Binding Primitives (#78). Two response shapes:
         # `linked_terminal_ready` carries an int pane_id; `command_preview`
-        # carries (command, would_run_in_cwd). Each blocking helper drains
+        # carries (command, would_run_in_cwd). Each async helper awaits
         # its own keyed queue.
-        self._pending_linked_terminal: dict[str, queue.Queue] = {}
-        self._pending_command_preview: dict[str, queue.Queue] = {}
+        self._pending_linked_terminal: "dict[str, asyncio.Queue]" = {}
+        self._pending_command_preview: "dict[str, asyncio.Queue]" = {}
+        # RenderContext.measure_text: awaits PlexiEvent::TextMeasured keyed on request_id.
+        self._pending_measure_text: "dict[str, asyncio.Queue]" = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
         # Pending text-input submissions keyed on TextInput `id`. The
-        # event-loop thread fills this when `PlexiEvent::TextSubmitted`
+        # event-loop coroutine fills this when `PlexiEvent::TextSubmitted`
         # arrives; `RenderContext.text_input` drains it during render.
         # One pending value per id — a second submit before the app
         # consumes the first overwrites (apps poll every frame, so
@@ -1854,10 +1923,24 @@ class App:
         )
 
     def run(self) -> None:
-        """Start the PGAP v3 event loop. Blocks until Shutdown."""
+        """Start the PGAP v3 asyncio event loop. Blocks until Shutdown."""
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        asyncio.run(self._async_main())
 
-        for raw in sys.stdin:
+    async def _async_main(self) -> None:
+        """Asyncio entry point. Reads stdin line-by-line in an executor so the
+        event loop stays free to process await-able blocking helpers while
+        waiting for the next host event."""
+        self._loop = asyncio.get_running_loop()
+
+        while True:
+            # readline() blocks; run it in the default thread-pool executor so
+            # the event loop can service other coroutines (blocking helpers)
+            # while waiting for the next line from the host.
+            raw = await self._loop.run_in_executor(None, sys.stdin.readline)
+            if not raw:
+                # EOF — host closed stdin; treat as shutdown
+                break
             raw = raw.strip()
             if not raw:
                 continue
@@ -1883,7 +1966,7 @@ class App:
                 features_used = [f for f in self.feature_flags
                                   if f in ("pane_groups_v1",)]
                 _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
-                self.on_init(self._make_ctx())
+                await self._dispatch_hook(self.on_init, self._make_ctx())
 
             elif t == "render":
                 import time as _time
@@ -1899,45 +1982,45 @@ class App:
                                   "w": ev["width"], "h": ev["height"]}
                 ctx = self._make_ctx(frame_id, elapsed=elapsed)
                 try:
-                    self.on_render(ctx)
+                    await self._dispatch_hook(self.on_render, ctx)
                 except Exception as e:
                     ctx.error(f"on_render exception: {e}")
                 ctx.frame_done()
 
             elif t == "key":
                 ctx = self._make_ctx()
-                self.on_key(ctx, ev.get("key", ""), ev.get("modifiers", {}))
+                await self._dispatch_hook(self.on_key, ctx, ev.get("key", ""), ev.get("modifiers", {}))
 
             elif t == "click":
                 ctx = self._make_ctx()
-                self.on_click(ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                              ev.get("button", "primary"))
+                await self._dispatch_hook(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                          ev.get("button", "primary"))
 
             elif t == "command":
                 ctx = self._make_ctx()
-                self.on_command(ctx, ev.get("text", ""))
+                await self._dispatch_hook(self.on_command, ctx, ev.get("text", ""))
 
             elif t == "paste":
                 ctx = self._make_ctx()
-                self.on_paste(ctx, ev.get("text", ""))
+                await self._dispatch_hook(self.on_paste, ctx, ev.get("text", ""))
 
             elif t == "capability_decision":
                 req_id = ev.get("request_id", "")
                 granted = ev.get("granted", False)
                 q = self._pending_capability.pop(req_id, None)
                 if q:
-                    q.put(granted)
+                    q.put_nowait(granted)
 
             elif t == "secret_value":
                 key = ev.get("key", "")
                 value = ev.get("value")
                 q = self._pending_secret.pop(key, None)
                 if q:
-                    q.put(value)
+                    q.put_nowait(value)
 
             elif t == "pipe_message":
                 ctx = self._make_ctx()
-                self.on_pipe_message(ctx, ev.get("pipe_id", ""), ev.get("payload"))
+                await self._dispatch_hook(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
 
             elif t == "pipe_opened":
                 pipe_id = ev.get("pipe_id", "")
@@ -1954,39 +2037,39 @@ class App:
 
             elif t == "path_changed":
                 ctx = self._make_ctx()
-                self.on_path_changed(ctx, ev.get("cwd", ""))
+                await self._dispatch_hook(self.on_path_changed, ctx, ev.get("cwd", ""))
 
             elif t == "suspend":
-                self.on_suspend()
+                await self._dispatch_hook(self.on_suspend)
 
             elif t == "resume":
-                self.on_resume()
+                await self._dispatch_hook(self.on_resume)
 
             elif t == "shutdown":
-                self.on_shutdown()
+                await self._dispatch_hook(self.on_shutdown)
                 break
 
             elif t == "inject_state":
                 ctx = self._make_ctx()
-                self.on_inject(ctx, ev.get("payload", {}))
+                await self._dispatch_hook(self.on_inject, ctx, ev.get("payload", {}))
 
             elif t == "http_response":
                 req_id = ev.get("request_id", "")
                 q = self._pending_http.pop(req_id, None)
                 if q:
                     if ev.get("error"):
-                        q.put(("error", ev["error"]))
+                        q.put_nowait(("error", ev["error"]))
                     else:
-                        q.put(("ok", ev.get("body", "")))
+                        q.put_nowait(("ok", ev.get("body", "")))
 
             elif t == "llm_response":
                 req_id = ev.get("request_id", "")
                 q = self._pending_llm.pop(req_id, None)
                 if q:
                     if ev.get("error"):
-                        q.put(("error", ev["error"]))
+                        q.put_nowait(("error", ev["error"]))
                     else:
-                        q.put(("ok", ev.get("content", "")))
+                        q.put_nowait(("ok", ev.get("content", "")))
 
             elif t == "iq_response":
                 # v3.3 iq.query broker (#284). Hand the whole event dict to
@@ -1995,14 +2078,14 @@ class App:
                 req_id = ev.get("request_id", "")
                 q = self._pending_iq.pop(req_id, None)
                 if q:
-                    q.put(ev)
+                    q.put_nowait(ev)
 
             elif t == "midi_devices_listed":
                 # v3.4 CoreMIDI (#320). Forward to Emitter.list_midi_devices.
                 req_id = ev.get("request_id", "")
                 q = self._pending_midi_devices.pop(req_id, None)
                 if q:
-                    q.put(ev)
+                    q.put_nowait(ev)
 
             elif t == "midi_input_opened":
                 # Confirms an OpenMidiInput call landed a CoreMIDI source.
@@ -2010,7 +2093,8 @@ class App:
                 # see this event after the corresponding PipeOpened — they
                 # can override on_midi_input_opened to react.
                 try:
-                    self.on_midi_input_opened(
+                    await self._dispatch_hook(
+                        self.on_midi_input_opened,
                         str(ev.get("pipe_id", "")),
                         str(ev.get("port_id", "")),
                         str(ev.get("port_name", "")),
@@ -2041,7 +2125,7 @@ class App:
                 req_id = str(ev.get("request_id", ""))
                 q = self._pending_video_open.pop(req_id, None)
                 if q:
-                    q.put(ev)
+                    q.put_nowait(ev)
 
             elif t == "video_open_error":
                 # OpenVideo failed (capability denied, NotImplemented from the
@@ -2050,24 +2134,24 @@ class App:
                 req_id = str(ev.get("request_id", ""))
                 q = self._pending_video_open.pop(req_id, None)
                 if q:
-                    q.put(ev)
+                    q.put_nowait(ev)
 
             elif t == "linked_terminal_ready":
                 # v3.5 #78. Forward the terminal_pane_id (int) to the
-                # blocking helper. 0 = capability denied — the helper
+                # awaiting helper. 0 = capability denied — the helper
                 # raises CapabilityDeniedError when it sees that.
                 req_id = ev.get("request_id", "")
                 q = self._pending_linked_terminal.pop(req_id, None)
                 if q:
-                    q.put(int(ev.get("terminal_pane_id", 0)))
+                    q.put_nowait(int(ev.get("terminal_pane_id", 0)))
 
             elif t == "command_preview":
                 # v3.5 #78. Forward (command, would_run_in_cwd) tuple to the
-                # blocking helper. would_run_in_cwd is "" on capability denial.
+                # awaiting helper. would_run_in_cwd is "" on capability denial.
                 req_id = ev.get("request_id", "")
                 q = self._pending_command_preview.pop(req_id, None)
                 if q:
-                    q.put((
+                    q.put_nowait((
                         str(ev.get("command", "")),
                         str(ev.get("would_run_in_cwd", "")),
                     ))
@@ -2081,7 +2165,7 @@ class App:
                 req_id = ev.get("request_id", "")
                 q = self._pending_agent_roster.pop(req_id, None)
                 if q:
-                    q.put(ev.get("agents", []) or [])
+                    q.put_nowait(ev.get("agents", []) or [])
 
             elif t == "notify_action":
                 # notify_choice / notify_input: put the value back.
@@ -2093,11 +2177,11 @@ class App:
                 q = self._pending_notify.pop(notify_id, None)
                 if q:
                     if action_label == "cancel":
-                        q.put("__cancel__")
+                        q.put_nowait("__cancel__")
                     elif value is not None:
-                        q.put(value)
+                        q.put_nowait(value)
                     else:
-                        q.put(action_label or "acknowledge")
+                        q.put_nowait(action_label or "acknowledge")
 
             elif t == "agent_init":
                 # v3.3 agent-as-app (#338): the host forwards the manifest's
@@ -2105,7 +2189,7 @@ class App:
                 # `Agent` consume this in `_on_agent_init`; plain App
                 # subclasses can override `on_agent_init` to receive it.
                 try:
-                    self.on_agent_init(ev.get("system_prompt"))
+                    await self._dispatch_hook(self.on_agent_init, ev.get("system_prompt"))
                 except Exception as e:
                     sys.stderr.write(f"on_agent_init handler raised: {e}\n")
 
@@ -2115,7 +2199,7 @@ class App:
                 # `on_user_message`. Only delivered to type=agent panes.
                 ctx = self._make_ctx()
                 try:
-                    self.on_user_message(ctx, ev.get("text", ""))
+                    await self._dispatch_hook(self.on_user_message, ctx, ev.get("text", ""))
                 except Exception as e:
                     sys.stderr.write(f"on_user_message handler raised: {e}\n")
 
@@ -2131,7 +2215,18 @@ class App:
             elif t == "timer":
                 timer_id = ev.get("timer_id", "")
                 ctx = self._make_ctx()
-                self.on_timer(ctx, timer_id)
+                await self._dispatch_hook(self.on_timer, ctx, timer_id)
+
+            elif t == "text_measured":
+                # Response to RenderContext.measure_text(). Forward (width, height)
+                # to the awaiting coroutine keyed on request_id.
+                req_id = ev.get("request_id", "")
+                q = self._pending_measure_text.pop(req_id, None)
+                if q:
+                    q.put_nowait((
+                        float(ev.get("width", 0.0)),
+                        float(ev.get("height", 0.0)),
+                    ))
 
             elif t in ("run_update",):
                 pass  # apps can override on_run_update if needed
@@ -2140,7 +2235,8 @@ class App:
                 # Confirmation that a SpawnApp request succeeded. Apps that
                 # want to track the spawned pane can override on_app_spawned.
                 try:
-                    self.on_app_spawned(
+                    await self._dispatch_hook(
+                        self.on_app_spawned,
                         int(ev.get("pane_id", 0)),
                         str(ev.get("type_id", "")),
                     )
@@ -2150,6 +2246,22 @@ class App:
         # Ensure all pipes are closed cleanly
         for p in self._pipes.values():
             p.close()
+
+    async def _dispatch_hook(self, hook: "Any", *args: Any) -> None:
+        """Dispatch a lifecycle hook — async or sync — in the event loop.
+
+        Async hooks are awaited directly, giving them access to blocking
+        helpers via ``await self.emit.method()``.
+
+        Sync hooks are called directly on the event loop thread. They are
+        safe for pure-compute / draw-command hooks (the common case). If a
+        sync hook needs to call a blocking Emitter helper, it must do so
+        from a background thread via ``threading.Thread`` + ``emit.run_sync()``.
+        """
+        if inspect.iscoroutinefunction(hook):
+            await hook(*args)
+        else:
+            hook(*args)
 
 
 # ── Agent base class (issue #338) ────────────────────────────────────────────
@@ -2203,12 +2315,15 @@ class Agent(App):
             f"agent: AgentInit received (system_prompt={'set' if system_prompt else 'unset'})"
         )
 
-    def on_user_message(self, ctx: "RenderContext", text: str) -> None:  # type: ignore[override]
+    async def on_user_message(self, ctx: "RenderContext", text: str) -> None:  # type: ignore[override]
         # Append the user turn before invoking the override so `self.history`
         # already contains it when the override calls `emit.iq_query`.
         self.append_user_message(text)
         try:
-            reply = self.respond(text)
+            if inspect.iscoroutinefunction(self.respond):
+                reply = await self.respond(text)  # type: ignore[misc]
+            else:
+                reply = self.respond(text)
         except Exception as e:
             self.emit.error(f"agent: respond() raised: {e}")
             self.append_system_message(f"Error: {e}")
@@ -2223,9 +2338,10 @@ class Agent(App):
     def respond(self, _text: str) -> "str | None":
         """Override this. Called once per `user_message` event.
 
-        Return a string to auto-append as the assistant turn. Return `None`
-        if you've already called `append_assistant_message` (or other
-        `append_*` helpers) yourself — useful for tool-use loops.
+        May be a regular ``def`` or ``async def``. Return a string to
+        auto-append as the assistant turn. Return ``None`` if you've already
+        called ``append_assistant_message`` (or other ``append_*`` helpers)
+        yourself — useful for tool-use loops.
         """
         raise NotImplementedError(
             "Agent subclasses must override `respond(text) -> str | None`"
@@ -2253,16 +2369,16 @@ class Agent(App):
         _emit({"type": "append_conversation", "role": "system", "content": text})
 
     # ── Inter-agent helpers (#286) ──────────────────────────────────────────
-    def list_agents(self) -> "list[AgentInfo]":
-        """Blocking helper — returns the workspace's live agent roster.
+    async def list_agents(self) -> "list[AgentInfo]":
+        """Return the workspace's live agent roster. Use with ``await``.
 
-        Thin wrapper around `self.emit.agent_roster()`. Apps without the
-        `agents.list` capability receive an EMPTY list (not an error).
+        Thin wrapper around ``await self.emit.agent_roster()``. Apps without
+        the `agents.list` capability receive an EMPTY list (not an error).
 
         Pass an entry's `pane_id` to `open_pipe_to(pane_id, ...)` to start
         an inter-agent channel.
         """
-        return self.emit.agent_roster()
+        return await self.emit.agent_roster()
 
     def open_pipe_to(self, pane_id: int, pipe_id: "str | None" = None) -> Pipe:
         """Open a duplex JSON pipe to another agent pane (#286).
