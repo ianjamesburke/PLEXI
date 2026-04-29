@@ -32,7 +32,7 @@ class IqQueryDeniedTestApp(App):
         #   ("denied", str)  — got CapabilityDeniedError (the happy path here)
         #   ("ok", str)      — unexpected; the gate should have blocked us
         #   ("err", str)     — some other error
-        self._state: object = None
+        self._state: "str | tuple[str, str] | None" = None
         ctx.status_summary("IQ Query Denied — press `s` to verify the gate")
         self.emit.info("IQ Query Denied Test started")
 

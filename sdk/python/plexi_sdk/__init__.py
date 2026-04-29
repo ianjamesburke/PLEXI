@@ -1563,6 +1563,10 @@ class RenderContext:
             # events expected mid-frame). A full async approach would require
             # a separate thread; apps that need that should use DrawCommand::MeasureText
             # with an explicit NotifyAction-style async pattern instead.
+        # stdin closed without a matching TextMeasured response.
+        raise RuntimeError(
+            f"measure_text: host closed stdin before responding to request_id={request_id!r}"
+        )
 
     def push_clip(self, x: float, y: float, w: float, h: float) -> None:
         """Push a clip rect onto the host's clip stack.

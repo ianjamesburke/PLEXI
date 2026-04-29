@@ -120,8 +120,7 @@ class IqQueryTestApp(App):
         ])
 
     def on_render(self, ctx: RenderContext) -> None:
-        rect = ctx.rect
-        ox, oy, ow, _oh = rect["x"], rect["y"], rect["w"], rect["h"]
+        ox, oy, ow = ctx.x, ctx.y, ctx.w
 
         # Single-line text input, host-owned buffer. Submit (Enter) sends to
         # Low tier by default — buttons l/m/h pick a specific tier explicitly.

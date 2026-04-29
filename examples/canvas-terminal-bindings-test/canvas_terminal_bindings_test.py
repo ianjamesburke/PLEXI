@@ -142,7 +142,7 @@ class CanvasTerminalBindingsTestApp(App):
             self._open_desktop()
         elif key == "5":
             self._reveal_home()
-        ctx.schedule_render(after_ms=16)
+        self.emit.schedule_render(after_ms=16)
 
     def on_click(
         self,
@@ -165,7 +165,7 @@ class CanvasTerminalBindingsTestApp(App):
                 self._reveal_home,
             ]
             handlers[idx]()
-        ctx.schedule_render(after_ms=16)
+        self.emit.schedule_render(after_ms=16)
 
     # ── Primitive dispatchers ──────────────────────────────────────────
 
