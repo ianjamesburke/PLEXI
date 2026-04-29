@@ -68,7 +68,7 @@ MAX_LOG_LINES = 200
 
 
 class VideoPlayerApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         self._handle: VideoHandle | None = None
         self._frames_seen: int = 0
         self._last_frame_bytes: int = 0
@@ -95,7 +95,7 @@ class VideoPlayerApp(App):
         else:
             self.emit.info("PLEXI_VIDEO_PATH not set - mock://gradient only. Set it to drive AVFoundation.")
         try:
-            self._terminal_pane_id = self.emit.request_linked_terminal(
+            self._terminal_pane_id = await self.emit.request_linked_terminal(
                 cwd=None,
                 label="video bridge",
             )
@@ -137,7 +137,7 @@ class VideoPlayerApp(App):
 
         def runner() -> None:
             try:
-                handle = self.emit.open_video(source=self._source, pipe_id=PIPE_ID)
+                handle = self.emit.run_sync(self.emit.open_video(source=self._source, pipe_id=PIPE_ID))
                 self._handle = handle
                 self._state = "play"
                 self._position_ms = 0

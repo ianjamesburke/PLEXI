@@ -59,7 +59,7 @@ def _path_from_argv() -> str:
 
 
 class AudioPlayerApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         self._path: str = _path_from_argv()
         self._terminal_pane_id: int = 0
         self._state: str = "(closed)"
@@ -78,7 +78,7 @@ class AudioPlayerApp(App):
         # Open a linked terminal so every transport action is also a
         # visible CLI command. This is the bridge contract from #79.
         try:
-            self._terminal_pane_id = self.emit.request_linked_terminal(
+            self._terminal_pane_id = await self.emit.request_linked_terminal(
                 cwd=None,
                 label="audio bridge",
             )

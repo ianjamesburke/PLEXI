@@ -44,11 +44,11 @@ class IqQueryDeniedTestApp(App):
 
         def runner() -> None:
             try:
-                resp: IqResponse = self.emit.iq_query(
+                resp: IqResponse = self.emit.run_sync(self.emit.iq_query(
                     model_tier="low",
                     system="You are a helpful assistant.",
                     messages=[{"role": "user", "content": "Hello?"}],
-                )
+                ))
                 # Reached only if the gate is broken.
                 self._state = ("ok", resp.content)
                 self.emit.error(

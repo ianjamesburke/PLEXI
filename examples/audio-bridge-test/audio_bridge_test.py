@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import struct
 import threading
-import time
 
 from plexi_sdk import App, RenderContext, CapabilityDeniedError
 
@@ -43,7 +42,7 @@ FFMPEG_CAPTURE = (
 
 
 class AudioBridgeTestApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         self._terminal_pane_id: int = 0
         self._capturing: bool = False
         self._reader_thread: "threading.Thread | None" = None
@@ -61,7 +60,7 @@ class AudioBridgeTestApp(App):
         ctx.status_summary("Audio Bridge Test — press r to record")
         self.emit.info("audio-bridge-test starting")
         try:
-            self._terminal_pane_id = self.emit.request_linked_terminal(
+            self._terminal_pane_id = await self.emit.request_linked_terminal(
                 cwd=None,
                 label="audio bridge",
             )

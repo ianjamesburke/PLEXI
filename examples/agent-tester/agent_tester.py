@@ -16,12 +16,12 @@ from plexi_sdk import Agent
 
 
 class AgentTester(Agent):
-    def respond(self, text: str) -> str:
+    async def respond(self, text: str) -> str:
         # `self.history` is auto-populated by `append_user_message` (called
         # by the SDK before this override runs). `system_prompt` is set by
         # the host's AgentInit forwarded from the manifest.
         del text  # captured by `self.history[-1]`
-        response = self.emit.iq_query(
+        response = await self.emit.iq_query(
             model_tier="medium",
             system=self.system_prompt or "",
             messages=self.history,

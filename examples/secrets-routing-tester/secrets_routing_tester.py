@@ -54,14 +54,14 @@ class SecretsRoutingTesterApp(App):
         self.emit.info("Secrets Routing Tester started")
 
     def _fetch(self, name: str) -> None:
-        """Background-thread fetch so the blocking secret_get doesn't stall
-        the render loop. Never logs the resolved value."""
+        """Background-thread fetch — uses emit.run_sync to await secret_get
+        without blocking the event loop. Never logs the resolved value."""
         self._status[name] = "fetching"
         self.emit.schedule_render(after_ms=20)
 
         def runner() -> None:
             try:
-                value = self.emit.get_secret(name)
+                value = self.emit.run_sync(self.emit.get_secret(name))
             except Exception as e:
                 self.emit.error(f"get_secret({name}) raised: {e}")
                 self._status[name] = ("missing",)

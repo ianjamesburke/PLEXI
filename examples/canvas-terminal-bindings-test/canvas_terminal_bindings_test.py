@@ -41,16 +41,15 @@ BUTTONS = [
 
 
 class CanvasTerminalBindingsTestApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         self._terminal_pane_id: int = 0
         self._last_action: str = "(no action yet)"
         self._preview_text: str = ""
-        # Open the linked terminal — blocks until the host responds. If the
-        # manifest doesn't declare `terminal.bindings` this raises
-        # CapabilityDeniedError; surface that in the UI rather than
-        # crashing.
+        # Await the linked terminal — suspends only this coroutine, keeping the
+        # event loop free to process host events. If the manifest doesn't
+        # declare `terminal.bindings` this raises CapabilityDeniedError.
         try:
-            self._terminal_pane_id = self.emit.request_linked_terminal(
+            self._terminal_pane_id = await self.emit.request_linked_terminal(
                 cwd=None,
                 label="bindings demo",
             )
@@ -129,7 +128,7 @@ class CanvasTerminalBindingsTestApp(App):
                 max_width=btn_w - 28, elide=True,
             )
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    async def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if any(mods.values()):
             return
         if key == "1":
@@ -137,14 +136,14 @@ class CanvasTerminalBindingsTestApp(App):
         elif key == "2":
             self._insert_tmp()
         elif key == "3":
-            self._preview_rm()
+            await self._preview_rm()
         elif key == "4":
             self._open_desktop()
         elif key == "5":
             self._reveal_home()
         ctx.schedule_render(after_ms=16)
 
-    def on_click(
+    async def on_click(
         self,
         ctx: RenderContext,
         x: float,
@@ -157,14 +156,12 @@ class CanvasTerminalBindingsTestApp(App):
         gap = 10
         idx = int((y - btn_y) // (btn_h + gap))
         if 0 <= idx < len(BUTTONS) and 24 <= x:
-            handlers = [
-                self._run_ls,
-                self._insert_tmp,
-                self._preview_rm,
-                self._open_desktop,
-                self._reveal_home,
-            ]
-            handlers[idx]()
+            sync_handlers = [self._run_ls, self._insert_tmp, None,
+                             self._open_desktop, self._reveal_home]
+            if idx == 2:
+                await self._preview_rm()
+            elif sync_handlers[idx]:
+                sync_handlers[idx]()
         ctx.schedule_render(after_ms=16)
 
     # ── Primitive dispatchers ──────────────────────────────────────────
@@ -191,10 +188,10 @@ class CanvasTerminalBindingsTestApp(App):
         self._last_action = "insert_path_token('/tmp', mode='append')"
         self._preview_text = ""
 
-    def _preview_rm(self) -> None:
+    async def _preview_rm(self) -> None:
         if not self._need_terminal():
             return
-        cmd, cwd = self.emit.request_command_preview(
+        cmd, cwd = await self.emit.request_command_preview(
             self._terminal_pane_id, "rm -rf .git",
         )
         self._last_action = "request_command_preview('rm -rf .git')"

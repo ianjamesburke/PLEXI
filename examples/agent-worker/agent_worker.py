@@ -27,11 +27,11 @@ class AgentWorker(Agent):
 
         def runner() -> None:
             try:
-                response = self.emit.iq_query(
+                response = self.emit.run_sync(self.emit.iq_query(
                     model_tier="low",
                     system=self.system_prompt or "",
                     messages=self.history,
-                )
+                ))
                 self.append_assistant_message(response.content)
             except Exception as e:  # noqa: BLE001
                 self.append_system_message(f"Worker iq_query failed: {e}")
@@ -60,11 +60,11 @@ class AgentWorker(Agent):
         # same pipe — host's directed-pipe table scopes the route.
         def runner() -> None:
             try:
-                response = self.emit.iq_query(
+                response = self.emit.run_sync(self.emit.iq_query(
                     model_tier="low",
                     system=self.system_prompt or "",
                     messages=[{"role": "user", "content": prompt}],
-                )
+                ))
                 self.append_assistant_message(response.content)
                 self.emit.pipe_send(pipe_id, {
                     "request_id": request_id,
