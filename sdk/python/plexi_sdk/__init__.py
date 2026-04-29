@@ -1937,324 +1937,365 @@ class App:
         asyncio.run(self._async_main())
 
     async def _async_main(self) -> None:
-        """Asyncio entry point. Reads stdin line-by-line in an executor so the
-        event loop stays free to process await-able blocking helpers while
-        waiting for the next host event."""
-        self._loop = asyncio.get_running_loop()
+        """Asyncio entry point — two concurrent tasks to eliminate deadlocks.
 
-        while True:
-            # readline() blocks; run it in the default thread-pool executor so
-            # the event loop can service other coroutines (blocking helpers)
-            # while waiting for the next line from the host.
-            raw = await self._loop.run_in_executor(None, sys.stdin.readline)
-            if not raw:
-                # EOF — host closed stdin; treat as shutdown
-                break
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                ev = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+        The root cause of the old single-loop design: when the dispatcher
+        awaited a hook (e.g. on_init) that itself called a blocking helper
+        (e.g. request_linked_terminal), the event loop had no concurrent
+        stdin reader in flight. Nothing could deliver the response event
+        while the hook was suspended, causing a permanent deadlock.
 
-            t = ev.get("type", "")
+        Fix: split into two tasks that run concurrently on the same event loop.
 
-            if t == "init":
-                proto = ev.get("protocol", "")
-                if not proto.startswith("pgap/3"):
-                    sys.stderr.write(
-                        f"plexi_sdk: unsupported protocol {proto!r}, expected pgap/3\n"
-                    )
-                    sys.exit(1)
-                self.app_id = ev.get("app_id", "")
-                self.workspace_root = ev.get("workspace_root", "")
-                self.capabilities = ev.get("capabilities", [])
-                self.feature_flags = ev.get("feature_flags", [])
-                # Send Ready
-                features_used = [f for f in self.feature_flags
-                                  if f in ("pane_groups_v1",)]
-                _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
-                await self._dispatch_hook(self.on_init, self._make_ctx())
+          _reader  — always has a run_in_executor(readline) in flight.
+                     Handles response events inline (put_nowait into pending
+                     queues) so they can unblock awaiting hooks even while the
+                     dispatcher is suspended.
 
-            elif t == "render":
-                import time as _time
-                now = _time.monotonic()
-                elapsed = (now - self._last_render_time) if self._last_render_time is not None else 0.0
-                self._last_render_time = now
-                frame_id = ev.get("frame_id", 0)
-                if "rect" in ev:
-                    self._rect = ev["rect"]
-                elif "width" in ev:
-                    # legacy compat
-                    self._rect = {"x": 0.0, "y": 0.0,
-                                  "w": ev["width"], "h": ev["height"]}
-                ctx = self._make_ctx(frame_id, elapsed=elapsed)
+          _dispatcher — drains a hook_q, dispatches hook events sequentially.
+                        Can safely await hooks because _reader is always running
+                        alongside it and will deliver response events.
+
+        Response events MUST be handled inline in _reader — never enqueued —
+        so that hooks awaiting on pending queues can be unblocked even when
+        the dispatcher is suspended mid-hook.
+        """
+        loop = asyncio.get_running_loop()
+        self._loop = loop
+        hook_q: asyncio.Queue = asyncio.Queue()
+
+        async def _reader() -> None:
+            while True:
+                raw = await loop.run_in_executor(None, sys.stdin.readline)
+                if not raw:
+                    # EOF — host closed stdin; signal dispatcher to shut down.
+                    await hook_q.put({"type": "shutdown"})
+                    return
+                raw = raw.strip()
+                if not raw:
+                    continue
                 try:
-                    await self._dispatch_hook(self.on_render, ctx)
-                except Exception as e:
-                    ctx.error(f"on_render exception: {e}")
-                ctx.frame_done()
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
 
-            elif t == "key":
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_key, ctx, ev.get("key", ""), ev.get("modifiers", {}))
+                t = ev.get("type", "")
 
-            elif t == "click":
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                          ev.get("button", "primary"))
+                # ── Response events: handled inline so they can unblock ──────
+                # hooks suspended in the dispatcher. These must NEVER go on
+                # hook_q — that would leave awaiting coroutines stuck forever.
 
-            elif t == "command":
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_command, ctx, ev.get("text", ""))
+                if t == "capability_decision":
+                    req_id = ev.get("request_id", "")
+                    granted = ev.get("granted", False)
+                    q = self._pending_capability.pop(req_id, None)
+                    if q:
+                        q.put_nowait(granted)
 
-            elif t == "paste":
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_paste, ctx, ev.get("text", ""))
-
-            elif t == "capability_decision":
-                req_id = ev.get("request_id", "")
-                granted = ev.get("granted", False)
-                q = self._pending_capability.pop(req_id, None)
-                if q:
-                    q.put_nowait(granted)
-
-            elif t == "secret_value":
-                key = ev.get("key", "")
-                value = ev.get("value")
-                q = self._pending_secret.pop(key, None)
-                if q:
-                    q.put_nowait(value)
-
-            elif t == "pipe_message":
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
-
-            elif t == "pipe_opened":
-                pipe_id = ev.get("pipe_id", "")
-                socket_path = ev.get("socket_path", "")
-                p = self._pipes.get(pipe_id)
-                if p:
-                    p._on_opened(socket_path)
-
-            elif t == "pipe_overrun":
-                self.emit.warn(
-                    f"pipe overrun pipe_id={ev.get('pipe_id')} "
-                    f"dropped={ev.get('dropped_frames')}"
-                )
-
-            elif t == "path_changed":
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_path_changed, ctx, ev.get("cwd", ""))
-
-            elif t == "suspend":
-                await self._dispatch_hook(self.on_suspend)
-
-            elif t == "resume":
-                await self._dispatch_hook(self.on_resume)
-
-            elif t == "shutdown":
-                await self._dispatch_hook(self.on_shutdown)
-                break
-
-            elif t == "inject_state":
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_inject, ctx, ev.get("payload", {}))
-
-            elif t == "http_response":
-                req_id = ev.get("request_id", "")
-                q = self._pending_http.pop(req_id, None)
-                if q:
-                    if ev.get("error"):
-                        q.put_nowait(("error", ev["error"]))
-                    else:
-                        q.put_nowait(("ok", ev.get("body", "")))
-
-            elif t == "llm_response":
-                req_id = ev.get("request_id", "")
-                q = self._pending_llm.pop(req_id, None)
-                if q:
-                    if ev.get("error"):
-                        q.put_nowait(("error", ev["error"]))
-                    else:
-                        q.put_nowait(("ok", ev.get("content", "")))
-
-            elif t == "iq_response":
-                # v3.3 iq.query broker (#284). Hand the whole event dict to
-                # `Emitter.iq_query` so it can split error vs success and
-                # attach token counts.
-                req_id = ev.get("request_id", "")
-                q = self._pending_iq.pop(req_id, None)
-                if q:
-                    q.put_nowait(ev)
-
-            elif t == "midi_devices_listed":
-                # v3.4 CoreMIDI (#320). Forward to Emitter.list_midi_devices.
-                req_id = ev.get("request_id", "")
-                q = self._pending_midi_devices.pop(req_id, None)
-                if q:
-                    q.put_nowait(ev)
-
-            elif t == "midi_input_opened":
-                # Confirms an OpenMidiInput call landed a CoreMIDI source.
-                # Apps that care about "the port is now wired to my pipe"
-                # see this event after the corresponding PipeOpened — they
-                # can override on_midi_input_opened to react.
-                try:
-                    await self._dispatch_hook(
-                        self.on_midi_input_opened,
-                        str(ev.get("pipe_id", "")),
-                        str(ev.get("port_id", "")),
-                        str(ev.get("port_name", "")),
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"on_midi_input_opened handler raised: {e}\n")
-
-            elif t == "midi_input_error":
-                # OpenMidiInput failed (capability denied, port_id not found,
-                # CoreMIDI error). Apps log this; the typical recovery is to
-                # surface the error in-pane and let the user pick a different
-                # port from list_midi_devices.
-                self.emit.warn(
-                    f"midi_input_error pipe_id={ev.get('pipe_id')} "
-                    f"error={ev.get('error')}"
-                )
-
-            elif t == "midi_send_error":
-                # SendMidi failed. Surfaces only on capability denial / open
-                # failure / coremidi error — successful sends produce no event.
-                self.emit.warn(
-                    f"midi_send_error port_id={ev.get('port_id')} "
-                    f"error={ev.get('error')}"
-                )
-
-            elif t == "video_open_ack":
-                # v3.4 video substrate (#345). Forward to Emitter.open_video().
-                req_id = str(ev.get("request_id", ""))
-                q = self._pending_video_open.pop(req_id, None)
-                if q:
-                    q.put_nowait(ev)
-
-            elif t == "video_open_error":
-                # OpenVideo failed (capability denied, NotImplemented from the
-                # production stub, bad source). Forward the error event so
-                # `open_video()` can raise CapabilityDeniedError / RuntimeError.
-                req_id = str(ev.get("request_id", ""))
-                q = self._pending_video_open.pop(req_id, None)
-                if q:
-                    q.put_nowait(ev)
-
-            elif t == "linked_terminal_ready":
-                # v3.5 #78. Forward the terminal_pane_id (int) to the
-                # awaiting helper. 0 = capability denied — the helper
-                # raises CapabilityDeniedError when it sees that.
-                req_id = ev.get("request_id", "")
-                q = self._pending_linked_terminal.pop(req_id, None)
-                if q:
-                    q.put_nowait(int(ev.get("terminal_pane_id", 0)))
-
-            elif t == "command_preview":
-                # v3.5 #78. Forward (command, would_run_in_cwd) tuple to the
-                # awaiting helper. would_run_in_cwd is "" on capability denial.
-                req_id = ev.get("request_id", "")
-                q = self._pending_command_preview.pop(req_id, None)
-                if q:
-                    q.put_nowait((
-                        str(ev.get("command", "")),
-                        str(ev.get("would_run_in_cwd", "")),
-                    ))
-
-            elif t == "agent_roster":
-                # v3.3 P2 agents.list (#286). The `agents` field is always
-                # a list (empty when the app lacks the `agents.list`
-                # capability — the host returns an empty roster, not an
-                # error). Forwarded as-is to the queue waiting in
-                # `Emitter.agent_roster`.
-                req_id = ev.get("request_id", "")
-                q = self._pending_agent_roster.pop(req_id, None)
-                if q:
-                    q.put_nowait(ev.get("agents", []) or [])
-
-            elif t == "notify_action":
-                # notify_choice / notify_input: put the value back.
-                # notify / notify_and_wait: put action_label back.
-                # Esc cancel: return "__cancel__" so callers can check easily.
-                notify_id = ev.get("notify_id", "")
-                action_label = ev.get("action_label", "")
-                value = ev.get("value")
-                q = self._pending_notify.pop(notify_id, None)
-                if q:
-                    if action_label == "cancel":
-                        q.put_nowait("__cancel__")
-                    elif value is not None:
+                elif t == "secret_value":
+                    key = ev.get("key", "")
+                    value = ev.get("value")
+                    q = self._pending_secret.pop(key, None)
+                    if q:
                         q.put_nowait(value)
-                    else:
-                        q.put_nowait(action_label or "acknowledge")
 
-            elif t == "agent_init":
-                # v3.3 agent-as-app (#338): the host forwards the manifest's
-                # `[launch].system_prompt` once at startup. Apps that subclass
-                # `Agent` consume this in `_on_agent_init`; plain App
-                # subclasses can override `on_agent_init` to receive it.
-                try:
-                    await self._dispatch_hook(self.on_agent_init, ev.get("system_prompt"))
-                except Exception as e:
-                    sys.stderr.write(f"on_agent_init handler raised: {e}\n")
+                elif t == "http_response":
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_http.pop(req_id, None)
+                    if q:
+                        if ev.get("error"):
+                            q.put_nowait(("error", ev["error"]))
+                        else:
+                            q.put_nowait(("ok", ev.get("body", "")))
 
-            elif t == "user_message":
-                # v3.3 agent-as-app (#338): the user submitted text in the
-                # host-rendered conversation input box. Forwarded to
-                # `on_user_message`. Only delivered to type=agent panes.
-                ctx = self._make_ctx()
-                try:
-                    await self._dispatch_hook(self.on_user_message, ctx, ev.get("text", ""))
-                except Exception as e:
-                    sys.stderr.write(f"on_user_message handler raised: {e}\n")
+                elif t == "llm_response":
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_llm.pop(req_id, None)
+                    if q:
+                        if ev.get("error"):
+                            q.put_nowait(("error", ev["error"]))
+                        else:
+                            q.put_nowait(("ok", ev.get("content", "")))
 
-            elif t == "text_submitted":
-                # Host-owned text input: the user pressed Enter on a
-                # `DrawCommand::TextInput` field. Stash the value keyed
-                # on the input id; `RenderContext.text_input(...)` will
-                # drain it on the next frame the app polls.
-                tid = ev.get("id", "")
-                if tid:
-                    self._text_submissions[tid] = ev.get("value", "")
+                elif t == "iq_response":
+                    # v3.3 iq.query broker (#284). Hand the whole event dict to
+                    # `Emitter.iq_query` so it can split error vs success and
+                    # attach token counts.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_iq.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
 
-            elif t == "timer":
-                timer_id = ev.get("timer_id", "")
-                ctx = self._make_ctx()
-                await self._dispatch_hook(self.on_timer, ctx, timer_id)
+                elif t == "midi_devices_listed":
+                    # v3.4 CoreMIDI (#320). Forward to Emitter.list_midi_devices.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_midi_devices.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
 
-            elif t == "text_measured":
-                # Response to RenderContext.measure_text(). Forward (width, height)
-                # to the awaiting coroutine keyed on request_id.
-                req_id = ev.get("request_id", "")
-                q = self._pending_measure_text.pop(req_id, None)
-                if q:
-                    q.put_nowait((
-                        float(ev.get("width", 0.0)),
-                        float(ev.get("height", 0.0)),
-                    ))
+                elif t == "video_open_ack":
+                    # v3.4 video substrate (#345). Forward to Emitter.open_video().
+                    req_id = str(ev.get("request_id", ""))
+                    q = self._pending_video_open.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
 
-            elif t in ("run_update",):
-                pass  # apps can override on_run_update if needed
+                elif t == "video_open_error":
+                    # OpenVideo failed (capability denied, NotImplemented from the
+                    # production stub, bad source). Forward the error event so
+                    # `open_video()` can raise CapabilityDeniedError / RuntimeError.
+                    req_id = str(ev.get("request_id", ""))
+                    q = self._pending_video_open.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
 
-            elif t == "app_spawned":
-                # Confirmation that a SpawnApp request succeeded. Apps that
-                # want to track the spawned pane can override on_app_spawned.
-                try:
-                    await self._dispatch_hook(
-                        self.on_app_spawned,
-                        int(ev.get("pane_id", 0)),
-                        str(ev.get("type_id", "")),
+                elif t == "linked_terminal_ready":
+                    # v3.5 #78. Forward the terminal_pane_id (int) to the
+                    # awaiting helper. 0 = capability denied — the helper
+                    # raises CapabilityDeniedError when it sees that.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_linked_terminal.pop(req_id, None)
+                    if q:
+                        q.put_nowait(int(ev.get("terminal_pane_id", 0)))
+
+                elif t == "command_preview":
+                    # v3.5 #78. Forward (command, would_run_in_cwd) tuple to the
+                    # awaiting helper. would_run_in_cwd is "" on capability denial.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_command_preview.pop(req_id, None)
+                    if q:
+                        q.put_nowait((
+                            str(ev.get("command", "")),
+                            str(ev.get("would_run_in_cwd", "")),
+                        ))
+
+                elif t == "agent_roster":
+                    # v3.3 P2 agents.list (#286). The `agents` field is always
+                    # a list (empty when the app lacks the `agents.list`
+                    # capability — the host returns an empty roster, not an
+                    # error). Forwarded as-is to the queue waiting in
+                    # `Emitter.agent_roster`.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_agent_roster.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev.get("agents", []) or [])
+
+                elif t == "notify_action":
+                    # notify_choice / notify_input: put the value back.
+                    # notify / notify_and_wait: put action_label back.
+                    # Esc cancel: return "__cancel__" so callers can check easily.
+                    notify_id = ev.get("notify_id", "")
+                    action_label = ev.get("action_label", "")
+                    value = ev.get("value")
+                    q = self._pending_notify.pop(notify_id, None)
+                    if q:
+                        if action_label == "cancel":
+                            q.put_nowait("__cancel__")
+                        elif value is not None:
+                            q.put_nowait(value)
+                        else:
+                            q.put_nowait(action_label or "acknowledge")
+
+                elif t == "text_measured":
+                    # Response to RenderContext.measure_text(). Forward (width, height)
+                    # to the awaiting coroutine keyed on request_id.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_measure_text.pop(req_id, None)
+                    if q:
+                        q.put_nowait((
+                            float(ev.get("width", 0.0)),
+                            float(ev.get("height", 0.0)),
+                        ))
+
+                # ── Inline non-hook events (fast, no user code) ──────────────
+
+                elif t == "pipe_opened":
+                    pipe_id = ev.get("pipe_id", "")
+                    socket_path = ev.get("socket_path", "")
+                    p = self._pipes.get(pipe_id)
+                    if p:
+                        p._on_opened(socket_path)
+
+                elif t == "pipe_overrun":
+                    self.emit.warn(
+                        f"pipe overrun pipe_id={ev.get('pipe_id')} "
+                        f"dropped={ev.get('dropped_frames')}"
                     )
-                except Exception as e:
-                    sys.stderr.write(f"on_app_spawned handler raised: {e}\n")
 
-        # Ensure all pipes are closed cleanly
-        for p in self._pipes.values():
-            p.close()
+                elif t == "midi_input_error":
+                    # OpenMidiInput failed (capability denied, port_id not found,
+                    # CoreMIDI error). Apps log this; the typical recovery is to
+                    # surface the error in-pane and let the user pick a different
+                    # port from list_midi_devices.
+                    self.emit.warn(
+                        f"midi_input_error pipe_id={ev.get('pipe_id')} "
+                        f"error={ev.get('error')}"
+                    )
+
+                elif t == "midi_send_error":
+                    # SendMidi failed. Surfaces only on capability denial / open
+                    # failure / coremidi error — successful sends produce no event.
+                    self.emit.warn(
+                        f"midi_send_error port_id={ev.get('port_id')} "
+                        f"error={ev.get('error')}"
+                    )
+
+                elif t == "text_submitted":
+                    # Host-owned text input: the user pressed Enter on a
+                    # `DrawCommand::TextInput` field. Stash the value keyed
+                    # on the input id; `RenderContext.text_input(...)` will
+                    # drain it on the next frame the app polls.
+                    tid = ev.get("id", "")
+                    if tid:
+                        self._text_submissions[tid] = ev.get("value", "")
+
+                elif t == "run_update":
+                    pass  # apps can override on_run_update if needed
+
+                # ── Hook events: forwarded to the dispatcher ─────────────────
+                else:
+                    await hook_q.put(ev)
+
+        async def _dispatcher() -> None:
+            while True:
+                ev = await hook_q.get()
+                t = ev.get("type", "")
+
+                if t == "init":
+                    proto = ev.get("protocol", "")
+                    if not proto.startswith("pgap/3"):
+                        sys.stderr.write(
+                            f"plexi_sdk: unsupported protocol {proto!r}, expected pgap/3\n"
+                        )
+                        sys.exit(1)
+                    self.app_id = ev.get("app_id", "")
+                    self.workspace_root = ev.get("workspace_root", "")
+                    self.capabilities = ev.get("capabilities", [])
+                    self.feature_flags = ev.get("feature_flags", [])
+                    # Send Ready
+                    features_used = [f for f in self.feature_flags
+                                      if f in ("pane_groups_v1",)]
+                    _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
+                    await self._dispatch_hook(self.on_init, self._make_ctx())
+
+                elif t == "render":
+                    import time as _time
+                    now = _time.monotonic()
+                    elapsed = (now - self._last_render_time) if self._last_render_time is not None else 0.0
+                    self._last_render_time = now
+                    frame_id = ev.get("frame_id", 0)
+                    if "rect" in ev:
+                        self._rect = ev["rect"]
+                    elif "width" in ev:
+                        # legacy compat
+                        self._rect = {"x": 0.0, "y": 0.0,
+                                      "w": ev["width"], "h": ev["height"]}
+                    ctx = self._make_ctx(frame_id, elapsed=elapsed)
+                    try:
+                        await self._dispatch_hook(self.on_render, ctx)
+                    except Exception as e:
+                        ctx.error(f"on_render exception: {e}")
+                    ctx.frame_done()
+
+                elif t == "key":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_key, ctx, ev.get("key", ""), ev.get("modifiers", {}))
+
+                elif t == "click":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("button", "primary"))
+
+                elif t == "command":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_command, ctx, ev.get("text", ""))
+
+                elif t == "paste":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_paste, ctx, ev.get("text", ""))
+
+                elif t == "pipe_message":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
+
+                elif t == "path_changed":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_path_changed, ctx, ev.get("cwd", ""))
+
+                elif t == "suspend":
+                    await self._dispatch_hook(self.on_suspend)
+
+                elif t == "resume":
+                    await self._dispatch_hook(self.on_resume)
+
+                elif t == "shutdown":
+                    await self._dispatch_hook(self.on_shutdown)
+                    return
+
+                elif t == "inject_state":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_inject, ctx, ev.get("payload", {}))
+
+                elif t == "midi_input_opened":
+                    # Confirms an OpenMidiInput call landed a CoreMIDI source.
+                    # Apps that care about "the port is now wired to my pipe"
+                    # see this event after the corresponding PipeOpened — they
+                    # can override on_midi_input_opened to react.
+                    try:
+                        await self._dispatch_hook(
+                            self.on_midi_input_opened,
+                            str(ev.get("pipe_id", "")),
+                            str(ev.get("port_id", "")),
+                            str(ev.get("port_name", "")),
+                        )
+                    except Exception as e:
+                        sys.stderr.write(f"on_midi_input_opened handler raised: {e}\n")
+
+                elif t == "agent_init":
+                    # v3.3 agent-as-app (#338): the host forwards the manifest's
+                    # `[launch].system_prompt` once at startup. Apps that subclass
+                    # `Agent` consume this in `_on_agent_init`; plain App
+                    # subclasses can override `on_agent_init` to receive it.
+                    try:
+                        await self._dispatch_hook(self.on_agent_init, ev.get("system_prompt"))
+                    except Exception as e:
+                        sys.stderr.write(f"on_agent_init handler raised: {e}\n")
+
+                elif t == "user_message":
+                    # v3.3 agent-as-app (#338): the user submitted text in the
+                    # host-rendered conversation input box. Forwarded to
+                    # `on_user_message`. Only delivered to type=agent panes.
+                    ctx = self._make_ctx()
+                    try:
+                        await self._dispatch_hook(self.on_user_message, ctx, ev.get("text", ""))
+                    except Exception as e:
+                        sys.stderr.write(f"on_user_message handler raised: {e}\n")
+
+                elif t == "timer":
+                    timer_id = ev.get("timer_id", "")
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_timer, ctx, timer_id)
+
+                elif t == "app_spawned":
+                    # Confirmation that a SpawnApp request succeeded. Apps that
+                    # want to track the spawned pane can override on_app_spawned.
+                    try:
+                        await self._dispatch_hook(
+                            self.on_app_spawned,
+                            int(ev.get("pane_id", 0)),
+                            str(ev.get("type_id", "")),
+                        )
+                    except Exception as e:
+                        sys.stderr.write(f"on_app_spawned handler raised: {e}\n")
+
+        reader_task = asyncio.create_task(_reader())
+        try:
+            await _dispatcher()
+        finally:
+            reader_task.cancel()
+            # Ensure all pipes are closed cleanly
+            for p in self._pipes.values():
+                p.close()
 
     async def _dispatch_hook(self, hook: "Any", *args: Any) -> None:
         """Dispatch a lifecycle hook — async or sync — in the event loop.
