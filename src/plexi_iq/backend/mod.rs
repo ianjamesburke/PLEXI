@@ -1,14 +1,13 @@
 //! LLM backend abstraction for the Plexi IQ broker.
 //!
-//! Today (#284) the only concrete backend is `AnthropicApiBackend` — direct
-//! Messages API via `async-anthropic`. The `claude_cli` proxied backend
-//! lands with #285 (agent-as-app) when the v2 in-process turn loop is
-//! retired and Plexi IQ becomes a thin broker on top of subprocess agents.
+//! The concrete backend is `OpenRouterBackend` — routes to any OpenRouter
+//! model via SSE streaming. The host reads `OPENROUTER_API_KEY` from the
+//! environment at dispatch time; apps never see the key.
 //!
 //! Backends deliver events through an `mpsc::Sender<StreamEvent>` so the
 //! caller can drain a receiver each frame without blocking the UI.
 
-pub mod anthropic_api;
+pub mod openrouter;
 
 use std::sync::mpsc;
 
@@ -30,9 +29,16 @@ pub enum StreamEvent {
     /// Incremental text chunk — append to the pane's output buffer.
     Text(String),
     /// Turn complete. Token counts are `Some` only for metered backends.
+    /// `generation_id` carries the `X-Generation-Id` response header value
+    /// (OpenRouter-specific); the broker uses it to fetch the real cost after
+    /// the turn completes.
     Done {
         input_tokens: Option<u32>,
         output_tokens: Option<u32>,
+        /// OpenRouter generation ID captured from the `X-Generation-Id`
+        /// response header before reading the SSE body. Used to fetch
+        /// real per-call cost via the generation endpoint.
+        generation_id: Option<String>,
     },
     /// Terminal error. Surface in the conversation buffer.
     Error(String),

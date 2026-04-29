@@ -31,7 +31,7 @@ use crate::plexi_iq::broker::{IqBroker, LiveIqBroker};
 use crate::runs::RunRegistry;
 use crate::typed_pipes::TypedPipeRegistry;
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::{
@@ -220,10 +220,7 @@ impl ProcessApp {
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
-        // Capture for the broker closure — moved into the broker after the
-        // `Self {}` constructor consumes the originals.
-        let type_id_for_broker = type_id.clone();
-        let workspace_root_for_broker = workspace_root.clone();
+        // (broker construction below reads IqConfig from PlexiConfig — no captures needed)
 
         if workspace_root.as_os_str().is_empty() {
             return Err(std::io::Error::new(
@@ -249,8 +246,8 @@ impl ProcessApp {
 
         // STEP-9: environment isolation (spec invariant I-6).
         // Clear the inherited environment and whitelist only vars the app
-        // legitimately needs. Strips ANTHROPIC_API_KEY and every other
-        // host credential — apps must go through the secret broker.
+        // legitimately needs. Strips OPENROUTER_API_KEY and every other
+        // host credential — apps must use the iq.query / llm broker, never direct API access.
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
         let mut cmd = std::process::Command::new(bin_path);
         cmd.args(args)
@@ -442,10 +439,7 @@ impl ProcessApp {
             net: Arc::new(UreqNetService::new()),
             http_tx,
             http_rx,
-            iq_broker: Arc::new(default_live_broker(
-                type_id_for_broker.clone(),
-                workspace_root_for_broker.clone(),
-            )),
+            iq_broker: Arc::new(default_live_broker()),
             audio_device: default_audio_device(),
             audio_capture_sessions: HashMap::new(),
             midi_device: default_midi_device(),
@@ -1272,15 +1266,13 @@ impl App for ProcessApp {
     }
 }
 
-/// Build a `LiveIqBroker` whose `api_key_resolver` resolves through the
-/// existing workspace-scoped secrets store every dispatch. Captured by value
-/// because the broker outlives the `launch` stack frame.
-fn default_live_broker(type_id: String, workspace_root: PathBuf) -> LiveIqBroker {
-    LiveIqBroker::new(move || {
-        let workspace_str = workspace_root.to_str().unwrap_or("");
-        crate::secrets::resolve_secret("ANTHROPIC_API_KEY", &type_id, workspace_str)
-            .map(|z| z.as_str().to_string())
-    })
+/// Build a `LiveIqBroker` from the `[iq]` section of the current config.
+/// If the section is absent, the broker is constructed with `None` and will
+/// fail fast at dispatch time with a clear error directing the user to add
+/// the section to config.toml.
+fn default_live_broker() -> LiveIqBroker {
+    let iq_config = crate::config::PlexiConfig::load().iq;
+    LiveIqBroker::new(iq_config)
 }
 
 /// Build the production audio device. cpal in non-test builds; the mock

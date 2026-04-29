@@ -36,7 +36,7 @@ pub enum Capability {
     AudioPlayback,
     /// Decode and display video via host broker.
     VideoPlayback,
-    /// Make LLM API calls via host broker (uses ANTHROPIC_API_KEY from secrets store).
+    /// Make LLM API calls via host broker (reads OPENROUTER_API_KEY from environment).
     Llm,
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
     Timer,

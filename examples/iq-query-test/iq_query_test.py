@@ -116,7 +116,7 @@ class IqQueryTestApp(App):
         return Card([
             Section(f"Error ({tier})"),
             Label(f"  {message}", color="#f38ba8"),
-            Label("(check ANTHROPIC_API_KEY in Plexi secrets)"),
+            Label("(set OPENROUTER_API_KEY in your shell environment)"),
         ])
 
     def on_render(self, ctx: RenderContext) -> None:

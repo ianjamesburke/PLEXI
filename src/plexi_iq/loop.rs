@@ -27,6 +27,10 @@ pub struct TurnResult {
     pub input_tokens: Option<u32>,
     /// Output token count — `Some` only for metered (native API) backend.
     pub output_tokens: Option<u32>,
+    /// OpenRouter generation ID from `X-Generation-Id` response header.
+    /// `Some` when the OpenRouter backend is used; `None` otherwise.
+    /// The broker uses this to fetch the real per-call cost after the turn.
+    pub generation_id: Option<String>,
 }
 
 /// Error variants for a failed turn.
@@ -81,6 +85,7 @@ pub fn run_turn(
     let mut text = String::new();
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
+    let mut generation_id: Option<String> = None;
 
     loop {
         match rx.recv() {
@@ -91,9 +96,11 @@ pub fn run_turn(
             Ok(StreamEvent::Done {
                 input_tokens: in_tok,
                 output_tokens: out_tok,
+                generation_id: gen_id,
             }) => {
                 input_tokens = in_tok;
                 output_tokens = out_tok;
+                generation_id = gen_id;
                 break;
             }
             Ok(StreamEvent::Error(msg)) => {
@@ -114,5 +121,6 @@ pub fn run_turn(
         text,
         input_tokens,
         output_tokens,
+        generation_id,
     })
 }
