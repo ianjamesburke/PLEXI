@@ -285,7 +285,14 @@ impl TerminalBackend {
         if let Some(range) = content.selectable_range {
             let mut prev_line: Option<Line> = None;
             let last_col = content.grid.last_column();
-            for indexed in content.grid.display_iter() {
+            // iter_from(range.start) instead of display_iter() — display_iter
+            // only covers the current viewport, so a selection that starts in
+            // scrollback but ends at the live view would silently drop all cells
+            // above the visible top.
+            for indexed in content.grid.iter_from(range.start) {
+                if indexed.point > range.end {
+                    break;
+                }
                 if range.contains(indexed.point) {
                     if let Some(prev) = prev_line {
                         if prev != indexed.point.line {
