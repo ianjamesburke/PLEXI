@@ -1960,12 +1960,13 @@ class App:
         so that hooks awaiting on pending queues can be unblocked even when
         the dispatcher is suspended mid-hook.
         """
-        self._loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
+        self._loop = loop
         hook_q: asyncio.Queue = asyncio.Queue()
 
         async def _reader() -> None:
             while True:
-                raw = await self._loop.run_in_executor(None, sys.stdin.readline)
+                raw = await loop.run_in_executor(None, sys.stdin.readline)
                 if not raw:
                     # EOF — host closed stdin; signal dispatcher to shut down.
                     await hook_q.put({"type": "shutdown"})
