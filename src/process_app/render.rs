@@ -410,7 +410,12 @@ pub(super) fn render_draw_commands(
             | DrawCommand::RunInLinkedTerminal { .. }
             | DrawCommand::InsertPathToken { .. }
             | DrawCommand::RequestCommandPreview { .. }
-            | DrawCommand::OpenArtifact { .. } => {}
+            | DrawCommand::OpenArtifact { .. }
+            // Navigation stack commands are handled by route_command; the
+            // painter never sees them in the normal path — this arm is the
+            // safety net for any stray commands that leak through.
+            | DrawCommand::PushNav { .. }
+            | DrawCommand::PopNav { .. } => {}
         }
     }
 

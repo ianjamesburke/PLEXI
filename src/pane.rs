@@ -206,6 +206,15 @@ impl AppRuntime {
             AppRuntime::Builtin(_) => {}
         }
     }
+
+    /// Current nav stack depth as reported by the app via `PushNav`/`PopNav`.
+    /// Always 0 for builtin apps — they manage their own internal navigation.
+    pub fn nav_stack_depth(&self) -> usize {
+        match self {
+            AppRuntime::Process(app) => app.nav_stack_depth(),
+            AppRuntime::Builtin(_) => 0,
+        }
+    }
 }
 
 #[allow(dead_code)]
