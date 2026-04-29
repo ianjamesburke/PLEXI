@@ -490,7 +490,7 @@ class AppStoreApp(App):
             "Capabilities are gated at install AND runtime — you can revoke "
             "them later via the Permissions menu."
         )
-        choice = self.emit.notify_choice(
+        choice = self.emit.run_sync(self.emit.notify_choice(
             title=f"Install {app_id}?",
             body=body,
             options=[
@@ -500,7 +500,7 @@ class AppStoreApp(App):
             level="info",
             required=False,
             priority=100,
-        )
+        ))
         return choice == "install"
 
     # ── Install / uninstall / update / pack-export actions ────────────────
@@ -620,7 +620,7 @@ class AppStoreApp(App):
             self._busy = True
             try:
                 default_dest = str(Path.home() / "plexi-installed.pack.toml")
-                dest = self.emit.notify_input(
+                dest = self.emit.run_sync(self.emit.notify_input(
                     title="Export installed pack",
                     prompt="Destination path",
                     body=(
@@ -630,7 +630,7 @@ class AppStoreApp(App):
                     ),
                     required=False,
                     priority=80,
-                )
+                ))
                 if dest == "__cancel__":
                     self._log_action("export cancelled")
                     return

@@ -77,12 +77,12 @@ class NotificationTesterApp(App):
 
     def _fire_required_message(self) -> None:
         def runner():
-            result = self.emit.notify_and_wait(
+            result = self.emit.run_sync(self.emit.notify_and_wait(
                 title="Required message",
                 body="You cannot dismiss this with Esc. Press Enter to acknowledge.",
                 level="warn",
                 priority=PRIORITY_CRITICAL,
-            )
+            ))
             self._append(f"required message → {result}")
         threading.Thread(target=runner, daemon=True).start()
         self._append("sent: required @ CRITICAL(200)")
@@ -94,26 +94,26 @@ class NotificationTesterApp(App):
                 {"label": "No",    "value": "no",    "shortcut": "n"},
                 {"label": "Maybe", "value": "maybe", "shortcut": "m"},
             ]
-            result = self.emit.notify_choice(
+            result = self.emit.run_sync(self.emit.notify_choice(
                 title="How's your focus right now?",
                 body="Pick one. y/n/m or ↑↓ + Enter, or 1-3 to direct-select.",
                 options=options,
                 level="info",
                 priority=PRIORITY_HIGH,
-            )
+            ))
             self._append(f"choice → {result}")
         threading.Thread(target=runner, daemon=True).start()
         self._append("sent: choice @ HIGH(100)")
 
     def _fire_input(self) -> None:
         def runner():
-            result = self.emit.notify_input(
+            result = self.emit.run_sync(self.emit.notify_input(
                 title="What are you working on?",
                 prompt="Type a short description…",
                 body="Enter for newline, Cmd+Enter to submit, Esc to cancel.",
                 level="info",
                 priority=PRIORITY_HIGH,
-            )
+            ))
             self._append(
                 "input → cancelled" if result == "__cancel__"
                 else f"input → {result!r}"
@@ -164,14 +164,16 @@ class NotificationTesterApp(App):
     def _fire_inline_image(self) -> None:
         """Post a message-kind notification with a small inline PNG."""
         png = self._gradient_png(size=64)
-        # Use the SDK convenience: handles base64 + 50KB cap client-side.
-        self.emit.notify_with_image(
-            title="Inline image attached",
-            body=f"64x64 gradient PNG, {len(png)} bytes pre-encode.",
-            image_bytes=png,
-            mime="image/png",
-            priority=PRIORITY_NORMAL,
-        )
+        def runner():
+            # Use the SDK convenience: handles base64 + 50KB cap client-side.
+            self.emit.run_sync(self.emit.notify_with_image(
+                title="Inline image attached",
+                body=f"64x64 gradient PNG, {len(png)} bytes pre-encode.",
+                image_bytes=png,
+                mime="image/png",
+                priority=PRIORITY_NORMAL,
+            ))
+        threading.Thread(target=runner, daemon=True).start()
         self._append(f"sent: inline-image message ({len(png)}-byte PNG)")
 
     def _fire_inline_image_choice(self) -> None:
@@ -187,14 +189,14 @@ class NotificationTesterApp(App):
                 {"label": "Full-width layout", "value": "fullwidth", "shortcut": "2"},
                 {"label": "Neither — try again", "value": "retry",   "shortcut": "n"},
             ]
-            result = self.emit.notify_with_image(
+            result = self.emit.run_sync(self.emit.notify_with_image(
                 title="Which UI approach?",
                 body="Rendered the gradient option above. Pick one to continue.",
                 image_bytes=png,
                 mime="image/png",
                 priority=PRIORITY_HIGH,
                 choices=options,
-            )
+            ))
             self._append(f"image-choice → {result}")
         threading.Thread(target=runner, daemon=True).start()
         self._append("sent: image-choice @ HIGH(100)")

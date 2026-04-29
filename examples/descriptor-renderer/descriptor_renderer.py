@@ -152,7 +152,9 @@ class DescriptorRendererApp(App):
 
     def _connect_terminal(self, cli: str, ver: str) -> None:
         try:
-            pane_id = self.emit.request_linked_terminal(cwd=None, label=f"{cli} terminal")
+            pane_id = self.emit.run_sync(
+                self.emit.request_linked_terminal(cwd=None, label=f"{cli} terminal")
+            )
             self._terminal_pane_id = pane_id
             self.emit.info(f"descriptor-renderer: linked terminal #{pane_id}")
         except CapabilityDeniedError as e:

@@ -60,11 +60,11 @@ class IqQueryTestApp(App):
 
         def runner() -> None:
             try:
-                resp: IqResponse = self.emit.iq_query(
+                resp: IqResponse = self.emit.run_sync(self.emit.iq_query(
                     model_tier=tier,
                     system=SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": prompt_snapshot}],
-                )
+                ))
                 self._result = (
                     "ok", tier, resp.content, resp.tokens_in, resp.tokens_out,
                 )

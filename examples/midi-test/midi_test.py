@@ -73,7 +73,7 @@ class MidiTestApp(App):
 
         def runner() -> None:
             try:
-                devs = self.emit.list_midi_devices()
+                devs = self.emit.run_sync(self.emit.list_midi_devices())
                 self._devices = devs
                 self._append_log(
                     f"refreshed: {len(devs.inputs)} input(s), {len(devs.outputs)} output(s)"

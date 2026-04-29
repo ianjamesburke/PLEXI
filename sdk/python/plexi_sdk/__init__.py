@@ -406,14 +406,13 @@ SDK_ID = f"plexi-sdk-py/{__version__}"
 import asyncio
 import inspect
 import json
-import queue
 import socket
 import struct
 import sys
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Coroutine
 
 
 # ── iq.query (#284) types ─────────────────────────────────────────────────────
@@ -1783,6 +1782,11 @@ class RenderContext:
     def cancel_timer(self, timer_id: str) -> None:
         self.emit.cancel_timer(timer_id)
 
+    def schedule_render(self, after_ms: int = 16) -> None:
+        """Ask the host to send a new Render event after `after_ms` milliseconds.
+        Delegates to emit.schedule_render(). 16 ms ≈ 60 fps. 32 ms ≈ 30 fps."""
+        self.emit.schedule_render(after_ms=after_ms)
+
     async def get_secret(self, key: str) -> "str | None":
         """Request a secret by key. Alias for emit.get_secret(). Use with ``await``."""
         return await self.emit.get_secret(key)
@@ -1871,17 +1875,22 @@ class App:
         self.emit = Emitter(self)
 
     # ── Override these ──────────────────────────────────────────────────────
-    def on_init(self, _ctx: RenderContext) -> None: pass
+    # All hooks may be overridden as either `def` (sync) or `async def`.
+    # _dispatch_hook detects the type at call time — both are valid.
+    # Return type is `Coroutine[Any, Any, None] | None` so Pyright accepts
+    # both sync (`def` → returns None) and async (`async def` → returns
+    # Coroutine) overrides without reportIncompatibleMethodOverride.
+    def on_init(self, _ctx: RenderContext) -> Coroutine[Any, Any, None] | None: return None
     def on_render(self, _ctx: RenderContext) -> None: pass
-    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> None: pass
-    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None: pass
-    def on_command(self, _ctx: RenderContext, _text: str) -> None: pass
-    def on_paste(self, _ctx: RenderContext, _text: str) -> None: pass
-    def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> None: pass
-    def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> None: pass
-    def on_inject(self, _ctx: RenderContext, _payload: Any) -> None: pass
+    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> Coroutine[Any, Any, None] | None: return None
+    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_command(self, _ctx: RenderContext, _text: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_paste(self, _ctx: RenderContext, _text: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
+    def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_inject(self, _ctx: RenderContext, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
-    def on_timer(self, _ctx: "RenderContext", _timer_id: str) -> None: pass
+    def on_timer(self, _ctx: RenderContext, _timer_id: str) -> Coroutine[Any, Any, None] | None: return None
     def on_midi_input_opened(
         self,
         _pipe_id: str,
@@ -2393,7 +2402,7 @@ class Agent(App):
         pid = pipe_id or f"agent-{uuid.uuid4()}"
         return self.emit.pipe_open_directed(pid, int(pane_id))
 
-    def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> None:
+    def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> Coroutine[Any, Any, None] | None:
         """Override to receive directed inter-agent messages.
 
         The default `App.on_pipe_message` is a no-op. Override on `Agent`
@@ -2402,3 +2411,4 @@ class Agent(App):
         """
         # Same default as App.on_pipe_message — overridable by subclasses.
         del ctx, pipe_id, payload
+        return None
