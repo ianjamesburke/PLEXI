@@ -639,7 +639,7 @@ impl ProcessApp {
                     });
                 });
             }
-            // ── LLM request (broker via Anthropic API) ────────────────────
+            // ── LLM request (direct `llm` capability via OpenRouter) ──────
             DrawCommand::LlmRequest {
                 request_id,
                 prompt,
@@ -661,33 +661,32 @@ impl ProcessApp {
                     return;
                 }
 
-                let api_key = crate::secrets::resolve_secret(
-                    "ANTHROPIC_API_KEY",
-                    &self.type_id,
-                    self.workspace_root.to_str().unwrap_or(""),
-                );
-
-                let Some(api_key) = api_key else {
-                    log::warn!(
-                        "ProcessApp[{}]: LlmRequest {request_id} — ANTHROPIC_API_KEY not in secrets store",
-                        self.type_id
-                    );
-                    self.outbound_events.push_back(PlexiEvent::LlmResponse {
-                        request_id,
-                        content: String::new(),
-                        error: Some("api_key_missing: store ANTHROPIC_API_KEY in Plexi secrets to use llm capability".to_string()),
-                    });
-                    return;
+                let api_key = match std::env::var("OPENROUTER_API_KEY") {
+                    Ok(k) if !k.is_empty() => k,
+                    _ => {
+                        log::warn!(
+                            "ProcessApp[{}]: LlmRequest {request_id} — OPENROUTER_API_KEY not set",
+                            self.type_id
+                        );
+                        self.outbound_events.push_back(PlexiEvent::LlmResponse {
+                            request_id,
+                            content: String::new(),
+                            error: Some(
+                                "api_key_missing: OPENROUTER_API_KEY not set — export it in your shell profile"
+                                    .to_string(),
+                            ),
+                        });
+                        return;
+                    }
                 };
 
+                let type_id = self.type_id.clone();
                 log::debug!(
-                    "ProcessApp[{}]: LlmRequest {request_id} model={model}",
-                    self.type_id
+                    "ProcessApp[{type_id}]: LlmRequest {request_id} model={model}"
                 );
                 let tx = self.http_tx.clone();
-                let type_id = self.type_id.clone();
                 std::thread::spawn(move || {
-                    let result = call_anthropic_api(&api_key, &model, &prompt, system.as_deref());
+                    let result = call_openrouter(&api_key, &model, &prompt, system.as_deref(), &type_id);
                     let _ = tx.send(match result {
                         Ok(content) => PlexiEvent::LlmResponse {
                             request_id,
@@ -1511,27 +1510,38 @@ impl ProcessApp {
     }
 }
 
-/// Call the Anthropic Messages API synchronously. Returns the text of the first content block.
-fn call_anthropic_api(
-    api_key: &zeroize::Zeroizing<String>,
+/// Call the OpenRouter chat completions API (non-streaming).
+///
+/// System prompt is injected as a leading `{"role":"system"}` message —
+/// NOT as a top-level `"system"` field (Anthropic format, silently ignored
+/// by OpenRouter). `app_type_id` is passed as the `user` field for per-app
+/// attribution in the OpenRouter Activity dashboard.
+fn call_openrouter(
+    api_key: &str,
     model: &str,
     prompt: &str,
     system: Option<&str>,
+    app_type_id: &str,
 ) -> Result<String, String> {
-    let mut body = serde_json::json!({
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    if let Some(sys) = system {
+        messages.push(serde_json::json!({"role": "system", "content": sys}));
+    }
+    messages.push(serde_json::json!({"role": "user", "content": prompt}));
+
+    let body = serde_json::json!({
         "model": model,
         "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}]
+        "messages": messages,
+        "user": app_type_id
     });
-    if let Some(sys) = system {
-        body["system"] = serde_json::Value::String(sys.to_string());
-    }
 
     let body_str = body.to_string();
-    let resp = ureq::post("https://api.anthropic.com/v1/messages")
-        .set("x-api-key", api_key.as_str())
-        .set("anthropic-version", "2023-06-01")
-        .set("content-type", "application/json")
+    let resp = ureq::post("https://openrouter.ai/api/v1/chat/completions")
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .set("Content-Type", "application/json")
+        .set("HTTP-Referer", "https://plexi.app")
+        .set("X-Title", "Plexi")
         .send_string(&body_str);
 
     match resp {
@@ -1539,14 +1549,18 @@ fn call_anthropic_api(
             let resp_body = r.into_string().map_err(|e| format!("read_error: {e}"))?;
             let v: serde_json::Value =
                 serde_json::from_str(&resp_body).map_err(|e| format!("parse_error: {e}"))?;
-            v["content"][0]["text"]
+            v["choices"][0]["message"]["content"]
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| format!("unexpected_response: {resp_body}"))
         }
         Err(ureq::Error::Status(status, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            Err(format!("http_error: status={status} body={body}"))
+            let msg = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| body.clone());
+            Err(format!("http_error: status={status} {msg}"))
         }
         Err(e) => Err(format!("http_error: {e}")),
     }

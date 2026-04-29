@@ -9,10 +9,41 @@ pub struct PlexiConfig {
     pub beta: Option<BetaConfig>,
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
+    pub iq: Option<IqConfig>,
     /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
     pub confirm_close: Option<bool>,
+}
+
+/// Model tier configuration for Plexi IQ (`iq.query` broker).
+///
+/// API key is NOT stored here — export `OPENROUTER_API_KEY` in your shell
+/// profile (`~/.zshrc`, `~/.zprofile`, etc.). Never store API keys in
+/// plaintext config files.
+#[derive(Deserialize, Default, Clone)]
+pub struct IqConfig {
+    /// Low-tier model (fast, cheap). e.g. "google/gemini-flash-2.0"
+    pub model_low: Option<String>,
+    /// Medium-tier model. e.g. "anthropic/claude-sonnet-4-6"
+    pub model_medium: Option<String>,
+    /// High-tier model (most capable). e.g. "anthropic/claude-opus-4-7"
+    pub model_high: Option<String>,
+}
+
+impl IqConfig {
+    /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
+    pub fn overlay(&mut self, other: Self) {
+        if other.model_low.is_some() {
+            self.model_low = other.model_low;
+        }
+        if other.model_medium.is_some() {
+            self.model_medium = other.model_medium;
+        }
+        if other.model_high.is_some() {
+            self.model_high = other.model_high;
+        }
+    }
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -281,6 +312,19 @@ accent = "#89b4fa"
 # bright_white = "#f4f2f9"
 # bright_foreground = "#f4f2f9"
 
+# ── Plexi IQ — brokered LLM calls (`iq.query` capability) ─────
+# Apps that declare `iq.query` in their manifest can call tier-routed
+# LLM models through the host broker. The host reads OPENROUTER_API_KEY
+# from your shell environment — never store API keys in this file.
+#
+# Export your key in ~/.zprofile or ~/.zshrc:
+#   export OPENROUTER_API_KEY="sk-or-..."
+#
+# [iq]
+# model_low    = "google/gemini-flash-2.0"       # fast / cheap
+# model_medium = "anthropic/claude-sonnet-4-6"   # balanced
+# model_high   = "anthropic/claude-opus-4-7"     # most capable
+
 # ── Experimental Features ──────────────────────────────────────
 # Flip any flag to true and restart to enable.
 [beta]
@@ -384,6 +428,11 @@ impl PlexiConfig {
         match (self.notifications.as_mut(), other.notifications) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.notifications = Some(incoming),
+            _ => {}
+        }
+        match (self.iq.as_mut(), other.iq) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.iq = Some(incoming),
             _ => {}
         }
     }

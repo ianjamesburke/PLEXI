@@ -1243,7 +1243,10 @@ fn default_volume() -> f32 {
 }
 
 fn default_llm_model() -> String {
-    "claude-haiku-4-5-20251001".to_string()
+    // OpenRouter model ID format. Apps omitting `model` use this default.
+    // Breaking change from #383: bare Anthropic IDs (e.g. "claude-haiku-4-5-20251001")
+    // no longer work — OpenRouter requires the "provider/model" format.
+    "anthropic/claude-haiku-4-5".to_string()
 }
 
 #[cfg(test)]
