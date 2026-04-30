@@ -1381,18 +1381,18 @@ impl PlexiApp {
                     ui.add_space(style::SPACE_MD);
 
                     ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("My dream is to work on Plexi full-time.")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                        );
-                        ui.add_space(style::SPACE_SM / 2.0);
-                        ui.label(
-                            RichText::new("If you'd like to support the project:")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                        );
-                        ui.add_space(style::SPACE_SM);
+                        // ui.label(
+                        //     RichText::new("My dream is to work on Plexi full-time.")
+                        //         .size(style::TEXT_CAPTION)
+                        //         .color(colors.text_dim),
+                        // );
+                        // ui.add_space(style::SPACE_SM / 2.0);
+                        // ui.label(
+                        //     RichText::new("If you'd like to support the project:")
+                        //         .size(style::TEXT_CAPTION)
+                        //         .color(colors.text_dim),
+                        // );
+                        // ui.add_space(style::SPACE_SM);
                         ui.hyperlink_to(
                             RichText::new("☕  Buy Me a Coffee").size(style::TEXT_BODY),
                             "https://buymeacoffee.com/ianjamesbu8",
