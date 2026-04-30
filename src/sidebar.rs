@@ -308,8 +308,10 @@ impl PlexiApp {
                         }
                     });
 
-                    // Only switch context on click, not on drag release
-                    if row_response.clicked() && self.drag_context.is_none() {
+                    // Double-click → rename; single click → switch context (not on drag release)
+                    if row_response.double_clicked() && self.drag_context.is_none() {
+                        menu_action = Some((i, WindowMenuAction::Rename));
+                    } else if row_response.clicked() && self.drag_context.is_none() {
                         clicked_workspace = Some(i);
                     }
                 }
