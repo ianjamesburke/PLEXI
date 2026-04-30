@@ -6,7 +6,6 @@ Layout:
   - The clock face + month grid are drawn with primitive ctx.circle/arc/text —
     they're data surfaces, not chrome.
 """
-from __future__ import annotations
 
 import datetime
 import json

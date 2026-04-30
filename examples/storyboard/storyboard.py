@@ -5,7 +5,6 @@ Canvas-style horizontal scene strip. Each scene card has a synthetic
 16:9 image placeholder rendered from draw primitives based on description
 keywords, plus description and dialogue sections. Fully interactive.
 """
-from __future__ import annotations
 
 import sys
 import os

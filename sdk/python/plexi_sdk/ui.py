@@ -35,7 +35,6 @@ than the total fixed-height content, grow spacers collapse to 0 and
 content at the bottom may not render — keep the total intentionally
 below the minimum pane size, or use `ScrollLog` for variable content.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Union

@@ -7,7 +7,6 @@ physics, ctx.clear(), and on_click to spawn new balls.
 Physics model: constant gravity, elastic circle-circle collisions with
 impulse resolution, wall bounce with damping.
 """
-from __future__ import annotations
 
 import math
 import random

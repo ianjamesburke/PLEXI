@@ -14,7 +14,6 @@ Buttons (click or press the matching number):
 
 Capability: `terminal.bindings`.
 """
-from __future__ import annotations
 
 import os
 

@@ -11,7 +11,6 @@ Keys:
   g — Fetch GITHUB_TOKEN (optional)
   r — Refresh both
 """
-from __future__ import annotations
 
 import threading
 

@@ -10,7 +10,6 @@ the `iq.query` broker.
 Build: ~10 lines of substance. The `Agent` SDK base class handles
 history mirroring, append helpers, and event wiring.
 """
-from __future__ import annotations
 
 from plexi_sdk import Agent
 

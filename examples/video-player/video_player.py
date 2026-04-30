@@ -33,7 +33,6 @@ Keys:
 Manifest declares `video.playback`. Without it, open_video() raises
 CapabilityDeniedError immediately and the app surfaces it in the log.
 """
-from __future__ import annotations
 
 import os
 import shlex

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Logs — live tail of ~/.plexi-beta/plexi.log, newest-first, color-coded by level."""
-from __future__ import annotations
 
 import os
 import re

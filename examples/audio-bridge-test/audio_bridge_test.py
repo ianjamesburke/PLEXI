@@ -20,7 +20,6 @@ Keys:
   s - Stop (end capture + echo "# capture stopped")
   c - Clear waveform
 """
-from __future__ import annotations
 
 import struct
 import threading

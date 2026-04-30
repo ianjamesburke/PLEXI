@@ -14,7 +14,6 @@ Keys:
 The host requires `ai.query` declared in manifest.toml. This app
 declares it; see `ai-query-denied-test/` for the gate-denied path.
 """
-from __future__ import annotations
 
 import threading
 

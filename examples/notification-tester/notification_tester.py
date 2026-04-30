@@ -29,7 +29,6 @@ Scope (context vs global) is NOT a runtime choice. It's declared per-app
 in manifest.toml::default_notification_scope. Flip this app's manifest to
 "global" to test cross-context visibility.
 """
-from __future__ import annotations
 
 import threading
 import time

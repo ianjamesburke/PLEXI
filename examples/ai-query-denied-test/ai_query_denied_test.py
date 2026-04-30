@@ -7,7 +7,6 @@ reaching the LLM backend. The SDK turns that into a CapabilityDeniedError.
 
 Press `s` to send a test query and watch the gate fire.
 """
-from __future__ import annotations
 
 import threading
 

@@ -24,7 +24,6 @@ Keys:
   i - ffprobe info dump
   c - Clear log
 """
-from __future__ import annotations
 
 import shlex
 import sys

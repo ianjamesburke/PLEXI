@@ -7,7 +7,6 @@ and a multi-track timeline with clips, ruler, and animated playhead.
 
 No video decoding — all frames are synthetic. Space to play/pause.
 """
-from __future__ import annotations
 
 import math
 import threading

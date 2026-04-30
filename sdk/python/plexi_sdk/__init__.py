@@ -398,7 +398,6 @@ auto-emits FrameDone; all others must NOT emit FrameDone.
 
 Call MyApp().run() to start the PGAP event loop. This blocks until Shutdown.
 """
-from __future__ import annotations
 
 __version__ = "0.5.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"

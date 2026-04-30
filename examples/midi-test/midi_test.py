@@ -22,7 +22,6 @@ Keys:
 
 The host requires `midi.in` and `midi.out` declared in manifest.toml.
 """
-from __future__ import annotations
 
 import threading
 import time

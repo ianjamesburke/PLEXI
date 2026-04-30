@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 """Unit tests for the v3.3 SDK `Agent` base class (issue #338, part 2 of #285).
 

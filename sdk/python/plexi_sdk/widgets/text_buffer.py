@@ -2,7 +2,6 @@
 
 Lines + cursor + selection. No rendering; that is the TextArea widget's job.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 

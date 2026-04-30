@@ -13,7 +13,6 @@ JSON pipe opened by a coordinator agent. The worker:
 Both pipe-receive and direct-user paths run their `iq.query` calls on
 a background thread so the SDK stdin loop stays free.
 """
-from __future__ import annotations
 
 import threading
 
