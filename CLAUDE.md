@@ -185,7 +185,6 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 ## PlexiApp State
 
 `PlexiApp` fields are declared in `src/app/mod.rs`. There are exactly two struct-literal initialization blocks — both contain `renaming_window: None` and are the only places new fields need to be initialized.
-
 ## Host UI Systems — Reuse Before Rolling Your Own
 
 Before writing any keyboard shortcut display, badge, chip, or inline label widget, check `src/widgets.rs` and `src/style.rs`. These modules contain the canonical, already-tested implementations. Re-rolling them inline produces visual inconsistency and duplicated sizing logic.
