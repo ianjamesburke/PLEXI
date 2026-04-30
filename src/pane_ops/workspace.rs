@@ -293,12 +293,15 @@ impl PlexiApp {
         if let Some(ctx_id) = preferred {
             if let Some(idx) = self.contexts.iter().position(|c| c.context_id == ctx_id && c.workspace_id == ws_id) {
                 self.active_context = idx;
+                self.record_context_visit(ctx_id);
                 return;
             }
         }
         if let Some(idx) = self.contexts.iter().position(|c| c.workspace_id == ws_id) {
             self.active_context = idx;
-            self.workspace_active_window.insert(ws_id, self.contexts[idx].context_id);
+            let cid = self.contexts[idx].context_id;
+            self.workspace_active_window.insert(ws_id, cid);
+            self.record_context_visit(cid);
         }
     }
 

@@ -106,6 +106,8 @@ impl PlexiApp {
             let c = &self.contexts[idx];
             self.last_page_x_per_row.insert(c.grid_y, c.grid_x);
             self.workspace_active_window.insert(ws_id, c.context_id);
+            let cid = c.context_id;
+            self.record_context_visit(cid);
         }
     }
 
