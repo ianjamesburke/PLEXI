@@ -1,12 +1,17 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
-## 2026-04-30 — [FIX] Cmd+Q freezes when Claude Code is running in a terminal pane (PR #453 → alpha)
+## 2026-04-30 — [GOTCHA] UNSOLVED: Cmd+Q freezes the app when Claude Code is running in a terminal pane
 
-`get_pid_cwd()` spawned `/usr/sbin/lsof` via `Command::output()` (blocking) on the main render/UI thread. Claude Code holds many open fds, sockets, and API connections; `lsof -p <shell_pid>` blocks indefinitely enumerating them. `save_workspace()` calls `get_pid_cwd()` for every terminal pane before issuing `ViewportCommand::Close`, so Cmd+Q froze the entire app requiring force-quit. The same call site in `render/terminal_pane.rs` and `app/sync.rs` also ran lsof 3–4× per second per pane during normal rendering.
+**Status: unsolved. Reverted PR #453.**
 
-Fix: `get_pid_cwd()` is now non-blocking — cache-read-only on the caller's thread, with a named background thread (`cwd-refresh-<pid>`) handling `lsof`. `PENDING_REFRESH` prevents duplicate concurrent spawns. Stale values are returned during the refresh window. TTL bumped 300ms → 2s since refreshes are async.
+**What happens:** Pressing Cmd+Q while a Claude Code instance is running in any terminal pane causes the app to stop responding entirely. The process stays alive (visible in Activity Monitor at ~25% CPU), but the window is frozen and the only escape is force-quit. Removing Claude Code from the picture, Cmd+Q works normally.
 
-**Breaks if:** Cmd+Q with an active Claude Code terminal pane causes the app to freeze/stop responding.
+**What was tried:** Moved `lsof` calls in `get_pid_cwd()` off the render thread onto named background threads (`cwd-refresh-<pid>`). Hypothesis was that `lsof -p <shell_pid>` blocks indefinitely while Claude Code holds many open fds and network connections, and `save_workspace()` calling it synchronously on the render thread before `ViewportCommand::Close` was the freeze point. Shipped as PR #453, reverted — the freeze persisted, so `lsof` on `save_workspace` is not the root cause.
+
+**Current hypotheses:**
+1. **Claude Code swallows Cmd+Q through the PTY.** Claude Code is a full-screen TUI; when the terminal pane has focus, keystrokes route into the PTY before egui sees them. Cmd+Q may never reach `Action::Quit`, so `quit_press_count` stays 0 and the triple-tap confirm flow never fires. The OS `close_requested` event does arrive but may race with `CancelClose`. Needs a test: does the freeze happen when a *non-Claude* full-screen TUI (e.g. `vim`, `htop`) is running?
+2. **PTY child reaping blocks on drop.** PR #440 (`fix(subprocess): reap PTY children on TerminalBackend drop`) added explicit child-wait logic on `TerminalBackend::drop`. If that wait blocks because Claude Code doesn't exit cleanly on SIGTERM (it tries to save state, etc.), the shutdown path hangs. Check `TerminalBackend::drop` — does it join a thread that's waiting for the child?
+3. **Shutdown deadlock in the PTY event subscription threads.** The `pty_event_subscription_N` threads (`src/pty_event.rs`) are parked waiting on a channel. If the channel sender is dropped during shutdown before those threads are unparked, or if there's a lock ordering issue between the event threads and the render thread, shutdown could deadlock.
 
 ## 2026-04-29 — [FIX] ai.query hangs forever: invalid model ID + missing config + response delivery race (PR #434)
 
