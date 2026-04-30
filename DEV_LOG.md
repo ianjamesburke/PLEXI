@@ -1,19 +1,16 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
-## 2026-04-30 — [GOTCHA] UNSOLVED: Cmd+Q freezes the app whenever any full-screen TUI is running in a terminal pane
+## 2026-04-30 — [FIX] Cmd+Q freezes when any full-screen TUI is running in a terminal pane (PR #454 → alpha)
 
-**Status: unsolved. Reverted PR #453.**
+Two bugs in `deps/egui_term/src/backend/mod.rs` combined to freeze the app on Cmd+Q whenever a full-screen TUI (Claude Code, `btop`, `files`) was running. The 25% CPU ghost + indefinite freeze were separate symptoms from separate root causes.
 
-**What happens:** Pressing Cmd+Q while any full-screen TUI is running in a terminal pane causes the app to stop responding entirely. Confirmed with: Claude Code, `btop`, `files`. The process stays alive (visible in Activity Monitor at ~25% CPU), but the window is frozen and the only escape is force-quit. Cmd+Q works normally when terminals are at a plain shell prompt.
+**Bug 1 — `pty_event_subscription` busy-loop on channel close:** The thread used `loop { if let Ok(event) = recv() }`. When `TerminalBackend` drops and the sender is released, `recv()` returns `Err` immediately. The `if let Ok` silently falls through and the loop spins forever — one full CPU core. Fixed by changing to `while let Ok` so the thread exits when the channel closes. Also changed the `panic!` on a failed proxy send to a `break` — the receiver can legitimately be gone during shutdown.
 
-**What was tried:** Moved `lsof` calls in `get_pid_cwd()` off the render thread onto named background threads. Hypothesis was that `lsof` blocking on `save_workspace()` was the freeze point. Shipped as PR #453, reverted — the freeze persisted. `lsof` / `save_workspace` is not the root cause.
+**Bug 2 — `reap_child` blocking the render thread:** `TerminalBackend::drop` (added in PR #442) called `reap_child()` synchronously, which polls `waitpid(WNOHANG)` 8 × 25 ms then blocks on `waitpid(0)`. Full-screen TUIs don't exit within 200 ms of `Msg::Shutdown` — they restore the terminal first — so drop blocked the render thread per pane. Fixed by spawning `reap_child` on a named background thread (`pty-reap-<pid>`).
 
-**Ruled out:** App-specific behaviour (Claude Code swallowing Cmd+Q through the PTY) — `btop` and `files` reproduce it identically, so this is a general full-screen TUI issue, not anything about Claude Code's process.
+**False lead:** Moving `lsof` calls off the render thread (PR #453) did not fix it — reverted.
 
-**Leading hypotheses:**
-1. **PTY child reaping blocks on `TerminalBackend::drop`.** PR #440 added explicit child-wait logic on drop. Full-screen TUIs (alt-screen mode) don't exit cleanly on SIGTERM — they restore the terminal first, which takes time or hangs. If `TerminalBackend::drop` joins a thread waiting for the child process to exit, shutdown blocks indefinitely. Start here: read `TerminalBackend::drop` and the reaping thread it spawned in PR #440.
-2. **Shutdown deadlock in the PTY event subscription threads.** The `pty_event_subscription_N` threads park on a channel receiver. If the channel sender drops during shutdown before those threads are unparked, or there's a lock ordering issue between the event threads and the render thread during teardown, shutdown deadlocks. The backtrace from the frozen process showed these threads alive and parked — suspicious.
-3. **Alt-screen mode blocks the PTY reader on shutdown.** Full-screen TUIs hold the terminal in ALT_SCREEN. The PTY reader thread may be blocked in `kevent` waiting for data that never arrives (because the TUI is waiting for a signal before flushing). If the shutdown sequence tries to join the PTY reader before it unblocks, it hangs.
+**Breaks if:** Cmd+Q with a full-screen TUI running freezes the app or requires force-quit.
 
 ## 2026-04-29 — [FIX] ai.query hangs forever: invalid model ID + missing config + response delivery race (PR #434)
 
