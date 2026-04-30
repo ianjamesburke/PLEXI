@@ -675,7 +675,7 @@ impl PlexiApp {
         // If the window is now empty and there are others in the same context,
         // delete it and switch — don't strand the user on a blank welcome screen.
         if self.windows[self.active_window].panes.is_empty() {
-            self.delete_context(self.active_window);
+            self.delete_window(self.active_window);
         }
         false
     }
