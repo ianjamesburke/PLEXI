@@ -328,13 +328,16 @@ impl TerminalBackend {
             None => None,
         };
 
-        // When a full-screen TUI (e.g. Claude Code) exits the alternate screen,
-        // the scroll-back buffer retains stale render frames that appear as
-        // duplicated content when the user scrolls up. Clear history on the
-        // ALT_SCREEN → normal transition so scroll-back starts clean.
+        // Full-screen TUIs (e.g. Claude Code) use `ALT_SCREEN`.
+        //
+        // In that mode we must ensure Plexi's scrollback is empty.
+        // If we only clear on ALT_SCREEN exit, any scrollback frames that
+        // accumulated *during* the session can still get exposed when the
+        // user scrolls up.
         let was_alt_screen = self.last_content.terminal_mode.contains(TermMode::ALT_SCREEN);
         let is_alt_screen = terminal.mode().contains(TermMode::ALT_SCREEN);
-        if was_alt_screen && !is_alt_screen {
+        if !was_alt_screen && is_alt_screen {
+            // Drop any stale history and reset display offset.
             terminal.grid_mut().clear_history();
         }
 
