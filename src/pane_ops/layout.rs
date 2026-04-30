@@ -667,15 +667,16 @@ impl PlexiApp {
 
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
-    ///
-    /// After closing the last pane in a context the context remains open and
-    /// the welcome screen is shown in its place.
     pub(crate) fn execute_close_pane(&mut self) -> bool {
         self.windows[self.active_window].zoomed_pane = None;
         if !self.windows[self.active_window].panes.is_empty() {
             self.close_focused();
         }
-
+        // If the window is now empty and there are others in the same context,
+        // delete it and switch — don't strand the user on a blank welcome screen.
+        if self.windows[self.active_window].panes.is_empty() {
+            self.delete_context(self.active_window);
+        }
         false
     }
 }
