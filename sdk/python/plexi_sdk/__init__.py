@@ -2290,9 +2290,15 @@ class App:
             await _dispatcher()
         finally:
             reader_task.cancel()
-            # Ensure all pipes are closed cleanly
             for p in self._pipes.values():
                 p.close()
+            # _reader is blocked in run_in_executor(sys.stdin.readline) which
+            # cannot be interrupted by task cancellation — the executor thread
+            # stays alive until stdin EOF, which the host may not send within
+            # the 2s shutdown window. os._exit() terminates immediately without
+            # waiting for threads, avoiding the SIGTERM that would otherwise fire.
+            import os as _os
+            _os._exit(0)
 
     async def _dispatch_hook(self, hook: "Any", *args: Any) -> None:
         """Dispatch a lifecycle hook — async or sync — in the event loop.

@@ -12,10 +12,10 @@ const R6: CornerRadius = CornerRadius::same(6);
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let active_ctx = &self.contexts[self.active_context];
+            let active_ctx = &self.windows[self.active_window];
 
             // Workspace dots
-            let sidebar_contexts: Vec<usize> = (0..self.workspaces.len()).collect();
+            let sidebar_contexts: Vec<usize> = (0..self.contexts.len()).collect();
             if sidebar_contexts.len() > 1 {
                 let dot_radius = 3.5;
                 let dot_spacing = 10.0;
@@ -28,7 +28,7 @@ impl PlexiApp {
                 let start_x = rect.left() + dot_radius;
                 for (dot_i, ctx_i) in sidebar_contexts.iter().enumerate() {
                     let cx = start_x + (dot_i as f32) * dot_spacing;
-                    let color = if *ctx_i == self.active_workspace {
+                    let color = if *ctx_i == self.active_context {
                         self.colors.accent
                     } else {
                         self.colors.bg_active
@@ -41,9 +41,9 @@ impl PlexiApp {
 
             // Title: "Workspace (x,y)" when multiple windows exist,
             // otherwise just the workspace name.
-            let ws = &self.workspaces[self.active_workspace];
+            let ws = &self.contexts[self.active_context];
             let ws_id = ws.context_id;
-            let window_count = self.contexts.iter().filter(|c| c.workspace_id == ws_id).count();
+            let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
             let title = if window_count > 1 {
                 format!(
                     "{} ({},{})",
@@ -251,7 +251,7 @@ impl PlexiApp {
         } else if commit {
             let new_name = self.rename_buffer.trim().to_string();
             if let Some(pane) =
-                self.contexts[self.active_context].panes.get_mut(&pane_id)
+                self.windows[self.active_window].panes.get_mut(&pane_id)
             {
                 if let Some(t) = pane.as_terminal_mut() {
                     t.name = if new_name.is_empty() {
@@ -441,7 +441,7 @@ impl PlexiApp {
         // Collect all active runs from every app pane in every context.
         // Clone needed because we hold &self across the window render.
         let all_runs: Vec<(String, String, String, Option<String>)> = Vec::new(); // (run_id, app_id, status, blocked_prompt)
-        for _context in &self.contexts {}
+        for _win in &self.windows {}
 
         egui::Window::new("Active Runs")
             .collapsible(false)
@@ -1266,10 +1266,10 @@ impl PlexiApp {
         }
 
         let content_rect = ctx.screen_rect();
-        let active_context = self.active_context;
+        let active_context = self.active_window;
         let colors = self.colors;
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        let ws_name = self.workspaces[self.active_workspace].name.clone();
+        let ws_id = self.contexts[self.active_context].context_id;
+        let ws_name = self.contexts[self.active_context].name.clone();
 
         egui::Area::new(egui::Id::new("minimap_overlay"))
             .order(egui::Order::Foreground)
@@ -1279,19 +1279,19 @@ impl PlexiApp {
                 if let Some(clicked_idx) = crate::minimap::render_minimap(
                     ui,
                     content_rect,
-                    &self.contexts,
+                    &self.windows,
                     active_context,
                     &self.last_page_x_per_row,
                     &colors,
                     ws_id,
                     &ws_name,
                 ) {
-                    let old = &self.contexts[self.active_context];
+                    let old = &self.windows[self.active_window];
                     self.last_page_x_per_row.insert(old.grid_y, old.grid_x);
-                    self.active_context = clicked_idx;
-                    let new = &self.contexts[clicked_idx];
+                    self.active_window = clicked_idx;
+                    let new = &self.windows[clicked_idx];
                     self.last_page_x_per_row.insert(new.grid_y, new.grid_x);
-                    self.workspace_active_window.insert(ws_id, new.context_id);
+                    self.context_active_window.insert(ws_id, new.window_id);
                 }
             });
     }
@@ -1311,6 +1311,7 @@ impl PlexiApp {
                     style::MODAL_PADDING_V,
                 ))
                 .show(ui, |ui| {
+                    ui.add_space(style::SPACE_XL);
                     ui.vertical_centered(|ui| {
                         ui.label(
                             RichText::new("PLEXI")

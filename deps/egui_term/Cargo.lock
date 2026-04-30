@@ -153,6 +153,8 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "egui",
+ "libc",
+ "log",
  "open",
 ]
 

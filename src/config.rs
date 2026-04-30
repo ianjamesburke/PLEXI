@@ -338,11 +338,11 @@ interrupt_threshold = 100
 # ── Theme ──────────────────────────────────────────────────────
 # Pick a preset OR customize individual colors below.
 # Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
-# theme_preset = "catppuccin-mocha"
+theme_preset = "catppuccin-mocha"
 
 [theme]
-# UI chrome colors (hex format)
-accent = "#89b4fa"
+# Uncomment any color below to override the preset value.
+# accent = "#89b4fa"
 # bg_darkest = "#11111b"      # Deepest background (window edges)
 # bg_sidebar = "#181825"      # Sidebar background
 # bg_toolbar = "#181825"      # Toolbar/status bar background
@@ -425,7 +425,9 @@ pub fn open_config_file() {
         let _ = std::fs::write(&path, CONFIG_TEMPLATE);
     }
 
-    let _ = std::process::Command::new("open").arg(&path).spawn();
+    if let Err(e) = std::process::Command::new("open").arg(&path).status() {
+        log::error!("open_config_file: failed to open {}: {e}", path.display());
+    }
 }
 
 impl PlexiConfig {

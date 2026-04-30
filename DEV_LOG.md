@@ -1,5 +1,17 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-30 — [FIX] Cmd+Q freezes when any full-screen TUI is running in a terminal pane (PR #454 → alpha)
+
+Two bugs in `deps/egui_term/src/backend/mod.rs` combined to freeze the app on Cmd+Q whenever a full-screen TUI (Claude Code, `btop`, `files`) was running. The 25% CPU ghost + indefinite freeze were separate symptoms from separate root causes.
+
+**Bug 1 — `pty_event_subscription` busy-loop on channel close:** The thread used `loop { if let Ok(event) = recv() }`. When `TerminalBackend` drops and the sender is released, `recv()` returns `Err` immediately. The `if let Ok` silently falls through and the loop spins forever — one full CPU core. Fixed by changing to `while let Ok` so the thread exits when the channel closes. Also changed the `panic!` on a failed proxy send to a `break` — the receiver can legitimately be gone during shutdown.
+
+**Bug 2 — `reap_child` blocking the render thread:** `TerminalBackend::drop` (added in PR #442) called `reap_child()` synchronously, which polls `waitpid(WNOHANG)` 8 × 25 ms then blocks on `waitpid(0)`. Full-screen TUIs don't exit within 200 ms of `Msg::Shutdown` — they restore the terminal first — so drop blocked the render thread per pane. Fixed by spawning `reap_child` on a named background thread (`pty-reap-<pid>`).
+
+**False lead:** Moving `lsof` calls off the render thread (PR #453) did not fix it — reverted.
+
+**Breaks if:** Cmd+Q with a full-screen TUI running freezes the app or requires force-quit.
+
 ## 2026-04-29 — [FIX] ai.query hangs forever: invalid model ID + missing config + response delivery race (PR #434)
 
 Three compounding bugs caused every `ai.query` call to hang permanently showing "Waiting for the host's AI broker…" with no error surfaced.
@@ -27,7 +39,6 @@ When a query is in flight and `Shutdown` arrives, the `ai_query` coroutine is bl
 Renamed all "IQ" → "AI" across the codebase (92+ sites): protocol types (`IqQuery` → `AiQuery`, `IqResponse` → `AiResponse`), wire strings, capability string (`iq.query` → `ai.query`), module (`src/plexi_iq/` → `src/plexi_ai/`), config section (`[iq]` → `[ai]`), Python SDK (`emit.iq_query` → `emit.ai_query`), and example apps. Added `OllamaBackend` — NDJSON streaming via `/api/chat`, pluggable via `[ai] backend = "ollama"`. Deleted `src/agent_turn.rs` and all `InProcessAgent` code (session persistence, SOUL/MEMORY loading, `claude -p`). Deleted `DrawCommand::LlmRequest` / `PlexiEvent::LlmResponse`. Ledger renamed to `ai-ledger.jsonl`.
 
 **Breaks if:** An installed app still declares `iq.query` in its manifest — skipped at startup with WARN. Any app calling `emit.iq_query()` gets `AttributeError`.
-
 ## 2026-04-28 — [FIX] Minimap hidden after Cmd+1-9 workspace switch
 
 **Root cause:** `Action::SwitchContext` (Cmd+1-9) was inlining the workspace switch — directly setting `self.active_workspace = n` and calling `pick_active_context_from_workspace` — bypassing `switch_workspace` and its minimap save/restore logic. Sidebar clicks correctly called `switch_workspace`; Cmd+1-9 did not.

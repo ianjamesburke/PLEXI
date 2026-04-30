@@ -29,11 +29,11 @@ impl PlexiApp {
         request_id: String,
         cwd: Option<String>,
     ) {
-        let active = self.active_context;
+        let active = self.active_window;
 
         // Resolve cwd: explicit > sender's workspace_root > home.
         let workspace_root = self
-            .contexts[active]
+            .windows[active]
             .panes
             .get(&sender_pane_id)
             .and_then(|p| p.as_app())
@@ -46,7 +46,7 @@ impl PlexiApp {
         // Find the sender's tile so we can split next to it. Without the
         // tile we have no anchor for the split — bail out and notify the
         // app so the blocking helper unblocks instead of hanging.
-        let Some(sender_tile) = find_tile_for_pane(&self.contexts[active].tree, sender_pane_id)
+        let Some(sender_tile) = find_tile_for_pane(&self.windows[active].tree, sender_pane_id)
         else {
             log::warn!(
                 "RequestLinkedTerminal: sender pane {sender_pane_id} not in tree; \
@@ -84,7 +84,7 @@ impl PlexiApp {
             );
             return;
         };
-        self.contexts[active]
+        self.windows[active]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(term)));
 
@@ -94,18 +94,18 @@ impl PlexiApp {
         // then restore focus afterwards. Side-by-side (vertical=true) on
         // the right: feels right for a Canvas-app-on-left, terminal-on-
         // right layout, which is the common case.
-        let prev_focus = self.contexts[active].focused_pane;
-        self.contexts[active].focused_pane = Some(sender_tile);
+        let prev_focus = self.windows[active].focused_pane;
+        self.windows[active].focused_pane = Some(sender_tile);
         let share = crate::host::command::ShareRatio::new(1.0, 1.0)
             .expect("1:1 is a valid ShareRatio");
         let _ = self.split_with_new_pane(new_id, true, share, false);
         // Don't snap focus to the new terminal — the user clicked a button
         // in the Canvas app and would lose keyboard focus mid-flow.
-        self.contexts[active].focused_pane = prev_focus;
+        self.windows[active].focused_pane = prev_focus;
 
         // Update the sender's linked_pane_id so legacy CdRequest also
         // routes to this terminal.
-        if let Some(pane) = self.contexts[active].panes.get_mut(&sender_pane_id) {
+        if let Some(pane) = self.windows[active].panes.get_mut(&sender_pane_id) {
             if let Some(app) = pane.as_app_mut() {
                 app.linked_pane_id = Some(new_id);
             }
@@ -136,8 +136,8 @@ impl PlexiApp {
         command: String,
         echo: bool,
     ) {
-        let active = self.active_context;
-        let Some(term) = self.contexts[active]
+        let active = self.active_window;
+        let Some(term) = self.windows[active]
             .panes
             .get_mut(&terminal_pane_id)
             .and_then(|p| p.as_terminal_mut())
@@ -164,8 +164,8 @@ impl PlexiApp {
         path: String,
         mode: PathTokenMode,
     ) {
-        let active = self.active_context;
-        let Some(term) = self.contexts[active]
+        let active = self.active_window;
+        let Some(term) = self.windows[active]
             .panes
             .get_mut(&terminal_pane_id)
             .and_then(|p| p.as_terminal_mut())
@@ -198,8 +198,8 @@ impl PlexiApp {
         terminal_pane_id: PaneId,
         command: String,
     ) {
-        let active = self.active_context;
-        let cwd = self.contexts[active]
+        let active = self.active_window;
+        let cwd = self.windows[active]
             .panes
             .get(&terminal_pane_id)
             .and_then(|p| p.as_terminal())
@@ -254,8 +254,8 @@ impl PlexiApp {
     /// pending dispatch — the user closed the canvas app between request
     /// and response).
     fn queue_event_to_pane(&mut self, pane_id: PaneId, event: PlexiEvent) {
-        let active = self.active_context;
-        if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+        let active = self.active_window;
+        if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
             if let Some(app) = pane.as_app_mut() {
                 app.runtime.queue_outbound_event(event);
             } else if let Some(agent) = pane.as_agent_mut() {
