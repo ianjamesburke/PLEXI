@@ -190,8 +190,11 @@ impl TerminalBackend {
         let shared_size_clone = shared_size.clone();
         let _pty_event_subscription = std::thread::Builder::new()
             .name(format!("pty_event_subscription_{}", id))
-            .spawn(move || loop {
-                if let Ok(event) = event_receiver.recv() {
+            .spawn(move || {
+                // `while let Ok` exits cleanly when the sender drops (channel
+                // closed on TerminalBackend drop), preventing a busy-loop on
+                // a dead channel that would spin a full CPU core at shutdown.
+                while let Ok(event) = event_receiver.recv() {
                     if let Event::ColorRequest(index, formatter) = &event {
                         if let Some(color) =
                             resolve_dynamic_color(&event_term, &dynamic_colors, *index)
@@ -211,11 +214,10 @@ impl TerminalBackend {
                         event_notifier.notify(formatter(size.into()).into_bytes());
                         continue;
                     }
-                    pty_event_proxy_sender
-                        .send((id, event.clone()))
-                        .unwrap_or_else(|_| {
-                            panic!("pty_event_subscription_{}: sending PtyEvent is failed", id)
-                        });
+                    // If the receiver is gone (app shutting down) just exit.
+                    if pty_event_proxy_sender.send((id, event.clone())).is_err() {
+                        break;
+                    }
                     app_context.clone().request_repaint();
                     if let Event::Exit = event {
                         break;
@@ -789,11 +791,16 @@ impl Default for RenderableContent {
 impl Drop for TerminalBackend {
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);
-        // Reap the PTY child so it doesn't get orphaned if the event loop
-        // doesn't propagate the shutdown to the shell in time. Poll for up to
-        // 200 ms (8 × 25 ms) for a clean exit, then SIGKILL + blocking wait.
+        // Reap the PTY child on a background thread. reap_child polls for up
+        // to 200 ms then issues SIGKILL + blocking waitpid — running that on
+        // the caller's thread (the render thread during quit) froze the UI.
         #[cfg(unix)]
-        reap_child(self.child_pid);
+        {
+            let pid = self.child_pid;
+            let _ = std::thread::Builder::new()
+                .name(format!("pty-reap-{pid}"))
+                .spawn(move || reap_child(pid));
+        }
     }
 }
 
