@@ -94,7 +94,14 @@ Steps 5–8 are mandatory after every merge. Skipping `git pull` + install is ho
 
 **Always run `wtp add` from inside `worktrees/alpha/`**, not the repo root. This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
 
-**Before creating a worktree:** check `git status` in `worktrees/alpha`. If there are uncommitted changes, ask whether to commit them first or carry the dirty HEAD into the new branch. Never silently drop uncommitted work.
+**Verify the base immediately after `wtp add`** — before delegating any work to a subagent or writing any code, confirm the new worktree is on the right commit:
+```bash
+git -C worktrees/<new-branch> log --oneline -1   # must match ↓
+git -C worktrees/alpha log --oneline -1
+```
+If they don't match, delete the worktree and branch immediately and redo from inside `worktrees/alpha/`. Discovering the wrong base after a subagent has run wastes the entire run.
+
+**Before creating a worktree:** run `git status` AND `git diff --stat` in `worktrees/alpha`. Alpha must be clean (no uncommitted changes, no unstaged diffs) before branching. If it's dirty, stop and ask: commit first, or is this work meant to be carried into the new branch? Never silently proceed on a dirty base.
 
 **Small-changes batch PR:** Multiple small related fixes may land in one PR if they share a single commit message and a single `Breaks if:` line. Unrelated changes go in separate PRs.
 
