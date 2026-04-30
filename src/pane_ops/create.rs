@@ -526,22 +526,11 @@ impl PlexiApp {
         let _ = self.split_with_new_pane(new_id, true, share, false);
     }
 
-    /// Open a new agent (Plexi IQ) pane alongside the focused terminal (Cmd+I).
+    /// Cmd+I: in-process agent was removed (#429). This is a no-op — the
+    /// Action::OpenAgentPane binding remains but does nothing until a default
+    /// subprocess agent is configured.
     pub(crate) fn open_agent_pane(&mut self) {
-        let active = self.active_context;
-        let cwd = {
-            let ctx = &self.contexts[active];
-            ctx.focused_pane
-                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-        };
-        let new_id = self.host.alloc_pane_id();
-        let pane = crate::agent_pane::AgentPane::new(new_id, cwd);
-        self.contexts[active]
-            .panes
-            .insert(new_id, Pane::Agent(Box::new(pane)));
-        let share = ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
-        let _ = self.split_with_new_pane(new_id, true, share, false);
+        log::info!("open_agent_pane: in-process agent removed (#429); use a subprocess agent app instead");
     }
 
     /// Open an Agent Workspace pane (#348): create a git worktree, spawn the

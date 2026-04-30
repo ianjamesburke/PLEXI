@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "ai-query-test"
+type = "app"
+name = "AI Query Test"
+version = "0.1.0"
+description = "POC for #284 — exercises the ai.query broker across all three model tiers (Haiku / Sonnet / Opus)."
+entry = "ai_query_test.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+capabilities = ["ai.query"]
+
+[launch]
+background = false

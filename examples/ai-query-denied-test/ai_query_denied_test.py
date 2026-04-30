@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""IQ Query Denied Test — POC for #284 (gate-denied path).
+"""AI Query Denied Test — POC for #284 (gate-denied path).
 
-Manifest does NOT declare `iq.query`. The host must therefore return
-`capability denied` immediately for every iq_query call, without ever
+Manifest does NOT declare `ai.query`. The host must therefore return
+`capability denied` immediately for every ai_query call, without ever
 reaching the LLM backend. The SDK turns that into a CapabilityDeniedError.
 
 Press `s` to send a test query and watch the gate fire.
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 
-from plexi_sdk import App, RenderContext, CapabilityDeniedError, IqResponse
+from plexi_sdk import App, RenderContext, CapabilityDeniedError, AiResponse
 from plexi_sdk.ui import (
     AppBar,
     Card,
@@ -24,7 +24,7 @@ from plexi_sdk.ui import (
 )
 
 
-class IqQueryDeniedTestApp(App):
+class AiQueryDeniedTestApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         # `_state` is one of:
         #   None             — no attempt yet
@@ -33,8 +33,8 @@ class IqQueryDeniedTestApp(App):
         #   ("ok", str)      — unexpected; the gate should have blocked us
         #   ("err", str)     — some other error
         self._state: object = None
-        ctx.status_summary("IQ Query Denied — press `s` to verify the gate")
-        self.emit.info("IQ Query Denied Test started")
+        ctx.status_summary("AI Query Denied — press `s` to verify the gate")
+        self.emit.info("AI Query Denied Test started")
 
     def _try_call(self) -> None:
         if self._state == "in_flight":
@@ -44,7 +44,7 @@ class IqQueryDeniedTestApp(App):
 
         def runner() -> None:
             try:
-                resp: IqResponse = self.emit.run_sync(self.emit.iq_query(
+                resp: AiResponse = self.emit.run_sync(self.emit.ai_query(
                     model_tier="low",
                     system="You are a helpful assistant.",
                     messages=[{"role": "user", "content": "Hello?"}],
@@ -52,14 +52,14 @@ class IqQueryDeniedTestApp(App):
                 # Reached only if the gate is broken.
                 self._state = ("ok", resp.content)
                 self.emit.error(
-                    "GATE BUG: iq_query returned content despite missing capability"
+                    "GATE BUG: ai_query returned content despite missing capability"
                 )
             except CapabilityDeniedError as e:
                 self._state = ("denied", str(e))
                 self.emit.info(f"gate fired (expected): {e}")
             except Exception as e:
                 self._state = ("err", str(e))
-                self.emit.warn(f"unexpected error from iq_query: {e}")
+                self.emit.warn(f"unexpected error from ai_query: {e}")
             finally:
                 self.emit.schedule_render(after_ms=20)
 
@@ -85,7 +85,7 @@ class IqQueryDeniedTestApp(App):
                 Label(msg, color="#a6e3a1"),
                 Label(
                     "The host refused the call because manifest.toml does"
-                    " not declare `iq.query`. This is the correct behaviour."
+                    " not declare `ai.query`. This is the correct behaviour."
                 ),
             ])
         if kind == "ok":
@@ -105,9 +105,9 @@ class IqQueryDeniedTestApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         children = [
-            AppBar(title="IQ Query Denied Test"),
+            AppBar(title="AI Query Denied Test"),
             Label(
-                "This app's manifest does NOT declare `iq.query`. Every call"
+                "This app's manifest does NOT declare `ai.query`. Every call"
                 " should be refused at the host's capability gate."
             ),
             Section("Actions"),
@@ -123,4 +123,4 @@ class IqQueryDeniedTestApp(App):
         ctx.render(Column(children))
 
 
-IqQueryDeniedTestApp().run()
+AiQueryDeniedTestApp().run()

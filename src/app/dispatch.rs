@@ -70,14 +70,12 @@ impl PlexiApp {
                 // through its inner ProcessApp. Drain those here so the host
                 // dispatch loop sees them.
                 if let Some(agent_pane) = pane.as_agent_mut() {
-                    if let crate::agent_pane::AgentBackend::Subprocess(sub) =
-                        &mut agent_pane.backend
-                    {
-                        let type_id = sub.manifest_id.clone();
-                        let cmds = std::mem::take(&mut sub.process.pending_commands);
-                        if !cmds.is_empty() {
-                            per_pane.push((ctx_idx, *pane_id, type_id, cmds));
-                        }
+                    let crate::agent_pane::AgentBackend::Subprocess(sub) =
+                        &mut agent_pane.backend;
+                    let type_id = sub.manifest_id.clone();
+                    let cmds = std::mem::take(&mut sub.process.pending_commands);
+                    if !cmds.is_empty() {
+                        per_pane.push((ctx_idx, *pane_id, type_id, cmds));
                     }
                 }
             }

@@ -366,10 +366,13 @@ impl PlexiApp {
                             crate::workspace::SavedPaneKind::Agent
                         )
                     {
-                        let agent_cwd = saved_pane.cwd.clone();
-                        let pane =
-                            crate::agent_pane::AgentPane::new(saved_pane.id, agent_cwd);
-                        pane_entry = Some(crate::pane::Pane::Agent(Box::new(pane)));
+                        // In-process agent removed (#429). Saved sessions of
+                        // type Agent are skipped on restore; subprocess agents
+                        // are re-launched via the app launcher on next open.
+                        log::info!(
+                            "session restore: skipping saved in-process agent pane {} (#429)",
+                            saved_pane.id
+                        );
                     }
 
                     if pane_entry.is_none()
@@ -1203,11 +1206,9 @@ impl eframe::App for PlexiApp {
                                 if let Some(app) = pane.as_app_mut() {
                                     app.runtime.queue_outbound_event(event);
                                 } else if let Some(agent) = pane.as_agent_mut() {
-                                    if let crate::agent_pane::AgentBackend::Subprocess(sub) =
-                                        &mut agent.backend
-                                    {
-                                        sub.process.queue_outbound_event_direct(event);
-                                    }
+                                    let crate::agent_pane::AgentBackend::Subprocess(sub) =
+                                        &mut agent.backend;
+                                    sub.process.queue_outbound_event_direct(event);
                                 }
                             }
                         }
@@ -1308,11 +1309,9 @@ impl eframe::App for PlexiApp {
                         if let Some(app) = pane.as_app_mut() {
                             app.runtime.queue_outbound_event(event);
                         } else if let Some(agent) = pane.as_agent_mut() {
-                            if let crate::agent_pane::AgentBackend::Subprocess(sub) =
-                                &mut agent.backend
-                            {
-                                sub.process.queue_outbound_event_direct(event);
-                            }
+                            let crate::agent_pane::AgentBackend::Subprocess(sub) =
+                                &mut agent.backend;
+                            sub.process.queue_outbound_event_direct(event);
                         }
                     }
                 }
@@ -2381,7 +2380,6 @@ fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str)
             crate::agent_pane::AgentBackend::Subprocess(sub) => {
                 Some(sub.process.pipe_registry.clone())
             }
-            crate::agent_pane::AgentBackend::InProcess(_) => None,
         },
         crate::pane::Pane::Terminal(_) => None,
         // AgentWorkspace panes (#348) are PTY shells running a CLI binary —

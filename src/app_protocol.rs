@@ -127,15 +127,6 @@ pub enum PlexiEvent {
         #[serde(default)]
         error: Option<String>,
     },
-    /// Sent when an LlmRequest completes.
-    LlmResponse {
-        request_id: String,
-        /// The text content of the first choice, or empty on error.
-        content: String,
-        /// Set if the call failed.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
     /// Sent when the user responds to a notification that included a notify_id.
     ///
     /// - `action_label`: what was clicked — "acknowledge" for the default,
@@ -197,16 +188,15 @@ pub enum PlexiEvent {
     /// macOS-only and races with focus changes. This event is the portable
     /// path.
     Paste { text: String },
-    /// Response to a `DrawCommand::IqQuery`. Either `content` is `Some` (success)
+    /// Response to a `DrawCommand::AiQuery`. Either `content` is `Some` (success)
     /// or `error` is `Some` (failure) — the two are mutually exclusive. Token
     /// counts are zero on error.
     ///
     /// `error` is set when:
-    ///   - the app does not declare the `iq.query` capability ("capability denied")
-    ///   - the host backend cannot be reached (e.g. missing API key, claude CLI
-    ///     not installed)
+    ///   - the app does not declare the `ai.query` capability ("capability denied")
+    ///   - the host backend cannot be reached (e.g. missing API key, Ollama not running)
     ///   - the upstream backend returned an error mid-stream
-    IqResponse {
+    AiResponse {
         request_id: String,
         content: Option<String>,
         tokens_in: u32,
@@ -386,11 +376,11 @@ impl From<crate::audio::AudioDeviceInfo> for AudioDeviceWire {
     }
 }
 
-/// One message in an `IqQuery` conversation. Wire shape mirrors Anthropic
+/// One message in an `AiQuery` conversation. Wire shape mirrors Anthropic
 /// Messages API: `role` ∈ {"user", "assistant"}, `content` is plain text.
 /// (Multimodal content blocks are future-scope.)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct IqMessage {
+pub struct AiMessage {
     pub role: String,
     pub content: String,
 }
@@ -400,14 +390,14 @@ pub struct IqMessage {
 /// an error response. Reserved on the wire so that v3.4+ can add tool
 /// dispatch without changing the protocol.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct IqTool {
+pub struct AiTool {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
 }
 
 /// Coarse model tier requested by the app. The host maps each tier to a
-/// concrete model identifier per backend (spec §iq.query):
+/// concrete model identifier per backend (spec §ai.query):
 ///   - `Low`    → Haiku
 ///   - `Medium` → Sonnet
 ///   - `High`   → Opus
@@ -685,32 +675,21 @@ pub enum DrawCommand {
         #[serde(default)]
         body: Option<String>,
     },
-    /// Host-brokered LLM call. Requires `llm` capability.
-    /// Calls Anthropic Claude with the given prompt and optional system message.
-    /// Host replies with `PlexiEvent::LlmResponse { request_id, content, error }`.
-    LlmRequest {
-        request_id: String,
-        prompt: String,
-        #[serde(default = "default_llm_model")]
-        model: String,
-        #[serde(default)]
-        system: Option<String>,
-    },
-    /// v3.3 brokered LLM call. Requires `iq.query` capability.
+    /// v3.3 brokered AI call. Requires `ai.query` capability.
     ///
-    /// The host routes this to the active Plexi IQ backend, appends an
-    /// `AgentTurn` row to `ledger.jsonl`, and replies with
-    /// `PlexiEvent::IqResponse { request_id, content, tokens_in, tokens_out, error }`.
+    /// The host routes this to the active Plexi AI backend, appends an
+    /// `AgentTurn` row to `ai-ledger.jsonl`, and replies with
+    /// `PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.
     ///
     /// All fields are required — no `serde(default)`. `tools` may be empty;
     /// non-empty `tools` is accepted on the wire but rejected at the broker
     /// (returns an error response) until v3.4 adds tool dispatch.
-    IqQuery {
+    AiQuery {
         request_id: String,
         model_tier: ModelTier,
         system: String,
-        messages: Vec<IqMessage>,
-        tools: Vec<IqTool>,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiTool>,
     },
     /// Draw an image from a workspace-scoped path or data URL.
     Image {
@@ -1242,12 +1221,6 @@ fn default_volume() -> f32 {
     1.0
 }
 
-fn default_llm_model() -> String {
-    // OpenRouter model ID format. Apps omitting `model` use this default.
-    // Breaking change from #383: bare Anthropic IDs (e.g. "claude-haiku-4-5-20251001")
-    // no longer work — OpenRouter requires the "provider/model" format.
-    "anthropic/claude-haiku-4-5".to_string()
-}
 
 #[cfg(test)]
 mod tests {
@@ -1324,15 +1297,15 @@ mod tests {
     }
 
     // ── v3.3 iq.query wire shape (#284) ──────────────────────────────────
-    // Pin the on-the-wire shape for IqQuery / IqResponse. All fields are
+    // Pin the on-the-wire shape for AiQuery / AiResponse. All fields are
     // required — no `serde(default)`.
 
     #[test]
-    fn iq_query_drawcommand_round_trips_serde() {
-        let json = r#"{"type":"iq_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
+    fn ai_query_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"ai_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::IqQuery {
+            DrawCommand::AiQuery {
                 request_id,
                 model_tier,
                 system,
@@ -1347,11 +1320,11 @@ mod tests {
                 assert_eq!(messages[0].content, "hi");
                 assert!(tools.is_empty());
             }
-            other => panic!("expected IqQuery, got {other:?}"),
+            other => panic!("expected AiQuery, got {other:?}"),
         }
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(
-            serialised.contains(r#""type":"iq_query""#),
+            serialised.contains(r#""type":"ai_query""#),
             "wire tag missing: {serialised}"
         );
         assert!(
@@ -1361,11 +1334,11 @@ mod tests {
     }
 
     #[test]
-    fn iq_response_round_trips_serde() {
-        let json = r#"{"type":"iq_response","request_id":"req-1","content":"Hello!","tokens_in":12,"tokens_out":4,"error":null}"#;
+    fn ai_response_round_trips_serde() {
+        let json = r#"{"type":"ai_response","request_id":"req-1","content":"Hello!","tokens_in":12,"tokens_out":4,"error":null}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
         match &event {
-            PlexiEvent::IqResponse {
+            PlexiEvent::AiResponse {
                 request_id,
                 content,
                 tokens_in,
@@ -1378,21 +1351,21 @@ mod tests {
                 assert_eq!(*tokens_out, 4);
                 assert!(error.is_none());
             }
-            other => panic!("expected IqResponse, got {other:?}"),
+            other => panic!("expected AiResponse, got {other:?}"),
         }
         let serialised = serde_json::to_string(&event).expect("serialise");
         assert!(
-            serialised.contains(r#""type":"iq_response""#),
+            serialised.contains(r#""type":"ai_response""#),
             "wire tag missing: {serialised}"
         );
     }
 
     #[test]
-    fn iq_response_with_error_serde() {
-        let json = r#"{"type":"iq_response","request_id":"req-2","content":null,"tokens_in":0,"tokens_out":0,"error":"capability denied: iq.query not declared in manifest"}"#;
+    fn ai_response_with_error_serde() {
+        let json = r#"{"type":"ai_response","request_id":"req-2","content":null,"tokens_in":0,"tokens_out":0,"error":"capability denied: ai.query not declared in manifest"}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
         match &event {
-            PlexiEvent::IqResponse {
+            PlexiEvent::AiResponse {
                 content,
                 error,
                 tokens_in,
@@ -1402,12 +1375,12 @@ mod tests {
                 assert!(content.is_none(), "content must be None on error");
                 assert_eq!(
                     error.as_deref(),
-                    Some("capability denied: iq.query not declared in manifest")
+                    Some("capability denied: ai.query not declared in manifest")
                 );
                 assert_eq!(*tokens_in, 0);
                 assert_eq!(*tokens_out, 0);
             }
-            other => panic!("expected IqResponse, got {other:?}"),
+            other => panic!("expected AiResponse, got {other:?}"),
         }
     }
 
@@ -1509,10 +1482,10 @@ mod tests {
     }
 
     #[test]
-    fn iq_query_missing_required_field_fails_deserialise() {
+    fn ai_query_missing_required_field_fails_deserialise() {
         // No `tools` field — must fail because the field is required
         // (no `#[serde(default)]` on it).
-        let json = r#"{"type":"iq_query","request_id":"r","model_tier":"low","system":"","messages":[]}"#;
+        let json = r#"{"type":"ai_query","request_id":"r","model_tier":"low","system":"","messages":[]}"#;
         let result: Result<DrawCommand, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),

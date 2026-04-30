@@ -168,7 +168,6 @@ fn drain_pipe_frame(
                 crate::agent_pane::AgentBackend::Subprocess(sub) => {
                     Some(sub.process.pipe_registry.clone())
                 }
-                crate::agent_pane::AgentBackend::InProcess(_) => None,
             },
             _ => None,
         };

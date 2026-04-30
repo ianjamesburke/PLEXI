@@ -9,31 +9,94 @@ pub struct PlexiConfig {
     pub beta: Option<BetaConfig>,
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
-    pub iq: Option<IqConfig>,
+    pub ai: Option<AiConfig>,
     /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
     pub confirm_close: Option<bool>,
 }
 
-/// Model tier configuration for Plexi IQ (`iq.query` broker).
+/// Plexi AI broker configuration (`ai.query` capability).
 ///
-/// API key is NOT stored here — export `OPENROUTER_API_KEY` in your shell
+/// `backend` selects the provider: `"openrouter"` (default) or `"ollama"`.
+/// API keys are NOT stored here — export `OPENROUTER_API_KEY` in your shell
 /// profile (`~/.zshrc`, `~/.zprofile`, etc.). Never store API keys in
 /// plaintext config files.
 #[derive(Deserialize, Default, Clone)]
-pub struct IqConfig {
-    /// Low-tier model (fast, cheap). e.g. "google/gemini-flash-2.0"
+pub struct AiConfig {
+    /// Backend selection: `"openrouter"` (default) or `"ollama"`.
+    pub backend: Option<String>,
+    pub openrouter: Option<OpenRouterBackendConfig>,
+    pub ollama: Option<OllamaBackendConfig>,
+}
+
+/// OpenRouter backend configuration.
+#[derive(Deserialize, Default, Clone)]
+pub struct OpenRouterBackendConfig {
+    /// Environment variable name for the API key. Default: `OPENROUTER_API_KEY`.
+    pub api_key_env: Option<String>,
+    /// Low-tier model. e.g. "google/gemini-2.0-flash-001"
     pub model_low: Option<String>,
     /// Medium-tier model. e.g. "anthropic/claude-sonnet-4-6"
     pub model_medium: Option<String>,
-    /// High-tier model (most capable). e.g. "anthropic/claude-opus-4-7"
+    /// High-tier model. e.g. "anthropic/claude-opus-4-7"
     pub model_high: Option<String>,
 }
 
-impl IqConfig {
+/// Ollama backend configuration.
+#[derive(Deserialize, Default, Clone)]
+pub struct OllamaBackendConfig {
+    /// Ollama host URL. Default: `http://localhost:11434`.
+    pub host: Option<String>,
+    /// Low-tier model. e.g. "llama3.2:3b"
+    pub model_low: Option<String>,
+    /// Medium-tier model. e.g. "llama3.3:70b"
+    pub model_medium: Option<String>,
+    /// High-tier model. e.g. "qwq:32b"
+    pub model_high: Option<String>,
+}
+
+impl AiConfig {
     /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
     pub fn overlay(&mut self, other: Self) {
+        if other.backend.is_some() {
+            self.backend = other.backend;
+        }
+        match (self.openrouter.as_mut(), other.openrouter) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.openrouter = Some(incoming),
+            _ => {}
+        }
+        match (self.ollama.as_mut(), other.ollama) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.ollama = Some(incoming),
+            _ => {}
+        }
+    }
+}
+
+impl OpenRouterBackendConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.api_key_env.is_some() {
+            self.api_key_env = other.api_key_env;
+        }
+        if other.model_low.is_some() {
+            self.model_low = other.model_low;
+        }
+        if other.model_medium.is_some() {
+            self.model_medium = other.model_medium;
+        }
+        if other.model_high.is_some() {
+            self.model_high = other.model_high;
+        }
+    }
+}
+
+impl OllamaBackendConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.host.is_some() {
+            self.host = other.host;
+        }
         if other.model_low.is_some() {
             self.model_low = other.model_low;
         }
@@ -312,18 +375,33 @@ accent = "#89b4fa"
 # bright_white = "#f4f2f9"
 # bright_foreground = "#f4f2f9"
 
-# ── Plexi IQ — brokered LLM calls (`iq.query` capability) ─────
-# Apps that declare `iq.query` in their manifest can call tier-routed
-# LLM models through the host broker. The host reads OPENROUTER_API_KEY
-# from your shell environment — never store API keys in this file.
+# ── Plexi AI — brokered LLM calls (`ai.query` capability) ─────
+# Apps that declare `ai.query` in their manifest can call tier-routed
+# LLM models through the host broker. Two backends are supported:
+# "openrouter" (default, cloud) and "ollama" (local).
 #
-# Export your key in ~/.zprofile or ~/.zshrc:
-#   export OPENROUTER_API_KEY="sk-or-..."
+# OpenRouter (default):
+#   Export your key in ~/.zprofile or ~/.zshrc:
+#     export OPENROUTER_API_KEY="sk-or-..."
 #
-# [iq]
-# model_low    = "google/gemini-flash-2.0"       # fast / cheap
+# [ai]
+# backend = "openrouter"
+#
+# [ai.openrouter]
+# api_key_env  = "OPENROUTER_API_KEY"
+# model_low    = "google/gemini-2.0-flash-001"   # fast / cheap
 # model_medium = "anthropic/claude-sonnet-4-6"   # balanced
 # model_high   = "anthropic/claude-opus-4-7"     # most capable
+#
+# Ollama (local):
+# [ai]
+# backend = "ollama"
+#
+# [ai.ollama]
+# host         = "http://localhost:11434"
+# model_low    = "llama3.2:3b"
+# model_medium = "llama3.3:70b"
+# model_high   = "qwq:32b"
 
 # ── Experimental Features ──────────────────────────────────────
 # Flip any flag to true and restart to enable.
@@ -430,9 +508,9 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.notifications = Some(incoming),
             _ => {}
         }
-        match (self.iq.as_mut(), other.iq) {
+        match (self.ai.as_mut(), other.ai) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.iq = Some(incoming),
+            (None, Some(incoming)) => self.ai = Some(incoming),
             _ => {}
         }
     }
