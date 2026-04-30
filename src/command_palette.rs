@@ -1,4 +1,3 @@
-use crate::shell;
 use egui::{Align2, Color32, CornerRadius, RichText, Stroke, Vec2};
 
 use crate::app::PlexiApp;
@@ -6,20 +5,18 @@ use crate::overlays::MODAL_WIDTH;
 use crate::widgets::selectable_row;
 
 enum PaletteEntry {
-    Pane {
+    Context {
         ctx_idx: usize,
-        ctx_name: String,
-        tile_id: egui_tiles::TileId,
+        context_id: u64,
         name: String,
-        cwd: String,
+        workspace_name: String,
     },
     App {
         id: String,
         name: String,
         description: String,
     },
-    /// Static action — flat command not tied to a pane or installed app.
-    /// First use case: "New Agent Workspace: <CLI>" entries (#348).
+    /// Static action — flat command not tied to a context or installed app.
     Action {
         id: String,
         name: String,
@@ -31,56 +28,58 @@ impl PlexiApp {
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
         let query = self.palette_query.to_lowercase();
 
-        // ── Pane entries ────────────────────────────────────────────────────
-        let mut entries: Vec<PaletteEntry> = Vec::new();
+        // ── Context entries (active context first, then by visit recency) ──
+        let active_ctx_id = self.contexts[self.active_context].context_id;
 
-        for (ci, context) in self.contexts.iter().enumerate() {
-            for (&pane_id, pane) in &context.panes {
-                let Some(t) = pane.as_terminal() else {
-                    continue;
-                };
-                let Some(display_name) = t.name.clone() else {
-                    continue;
-                };
-                let cwd = shell::get_pid_cwd(t.backend.child_pid())
-                    .as_deref()
-                    .map(crate::app::PlexiApp::abbreviate_home_path)
-                    .unwrap_or_else(|| crate::app::PlexiApp::abbreviate_home_path(&context.path));
-                if let Some(tile_id) = context.tree.tiles.find_pane(&pane_id) {
-                    if query.is_empty()
-                        || display_name.to_lowercase().contains(&query)
-                        || context.name.to_lowercase().contains(&query)
-                        || cwd.to_lowercase().contains(&query)
-                    {
-                        entries.push(PaletteEntry::Pane {
-                            ctx_idx: ci,
-                            ctx_name: context.name.clone(),
-                            tile_id,
-                            name: display_name,
-                            cwd,
-                        });
-                    }
-                }
+        let rank_of = |context_id: u64| -> usize {
+            if context_id == active_ctx_id {
+                return 0;
             }
-        }
+            self.context_visit_history
+                .iter()
+                .position(|&id| id == context_id)
+                .map(|p| p + 1)
+                .unwrap_or(usize::MAX)
+        };
 
-        // Sort panes by visit history
-        entries.sort_by(|a, b| {
-            let rank = |e: &PaletteEntry| match e {
-                PaletteEntry::Pane {
-                    ctx_idx, tile_id, ..
-                } => self
-                    .pane_visit_history
-                    .iter()
-                    .position(|&(c, t)| c == *ctx_idx && t == *tile_id)
-                    .unwrap_or(usize::MAX),
-                PaletteEntry::App { .. } => usize::MAX,
-                PaletteEntry::Action { .. } => usize::MAX,
-            };
-            rank(a).cmp(&rank(b))
-        });
+        let mut entries: Vec<PaletteEntry> = {
+            let mut ctx_entries: Vec<PaletteEntry> = self
+                .contexts
+                .iter()
+                .enumerate()
+                .filter_map(|(ci, c)| {
+                    let ws_name = self
+                        .workspaces
+                        .iter()
+                        .find(|w| w.context_id == c.workspace_id)
+                        .map(|w| w.name.clone())
+                        .unwrap_or_default();
 
-        // ── App entries (appended after panes) ─────────────────────────────
+                    if query.is_empty()
+                        || c.name.to_lowercase().contains(&query)
+                        || ws_name.to_lowercase().contains(&query)
+                    {
+                        Some(PaletteEntry::Context {
+                            ctx_idx: ci,
+                            context_id: c.context_id,
+                            name: c.name.clone(),
+                            workspace_name: ws_name,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            ctx_entries.sort_by_key(|e| match e {
+                PaletteEntry::Context { context_id, .. } => rank_of(*context_id),
+                _ => usize::MAX,
+            });
+
+            ctx_entries
+        };
+
+        // ── App entries ────────────────────────────────────────────────────
         let app_entries: Vec<(String, String, String)> = self
             .registry
             .list()
@@ -108,10 +107,7 @@ impl PlexiApp {
             });
         }
 
-        // ── Static actions (#348 flat commands + #349 modal entry) ─────────
-        // The three flat commands stay (fast path: same-repo + last-CLI-style
-        // workflows). The "…" entry opens the richer modal picker (CLI dropdown
-        // with auto-disable, repo picker, optional task textarea).
+        // ── Static actions ─────────────────────────────────────────────────
         let action_specs: &[(&str, &str, &str)] = &[
             (
                 "agent_workspace:modal",
@@ -149,7 +145,6 @@ impl PlexiApp {
 
         let total = entries.len();
 
-        // Clamp selection
         if self.palette_selected >= total && total > 0 {
             self.palette_selected = total - 1;
         }
@@ -157,7 +152,7 @@ impl PlexiApp {
         // ── Keyboard nav ───────────────────────────────────────────────────
         #[derive(Clone)]
         enum Action {
-            JumpPane(usize, egui_tiles::TileId),
+            JumpContext(usize, u64),
             LaunchApp(String),
             RunAction(String),
         }
@@ -168,9 +163,6 @@ impl PlexiApp {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
-            // Cmd+P toggles the palette closed without re-dispatching through
-            // `poll_actions` (which runs after the keyboard drain). Consuming
-            // here keeps open→close symmetric with the open keybind.
             if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
                 self.show_command_palette = false;
             }
@@ -187,10 +179,12 @@ impl PlexiApp {
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 match entries.get(self.palette_selected) {
-                    Some(PaletteEntry::Pane {
-                        ctx_idx, tile_id, ..
+                    Some(PaletteEntry::Context {
+                        ctx_idx,
+                        context_id,
+                        ..
                     }) => {
-                        action = Some(Action::JumpPane(*ctx_idx, *tile_id));
+                        action = Some(Action::JumpContext(*ctx_idx, *context_id));
                     }
                     Some(PaletteEntry::App { id, .. }) => {
                         action = Some(Action::LaunchApp(id.clone()));
@@ -204,12 +198,8 @@ impl PlexiApp {
         });
 
         match action {
-            Some(Action::JumpPane(ctx_idx, tile_id)) => {
-                self.record_pane_visit(ctx_idx, tile_id);
-                self.active_context = ctx_idx;
-                self.contexts[ctx_idx].focused_pane = Some(tile_id);
-                self.contexts[ctx_idx].zoomed_pane = None;
-                self.contexts[ctx_idx].activate_tab_for(tile_id);
+            Some(Action::JumpContext(ctx_idx, context_id)) => {
+                self.jump_to_context(ctx_idx, context_id);
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 return;
@@ -235,11 +225,8 @@ impl PlexiApp {
 
         // ── Render ─────────────────────────────────────────────────────────
         let screen_rect = ctx.screen_rect();
-        // Scale the list viewport with the window. 80 = anchor offset above,
-        // 120 = breathing room below + search input + frame padding. Every
-        // other ScrollArea in the codebase uses auto_shrink([false, false]);
-        // this one used [false, true] and collapsed to ~1 row inside an Area.
         let palette_max_list_h = (screen_rect.height() - 80.0 - 120.0).max(200.0);
+
         egui::Area::new(egui::Id::new("palette_scrim"))
             .fixed_pos(screen_rect.min)
             .show(ctx, |ui| {
@@ -268,7 +255,7 @@ impl PlexiApp {
                             egui::TextEdit::singleline(&mut self.palette_query)
                                 .id(te_id)
                                 .desired_width(MODAL_WIDTH)
-                                .hint_text("Jump to pane or launch app...")
+                                .hint_text("Jump to context or launch app...")
                                 .font(egui::TextStyle::Body),
                         );
                         if !te.has_focus() {
@@ -282,34 +269,20 @@ impl PlexiApp {
 
                         if entries.is_empty() {
                             ui.label(
-                                RichText::new("No matching panes or apps")
+                                RichText::new("No matching contexts or apps")
                                     .size(11.0)
                                     .color(self.colors.text_dim),
                             );
                             return;
                         }
 
-                        let current_ctx = self.active_context;
-                        let current_focused = self.contexts[self.active_context].focused_pane;
                         let mut shown_apps_header = false;
                         let mut click_action: Option<Action> = None;
                         let mut hover_select: Option<usize> = None;
                         let colors = self.colors;
-                        // Only let hover drive selection when the pointer moved this frame.
-                        // A stationary mouse means keyboard navigation owns the index.
                         let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
-                        // Scroll the selected row into view when keyboard navigation moved it.
                         let should_scroll = self.palette_selected != prev_selected;
 
-                        // `max_height` alone caps the viewport but doesn't
-                        // *reserve* it — when the filtered result set is
-                        // short (e.g. a single pane + a handful of apps),
-                        // egui collapses the scrollable region to the
-                        // content's natural height, producing the "tiny
-                        // sliver showing one row" bug. `min_scrolled_height`
-                        // forces the viewport to stay at the computed
-                        // target height, so the palette always reads as a
-                        // full-size list.
                         egui::ScrollArea::vertical()
                             .max_height(palette_max_list_h)
                             .min_scrolled_height(palette_max_list_h)
@@ -321,16 +294,14 @@ impl PlexiApp {
                                     let is_selected = i == self.palette_selected;
 
                                     match entry {
-                                        PaletteEntry::Pane {
+                                        PaletteEntry::Context {
                                             ctx_idx,
-                                            ctx_name,
-                                            tile_id,
+                                            context_id,
                                             name,
-                                            cwd,
+                                            workspace_name,
                                         } => {
-                                            let is_current = *ctx_idx == current_ctx
-                                                && current_focused == Some(*tile_id);
-                                            let name_color = if is_current {
+                                            let is_active = *context_id == active_ctx_id;
+                                            let name_color = if is_active {
                                                 colors.accent
                                             } else {
                                                 colors.text_primary
@@ -342,29 +313,24 @@ impl PlexiApp {
                                                 &colors,
                                                 |ui| {
                                                     ui.horizontal(|ui| {
-                                                        ui.label(
-                                                            RichText::new(ctx_name.as_str())
-                                                                .size(10.0)
-                                                                .color(colors.text_dim),
-                                                        );
-                                                        ui.label(
-                                                            RichText::new("\u{203A}")
-                                                                .size(10.0)
-                                                                .color(colors.text_dim),
-                                                        );
+                                                        if !workspace_name.is_empty() {
+                                                            ui.label(
+                                                                RichText::new(workspace_name.as_str())
+                                                                    .size(10.0)
+                                                                    .color(colors.text_dim),
+                                                            );
+                                                            ui.label(
+                                                                RichText::new("\u{203A}")
+                                                                    .size(10.0)
+                                                                    .color(colors.text_dim),
+                                                            );
+                                                        }
                                                         ui.label(
                                                             RichText::new(name.as_str())
                                                                 .size(12.0)
                                                                 .color(name_color),
                                                         );
                                                     });
-                                                    if !cwd.is_empty() {
-                                                        ui.label(
-                                                            RichText::new(cwd.as_str())
-                                                                .size(9.0)
-                                                                .color(colors.text_dim),
-                                                        );
-                                                    }
                                                 },
                                             );
 
@@ -372,8 +338,10 @@ impl PlexiApp {
                                                 r.scroll_to_me(None);
                                             }
                                             if r.clicked() {
-                                                click_action =
-                                                    Some(Action::JumpPane(*ctx_idx, *tile_id));
+                                                click_action = Some(Action::JumpContext(
+                                                    *ctx_idx,
+                                                    *context_id,
+                                                ));
                                             }
                                             if r.hovered() {
                                                 hover_select = Some(i);
@@ -491,12 +459,8 @@ impl PlexiApp {
 
                         if let Some(act) = click_action {
                             match act {
-                                Action::JumpPane(ctx_idx, tile_id) => {
-                                    self.record_pane_visit(ctx_idx, tile_id);
-                                    self.active_context = ctx_idx;
-                                    self.contexts[ctx_idx].focused_pane = Some(tile_id);
-                                    self.contexts[ctx_idx].zoomed_pane = None;
-                                    self.contexts[ctx_idx].activate_tab_for(tile_id);
+                                Action::JumpContext(ctx_idx, context_id) => {
+                                    self.jump_to_context(ctx_idx, context_id);
                                     self.show_command_palette = false;
                                     self.palette_query.clear();
                                 }
@@ -516,7 +480,29 @@ impl PlexiApp {
             });
     }
 
-    /// Dispatch a static palette action (#348). Adding a new action means
+    /// Jump to a context by index, switching workspace if necessary.
+    fn jump_to_context(&mut self, ctx_idx: usize, context_id: u64) {
+        let target_ws_id = self.contexts[ctx_idx].workspace_id;
+        if let Some(ws_idx) = self
+            .workspaces
+            .iter()
+            .position(|w| w.context_id == target_ws_id)
+        {
+            if ws_idx != self.active_workspace {
+                // switch_workspace → pick_active_context_from_workspace sets
+                // active_context based on workspace_active_window. We override it
+                // immediately below.
+                self.switch_workspace(ws_idx);
+            }
+        }
+        self.active_context = ctx_idx;
+        self.contexts[ctx_idx].zoomed_pane = None;
+        let ws_id = self.workspaces[self.active_workspace].context_id;
+        self.workspace_active_window.insert(ws_id, context_id);
+        self.record_context_visit(context_id);
+    }
+
+    /// Dispatch a static palette action. Adding a new action means
     /// (1) appending to `action_specs` above, and (2) extending this match.
     pub(crate) fn run_palette_action(&mut self, id: &str) {
         match id {
@@ -536,8 +522,6 @@ impl PlexiApp {
         }
     }
 
-    /// Spawn an Agent Workspace pane from the palette. Empty task label —
-    /// the modal picker (#349) is what populates a real label.
     fn spawn_agent_workspace(&mut self, cli: crate::agent_workspace::AgentCli) {
         if !cli.is_installed() {
             self.push_host_notification(
@@ -567,13 +551,8 @@ impl PlexiApp {
 mod tests {
     use super::*;
 
-    /// Smoke test: `AgentCli::is_installed()` must return a bool without
-    /// panicking regardless of what is on the test machine's PATH.
     #[test]
     fn palette_spawn_not_installed_pushes_notification() {
-        // We can't easily construct a full PlexiApp in a unit test, so we
-        // validate the install-check path that guards `spawn_agent_workspace`:
-        // `is_installed()` must return a bool without panicking.
         let result = std::panic::catch_unwind(|| {
             let _ = crate::agent_workspace::AgentCli::ClaudeCode.is_installed();
             let _ = crate::agent_workspace::AgentCli::Codex.is_installed();

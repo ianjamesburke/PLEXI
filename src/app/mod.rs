@@ -116,7 +116,7 @@ pub struct PlexiApp {
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
-    pub(crate) pane_visit_history: Vec<(usize, egui_tiles::TileId)>,
+    pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
     /// Whether the Run palette overlay is visible (Cmd+R).
@@ -506,7 +506,7 @@ impl PlexiApp {
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
-                    pane_visit_history: Vec::new(),
+                    context_visit_history: Vec::new(),
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
@@ -584,7 +584,7 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
-            pane_visit_history: Vec::new(),
+            context_visit_history: Vec::new(),
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
@@ -2274,11 +2274,10 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn record_pane_visit(&mut self, ctx_idx: usize, tile_id: egui_tiles::TileId) {
-        self.pane_visit_history
-            .retain(|&(c, t)| !(c == ctx_idx && t == tile_id));
-        self.pane_visit_history.insert(0, (ctx_idx, tile_id));
-        self.pane_visit_history.truncate(100);
+    pub(crate) fn record_context_visit(&mut self, context_id: u64) {
+        self.context_visit_history.retain(|&id| id != context_id);
+        self.context_visit_history.insert(0, context_id);
+        self.context_visit_history.truncate(50);
     }
 
     fn draw_feature_effects(&self, ctx: &egui::Context) {
