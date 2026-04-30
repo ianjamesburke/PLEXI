@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -180,27 +180,62 @@ fn detect_ghostty_terminfo_dir() -> Option<String> {
 
 static CWD_CACHE: LazyLock<Mutex<HashMap<u32, (PathBuf, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-const CWD_CACHE_TTL: Duration = Duration::from_millis(300);
+// PIDs whose lsof refresh is currently in flight; prevents duplicate spawns.
+static PENDING_REFRESH: LazyLock<Mutex<HashSet<u32>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+// Longer TTL is fine because refreshes are now async.
+const CWD_CACHE_TTL: Duration = Duration::from_secs(2);
 
+/// Returns the current working directory for `pid`, non-blocking.
+///
+/// On macOS, resolving a CWD requires spawning `lsof`, which can block
+/// indefinitely when the target process (e.g. Claude Code) holds many open
+/// file descriptors or network connections. This function NEVER spawns lsof on
+/// the caller's thread — it only reads from the shared cache and, when the
+/// entry is missing or stale, kicks off a background refresh. Callers receive
+/// a stale-but-valid value during the refresh window, or `None` on first call
+/// before any result has arrived.
 pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
-    // Check cache first — lsof is expensive and called every frame on macOS.
-    if let Ok(cache) = CWD_CACHE.lock() {
-        if let Some((path, ts)) = cache.get(&pid) {
-            if ts.elapsed() < CWD_CACHE_TTL {
-                return Some(path.clone());
+    let cached = if let Ok(cache) = CWD_CACHE.lock() {
+        cache.get(&pid).map(|(path, ts)| (path.clone(), ts.elapsed() < CWD_CACHE_TTL))
+    } else {
+        None
+    };
+
+    match cached {
+        Some((path, true)) => return Some(path),
+        Some((path, false)) => {
+            trigger_background_refresh(pid);
+            return Some(path);
+        }
+        None => {
+            trigger_background_refresh(pid);
+            None
+        }
+    }
+}
+
+fn trigger_background_refresh(pid: u32) {
+    if let Ok(mut pending) = PENDING_REFRESH.lock() {
+        if !pending.insert(pid) {
+            return; // already in flight
+        }
+    } else {
+        return;
+    }
+    std::thread::Builder::new()
+        .name(format!("cwd-refresh-{pid}"))
+        .spawn(move || {
+            if let Some(path) = get_pid_cwd_uncached(pid) {
+                if let Ok(mut cache) = CWD_CACHE.lock() {
+                    cache.insert(pid, (path, Instant::now()));
+                }
             }
-        }
-    }
-
-    let result = get_pid_cwd_uncached(pid);
-
-    if let Some(ref path) = result {
-        if let Ok(mut cache) = CWD_CACHE.lock() {
-            cache.insert(pid, (path.clone(), Instant::now()));
-        }
-    }
-
-    result
+            if let Ok(mut pending) = PENDING_REFRESH.lock() {
+                pending.remove(&pid);
+            }
+        })
+        .ok();
 }
 
 fn get_pid_cwd_uncached(pid: u32) -> Option<PathBuf> {
