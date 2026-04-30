@@ -282,6 +282,7 @@ impl<'a> TerminalView<'a> {
                 self.backend.process_command(BackendCommand::SelectUpdate(
                     clamped_x - layout.rect.min.x,
                     clamped_y - layout.rect.min.y,
+                    layout.ctx.pixels_per_point(),
                 ));
             }
         }
@@ -767,6 +768,7 @@ fn build_start_select_command(
         selection_type,
         cursor_position.x - layout.rect.min.x,
         cursor_position.y - layout.rect.min.y,
+        layout.ctx.pixels_per_point(),
     )
 }
 
@@ -785,6 +787,7 @@ fn process_mouse_move(
         cursor_y,
         &terminal_content.terminal_size,
         terminal_content.grid.display_offset(),
+        layout.ctx.pixels_per_point(),
     );
 
     let mut actions = vec![];
@@ -802,7 +805,9 @@ fn process_mouse_move(
             ))
         } else {
             InputAction::BackendCall(BackendCommand::SelectUpdate(
-                cursor_x, cursor_y,
+                cursor_x,
+                cursor_y,
+                layout.ctx.pixels_per_point(),
             ))
         };
 

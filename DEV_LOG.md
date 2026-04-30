@@ -39,7 +39,6 @@ When a query is in flight and `Shutdown` arrives, the `ai_query` coroutine is bl
 Renamed all "IQ" → "AI" across the codebase (92+ sites): protocol types (`IqQuery` → `AiQuery`, `IqResponse` → `AiResponse`), wire strings, capability string (`iq.query` → `ai.query`), module (`src/plexi_iq/` → `src/plexi_ai/`), config section (`[iq]` → `[ai]`), Python SDK (`emit.iq_query` → `emit.ai_query`), and example apps. Added `OllamaBackend` — NDJSON streaming via `/api/chat`, pluggable via `[ai] backend = "ollama"`. Deleted `src/agent_turn.rs` and all `InProcessAgent` code (session persistence, SOUL/MEMORY loading, `claude -p`). Deleted `DrawCommand::LlmRequest` / `PlexiEvent::LlmResponse`. Ledger renamed to `ai-ledger.jsonl`.
 
 **Breaks if:** An installed app still declares `iq.query` in its manifest — skipped at startup with WARN. Any app calling `emit.iq_query()` gets `AttributeError`.
-
 ## 2026-04-28 — [FIX] Minimap hidden after Cmd+1-9 workspace switch
 
 **Root cause:** `Action::SwitchContext` (Cmd+1-9) was inlining the workspace switch — directly setting `self.active_workspace = n` and calling `pick_active_context_from_workspace` — bypassing `switch_workspace` and its minimap save/restore logic. Sidebar clicks correctly called `switch_workspace`; Cmd+1-9 did not.

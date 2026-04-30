@@ -36,8 +36,8 @@ pub enum BackendCommand {
     Write(Vec<u8>),
     Scroll(i32),
     Resize(Size, Size),
-    SelectStart(SelectionType, f32, f32),
-    SelectUpdate(f32, f32),
+    SelectStart(SelectionType, f32, f32, f32),
+    SelectUpdate(f32, f32, f32),
     ProcessLink(LinkAction, Point),
     MouseReport(MouseButton, Modifiers, Point, bool),
 }
@@ -251,11 +251,11 @@ impl TerminalBackend {
             BackendCommand::Resize(layout_size, font_size) => {
                 self.resize(&mut term, layout_size, font_size);
             },
-            BackendCommand::SelectStart(selection_type, x, y) => {
-                self.start_selection(&mut term, selection_type, x, y);
+            BackendCommand::SelectStart(selection_type, x, y, ppp) => {
+                self.start_selection(&mut term, selection_type, x, y, ppp);
             },
-            BackendCommand::SelectUpdate(x, y) => {
-                self.update_selection(&mut term, x, y);
+            BackendCommand::SelectUpdate(x, y, ppp) => {
+                self.update_selection(&mut term, x, y, ppp);
             },
             BackendCommand::ProcessLink(link_action, point) => {
                 self.process_link_action(&term, link_action, point);
@@ -271,11 +271,18 @@ impl TerminalBackend {
         y: f32,
         terminal_size: &TerminalSize,
         display_offset: usize,
+        pixels_per_point: f32,
     ) -> Point {
-        let col = (x as usize) / (terminal_size.cell_width as usize);
+        // Snap cell dimensions to physical pixels so hit-testing matches the
+        // renderer, which calls .round_to_pixels() on each cell rect. Without
+        // snapping, rounding errors accumulate across columns on high-DPI
+        // displays, causing selection to lag one cell behind the visual grid.
+        let snapped_w = (terminal_size.cell_width as f32 * pixels_per_point).round() / pixels_per_point;
+        let snapped_h = (terminal_size.cell_height as f32 * pixels_per_point).round() / pixels_per_point;
+        let col = (x / snapped_w) as usize;
         let col = min(Column(col), Column(terminal_size.num_cols as usize - 1));
 
-        let line = (y as usize) / (terminal_size.cell_height as usize);
+        let line = (y / snapped_h) as usize;
         let line = min(line, terminal_size.num_lines as usize - 1);
 
         viewport_to_point(display_offset, Point::new(line, col))
@@ -492,12 +499,14 @@ impl TerminalBackend {
         selection_type: SelectionType,
         x: f32,
         y: f32,
+        pixels_per_point: f32,
     ) {
         let location = Self::selection_point(
             x,
             y,
             &self.size,
             terminal.grid().display_offset(),
+            pixels_per_point,
         );
         terminal.selection = Some(Selection::new(
             selection_type,
@@ -511,11 +520,12 @@ impl TerminalBackend {
         terminal: &mut Term<EventProxy>,
         x: f32,
         y: f32,
+        pixels_per_point: f32,
     ) {
         let display_offset = terminal.grid().display_offset();
         if let Some(ref mut selection) = terminal.selection {
             let location =
-                Self::selection_point(x, y, &self.size, display_offset);
+                Self::selection_point(x, y, &self.size, display_offset, pixels_per_point);
             selection.update(location, self.selection_side(x));
         }
     }
