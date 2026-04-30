@@ -35,7 +35,7 @@ impl PlexiApp {
     /// Used to record which terminal an app was spawned alongside, so CdRequest can
     /// route directly to it without a tile-tree walk.
     fn focused_terminal_id(&self, active: usize) -> Option<PaneId> {
-        let ctx = &self.contexts[active];
+        let ctx = &self.windows[active];
         let tile_id = ctx.focused_pane?;
         let pane_id = match ctx.tree.tiles.get(tile_id) {
             Some(egui_tiles::Tile::Pane(id)) => *id,
@@ -109,7 +109,7 @@ impl PlexiApp {
         group: Option<String>,
         hint: Option<&str>,
     ) {
-        let active = self.active_context;
+        let active = self.active_window;
         let new_app_pane = |id: PaneId,
                             process: crate::process_app::ProcessApp,
                             workspace_root: PathBuf,
@@ -130,24 +130,24 @@ impl PlexiApp {
         };
 
         if matches!(hint, Some("overlay")) {
-            let Some(focused_tile) = self.contexts[active].focused_pane else {
+            let Some(focused_tile) = self.windows[active].focused_pane else {
                 return;
             };
             let Some(Tile::Pane(focused_pane_id)) =
-                self.contexts[active].tree.tiles.get(focused_tile)
+                self.windows[active].tree.tiles.get(focused_tile)
             else {
                 return;
             };
             let pane_id = *focused_pane_id;
-            let Some(replaced_pane) = self.contexts[active].panes.remove(&pane_id) else {
+            let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
                 return;
             };
             process.set_pane_id(pane_id);
-            self.contexts[active].panes.insert(
+            self.windows[active].panes.insert(
                 pane_id,
                 new_app_pane(pane_id, process, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
-            self.contexts[active].focused_pane = Some(focused_tile);
+            self.windows[active].focused_pane = Some(focused_tile);
             return;
         }
 
@@ -157,7 +157,7 @@ impl PlexiApp {
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, group.clone(), hint, share);
         process.set_pane_id(new_id);
-        self.contexts[active].panes.insert(
+        self.windows[active].panes.insert(
             new_id,
             new_app_pane(new_id, process, workspace_root, group, linked_pane_id, None),
         );
@@ -190,8 +190,8 @@ impl PlexiApp {
     /// process-backed AppPane). Returns false otherwise (pane gone, not an
     /// app pane, or builtin runtime).
     pub(crate) fn reload_app_pane(&mut self, pane_id: PaneId, reason: &str) -> bool {
-        let active = self.active_context;
-        let ctx = &self.contexts[active];
+        let active = self.active_window;
+        let ctx = &self.windows[active];
         let Some(app_pane) = ctx.panes.get(&pane_id).and_then(|p| p.as_app()) else {
             log::debug!("reload_app_pane({pane_id}): not an app pane — ignoring");
             return false;
@@ -220,7 +220,7 @@ impl PlexiApp {
 
         // Swap the runtime. The old `ProcessApp` drops at end-of-scope —
         // its `Drop` impl sends `Shutdown` and waits/kills the child.
-        let ctx_mut = &mut self.contexts[active];
+        let ctx_mut = &mut self.windows[active];
         if let Some(pane) = ctx_mut.panes.get_mut(&pane_id) {
             if let Some(app_pane) = pane.as_app_mut() {
                 let new_perms = new_process.permissions.clone();
@@ -252,11 +252,11 @@ impl PlexiApp {
     /// Force-reload the focused app pane (manual trigger via Cmd+Option+R).
     /// No-op when the focused pane isn't a process-backed AppPane.
     pub(crate) fn force_reload_focused_app(&mut self) {
-        let active = self.active_context;
-        let Some(focused_tile) = self.contexts[active].focused_pane else {
+        let active = self.active_window;
+        let Some(focused_tile) = self.windows[active].focused_pane else {
             return;
         };
-        let Some(Tile::Pane(pane_id)) = self.contexts[active].tree.tiles.get(focused_tile) else {
+        let Some(Tile::Pane(pane_id)) = self.windows[active].tree.tiles.get(focused_tile) else {
             return;
         };
         let pane_id = *pane_id;
@@ -272,7 +272,7 @@ impl PlexiApp {
         hint: Option<&str>,
         share: Option<f32>,
     ) {
-        let active = self.active_context;
+        let active = self.active_window;
         let app_type_id = app.type_id().to_string();
         let app_name = app.display_name();
         let new_app_pane = |id: PaneId,
@@ -295,23 +295,23 @@ impl PlexiApp {
         };
 
         if matches!(hint, Some("overlay")) {
-            let Some(focused_tile) = self.contexts[active].focused_pane else {
+            let Some(focused_tile) = self.windows[active].focused_pane else {
                 return;
             };
             let Some(Tile::Pane(focused_pane_id)) =
-                self.contexts[active].tree.tiles.get(focused_tile)
+                self.windows[active].tree.tiles.get(focused_tile)
             else {
                 return;
             };
             let pane_id = *focused_pane_id;
-            let Some(replaced_pane) = self.contexts[active].panes.remove(&pane_id) else {
+            let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
                 return;
             };
-            self.contexts[active].panes.insert(
+            self.windows[active].panes.insert(
                 pane_id,
                 new_app_pane(pane_id, app, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
-            self.contexts[active].focused_pane = Some(focused_tile);
+            self.windows[active].focused_pane = Some(focused_tile);
             return;
         }
 
@@ -323,7 +323,7 @@ impl PlexiApp {
         );
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(&app_type_id, group.clone(), hint, share);
-        self.contexts[active].panes.insert(
+        self.windows[active].panes.insert(
             new_id,
             new_app_pane(new_id, app, workspace_root, group, linked_pane_id, None),
         );
@@ -361,7 +361,7 @@ impl PlexiApp {
     pub(crate) fn open_file_browser(&mut self) {
         // Check if the focused pane (or its linked app pane above) already has
         // a file browser open. If so, close it.
-        let ctx = &self.contexts[self.active_context];
+        let ctx = &self.windows[self.active_window];
         if let Some(focused) = ctx.focused_pane {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
@@ -377,7 +377,7 @@ impl PlexiApp {
         }
 
         let cwd = {
-            let ctx = &self.contexts[self.active_context];
+            let ctx = &self.windows[self.active_window];
             ctx.focused_pane
                 .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
@@ -404,7 +404,7 @@ impl PlexiApp {
     /// Open the quick note app (full pane, no terminal split).
     pub(crate) fn open_quick_note(&mut self) {
         let cwd = {
-            let ctx = &self.contexts[self.active_context];
+            let ctx = &self.windows[self.active_window];
             ctx.focused_pane
                 .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
@@ -457,9 +457,9 @@ impl PlexiApp {
         layout: Option<String>,
         args: &[String],
     ) {
-        let cwd = self.contexts[self.active_context]
+        let cwd = self.windows[self.active_window]
             .focused_pane
-            .and_then(|fp| self.contexts[self.active_context].get_focused_pane_cwd(fp))
+            .and_then(|fp| self.windows[self.active_window].get_focused_pane_cwd(fp))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
         let group = self.registry.group_for(id);
@@ -510,7 +510,7 @@ impl PlexiApp {
         mut process: crate::process_app::ProcessApp,
         system_prompt: Option<String>,
     ) {
-        let active = self.active_context;
+        let active = self.active_window;
         let new_id = self.host.alloc_pane_id();
         process.set_pane_id(new_id);
         let pane = crate::agent_pane::AgentPane::new_subprocess(
@@ -519,7 +519,7 @@ impl PlexiApp {
             system_prompt,
             manifest_id.to_string(),
         );
-        self.contexts[active]
+        self.windows[active]
             .panes
             .insert(new_id, Pane::Agent(Box::new(pane)));
         let share = ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
@@ -546,10 +546,10 @@ impl PlexiApp {
         cli: crate::agent_workspace::AgentCli,
         task_label: String,
     ) -> Result<(), crate::agent_workspace::AgentWorkspaceError> {
-        let active = self.active_context;
-        let cwd = self.contexts[active]
+        let active = self.active_window;
+        let cwd = self.windows[active]
             .focused_pane
-            .and_then(|fp| self.contexts[active].get_focused_pane_cwd(fp))
+            .and_then(|fp| self.windows[active].get_focused_pane_cwd(fp))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
         let repo_root = crate::agent_workspace::find_git_repo_root(&cwd).ok_or_else(|| {
@@ -568,7 +568,7 @@ impl PlexiApp {
         repo_root: PathBuf,
         task_label: String,
     ) -> Result<(), crate::agent_workspace::AgentWorkspaceError> {
-        let active = self.active_context;
+        let active = self.active_window;
         let new_id = self.host.alloc_pane_id();
         let env = crate::shell::build_env();
         let dynamic_colors = crate::theme::terminal_dynamic_colors(&self.colors);
@@ -584,7 +584,7 @@ impl PlexiApp {
             self.default_font_size,
         )?;
 
-        self.contexts[active]
+        self.windows[active]
             .panes
             .insert(new_id, Pane::AgentWorkspace(Box::new(pane)));
         let share = crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
@@ -595,7 +595,7 @@ impl PlexiApp {
     /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
     pub(crate) fn open_secrets_manager(&mut self) {
         // Toggle: if already open, close it.
-        let ctx = &self.contexts[self.active_context];
+        let ctx = &self.windows[self.active_window];
         if let Some(focused) = ctx.focused_pane {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 if let Some(pane) = ctx.panes.get(pane_id) {
@@ -610,7 +610,7 @@ impl PlexiApp {
         }
 
         let cwd = {
-            let ctx = &self.contexts[self.active_context];
+            let ctx = &self.windows[self.active_window];
             ctx.focused_pane
                 .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))

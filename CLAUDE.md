@@ -184,7 +184,7 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 
 ## PlexiApp State
 
-`PlexiApp` fields are declared in `src/app/mod.rs`. There are exactly two struct-literal initialization blocks — both contain `renaming_context: None` and are the only places new fields need to be initialized.
+`PlexiApp` fields are declared in `src/app/mod.rs`. There are exactly two struct-literal initialization blocks — both contain `renaming_window: None` and are the only places new fields need to be initialized.
 
 ## Host UI Systems — Reuse Before Rolling Your Own
 

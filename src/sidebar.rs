@@ -1,4 +1,4 @@
-use crate::context::ContextMenuAction;
+use crate::context::WindowMenuAction;
 use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 
 use crate::app::PlexiApp;
@@ -74,16 +74,16 @@ impl PlexiApp {
         ui.add_space(4.0);
 
         // Workspace list
-        let num_workspaces = self.workspaces.len();
+        let num_contexts = self.contexts.len();
         let mut clicked_workspace: Option<usize> = None;
-        let mut delete_workspace: Option<usize> = None;
-        let mut menu_action: Option<(usize, ContextMenuAction)> = None;
-        let mut row_rects: Vec<Rect> = Vec::with_capacity(num_workspaces);
+        let mut delete_context: Option<usize> = None;
+        let mut menu_action: Option<(usize, WindowMenuAction)> = None;
+        let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
         let mut drag_released = false;
 
-        for i in 0..num_workspaces {
-            let is_active = i == self.active_workspace;
-            let is_renaming = self.renaming_context == Some(i);
+        for i in 0..num_contexts {
+            let is_active = i == self.active_context;
+            let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
 
             let row_rect = ui.cursor();
@@ -169,13 +169,13 @@ impl PlexiApp {
                         );
                         if te.lost_focus() {
                             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                self.renaming_context = None;
+                                self.renaming_window = None;
                             } else {
                                 let new_name = self.rename_buffer.trim().to_string();
                                 if !new_name.is_empty() {
-                                    self.workspaces[i].name = new_name;
+                                    self.contexts[i].name = new_name;
                                 }
-                                self.renaming_context = None;
+                                self.renaming_window = None;
                             }
                             ui.input_mut(|i| {
                                 i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
@@ -215,7 +215,7 @@ impl PlexiApp {
                         }
                         ui.add(
                             egui::Label::new(
-                                RichText::new(&self.workspaces[i].name)
+                                RichText::new(&self.contexts[i].name)
                                     .size(12.0)
                                     .color(text_color),
                             )
@@ -248,7 +248,7 @@ impl PlexiApp {
                         }
 
                         // Delete button on hover when 2+ contexts (suppress during drag)
-                        if hover && num_workspaces > 1 && self.drag_context.is_none() {
+                        if hover && num_contexts > 1 && self.drag_context.is_none() {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(8.0);
                                 let x_btn = ui
@@ -263,7 +263,7 @@ impl PlexiApp {
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .on_hover_text("Delete context");
                                 if x_btn.clicked() {
-                                    delete_workspace = Some(i);
+                                    delete_context = Some(i);
                                 }
                             });
                         }
@@ -272,37 +272,37 @@ impl PlexiApp {
             );
 
             if !is_renaming {
-                if delete_workspace.is_none() {
+                if delete_context.is_none() {
                     row_response.context_menu(|ui| {
                         if ui.button("Rename").clicked() {
-                            menu_action = Some((i, ContextMenuAction::Rename));
+                            menu_action = Some((i, WindowMenuAction::Rename));
                             ui.close_menu();
                         }
                         ui.separator();
                         if i > 0 {
                             if ui.button("Move to Top").clicked() {
-                                menu_action = Some((i, ContextMenuAction::MoveToTop));
+                                menu_action = Some((i, WindowMenuAction::MoveToTop));
                                 ui.close_menu();
                             }
                             if ui.button("Move Up").clicked() {
-                                menu_action = Some((i, ContextMenuAction::MoveUp));
+                                menu_action = Some((i, WindowMenuAction::MoveUp));
                                 ui.close_menu();
                             }
                         }
-                        if i < num_workspaces - 1 {
+                        if i < num_contexts - 1 {
                             if ui.button("Move Down").clicked() {
-                                menu_action = Some((i, ContextMenuAction::MoveDown));
+                                menu_action = Some((i, WindowMenuAction::MoveDown));
                                 ui.close_menu();
                             }
                             if ui.button("Move to Bottom").clicked() {
-                                menu_action = Some((i, ContextMenuAction::MoveToBottom));
+                                menu_action = Some((i, WindowMenuAction::MoveToBottom));
                                 ui.close_menu();
                             }
                         }
-                        if num_workspaces > 1 {
+                        if num_contexts > 1 {
                             ui.separator();
                             if ui.button("Delete").clicked() {
-                                menu_action = Some((i, ContextMenuAction::Delete));
+                                menu_action = Some((i, WindowMenuAction::Delete));
                                 ui.close_menu();
                             }
                         }
@@ -330,14 +330,14 @@ impl PlexiApp {
             if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
                 if dst != src && dst != src + 1 {
                     let effective_dst = if dst > src { dst - 1 } else { dst };
-                    let ws = self.workspaces.remove(src);
-                    self.workspaces.insert(effective_dst, ws);
-                    if self.active_workspace == src {
-                        self.active_workspace = effective_dst;
-                    } else if src < self.active_workspace && effective_dst >= self.active_workspace {
-                        self.active_workspace -= 1;
-                    } else if src > self.active_workspace && effective_dst <= self.active_workspace {
-                        self.active_workspace += 1;
+                    let ctx = self.contexts.remove(src);
+                    self.contexts.insert(effective_dst, ctx);
+                    if self.active_context == src {
+                        self.active_context = effective_dst;
+                    } else if src < self.active_context && effective_dst >= self.active_context {
+                        self.active_context -= 1;
+                    } else if src > self.active_context && effective_dst <= self.active_context {
+                        self.active_context += 1;
                     }
                 }
             }
@@ -365,50 +365,50 @@ impl PlexiApp {
         // Handle collected actions after the loop
         if let Some((i, action)) = menu_action {
             match action {
-                ContextMenuAction::Rename => {
-                    self.renaming_context = Some(i);
-                    self.rename_buffer = self.workspaces[i].name.clone();
+                WindowMenuAction::Rename => {
+                    self.renaming_window = Some(i);
+                    self.rename_buffer = self.contexts[i].name.clone();
                 }
-                ContextMenuAction::MoveToTop => {
-                    let ws = self.workspaces.remove(i);
-                    self.workspaces.insert(0, ws);
-                    if self.active_workspace == i {
-                        self.active_workspace = 0;
-                    } else if self.active_workspace < i {
-                        self.active_workspace += 1;
+                WindowMenuAction::MoveToTop => {
+                    let ctx = self.contexts.remove(i);
+                    self.contexts.insert(0, ctx);
+                    if self.active_context == i {
+                        self.active_context = 0;
+                    } else if self.active_context < i {
+                        self.active_context += 1;
                     }
                 }
-                ContextMenuAction::MoveUp => {
-                    self.workspaces.swap(i, i - 1);
-                    if self.active_workspace == i {
-                        self.active_workspace = i - 1;
-                    } else if self.active_workspace == i - 1 {
-                        self.active_workspace = i;
+                WindowMenuAction::MoveUp => {
+                    self.contexts.swap(i, i - 1);
+                    if self.active_context == i {
+                        self.active_context = i - 1;
+                    } else if self.active_context == i - 1 {
+                        self.active_context = i;
                     }
                 }
-                ContextMenuAction::MoveDown => {
-                    self.workspaces.swap(i, i + 1);
-                    if self.active_workspace == i {
-                        self.active_workspace = i + 1;
-                    } else if self.active_workspace == i + 1 {
-                        self.active_workspace = i;
+                WindowMenuAction::MoveDown => {
+                    self.contexts.swap(i, i + 1);
+                    if self.active_context == i {
+                        self.active_context = i + 1;
+                    } else if self.active_context == i + 1 {
+                        self.active_context = i;
                     }
                 }
-                ContextMenuAction::MoveToBottom => {
-                    let last = num_workspaces - 1;
-                    let ws = self.workspaces.remove(i);
-                    self.workspaces.push(ws);
-                    if self.active_workspace == i {
-                        self.active_workspace = last;
-                    } else if self.active_workspace > i {
-                        self.active_workspace -= 1;
+                WindowMenuAction::MoveToBottom => {
+                    let last = num_contexts - 1;
+                    let ctx = self.contexts.remove(i);
+                    self.contexts.push(ctx);
+                    if self.active_context == i {
+                        self.active_context = last;
+                    } else if self.active_context > i {
+                        self.active_context -= 1;
                     }
                 }
-                ContextMenuAction::Delete => {
+                WindowMenuAction::Delete => {
                     self.delete_workspace(i);
                 }
             }
-        } else if let Some(i) = delete_workspace {
+        } else if let Some(i) = delete_context {
             self.delete_workspace(i);
         } else if let Some(i) = clicked_workspace {
             self.switch_workspace(i);
