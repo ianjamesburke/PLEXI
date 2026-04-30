@@ -1037,7 +1037,14 @@ class Emitter:
             "tools": tools or [],
         }
         _emit(payload)
-        ev = await q.get()
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=35.0)
+        except asyncio.TimeoutError:
+            self._app._pending_ai.pop(req_id, None)
+            raise RuntimeError(
+                f"ai_query timed out after 35s (req_id={req_id!r}) — "
+                "check OPENROUTER_API_KEY and network connectivity"
+            )
         error = ev.get("error")
         if error is not None:
             if "capability denied" in error:
@@ -1995,6 +2002,12 @@ class App:
                     q = self._pending_ai.pop(req_id, None)
                     if q:
                         q.put_nowait(ev)
+                    else:
+                        import logging as _logging
+                        _logging.warning(
+                            f"ai_response: no pending request for req_id={req_id!r} — "
+                            "response dropped (query may have timed out already)"
+                        )
 
                 elif t == "midi_devices_listed":
                     # v3.4 CoreMIDI (#320). Forward to Emitter.list_midi_devices.
@@ -2199,6 +2212,20 @@ class App:
                     await self._dispatch_hook(self.on_resume)
 
                 elif t == "shutdown":
+                    # Cancel any pending ai_query waiters so their coroutines
+                    # unblock immediately instead of waiting up to 35s for a
+                    # response that will never arrive.
+                    if self._pending_ai:
+                        import logging as _logging
+                        _logging.warning(
+                            f"shutdown: cancelling {len(self._pending_ai)} in-flight "
+                            f"ai_query request(s): {list(self._pending_ai.keys())}"
+                        )
+                        for _pending_q in self._pending_ai.values():
+                            _pending_q.put_nowait(
+                                {"error": "ai_query cancelled: app is shutting down"}
+                            )
+                        self._pending_ai.clear()
                     await self._dispatch_hook(self.on_shutdown)
                     return
 

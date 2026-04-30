@@ -384,15 +384,15 @@ accent = "#89b4fa"
 #   Export your key in ~/.zprofile or ~/.zshrc:
 #     export OPENROUTER_API_KEY="sk-or-..."
 #
-# [ai]
-# backend = "openrouter"
-#
-# [ai.openrouter]
-# api_key_env  = "OPENROUTER_API_KEY"
-# model_low    = "google/gemini-2.0-flash-001"   # fast / cheap
-# model_medium = "anthropic/claude-sonnet-4-6"   # balanced
-# model_high   = "anthropic/claude-opus-4-7"     # most capable
-#
+[ai]
+backend = "openrouter"
+
+[ai.openrouter]
+api_key_env  = "OPENROUTER_API_KEY"
+model_low    = "google/gemini-2.0-flash-001"
+model_medium = "anthropic/claude-sonnet-4-6"
+model_high   = "anthropic/claude-opus-4-7"
+
 # Ollama (local):
 # [ai]
 # backend = "ollama"
@@ -433,7 +433,17 @@ impl PlexiConfig {
     /// should prefer [`load_with_workspace`] so a workspace's
     /// `.plexi/config.toml` can override.
     pub fn load() -> Self {
-        Self::load_from_path(&config_path()).unwrap_or_default()
+        let path = config_path();
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(&path, CONFIG_TEMPLATE) {
+                Ok(()) => log::info!("config: created default config at {path:?}"),
+                Err(e) => log::warn!("config: could not write default config to {path:?}: {e}"),
+            }
+        }
+        Self::load_from_path(&path).unwrap_or_default()
     }
 
     /// Load `path` as a `PlexiConfig`. Returns `None` if the file is absent;

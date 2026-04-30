@@ -102,15 +102,17 @@ impl AiBroker for LiveAiBroker {
     fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
         // v3.3: text-in / text-out only. Tool dispatch lands in v3.4.
         if !request.tools.is_empty() {
-            return AiBrokerResponse::err("tools not yet supported by ai.query broker (v3.4)");
+            let msg = "tools not yet supported by ai.query broker (v3.4)";
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
         }
 
         let ai_config = match &self.ai_config {
             Some(c) => c,
             None => {
-                return AiBrokerResponse::err(
-                    "ai_config_missing: add [ai] section with model_low, model_medium, model_high to config.toml",
-                );
+                let msg = "ai_config_missing: add [ai] section with model_low, model_medium, model_high to config.toml";
+                log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+                return AiBrokerResponse::err(msg);
             }
         };
 
@@ -128,20 +130,23 @@ fn dispatch_openrouter(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrok
     let or_config = match ai_config.openrouter.as_ref() {
         Some(c) => c,
         None => {
-            // Fall back to top-level model fields (legacy config) or fail.
-            return AiBrokerResponse::err(
-                "ai_config_missing: [ai.openrouter] section required for openrouter backend",
-            );
+            let msg = "ai_config_missing: [ai.openrouter] section required for openrouter backend";
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
         }
     };
 
     let model_id = resolve_model_tier(&request.model_tier, or_config);
     let model_id = match model_id {
         Some(m) => m,
-        None => return AiBrokerResponse::err(format!(
-            "ai_config_missing: model_{} not set in [ai.openrouter] config section",
-            tier_name(&request.model_tier)
-        )),
+        None => {
+            let msg = format!(
+                "ai_config_missing: model_{} not set in [ai.openrouter] config section",
+                tier_name(&request.model_tier)
+            );
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
+        }
     };
 
     let api_key_env = or_config.api_key_env.as_deref().unwrap_or("OPENROUTER_API_KEY");
@@ -172,19 +177,23 @@ fn dispatch_ollama(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrokerRe
     let ollama_config = match ai_config.ollama.as_ref() {
         Some(c) => c,
         None => {
-            return AiBrokerResponse::err(
-                "Ollama backend selected but [ai.ollama] config section is missing",
-            );
+            let msg = "Ollama backend selected but [ai.ollama] config section is missing";
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
         }
     };
 
     let model_id = resolve_ollama_model_tier(&request.model_tier, ollama_config);
     let model_id = match model_id {
         Some(m) => m,
-        None => return AiBrokerResponse::err(format!(
-            "ai_config_missing: model_{} not set in [ai.ollama] config section",
-            tier_name(&request.model_tier)
-        )),
+        None => {
+            let msg = format!(
+                "ai_config_missing: model_{} not set in [ai.ollama] config section",
+                tier_name(&request.model_tier)
+            );
+            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+            return AiBrokerResponse::err(msg);
+        }
     };
 
     let host = ollama_config.host.as_deref().unwrap_or("http://localhost:11434").to_string();
