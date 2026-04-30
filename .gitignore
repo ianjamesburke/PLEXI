@@ -28,6 +28,9 @@ Thumbs.db
 # Generated bundle assets (cargo bundle generates its own from Cargo.toml)
 assets/Info.plist
 
+# Bundled Python runtime (fetched by `just fetch-python-runtime` at build time)
+assets/python/
+
 # Misc
 *.log
 *.swp

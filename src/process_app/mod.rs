@@ -267,19 +267,30 @@ impl ProcessApp {
                 cmd.env(k, v);
             }
         }
+        // Prepend the bundled Python interpreter's bin/ dir to PATH so that
+        // Python app shebangs (`#!/usr/bin/env python3`) resolve to our hermetic
+        // Python 3.12, not whatever the host machine happens to have installed.
+        // Falls back silently to host PATH if the bundle runtime isn't present
+        // (dev builds that haven't run `just fetch-python-runtime` yet).
+        let bundle_contents = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+        if let Some(ref contents) = bundle_contents {
+            let py_bin = contents.join("Resources").join("assets").join("python").join("bin");
+            if py_bin.exists() {
+                let host_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
+            }
+        }
+
         // Make the shared Plexi SDK importable by Python apps without per-app copies.
         // Priority: user's local SDK (~/.plexi-alpha/sdk/) first, then the copy
         // bundled inside the .app bundle (Contents/Resources/sdk/python/). The bundle path
         // ensures apps work on a fresh install where just install-alpha was never run.
         let sdk_dir = crate::config::config_dir().join("sdk");
         let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
-        if let Some(bundle_sdk) = std::env::current_exe()
-            .ok()
-            .and_then(|exe| {
-                exe.parent()
-                    .and_then(|p| p.parent())
-                    .map(|p| p.join("Resources").join("sdk").join("python"))
-            })
+        if let Some(bundle_sdk) = bundle_contents
+            .map(|p| p.join("Resources").join("sdk").join("python"))
             .filter(|p| p.exists())
         {
             pythonpath.push(':');

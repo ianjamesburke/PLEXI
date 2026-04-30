@@ -1,3 +1,53 @@
+PYTHON_VERSION := "3.12.13"
+PYTHON_PBS_DATE := "20260414"
+
+# Download the python-build-standalone runtime into assets/python/ for bundling.
+# Skips if the correct version is already present. macOS only.
+fetch-python-runtime:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ "$(uname)" != "Darwin" ]]; then
+        echo "fetch-python-runtime: macOS only, skipping"
+        exit 0
+    fi
+
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "arm64" ]]; then
+        PBS_ARCH="aarch64-apple-darwin"
+    else
+        PBS_ARCH="x86_64-apple-darwin"
+    fi
+
+    VERSION="{{PYTHON_VERSION}}"
+    DATE="{{PYTHON_PBS_DATE}}"
+    EXPECTED="${VERSION}+${DATE}-${PBS_ARCH}"
+    VERSION_FILE="assets/python/.pbs-version"
+
+    if [[ -f "$VERSION_FILE" ]] && [[ "$(cat "$VERSION_FILE")" == "$EXPECTED" ]]; then
+        echo "Python runtime ${VERSION} (${PBS_ARCH}) already present, skipping download"
+        exit 0
+    fi
+
+    FILENAME="cpython-${VERSION}+${DATE}-${PBS_ARCH}-install_only.tar.gz"
+    URL="https://github.com/astral-sh/python-build-standalone/releases/download/${DATE}/${FILENAME}"
+
+    echo "Downloading Python ${VERSION} (${PBS_ARCH}) from python-build-standalone..."
+    rm -rf assets/python
+    mkdir -p assets
+
+    TMP=$(mktemp -d)
+    trap "rm -rf $TMP" EXIT
+
+    curl -fL --progress-bar "$URL" -o "$TMP/$FILENAME"
+    tar xzf "$TMP/$FILENAME" -C assets/
+
+    # Strip headers — not needed at runtime, saves ~5 MB
+    rm -rf assets/python/include
+
+    echo "$EXPECTED" > "$VERSION_FILE"
+    echo "Python ${VERSION} ready at assets/python/"
+
 dev:
     cargo run
 
@@ -242,7 +292,7 @@ install-apps:
     echo "install-apps is deprecated. Use 'just install-alpha', 'just install-beta', or 'just install-v3'."
     exit 1
 
-install-alpha:
+install-alpha: fetch-python-runtime
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -314,7 +364,7 @@ install-alpha:
     echo "Config dir: ~/.plexi-alpha/"
     echo "Apps: $(ls ~/.plexi-alpha/apps | wc -l | tr -d ' ') synced from examples/"
 
-install-v3:
+install-v3: fetch-python-runtime
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -378,7 +428,7 @@ install-v3:
     echo "Config dir: ~/.plexi-v3/"
     echo "Apps: $(ls ~/.plexi-v3/apps | wc -l | tr -d ' ') installed"
 
-install-beta:
+install-beta: fetch-python-runtime
     #!/usr/bin/env bash
     set -euo pipefail
 
