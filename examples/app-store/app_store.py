@@ -812,7 +812,7 @@ class AppStoreApp(App):
             "app-store-url",
             x=20.0,
             y=input_y,
-            w=ctx.width - 40.0 if hasattr(ctx, "width") else 600.0,
+            w=ctx.w - 40.0,
             placeholder="github:owner/repo[@ref]  or  git+https://…  (Enter to install)",
         )
         if submitted is not None:

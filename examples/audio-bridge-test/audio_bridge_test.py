@@ -161,7 +161,7 @@ class AudioBridgeTestApp(App):
         elif k == "c":
             with self._peaks_lock:
                 self._peaks.clear()
-            ctx.schedule_render(after_ms=16)
+            self.emit.schedule_render(after_ms=16)
 
     # -- Render ---------------------------------------------------------
 

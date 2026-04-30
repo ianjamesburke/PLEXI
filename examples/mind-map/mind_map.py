@@ -191,7 +191,9 @@ class MindMapApp(App):
 
         elif key in ("Backspace", "Delete"):
             if self._selected != self._root:
-                parent_id = node.parent
+                # Non-root nodes always have a parent; assert to narrow the type.
+                assert node.parent is not None
+                parent_id: int = node.parent
                 # Find a reasonable node to select after deletion
                 siblings = self._nodes[parent_id].children
                 idx = siblings.index(self._selected)
