@@ -13,6 +13,7 @@ osx_minimum_system_version = "12.0"
 # `cpal::Stream::play()` call. Without this string the prompt is suppressed
 # and capture silently records zeros (#277).
 osx_info_plist_exts = ["assets/Info.plist.fragment"]
+resources = ["sdk/python/plexi_sdk"]
 
 [dependencies]
 egui = "0.31"
