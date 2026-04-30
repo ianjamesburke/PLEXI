@@ -23,7 +23,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          direct_prompt: |
+          prompt: |
             Review the changes in PR #${{ github.event.pull_request.number }} of ${{ github.repository }}.
             Fetch the diff with: gh pr diff ${{ github.event.pull_request.number }}
             Post a review using: gh pr review ${{ github.event.pull_request.number }} --comment -b "<your review>"
