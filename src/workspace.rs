@@ -9,26 +9,26 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize)]
 pub struct WorkspaceFile {
     pub version: u32,
-    /// Active workspace index (sidebar context).
-    pub active_workspace: usize,
+    /// Active context index (sidebar item).
+    pub active_context: usize,
     pub sidebar_visible: bool,
     pub next_pane_id: u64,
-    pub workspaces: Vec<SavedWorkspaceMeta>,
     pub contexts: Vec<SavedContext>,
-    /// workspace_id → last active context_id for that workspace.
+    pub windows: Vec<SavedWindow>,
+    /// context_id → last active window_id for that context.
     #[serde(default)]
-    pub workspace_active_window: HashMap<u64, u64>,
+    pub context_active_window: HashMap<u64, u64>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct SavedWorkspaceMeta {
+pub struct SavedContext {
     pub name: String,
     pub path: PathBuf,
     pub context_id: u64,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct SavedContext {
+pub struct SavedWindow {
     pub name: String,
     pub path: PathBuf,
     pub tree: Tree<PaneId>,
@@ -39,9 +39,9 @@ pub struct SavedContext {
     #[serde(default)]
     pub grid_y: u32,
     #[serde(default)]
-    pub context_id: u64,
+    pub window_id: u64,
     #[serde(default)]
-    pub workspace_id: u64,
+    pub context_id: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(aw.task_label, "fix the auth bug");
     }
 
-    /// SavedContext omits `grid_x` / `grid_y` defaults cleanly.
+    /// SavedWindow omits `grid_x` / `grid_y` defaults cleanly.
     #[test]
     fn grid_coords_default_to_zero_on_load() {
         use egui_tiles::Tree;
@@ -227,8 +227,8 @@ mod tests {
             tree_json
         );
 
-        let restored: SavedContext = serde_json::from_str(&json)
-            .expect("SavedContext without grid_x/grid_y must deserialize");
+        let restored: SavedWindow = serde_json::from_str(&json)
+            .expect("SavedWindow without grid_x/grid_y must deserialize");
         assert_eq!(restored.grid_x, 0, "grid_x must default to 0");
         assert_eq!(restored.grid_y, 0, "grid_y must default to 0");
     }

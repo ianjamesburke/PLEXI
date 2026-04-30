@@ -3,11 +3,11 @@
 // Cmd+D / Cmd+Shift+D       — split horizontal / vertical (terminal)
 // Cmd+\                       — split focused pane to the right (mirror type)
 // Cmd+Shift+\                 — split focused pane below (mirror type)
-// Cmd+N                       — new page to the right on the current grid row
-// Cmd+Shift+N                 — new sidebar context
+// Cmd+N                       — new window to the right on the current grid row
+// Cmd+Shift+N                 — new context (sidebar item)
 // Cmd+W                       — close pane
 // Cmd+H/J/K/L                 — navigate panes
-// Cmd+Shift+H/J/K/L           — navigate to adjacent page (spatial grid)
+// Cmd+Shift+H/J/K/L           — navigate to adjacent window (spatial grid)
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
 // Cmd+] / Cmd+[               — cycle tabs
@@ -21,7 +21,7 @@
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
 // Cmd+0                       — quick note
-// Cmd+1–9                     — switch context
+// Cmd+1–9                     — switch context (sidebar)
 // Escape (app active)         — close app
 // Tab (app active)            — navigate to linked terminal
 //
@@ -93,13 +93,13 @@ pub enum Action {
     /// Option (Alt) modifier is the next free chord. No-op when the
     /// focused pane isn't a process-backed app.
     ForceReloadApp,
-    /// Create a new page (context) to the right of the active one on the same
+    /// Create a new window to the right of the active one on the same
     /// grid row. Bound to Cmd+N.
     NewPageRight,
-    /// Create a new sidebar context and immediately open the rename modal.
+    /// Create a new context (sidebar item) and immediately open the rename modal.
     /// Bound to Cmd+Shift+N.
     NewContext,
-    /// Navigate to the adjacent page in the spatial grid. Bound to
+    /// Navigate to the adjacent window in the spatial grid. Bound to
     /// Cmd+Shift+H/J/K/L (left/down/up/right).
     PageLeft,
     PageDown,

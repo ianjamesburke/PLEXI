@@ -28,42 +28,42 @@ impl PlexiApp {
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
         let query = self.palette_query.to_lowercase();
 
-        // ── Context entries (active context first, then by visit recency) ──
-        let active_ctx_id = self.contexts[self.active_context].context_id;
+        // ── Window entries (active window first, then by visit recency) ──
+        let active_win_id = self.windows[self.active_window].window_id;
 
-        let rank_of = |context_id: u64| -> usize {
-            if context_id == active_ctx_id {
+        let rank_of = |win_id: u64| -> usize {
+            if win_id == active_win_id {
                 return 0;
             }
             self.context_visit_history
                 .iter()
-                .position(|&id| id == context_id)
+                .position(|&id| id == win_id)
                 .map(|p| p + 1)
                 .unwrap_or(usize::MAX)
         };
 
         let mut entries: Vec<PaletteEntry> = {
             let mut ctx_entries: Vec<PaletteEntry> = self
-                .contexts
+                .windows
                 .iter()
                 .enumerate()
-                .filter_map(|(ci, c)| {
-                    let ws_name = self
-                        .workspaces
+                .filter_map(|(ci, w)| {
+                    let ctx_name = self
+                        .contexts
                         .iter()
-                        .find(|w| w.context_id == c.workspace_id)
-                        .map(|w| w.name.clone())
+                        .find(|c| c.context_id == w.context_id)
+                        .map(|c| c.name.clone())
                         .unwrap_or_default();
 
                     if query.is_empty()
-                        || c.name.to_lowercase().contains(&query)
-                        || ws_name.to_lowercase().contains(&query)
+                        || w.name.to_lowercase().contains(&query)
+                        || ctx_name.to_lowercase().contains(&query)
                     {
                         Some(PaletteEntry::Context {
                             ctx_idx: ci,
-                            context_id: c.context_id,
-                            name: c.name.clone(),
-                            workspace_name: ws_name,
+                            context_id: w.window_id,
+                            name: w.name.clone(),
+                            workspace_name: ctx_name,
                         })
                     } else {
                         None
@@ -300,7 +300,7 @@ impl PlexiApp {
                                             name,
                                             workspace_name,
                                         } => {
-                                            let is_active = *context_id == active_ctx_id;
+                                            let is_active = *context_id == active_win_id;
                                             let name_color = if is_active {
                                                 colors.accent
                                             } else {
@@ -480,26 +480,26 @@ impl PlexiApp {
             });
     }
 
-    /// Jump to a context by index, switching workspace if necessary.
-    fn jump_to_context(&mut self, ctx_idx: usize, context_id: u64) {
-        let target_ws_id = self.contexts[ctx_idx].workspace_id;
-        if let Some(ws_idx) = self
-            .workspaces
+    /// Jump to a window by index, switching context if necessary.
+    fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64) {
+        let target_ctx_id = self.windows[ctx_idx].context_id;
+        if let Some(ctx_idx_sidebar) = self
+            .contexts
             .iter()
-            .position(|w| w.context_id == target_ws_id)
+            .position(|c| c.context_id == target_ctx_id)
         {
-            if ws_idx != self.active_workspace {
+            if ctx_idx_sidebar != self.active_context {
                 // switch_workspace → pick_active_context_from_workspace sets
-                // active_context based on workspace_active_window. We override it
+                // active_window based on context_active_window. We override it
                 // immediately below.
-                self.switch_workspace(ws_idx);
+                self.switch_workspace(ctx_idx_sidebar);
             }
         }
-        self.active_context = ctx_idx;
-        self.contexts[ctx_idx].zoomed_pane = None;
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        self.workspace_active_window.insert(ws_id, context_id);
-        self.record_context_visit(context_id);
+        self.active_window = ctx_idx;
+        self.windows[ctx_idx].zoomed_pane = None;
+        let ctx_id = self.contexts[self.active_context].context_id;
+        self.context_active_window.insert(ctx_id, win_id);
+        self.record_context_visit(win_id);
     }
 
     /// Dispatch a static palette action. Adding a new action means

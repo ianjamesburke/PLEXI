@@ -9,11 +9,11 @@ impl PlexiApp {
     /// in the active context. This way PathChanged fires even when an app pane
     /// (like the file browser) is the egui-focused tile.
     pub(super) fn sync_app_cwd(&mut self) {
-        let active = self.active_context;
+        let active = self.active_window;
 
         // First try: focused pane if it's a terminal.
         let terminal_cwd = {
-            let ctx = &self.contexts[active];
+            let ctx = &self.windows[active];
             let focused_terminal_cwd = ctx.focused_pane.and_then(|tile| {
                 let pane_id = match ctx.tree.tiles.get(tile)? {
                     egui_tiles::Tile::Pane(id) => *id,
@@ -38,7 +38,7 @@ impl PlexiApp {
             return;
         };
 
-        let app_ids: Vec<_> = self.contexts[active]
+        let app_ids: Vec<_> = self.windows[active]
             .panes
             .iter()
             .filter_map(|(&id, pane)| {
@@ -52,7 +52,7 @@ impl PlexiApp {
             .collect();
 
         for id in app_ids {
-            if let Some(pane) = self.contexts[active].panes.get_mut(&id) {
+            if let Some(pane) = self.windows[active].panes.get_mut(&id) {
                 if let Some(app) = pane.as_app_mut() {
                     if app.workspace_root != new_cwd {
                         app.workspace_root = new_cwd.clone();

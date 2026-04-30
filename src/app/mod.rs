@@ -75,7 +75,7 @@ pub(crate) enum NotificationImageState {
 use crate::agent_workspace::MergeOutcome;
 use crate::app_registry::AppRegistry;
 use crate::config;
-use crate::context::Context;
+use crate::context::{Context, Window};
 use crate::keys::{self, Action};
 use crate::pane::{Pane, TerminalPane};
 use crate::shell;
@@ -97,10 +97,10 @@ pub struct PlexiApp {
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
     pub(crate) ctx: egui::Context,
-    pub(crate) workspaces: Vec<crate::context::WorkspaceMeta>,
     pub(crate) contexts: Vec<Context>,
+    pub(crate) windows: Vec<Window>,
+    pub(crate) active_window: usize,
     pub(crate) active_context: usize,
-    pub(crate) active_workspace: usize,
     pub(crate) sidebar_visible: bool,
     pub(crate) show_shortcuts: bool,
     pub(crate) quitting: bool,
@@ -110,7 +110,7 @@ pub struct PlexiApp {
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
-    pub(crate) renaming_context: Option<usize>,
+    pub(crate) renaming_window: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) drag_context: Option<usize>,
     pub(crate) registry: AppRegistry,
@@ -195,15 +195,15 @@ pub struct PlexiApp {
     /// consult this to land on the most recently accessed page in the target
     /// row rather than the spatially closest one.
     pub(crate) last_page_x_per_row: HashMap<u32, u32>,
-    /// workspace_id → last active context_id for that workspace.
-    pub(crate) workspace_active_window: HashMap<u64, u64>,
-    /// Per-workspace minimap visibility. Saved on workspace switch so each
-    /// workspace remembers its own minimap state across context changes.
-    /// Absent entry = first visit; defaults to `true` iff workspace has > 1 page.
-    pub(crate) minimap_visible_per_workspace: HashMap<u64, bool>,
-    /// Monotonically increasing counter. Assigned to each new `Context` as its
-    /// stable `context_id`. Never reused — only increments.
-    pub(crate) next_context_id: u64,
+    /// context_id → last active window_id for that context.
+    pub(crate) context_active_window: HashMap<u64, u64>,
+    /// Per-context minimap visibility. Saved on context switch so each
+    /// context remembers its own minimap state across window changes.
+    /// Absent entry = first visit; defaults to `true` iff context has > 1 page.
+    pub(crate) minimap_visible_per_context: HashMap<u64, bool>,
+    /// Monotonically increasing counter. Assigned to each new `Window` as its
+    /// stable `window_id`. Never reused — only increments.
+    pub(crate) next_window_id: u64,
 }
 
 impl PlexiApp {
@@ -265,14 +265,14 @@ impl PlexiApp {
 
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
-            let mut contexts = Vec::new();
-            for saved_ctx in ws.contexts {
+            let mut windows = Vec::new();
+            for saved_win in ws.windows {
                 let mut panes = HashMap::new();
-                for saved_pane in &saved_ctx.panes {
+                for saved_pane in &saved_win.panes {
                     let cwd = if saved_pane.cwd.is_dir() {
                         Some(saved_pane.cwd.clone())
-                    } else if saved_ctx.path.is_dir() {
-                        Some(saved_ctx.path.clone())
+                    } else if saved_win.path.is_dir() {
+                        Some(saved_win.path.clone())
                     } else {
                         dirs::home_dir()
                     };
@@ -438,50 +438,50 @@ impl PlexiApp {
                 }
                 // Skip only if there were saved panes that all failed to restore
                 // (corrupted state). An empty saved pane list means the user
-                // intentionally closed all panes — restore the empty context so
+                // intentionally closed all panes — restore the empty window so
                 // the welcome screen appears on next launch.
-                if !saved_ctx.panes.is_empty() && panes.is_empty() {
+                if !saved_win.panes.is_empty() && panes.is_empty() {
                     continue;
                 }
-                contexts.push(Context {
-                    name: saved_ctx.name,
-                    path: saved_ctx.path,
-                    tree: saved_ctx.tree,
+                windows.push(Window {
+                    name: saved_win.name,
+                    path: saved_win.path,
+                    tree: saved_win.tree,
                     panes,
-                    focused_pane: saved_ctx.focused_pane,
+                    focused_pane: saved_win.focused_pane,
                     zoomed_pane: None,
-                    grid_x: saved_ctx.grid_x,
-                    grid_y: saved_ctx.grid_y,
-                    context_id: saved_ctx.context_id,
-                    workspace_id: saved_ctx.workspace_id,
+                    grid_x: saved_win.grid_x,
+                    grid_y: saved_win.grid_y,
+                    window_id: saved_win.window_id,
+                    context_id: saved_win.context_id,
                 });
             }
-            if !contexts.is_empty() {
-                // Repair context_ids: old workspace files have context_id=0.
-                // Assign sequential IDs so every context has a stable unique ID.
+            if !windows.is_empty() {
+                // Repair window_ids: old workspace files have window_id=0.
+                // Assign sequential IDs so every window has a stable unique ID.
                 let mut next_id: u64 = 1;
-                for ctx in &mut contexts {
-                    if ctx.context_id == 0 {
-                        ctx.context_id = next_id;
+                for win in &mut windows {
+                    if win.window_id == 0 {
+                        win.window_id = next_id;
                         next_id += 1;
                     } else {
-                        next_id = next_id.max(ctx.context_id + 1);
+                        next_id = next_id.max(win.window_id + 1);
                     }
                 }
-                let mut workspaces = Vec::new();
-                for saved_ws in ws.workspaces {
-                    workspaces.push(crate::context::WorkspaceMeta {
-                        name: saved_ws.name,
-                        path: saved_ws.path,
-                        context_id: saved_ws.context_id,
+                let mut contexts = Vec::new();
+                for saved_ctx in ws.contexts {
+                    contexts.push(crate::context::Context {
+                        name: saved_ctx.name,
+                        path: saved_ctx.path,
+                        context_id: saved_ctx.context_id,
                     });
                 }
-                let active_ws = ws.active_workspace.min(workspaces.len().saturating_sub(1));
-                let active_ws_id = workspaces[active_ws].context_id;
-                let active = ws.workspace_active_window.get(&active_ws_id)
-                    .and_then(|ctx_id| contexts.iter().position(|c| c.context_id == *ctx_id))
+                let active_ctx = ws.active_context.min(contexts.len().saturating_sub(1));
+                let active_ctx_id = contexts[active_ctx].context_id;
+                let active = ws.context_active_window.get(&active_ctx_id)
+                    .and_then(|win_id| windows.iter().position(|w| w.window_id == *win_id))
                     .unwrap_or(0);
-                let window_count = contexts.iter().filter(|c| c.workspace_id == active_ws_id).count();
+                let window_count = windows.iter().filter(|w| w.context_id == active_ctx_id).count();
                 let mut host = crate::host::model::HostModel::new();
                 host.seed_next_pane_id(ws.next_pane_id);
                 return Self {
@@ -492,9 +492,9 @@ impl PlexiApp {
                     default_font_size,
                     ctx: cc.egui_ctx.clone(),
                     contexts,
-                    workspaces,
-                    active_context: active,
-                    active_workspace: active_ws,
+                    windows,
+                    active_window: active,
+                    active_context: active_ctx,
                     sidebar_visible: ws.sidebar_visible,
                     show_shortcuts: false,
                     quitting: false,
@@ -502,7 +502,7 @@ impl PlexiApp {
                     quit_last_press: None,
                     config: config.clone(),
                     pending_close: false,
-                    renaming_context: None,
+                    renaming_window: None,
                     rename_buffer: String::new(),
                     drag_context: None,
                     show_command_palette: false,
@@ -535,9 +535,9 @@ impl PlexiApp {
                     last_cli_map: crate::agent_workspace::persistence::load(),
                     minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
-                    workspace_active_window: ws.workspace_active_window,
-                    minimap_visible_per_workspace: HashMap::new(),
-                    next_context_id: next_id,
+                    context_active_window: ws.context_active_window,
+                    minimap_visible_per_context: HashMap::new(),
+                    next_window_id: next_id,
                 };
             }
         }
@@ -556,12 +556,12 @@ impl PlexiApp {
             colors,
             default_font_size,
             ctx: cc.egui_ctx.clone(),
-            workspaces: vec![crate::context::WorkspaceMeta {
+            contexts: vec![crate::context::Context {
                 name: "Default".into(),
                 path: path.clone(),
                 context_id: 1,
             }],
-            contexts: vec![Context {
+            windows: vec![Window {
                 name: "Default".into(),
                 path,
                 tree,
@@ -570,9 +570,10 @@ impl PlexiApp {
                 zoomed_pane: None,
                 grid_x: 0,
                 grid_y: 0,
+                window_id: 1,
                 context_id: 1,
-                workspace_id: 1,
             }],
+            active_window: 0,
             active_context: 0,
             sidebar_visible: true,
             show_shortcuts: false,
@@ -581,7 +582,7 @@ impl PlexiApp {
             quit_last_press: None,
             config,
             pending_close: false,
-            renaming_context: None,
+            renaming_window: None,
             rename_buffer: String::new(),
             drag_context: None,
             show_command_palette: false,
@@ -614,10 +615,9 @@ impl PlexiApp {
             last_cli_map: crate::agent_workspace::persistence::load(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
-            workspace_active_window: HashMap::new(),
-            minimap_visible_per_workspace: HashMap::new(),
-            active_workspace: 0,
-            next_context_id: 2,
+            context_active_window: HashMap::new(),
+            minimap_visible_per_context: HashMap::new(),
+            next_window_id: 2,
         }
     }
 
@@ -675,7 +675,7 @@ impl PlexiApp {
                 sender_pane_id: 0,
                 // Host-originated notifications are global (they originate
                 // outside any context) and always visible.
-                source_context: self.active_workspace,
+                source_context: self.active_context,
                 scope: crate::app_protocol::NotifyScope::Global,
                 level,
                 title,
@@ -711,8 +711,8 @@ impl PlexiApp {
             // Forward Wakeup / ChildExit to AgentWorkspace status heuristics
             // (#349). Other panes ignore these — only the agent workspace
             // tracks activity timing.
-            for context in &mut self.contexts {
-                if let Some(pane) = context.panes.get_mut(&id) {
+            for win in &mut self.windows {
+                if let Some(pane) = win.panes.get_mut(&id) {
                     if let Some(workspace) = pane.as_agent_workspace_mut() {
                         workspace.record_pty_activity(&event, now);
                     }
@@ -721,8 +721,8 @@ impl PlexiApp {
             }
             match &event {
                 PtyEvent::Exit => {
-                    for context in &mut self.contexts {
-                        if let Some(pane) = context.panes.get_mut(&id) {
+                    for win in &mut self.windows {
+                        if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 t.exited = true;
                             }
@@ -759,14 +759,14 @@ impl PlexiApp {
     // push order (we never reorder the Vec; dismissal removes by id).
     //
     // Visibility: Context-scoped notifications are only visible when
-    // `source_context == self.active_workspace`. Global notifications are
+    // `source_context == self.active_context`. Global notifications are
     // always visible. The raw `pending_notifications` Vec stays flat;
     // only the *view* changes with the active workspace.
 
     /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
         matches!(n.scope, crate::app_protocol::NotifyScope::Global)
-            || n.source_context == self.active_workspace
+            || n.source_context == self.active_context
     }
 
     /// Return ids of all *visible* notifications (for the current context),
@@ -860,8 +860,8 @@ impl PlexiApp {
         let now = std::time::Instant::now();
         let mut conflict_surfaces: Vec<(String, Vec<String>)> = Vec::new();
         let mut merge_failures: Vec<(String, String)> = Vec::new();
-        for context in &mut self.contexts {
-            for pane in context.panes.values_mut() {
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
                 let Some(workspace) = pane.as_agent_workspace_mut() else {
                     continue;
                 };
@@ -939,7 +939,7 @@ impl PlexiApp {
         self.pending_notifications.push(PendingNotification {
             notify_id: internal_id.clone(),
             sender_pane_id: 0,
-            source_context: self.active_workspace,
+            source_context: self.active_context,
             scope: crate::app_protocol::NotifyScope::Global,
             level,
             title,
@@ -1050,10 +1050,10 @@ impl eframe::App for PlexiApp {
                     args,
                 } => {
                     // Capture requesting pane before launch changes focused_pane.
-                    let active = self.active_context;
-                    let requesting_pane_id = self.contexts[active]
+                    let active = self.active_window;
+                    let requesting_pane_id = self.windows[active]
                         .focused_pane
-                        .and_then(|tile| self.contexts[active].tree.tiles.get(tile))
+                        .and_then(|tile| self.windows[active].tree.tiles.get(tile))
                         .and_then(|tile| {
                             if let egui_tiles::Tile::Pane(pid) = tile {
                                 Some(*pid)
@@ -1067,8 +1067,8 @@ impl eframe::App for PlexiApp {
 
                     // Confirm back to the requesting app.
                     if let Some(req_pane_id) = requesting_pane_id {
-                        let active = self.active_context;
-                        if let Some(pane) = self.contexts[active].panes.get_mut(&req_pane_id) {
+                        let active = self.active_window;
+                        if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
                             let event = crate::app_protocol::PlexiEvent::AppSpawned {
                                 pane_id: new_pane_id,
                                 type_id: type_id.clone(),
@@ -1080,16 +1080,16 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::CdRequest { cwd, sender_pane_id } => {
-                    let active = self.active_context;
+                    let active = self.active_window;
                     let escaped = cwd.replace('\'', "'\\''");
                     let cd_cmd = format!("cd '{}'\n", escaped);
-                    let linked_id = self.contexts[active]
+                    let linked_id = self.windows[active]
                         .panes
                         .get(&sender_pane_id)
                         .and_then(|p| p.as_app())
                         .and_then(|a| a.linked_pane_id);
                     if let Some(tid) = linked_id {
-                        if let Some(t) = self.contexts[active]
+                        if let Some(t) = self.windows[active]
                             .panes
                             .get_mut(&tid)
                             .and_then(|p| p.as_terminal_mut())
@@ -1151,7 +1151,7 @@ impl eframe::App for PlexiApp {
                     //      "note saved".
                     // If any gate fails, the notification still queues
                     // (badge ticks) but the modal doesn't pop.
-                    let is_visible = is_global || notif_source_ctx == self.active_context;
+                    let is_visible = is_global || notif_source_ctx == self.active_window;
                     let should_auto_open = is_visible
                         && !self.notifications_focus_mode
                         && priority >= self.notifications_interrupt_threshold;
@@ -1169,8 +1169,8 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } => {
-                    let active = self.active_context;
-                    if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                    let active = self.active_window;
+                    if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                         if let Some(app) = pane.as_app_mut() {
                             app.runtime.queue_outbound_event(
                                 crate::app_protocol::PlexiEvent::NotifyAction {
@@ -1183,7 +1183,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::DeliverPipeMessage { sender_pane_id, pipe_id, payload } => {
-                    let active = self.active_context;
+                    let active = self.active_window;
                     // Directed pipe (#286) — only the non-sender member of
                     // the pair receives. Falls through to the legacy peer
                     // broadcast when the pipe was not opened directed.
@@ -1201,7 +1201,7 @@ impl eframe::App for PlexiApp {
                             None
                         };
                         if let Some(tid) = target_pid {
-                            if let Some(pane) = self.contexts[active].panes.get_mut(&tid) {
+                            if let Some(pane) = self.windows[active].panes.get_mut(&tid) {
                                 let event = crate::app_protocol::PlexiEvent::PipeMessage {
                                     pipe_id: pipe_id.clone(),
                                     payload: payload.clone(),
@@ -1217,12 +1217,12 @@ impl eframe::App for PlexiApp {
                         }
                         continue;
                     }
-                    let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
+                    let pane_ids: Vec<_> = self.windows[active].panes.keys().copied().collect();
                     for pid in pane_ids {
                         if pid == sender_pane_id {
                             continue; // don't echo back to sender
                         }
-                        let is_reader = self.contexts[active]
+                        let is_reader = self.windows[active]
                             .panes
                             .get(&pid)
                             .and_then(|p| p.as_app())
@@ -1234,7 +1234,7 @@ impl eframe::App for PlexiApp {
                             })
                             .unwrap_or(false);
                         if is_reader {
-                            if let Some(pane) = self.contexts[active].panes.get_mut(&pid) {
+                            if let Some(pane) = self.windows[active].panes.get_mut(&pid) {
                                 if let Some(app) = pane.as_app_mut() {
                                     app.runtime.queue_outbound_event(
                                         crate::app_protocol::PlexiEvent::PipeMessage {
@@ -1258,8 +1258,8 @@ impl eframe::App for PlexiApp {
                     // locally inside its own ProcessApp; we need to register
                     // it on the target so its `has_reader` returns true and
                     // its SDK has a Pipe handle if it sends in reverse.
-                    let active = self.active_context;
-                    let target_kind = self.contexts[active]
+                    let active = self.active_window;
+                    let target_kind = self.windows[active]
                         .panes
                         .get(&target_pane_id)
                         .map(|p| match p {
@@ -1273,7 +1273,7 @@ impl eframe::App for PlexiApp {
                             // Register pipe on target's registry so it can
                             // PipeSend back through the same id.
                             let registered = if let Some(pane) =
-                                self.contexts[active].panes.get_mut(&target_pane_id)
+                                self.windows[active].panes.get_mut(&target_pane_id)
                             {
                                 register_directed_pipe_on_target(pane, &pipe_id)
                             } else {
@@ -1300,15 +1300,15 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::AgentRosterGet { sender_pane_id, request_id } => {
-                    let active = self.active_context;
+                    let active = self.active_window;
                     let agents = crate::agent_pane::enumerate_agents(
-                        self.contexts[active].panes.values(),
+                        self.windows[active].panes.values(),
                     );
                     let event = crate::app_protocol::PlexiEvent::AgentRoster {
                         request_id,
                         agents,
                     };
-                    if let Some(pane) = self.contexts[active].panes.get_mut(&sender_pane_id) {
+                    if let Some(pane) = self.windows[active].panes.get_mut(&sender_pane_id) {
                         if let Some(app) = pane.as_app_mut() {
                             app.runtime.queue_outbound_event(event);
                         } else if let Some(agent) = pane.as_agent_mut() {
@@ -1357,11 +1357,11 @@ impl eframe::App for PlexiApp {
                     self.dispatch_open_artifact(path, mode);
                 }
                 AppCommand::DeliverRunUpdate { originator_type_id, event } => {
-                    let active = self.active_context;
-                    let pane_ids: Vec<_> = self.contexts[active].panes.keys().copied().collect();
+                    let active = self.active_window;
+                    let pane_ids: Vec<_> = self.windows[active].panes.keys().copied().collect();
                     let mut delivered = false;
                     for pid in pane_ids {
-                        let matches = self.contexts[active]
+                        let matches = self.windows[active]
                             .panes
                             .get(&pid)
                             .and_then(|p| p.as_app())
@@ -1373,7 +1373,7 @@ impl eframe::App for PlexiApp {
                             })
                             .unwrap_or(false);
                         if matches {
-                            if let Some(pane) = self.contexts[active].panes.get_mut(&pid) {
+                            if let Some(pane) = self.windows[active].panes.get_mut(&pid) {
                                 if let Some(app) = pane.as_app_mut() {
                                     app.runtime.queue_outbound_event(event.clone());
                                     delivered = true;
@@ -1393,7 +1393,7 @@ impl eframe::App for PlexiApp {
 
         // Check if the focused app wants to close itself (e.g. after saving).
         {
-            let ctx_ref = &self.contexts[self.active_context];
+            let ctx_ref = &self.windows[self.active_window];
             let should_close = ctx_ref
                 .focused_pane
                 .and_then(|tile| ctx_ref.tree.tiles.get(tile))
@@ -1418,7 +1418,7 @@ impl eframe::App for PlexiApp {
 
         // Update window title to reflect active pane — readable by AppleScript / OS scripts
         {
-            let context = &self.contexts[self.active_context];
+            let context = &self.windows[self.active_window];
             let pane_name = context
                 .focused_pane
                 .and_then(|tile_id| context.tree.tiles.get(tile_id))
@@ -1436,9 +1436,9 @@ impl eframe::App for PlexiApp {
                         pane.as_app().map(|a| a.name.clone())
                     }
                 });
-            let ws = &self.workspaces[self.active_workspace];
+            let ws = &self.contexts[self.active_context];
             let ws_id = ws.context_id;
-            let window_count = self.contexts.iter().filter(|c| c.workspace_id == ws_id).count();
+            let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
             let context_label = if window_count > 1 {
                 format!("{} ({},{})", ws.name, context.grid_x, context.grid_y)
             } else {
@@ -1454,7 +1454,7 @@ impl eframe::App for PlexiApp {
         // Determine if the focused pane has an active app surface, and whether
         // that app has declared keyboard_capture mode.
         let (app_active, keyboard_capture_active) = {
-            let context = &self.contexts[self.active_context];
+            let context = &self.windows[self.active_window];
             let focused_pane = context.focused_pane.and_then(|tile_id| {
                 if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
                     context.panes.get(pane_id)
@@ -1481,27 +1481,27 @@ impl eframe::App for PlexiApp {
         for action in keys::poll_actions(ctx, app_active, keyboard_capture_active, modal_open) {
             match action {
                 Action::SplitHorizontal => {
-                    self.contexts[self.active_context].zoomed_pane = None;
+                    self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused(false);
                 }
                 Action::SplitVertical => {
-                    self.contexts[self.active_context].zoomed_pane = None;
+                    self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused(true);
                 }
                 Action::SplitRight => {
-                    self.contexts[self.active_context].zoomed_pane = None;
+                    self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused_mirror(crate::host::command::Placement::Right);
                 }
                 Action::SplitDown => {
-                    self.contexts[self.active_context].zoomed_pane = None;
+                    self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused_mirror(crate::host::command::Placement::Below);
                 }
                 Action::Navigate(dir) => {
-                    let was_zoomed = self.contexts[self.active_context].zoomed_pane.is_some();
+                    let was_zoomed = self.windows[self.active_window].zoomed_pane.is_some();
                     self.navigate(dir);
                     if was_zoomed {
-                        self.contexts[self.active_context].zoomed_pane =
-                            self.contexts[self.active_context].focused_pane;
+                        self.windows[self.active_window].zoomed_pane =
+                            self.windows[self.active_window].focused_pane;
                     }
                 }
                 Action::ClosePane => {
@@ -1509,7 +1509,7 @@ impl eframe::App for PlexiApp {
                     // depth (via PushNav), Escape routes NavBack to the app
                     // instead of closing the pane.
                     let nav_pane_id = {
-                        let active_ctx = &self.contexts[self.active_context];
+                        let active_ctx = &self.windows[self.active_window];
                         active_ctx.focused_pane.and_then(|tile_id| {
                             if let Some(egui_tiles::Tile::Pane(pane_id)) =
                                 active_ctx.tree.tiles.get(tile_id)
@@ -1529,8 +1529,8 @@ impl eframe::App for PlexiApp {
                         })
                     };
                     if let Some(pane_id) = nav_pane_id {
-                        let active = self.active_context;
-                        if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                        let active = self.active_window;
+                        if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                             if let Some(app) = pane.as_app_mut() {
                                 app.runtime.queue_outbound_event(
                                     crate::app_protocol::PlexiEvent::NavBack {},
@@ -1545,7 +1545,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::NewTab => self.new_tab(),
                 Action::ToggleZoom => {
-                    let ctx = &mut self.contexts[self.active_context];
+                    let ctx = &mut self.windows[self.active_window];
                     if let Some(focused) = ctx.focused_pane {
                         if ctx.zoomed_pane == Some(focused) {
                             ctx.zoomed_pane = None;
@@ -1589,7 +1589,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::RenamePane => {
-                    let active_ctx = &self.contexts[self.active_context];
+                    let active_ctx = &self.windows[self.active_window];
                     if let Some(focused_tile) = active_ctx.focused_pane {
                         if let Some(Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(focused_tile) {
                             let pane_id = *pane_id;
@@ -1604,7 +1604,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SwitchContext(n) => {
-                    if n < self.workspaces.len() {
+                    if n < self.contexts.len() {
                         self.switch_workspace(n);
                     }
                 }
@@ -1678,7 +1678,7 @@ impl eframe::App for PlexiApp {
                     self.force_reload_focused_app();
                 }
                 Action::NewPageRight => {
-                    if self.contexts[self.active_context].panes.is_empty() {
+                    if self.windows[self.active_window].panes.is_empty() {
                         self.reset_active_context();
                     } else {
                         self.new_page_right();
@@ -1787,13 +1787,13 @@ impl eframe::App for PlexiApp {
                 ..Default::default()
             })
             .show(ctx, |ui| {
-                let active = self.active_context;
-                if self.contexts[active].panes.is_empty() {
+                let active = self.active_window;
+                if self.windows[active].panes.is_empty() {
                     self.draw_welcome_screen(ui);
                     return;
                 }
 
-                let ctx = &mut self.contexts[self.active_context];
+                let ctx = &mut self.windows[self.active_window];
 
                 // Resolve focused_pane if simplifier moved the tile
                 if let Some(fp) = ctx.focused_pane {
@@ -1816,7 +1816,7 @@ impl eframe::App for PlexiApp {
                     .iter()
                     .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
                     .collect();
-                let suppress_focus = self.renaming_context.is_some()
+                let suppress_focus = self.renaming_window.is_some()
                     || self.show_command_palette
                     || self.renaming_pane.is_some();
 
@@ -2000,8 +2000,8 @@ impl eframe::App for PlexiApp {
         }
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        let window_count = self.contexts.iter().filter(|c| c.workspace_id == ws_id).count();
+        let ws_id = self.contexts[self.active_context].context_id;
+        let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
         if window_count >= 2 {
             self.draw_minimap_overlay(ctx);
         } else {
@@ -2261,8 +2261,8 @@ impl PlexiApp {
         use crate::app_trait::AppCommand;
         for cmd in cmds {
             if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } = cmd {
-                let active = self.active_context;
-                if let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) {
+                let active = self.active_window;
+                if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                     if let Some(app) = pane.as_app_mut() {
                         app.runtime.queue_outbound_event(
                             crate::app_protocol::PlexiEvent::NotifyAction {

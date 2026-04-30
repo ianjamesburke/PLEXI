@@ -4,7 +4,7 @@
 //! active workspace. Empty rows are collapsed so the grid is always compact.
 //! The active window is highlighted; clicking a cell switches to it.
 
-use crate::context::Context;
+use crate::context::Window;
 use crate::theme::Colors;
 
 /// Runtime state for the minimap overlay.
@@ -38,18 +38,18 @@ const NAME_FONT_SIZE: f32 = 12.0;
 pub fn render_minimap(
     ui: &mut egui::Ui,
     content_rect: egui::Rect,
-    contexts: &[Context],
-    active_context: usize,
+    windows: &[Window],
+    active_window: usize,
     last_visited: &std::collections::HashMap<u32, u32>,
     colors: &Colors,
     workspace_id: u64,
     workspace_name: &str,
 ) -> Option<usize> {
     // Only windows belonging to the current workspace.
-    let visible: Vec<(usize, &Context)> = contexts
+    let visible: Vec<(usize, &Window)> = windows
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.workspace_id == workspace_id)
+        .filter(|(_, c)| c.context_id == workspace_id)
         .collect();
 
     if visible.is_empty() {
@@ -138,7 +138,7 @@ pub fn render_minimap(
             egui::Vec2::new(CELL_W, CELL_H),
         );
 
-        let is_active = idx == active_context;
+        let is_active = idx == active_window;
         let is_trail = !is_active
             && last_visited.get(&ctx.grid_y).copied() == Some(ctx.grid_x);
 
