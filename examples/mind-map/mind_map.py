@@ -4,7 +4,6 @@
 Vim-style navigation (h/j/k/l), Tab to add child, Enter to add sibling,
 r/F2 to rename, Backspace/Delete to remove. Zoom with +/-/0. Click to select.
 """
-from __future__ import annotations
 
 import sys
 import os

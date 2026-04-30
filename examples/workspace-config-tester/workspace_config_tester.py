@@ -13,7 +13,6 @@ Surfaces:
 Keys:
   r — Reload from disk
 """
-from __future__ import annotations
 
 from pathlib import Path
 

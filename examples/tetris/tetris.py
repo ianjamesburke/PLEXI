@@ -4,7 +4,6 @@
 Demonstrates: time-based game logic in on_render, ghost piece, wall kicks,
 hard drop, level progression, and the ScheduleRender protocol extension.
 """
-from __future__ import annotations
 
 import random
 import sys

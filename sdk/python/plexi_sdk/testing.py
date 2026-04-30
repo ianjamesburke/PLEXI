@@ -3,7 +3,6 @@
 Spawns the plexi binary with `--render`, feeds it DrawCommand JSON,
 reads back PNG bytes. Provides pixel-level assertions and snapshot file helpers.
 """
-from __future__ import annotations
 
 import json
 import os

@@ -9,7 +9,6 @@ Keys:
   j — spam malformed JSON (protocol_error pill)
   x — exit cleanly (no pill)
 """
-from __future__ import annotations
 
 import sys
 import time

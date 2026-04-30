@@ -19,7 +19,6 @@ loop stays free to dispatch the worker's `pipe_message` reply back into
 `on_pipe_message`. `respond` returns `None` (manual append mode) and
 the worker thread does the final `append_assistant_message` itself.
 """
-from __future__ import annotations
 
 import queue
 import threading

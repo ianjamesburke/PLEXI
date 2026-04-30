@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 """Unit tests for the v3.1 host-owned `TextInput` SDK wrapper (issue #283).
 

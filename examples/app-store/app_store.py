@@ -19,7 +19,6 @@ single source of truth (`crate::install`) stays canonical.
 Capability approval is mandatory before any install — the user sees
 exactly which manifest-declared capabilities they're granting.
 """
-from __future__ import annotations
 
 import json
 import os

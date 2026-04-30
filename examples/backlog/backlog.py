@@ -5,7 +5,6 @@ hjkl navigation. e/Enter opens in default app. a archives. d deletes (confirm).
 n creates a new item via host TextInput (issue #283). r refreshes. / searches.
 Items are markdown files inside <workspace>/.plexi/backlog/.
 """
-from __future__ import annotations
 
 import os
 import shutil

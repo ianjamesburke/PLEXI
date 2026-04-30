@@ -5,7 +5,6 @@ vertical scrolling. Emits PGAP-compatible DrawCommand dicts (same shape
 as ctx.rect / ctx.text). All coordinates are absolute within the
 render viewport passed to render().
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 

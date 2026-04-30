@@ -11,7 +11,6 @@ Try it:
     plexi-alpha descriptor probe python plexi_descriptor_demo.py
 """
 
-from __future__ import annotations
 
 import json
 import sys

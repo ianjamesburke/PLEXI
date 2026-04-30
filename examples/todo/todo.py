@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Todo — fs.read + fs.write + persistence example for PGAP v3."""
-from __future__ import annotations
 
 import json
 import pathlib

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 """Unit tests for git_log lane layout and parse_commits.
 

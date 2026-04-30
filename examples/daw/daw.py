@@ -9,7 +9,6 @@ Grid: 8 rows × 64 steps (4 bars × 16 steps each).
 Physics balls float over the grid, bouncing off its walls, providing
 visual modulation cues (which column region is "hot").
 """
-from __future__ import annotations
 
 import time
 import threading

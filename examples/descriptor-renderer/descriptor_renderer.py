@@ -11,7 +11,6 @@ Form view:   host-managed text_input per arg/flag; first field auto-focused;
              Tab cycles fields; Enter on last field runs the command.
              Escape returns to list.
 """
-from __future__ import annotations
 
 import json
 import sys

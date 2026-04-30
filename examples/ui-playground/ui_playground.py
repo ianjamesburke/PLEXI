@@ -9,7 +9,6 @@ Keys:
   l — append a line to the scroll log (for watching it grow)
   c — clear the log
 """
-from __future__ import annotations
 
 import time
 

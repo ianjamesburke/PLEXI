@@ -20,7 +20,6 @@ apps cannot inspect the typed value between keystrokes.
 Real-time validation (per-keystroke value access) is intentionally out
 of scope for v3.1 — see issue #283 option A.
 """
-from __future__ import annotations
 
 import json
 import sys

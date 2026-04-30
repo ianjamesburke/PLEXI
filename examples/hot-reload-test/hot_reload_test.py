@@ -10,7 +10,6 @@ To exercise this: copy this directory under a workspace's `.plexi/apps/` and
 launch Plexi from that workspace. The manifest's `watch = true` only engages
 for workspace-local installs, never global.
 """
-from __future__ import annotations
 
 import os
 import sys

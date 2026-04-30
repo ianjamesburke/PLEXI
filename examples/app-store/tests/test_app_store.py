@@ -11,7 +11,6 @@ Tests in scope (#308 Phase 3 acceptance):
   4. _install_action shells out to `plexi-<channel> install <spec>` (after a
      forced-True capability prompt).
 """
-from __future__ import annotations
 
 import sys
 import textwrap

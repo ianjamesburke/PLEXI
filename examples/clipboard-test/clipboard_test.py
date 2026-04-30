@@ -9,7 +9,6 @@ Three things on screen:
 
 Cmd+V (or right-click → Paste) anywhere in the pane fires `on_paste`.
 """
-from __future__ import annotations
 
 import time
 

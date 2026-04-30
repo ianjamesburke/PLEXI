@@ -10,7 +10,6 @@ system real-time 0xF8..=0xFF). SysEx (0xF0..0xF7) is out of scope for v3.4.
 All channel arguments are 0-indexed (channel 0 = MIDI channel 1 in DAWs).
 All note / CC / value arguments are 0..=127.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 
