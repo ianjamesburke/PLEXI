@@ -338,11 +338,11 @@ interrupt_threshold = 100
 # ── Theme ──────────────────────────────────────────────────────
 # Pick a preset OR customize individual colors below.
 # Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
-# theme_preset = "catppuccin-mocha"
+theme_preset = "catppuccin-mocha"
 
 [theme]
-# UI chrome colors (hex format)
-accent = "#89b4fa"
+# Uncomment any color below to override the preset value.
+# accent = "#89b4fa"
 # bg_darkest = "#11111b"      # Deepest background (window edges)
 # bg_sidebar = "#181825"      # Sidebar background
 # bg_toolbar = "#181825"      # Toolbar/status bar background
