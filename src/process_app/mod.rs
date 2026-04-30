@@ -269,13 +269,17 @@ impl ProcessApp {
         }
         // Make the shared Plexi SDK importable by Python apps without per-app copies.
         // Priority: user's local SDK (~/.plexi-alpha/sdk/) first, then the copy
-        // bundled inside the .app bundle (Contents/Resources/). The bundle path
+        // bundled inside the .app bundle (Contents/Resources/sdk/python/). The bundle path
         // ensures apps work on a fresh install where just install-alpha was never run.
         let sdk_dir = crate::config::config_dir().join("sdk");
         let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
         if let Some(bundle_sdk) = std::env::current_exe()
             .ok()
-            .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.join("Resources")))
+            .and_then(|exe| {
+                exe.parent()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.join("Resources").join("sdk").join("python"))
+            })
             .filter(|p| p.exists())
         {
             pythonpath.push(':');
