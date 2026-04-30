@@ -8,10 +8,18 @@ run:
     cargo run --release
 
 install:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo bundle --release
     cp target/release/bundle/osx/Plexi.app/Contents/MacOS/plexi /usr/local/bin/plexi
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
+    mkdir -p "$HOME/.plexi"
+    CONFIG="$HOME/.plexi/config.toml"
+    if [ ! -f "$CONFIG" ]; then
+      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
+      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
+    fi
 
 # ── Versions — full lifecycle for parallel .app installs + worktrees ─────────
 #
@@ -294,6 +302,13 @@ install-alpha:
     fi
     /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
 
+    # Create a default config.toml if none exists. Never overwrites an existing one.
+    CONFIG="$HOME/.plexi-alpha/config.toml"
+    if [ ! -f "$CONFIG" ]; then
+      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
+      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
+    fi
+
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
@@ -421,6 +436,13 @@ install-beta:
       "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
     fi
     /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
+
+    # Create a default config.toml if none exists. Never overwrites an existing one.
+    CONFIG="$HOME/.plexi-beta/config.toml"
+    if [ ! -f "$CONFIG" ]; then
+      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
+      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
+    fi
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-beta"
