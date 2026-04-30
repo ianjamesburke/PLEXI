@@ -425,7 +425,9 @@ pub fn open_config_file() {
         let _ = std::fs::write(&path, CONFIG_TEMPLATE);
     }
 
-    let _ = std::process::Command::new("open").arg(&path).spawn();
+    if let Err(e) = std::process::Command::new("open").arg(&path).status() {
+        log::error!("open_config_file: failed to open {}: {e}", path.display());
+    }
 }
 
 impl PlexiConfig {

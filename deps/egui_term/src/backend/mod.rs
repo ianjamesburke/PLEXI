@@ -776,7 +776,42 @@ impl Default for RenderableContent {
 impl Drop for TerminalBackend {
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);
+        // Reap the PTY child so it doesn't get orphaned if the event loop
+        // doesn't propagate the shutdown to the shell in time. Poll for up to
+        // 200 ms (8 × 25 ms) for a clean exit, then SIGKILL + blocking wait.
+        #[cfg(unix)]
+        reap_child(self.child_pid);
     }
+}
+
+/// Kill and reap a PTY child process. Sends SIGKILL if the process has not
+/// exited within ~200 ms of the caller sending Msg::Shutdown.
+#[cfg(unix)]
+fn reap_child(pid: u32) {
+    use std::os::raw::c_int;
+    const SIGKILL: c_int = 9;
+    const WNOHANG: c_int = 1;
+    const POLL_MS: u64 = 25;
+    const POLLS: u32 = 8; // 8 × 25 ms = 200 ms grace period
+
+    extern "C" {
+        fn waitpid(pid: libc::pid_t, status: *mut c_int, options: c_int) -> libc::pid_t;
+        fn kill(pid: libc::pid_t, sig: c_int) -> c_int;
+    }
+
+    let ipid = pid as libc::pid_t;
+    for _ in 0..POLLS {
+        let result = unsafe { waitpid(ipid, std::ptr::null_mut(), WNOHANG) };
+        if result != 0 {
+            // Reaped (result == pid) or error (result == -1); either way done.
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+    }
+    // Child still alive — escalate to SIGKILL and block until reaped.
+    log::warn!("egui_term: PTY child {pid} did not exit after Shutdown — sending SIGKILL");
+    unsafe { kill(ipid, SIGKILL) };
+    unsafe { waitpid(ipid, std::ptr::null_mut(), 0) };
 }
 
 #[derive(Clone)]
@@ -816,5 +851,37 @@ mod tests {
         ] {
             assert!(!is_url_char(c), "expected {c:?} to NOT be a URL char");
         }
+    }
+
+    /// `reap_child` must kill and reap a process that does not exit on its
+    /// own. After it returns, the PID must be gone (kill -0 returns ESRCH).
+    #[cfg(unix)]
+    #[test]
+    fn reap_child_kills_and_reaps_stubborn_process() {
+        use std::process::Command;
+
+        let child = Command::new("/bin/sleep")
+            .arg("3600")
+            .spawn()
+            .expect("failed to spawn sleep 3600");
+        let pid = child.id();
+
+        // Forget the handle — we want reap_child to do the cleanup.
+        std::mem::forget(child);
+
+        // Confirm the child is alive before we reap it.
+        let alive_before = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        assert_eq!(alive_before, 0, "child {pid} should be alive before reap");
+
+        super::reap_child(pid);
+
+        // Give the OS a tick to update process state.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let alive_after = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        assert_eq!(
+            alive_after, -1,
+            "child {pid} must be gone after reap_child, kill returned {alive_after}"
+        );
     }
 }

@@ -169,8 +169,8 @@ impl FileBrowserApp {
             });
             return;
         }
-        match std::process::Command::new(Self::system_opener()).arg(path).spawn() {
-            Ok(_) => log::debug!("file_browser: system-open spawned for {}", path.display()),
+        match std::process::Command::new(Self::system_opener()).arg(path).status() {
+            Ok(_) => log::debug!("file_browser: system-open succeeded for {}", path.display()),
             Err(e) => log::error!(
                 "file_browser: system-open failed for {}: {e}",
                 path.display()
