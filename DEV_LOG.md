@@ -1,5 +1,33 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-29 — [FIX] ai.query hangs forever: invalid model ID + missing config + response delivery race (PR #434)
+
+Three compounding bugs caused every `ai.query` call to hang permanently showing "Waiting for the host's AI broker…" with no error surfaced.
+
+**Bug 1 — Invalid model ID in config template (`google/gemini-flash-2.0`).**
+The `CONFIG_TEMPLATE` in `config.rs` had `model_low = "google/gemini-flash-2.0"` which is not a valid OpenRouter model ID (correct: `google/gemini-2.0-flash-001`). OpenRouter stalled the connection rather than returning a 4xx, and `ureq` had no read timeout, so the broker thread blocked forever. Fix: corrected model ID in template; added 30s read + 10s connect timeout via `ureq::AgentBuilder` in `openrouter.rs`.
+
+**Bug 2 — `config.toml` never created on install.**
+`PlexiConfig::load()` returned `unwrap_or_default()` silently when the file was absent — never writing the template. `open_config_file()` (the only function that writes the template) is only called when the user explicitly opens their config, never on launch. Fresh install → no `config.toml` → `ai_config = None` → broker returned an error string that was never visible to the user. Fix (PR #434): `PlexiConfig::load()` now writes `CONFIG_TEMPLATE` before parsing if the file doesn't exist, logging at `info`. The `[ai]` section in the template is uncommented with correct default model IDs.
+
+**Bug 3 — Broker error response silently dropped (response delivery race).**
+The broker dispatches on a spawned thread and returns immediately on config errors. Because the thread can complete and post to `http_tx` before the Python SDK has registered `_pending_ai[req_id]`, the `AiResponse` event arrives at the `_reader` while the dict is still empty — `q = self._pending_ai.pop(req_id, None)` returns `None` and the response is silently dropped. The `await q.get()` in `ai_query` then waits forever. Fix (PR #434): register `_pending_ai[req_id] = q` **before** emitting the `AiQuery` draw command. Also added `asyncio.wait_for(q.get(), timeout=35.0)` so any future dropped response surfaces as a clear error after 35s.
+
+**Bug 4 — SIGTERM on close (app doesn't exit within 2s).**
+When a query is in flight and `Shutdown` arrives, the `ai_query` coroutine is blocked at `await q.get()`. The asyncio event loop can't cleanly finish — app exits only after SIGTERM (2s+ delay). Fix (PR #434): shutdown handler drains `_pending_ai`, cancels all pending waiters with `return_exceptions=True`.
+
+**What NOT to do:** Do not fix `ai.query` hangs by increasing timeouts alone. The core issue was the response delivery race — timeouts only shorten the wait, they don't fix the dropped-response path. Always register `_pending_ai` before emitting the draw command.
+
+**Diagnostic recipe for future hangs:** (1) Check `plexi.log` for `WARN ai broker` — if absent, config is not loaded. (2) Confirm `~/.plexi-alpha/config.toml` exists. (3) Grep for `openrouter: dispatching` — if absent, `AiQuery` never reached the host router. (4) If dispatching appears but no response, check for HTTP 4xx (bad model ID).
+
+**Breaks if:** After a fresh install with no existing `config.toml`, AI queries still hang — `PlexiConfig::load()` didn't write the template on startup.
+
+## 2026-04-29 — [CHANGED] IQ → AI rename + Ollama backend + delete legacy Claude CLI path (PR #433)
+
+Renamed all "IQ" → "AI" across the codebase (92+ sites): protocol types (`IqQuery` → `AiQuery`, `IqResponse` → `AiResponse`), wire strings, capability string (`iq.query` → `ai.query`), module (`src/plexi_iq/` → `src/plexi_ai/`), config section (`[iq]` → `[ai]`), Python SDK (`emit.iq_query` → `emit.ai_query`), and example apps. Added `OllamaBackend` — NDJSON streaming via `/api/chat`, pluggable via `[ai] backend = "ollama"`. Deleted `src/agent_turn.rs` and all `InProcessAgent` code (session persistence, SOUL/MEMORY loading, `claude -p`). Deleted `DrawCommand::LlmRequest` / `PlexiEvent::LlmResponse`. Ledger renamed to `ai-ledger.jsonl`.
+
+**Breaks if:** An installed app still declares `iq.query` in its manifest — skipped at startup with WARN. Any app calling `emit.iq_query()` gets `AttributeError`.
+
 ## 2026-04-28 — [FIX] Minimap hidden after Cmd+1-9 workspace switch
 
 **Root cause:** `Action::SwitchContext` (Cmd+1-9) was inlining the workspace switch — directly setting `self.active_workspace = n` and calling `pick_active_context_from_workspace` — bypassing `switch_workspace` and its minimap save/restore logic. Sidebar clicks correctly called `switch_workspace`; Cmd+1-9 did not.
