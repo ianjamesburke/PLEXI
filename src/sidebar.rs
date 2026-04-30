@@ -5,6 +5,17 @@ use crate::app::PlexiApp;
 
 const ROW_HEIGHT: f32 = 26.0;
 
+/// Returns the insertion slot (0 = before first row, n = after last row) that
+/// the mouse Y is closest to, based on actual rendered rects.
+fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
+    for (i, rect) in rects.iter().enumerate() {
+        if mouse_y <= rect.center().y {
+            return i;
+        }
+    }
+    rects.len()
+}
+
 impl PlexiApp {
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
@@ -67,19 +78,8 @@ impl PlexiApp {
         let mut clicked_workspace: Option<usize> = None;
         let mut delete_workspace: Option<usize> = None;
         let mut menu_action: Option<(usize, ContextMenuAction)> = None;
-
-        // Record the Y position where the first row starts, for drop-target math.
-        let list_top_y = ui.cursor().min.y;
-
-        // Compute drop target index from mouse position while a drag is active.
-        let drop_index: Option<usize> = if self.drag_context.is_some() {
-            ui.input(|i| i.pointer.hover_pos()).map(|pos| {
-                let slot = ((pos.y - list_top_y) / ROW_HEIGHT).round() as isize;
-                slot.clamp(0, num_workspaces as isize) as usize
-            })
-        } else {
-            None
-        };
+        let mut row_rects: Vec<Rect> = Vec::with_capacity(num_workspaces);
+        let mut drag_released = false;
 
         for i in 0..num_workspaces {
             let is_active = i == self.active_workspace;
@@ -88,6 +88,7 @@ impl PlexiApp {
 
             let row_rect = ui.cursor();
             let row_rect = Rect::from_min_size(row_rect.min, Vec2::new(sidebar_width, ROW_HEIGHT));
+            row_rects.push(row_rect);
 
             let row_response = ui.interact(
                 row_rect,
@@ -95,28 +96,11 @@ impl PlexiApp {
                 egui::Sense::click_and_drag(),
             );
 
-            // Start drag
             if row_response.drag_started() && !is_renaming {
                 self.drag_context = Some(i);
             }
-
-            // Release drag: perform reorder
             if row_response.drag_stopped() {
-                if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
-                    if dst != src && dst != src + 1 {
-                        let effective_dst = if dst > src { dst - 1 } else { dst };
-                        let ws = self.workspaces.remove(src);
-                        self.workspaces.insert(effective_dst, ws);
-                        if self.active_workspace == src {
-                            self.active_workspace = effective_dst;
-                        } else if src < self.active_workspace && effective_dst >= self.active_workspace {
-                            self.active_workspace -= 1;
-                        } else if src > self.active_workspace && effective_dst <= self.active_workspace {
-                            self.active_workspace += 1;
-                        }
-                    }
-                }
-                self.drag_context = None;
+                drag_released = true;
             }
 
             let cursor_icon = if is_dragging {
@@ -135,8 +119,6 @@ impl PlexiApp {
             }
 
             let hover = ui.rect_contains_pointer(row_rect);
-
-            // Dim the row being dragged
             let row_alpha = if is_dragging { 0.4 } else { 1.0 };
 
             ui.allocate_ui_with_layout(
@@ -152,7 +134,6 @@ impl PlexiApp {
                     } else {
                         Color32::TRANSPARENT
                     };
-
                     let fill = Color32::from_rgba_unmultiplied(
                         fill.r(),
                         fill.g(),
@@ -335,11 +316,45 @@ impl PlexiApp {
             }
         }
 
-        // Draw the drop indicator line while dragging
+        // Compute drop slot from actual rendered rects + current mouse position.
+        // This is done after the loop so we use the real geometry, not row-height math.
+        let drop_index: Option<usize> = if self.drag_context.is_some() {
+            ui.input(|i| i.pointer.hover_pos())
+                .map(|pos| drop_slot_from_rects(&row_rects, pos.y))
+        } else {
+            None
+        };
+
+        // Handle drag release: perform the reorder then clear drag state.
+        if drag_released {
+            if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
+                if dst != src && dst != src + 1 {
+                    let effective_dst = if dst > src { dst - 1 } else { dst };
+                    let ws = self.workspaces.remove(src);
+                    self.workspaces.insert(effective_dst, ws);
+                    if self.active_workspace == src {
+                        self.active_workspace = effective_dst;
+                    } else if src < self.active_workspace && effective_dst >= self.active_workspace {
+                        self.active_workspace -= 1;
+                    } else if src > self.active_workspace && effective_dst <= self.active_workspace {
+                        self.active_workspace += 1;
+                    }
+                }
+            }
+            self.drag_context = None;
+        }
+
+        // Draw the drop indicator line at the actual gap between rects.
         if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
             if dst != src && dst != src + 1 {
-                let line_y = list_top_y + dst as f32 * ROW_HEIGHT;
-                let x0 = ui.cursor().min.x;
+                let line_y = if dst == 0 {
+                    row_rects[0].min.y
+                } else if dst >= row_rects.len() {
+                    row_rects[row_rects.len() - 1].max.y
+                } else {
+                    row_rects[dst - 1].max.y
+                };
+                let x0 = row_rects[0].min.x;
                 ui.painter().line_segment(
                     [egui::pos2(x0, line_y), egui::pos2(x0 + sidebar_width, line_y)],
                     Stroke::new(2.0, self.colors.accent),
