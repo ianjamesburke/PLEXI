@@ -12,6 +12,17 @@ install:
     cp target/release/bundle/osx/Plexi.app/Contents/MacOS/plexi /usr/local/bin/plexi
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
+    @bash scripts/migrate-config.sh "$HOME/.plexi/config.toml"
+
+# Append any missing config sections to a Plexi config.toml. Idempotent.
+migrate-config-alpha:
+    @bash scripts/migrate-config.sh "$HOME/.plexi-alpha/config.toml"
+
+migrate-config-beta:
+    @bash scripts/migrate-config.sh "$HOME/.plexi-beta/config.toml"
+
+migrate-config-v3:
+    @bash scripts/migrate-config.sh "$HOME/.plexi-v3/config.toml"
 
 # ── Versions — full lifecycle for parallel .app installs + worktrees ─────────
 #
@@ -298,6 +309,7 @@ install-alpha:
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
     echo "Apps: $(ls ~/.plexi-alpha/apps | wc -l | tr -d ' ') synced from examples/"
+    bash scripts/migrate-config.sh "$HOME/.plexi-alpha/config.toml"
 
 install-v3:
     #!/usr/bin/env bash
@@ -362,6 +374,7 @@ install-v3:
     echo "CLI binary: /usr/local/bin/plexi-v3"
     echo "Config dir: ~/.plexi-v3/"
     echo "Apps: $(ls ~/.plexi-v3/apps | wc -l | tr -d ' ') installed"
+    bash scripts/migrate-config.sh "$HOME/.plexi-v3/config.toml"
 
 install-beta:
     #!/usr/bin/env bash
@@ -426,6 +439,7 @@ install-beta:
     echo "CLI binary: /usr/local/bin/plexi-beta"
     echo "Config dir: ~/.plexi-beta/"
     echo "Apps: $(ls ~/.plexi-beta/apps | wc -l | tr -d ' ') synced from examples/"
+    bash scripts/migrate-config.sh "$HOME/.plexi-beta/config.toml"
 
 # Wipe a channel's installed apps directory. The install-* recipes use
 # `cp -R` (sync, not mirror), so apps deleted from `examples/` persist in
