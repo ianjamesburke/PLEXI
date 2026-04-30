@@ -1,17 +1,19 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
-## 2026-04-30 — [GOTCHA] UNSOLVED: Cmd+Q freezes the app when Claude Code is running in a terminal pane
+## 2026-04-30 — [GOTCHA] UNSOLVED: Cmd+Q freezes the app whenever any full-screen TUI is running in a terminal pane
 
 **Status: unsolved. Reverted PR #453.**
 
-**What happens:** Pressing Cmd+Q while a Claude Code instance is running in any terminal pane causes the app to stop responding entirely. The process stays alive (visible in Activity Monitor at ~25% CPU), but the window is frozen and the only escape is force-quit. Removing Claude Code from the picture, Cmd+Q works normally.
+**What happens:** Pressing Cmd+Q while any full-screen TUI is running in a terminal pane causes the app to stop responding entirely. Confirmed with: Claude Code, `btop`, `files`. The process stays alive (visible in Activity Monitor at ~25% CPU), but the window is frozen and the only escape is force-quit. Cmd+Q works normally when terminals are at a plain shell prompt.
 
-**What was tried:** Moved `lsof` calls in `get_pid_cwd()` off the render thread onto named background threads (`cwd-refresh-<pid>`). Hypothesis was that `lsof -p <shell_pid>` blocks indefinitely while Claude Code holds many open fds and network connections, and `save_workspace()` calling it synchronously on the render thread before `ViewportCommand::Close` was the freeze point. Shipped as PR #453, reverted — the freeze persisted, so `lsof` on `save_workspace` is not the root cause.
+**What was tried:** Moved `lsof` calls in `get_pid_cwd()` off the render thread onto named background threads. Hypothesis was that `lsof` blocking on `save_workspace()` was the freeze point. Shipped as PR #453, reverted — the freeze persisted. `lsof` / `save_workspace` is not the root cause.
 
-**Current hypotheses:**
-1. **Claude Code swallows Cmd+Q through the PTY.** Claude Code is a full-screen TUI; when the terminal pane has focus, keystrokes route into the PTY before egui sees them. Cmd+Q may never reach `Action::Quit`, so `quit_press_count` stays 0 and the triple-tap confirm flow never fires. The OS `close_requested` event does arrive but may race with `CancelClose`. Needs a test: does the freeze happen when a *non-Claude* full-screen TUI (e.g. `vim`, `htop`) is running?
-2. **PTY child reaping blocks on drop.** PR #440 (`fix(subprocess): reap PTY children on TerminalBackend drop`) added explicit child-wait logic on `TerminalBackend::drop`. If that wait blocks because Claude Code doesn't exit cleanly on SIGTERM (it tries to save state, etc.), the shutdown path hangs. Check `TerminalBackend::drop` — does it join a thread that's waiting for the child?
-3. **Shutdown deadlock in the PTY event subscription threads.** The `pty_event_subscription_N` threads (`src/pty_event.rs`) are parked waiting on a channel. If the channel sender is dropped during shutdown before those threads are unparked, or if there's a lock ordering issue between the event threads and the render thread, shutdown could deadlock.
+**Ruled out:** App-specific behaviour (Claude Code swallowing Cmd+Q through the PTY) — `btop` and `files` reproduce it identically, so this is a general full-screen TUI issue, not anything about Claude Code's process.
+
+**Leading hypotheses:**
+1. **PTY child reaping blocks on `TerminalBackend::drop`.** PR #440 added explicit child-wait logic on drop. Full-screen TUIs (alt-screen mode) don't exit cleanly on SIGTERM — they restore the terminal first, which takes time or hangs. If `TerminalBackend::drop` joins a thread waiting for the child process to exit, shutdown blocks indefinitely. Start here: read `TerminalBackend::drop` and the reaping thread it spawned in PR #440.
+2. **Shutdown deadlock in the PTY event subscription threads.** The `pty_event_subscription_N` threads park on a channel receiver. If the channel sender drops during shutdown before those threads are unparked, or there's a lock ordering issue between the event threads and the render thread during teardown, shutdown deadlocks. The backtrace from the frozen process showed these threads alive and parked — suspicious.
+3. **Alt-screen mode blocks the PTY reader on shutdown.** Full-screen TUIs hold the terminal in ALT_SCREEN. The PTY reader thread may be blocked in `kevent` waiting for data that never arrives (because the TUI is waiting for a signal before flushing). If the shutdown sequence tries to join the PTY reader before it unblocks, it hangs.
 
 ## 2026-04-29 — [FIX] ai.query hangs forever: invalid model ID + missing config + response delivery race (PR #434)
 
