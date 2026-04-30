@@ -3,7 +3,6 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
-use egui::emath::GuiRounding;
 use egui::epaint::RectShape;
 use egui::{CornerRadius, Key};
 use egui::Modifiers;
@@ -316,6 +315,18 @@ impl<'a> TerminalView<'a> {
         let lines = content.terminal_size.screen_lines() as f32;
         let cell_height = layout.rect.height() / lines;
         let cell_width = layout.rect.width() / cols;
+
+        // Snap cell dimensions to integer physical pixels so every cell
+        // in a row has the same width and boundaries align to the pixel
+        // grid. This prevents text-spacing deformation during pane resize.
+        let ppp = painter.pixels_per_point();
+        let cell_width = (cell_width * ppp).round().max(1.0) / ppp;
+        let cell_height = (cell_height * ppp).round().max(1.0) / ppp;
+        // Snap the top-left origin too so the grid starts on a pixel boundary.
+        let origin = Pos2::new(
+            (layout_min.x * ppp).round() / ppp,
+            (layout_min.y * ppp).round() / ppp,
+        );
         let global_bg =
             self.theme.get_color(Color::Named(NamedColor::Background));
 
@@ -353,10 +364,10 @@ impl<'a> TerminalView<'a> {
                         && r.contains(&state.current_mouse_position_on_grid)
                 });
 
-            let x = layout_min.x + (cell_width * indexed.point.column.0 as f32);
+            let x = origin.x + (cell_width * indexed.point.column.0 as f32);
             let line_num =
                 indexed.point.line.0 + content.grid.display_offset() as i32;
-            let y = layout_min.y + (cell_height * line_num as f32);
+            let y = origin.y + (cell_height * line_num as f32);
 
             let mut fg = self.theme.get_color(indexed.fg);
             let mut bg = self.theme.get_color(indexed.bg);
@@ -371,8 +382,7 @@ impl<'a> TerminalView<'a> {
                     (x + cell_width).min(layout_max.x),
                     (y + cell_height).min(layout_max.y),
                 ),
-            )
-            .round_to_pixels(painter.pixels_per_point());
+            );
 
             if is_dim {
                 fg = fg.linear_multiply(0.7);
