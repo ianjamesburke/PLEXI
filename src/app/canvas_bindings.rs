@@ -259,9 +259,8 @@ impl PlexiApp {
             if let Some(app) = pane.as_app_mut() {
                 app.runtime.queue_outbound_event(event);
             } else if let Some(agent) = pane.as_agent_mut() {
-                if let crate::agent_pane::AgentBackend::Subprocess(sub) = &mut agent.backend {
-                    sub.process.queue_outbound_event_direct(event);
-                }
+                let crate::agent_pane::AgentBackend::Subprocess(sub) = &mut agent.backend;
+                sub.process.queue_outbound_event_direct(event);
             }
         }
     }

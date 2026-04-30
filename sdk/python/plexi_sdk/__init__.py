@@ -319,12 +319,12 @@ All methods are thread-safe (protected by a global write lock).
       Blocks until the response arrives. Raises RuntimeError on failure.
       Call from a background thread to avoid stalling the render loop.
 
-  emit.iq_query(model_tier, system, messages, tools=None) -> IqResponse  [BLOCKING]
-      Plexi IQ broker call (#284). Requires the `iq.query` capability declared
+  emit.ai_query(model_tier, system, messages, tools=None) -> AiResponse  [BLOCKING]
+      Plexi AI broker call (#284). Requires the `ai.query` capability declared
       in manifest.toml. `model_tier` is "low" | "medium" | "high"
-      (Haiku / Sonnet / Opus). Returns an IqResponse with content, tokens_in,
+      (Haiku / Sonnet / Opus). Returns an AiResponse with content, tokens_in,
       tokens_out. Raises CapabilityDeniedError if the manifest didn't grant
-      `iq.query`, or RuntimeError on any other backend failure. Call from a
+      `ai.query`, or RuntimeError on any other backend failure. Call from a
       background thread — the host may take seconds to reply.
 
   emit.capability_request(capability) -> bool  [BLOCKING]
@@ -415,11 +415,11 @@ from dataclasses import dataclass
 from typing import Any, Coroutine
 
 
-# ── iq.query (#284) types ─────────────────────────────────────────────────────
+# ── ai.query (#284) types ─────────────────────────────────────────────────────
 
 @dataclass
-class IqResponse:
-    """Result of `Emitter.iq_query`. `tokens_in`/`tokens_out` are zero on error."""
+class AiResponse:
+    """Result of `Emitter.ai_query`. `tokens_in`/`tokens_out` are zero on error."""
     content: str
     tokens_in: int
     tokens_out: int
@@ -996,33 +996,11 @@ class Emitter:
             raise RuntimeError(f"http_request {url!r}: {value}")
         return value
 
-    async def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
-                  system: str | None = None) -> str:
-        """LLM call brokered through the host. Requires llm capability.
-        Uses ANTHROPIC_API_KEY from the Plexi secrets store.
-        Returns the text response. Raises RuntimeError on failure.
-
-        From background threads:
-        ``self.emit.run_sync(self.emit.llm(prompt, model=model))``.
-        """
-        req_id = str(uuid.uuid4())
-        q: asyncio.Queue[tuple[str, str]] = _make_async_queue()
-        self._app._pending_llm[req_id] = q
-        payload: dict = {"type": "llm_request", "request_id": req_id,
-                         "prompt": prompt, "model": model}
-        if system is not None:
-            payload["system"] = system
-        _emit(payload)
-        status, value = await q.get()
-        if status == "error":
-            raise RuntimeError(f"llm call failed: {value}")
-        return value
-
-    async def iq_query(self, model_tier: str, system: str,
+    async def ai_query(self, model_tier: str, system: str,
                        messages: "list[dict]",
-                       tools: "list[dict] | None" = None) -> IqResponse:
-        """Call into the host's Plexi IQ broker (#284). Requires the
-        `iq.query` capability declared in `manifest.toml`.
+                       tools: "list[dict] | None" = None) -> AiResponse:
+        """Call into the host's Plexi AI broker (#284). Requires the
+        `ai.query` capability declared in `manifest.toml`.
 
         Args:
             model_tier: one of "low" | "medium" | "high" — the host maps these
@@ -1033,25 +1011,25 @@ class Emitter:
             tools: reserved for v3.4 tool-use; pass `None` or `[]` today.
 
         Returns:
-            IqResponse with `content`, `tokens_in`, `tokens_out`.
+            AiResponse with `content`, `tokens_in`, `tokens_out`.
 
         Raises:
-            CapabilityDeniedError: app didn't declare `iq.query` in its manifest
+            CapabilityDeniedError: app didn't declare `ai.query` in its manifest
                 (or the host returned any other "capability denied" error).
             RuntimeError: backend failed (e.g. missing API key, network error).
 
         From background threads:
-        ``self.emit.run_sync(self.emit.iq_query(...))``.
+        ``self.emit.run_sync(self.emit.ai_query(...))``.
         """
         if model_tier not in ("low", "medium", "high"):
             raise ValueError(
-                f"iq_query: model_tier must be one of low|medium|high, got {model_tier!r}"
+                f"ai_query: model_tier must be one of low|medium|high, got {model_tier!r}"
             )
         req_id = str(uuid.uuid4())
         q: asyncio.Queue[dict] = _make_async_queue()
-        self._app._pending_iq[req_id] = q
+        self._app._pending_ai[req_id] = q
         payload: dict = {
-            "type": "iq_query",
+            "type": "ai_query",
             "request_id": req_id,
             "model_tier": model_tier,
             "system": system,
@@ -1064,8 +1042,8 @@ class Emitter:
         if error is not None:
             if "capability denied" in error:
                 raise CapabilityDeniedError(error)
-            raise RuntimeError(f"iq_query failed: {error}")
-        return IqResponse(
+            raise RuntimeError(f"ai_query failed: {error}")
+        return AiResponse(
             content=ev.get("content") or "",
             tokens_in=int(ev.get("tokens_in", 0) or 0),
             tokens_out=int(ev.get("tokens_out", 0) or 0),
@@ -1797,10 +1775,12 @@ class RenderContext:
         """HTTP request brokered through the host. Requires net.http capability. Use with ``await``."""
         return await self.emit.http_request(url, method=method, headers=headers, body=body)
 
-    async def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
-                  system: str | None = None) -> str:
-        """LLM call brokered through the host. Requires llm capability. Use with ``await``."""
-        return await self.emit.llm(prompt=prompt, model=model, system=system)
+    async def ai_query(self, model_tier: str, system: str,
+                       messages: "list[dict]",
+                       tools: "list[dict] | None" = None) -> AiResponse:
+        """AI broker call through the host. Requires ai.query capability. Use with ``await``."""
+        return await self.emit.ai_query(model_tier=model_tier, system=system,
+                                        messages=messages, tools=tools)
 
     def frame_done(self) -> None:
         _emit({"type": "frame_done", "frame_id": self.frame_id})
@@ -1840,10 +1820,9 @@ class App:
         self._pending_capability: "dict[str, asyncio.Queue]" = {}
         self._pending_secret: "dict[str, asyncio.Queue]" = {}
         self._pending_http: "dict[str, asyncio.Queue]" = {}
-        self._pending_llm: "dict[str, asyncio.Queue]" = {}
-        # v3.3 iq.query broker (#284): awaits PlexiEvent::IqResponse keyed
-        # on request_id. Each entry is consumed by a single iq_query() call.
-        self._pending_iq: "dict[str, asyncio.Queue]" = {}
+        # v3.3 ai.query broker (#284): awaits PlexiEvent::AiResponse keyed
+        # on request_id. Each entry is consumed by a single ai_query() call.
+        self._pending_ai: "dict[str, asyncio.Queue]" = {}
         # v3.4 CoreMIDI (#320): awaits PlexiEvent::MidiDevicesListed keyed
         # on request_id. Each entry is consumed by a single list_midi_devices().
         self._pending_midi_devices: "dict[str, asyncio.Queue]" = {}
@@ -2008,21 +1987,12 @@ class App:
                         else:
                             q.put_nowait(("ok", ev.get("body", "")))
 
-                elif t == "llm_response":
-                    req_id = ev.get("request_id", "")
-                    q = self._pending_llm.pop(req_id, None)
-                    if q:
-                        if ev.get("error"):
-                            q.put_nowait(("error", ev["error"]))
-                        else:
-                            q.put_nowait(("ok", ev.get("content", "")))
-
-                elif t == "iq_response":
-                    # v3.3 iq.query broker (#284). Hand the whole event dict to
-                    # `Emitter.iq_query` so it can split error vs success and
+                elif t == "ai_response":
+                    # v3.3 ai.query broker (#284). Hand the whole event dict to
+                    # `Emitter.ai_query` so it can split error vs success and
                     # attach token counts.
                     req_id = ev.get("request_id", "")
-                    q = self._pending_iq.pop(req_id, None)
+                    q = self._pending_ai.pop(req_id, None)
                     if q:
                         q.put_nowait(ev)
 
@@ -2332,13 +2302,13 @@ class Agent(App):
     multiple rows per turn (tool use, partial replies).
 
     Conversation history (`self.history`) is auto-built from `append_*`
-    helpers — pass it directly to `emit.iq_query(...)` for multi-turn.
+    helpers — pass it directly to `emit.ai_query(...)` for multi-turn.
 
     Example:
 
         class JokeAgent(Agent):
             def on_user_message(self, text: str) -> str:
-                resp = self.emit.iq_query(
+                resp = self.emit.ai_query(
                     model_tier="medium",
                     system=self.system_prompt or "",
                     messages=self.history,
@@ -2355,7 +2325,7 @@ class Agent(App):
         # if the manifest omits `[launch].system_prompt`).
         self.system_prompt: "str | None" = None
         # Conversation history in Anthropic Messages shape — built by the
-        # `append_*` helpers and passed straight to `emit.iq_query`.
+        # `append_*` helpers and passed straight to `emit.ai_query`.
         self.history: list = []
 
     # ── Wire-up (do not override) ───────────────────────────────────────────
@@ -2367,7 +2337,7 @@ class Agent(App):
 
     async def on_user_message(self, ctx: "RenderContext", text: str) -> None:  # type: ignore[override]
         # Append the user turn before invoking the override so `self.history`
-        # already contains it when the override calls `emit.iq_query`.
+        # already contains it when the override calls `emit.ai_query`.
         self.append_user_message(text)
         try:
             if inspect.iscoroutinefunction(self.respond):
@@ -2400,7 +2370,7 @@ class Agent(App):
     # ── Conversation surface ────────────────────────────────────────────────
     def append_user_message(self, text: str) -> None:
         """Append a user row to the transcript. Updates `self.history` so the
-        next `emit.iq_query` call sees the turn."""
+        next `emit.ai_query` call sees the turn."""
         self.history.append({"role": "user", "content": text})
         _emit({"type": "append_conversation", "role": "user", "content": text})
 

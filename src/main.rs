@@ -6,7 +6,6 @@
 #![deny(clippy::todo, clippy::unimplemented)]
 
 mod agent_pane;
-mod agent_turn;
 mod agent_workspace;
 mod agent_workspace_modal;
 mod app;
@@ -34,7 +33,7 @@ mod packs;
 mod pane;
 mod pane_ops;
 mod plexi_descriptor;
-mod plexi_iq;
+mod plexi_ai;
 mod render;
 mod process_app;
 mod headless_renderer;

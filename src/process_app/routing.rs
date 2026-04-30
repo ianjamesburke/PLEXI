@@ -8,7 +8,7 @@ use crate::app_protocol::{AudioDeviceWire, DrawCommand, MidiPortWire, PlexiEvent
 use crate::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
 use crate::event_log::{self, HostEvent};
-use crate::plexi_iq::broker::IqBrokerRequest;
+use crate::plexi_ai::broker::AiBrokerRequest;
 use crate::typed_pipes::PipeDirection;
 
 use super::ProcessApp;
@@ -639,71 +639,8 @@ impl ProcessApp {
                     });
                 });
             }
-            // ── LLM request (direct `llm` capability via OpenRouter) ──────
-            DrawCommand::LlmRequest {
-                request_id,
-                prompt,
-                model,
-                system,
-            } => {
-                if let PermissionCheck::Denied(reason) =
-                    check(&self.permissions, Capability::Llm)
-                {
-                    log::warn!(
-                        "ProcessApp[{}]: LlmRequest {request_id} denied — {reason}",
-                        self.type_id
-                    );
-                    self.outbound_events.push_back(PlexiEvent::LlmResponse {
-                        request_id,
-                        content: String::new(),
-                        error: Some(format!("capability_denied: {reason}")),
-                    });
-                    return;
-                }
-
-                let api_key = match std::env::var("OPENROUTER_API_KEY") {
-                    Ok(k) if !k.is_empty() => k,
-                    _ => {
-                        log::warn!(
-                            "ProcessApp[{}]: LlmRequest {request_id} — OPENROUTER_API_KEY not set",
-                            self.type_id
-                        );
-                        self.outbound_events.push_back(PlexiEvent::LlmResponse {
-                            request_id,
-                            content: String::new(),
-                            error: Some(
-                                "api_key_missing: OPENROUTER_API_KEY not set — export it in your shell profile"
-                                    .to_string(),
-                            ),
-                        });
-                        return;
-                    }
-                };
-
-                let type_id = self.type_id.clone();
-                log::debug!(
-                    "ProcessApp[{type_id}]: LlmRequest {request_id} model={model}"
-                );
-                let tx = self.http_tx.clone();
-                std::thread::spawn(move || {
-                    let result = call_openrouter(&api_key, &model, &prompt, system.as_deref(), &type_id);
-                    let _ = tx.send(match result {
-                        Ok(content) => PlexiEvent::LlmResponse {
-                            request_id,
-                            content,
-                            error: None,
-                        },
-                        Err(e) => PlexiEvent::LlmResponse {
-                            request_id,
-                            content: String::new(),
-                            error: Some(e),
-                        },
-                    });
-                    log::debug!("ProcessApp[{type_id}]: LlmRequest completed");
-                });
-            }
-            // ── iq.query broker (#284) ─────────────────────────────────────
-            DrawCommand::IqQuery {
+            // ── ai.query broker (#284) ─────────────────────────────────────
+            DrawCommand::AiQuery {
                 request_id,
                 model_tier,
                 system,
@@ -711,44 +648,44 @@ impl ProcessApp {
                 tools,
             } => {
                 if let PermissionCheck::Denied(_reason) =
-                    check(&self.permissions, Capability::IqQuery)
+                    check(&self.permissions, Capability::AiQuery)
                 {
                     log::warn!(
-                        "ProcessApp[{}]: IqQuery {request_id} denied — capability not declared",
+                        "ProcessApp[{}]: AiQuery {request_id} denied — capability not declared",
                         self.type_id
                     );
-                    self.outbound_events.push_back(PlexiEvent::IqResponse {
+                    self.outbound_events.push_back(PlexiEvent::AiResponse {
                         request_id,
                         content: None,
                         tokens_in: 0,
                         tokens_out: 0,
                         error: Some(
-                            "capability denied: iq.query not declared in manifest".to_string(),
+                            "capability denied: ai.query not declared in manifest".to_string(),
                         ),
                     });
                     return;
                 }
 
                 log::debug!(
-                    "ProcessApp[{}]: IqQuery {request_id} tier={:?} messages={} tools={}",
+                    "ProcessApp[{}]: AiQuery {request_id} tier={:?} messages={} tools={}",
                     self.type_id,
                     model_tier,
                     messages.len(),
                     tools.len()
                 );
 
-                let broker = self.iq_broker.clone();
+                let broker = self.ai_broker.clone();
                 let app_id = self.type_id.clone();
                 let tx = self.http_tx.clone();
                 std::thread::spawn(move || {
-                    let resp = broker.dispatch(IqBrokerRequest {
+                    let resp = broker.dispatch(AiBrokerRequest {
                         app_id,
                         model_tier,
                         system,
                         messages,
                         tools,
                     });
-                    let event = PlexiEvent::IqResponse {
+                    let event = PlexiEvent::AiResponse {
                         request_id,
                         content: resp.content,
                         tokens_in: resp.tokens_in,
@@ -756,7 +693,7 @@ impl ProcessApp {
                         error: resp.error,
                     };
                     if let Err(e) = tx.send(event) {
-                        log::warn!("iq broker: response receiver dropped: {e}");
+                        log::warn!("ai broker: response receiver dropped: {e}");
                     }
                 });
             }
@@ -1507,62 +1444,6 @@ impl ProcessApp {
                 });
             }
         }
-    }
-}
-
-/// Call the OpenRouter chat completions API (non-streaming).
-///
-/// System prompt is injected as a leading `{"role":"system"}` message —
-/// NOT as a top-level `"system"` field (Anthropic format, silently ignored
-/// by OpenRouter). `app_type_id` is passed as the `user` field for per-app
-/// attribution in the OpenRouter Activity dashboard.
-fn call_openrouter(
-    api_key: &str,
-    model: &str,
-    prompt: &str,
-    system: Option<&str>,
-    app_type_id: &str,
-) -> Result<String, String> {
-    let mut messages: Vec<serde_json::Value> = Vec::new();
-    if let Some(sys) = system {
-        messages.push(serde_json::json!({"role": "system", "content": sys}));
-    }
-    messages.push(serde_json::json!({"role": "user", "content": prompt}));
-
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": 4096,
-        "messages": messages,
-        "user": app_type_id
-    });
-
-    let body_str = body.to_string();
-    let resp = ureq::post("https://openrouter.ai/api/v1/chat/completions")
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("Content-Type", "application/json")
-        .set("HTTP-Referer", "https://plexi.app")
-        .set("X-Title", "Plexi")
-        .send_string(&body_str);
-
-    match resp {
-        Ok(r) => {
-            let resp_body = r.into_string().map_err(|e| format!("read_error: {e}"))?;
-            let v: serde_json::Value =
-                serde_json::from_str(&resp_body).map_err(|e| format!("parse_error: {e}"))?;
-            v["choices"][0]["message"]["content"]
-                .as_str()
-                .map(|s| s.to_string())
-                .ok_or_else(|| format!("unexpected_response: {resp_body}"))
-        }
-        Err(ureq::Error::Status(status, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            let msg = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| body.clone());
-            Err(format!("http_error: status={status} {msg}"))
-        }
-        Err(e) => Err(format!("http_error: {e}")),
     }
 }
 

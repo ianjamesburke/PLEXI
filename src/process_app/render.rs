@@ -370,8 +370,7 @@ pub(super) fn render_draw_commands(
             | DrawCommand::StatusSummary { .. }
             | DrawCommand::SpawnApp { .. }
             | DrawCommand::HttpRequest { .. }
-            | DrawCommand::LlmRequest { .. }
-            | DrawCommand::IqQuery { .. }
+            | DrawCommand::AiQuery { .. }
             | DrawCommand::CdRequest { .. }
             | DrawCommand::Image { .. }
             | DrawCommand::OpenVideo { .. }

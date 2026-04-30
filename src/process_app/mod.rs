@@ -27,7 +27,7 @@ use crate::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
 use crate::video::{VideoDecoder, VideoHandle};
 use crate::event_log::{self, HostEvent};
 use crate::host::services::{NetService, UreqNetService};
-use crate::plexi_iq::broker::{IqBroker, LiveIqBroker};
+use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
 use crate::runs::RunRegistry;
 use crate::typed_pipes::TypedPipeRegistry;
 use std::collections::{HashMap, VecDeque};
@@ -136,10 +136,10 @@ pub struct ProcessApp {
     /// result here so the UI thread never blocks on network I/O.
     pub(crate) http_tx: Sender<PlexiEvent>,
     pub(crate) http_rx: Receiver<PlexiEvent>,
-    /// `iq.query` broker (#284). `Arc<dyn IqBroker>` so production panes share
-    /// a `LiveIqBroker` while tests can inject a `CannedBroker`. Dispatch runs
+    /// `ai.query` broker (#284). `Arc<dyn AiBroker>` so production panes share
+    /// a `LiveAiBroker` while tests can inject a `CannedBroker`. Dispatch runs
     /// on a worker thread so the UI never blocks on the LLM call.
-    pub(crate) iq_broker: Arc<dyn IqBroker>,
+    pub(crate) ai_broker: Arc<dyn AiBroker>,
     /// Audio device backend (#277). `Arc<dyn AudioDevice>` so production
     /// panes share a `CoreAudioDevice` while tests inject `MockAudioDevice`.
     /// Enumeration is synchronous; capture spawns a cpal stream that drives
@@ -439,7 +439,7 @@ impl ProcessApp {
             net: Arc::new(UreqNetService::new()),
             http_tx,
             http_rx,
-            iq_broker: Arc::new(default_live_broker()),
+            ai_broker: Arc::new(default_live_broker()),
             audio_device: default_audio_device(),
             audio_capture_sessions: HashMap::new(),
             midi_device: default_midi_device(),
@@ -780,7 +780,6 @@ impl ProcessApp {
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
-                | DrawCommand::LlmRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
                 | DrawCommand::ListAudioDevices { .. }
@@ -988,7 +987,6 @@ impl App for ProcessApp {
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
-                | DrawCommand::LlmRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
                 | DrawCommand::ListAudioDevices { .. }
@@ -1266,13 +1264,13 @@ impl App for ProcessApp {
     }
 }
 
-/// Build a `LiveIqBroker` from the `[iq]` section of the current config.
+/// Build a `LiveAiBroker` from the `[ai]` section of the current config.
 /// If the section is absent, the broker is constructed with `None` and will
 /// fail fast at dispatch time with a clear error directing the user to add
 /// the section to config.toml.
-fn default_live_broker() -> LiveIqBroker {
-    let iq_config = crate::config::PlexiConfig::load().iq;
-    LiveIqBroker::new(iq_config)
+fn default_live_broker() -> LiveAiBroker {
+    let ai_config = crate::config::PlexiConfig::load().ai;
+    LiveAiBroker::new(ai_config)
 }
 
 /// Build the production audio device. cpal in non-test builds; the mock
@@ -1662,33 +1660,33 @@ impl Drop for ProcessApp {
 }
 
 #[cfg(test)]
-mod iq_tests {
-    //! Routing tests for the v3.3 `iq.query` broker capability (#284).
+mod ai_tests {
+    //! Routing tests for the v3.3 `ai.query` broker capability (#284).
     //!
     //! Two paths under test:
-    //!   1. App without `iq.query` capability — synchronous denial response
+    //!   1. App without `ai.query` capability — synchronous denial response
     //!      lands on `outbound_events`. No broker dispatch occurs.
-    //!   2. App with `iq.query` capability — broker is invoked once and
-    //!      its response surfaces on `http_rx` as `PlexiEvent::IqResponse`.
+    //!   2. App with `ai.query` capability — broker is invoked once and
+    //!      its response surfaces on `http_rx` as `PlexiEvent::AiResponse`.
     //!
     //! The mock broker (`CannedBroker`) records every call so the granted
     //! path also confirms that the routing layer forwarded the right
     //! `model_tier`, `system`, and `messages` payload to the broker.
     use super::*;
-    use crate::app_protocol::{DrawCommand, IqMessage, ModelTier, PlexiEvent};
-    use crate::plexi_iq::broker::{IqBroker, IqBrokerRequest, IqBrokerResponse};
+    use crate::app_protocol::{AiMessage, DrawCommand, ModelTier, PlexiEvent};
+    use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     /// Test broker: records every dispatch and returns a canned response.
     struct CannedBroker {
-        seen: Arc<Mutex<Vec<IqBrokerRequest>>>,
-        response: IqBrokerResponse,
+        seen: Arc<Mutex<Vec<AiBrokerRequest>>>,
+        response: AiBrokerResponse,
     }
 
-    impl IqBroker for CannedBroker {
-        fn dispatch(&self, request: IqBrokerRequest) -> IqBrokerResponse {
+    impl AiBroker for CannedBroker {
+        fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
             self.seen.lock().unwrap().push(request);
             self.response.clone()
         }
@@ -1701,8 +1699,8 @@ mod iq_tests {
             .map(PathBuf::from)?;
         let workspace_root = std::env::temp_dir();
         ProcessApp::launch(
-            "test_iq",
-            "Test IQ",
+            "test_ai",
+            "Test AI",
             &sh,
             &workspace_root,
             &["-c".to_string(), "sleep 1".to_string()],
@@ -1715,8 +1713,8 @@ mod iq_tests {
 
     #[test]
     fn denied_app_gets_capability_denied_response() {
-        // App without `iq.query` capability: route_command must immediately
-        // queue an IqResponse with the canonical "capability denied" error
+        // App without `ai.query` capability: route_command must immediately
+        // queue an AiResponse with the canonical "capability denied" error
         // — synchronously, without ever invoking the broker.
         let Some(mut app) = make_app(HashSet::new()) else {
             eprintln!("skipping: no /bin/sh available");
@@ -1726,18 +1724,18 @@ mod iq_tests {
         // Inject a broker that would *panic* if called. The denied path
         // must short-circuit before reaching dispatch.
         struct PanicBroker;
-        impl IqBroker for PanicBroker {
-            fn dispatch(&self, _: IqBrokerRequest) -> IqBrokerResponse {
+        impl AiBroker for PanicBroker {
+            fn dispatch(&self, _: AiBrokerRequest) -> AiBrokerResponse {
                 panic!("denied path must never call the broker");
             }
         }
-        app.iq_broker = Arc::new(PanicBroker);
+        app.ai_broker = Arc::new(PanicBroker);
 
-        app.route_command(DrawCommand::IqQuery {
+        app.route_command(DrawCommand::AiQuery {
             request_id: "req-denied".to_string(),
             model_tier: ModelTier::Low,
             system: "system".to_string(),
-            messages: vec![IqMessage {
+            messages: vec![AiMessage {
                 role: "user".to_string(),
                 content: "hi".to_string(),
             }],
@@ -1749,10 +1747,10 @@ mod iq_tests {
         let resp = app
             .outbound_events
             .iter()
-            .find(|e| matches!(e, PlexiEvent::IqResponse { .. }))
-            .expect("expected IqResponse on outbound queue");
+            .find(|e| matches!(e, PlexiEvent::AiResponse { .. }))
+            .expect("expected AiResponse on outbound queue");
         match resp {
-            PlexiEvent::IqResponse {
+            PlexiEvent::AiResponse {
                 request_id,
                 content,
                 tokens_in,
@@ -1769,38 +1767,38 @@ mod iq_tests {
                     "denial message must say `capability denied`: {err}"
                 );
                 assert!(
-                    err.contains("iq.query"),
+                    err.contains("ai.query"),
                     "denial message must name the capability: {err}"
                 );
             }
-            other => panic!("expected IqResponse, got {other:?}"),
+            other => panic!("expected AiResponse, got {other:?}"),
         }
     }
 
     #[test]
     fn granted_app_dispatches_to_broker() {
-        // App WITH `iq.query` granted: route_command must spawn a worker
+        // App WITH `ai.query` granted: route_command must spawn a worker
         // that calls broker.dispatch exactly once with the right payload,
-        // and the broker's response must arrive as a PlexiEvent::IqResponse
+        // and the broker's response must arrive as a PlexiEvent::AiResponse
         // on http_rx.
         let mut caps = HashSet::new();
-        caps.insert(Capability::IqQuery);
+        caps.insert(Capability::AiQuery);
         let Some(mut app) = make_app(caps) else {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
 
-        let seen: Arc<Mutex<Vec<IqBrokerRequest>>> = Arc::new(Mutex::new(Vec::new()));
-        app.iq_broker = Arc::new(CannedBroker {
+        let seen: Arc<Mutex<Vec<AiBrokerRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        app.ai_broker = Arc::new(CannedBroker {
             seen: Arc::clone(&seen),
-            response: IqBrokerResponse::ok("Pong.".to_string(), 12, 4),
+            response: AiBrokerResponse::ok("Pong.".to_string(), 12, 4),
         });
 
-        app.route_command(DrawCommand::IqQuery {
+        app.route_command(DrawCommand::AiQuery {
             request_id: "req-ok".to_string(),
             model_tier: ModelTier::High,
             system: "be terse".to_string(),
-            messages: vec![IqMessage {
+            messages: vec![AiMessage {
                 role: "user".to_string(),
                 content: "ping".to_string(),
             }],
@@ -1816,7 +1814,7 @@ mod iq_tests {
             .expect("broker response must arrive on http_rx within 2s");
 
         match event {
-            PlexiEvent::IqResponse {
+            PlexiEvent::AiResponse {
                 request_id,
                 content,
                 tokens_in,
@@ -1829,13 +1827,13 @@ mod iq_tests {
                 assert_eq!(tokens_out, 4);
                 assert!(error.is_none());
             }
-            other => panic!("expected IqResponse, got {other:?}"),
+            other => panic!("expected AiResponse, got {other:?}"),
         }
 
         // Broker must have been invoked exactly once with the correct payload.
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 1, "broker must be called exactly once");
-        assert_eq!(calls[0].app_id, "test_iq");
+        assert_eq!(calls[0].app_id, "test_ai");
         assert_eq!(calls[0].model_tier, ModelTier::High);
         assert_eq!(calls[0].system, "be terse");
         assert_eq!(calls[0].messages.len(), 1);

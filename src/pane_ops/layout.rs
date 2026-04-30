@@ -200,19 +200,10 @@ impl PlexiApp {
                 );
             }
             Kind::Agent => {
-                let cwd = self.contexts[active]
-                    .get_focused_pane_cwd(focused_tile)
-                    .unwrap_or_else(|| {
-                        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"))
-                    });
-                let new_id = self.host.alloc_pane_id();
-                let pane = crate::agent_pane::AgentPane::new(new_id, cwd);
-                self.contexts[active]
-                    .panes
-                    .insert(new_id, Pane::Agent(Box::new(pane)));
-                let share = crate::host::command::ShareRatio::new(1.0, 1.0)
-                    .expect("1:1 is valid");
-                let _ = self.split_with_new_pane(new_id, vertical, share, false);
+                // In-process agent removed (#429). Mirror-split of an Agent pane
+                // falls through to a no-op; subprocess agents are spawned via
+                // the app launcher, not the layout mirror path.
+                log::info!("mirror_split: in-process agent removed (#429); no-op");
             }
             Kind::AgentWorkspace => {
                 // Substrate-only: mirror-split of an Agent Workspace falls

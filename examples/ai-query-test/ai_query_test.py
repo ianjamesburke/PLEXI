@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""IQ Query Test — POC for #284.
+"""AI Query Test — POC for #284.
 
-Drives the host's `iq.query` broker across the three model tiers
+Drives the host's `ai.query` broker across the three model tiers
 (Low / Medium / High → Haiku / Sonnet / Opus). Type a prompt, hit
 the tier you want, see the response and token counts.
 
@@ -11,14 +11,14 @@ Keys:
   h — Send the typed prompt at High tier (Opus)
   c — Clear the response
 
-The host requires `iq.query` declared in manifest.toml. This app
-declares it; see `iq-query-denied-test/` for the gate-denied path.
+The host requires `ai.query` declared in manifest.toml. This app
+declares it; see `ai-query-denied-test/` for the gate-denied path.
 """
 from __future__ import annotations
 
 import threading
 
-from plexi_sdk import App, RenderContext, CapabilityDeniedError, IqResponse
+from plexi_sdk import App, RenderContext, CapabilityDeniedError, AiResponse
 from plexi_sdk.ui import (
     AppBar,
     Card,
@@ -34,7 +34,7 @@ from plexi_sdk.ui import (
 SYSTEM_PROMPT = "You are a helpful assistant. Reply concisely (one or two sentences)."
 
 
-class IqQueryTestApp(App):
+class AiQueryTestApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         self._prompt: str = ""
         self._tier_in_flight: str | None = None
@@ -43,15 +43,15 @@ class IqQueryTestApp(App):
         #   ("ok", tier, content, tokens_in, tokens_out)
         #   ("err", tier, message)
         self._result: tuple | None = None
-        ctx.status_summary("IQ Query — type a prompt, then press l/m/h")
-        self.emit.info("IQ Query Test started")
+        ctx.status_summary("AI Query — type a prompt, then press l/m/h")
+        self.emit.info("AI Query Test started")
 
     def _dispatch(self, tier: str) -> None:
         if not self._prompt:
-            self.emit.info("iq_query: prompt is empty — type something first")
+            self.emit.info("ai_query: prompt is empty — type something first")
             return
         if self._tier_in_flight is not None:
-            self.emit.info(f"iq_query: {self._tier_in_flight} call still in flight — wait")
+            self.emit.info(f"ai_query: {self._tier_in_flight} call still in flight — wait")
             return
 
         self._tier_in_flight = tier
@@ -60,7 +60,7 @@ class IqQueryTestApp(App):
 
         def runner() -> None:
             try:
-                resp: IqResponse = self.emit.run_sync(self.emit.iq_query(
+                resp: AiResponse = self.emit.run_sync(self.emit.ai_query(
                     model_tier=tier,
                     system=SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": prompt_snapshot}],
@@ -69,14 +69,14 @@ class IqQueryTestApp(App):
                     "ok", tier, resp.content, resp.tokens_in, resp.tokens_out,
                 )
                 self.emit.info(
-                    f"iq_query[{tier}]: {resp.tokens_in}/{resp.tokens_out} tokens"
+                    f"ai_query[{tier}]: {resp.tokens_in}/{resp.tokens_out} tokens"
                 )
             except CapabilityDeniedError as e:
                 self._result = ("err", tier, f"capability denied: {e}")
-                self.emit.warn(f"iq_query[{tier}] denied: {e}")
+                self.emit.warn(f"ai_query[{tier}] denied: {e}")
             except Exception as e:
                 self._result = ("err", tier, str(e))
-                self.emit.warn(f"iq_query[{tier}] failed: {e}")
+                self.emit.warn(f"ai_query[{tier}] failed: {e}")
             finally:
                 self._tier_in_flight = None
                 self.emit.schedule_render(after_ms=20)
@@ -99,7 +99,7 @@ class IqQueryTestApp(App):
         if self._tier_in_flight:
             return Card([
                 Section(f"In flight: {self._tier_in_flight}"),
-                Label("Waiting for the host's IQ broker…"),
+                Label("Waiting for the host's AI broker…"),
             ])
         if self._result is None:
             return None
@@ -125,7 +125,7 @@ class IqQueryTestApp(App):
         # Single-line text input, host-owned buffer. Submit (Enter) sends to
         # Low tier by default — buttons l/m/h pick a specific tier explicitly.
         submitted = ctx.text_input(
-            "iq-prompt",
+            "ai-prompt",
             x=ox + 16, y=oy + 96, w=ow - 32,
             placeholder="Ask anything (e.g. 'What is 2+2?'), then press l, m, or h",
         )
@@ -143,8 +143,8 @@ class IqQueryTestApp(App):
 
         result = self._result_card()
         children = [
-            AppBar(title="IQ Query Test"),
-            Label("v3.3 broker — `iq.query` capability."),
+            AppBar(title="AI Query Test"),
+            Label("v3.3 broker — `ai.query` capability."),
             Section("Prompt (host-owned input below)"),
             # The text_input itself is positioned absolutely above; this
             # section header just labels the area visually for the user.
@@ -167,4 +167,4 @@ class IqQueryTestApp(App):
         ctx.render(Column(children))
 
 
-IqQueryTestApp().run()
+AiQueryTestApp().run()

@@ -223,8 +223,7 @@ impl ProcessApp {
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
                 | DrawCommand::HttpRequest { .. }
-                | DrawCommand::LlmRequest { .. }
-                | DrawCommand::IqQuery { .. }
+                | DrawCommand::AiQuery { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
                 | DrawCommand::CdRequest { .. }

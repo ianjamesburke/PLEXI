@@ -40,9 +40,9 @@ pub enum Capability {
     Llm,
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
     Timer,
-    /// Issue tier-routed LLM calls through the Plexi IQ broker (`iq.query`).
+    /// Issue tier-routed LLM calls through the Plexi AI broker (`ai.query`).
     /// The host owns the API key and the cost ledger; apps never see the key.
-    IqQuery,
+    AiQuery,
     /// Receive MIDI 1.0 byte streams from a connected hardware controller via
     /// the host CoreMIDI broker (#320). Per-port; the manifest declares the
     /// capability and the OpenMidiInput dispatch validates the gate.
@@ -85,7 +85,7 @@ impl Capability {
             Self::VideoPlayback => "video.playback",
             Self::Llm => "llm",
             Self::Timer => "timer",
-            Self::IqQuery => "iq.query",
+            Self::AiQuery => "ai.query",
             Self::MidiIn => "midi.in",
             Self::MidiOut => "midi.out",
             Self::AgentsList => "agents.list",
@@ -124,7 +124,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "video.playback" => Ok(Self::VideoPlayback),
             "llm" => Ok(Self::Llm),
             "timer" => Ok(Self::Timer),
-            "iq.query" => Ok(Self::IqQuery),
+            "ai.query" => Ok(Self::AiQuery),
             "midi.in" => Ok(Self::MidiIn),
             "midi.out" => Ok(Self::MidiOut),
             "agents.list" => Ok(Self::AgentsList),
@@ -223,21 +223,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn iq_query_capability_recognized() {
-        // Manifest validator must accept "iq.query" and round-trip through
+    fn ai_query_capability_recognized() {
+        // Manifest validator must accept "ai.query" and round-trip through
         // Capability::try_from / as_str without truncation or coercion.
-        let parsed = Capability::try_from("iq.query").expect("iq.query must parse");
-        assert_eq!(parsed, Capability::IqQuery);
-        assert_eq!(parsed.as_str(), "iq.query");
+        let parsed = Capability::try_from("ai.query").expect("ai.query must parse");
+        assert_eq!(parsed, Capability::AiQuery);
+        assert_eq!(parsed.as_str(), "ai.query");
 
         // Permissions parser must populate the granted set.
-        let perms = AppPermissions::from_capability_strings(&["iq.query".to_string()]);
+        let perms = AppPermissions::from_capability_strings(&["ai.query".to_string()]);
         assert!(
-            perms.capabilities.contains(&Capability::IqQuery),
-            "iq.query must end up in granted capabilities"
+            perms.capabilities.contains(&Capability::AiQuery),
+            "ai.query must end up in granted capabilities"
         );
         assert!(matches!(
-            check(&perms, Capability::IqQuery),
+            check(&perms, Capability::AiQuery),
             PermissionCheck::Allowed
         ));
     }
@@ -300,11 +300,11 @@ mod tests {
     }
 
     #[test]
-    fn iq_query_denied_when_not_declared() {
+    fn ai_query_denied_when_not_declared() {
         let perms = AppPermissions::from_capability_strings(&[]);
-        match check(&perms, Capability::IqQuery) {
+        match check(&perms, Capability::AiQuery) {
             PermissionCheck::Denied(reason) => {
-                assert!(reason.contains("iq.query"), "denial reason must name capability: {reason}");
+                assert!(reason.contains("ai.query"), "denial reason must name capability: {reason}");
             }
             PermissionCheck::Allowed => panic!("must be denied without manifest declaration"),
         }
