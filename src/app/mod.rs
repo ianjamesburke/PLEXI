@@ -965,6 +965,7 @@ impl PlexiApp {
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let _frame_start = std::time::Instant::now();
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_notify_queue();
@@ -2035,6 +2036,11 @@ impl eframe::App for PlexiApp {
         }
 
         self.draw_feature_effects(ctx);
+
+        let frame_ms = _frame_start.elapsed().as_millis();
+        if frame_ms > 50 {
+            log::warn!("slow frame: {}ms", frame_ms);
+        }
     }
 }
 
