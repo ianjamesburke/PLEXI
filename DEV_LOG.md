@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-30 — [FIX] Cmd+Q freezes when Claude Code is running in a terminal pane (PR #453 → alpha)
+
+`get_pid_cwd()` spawned `/usr/sbin/lsof` via `Command::output()` (blocking) on the main render/UI thread. Claude Code holds many open fds, sockets, and API connections; `lsof -p <shell_pid>` blocks indefinitely enumerating them. `save_workspace()` calls `get_pid_cwd()` for every terminal pane before issuing `ViewportCommand::Close`, so Cmd+Q froze the entire app requiring force-quit. The same call site in `render/terminal_pane.rs` and `app/sync.rs` also ran lsof 3–4× per second per pane during normal rendering.
+
+Fix: `get_pid_cwd()` is now non-blocking — cache-read-only on the caller's thread, with a named background thread (`cwd-refresh-<pid>`) handling `lsof`. `PENDING_REFRESH` prevents duplicate concurrent spawns. Stale values are returned during the refresh window. TTL bumped 300ms → 2s since refreshes are async.
+
+**Breaks if:** Cmd+Q with an active Claude Code terminal pane causes the app to freeze/stop responding.
+
 ## 2026-04-29 — [FIX] ai.query hangs forever: invalid model ID + missing config + response delivery race (PR #434)
 
 Three compounding bugs caused every `ai.query` call to hang permanently showing "Waiting for the host's AI broker…" with no error surfaced.
