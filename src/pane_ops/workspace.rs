@@ -2,7 +2,7 @@
 //! and on-disk workspace save.
 
 use crate::app::PlexiApp;
-use crate::context::Context;
+use crate::context::Window;
 use crate::shell;
 use crate::workspace::WorkspaceFile;
 use std::path::PathBuf;
@@ -16,18 +16,18 @@ impl PlexiApp {
             return;
         };
 
-        let ws_id = self.next_context_id;
-        self.next_context_id += 1;
-        let ctx_id = self.next_context_id;
-        self.next_context_id += 1;
+        let ctx_id = self.next_window_id;
+        self.next_window_id += 1;
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
 
-        let name = format!("Context {}", self.workspaces.len() + 1);
-        self.workspaces.push(crate::context::WorkspaceMeta {
+        let name = format!("Context {}", self.contexts.len() + 1);
+        self.contexts.push(crate::context::Context {
             name: name.clone(),
             path: home.clone(),
-            context_id: ws_id,
+            context_id: ctx_id,
         });
-        self.contexts.push(Context {
+        self.windows.push(Window {
             name,
             path: home,
             tree,
@@ -36,27 +36,27 @@ impl PlexiApp {
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
+            window_id: win_id,
             context_id: ctx_id,
-            workspace_id: ws_id,
         });
-        self.active_workspace = self.workspaces.len() - 1;
         self.active_context = self.contexts.len() - 1;
-        self.workspace_active_window.insert(ws_id, ctx_id);
+        self.active_window = self.windows.len() - 1;
+        self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
 
         // Auto-open inline rename so the user can name the context immediately.
-        let new_ws_idx = self.workspaces.len() - 1;
-        self.renaming_context = Some(new_ws_idx);
-        self.rename_buffer = self.workspaces[new_ws_idx].name.clone();
+        let new_ctx_idx = self.contexts.len() - 1;
+        self.renaming_window = Some(new_ctx_idx);
+        self.rename_buffer = self.contexts[new_ctx_idx].name.clone();
     }
 
     /// Create a new page immediately to the right of the active page on the
     /// same grid row, then switch to it.
     pub(crate) fn new_page_right(&mut self) {
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        let active_y = self.contexts[self.active_context].grid_y;
-        let max_x = self.contexts.iter()
-            .filter(|c| c.workspace_id == ws_id && c.grid_y == active_y)
+        let ws_id = self.contexts[self.active_context].context_id;
+        let active_y = self.windows[self.active_window].grid_y;
+        let max_x = self.windows.iter()
+            .filter(|c| c.context_id == ws_id && c.grid_y == active_y)
             .map(|c| c.grid_x)
             .max();
         let new_x = match max_x {
@@ -76,10 +76,10 @@ impl PlexiApp {
             return;
         };
         let name = format!("Page {},{}", grid_x, grid_y);
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        let ctx_id = self.next_context_id;
-        self.next_context_id += 1;
-        self.contexts.push(Context {
+        let ctx_id = self.contexts[self.active_context].context_id;
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
+        self.windows.push(Window {
             name,
             path: home,
             tree,
@@ -88,11 +88,11 @@ impl PlexiApp {
             zoomed_pane: None,
             grid_x,
             grid_y,
+            window_id: win_id,
             context_id: ctx_id,
-            workspace_id: ws_id,
         });
-        self.active_context = self.contexts.len() - 1;
-        self.workspace_active_window.insert(ws_id, ctx_id);
+        self.active_window = self.windows.len() - 1;
+        self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = true;
     }
 
@@ -104,28 +104,28 @@ impl PlexiApp {
             return;
         };
 
-        let ctx = &mut self.contexts[self.active_context];
+        let ctx = &mut self.windows[self.active_window];
         ctx.tree = tree;
         ctx.panes = panes;
         ctx.focused_pane = Some(root_tile);
         ctx.zoomed_pane = None;
     }
 
-    pub(crate) fn delete_workspace(&mut self, ws_index: usize) {
-        if self.workspaces.len() <= 1 {
+    pub(crate) fn delete_context(&mut self, ws_index: usize) {
+        if self.contexts.len() <= 1 {
             return;
         }
-        let ws_id = self.workspaces[ws_index].context_id;
+        let ws_id = self.contexts[ws_index].context_id;
 
         // Remove all contexts belonging to this workspace.
-        self.contexts.retain(|c| c.workspace_id != ws_id);
-        self.workspaces.remove(ws_index);
+        self.windows.retain(|c| c.context_id != ws_id);
+        self.contexts.remove(ws_index);
 
         // Fix active indices.
-        if self.active_workspace >= self.workspaces.len() {
-            self.active_workspace = self.workspaces.len().saturating_sub(1);
-        } else if self.active_workspace > ws_index {
-            self.active_workspace -= 1;
+        if self.active_context >= self.contexts.len() {
+            self.active_context = self.contexts.len().saturating_sub(1);
+        } else if self.active_context > ws_index {
+            self.active_context -= 1;
         }
         // Pick a valid active_context in the new active workspace.
         self.pick_active_context_from_workspace();
@@ -143,58 +143,58 @@ impl PlexiApp {
         }
 
         // Restore minimap state for the workspace we landed on.
-        let new_ws_id = self.workspaces[self.active_workspace].context_id;
-        let page_count = self.contexts.iter().filter(|c| c.workspace_id == new_ws_id).count();
+        let new_ws_id = self.contexts[self.active_context].context_id;
+        let page_count = self.windows.iter().filter(|c| c.context_id == new_ws_id).count();
         self.minimap.visible = self
-            .minimap_visible_per_workspace
+            .minimap_visible_per_context
             .get(&new_ws_id)
             .copied()
             .unwrap_or(page_count > 1);
     }
 
-    pub(crate) fn delete_context(&mut self, index: usize) {
-        if self.contexts.len() <= 1 {
+    pub(crate) fn delete_window(&mut self, index: usize) {
+        if self.windows.len() <= 1 {
             return;
         }
-        let removed_ws_id = self.contexts[index].workspace_id;
-        let was_active = self.active_context == index;
-        let removed_x = self.contexts[index].grid_x;
-        let removed_y = self.contexts[index].grid_y;
+        let removed_ws_id = self.windows[index].context_id;
+        let was_active = self.active_window == index;
+        let removed_x = self.windows[index].grid_x;
+        let removed_y = self.windows[index].grid_y;
 
-        self.contexts.remove(index);
+        self.windows.remove(index);
 
         // If workspace now has no windows, remove it too.
-        let ws_has_windows = self.contexts.iter().any(|c| c.workspace_id == removed_ws_id);
+        let ws_has_windows = self.windows.iter().any(|c| c.context_id == removed_ws_id);
         if !ws_has_windows {
-            if let Some(ws_idx) = self.workspaces.iter().position(|w| w.context_id == removed_ws_id) {
-                self.workspaces.remove(ws_idx);
-                if self.active_workspace >= self.workspaces.len() {
-                    self.active_workspace = self.workspaces.len().saturating_sub(1);
-                } else if self.active_workspace > ws_idx {
-                    self.active_workspace -= 1;
+            if let Some(ws_idx) = self.contexts.iter().position(|w| w.context_id == removed_ws_id) {
+                self.contexts.remove(ws_idx);
+                if self.active_context >= self.contexts.len() {
+                    self.active_context = self.contexts.len().saturating_sub(1);
+                } else if self.active_context > ws_idx {
+                    self.active_context -= 1;
                 }
             }
         }
 
         if was_active {
-            self.active_context = self.nearest_context_after_delete(removed_x, removed_y);
-            // Sync workspace to the new active context.
-            let new_ws_id = self.contexts[self.active_context].workspace_id;
-            if let Some(ws_idx) = self.workspaces.iter().position(|w| w.context_id == new_ws_id) {
-                self.active_workspace = ws_idx;
-                self.workspace_active_window.insert(new_ws_id, self.contexts[self.active_context].context_id);
+            self.active_window = self.nearest_context_after_delete(removed_x, removed_y);
+            // Sync context to the new active window.
+            let new_ctx_id = self.windows[self.active_window].context_id;
+            if let Some(ctx_idx) = self.contexts.iter().position(|w| w.context_id == new_ctx_id) {
+                self.active_context = ctx_idx;
+                self.context_active_window.insert(new_ctx_id, self.windows[self.active_window].window_id);
             }
-        } else if self.active_context >= self.contexts.len() {
-            self.active_context = self.contexts.len() - 1;
-        } else if self.active_context > index {
-            self.active_context -= 1;
+        } else if self.active_window >= self.windows.len() {
+            self.active_window = self.windows.len() - 1;
+        } else if self.active_window > index {
+            self.active_window -= 1;
         }
 
-        if self.renaming_context == Some(index) {
-            self.renaming_context = None;
-        } else if let Some(r) = self.renaming_context {
+        if self.renaming_window == Some(index) {
+            self.renaming_window = None;
+        } else if let Some(r) = self.renaming_window {
             if r > index {
-                self.renaming_context = Some(r - 1);
+                self.renaming_window = Some(r - 1);
             }
         }
 
@@ -202,10 +202,10 @@ impl PlexiApp {
         self.compact_workspace_grid(removed_ws_id);
 
         // Restore minimap state for the workspace we landed on.
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        let page_count = self.contexts.iter().filter(|c| c.workspace_id == ws_id).count();
+        let ws_id = self.contexts[self.active_context].context_id;
+        let page_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
         self.minimap.visible = self
-            .minimap_visible_per_workspace
+            .minimap_visible_per_context
             .get(&ws_id)
             .copied()
             .unwrap_or(page_count > 1);
@@ -214,35 +214,35 @@ impl PlexiApp {
     /// After a deletion, compact each row independently: within each row,
     /// shift windows left to close any gaps in grid_x. This ensures that
     /// deleting the left-most window in a row causes the rest to slide over.
-    fn compact_workspace_grid(&mut self, ws_id: u64) {
-        // Collect positions: (context_id, grid_y, grid_x)
-        let entries: Vec<(u64, u32, u32)> = self.contexts.iter()
-            .filter(|c| c.workspace_id == ws_id)
-            .map(|c| (c.context_id, c.grid_y, c.grid_x))
+    fn compact_workspace_grid(&mut self, ctx_id: u64) {
+        // Collect positions: (window_id, grid_y, grid_x) for windows in the given context.
+        let entries: Vec<(u64, u32, u32)> = self.windows.iter()
+            .filter(|w| w.context_id == ctx_id)
+            .map(|w| (w.window_id, w.grid_y, w.grid_x))
             .collect();
 
         // Group by row (grid_y)
         let mut by_row: std::collections::HashMap<u32, Vec<(u64, u32)>> = std::collections::HashMap::new();
-        for (ctx_id, y, x) in entries {
-            by_row.entry(y).or_default().push((ctx_id, x));
+        for (win_id, y, x) in entries {
+            by_row.entry(y).or_default().push((win_id, x));
         }
 
         // For each row, sort by x and assign sequential new_x = 0,1,2,...
         let mut updates: Vec<(u64, u32)> = Vec::new();
         for (_, mut items) in by_row {
             items.sort_by_key(|(_, x)| *x);
-            for (new_x, (ctx_id, _)) in items.iter().enumerate() {
-                updates.push((*ctx_id, new_x as u32));
+            for (new_x, (win_id, _)) in items.iter().enumerate() {
+                updates.push((*win_id, new_x as u32));
             }
         }
 
         // Apply updates
         let mut old_to_new: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        for ctx in self.contexts.iter_mut() {
-            if let Some(&(_, new_x)) = updates.iter().find(|(id, _)| *id == ctx.context_id) {
-                if ctx.grid_x != new_x {
-                    old_to_new.insert(ctx.grid_x, new_x);
-                    ctx.grid_x = new_x;
+        for win in self.windows.iter_mut() {
+            if let Some(&(_, new_x)) = updates.iter().find(|(id, _)| *id == win.window_id) {
+                if win.grid_x != new_x {
+                    old_to_new.insert(win.grid_x, new_x);
+                    win.grid_x = new_x;
                 }
             }
         }
@@ -262,65 +262,68 @@ impl PlexiApp {
     /// This is the **only** place workspace switching should be performed —
     /// do not inline `active_workspace = i` + `pick_active_context_from_workspace`
     /// elsewhere, as that bypasses the save/restore.
-    pub(crate) fn switch_workspace(&mut self, new_ws_idx: usize) {
-        // Save current workspace's active window + minimap state.
-        let old_ws_id = self.workspaces[self.active_workspace].context_id;
-        self.workspace_active_window
-            .insert(old_ws_id, self.contexts[self.active_context].context_id);
-        self.minimap_visible_per_workspace
-            .insert(old_ws_id, self.minimap.visible);
+    pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
+        // Save current context's active window + minimap state.
+        let old_ctx_id = self.contexts[self.active_context].context_id;
+        self.context_active_window
+            .insert(old_ctx_id, self.windows[self.active_window].window_id);
+        self.minimap_visible_per_context
+            .insert(old_ctx_id, self.minimap.visible);
 
-        self.active_workspace = new_ws_idx;
+        self.active_context = new_ctx_idx;
         self.pick_active_context_from_workspace();
 
-        // Restore minimap state for the new workspace.
-        let new_ws_id = self.workspaces[self.active_workspace].context_id;
+        // Restore minimap state for the new context.
+        let new_ctx_id = self.contexts[self.active_context].context_id;
         let page_count = self
-            .contexts
+            .windows
             .iter()
-            .filter(|c| c.workspace_id == new_ws_id)
+            .filter(|w| w.context_id == new_ctx_id)
             .count();
         self.minimap.visible = self
-            .minimap_visible_per_workspace
-            .get(&new_ws_id)
+            .minimap_visible_per_context
+            .get(&new_ctx_id)
             .copied()
             .unwrap_or(page_count > 1);
     }
 
     pub(crate) fn pick_active_context_from_workspace(&mut self) {
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        let preferred = self.workspace_active_window.get(&ws_id).copied();
-        if let Some(ctx_id) = preferred {
-            if let Some(idx) = self.contexts.iter().position(|c| c.context_id == ctx_id && c.workspace_id == ws_id) {
-                self.active_context = idx;
+        let ctx_id = self.contexts[self.active_context].context_id;
+        let preferred = self.context_active_window.get(&ctx_id).copied();
+        if let Some(win_id) = preferred {
+            if let Some(idx) = self.windows.iter().position(|w| w.window_id == win_id && w.context_id == ctx_id) {
+                self.active_window = idx;
+                self.record_context_visit(win_id);
                 return;
             }
         }
-        if let Some(idx) = self.contexts.iter().position(|c| c.workspace_id == ws_id) {
-            self.active_context = idx;
-            self.workspace_active_window.insert(ws_id, self.contexts[idx].context_id);
+        if let Some(idx) = self.windows.iter().position(|w| w.context_id == ctx_id) {
+            self.active_window = idx;
+            let wid = self.windows[idx].window_id;
+            self.context_active_window.insert(ctx_id, wid);
+            self.record_context_visit(wid);
         }
     }
 
     pub(crate) fn save_workspace(&self) {
-        let mut saved_workspaces = Vec::new();
         let mut saved_contexts = Vec::new();
+        let mut saved_windows = Vec::new();
 
-        for ws in &self.workspaces {
-            saved_workspaces.push(crate::workspace::SavedWorkspaceMeta {
-                name: ws.name.clone(),
-                path: ws.path.clone(),
-                context_id: ws.context_id,
+        for ctx in &self.contexts {
+            saved_contexts.push(crate::workspace::SavedContext {
+                name: ctx.name.clone(),
+                path: ctx.path.clone(),
+                context_id: ctx.context_id,
             });
         }
 
-        for context in &self.contexts {
+        for win in &self.windows {
             let mut saved_panes = Vec::new();
-            for (&id, pane) in &context.panes {
+            for (&id, pane) in &win.panes {
                 debug_assert_eq!(pane.id(), id);
                 if let Some(t) = pane.as_terminal() {
                     let cwd = shell::get_pid_cwd(t.backend.child_pid())
-                        .unwrap_or_else(|| context.path.clone());
+                        .unwrap_or_else(|| win.path.clone());
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
                         kind: crate::workspace::SavedPaneKind::Terminal,
@@ -368,27 +371,27 @@ impl PlexiApp {
                     });
                 }
             }
-            saved_contexts.push(crate::workspace::SavedContext {
-                name: context.name.clone(),
-                path: context.path.clone(),
-                tree: context.tree.clone(),
+            saved_windows.push(crate::workspace::SavedWindow {
+                name: win.name.clone(),
+                path: win.path.clone(),
+                tree: win.tree.clone(),
                 panes: saved_panes,
-                focused_pane: context.focused_pane,
-                grid_x: context.grid_x,
-                grid_y: context.grid_y,
-                context_id: context.context_id,
-                workspace_id: context.workspace_id,
+                focused_pane: win.focused_pane,
+                grid_x: win.grid_x,
+                grid_y: win.grid_y,
+                window_id: win.window_id,
+                context_id: win.context_id,
             });
         }
 
         let ws = WorkspaceFile {
             version: 2,
-            active_workspace: self.active_workspace,
+            active_context: self.active_context,
             sidebar_visible: self.sidebar_visible,
             next_pane_id: self.host.next_pane_id(),
-            workspaces: saved_workspaces,
             contexts: saved_contexts,
-            workspace_active_window: self.workspace_active_window.clone(),
+            windows: saved_windows,
+            context_active_window: self.context_active_window.clone(),
         };
 
         if let Err(e) = ws.save() {

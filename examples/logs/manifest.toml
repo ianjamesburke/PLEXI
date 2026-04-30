@@ -1,0 +1,12 @@
+schema_version = 1
+
+[app]
+id = "logs"
+type = "app"
+name = "Logs"
+version = "0.1.0"
+description = "Live tail of the Plexi host log, color-coded by level."
+entry = "logs.py"
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }

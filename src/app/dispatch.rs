@@ -11,17 +11,17 @@ impl PlexiApp {
     /// apps can surface notifications and other commands while the
     /// focused pane is something else (or while a modal holds focus).
     pub(super) fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
-        let active = self.active_context;
-        let Some(focused_tile) = self.contexts[active].focused_pane else {
+        let active = self.active_window;
+        let Some(focused_tile) = self.windows[active].focused_pane else {
             return;
         };
         let Some(egui_tiles::Tile::Pane(pane_id)) =
-            self.contexts[active].tree.tiles.get(focused_tile)
+            self.windows[active].tree.tiles.get(focused_tile)
         else {
             return;
         };
         let pane_id = *pane_id;
-        let Some(pane) = self.contexts[active].panes.get_mut(&pane_id) else {
+        let Some(pane) = self.windows[active].panes.get_mut(&pane_id) else {
             return;
         };
         let Some(app_pane) = pane.as_app_mut() else {
@@ -46,9 +46,9 @@ impl PlexiApp {
         // looked up from the registry by type_id, and we can't hold a
         // mutable borrow on contexts + a shared borrow on the registry at
         // the same time during the match below.
-        let active = self.active_context;
+        let active = self.active_window;
         let mut per_pane: Vec<(usize, u64, String, Vec<AppCommand>)> = Vec::new();
-        for (ctx_idx, context) in self.contexts.iter_mut().enumerate() {
+        for (ctx_idx, context) in self.windows.iter_mut().enumerate() {
             for (pane_id, pane) in context.panes.iter_mut() {
                 if let Some(app_pane) = pane.as_app_mut() {
                     // Active-context panes are already fully updated by ui()
@@ -126,8 +126,8 @@ impl PlexiApp {
                         image_pipe_id,
                         ..
                     } => {
-                        let ws_idx = self.contexts.get(ctx_idx)
-                            .and_then(|c| self.workspaces.iter().position(|w| w.context_id == c.workspace_id))
+                        let ws_idx = self.windows.get(ctx_idx)
+                            .and_then(|w| self.contexts.iter().position(|c| c.context_id == w.context_id))
                             .unwrap_or(0);
                         deferred.push(AppCommand::ShowNotification {
                             notify_id,

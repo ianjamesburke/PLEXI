@@ -115,12 +115,12 @@ impl crate::app::PlexiApp {
         if self.agent_workspace_modal.is_some() {
             return;
         }
-        let default_cwd: Option<PathBuf> = self.contexts[self.active_context]
+        let default_cwd: Option<PathBuf> = self.windows[self.active_window]
             .focused_pane
             .and_then(|fp| {
-                self.contexts[self.active_context].get_focused_pane_cwd(fp)
+                self.windows[self.active_window].get_focused_pane_cwd(fp)
             })
-            .or_else(|| Some(self.contexts[self.active_context].path.clone()));
+            .or_else(|| Some(self.windows[self.active_window].path.clone()));
 
         let modal = AgentWorkspaceModal::open(&self.last_cli_map, default_cwd.as_deref());
         self.agent_workspace_modal = Some(modal);

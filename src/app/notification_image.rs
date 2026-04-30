@@ -155,7 +155,7 @@ fn drain_pipe_frame(
     // Walk every context's panes — the sender pane id is unique across the
     // workspace, so a linear scan is fine for the small N (single-digit
     // contexts × low-double-digit panes).
-    for ctx in &app.contexts {
+    for ctx in &app.windows {
         let Some(pane) = ctx.panes.get(&sender_pane_id) else {
             continue;
         };

@@ -6,7 +6,7 @@ use egui_tiles::{Container, Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub(crate) enum ContextMenuAction {
+pub(crate) enum WindowMenuAction {
     Rename,
     MoveToTop,
     MoveUp,
@@ -15,37 +15,37 @@ pub(crate) enum ContextMenuAction {
     Delete,
 }
 
-/// A workspace is a sidebar item — a project or directory scope.
-/// It does not own panes directly; pane layouts live in `Context` windows
-/// that reference this workspace via `workspace_id`.
-pub struct WorkspaceMeta {
+/// A context is a sidebar item — a project or directory scope.
+/// It does not own panes directly; pane layouts live in `Window` pages
+/// that reference this context via `context_id`.
+pub struct Context {
     pub name: String,
     pub path: PathBuf,
     /// Stable unique ID, assigned at creation and never reused.
     pub context_id: u64,
 }
 
-/// A context is a single window — a pane layout with focus and zoom state.
-/// Every context belongs to a workspace (`workspace_id`).
-pub struct Context {
+/// A window is a single spatial grid page — a pane layout with focus and zoom state.
+/// Every window belongs to a context (`context_id`).
+pub struct Window {
     pub name: String,
     pub path: PathBuf,
     pub tree: Tree<PaneId>,
     pub panes: HashMap<PaneId, Pane>,
     pub focused_pane: Option<TileId>,
     pub zoomed_pane: Option<TileId>,
-    /// Spatial grid coordinates within the workspace's window grid.
+    /// Spatial grid coordinates within the context's window grid.
     /// `(0, 0)` is the origin (top-left). `grid_x` grows rightward,
     /// `grid_y` grows downward.
     pub grid_x: u32,
     pub grid_y: u32,
-    /// Stable unique ID for this context (window), assigned at creation.
+    /// Stable unique ID for this window, assigned at creation.
+    pub window_id: u64,
+    /// The context this window belongs to.
     pub context_id: u64,
-    /// The workspace this window belongs to.
-    pub workspace_id: u64,
 }
 
-impl Context {
+impl Window {
     pub(crate) fn find_ancestor_tabs(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;
         loop {

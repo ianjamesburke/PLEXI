@@ -81,14 +81,14 @@ impl PlexiApp {
     /// Does **not** create pages. For create-if-missing behaviour see
     /// [`navigate_or_create_page`].
     pub(crate) fn navigate_page(&mut self, dx: i32, dy: i32) {
-        let cur_x = self.contexts[self.active_context].grid_x;
-        let cur_y = self.contexts[self.active_context].grid_y;
-        let ws_id = self.workspaces[self.active_workspace].context_id;
+        let cur_x = self.windows[self.active_window].grid_x;
+        let cur_y = self.windows[self.active_window].grid_y;
+        let ws_id = self.contexts[self.active_context].context_id;
 
         let pages: Vec<(u32, u32, u64)> = self
-            .contexts
+            .windows
             .iter()
-            .map(|c| (c.grid_x, c.grid_y, c.workspace_id))
+            .map(|w| (w.grid_x, w.grid_y, w.context_id))
             .collect();
 
         // Record the current column before leaving this row so that returning
@@ -102,10 +102,12 @@ impl PlexiApp {
             find_navigation_target(&pages, ws_id, cur_x, cur_y, dx, dy, &self.last_page_x_per_row);
 
         if let Some(idx) = new_idx {
-            self.active_context = idx;
-            let c = &self.contexts[idx];
-            self.last_page_x_per_row.insert(c.grid_y, c.grid_x);
-            self.workspace_active_window.insert(ws_id, c.context_id);
+            self.active_window = idx;
+            let w = &self.windows[idx];
+            self.last_page_x_per_row.insert(w.grid_y, w.grid_x);
+            self.context_active_window.insert(ws_id, w.window_id);
+            let wid = w.window_id;
+            self.record_context_visit(wid);
         }
     }
 
@@ -115,8 +117,8 @@ impl PlexiApp {
     /// Creation policy: vertical moves start new rows at **column 0**;
     /// horizontal moves extend the current row at the adjacent column.
     pub(crate) fn navigate_or_create_page(&mut self, dx: i32, dy: i32) {
-        let cur_x = self.contexts[self.active_context].grid_x;
-        let cur_y = self.contexts[self.active_context].grid_y;
+        let cur_x = self.windows[self.active_window].grid_x;
+        let cur_y = self.windows[self.active_window].grid_y;
 
         let tx = cur_x as i32 + dx;
         let ty = cur_y as i32 + dy;
@@ -124,9 +126,9 @@ impl PlexiApp {
             return;
         }
 
-        let before = self.active_context;
+        let before = self.active_window;
         self.navigate_page(dx, dy);
-        if self.active_context == before {
+        if self.active_window == before {
             // Vertical: new rows always start at column 0.
             // Horizontal: extend the current row at the adjacent column.
             let create_x = if dy != 0 { 0 } else { tx as u32 };
@@ -147,11 +149,11 @@ impl PlexiApp {
         removed_x: u32,
         removed_y: u32,
     ) -> usize {
-        let ws_id = self.workspaces[self.active_workspace].context_id;
-        self.contexts
+        let ws_id = self.contexts[self.active_context].context_id;
+        self.windows
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.workspace_id == ws_id)
+            .filter(|(_, c)| c.context_id == ws_id)
             .min_by_key(|(_, c)| {
                 let dx = (c.grid_x as i64 - removed_x as i64).unsigned_abs();
                 let dy = (c.grid_y as i64 - removed_y as i64).unsigned_abs();

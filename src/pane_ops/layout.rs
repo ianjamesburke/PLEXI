@@ -2,7 +2,7 @@
 //! zoom-free tree manipulation, font size, scroll.
 
 use crate::app::PlexiApp;
-use crate::context::{replace_child, Context};
+use crate::context::{replace_child, Window};
 use crate::host::command::{HostCommand, Placement};
 use crate::host::effect::HostEffect;
 use crate::keys::Direction;
@@ -53,13 +53,13 @@ impl PlexiApp {
         share: crate::host::command::ShareRatio,
         new_pane_first: bool,
     ) -> Option<egui_tiles::TileId> {
-        let focused = self.contexts[self.active_context].focused_pane?;
-        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+        let focused = self.windows[self.active_window].focused_pane?;
+        let split_target = match self.windows[self.active_window].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
             None => focused,
         };
 
-        let ctx = &mut self.contexts[self.active_context];
+        let ctx = &mut self.windows[self.active_window];
         let parent = ctx.tree.tiles.parent_of(split_target);
         let new_tile = ctx.tree.tiles.insert_pane(new_pane_id);
 
@@ -133,24 +133,24 @@ impl PlexiApp {
     ///
     /// If no pane is focused, falls back to creating a full-size terminal.
     pub(crate) fn split_focused_mirror(&mut self, placement: Placement) {
-        let active = self.active_context;
-        let Some(focused_tile) = self.contexts[active].focused_pane else {
+        let active = self.active_window;
+        let Some(focused_tile) = self.windows[active].focused_pane else {
             // No focused pane → create a full-size terminal in the active context.
             // The empty-context path: if the context has no panes at all, replace
             // the tree. If it has panes but none focused (rare), drop into the
             // standard terminal split path which will no-op for now.
-            if self.contexts[active].panes.is_empty() {
+            if self.windows[active].panes.is_empty() {
                 if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(None) {
-                    self.contexts[active].tree = tree;
-                    self.contexts[active].panes = panes;
-                    self.contexts[active].focused_pane = Some(root_tile);
+                    self.windows[active].tree = tree;
+                    self.windows[active].panes = panes;
+                    self.windows[active].focused_pane = Some(root_tile);
                 }
             }
             return;
         };
 
         let Some(Tile::Pane(focused_pane_id)) =
-            self.contexts[active].tree.tiles.get(focused_tile)
+            self.windows[active].tree.tiles.get(focused_tile)
         else {
             return;
         };
@@ -169,7 +169,7 @@ impl PlexiApp {
             /// would be confusing, so we fall back to a plain terminal split.
             AgentWorkspace,
         }
-        let kind = match self.contexts[active].panes.get(&focused_pane_id) {
+        let kind = match self.windows[active].panes.get(&focused_pane_id) {
             Some(Pane::Terminal(_)) => Kind::Terminal,
             Some(Pane::App(a)) => Kind::App(a.manifest_id.clone()),
             Some(Pane::Agent(_)) => Kind::Agent,
@@ -215,7 +215,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn split_focused(&mut self, vertical: bool) {
-        let Some(focused) = self.contexts[self.active_context].focused_pane else {
+        let Some(focused) = self.windows[self.active_window].focused_pane else {
             return;
         };
 
@@ -236,7 +236,7 @@ impl PlexiApp {
             })
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
-        let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
+        let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) = TerminalPane::new(
             new_id,
@@ -248,16 +248,16 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
-        self.contexts[self.active_context]
+        self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
 
-        let split_target = match self.contexts[self.active_context].find_ancestor_tabs(focused) {
+        let split_target = match self.windows[self.active_window].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
             None => focused,
         };
 
-        let ctx = &mut self.contexts[self.active_context];
+        let ctx = &mut self.windows[self.active_window];
         let parent = ctx.tree.tiles.parent_of(split_target);
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
 
@@ -313,7 +313,7 @@ impl PlexiApp {
 
     pub(crate) fn new_tab(&mut self) {
         // Empty context (welcome screen): create the first pane as tree root.
-        if self.contexts[self.active_context].panes.is_empty() {
+        if self.windows[self.active_window].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
             let settings = Self::make_backend_settings(None, &self.colors);
             let Some(pane) = TerminalPane::new(
@@ -326,7 +326,7 @@ impl PlexiApp {
                 log::error!("Failed to create first terminal pane in empty context");
                 return;
             };
-            let ctx = &mut self.contexts[self.active_context];
+            let ctx = &mut self.windows[self.active_window];
             ctx.panes.insert(new_id, Pane::Terminal(Box::new(pane)));
             let pane_tile = ctx.tree.tiles.insert_pane(new_id);
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
@@ -335,13 +335,13 @@ impl PlexiApp {
             return;
         }
 
-        let Some(focused) = self.contexts[self.active_context].focused_pane else {
+        let Some(focused) = self.windows[self.active_window].focused_pane else {
             return;
         };
 
         let new_id = self.host.alloc_pane_id();
 
-        let cwd = self.contexts[self.active_context].get_focused_pane_cwd(focused);
+        let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
         let settings = Self::make_backend_settings(cwd, &self.colors);
         let Some(pane) = TerminalPane::new(
             new_id,
@@ -353,11 +353,11 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
-        self.contexts[self.active_context]
+        self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
 
-        let ctx = &mut self.contexts[self.active_context];
+        let ctx = &mut self.windows[self.active_window];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
 
         if let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) {
@@ -388,7 +388,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn cycle_tab(&mut self, forward: bool) {
-        let ctx = &self.contexts[self.active_context];
+        let ctx = &self.windows[self.active_window];
         let Some(focused) = ctx.focused_pane else {
             return;
         };
@@ -418,7 +418,7 @@ impl PlexiApp {
         };
         let target = children[new_idx];
 
-        let ctx = &mut self.contexts[self.active_context];
+        let ctx = &mut self.windows[self.active_window];
         if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tabs_id) {
             tabs.set_active(target);
         }
@@ -432,11 +432,11 @@ impl PlexiApp {
     }
 
     pub(crate) fn close_focused(&mut self) {
-        let focused = match self.contexts[self.active_context].focused_pane {
+        let focused = match self.windows[self.active_window].focused_pane {
             Some(f) => f,
             None => return,
         };
-        let focused_pane_id = self.contexts[self.active_context]
+        let focused_pane_id = self.windows[self.active_window]
             .tree
             .tiles
             .get(focused)
@@ -445,22 +445,22 @@ impl PlexiApp {
                 _ => None,
             });
         if let Some(pane_id) = focused_pane_id {
-            if restore_overlay_replacement(&mut self.contexts[self.active_context].panes, pane_id) {
+            if restore_overlay_replacement(&mut self.windows[self.active_window].panes, pane_id) {
                 return;
             }
         }
 
         let effects = self.submit(HostCommand::CloseFocusedPane);
         log::debug!("close_focused effects: {:?}", effects);
-        self.close_tile(self.active_context, focused);
+        self.close_tile(self.active_window, focused);
     }
 
     /// Close a specific pane by its PaneId (the u64 backend ID, not the TileId).
     /// Searches all contexts to find the tile containing this pane.
     pub(crate) fn close_pane_by_id(&mut self, pane_id: PaneId) {
         // Find which context and tile owns this pane_id.
-        for ctx_idx in 0..self.contexts.len() {
-            if let Some(tile_id) = self.contexts[ctx_idx].tree.tiles.find_pane(&pane_id) {
+        for ctx_idx in 0..self.windows.len() {
+            if let Some(tile_id) = self.windows[ctx_idx].tree.tiles.find_pane(&pane_id) {
                 self.close_tile(ctx_idx, tile_id);
                 return;
             }
@@ -471,11 +471,11 @@ impl PlexiApp {
     /// transfer, container cleanup, and pane removal.
     pub(super) fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
         // Phase 1: Read-only — determine sibling and container type
-        let parent_info = self.contexts[ctx_idx].find_logical_parent(tile_id);
+        let parent_info = self.windows[ctx_idx].find_logical_parent(tile_id);
 
         let next = if let Some((parent_id, child_in_parent)) = parent_info {
             let sibling_info = {
-                let ctx: &Context = &self.contexts[ctx_idx];
+                let ctx: &Window = &self.windows[ctx_idx];
                 if let Some(Tile::Container(container)) = ctx.tree.tiles.get(parent_id) {
                     let children: Vec<TileId> = container.children().copied().collect();
                     children
@@ -498,7 +498,7 @@ impl PlexiApp {
 
             if let Some((sibling, is_tabs, is_linear, all_children)) = sibling_info {
                 // Phase 2: Mutable — update container state
-                let ctx = &mut self.contexts[ctx_idx];
+                let ctx = &mut self.windows[ctx_idx];
                 if is_tabs {
                     if let Some(Tile::Container(Container::Tabs(tabs))) =
                         ctx.tree.tiles.get_mut(parent_id)
@@ -516,17 +516,17 @@ impl PlexiApp {
                     }
                 }
 
-                self.contexts[ctx_idx].find_first_pane_in(sibling)
+                self.windows[ctx_idx].find_first_pane_in(sibling)
             } else {
-                self.contexts[ctx_idx].find_next_focus(tile_id)
+                self.windows[ctx_idx].find_next_focus(tile_id)
             }
         } else {
-            self.contexts[ctx_idx].find_next_focus(tile_id)
+            self.windows[ctx_idx].find_next_focus(tile_id)
         };
 
         // Phase 3: Remove tile and extract pane — defer drop so background apps can be parked.
         let removed_pane = {
-            let ctx = &mut self.contexts[ctx_idx];
+            let ctx = &mut self.windows[ctx_idx];
             if let Some(parent_id) = ctx.tree.tiles.parent_of(tile_id) {
                 if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
                     parent.remove_child(tile_id);
@@ -592,16 +592,16 @@ impl PlexiApp {
         let effects = self.submit(HostCommand::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
 
-        let ctx = &self.contexts[self.active_context];
+        let ctx = &self.windows[self.active_window];
         if let Some(focused) = ctx.focused_pane {
             if let Some(target) = ctx.find_pane_in_direction_from(focused, dir) {
-                self.contexts[self.active_context].focused_pane = Some(target);
+                self.windows[self.active_window].focused_pane = Some(target);
             }
         }
     }
 
     pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
-        let ctx = &mut self.contexts[self.active_context];
+        let ctx = &mut self.windows[self.active_window];
         let Some(focused_tile) = ctx.focused_pane else {
             return;
         };
@@ -617,7 +617,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn adjust_focused_pane_font_size(&mut self, delta: f32) {
-        let ctx = &mut self.contexts[self.active_context];
+        let ctx = &mut self.windows[self.active_window];
         let Some(focused_tile) = ctx.focused_pane else {
             return;
         };
@@ -636,11 +636,11 @@ impl PlexiApp {
 
     /// Close the focused app pane.
     pub(crate) fn close_focused_app(&mut self) {
-        let active = self.active_context;
-        let Some(focused_tile) = self.contexts[active].focused_pane else {
+        let active = self.active_window;
+        let Some(focused_tile) = self.windows[active].focused_pane else {
             return;
         };
-        let Some(pane_id) = self.contexts[active]
+        let Some(pane_id) = self.windows[active]
             .tree
             .tiles
             .get(focused_tile)
@@ -651,11 +651,11 @@ impl PlexiApp {
         else {
             return;
         };
-        if restore_overlay_replacement(&mut self.contexts[active].panes, pane_id) {
+        if restore_overlay_replacement(&mut self.windows[active].panes, pane_id) {
             return;
         }
 
-        let is_app = self.contexts[active]
+        let is_app = self.windows[active]
             .panes
             .get(&pane_id)
             .and_then(|p| p.as_app())
@@ -667,15 +667,16 @@ impl PlexiApp {
 
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
-    ///
-    /// After closing the last pane in a context the context remains open and
-    /// the welcome screen is shown in its place.
     pub(crate) fn execute_close_pane(&mut self) -> bool {
-        self.contexts[self.active_context].zoomed_pane = None;
-        if !self.contexts[self.active_context].panes.is_empty() {
+        self.windows[self.active_window].zoomed_pane = None;
+        if !self.windows[self.active_window].panes.is_empty() {
             self.close_focused();
         }
-
+        // If the window is now empty and there are others in the same context,
+        // delete it and switch — don't strand the user on a blank welcome screen.
+        if self.windows[self.active_window].panes.is_empty() {
+            self.delete_window(self.active_window);
+        }
         false
     }
 }
