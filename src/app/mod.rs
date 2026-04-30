@@ -89,6 +89,74 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+/// Duration of pane layout animations (swap, split expand, split contract).
+const ANIM_DURATION_MS: f32 = 160.0;
+
+/// Ease-out cubic: `t = 1 - (1 - progress)^3`, clamped to [0, 1].
+/// Fast start, decelerates to final position.
+fn ease_out_cubic(progress: f32) -> f32 {
+    let p = progress.clamp(0.0, 1.0);
+    1.0 - (1.0 - p).powi(3)
+}
+
+/// Active animation for a single pane — smoothly interpolates from `from` to `to`
+/// over [`ANIM_DURATION_MS`] milliseconds using ease-out cubic easing.
+///
+/// Stored on [`PlexiApp::pane_anims`], keyed by [`egui_tiles::TileId`].
+/// Cleared once `t >= 1.0`.
+pub(crate) struct RectAnim {
+    pub from: egui::Rect,
+    pub to: egui::Rect,
+    pub started_at: std::time::Instant,
+}
+
+impl RectAnim {
+    /// Construct a new animation from `from` → `to`, starting now.
+    pub fn new(from: egui::Rect, to: egui::Rect) -> Self {
+        Self {
+            from,
+            to,
+            started_at: std::time::Instant::now(),
+        }
+    }
+
+    /// Returns the interpolated rect for the current instant, or `None` if the
+    /// animation has completed (`elapsed >= ANIM_DURATION_MS`).
+    pub fn current_rect(&self) -> Option<egui::Rect> {
+        let elapsed_ms = self.started_at.elapsed().as_secs_f32() * 1000.0;
+        let progress = elapsed_ms / ANIM_DURATION_MS;
+        if progress >= 1.0 {
+            return None;
+        }
+        let t = ease_out_cubic(progress);
+        let lerp_pos2 = |a: egui::Pos2, b: egui::Pos2| -> egui::Pos2 {
+            egui::pos2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+        };
+        Some(egui::Rect::from_min_max(
+            lerp_pos2(self.from.min, self.to.min),
+            lerp_pos2(self.from.max, self.to.max),
+        ))
+    }
+}
+
+/// Number of frames the edge pulse is shown. Pulse is frame-counted so it
+/// renders for exactly two frames regardless of frame rate.
+const EDGE_PULSE_FRAMES: u8 = 2;
+
+pub(crate) struct EdgePulse {
+    pub direction: crate::keys::Direction,
+    pub frames_remaining: u8,
+}
+
+impl EdgePulse {
+    pub fn new(direction: crate::keys::Direction) -> Self {
+        Self {
+            direction,
+            frames_remaining: EDGE_PULSE_FRAMES,
+        }
+    }
+}
+
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
@@ -203,6 +271,14 @@ pub struct PlexiApp {
     /// Monotonically increasing counter. Assigned to each new `Context` as its
     /// stable `context_id`. Never reused — only increments.
     pub(crate) next_context_id: u64,
+    /// Active rect animations keyed by TileId. Each animation interpolates a
+    /// pane's visual rect from `from` → `to` over [`ANIM_DURATION_MS`] ms.
+    /// Entries are removed when the animation completes (`t >= 1.0`).
+    /// `request_repaint()` is called each frame while any entry is present.
+    pub(crate) pane_anims: HashMap<egui_tiles::TileId, RectAnim>,
+    /// Optional edge pulse — shown when a swap is attempted at a boundary.
+    /// Clears after [`EDGE_PULSE_FRAMES`] frames.
+    pub(crate) edge_pulse: Option<EdgePulse>,
 }
 
 impl PlexiApp {
@@ -533,6 +609,8 @@ impl PlexiApp {
                     workspace_active_window: ws.workspace_active_window,
                     minimap_visible_per_workspace: HashMap::new(),
                     next_context_id: next_id,
+                    pane_anims: HashMap::new(),
+                    edge_pulse: None,
                 };
             }
         }
@@ -612,6 +690,8 @@ impl PlexiApp {
             minimap_visible_per_workspace: HashMap::new(),
             active_workspace: 0,
             next_context_id: 2,
+            pane_anims: HashMap::new(),
+            edge_pulse: None,
         }
     }
 
@@ -1700,6 +1780,9 @@ impl eframe::App for PlexiApp {
                 Action::ToggleMinimap => {
                     self.minimap.toggle();
                 }
+                Action::SwapPane(dir) => {
+                    self.swap_focused_pane(dir);
+                }
             }
         }
 
@@ -1871,6 +1954,78 @@ impl eframe::App for PlexiApp {
 
                 if let Some(new) = behavior.new_focused {
                     ctx.focused_pane = Some(new);
+                }
+
+                // --- Animation overlays ---
+                // Draw sliding rect overlays for active pane animations and
+                // the edge pulse for boundary-swap attempts.
+                // All drawing happens via the background painter so it sits
+                // beneath egui's widgets but visually on top of each pane.
+                let painter = ui.painter();
+
+                // Pane animations: for each active RectAnim, draw a filled rect
+                // that interpolates from `from` → `to`. The actual pane content
+                // is already at `to` (layout is immediate); the sliding rect is
+                // an opaque background that creates the illusion of movement.
+                let anim_color = self.colors.terminal_bg;
+                let mut completed: Vec<egui_tiles::TileId> = Vec::new();
+                for (&tile_id, anim) in &self.pane_anims {
+                    match anim.current_rect() {
+                        Some(anim_rect) => {
+                            painter.rect_filled(anim_rect, 0.0, anim_color);
+                        }
+                        None => {
+                            completed.push(tile_id);
+                        }
+                    }
+                }
+                for tile_id in completed {
+                    self.pane_anims.remove(&tile_id);
+                }
+
+                // Request continuous repaints while any animation is in flight.
+                if !self.pane_anims.is_empty() {
+                    ui.ctx().request_repaint();
+                }
+
+                // Edge pulse: draw a highlighted border on the focused pane's
+                // edge in the direction of the blocked swap, for two frames.
+                if let Some(ref pulse) = self.edge_pulse {
+                    if let Some(focused_tile) = ctx.focused_pane {
+                        if let Some(tile_rect) = ctx.tree.tiles.rect(focused_tile) {
+                            let pulse_color = self.colors.accent.gamma_multiply(0.8);
+                            let thickness = 3.0;
+                            let pulse_dir = pulse.direction;
+                            let seg = match pulse_dir {
+                                crate::keys::Direction::Left => egui::Rect::from_min_max(
+                                    tile_rect.min,
+                                    egui::pos2(tile_rect.min.x + thickness, tile_rect.max.y),
+                                ),
+                                crate::keys::Direction::Right => egui::Rect::from_min_max(
+                                    egui::pos2(tile_rect.max.x - thickness, tile_rect.min.y),
+                                    tile_rect.max,
+                                ),
+                                crate::keys::Direction::Up => egui::Rect::from_min_max(
+                                    tile_rect.min,
+                                    egui::pos2(tile_rect.max.x, tile_rect.min.y + thickness),
+                                ),
+                                crate::keys::Direction::Down => egui::Rect::from_min_max(
+                                    egui::pos2(tile_rect.min.x, tile_rect.max.y - thickness),
+                                    tile_rect.max,
+                                ),
+                            };
+                            painter.rect_filled(seg, 0.0, pulse_color);
+                        }
+                    }
+                }
+                // Decrement the pulse frame counter; clear when exhausted.
+                if let Some(ref mut pulse) = self.edge_pulse {
+                    if pulse.frames_remaining == 0 {
+                        self.edge_pulse = None;
+                    } else {
+                        pulse.frames_remaining -= 1;
+                        ui.ctx().request_repaint();
+                    }
                 }
 
                 let should_close_exited = behavior.close_exited.is_some();

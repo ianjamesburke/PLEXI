@@ -597,6 +597,95 @@ impl PlexiApp {
         }
     }
 
+    /// Swap the focused pane with its geometric neighbor in `dir`.
+    ///
+    /// Uses the same neighbor-discovery algorithm as `navigate()` so the swap
+    /// target is always the pane that `Cmd+dir` would move focus to.
+    ///
+    /// At boundaries (no neighbor), records an [`EdgePulse`] on `self.edge_pulse`
+    /// and returns without modifying the tree.
+    ///
+    /// On success, captures pre-swap rects and inserts [`RectAnim`] entries into
+    /// `self.pane_anims` for both tiles so their backgrounds animate to their
+    /// new positions over [`ANIM_DURATION_MS`] ms.
+    pub(crate) fn swap_focused_pane(&mut self, dir: Direction) {
+        use crate::app::{EdgePulse, RectAnim};
+
+        let active = self.active_context;
+        let Some(focused_tile) = self.contexts[active].focused_pane else {
+            return;
+        };
+
+        // Find the neighbor using the same geometry as focus navigation.
+        let target_tile = match self.contexts[active].find_pane_in_direction_from(focused_tile, dir) {
+            Some(t) => t,
+            None => {
+                // Boundary — no neighbor in this direction. Show edge pulse.
+                self.edge_pulse = Some(EdgePulse::new(dir));
+                return;
+            }
+        };
+
+        // Capture pre-swap rects for animation (may be None if layout hasn't run yet).
+        let rect_focused = self.contexts[active].tree.tiles.rect(focused_tile);
+        let rect_target = self.contexts[active].tree.tiles.rect(target_tile);
+
+        // Perform the tree swap: exchange the positions of focused_tile and
+        // target_tile. Both are `Tile::Pane` nodes. We swap their PaneId
+        // payloads — after this, focused_tile holds target's PaneId and vice
+        // versa. The TileIds stay in their original tree positions so the
+        // rects assigned by egui_tiles in the next layout pass are unchanged.
+        // That is: focused_tile will still have rect_focused, but now contains
+        // target's pane — which is the visual swap.
+        {
+            let tiles = &mut self.contexts[active].tree.tiles;
+
+            // Extract both pane IDs.
+            let focused_pane_id = match tiles.get(focused_tile) {
+                Some(egui_tiles::Tile::Pane(id)) => *id,
+                _ => return,
+            };
+            let target_pane_id = match tiles.get(target_tile) {
+                Some(egui_tiles::Tile::Pane(id)) => *id,
+                _ => return,
+            };
+
+            // Swap via mutable get_mut. Because `Tiles` doesn't expose a
+            // combined swap API, we overwrite each entry individually.
+            if let Some(egui_tiles::Tile::Pane(id)) = tiles.get_mut(focused_tile) {
+                *id = target_pane_id;
+            }
+            if let Some(egui_tiles::Tile::Pane(id)) = tiles.get_mut(target_tile) {
+                *id = focused_pane_id;
+            }
+        }
+
+        // After the swap, focused_tile now contains target's pane and
+        // target_tile contains focused's pane. Keep focus on the logical
+        // "focused pane" (now in target_tile's position).
+        self.contexts[active].focused_pane = Some(target_tile);
+
+        // Register animations: each tile animates its background from its old
+        // rect (pre-swap) to its new rect. Since we swapped pane IDs (not tree
+        // positions), both TileIds stay at their own rects next frame — the
+        // animation draws an overlay that appears to slide the content.
+        if let (Some(rf), Some(rt)) = (rect_focused, rect_target) {
+            // focused_tile: its content (now target's pane) should appear to
+            // come FROM where target was (rt) and land at focused_tile's rect (rf).
+            self.pane_anims.insert(focused_tile, RectAnim::new(rt, rf));
+            // target_tile: its content (now focused's pane) should appear to
+            // come FROM where focused was (rf) and land at target_tile's rect (rt).
+            self.pane_anims.insert(target_tile, RectAnim::new(rf, rt));
+        }
+
+        log::debug!(
+            "swap_focused_pane({:?}): {:?} ↔ {:?}",
+            dir,
+            focused_tile,
+            target_tile
+        );
+    }
+
     pub(crate) fn navigate(&mut self, dir: Direction) {
         let effects = self.submit(HostCommand::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);

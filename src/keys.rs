@@ -7,6 +7,7 @@
 // Cmd+Shift+N                 — new sidebar context
 // Cmd+W                       — close pane
 // Cmd+H/J/K/L                 — navigate panes
+// Cmd+Ctrl+H/J/K/L            — swap focused pane with directional neighbor
 // Cmd+Shift+H/J/K/L           — navigate to adjacent page (spatial grid)
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
@@ -109,6 +110,9 @@ pub enum Action {
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
     ReloadConfig,
+    /// Swap the focused pane with its directional neighbor.
+    /// Bound to Cmd+Ctrl+H/J/K/L. No-op (with edge pulse) at boundaries.
+    SwapPane(Direction),
 }
 
 /// Poll global keyboard actions.
@@ -150,6 +154,25 @@ pub fn poll_actions(
             actions.push(Action::SplitVertical);
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
             actions.push(Action::SplitHorizontal);
+        }
+
+        // Pane swap (Cmd+Ctrl+HJKL) — check before Cmd+Shift+HJKL and
+        // plain Cmd+HJKL so the more-specific modifier wins.
+        let cmd_ctrl = egui::Modifiers {
+            ctrl: true,
+            ..egui::Modifiers::COMMAND
+        };
+        if input.consume_key(cmd_ctrl, egui::Key::H) {
+            actions.push(Action::SwapPane(Direction::Left));
+        }
+        if input.consume_key(cmd_ctrl, egui::Key::J) {
+            actions.push(Action::SwapPane(Direction::Down));
+        }
+        if input.consume_key(cmd_ctrl, egui::Key::K) {
+            actions.push(Action::SwapPane(Direction::Up));
+        }
+        if input.consume_key(cmd_ctrl, egui::Key::L) {
+            actions.push(Action::SwapPane(Direction::Right));
         }
 
         // Page navigation (Shift+Cmd+HJKL) — check before plain Cmd+HJKL
