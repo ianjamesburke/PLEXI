@@ -1311,6 +1311,7 @@ impl PlexiApp {
                     style::MODAL_PADDING_V,
                 ))
                 .show(ui, |ui| {
+                    ui.add_space(style::SPACE_XL);
                     ui.vertical_centered(|ui| {
                         ui.label(
                             RichText::new("PLEXI")

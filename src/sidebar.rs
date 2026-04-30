@@ -405,11 +405,11 @@ impl PlexiApp {
                     }
                 }
                 WindowMenuAction::Delete => {
-                    self.delete_workspace(i);
+                    self.delete_context(i);
                 }
             }
         } else if let Some(i) = delete_context {
-            self.delete_workspace(i);
+            self.delete_context(i);
         } else if let Some(i) = clicked_workspace {
             self.switch_workspace(i);
         }

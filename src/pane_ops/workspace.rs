@@ -111,7 +111,7 @@ impl PlexiApp {
         ctx.zoomed_pane = None;
     }
 
-    pub(crate) fn delete_workspace(&mut self, ws_index: usize) {
+    pub(crate) fn delete_context(&mut self, ws_index: usize) {
         if self.contexts.len() <= 1 {
             return;
         }
@@ -152,7 +152,7 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
     }
 
-    pub(crate) fn delete_context(&mut self, index: usize) {
+    pub(crate) fn delete_window(&mut self, index: usize) {
         if self.windows.len() <= 1 {
             return;
         }
