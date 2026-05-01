@@ -312,6 +312,9 @@ install-alpha: fetch-python-runtime
     }
     trap cleanup EXIT
 
+    sed -i '' 's/^name = "plexi"/name = "plexi-alpha"/' Cargo.toml
+    sed -i '' 's/name = "Plexi"/name = "Plexi Alpha"/' Cargo.toml
+    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-alpha"/' Cargo.toml
     sed -i '' 's/with_title("Plexi")/with_title("Plexi Alpha")/' src/main.rs
     sed -i '' 's/"plexi",/"plexi-alpha",/' src/main.rs
 

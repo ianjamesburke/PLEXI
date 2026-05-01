@@ -1,0 +1,3 @@
+# Branch-specific channel identity — never overwrite during merges.
+# Requires: git config --global merge.ours.driver true
+.channel merge=ours
