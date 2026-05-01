@@ -150,7 +150,6 @@ impl LogConfig {
 #[derive(Deserialize, Default, Clone)]
 pub struct BetaConfig {
     pub crt: Option<bool>,
-    pub pulse: Option<bool>,
     pub ghost: Option<bool>,
 }
 
@@ -291,6 +290,11 @@ const CONFIG_TEMPLATE: &str = r##"# ╔═════════════�
 
 font_size = 14.0
 
+# ── Theme ──────────────────────────────────────────────────────
+# Pick a preset OR customize individual colors below.
+# Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
+theme_preset = "catppuccin-mocha"
+
 # ── Confirmation Dialogs ───────────────────────────────────────
 # confirm_quit requires triple Cmd+Q to exit (safer than a single press).
 # confirm_close shows a dialog before Cmd+W closes a pane.
@@ -334,11 +338,6 @@ interrupt_threshold = 100
 #   Esc = defer. Modal closes but the notification stays in the queue —
 #     open Cmd+Shift+A later to come back to it. No NotifyAction dispatched.
 #   Required notifications (required = true) cannot be Esc'd.
-
-# ── Theme ──────────────────────────────────────────────────────
-# Pick a preset OR customize individual colors below.
-# Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
-theme_preset = "catppuccin-mocha"
 
 [theme]
 # Uncomment any color below to override the preset value.
@@ -407,7 +406,6 @@ model_high   = "anthropic/claude-opus-4-7"
 # Flip any flag to true and restart to enable.
 [beta]
 # crt   = false    # Retro CRT scanlines + green phosphor tint
-# pulse = false    # Focused pane border gently breathes
 # ghost = false    # Unfocused panes render at reduced opacity
 
 # ── Logging ────────────────────────────────────────────────────
@@ -574,9 +572,6 @@ impl BetaConfig {
     fn overlay(&mut self, other: Self) {
         if other.crt.is_some() {
             self.crt = other.crt;
-        }
-        if other.pulse.is_some() {
-            self.pulse = other.pulse;
         }
         if other.ghost.is_some() {
             self.ghost = other.ghost;

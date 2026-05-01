@@ -10,6 +10,8 @@ enum PaletteEntry {
         context_id: u64,
         name: String,
         workspace_name: String,
+        /// If set, focus this specific pane after navigating to the window.
+        pane_id: Option<u64>,
     },
     App {
         id: String,
@@ -43,33 +45,132 @@ impl PlexiApp {
         };
 
         let mut entries: Vec<PaletteEntry> = {
-            let mut ctx_entries: Vec<PaletteEntry> = self
-                .windows
-                .iter()
-                .enumerate()
-                .filter_map(|(ci, w)| {
-                    let ctx_name = self
-                        .contexts
-                        .iter()
-                        .find(|c| c.context_id == w.context_id)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_default();
+            // For each context we emit exactly ONE primary entry — either the
+            // context name (active pane is unnamed) or "context › pane-name"
+            // (active pane is named). Additional named panes beyond the active
+            // one appear as secondary entries. This keeps the ⌘P → ↓ → Enter
+            // flow clean: the top entry for each context always represents the
+            // most-recently-active pane.
+            let mut seen_contexts: std::collections::HashSet<u64> =
+                std::collections::HashSet::new();
+            let mut ctx_entries: Vec<PaletteEntry> = Vec::new();
 
-                    if query.is_empty()
-                        || w.name.to_lowercase().contains(&query)
-                        || ctx_name.to_lowercase().contains(&query)
-                    {
-                        Some(PaletteEntry::Context {
-                            ctx_idx: ci,
-                            context_id: w.window_id,
-                            name: w.name.clone(),
-                            workspace_name: ctx_name,
+            // Resolve the active pane name for a context (following
+            // context_active_window → focused_pane → terminal name).
+            let active_pane_for_context = |ctx_id: u64| -> Option<(usize, u64, u64, String)> {
+                let active_win_id = self.context_active_window.get(&ctx_id).copied()?;
+                let (win_ci, win) = self
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .find(|(_, w)| w.window_id == active_win_id)?;
+                let tile_id = win.focused_pane?;
+                let tile = win.tree.tiles.get(tile_id)?;
+                let pane_id = match tile {
+                    egui_tiles::Tile::Pane(pid) => *pid,
+                    _ => return None,
+                };
+                let pane_name = win
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|p| p.as_terminal())
+                    .and_then(|t| t.name.clone())?;
+                Some((win_ci, active_win_id, pane_id, pane_name))
+            };
+
+            for (ci, w) in self.windows.iter().enumerate() {
+                let ctx_name = self
+                    .contexts
+                    .iter()
+                    .find(|c| c.context_id == w.context_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+
+                // Primary entry — one per context.
+                if !seen_contexts.contains(&w.context_id) {
+                    seen_contexts.insert(w.context_id);
+
+                    // Fallback window if context_active_window is absent/stale.
+                    let fallback_win_id = self
+                        .context_active_window
+                        .get(&w.context_id)
+                        .copied()
+                        .and_then(|id| {
+                            self.windows.iter().enumerate().find(|(_, w2)| w2.window_id == id)
                         })
+                        .map(|(i, w2)| (i, w2.window_id))
+                        .unwrap_or((ci, w.window_id));
+
+                    if let Some((win_ci, win_id, pane_id, pane_name)) =
+                        active_pane_for_context(w.context_id)
+                    {
+                        // Active pane is named — it IS the primary entry.
+                        if query.is_empty()
+                            || pane_name.to_lowercase().contains(&query)
+                            || ctx_name.to_lowercase().contains(&query)
+                        {
+                            ctx_entries.push(PaletteEntry::Context {
+                                ctx_idx: win_ci,
+                                context_id: win_id,
+                                name: pane_name,
+                                workspace_name: ctx_name.clone(),
+                                pane_id: Some(pane_id),
+                            });
+                        }
                     } else {
-                        None
+                        // Active pane is unnamed — show the context by name.
+                        if query.is_empty() || ctx_name.to_lowercase().contains(&query) {
+                            ctx_entries.push(PaletteEntry::Context {
+                                ctx_idx: fallback_win_id.0,
+                                context_id: fallback_win_id.1,
+                                name: ctx_name.clone(),
+                                workspace_name: String::new(),
+                                pane_id: None,
+                            });
+                        }
                     }
-                })
-                .collect();
+                }
+
+                // Secondary entries — named panes that are NOT the active pane.
+                let active_win_id = self
+                    .context_active_window
+                    .get(&w.context_id)
+                    .copied()
+                    .unwrap_or(0);
+                let active_pane_id = if w.window_id == active_win_id {
+                    w.focused_pane.and_then(|tid| {
+                        w.tree.tiles.get(tid).and_then(|tile| match tile {
+                            egui_tiles::Tile::Pane(pid) => Some(*pid),
+                            _ => None,
+                        })
+                    })
+                } else {
+                    None
+                };
+
+                for (&pane_id, pane) in &w.panes {
+                    if let Some(t) = pane.as_terminal() {
+                        if let Some(pane_name) = &t.name {
+                            // Skip if this is already the primary entry.
+                            if Some(pane_id) == active_pane_id && w.window_id == active_win_id {
+                                continue;
+                            }
+                            if query.is_empty()
+                                || pane_name.to_lowercase().contains(&query)
+                                || ctx_name.to_lowercase().contains(&query)
+                            {
+                                ctx_entries.push(PaletteEntry::Context {
+                                    ctx_idx: ci,
+                                    context_id: w.window_id,
+                                    name: pane_name.clone(),
+                                    workspace_name: ctx_name.clone(),
+                                    pane_id: Some(pane_id),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
 
             ctx_entries.sort_by_key(|e| match e {
                 PaletteEntry::Context { context_id, .. } => rank_of(*context_id),
@@ -152,7 +253,7 @@ impl PlexiApp {
         // ── Keyboard nav ───────────────────────────────────────────────────
         #[derive(Clone)]
         enum Action {
-            JumpContext(usize, u64),
+            JumpContext(usize, u64, Option<u64>),
             LaunchApp(String),
             RunAction(String),
         }
@@ -182,9 +283,10 @@ impl PlexiApp {
                     Some(PaletteEntry::Context {
                         ctx_idx,
                         context_id,
+                        pane_id,
                         ..
                     }) => {
-                        action = Some(Action::JumpContext(*ctx_idx, *context_id));
+                        action = Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
                     }
                     Some(PaletteEntry::App { id, .. }) => {
                         action = Some(Action::LaunchApp(id.clone()));
@@ -198,8 +300,8 @@ impl PlexiApp {
         });
 
         match action {
-            Some(Action::JumpContext(ctx_idx, context_id)) => {
-                self.jump_to_context(ctx_idx, context_id);
+            Some(Action::JumpContext(ctx_idx, context_id, pane_id)) => {
+                self.jump_to_context(ctx_idx, context_id, pane_id);
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 return;
@@ -299,6 +401,7 @@ impl PlexiApp {
                                             context_id,
                                             name,
                                             workspace_name,
+                                            pane_id,
                                         } => {
                                             let is_active = *context_id == active_win_id;
                                             let name_color = if is_active {
@@ -341,6 +444,7 @@ impl PlexiApp {
                                                 click_action = Some(Action::JumpContext(
                                                     *ctx_idx,
                                                     *context_id,
+                                                    *pane_id,
                                                 ));
                                             }
                                             if r.hovered() {
@@ -459,8 +563,8 @@ impl PlexiApp {
 
                         if let Some(act) = click_action {
                             match act {
-                                Action::JumpContext(ctx_idx, context_id) => {
-                                    self.jump_to_context(ctx_idx, context_id);
+                                Action::JumpContext(ctx_idx, context_id, pane_id) => {
+                                    self.jump_to_context(ctx_idx, context_id, pane_id);
                                     self.show_command_palette = false;
                                     self.palette_query.clear();
                                 }
@@ -481,7 +585,8 @@ impl PlexiApp {
     }
 
     /// Jump to a window by index, switching context if necessary.
-    fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64) {
+    /// If `pane_id` is provided, also focuses that specific pane in the window.
+    fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
         let target_ctx_id = self.windows[ctx_idx].context_id;
         if let Some(ctx_idx_sidebar) = self
             .contexts
@@ -500,6 +605,25 @@ impl PlexiApp {
         let ctx_id = self.contexts[self.active_context].context_id;
         self.context_active_window.insert(ctx_id, win_id);
         self.record_context_visit(win_id);
+
+        // Focus the specific pane if requested — find its TileId in the tree.
+        if let Some(pid) = pane_id {
+            let win = &mut self.windows[ctx_idx];
+            if let Some(tile_id) = win
+                .tree
+                .tiles
+                .iter()
+                .find_map(|(tid, tile)| {
+                    if matches!(tile, egui_tiles::Tile::Pane(p) if *p == pid) {
+                        Some(*tid)
+                    } else {
+                        None
+                    }
+                })
+            {
+                win.focused_pane = Some(tile_id);
+            }
+        }
     }
 
     /// Dispatch a static palette action. Adding a new action means

@@ -68,7 +68,6 @@ impl PlexiApp {
             };
             row_rects.push(row_rect);
 
-            let hover = ui.rect_contains_pointer(row_rect);
             let row_alpha = if is_dragging { 0.4_f32 } else { 1.0_f32 };
 
             let row_response = ui
@@ -81,6 +80,7 @@ impl PlexiApp {
                             egui::Id::new(("ctx_row", i)),
                             Sense::click_and_drag(),
                         );
+                        let hover = row_resp.hovered();
 
                         let rect = ui.max_rect();
 
@@ -243,7 +243,7 @@ impl PlexiApp {
                 }
             }
 
-            if hover || is_dragging {
+            if row_response.hovered() || is_dragging {
                 let icon = if is_dragging || self.drag_context.is_some() {
                     egui::CursorIcon::Grabbing
                 } else {

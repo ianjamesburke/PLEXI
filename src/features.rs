@@ -16,9 +16,6 @@ impl FeatureFlags {
             if beta.crt.unwrap_or(false) {
                 enabled.insert("crt".to_string());
             }
-            if beta.pulse.unwrap_or(false) {
-                enabled.insert("pulse".to_string());
-            }
             if beta.ghost.unwrap_or(false) {
                 enabled.insert("ghost".to_string());
             }

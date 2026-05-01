@@ -1,5 +1,51 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-01 — [CHANGED] Remove PLEXI logo + toolbar label; normalize dot sizes
+
+Removed the "PLEXI" heading and divider from the sidebar top (`sidebar.rs`). Removed the context/pane title label from the toolbar (`overlays.rs` `draw_toolbar`). Toolbar dots and tab dots both set to radius 4.0, spacing 12.0 — a slight bump from the original 3.5/4.0 without oversizing.
+
+## 2026-05-01 — [CHANGED] Shortcuts overlay redesign — two-column layout, square chips, HJKL blocks
+
+Widened the shortcuts overlay from 320px to 620px and split it into two columns. Left: pane/window management. Right: navigation (HJKL blocks at top). Key chips are now square for single-char keys (`chip_w` floor raised from fixed 18px to `chip_h`). HJKL navigation rendered as `⌘ [H][J][K][L]` and `⌘⇧ [H][J][K][L]` blocks instead of paired two-combo rows. Fixed stale label: `⌘N` → "New terminal", `⌘⇧N` → "New context".
+
+## 2026-05-01 — [FIX] Reload Configuration keyboard shortcut not firing
+
+`Cmd+Shift+,` via egui's `consume_key` was unreliable — macOS can consume shift+comma before egui sees it. The "Reload Configuration" menu item also had an empty `keyEquivalent`, so macOS had no knowledge of the shortcut. Fixed by setting `keyEquivalent: ","` and `keyEquivalentModifierMask: NSEventModifierFlagCommand | NSEventModifierFlagShift` on the menu item in `macos_menu.rs`. The macOS menu now intercepts the key and fires the `RELOAD_CONFIG_FLAG` atomic → `reload_config()` path, which is the same path that clicking the menu item uses and is known to work.
+
+## 2026-05-01 — [CHANGED] Gut TextEditorApp — Cmd+, now opens system editor
+
+Deleted `src/text_editor_app.rs` entirely. `Action::OpenConfig` (Cmd+,) now calls `open_config_file()` — the same `open` invocation the macOS menu uses — instead of spawning the half-baked in-app text viewer. `Cmd+Shift+,` (`ReloadConfig`) was already correct and unchanged.
+
+## 2026-05-01 — [CHANGED] Command palette — context/pane model overhaul
+
+Rewrote the palette entry logic three times to converge on the right model. Key decisions:
+
+**Terminology settled:** Context = sidebar project item (`Context.name`). Window = spatial grid page within a context (`Window.name` — never user-set, always auto-generated). Pane = individual terminal/app split (`TerminalPane.name: Option<String>` — user-set via rename-pane overlay). The palette should surface contexts and named panes; windows are invisible to the user.
+
+**Window.name stripped from palette entirely.** Old auto-names ("Page X,Y", "Context N") were written before windows defaulted to `""`. Migration strips them on load via `is_auto_window_name()` in `app/mod.rs`. New windows get `name: String::new()` at creation.
+
+**Primary entry model:** Each context gets exactly one primary entry. If the active pane (context_active_window → focused_pane → TerminalPane.name) is named, that named pane IS the primary entry ("context › pane-name"). If unnamed, the context name is shown bare. Additional named panes (not the active one) appear as secondary entries below. This preserves the ⌘P → ↓ → Enter flow — the first entry for each context always represents wherever you last were.
+
+**Named pane jump now focuses the pane.** `jump_to_context` gained an optional `pane_id` param. When set, it finds the `TileId` for that pane in the window's tile tree and sets `window.focused_pane`.
+
+**`delete_window` cleanup:** Added `context_active_window` update when the deleted window was the stored last-visited for its context, preventing palette navigation to ghost window IDs.
+
+**Minimap page numbers:** Changed from 1-based to 0-based (`p + 1` → `p` in minimap.rs).
+
+**Breaks if:** Jumping to a named pane from the palette doesn't focus that pane (tile tree walk fails). Or: a context with a named active pane shows a bare context-name entry instead of the pane name (primary entry logic fell through to unnamed path).
+
+## 2026-05-01 — [CHANGED] Gut pulse beta feature — applied to full window border, not per-pane
+
+Removed `pulse` entirely: `BetaConfig.pulse` field, the `# pulse = false` line in the config template, the `features.rs` flag insertion, and the `draw_feature_effects` rendering block. The implementation painted a breathing glow rect over `ctx.screen_rect()` — the entire window border — with no per-pane awareness. Gutted rather than fixed; can be revisited properly when the renderer has a focused-pane rect to target. `ghost` and `crt` flags are unaffected.
+
+## 2026-05-01 — [GOTCHA] theme_preset silently ignored — TOML section ordering
+
+`theme_preset` is a top-level field in `PlexiConfig` but `CONFIG_TEMPLATE` placed it after the `[notifications]` section header. TOML parses all keys after a `[section]` header as belonging to that section, so `theme_preset` was deserialized as `notifications.theme_preset`. `NotificationsConfig` has no such field, serde silently drops it, and `PlexiConfig.theme_preset` is always `None` — no preset ever applied.
+
+Fix: moved `theme_preset` above `[notifications]` in `CONFIG_TEMPLATE`. Also updated `~/.plexi-alpha/config.toml` (the existing user config had the same ordering).
+
+**What NOT to do:** Any top-level TOML key added to `PlexiConfig` must appear in the template *before* the first `[section]` header, or it will silently be swallowed by that section. Never place bare keys between two section headers in the template.
+
 ## 2026-04-30 — [FIX] Async input handlers stall event loop; import crash from list builtin shadow (PR #466 → alpha)
 
 **Issue #393 — blocking in event handlers freezes frame loop.** `_dispatcher` used `await _dispatch_hook(hook, ...)` for all events including input hooks. A slow `on_key` suspended the dispatcher — no further events processed, app froze. Fix: `_dispatch_hook_task` schedules async hooks via `asyncio.create_task()`. `on_render`, `on_init`, `on_shutdown` still awaited for ordering. Task refs stored in `_background_tasks` set to prevent GC; `_log_task_exception` callback surfaces unhandled errors.
