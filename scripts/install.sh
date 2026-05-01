@@ -37,7 +37,7 @@ if [[ -n "$suffix" ]]; then
   sed -i '' "s/identifier = \"com.ianjamesburke.plexi\"/identifier = \"${bundle_id}\"/" Cargo.toml
 fi
 
-cargo bundle --release
+RUSTFLAGS="-D warnings" cargo bundle --release
 
 if [[ ! -d "$app_src" ]]; then
   echo "Error: bundle not found at $app_src"
