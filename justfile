@@ -1,6 +1,8 @@
 PYTHON_VERSION := "3.12.13"
 PYTHON_PBS_DATE := "20260414"
 
+export RUSTFLAGS := "-D warnings"
+
 # Download the python-build-standalone runtime into assets/python/ for bundling.
 # Skips if the correct version is already present. macOS only.
 fetch-python-runtime:
@@ -94,7 +96,7 @@ bump:
     #!/usr/bin/env bash
     set -e
     echo "Verifying release build compiles..."
-    RUSTFLAGS="-D warnings" cargo build --release
+    cargo build --release
     current=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     echo "Current version: $current"
     echo "1) prerelease (increment beta number)"
