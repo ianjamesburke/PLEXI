@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-30 — [FIX] TextInput: auto-focus only first node + Shift+Enter multiline (#404 → alpha)
+
+Two bugs in `render_text_inputs` in `src/process_app/mod.rs`.
+
+**Bug 1 — auto-focus last node wins instead of first:** `request_focus()` was called on every newly-visible TextInput in a frame. egui's `request_focus` is last-write-wins within a frame, so when multiple inputs appear together (e.g. a form), only the last one received focus. Fixed by tracking a `focus_granted` bool per call and only requesting focus on the first newly-visible input.
+
+**Bug 2 — Shift+Enter did nothing in multiline mode:** egui's multiline `TextEdit` only inserts `\n` for plain Enter — it does not handle Shift+Enter at all. The existing code intercepted plain Enter to submit (stripping the egui-inserted `\n`), but the Shift+Enter case fell through to egui with no result. Fixed by explicitly detecting `Shift+Enter` while focused and pushing `\n` into the buffer manually.
+
+**Breaks if:** (1) A form with multiple TextInput nodes — the second and later inputs never auto-focus on first appearance. (2) A multiline TextInput — pressing Shift+Enter does nothing instead of inserting a newline.
+
 ## 2026-04-30 — [FIX] Cmd+Q freezes when any full-screen TUI is running in a terminal pane (PR #454 → alpha)
 
 Two bugs in `deps/egui_term/src/backend/mod.rs` combined to freeze the app on Cmd+Q whenever a full-screen TUI (Claude Code, `btop`, `files`) was running. The 25% CPU ghost + indefinite freeze were separate symptoms from separate root causes.
