@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-30 — [FIX] Async input handlers stall event loop; import crash from list builtin shadow (PR #466 → alpha)
+
+**Issue #393 — blocking in event handlers freezes frame loop.** `_dispatcher` used `await _dispatch_hook(hook, ...)` for all events including input hooks. A slow `on_key` suspended the dispatcher — no further events processed, app froze. Fix: `_dispatch_hook_task` schedules async hooks via `asyncio.create_task()`. `on_render`, `on_init`, `on_shutdown` still awaited for ordering. Task refs stored in `_background_tasks` set to prevent GC; `_log_task_exception` callback surfaces unhandled errors.
+
+**Pre-existing import crash from PR #460.** `RenderContext.list` shadowed the builtin `list` in the class body, causing `list | None` annotations on later methods to fail at class definition time on Python 3.12. Fixed by quoting the three affected annotations.
+
+**Breaks if:** An async `on_key` that awaits slow I/O freezes the frame loop. Or: `import plexi_sdk` crashes on Python 3.12.
+
 ## 2026-04-30 — [FIX] TextInput: auto-focus only first node + Shift+Enter multiline (#404 → alpha)
 
 Two bugs in `render_text_inputs` in `src/process_app/mod.rs`.
