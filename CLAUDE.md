@@ -133,7 +133,7 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 
 ## Build & Install
 
-`just install` reads `.channel` from CWD and dispatches to the correct recipe automatically (`install-alpha`, `install-beta`, or `install-stable`). Run it from any worktree — it always installs the right channel for that directory. The per-channel commands (`just install-alpha`, `just install-beta`) still exist but `just install` is the canonical way.
+`just install` reads `.channel` from CWD and installs the correct channel automatically. Run it from any worktree — it always installs the right channel for that directory.
 
 **After every completed code change, run `just install` from the active worktree** before reporting the task complete. The recipe builds from CWD, so run it from the worktree you're in (e.g. `worktrees/alpha/`).
 

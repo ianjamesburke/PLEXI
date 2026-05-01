@@ -57,28 +57,84 @@ build:
 run:
     cargo run --release
 
-# Smart install — reads .channel to dispatch to the right recipe.
+# Reads .channel from CWD and installs the appropriate build.
 # Run from any worktree: just install
-install:
+install: fetch-python-runtime
     #!/usr/bin/env bash
     set -euo pipefail
-    channel=$(cat .channel 2>/dev/null || echo "stable")
-    echo "Installing channel: $channel"
-    just install-$channel
 
-install-stable:
-    #!/usr/bin/env bash
-    set -euo pipefail
+    if [[ "$(uname)" != "Darwin" ]]; then
+      echo "install is macOS-only."
+      exit 1
+    fi
+
+    channel=$(cat .channel 2>/dev/null || echo "stable")
+
+    # Derive all channel-specific values from the channel name.
+    if [[ "$channel" == "stable" ]]; then
+      cap=""
+      suffix=""
+    else
+      cap=" $(echo "$channel" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+      suffix="-$channel"
+    fi
+
+    display="Plexi${cap}"
+    bundle_id="com.ianjamesburke.plexi${suffix}"
+    app_src="target/release/bundle/osx/${display}.app"
+    app_dest="/Applications/${display}.app"
+    bin_dest="/usr/local/bin/plexi${suffix}"
+    profile_dir="$HOME/.plexi${suffix}"
+
+    # HACK: cargo-bundle reads bundle metadata from Cargo.toml directly with no
+    # env-var or CLI override. Patch the two bundle fields, build, then restore.
+    # Package `name` is left as "plexi" so Cargo.lock stays identical across branches.
+    if [[ -n "$suffix" ]]; then
+      backup_dir="$(mktemp -d)"
+      cp Cargo.toml "$backup_dir/Cargo.toml"
+      cleanup() { cp "$backup_dir/Cargo.toml" Cargo.toml; rm -rf "$backup_dir"; }
+      trap cleanup EXIT
+      sed -i '' "s/name = \"Plexi\"/name = \"${display}\"/" Cargo.toml
+      sed -i '' "s/identifier = \"com.ianjamesburke.plexi\"/identifier = \"${bundle_id}\"/" Cargo.toml
+    fi
+
     cargo bundle --release
-    cp target/release/bundle/osx/Plexi.app/Contents/MacOS/plexi /usr/local/bin/plexi
-    rm -rf /Applications/Plexi.app
-    cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
-    mkdir -p "$HOME/.plexi"
-    CONFIG="$HOME/.plexi/config.toml"
+
+    if [[ ! -d "$app_src" ]]; then
+      echo "Error: bundle not found at $app_src"
+      exit 1
+    fi
+
+    rm -rf "$app_dest"
+    cp -R "$app_src" "$app_dest"
+
+    channel_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
+    cp "$channel_bin" "$bin_dest"
+
+    mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
+    rm -rf "$profile_dir/sdk/plexi_sdk.py" "$profile_dir/sdk/plexi_sdk"
+    cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk"
+    find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+    rsync -a --delete examples/ "$profile_dir/apps/"
+    find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
+    find "$profile_dir/apps" -name '*.py' -exec chmod +x {} \;
+
+    lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+    if [[ -x "$lsregister_bin" ]]; then
+      "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
+    fi
+    /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
+
+    CONFIG="$profile_dir/config.toml"
     if [ ! -f "$CONFIG" ]; then
       echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
       echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
     fi
+
+    echo "Installed $app_dest"
+    echo "CLI binary: $bin_dest"
+    echo "Config dir: $profile_dir/"
+    echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from examples/"
 
 # ── Versions — full lifecycle for parallel .app installs + worktrees ─────────
 #
@@ -295,139 +351,6 @@ ptail profile:
 popen profile:
     open ~/.plexi-{{profile}}/
 
-# Deprecated: use install-alpha or install-beta or install-v3 instead
-install-apps:
-    #!/usr/bin/env bash
-    echo "install-apps is deprecated. Use 'just install-alpha' or 'just install-beta'."
-    exit 1
-
-install-alpha: fetch-python-runtime
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    if [[ "$(uname)" != "Darwin" ]]; then
-      echo "install-alpha is macOS-only."
-      exit 1
-    fi
-
-    # HACK: cargo-bundle reads bundle metadata from Cargo.toml directly and
-    # has no env-var or CLI override support. Patch the two bundle fields,
-    # build, then restore. Package `name` is intentionally left as "plexi"
-    # so Cargo.lock stays identical across all channel branches.
-    backup_dir="$(mktemp -d)"
-    cp Cargo.toml "$backup_dir/Cargo.toml"
-    cleanup() { cp "$backup_dir/Cargo.toml" Cargo.toml; rm -rf "$backup_dir"; }
-    trap cleanup EXIT
-    sed -i '' 's/name = "Plexi"/name = "Plexi Alpha"/' Cargo.toml
-    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-alpha"/' Cargo.toml
-
-    cargo bundle --release
-
-    app_src="target/release/bundle/osx/Plexi Alpha.app"
-    app_dest="/Applications/Plexi Alpha.app"
-    if [[ ! -d "$app_src" ]]; then
-      echo "Error: bundle not found at $app_src"
-      exit 1
-    fi
-
-    rm -rf "$app_dest"
-    cp -R "$app_src" "$app_dest"
-
-    alpha_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
-    cp "$alpha_bin" /usr/local/bin/plexi-alpha
-
-    mkdir -p ~/.plexi-alpha/sdk ~/.plexi-alpha/apps
-    # Install the SDK as a proper package directory so Python can resolve
-    # submodules like `plexi_sdk.ui` (SDK v2). The older flat-file layout
-    # (~/.plexi-alpha/sdk/plexi_sdk.py) is removed if present.
-    rm -rf ~/.plexi-alpha/sdk/plexi_sdk.py ~/.plexi-alpha/sdk/plexi_sdk
-    cp -R sdk/python/plexi_sdk ~/.plexi-alpha/sdk/plexi_sdk
-    find ~/.plexi-alpha/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    rsync -a --delete examples/ ~/.plexi-alpha/apps/
-    find ~/.plexi-alpha/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
-    find ~/.plexi-alpha/apps -name '*.py' -exec chmod +x {} \;
-
-    # Refresh macOS LaunchServices so the Apple menu / app menu bar picks up
-    # the current CFBundleName instead of a cached value.
-    lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
-    if [[ -x "$lsregister_bin" ]]; then
-      "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
-    fi
-    /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
-
-    # Create a default config.toml if none exists. Never overwrites an existing one.
-    CONFIG="$HOME/.plexi-alpha/config.toml"
-    if [ ! -f "$CONFIG" ]; then
-      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
-      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
-    fi
-
-    echo "Installed $app_dest"
-    echo "CLI binary: /usr/local/bin/plexi-alpha"
-    echo "Config dir: ~/.plexi-alpha/"
-    echo "Apps: $(ls ~/.plexi-alpha/apps | wc -l | tr -d ' ') synced from examples/"
-
-install-beta: fetch-python-runtime
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    if [[ "$(uname)" != "Darwin" ]]; then
-      echo "install-beta is macOS-only."
-      exit 1
-    fi
-
-    # HACK: same as install-alpha — patch bundle metadata only, restore after build.
-    backup_dir="$(mktemp -d)"
-    cp Cargo.toml "$backup_dir/Cargo.toml"
-    cleanup() { cp "$backup_dir/Cargo.toml" Cargo.toml; rm -rf "$backup_dir"; }
-    trap cleanup EXIT
-    sed -i '' 's/name = "Plexi"/name = "Plexi Beta"/' Cargo.toml
-    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-beta"/' Cargo.toml
-
-    cargo bundle --release
-
-    app_src="target/release/bundle/osx/Plexi Beta.app"
-    app_dest="/Applications/Plexi Beta.app"
-    if [[ ! -d "$app_src" ]]; then
-      echo "Error: bundle not found at $app_src"
-      exit 1
-    fi
-
-    rm -rf "$app_dest"
-    cp -R "$app_src" "$app_dest"
-
-    beta_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
-    cp "$beta_bin" /usr/local/bin/plexi-beta
-
-    mkdir -p ~/.plexi-beta/sdk ~/.plexi-beta/apps
-    rm -rf ~/.plexi-beta/sdk/plexi_sdk.py ~/.plexi-beta/sdk/plexi_sdk
-    cp -R sdk/python/plexi_sdk ~/.plexi-beta/sdk/plexi_sdk
-    find ~/.plexi-beta/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    rsync -a --delete examples/ ~/.plexi-beta/apps/
-    find ~/.plexi-beta/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
-    find ~/.plexi-beta/apps -name '*.py' -exec chmod +x {} \;
-
-    # Refresh macOS LaunchServices so the Apple menu / app menu bar picks up
-    # the new CFBundleName ("Plexi Beta") instead of caching the old one.
-    # Without this, the menu bar still shows "Plexi" even though the bundle
-    # itself is correctly named.
-    lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
-    if [[ -x "$lsregister_bin" ]]; then
-      "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
-    fi
-    /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
-
-    # Create a default config.toml if none exists. Never overwrites an existing one.
-    CONFIG="$HOME/.plexi-beta/config.toml"
-    if [ ! -f "$CONFIG" ]; then
-      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
-      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
-    fi
-
-    echo "Installed $app_dest"
-    echo "CLI binary: /usr/local/bin/plexi-beta"
-    echo "Config dir: ~/.plexi-beta/"
-    echo "Apps: $(ls ~/.plexi-beta/apps | wc -l | tr -d ' ') synced from examples/"
 
 # Wipe a channel's installed apps directory. The install-* recipes use
 # `cp -R` (sync, not mirror), so apps deleted from `examples/` persist in
