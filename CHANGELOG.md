@@ -2,6 +2,19 @@
 
 Newest releases appear first.
 
+## [3.4.1] — 2026-05-01
+
+### Changes
+- **Command palette overhaul** — context/pane model rewrite; named pane entries with direct focus jump; strip stale auto window names on load
+- **Remove pulse beta feature** — `pulse` config flag and breathing border effect removed
+- **Fix `Cmd+Shift+,` reload shortcut** — wired through macOS menu NSEventModifierMask; was unreliable via egui key handling
+- **Fix `theme_preset` TOML ordering** — was silently ignored when placed after a section header in config template
+- **Remove built-in text editor** — `TextEditorApp` deleted; `Cmd+,` now opens config in system editor
+- **Compile gate on `just bump`** — `cargo build --release` runs before tagging so broken builds can't reach a release
+- **Square key chips** — shortcut chips resize to square for single-char keys
+- **Shortcuts overlay** — two-column layout, HJKL navigation blocks, wider overlay
+- **Minimap** — page numbers switched to 0-based
+
 ## [3.4.0] — 2026-05-01
 
 ### Features
