@@ -396,6 +396,38 @@ All handlers except on_suspend, on_resume, and on_shutdown receive a
 RenderContext as their first argument. on_render is the only handler that
 auto-emits FrameDone; all others must NOT emit FrameDone.
 
+ASYNC HANDLERS AND BLOCKING I/O (#393)
+
+Input-driven hooks (on_key, on_click, on_command, on_paste, on_pipe_message,
+on_path_changed, on_inject, on_timer) are dispatched as asyncio tasks — the
+event loop does NOT wait for them to finish before processing the next event.
+This means a slow handler never stalls the stdin reader or delays a Render.
+
+Rules:
+
+  1. Declare handlers ``async def`` whenever they need to do any I/O or call
+     ``await``-able Emitter helpers:
+
+         async def on_key(self, ctx, key, mods):
+             result = await self.emit.http_get(url)   # non-blocking — fine
+
+  2. Never call blocking operations directly from a handler. These freeze the
+     event loop thread and starve all other tasks:
+
+         def on_key(self, ctx, key, mods):
+             time.sleep(1)          # BAD — blocks event loop thread
+             requests.get(url)      # BAD — blocks event loop thread
+
+     Instead, use ``asyncio.to_thread`` from an async handler, or kick off a
+     ``threading.Thread`` and bridge back with ``emit.run_sync()``.
+
+  3. ``on_render`` is awaited directly — all draw commands must complete before
+     FrameDone is sent. Keep on_render free of I/O; use on_render to read state
+     that background tasks have already fetched and stored.
+
+  4. ``on_init`` and ``on_shutdown`` are also awaited (startup / teardown
+     ordering). Blocking I/O in on_init should use ``await`` Emitter helpers.
+
 Call MyApp().run() to start the PGAP event loop. This blocks until Shutdown.
 """
 
@@ -1699,10 +1731,10 @@ class RenderContext:
     def debug(self, message: str) -> None: self.log("debug", message)
 
     def notify(self, title: str, body: str = "", level: str = "info",
-               priority: int | None = None,
-               actions: list | None = None,
-               image_inline: dict | None = None,
-               image_pipe_id: str | None = None) -> None:
+               priority: "int | None" = None,
+               actions: "list | None" = None,
+               image_inline: "dict | None" = None,
+               image_pipe_id: "str | None" = None) -> None:
         """Post a message notification. See Emitter.notify.
         `priority` is required (int, higher = more urgent).
         `image_inline` / `image_pipe_id` (#74) optionally attach an image.
@@ -1729,8 +1761,8 @@ class RenderContext:
 
     async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
                                 mime: str, level: str = "info",
-                                priority: int | None = None,
-                                choices: list | None = None) -> "str | None":
+                                priority: "int | None" = None,
+                                choices: "list | None" = None) -> "str | None":
         """Convenience: post a notification with an inline base64 image.
         See Emitter.notify_with_image — handles base64 + 50KB cap. Use with ``await``."""
         return await self.emit.notify_with_image(title=title, body=body,
@@ -1749,8 +1781,8 @@ class RenderContext:
                                             priority=priority)
 
     async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                              actions: list | None = None,
-                              priority: int | None = None) -> str:
+                              actions: "list | None" = None,
+                              priority: "int | None" = None) -> str:
         """Post a message notification and await for acknowledge/cancel.
         `priority` is required (int, higher = more urgent).
         See Emitter.notify_and_wait. Use with ``await``."""
@@ -1799,17 +1831,27 @@ class App:
     Base class for Plexi v3 apps. Subclass and override event handlers.
 
     Override any of:
-        on_init(self, ctx)                            — after Init handshake
-        on_render(self, ctx)                          — on each Render event
-        on_key(self, ctx, key, mods)                  — on Key event
-        on_click(self, ctx, x, y, button)             — on Click event
-        on_command(self, ctx, text)                   — on Command event
-        on_paste(self, ctx, text)                     — on Paste event (Cmd+V)
-        on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (JSON mode)
-        on_path_changed(self, ctx, cwd)               — on PathChanged broadcast
-        on_suspend(self)                              — on Suspend
-        on_resume(self)                               — on Resume
-        on_shutdown(self)                             — on Shutdown (before exit)
+        on_init(self, ctx)                            — after Init handshake (awaited)
+        on_render(self, ctx)                          — on each Render event (awaited)
+        on_key(self, ctx, key, mods)                  — on Key event (task)
+        on_click(self, ctx, x, y, button)             — on Click event (task)
+        on_command(self, ctx, text)                   — on Command event (task)
+        on_paste(self, ctx, text)                     — on Paste event (task)
+        on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (task)
+        on_path_changed(self, ctx, cwd)               — on PathChanged (task)
+        on_suspend(self)                              — on Suspend (awaited)
+        on_resume(self)                               — on Resume (awaited)
+        on_shutdown(self)                             — on Shutdown (awaited)
+
+    Handlers marked (task) are dispatched as asyncio tasks — the event loop
+    does not wait for them to complete before processing the next event. Declare
+    them ``async def`` whenever they do any I/O. Never call blocking operations
+    (time.sleep, requests.get, etc.) directly from these handlers; use
+    ``await asyncio.to_thread(fn)`` or ``threading.Thread`` + ``emit.run_sync()``.
+
+    Handlers marked (awaited) block the event loop until they return. Use
+    ``await``-able Emitter helpers freely; they do not deadlock because the
+    stdin reader runs as a concurrent task.
     """
 
     def __init__(self) -> None:
@@ -2181,28 +2223,28 @@ class App:
 
                 elif t == "key":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_key, ctx, ev.get("key", ""), ev.get("modifiers", {}))
+                    self._dispatch_hook_task(self.on_key, ctx, ev.get("key", ""), ev.get("modifiers", {}))
 
                 elif t == "click":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                              ev.get("button", "primary"))
+                    self._dispatch_hook_task(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                             ev.get("button", "primary"))
 
                 elif t == "command":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_command, ctx, ev.get("text", ""))
+                    self._dispatch_hook_task(self.on_command, ctx, ev.get("text", ""))
 
                 elif t == "paste":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_paste, ctx, ev.get("text", ""))
+                    self._dispatch_hook_task(self.on_paste, ctx, ev.get("text", ""))
 
                 elif t == "pipe_message":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
+                    self._dispatch_hook_task(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
 
                 elif t == "path_changed":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_path_changed, ctx, ev.get("cwd", ""))
+                    self._dispatch_hook_task(self.on_path_changed, ctx, ev.get("cwd", ""))
 
                 elif t == "suspend":
                     await self._dispatch_hook(self.on_suspend)
@@ -2230,59 +2272,47 @@ class App:
 
                 elif t == "inject_state":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_inject, ctx, ev.get("payload", {}))
+                    self._dispatch_hook_task(self.on_inject, ctx, ev.get("payload", {}))
 
                 elif t == "midi_input_opened":
                     # Confirms an OpenMidiInput call landed a CoreMIDI source.
                     # Apps that care about "the port is now wired to my pipe"
                     # see this event after the corresponding PipeOpened — they
                     # can override on_midi_input_opened to react.
-                    try:
-                        await self._dispatch_hook(
-                            self.on_midi_input_opened,
-                            str(ev.get("pipe_id", "")),
-                            str(ev.get("port_id", "")),
-                            str(ev.get("port_name", "")),
-                        )
-                    except Exception as e:
-                        sys.stderr.write(f"on_midi_input_opened handler raised: {e}\n")
+                    self._dispatch_hook_task(
+                        self.on_midi_input_opened,
+                        str(ev.get("pipe_id", "")),
+                        str(ev.get("port_id", "")),
+                        str(ev.get("port_name", "")),
+                    )
 
                 elif t == "agent_init":
                     # v3.3 agent-as-app (#338): the host forwards the manifest's
                     # `[launch].system_prompt` once at startup. Apps that subclass
                     # `Agent` consume this in `_on_agent_init`; plain App
                     # subclasses can override `on_agent_init` to receive it.
-                    try:
-                        await self._dispatch_hook(self.on_agent_init, ev.get("system_prompt"))
-                    except Exception as e:
-                        sys.stderr.write(f"on_agent_init handler raised: {e}\n")
+                    await self._dispatch_hook(self.on_agent_init, ev.get("system_prompt"))
 
                 elif t == "user_message":
                     # v3.3 agent-as-app (#338): the user submitted text in the
                     # host-rendered conversation input box. Forwarded to
                     # `on_user_message`. Only delivered to type=agent panes.
                     ctx = self._make_ctx()
-                    try:
-                        await self._dispatch_hook(self.on_user_message, ctx, ev.get("text", ""))
-                    except Exception as e:
-                        sys.stderr.write(f"on_user_message handler raised: {e}\n")
+                    self._dispatch_hook_task(self.on_user_message, ctx, ev.get("text", ""))
 
                 elif t == "timer":
                     timer_id = ev.get("timer_id", "")
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_timer, ctx, timer_id)
+                    self._dispatch_hook_task(self.on_timer, ctx, timer_id)
 
                 elif t == "app_spawned":
                     # Confirmation that a SpawnApp request succeeded. Apps that
                     # want to track the spawned pane can override on_app_spawned.
-                    try:
-                        await self._dispatch_hook(
-                            self.on_app_spawned,
-                            int(ev.get("pane_id", 0)),
-                            str(ev.get("type_id", "")),
-                        )
-                    except Exception as e:
-                        sys.stderr.write(f"on_app_spawned handler raised: {e}\n")
+                    self._dispatch_hook_task(
+                        self.on_app_spawned,
+                        int(ev.get("pane_id", 0)),
+                        str(ev.get("type_id", "")),
+                    )
 
         reader_task = asyncio.create_task(_reader())
         try:
@@ -2300,18 +2330,56 @@ class App:
             _os._exit(0)
 
     async def _dispatch_hook(self, hook: "Any", *args: Any) -> None:
-        """Dispatch a lifecycle hook — async or sync — in the event loop.
+        """Dispatch a lifecycle hook and await its completion.
 
-        Async hooks are awaited directly, giving them access to blocking
-        helpers via ``await self.emit.method()``.
+        Use this for hooks where ordering matters — on_render (FrameDone must
+        follow all draw commands), on_init (startup must complete before the
+        first render), on_shutdown (clean-up must finish before exit).
 
-        Sync hooks are called directly on the event loop thread. They are
-        safe for pure-compute / draw-command hooks (the common case). If a
-        sync hook needs to call a blocking Emitter helper, it must do so
-        from a background thread via ``threading.Thread`` + ``emit.run_sync()``.
+        Async hooks are awaited directly; they may call any ``await``-able
+        Emitter helper without deadlock because _reader runs concurrently as
+        a separate task and will deliver response events while this hook is
+        suspended.
+
+        Sync hooks run on the event loop thread. They are safe for
+        pure-compute / draw-command work (on_render). A sync hook that calls
+        any blocking operation (time.sleep, requests.get, etc.) will freeze
+        the entire event loop — use _dispatch_hook_task for input events where
+        blocking is a realistic concern, or move blocking work to a thread via
+        ``threading.Thread`` + ``emit.run_sync()``.
         """
         if inspect.iscoroutinefunction(hook):
             await hook(*args)
+        else:
+            hook(*args)
+
+    def _dispatch_hook_task(self, hook: "Any", *args: Any) -> None:
+        """Dispatch a lifecycle hook as a non-blocking background task.
+
+        Use this for input-driven hooks (on_key, on_click, on_command, etc.)
+        where a slow or async handler must not stall the stdin reader or delay
+        the next Render event.
+
+        Async hooks are scheduled as asyncio tasks via create_task — the
+        dispatcher returns immediately and the hook runs concurrently on the
+        same event loop. All ``await``-able Emitter helpers work normally.
+
+        Sync hooks that do not block are called directly on the event loop
+        thread (zero overhead, same as before). Sync hooks that *do* block
+        (time.sleep, requests.get, urllib calls, etc.) are the root cause of
+        the deadlock described in issue #393. The correct fix is to declare
+        the handler ``async def`` and use ``await asyncio.to_thread(fn)`` or
+        ``await self.emit.http_get(url)`` for any I/O, or to kick off a
+        ``threading.Thread`` and use ``emit.run_sync(...)`` to bridge back.
+        Sync blocking is logged as a warning so the problem is surfaced at
+        runtime rather than silently freezing the app.
+
+        Note: because tasks run concurrently, a queued on_key task may still
+        be running when on_render fires. Apps with shared mutable state should
+        use asyncio locks or confine mutations to on_render (the poll pattern).
+        """
+        if inspect.iscoroutinefunction(hook):
+            asyncio.create_task(hook(*args))
         else:
             hook(*args)
 
