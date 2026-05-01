@@ -104,8 +104,13 @@ pub fn customize_app_menu() {
             mtm.alloc(),
             &reload_title,
             Some(sel!(reloadConfig:)),
-            &NSString::from_str(""),
+            &NSString::from_str(","),
         )
+    };
+    // NSEventModifierFlagCommand (1<<20) | NSEventModifierFlagShift (1<<17)
+    unsafe {
+        let mask: usize = (1 << 20) | (1 << 17);
+        let _: () = objc2::msg_send![&*reload_item, setKeyEquivalentModifierMask: mask];
     };
     unsafe { reload_item.setTarget(Some(&*handler)) };
     app_menu.addItem(&reload_item);

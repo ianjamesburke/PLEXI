@@ -80,8 +80,6 @@ pub(crate) fn selectable_row<R>(
 /// Padding around the key label text inside the chip.
 const KEYCAP_PAD_H: f32 = 6.0;
 const KEYCAP_PAD_V: f32 = 3.0;
-/// Minimum chip width — keeps single-char keys like `[` from looking cramped.
-const KEYCAP_MIN_W: f32 = 18.0;
 
 /// Render a single keycap chip. Allocates its own exact-size rect and
 /// returns the egui Response so callers can compose with other widgets.
@@ -91,8 +89,8 @@ pub(crate) fn key_chip(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui:
         .fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_primary));
     let text_w = galley.size().x;
     let text_h = galley.size().y;
-    let chip_w = (text_w + KEYCAP_PAD_H * 2.0).max(KEYCAP_MIN_W);
     let chip_h = text_h + KEYCAP_PAD_V * 2.0;
+    let chip_w = (text_w + KEYCAP_PAD_H * 2.0).max(chip_h);
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(chip_w, chip_h),
         egui::Sense::hover(),

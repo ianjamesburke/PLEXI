@@ -158,8 +158,8 @@ pub fn render_minimap(
             egui::StrokeKind::Inside,
         );
 
-        // Small page number inside each cell (1-based, left-bottom)
-        let page_num = visible.iter().position(|(i, _)| *i == idx).map(|p| p + 1).unwrap_or(0);
+        // Small page number inside each cell (0-based, left-bottom)
+        let page_num = visible.iter().position(|(i, _)| *i == idx).unwrap_or(0);
         ui.painter().text(
             egui::pos2(cell_rect.left() + 3.0, cell_rect.bottom() - 2.0),
             egui::Align2::LEFT_BOTTOM,
