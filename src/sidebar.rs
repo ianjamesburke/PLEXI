@@ -211,6 +211,11 @@ impl PlexiApp {
 
             if delete_context.is_none() {
                 row_response.context_menu(|ui| {
+                    if ui.button("Rename").clicked() {
+                        menu_action = Some((i, WindowMenuAction::Rename));
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if i > 0 {
                         if ui.button("Move to Top").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveToTop));
@@ -297,6 +302,10 @@ impl PlexiApp {
         // Handle collected actions after the loop
         if let Some((i, action)) = menu_action {
             match action {
+                WindowMenuAction::Rename => {
+                    self.renaming_window = Some(i);
+                    self.rename_buffer = self.contexts[i].name.clone();
+                }
                 WindowMenuAction::MoveToTop => {
                     let ctx = self.contexts.remove(i);
                     self.contexts.insert(0, ctx);

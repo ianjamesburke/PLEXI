@@ -1036,6 +1036,7 @@ impl eframe::App for PlexiApp {
                 }
                 Some(FocusLayer::RenamePane) => {
                     self.draw_rename_pane_overlay(ctx);
+                    self.draw_rename_context_overlay(ctx);
                 }
                 Some(FocusLayer::AgentWorkspaceModal) => {
                     self.draw_agent_workspace_modal(ctx);
@@ -1825,7 +1826,8 @@ impl eframe::App for PlexiApp {
                     .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
                     .collect();
                 let suppress_focus = self.show_command_palette
-                    || self.renaming_pane.is_some();
+                    || self.renaming_pane.is_some()
+                    || self.renaming_window.is_some();
 
                 #[cfg(target_os = "macos")]
                 let drag_cursor_pos: Option<egui::Pos2> = {

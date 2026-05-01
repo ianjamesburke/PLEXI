@@ -12,13 +12,11 @@ const R6: CornerRadius = CornerRadius::same(6);
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let active_ctx = &self.windows[self.active_window];
-
             // Workspace dots
             let sidebar_contexts: Vec<usize> = (0..self.contexts.len()).collect();
             if sidebar_contexts.len() > 1 {
-                let dot_radius = 3.5;
-                let dot_spacing = 10.0;
+                let dot_radius = 4.0;
+                let dot_spacing = 12.0;
                 let total_width = (sidebar_contexts.len() as f32) * dot_spacing;
                 let (rect, _) = ui.allocate_exact_size(
                     Vec2::new(total_width, ui.available_height()),
@@ -39,26 +37,6 @@ impl PlexiApp {
                 ui.add_space(4.0);
             }
 
-            // Title: "Workspace (x,y)" when multiple windows exist,
-            // otherwise just the workspace name.
-            let ws = &self.contexts[self.active_context];
-            let ws_id = ws.context_id;
-            let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
-            let title = if window_count > 1 {
-                format!(
-                    "{} ({},{})",
-                    ws.name, active_ctx.grid_x, active_ctx.grid_y
-                )
-            } else {
-                ws.name.clone()
-            };
-            ui.label(
-                RichText::new(title)
-                    .size(12.0)
-                    .color(self.colors.text_primary)
-                    .strong(),
-            );
-
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
@@ -66,7 +44,8 @@ impl PlexiApp {
                         egui::Button::new(
                             RichText::new("?").size(12.0).color(self.colors.text_dim),
                         )
-                        .frame(false),
+                        .frame(false)
+                        .min_size(egui::vec2(24.0, 0.0)),
                     )
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text("Keyboard shortcuts (\u{2318}/)")
@@ -105,20 +84,17 @@ impl PlexiApp {
     }
 
     pub(crate) fn draw_shortcuts_overlay(&self, ctx: &egui::Context) {
-        // Each row: (combo chips, description).
-        // Multi-key combos are expressed as slices; single-key as a one-element slice.
-        // Rows that cover two related combos (e.g. ]/[) are represented as a
-        // key_combo_list with two combos and a combined description.
         egui::Area::new(egui::Id::new("shortcuts_overlay"))
-            .anchor(Align2::RIGHT_TOP, Vec2::new(-16.0, 44.0))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
+                    .fill(self.colors.bg_sidebar.gamma_multiply(0.8))
                     .stroke(Stroke::new(1.0, self.colors.border))
                     .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .inner_margin(egui::Margin::symmetric(24, 20))
                     .show(ui, |ui| {
-                        ui.set_width(280.0);
+                        ui.set_width(620.0);
                         ui.label(
                             RichText::new("Keyboard Shortcuts")
                                 .size(13.0)
@@ -127,62 +103,108 @@ impl PlexiApp {
                         );
                         ui.add_space(8.0);
 
-                        // Two-column grid: fixed-width left column holds chips,
-                        // right column holds the description.
-                        egui::Grid::new("shortcuts_grid")
-                            .num_columns(2)
-                            .spacing([style::SPACE_SM, 4.0])
-                            .show(ui, |ui| {
-                                let colors = &self.colors;
+                        let colors = &self.colors;
 
-                                // Single-combo rows: (&[key parts], description)
-                                let rows: &[(&[&str], &str)] = &[
-                                    (&["\u{2318}", "P"], "Command palette"),
-                                    (&["\u{2318}", "\u{21E7}", "R"], "Rename pane"),
-                                    (&["\u{2318}", "T"], "New tab"),
-                                    (&["\u{2318}", "D"], "Split right"),
-                                    (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
-                                    (&["\u{2318}", "W"], "Close pane"),
-                                    (&["\u{2318}", "B"], "Toggle sidebar"),
-                                    (&["\u{2318}", "\u{21A9}"], "Zoom pane"),
-                                    (&["\u{2318}", "N"], "New context"),
-                                    (&["\u{2318}", ","], "Open config"),
-                                    (&["\u{2318}", "\u{21E7}", ","], "Reload config"),
-                                    (&["\u{2318}", "/"], "This help"),
-                                    (&["\u{2318}", "Q"], "Quit"),
-                                ];
-                                for (keys, desc) in rows {
-                                    crate::widgets::key_combo(ui, keys, colors);
+                        ui.columns(2, |cols| {
+                            // Left column — window / pane management
+                            egui::Grid::new("shortcuts_grid_left")
+                                .num_columns(2)
+                                .spacing([style::SPACE_SM, 4.0])
+                                .show(&mut cols[0], |ui| {
+                                    let rows: &[(&[&str], &str)] = &[
+                                        (&["\u{2318}", "P"], "Command palette"),
+                                        (&["\u{2318}", "T"], "New tab"),
+                                        (&["\u{2318}", "N"], "New terminal"),
+                                        (&["\u{2318}", "\u{21E7}", "N"], "New context"),
+                                        (&["\u{2318}", "D"], "Split right"),
+                                        (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
+                                        (&["\u{2318}", "W"], "Close pane"),
+                                        (&["\u{2318}", "B"], "Toggle sidebar"),
+                                        (&["\u{2318}", "\u{21A9}"], "Zoom pane"),
+                                        (&["\u{2318}", "\u{21E7}", "R"], "Rename pane"),
+                                        (&["\u{2318}", ","], "Open config"),
+                                        (&["\u{2318}", "\u{21E7}", ","], "Reload config"),
+                                        (&["\u{2318}", "/"], "This help"),
+                                        (&["\u{2318}", "Q"], "Quit"),
+                                    ];
+                                    for (keys, desc) in rows {
+                                        crate::widgets::key_combo(ui, keys, colors);
+                                        ui.label(
+                                            RichText::new(*desc)
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+
+                            // Right column — navigation
+                            egui::Grid::new("shortcuts_grid_right")
+                                .num_columns(2)
+                                .spacing([style::SPACE_SM, 4.0])
+                                .show(&mut cols[1], |ui| {
+                                    // ⌘ + HJKL block
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        crate::widgets::key_chip(ui, "\u{2318}", colors);
+                                        ui.add_space(4.0);
+                                        crate::widgets::key_chip(ui, "H", colors);
+                                        crate::widgets::key_chip(ui, "J", colors);
+                                        crate::widgets::key_chip(ui, "K", colors);
+                                        crate::widgets::key_chip(ui, "L", colors);
+                                    });
                                     ui.label(
-                                        RichText::new(*desc)
+                                        RichText::new("Move between panes")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );
                                     ui.end_row();
-                                }
 
-                                // Two-combo rows rendered with key_combo_list.
-                                let two_combo_rows: &[(&[&str], &[&str], &str)] = &[
-                                    (&["\u{2318}", "]"], &["\u{2318}", "["], "Next/prev tab"),
-                                    (&["\u{2318}", "H"], &["\u{2318}", "L"], "Focus pane ←/→"),
-                                    (&["\u{2318}", "J"], &["\u{2318}", "K"], "Focus pane ↓/↑"),
-                                    (&["\u{2318}", "1"], &["\u{2318}", "9"], "Switch context 1–9"),
-                                ];
-                                for (keys_a, keys_b, desc) in two_combo_rows {
+                                    // ⌘⇧ + HJKL block
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        crate::widgets::key_chip(ui, "\u{2318}", colors);
+                                        crate::widgets::key_chip(ui, "\u{21E7}", colors);
+                                        ui.add_space(4.0);
+                                        crate::widgets::key_chip(ui, "H", colors);
+                                        crate::widgets::key_chip(ui, "J", colors);
+                                        crate::widgets::key_chip(ui, "K", colors);
+                                        crate::widgets::key_chip(ui, "L", colors);
+                                    });
+                                    ui.label(
+                                        RichText::new("Move/create windows")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[keys_a, keys_b],
+                                        &[&["\u{2318}", "]"], &["\u{2318}", "["]],
                                         None,
                                         colors,
                                     );
                                     ui.label(
-                                        RichText::new(*desc)
+                                        RichText::new("Next/prev tab")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );
                                     ui.end_row();
-                                }
-                            });
+
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("Switch context 1–9")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+                                });
+                        });
                     });
             });
     }
@@ -262,6 +284,74 @@ impl PlexiApp {
                 }
             }
             self.renaming_pane = None;
+        }
+    }
+
+    pub(crate) fn draw_rename_context_overlay(&mut self, ctx: &egui::Context) {
+        let idx = match self.renaming_window {
+            Some(i) => i,
+            None => return,
+        };
+
+        let (commit, cancel) = ctx.input_mut(|i| {
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            (enter, esc)
+        });
+
+        egui::Area::new(egui::Id::new("rename_context_overlay"))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+                        ui.label(
+                            RichText::new("Rename Context")
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+
+                        let te_id = egui::Id::new("rename_context_input");
+                        let te = ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_buffer)
+                                .id(te_id)
+                                .desired_width(MODAL_WIDTH)
+                                .hint_text("Context name...")
+                                .font(egui::TextStyle::Body),
+                        );
+
+                        if !te.has_focus() {
+                            te.request_focus();
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                                state.cursor.set_char_range(Some(
+                                    egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(self.rename_buffer.len()),
+                                    ),
+                                ));
+                                state.store(ui.ctx(), te_id);
+                            }
+                        }
+                    });
+            });
+
+        if cancel {
+            self.renaming_window = None;
+        } else if commit {
+            let new_name = self.rename_buffer.trim().to_string();
+            if !new_name.is_empty() {
+                if let Some(ctx_entry) = self.contexts.get_mut(idx) {
+                    ctx_entry.name = new_name;
+                }
+            }
+            self.renaming_window = None;
         }
     }
 
