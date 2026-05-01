@@ -44,8 +44,10 @@ impl PlexiApp {
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
 
+        // Auto-open inline rename so the user can name the context immediately.
         let new_ctx_idx = self.contexts.len() - 1;
-        let _ = new_ctx_idx;
+        self.renaming_window = Some(new_ctx_idx);
+        self.rename_buffer = self.contexts[new_ctx_idx].name.clone();
     }
 
     /// Create a new page immediately to the right of the active page on the

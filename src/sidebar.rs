@@ -59,6 +59,7 @@ impl PlexiApp {
 
         for i in 0..num_contexts {
             let is_active = i == self.active_context;
+            let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
 
             let row_rect = {
@@ -116,6 +117,46 @@ impl PlexiApp {
                         }
 
                         ui.add_space(20.0);
+
+                        if is_renaming {
+                            let te_id = egui::Id::new(("rename_ctx", i));
+                            let te = ui.add(
+                                egui::TextEdit::singleline(&mut self.rename_buffer)
+                                    .id(te_id)
+                                    .desired_width(sidebar_width - 56.0)
+                                    .font(egui::TextStyle::Body),
+                            );
+                            if te.lost_focus() {
+                                if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                                    self.renaming_window = None;
+                                } else {
+                                    let new_name = self.rename_buffer.trim().to_string();
+                                    if !new_name.is_empty() {
+                                        self.contexts[i].name = new_name;
+                                    }
+                                    self.renaming_window = None;
+                                }
+                                ui.input_mut(|inp| {
+                                    inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                    inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                                });
+                            }
+                            if te.gained_focus() || !te.has_focus() {
+                                te.request_focus();
+                                if let Some(mut state) =
+                                    egui::TextEdit::load_state(ui.ctx(), te_id)
+                                {
+                                    state.cursor.set_char_range(Some(
+                                        egui::text::CCursorRange::two(
+                                            egui::text::CCursor::new(0),
+                                            egui::text::CCursor::new(self.rename_buffer.len()),
+                                        ),
+                                    ));
+                                    state.store(ui.ctx(), te_id);
+                                }
+                            }
+                            return row_resp;
+                        }
 
                         let text_color = if is_active {
                             self.colors.text_primary
@@ -193,11 +234,13 @@ impl PlexiApp {
                 )
                 .inner;
 
-            if row_response.drag_started() {
-                self.drag_context = Some(i);
-            }
-            if row_response.drag_stopped() {
-                drag_released = true;
+            if !is_renaming {
+                if row_response.drag_started() {
+                    self.drag_context = Some(i);
+                }
+                if row_response.drag_stopped() {
+                    drag_released = true;
+                }
             }
 
             if hover || is_dragging {
@@ -209,7 +252,7 @@ impl PlexiApp {
                 ui.ctx().set_cursor_icon(icon);
             }
 
-            if delete_context.is_none() {
+            if !is_renaming && delete_context.is_none() {
                 row_response.context_menu(|ui| {
                     if ui.button("Rename").clicked() {
                         menu_action = Some((i, WindowMenuAction::Rename));
@@ -247,7 +290,9 @@ impl PlexiApp {
                     }
                 });
 
-                if row_response.clicked() && self.drag_context.is_none() {
+                if row_response.double_clicked() && self.drag_context.is_none() {
+                    menu_action = Some((i, WindowMenuAction::Rename));
+                } else if row_response.clicked() && self.drag_context.is_none() {
                     clicked_workspace = Some(i);
                 }
             }

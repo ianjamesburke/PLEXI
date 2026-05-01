@@ -1036,7 +1036,6 @@ impl eframe::App for PlexiApp {
                 }
                 Some(FocusLayer::RenamePane) => {
                     self.draw_rename_pane_overlay(ctx);
-                    self.draw_rename_context_overlay(ctx);
                 }
                 Some(FocusLayer::AgentWorkspaceModal) => {
                     self.draw_agent_workspace_modal(ctx);
