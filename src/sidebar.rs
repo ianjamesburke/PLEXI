@@ -85,6 +85,7 @@ impl PlexiApp {
             let is_active = i == self.active_context;
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
+            let mut label_double_clicked = false;
 
             let row_rect = ui.cursor();
             let row_rect = Rect::from_min_size(row_rect.min, Vec2::new(sidebar_width, ROW_HEIGHT));
@@ -213,14 +214,20 @@ impl PlexiApp {
                                     .color(self.colors.text_dim),
                             );
                         }
-                        ui.add(
+                        let label_resp = ui.add(
                             egui::Label::new(
                                 RichText::new(&self.contexts[i].name)
                                     .size(12.0)
                                     .color(text_color),
                             )
-                            .sense(egui::Sense::hover()),
+                            .sense(egui::Sense::click()),
                         );
+                        if label_resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+                        }
+                        if label_resp.double_clicked() {
+                            label_double_clicked = true;
+                        }
 
                         // Per-context notification badge.
                         // Active context: count visible notifs (context-scoped for active + globals).
@@ -308,8 +315,8 @@ impl PlexiApp {
                         }
                     });
 
-                    // Double-click → rename; single click → switch context (not on drag release)
-                    if row_response.double_clicked() && self.drag_context.is_none() {
+                    // Double-click on the text label → rename; single click anywhere → switch context
+                    if label_double_clicked && self.drag_context.is_none() {
                         menu_action = Some((i, WindowMenuAction::Rename));
                     } else if row_response.clicked() && self.drag_context.is_none() {
                         clicked_workspace = Some(i);
