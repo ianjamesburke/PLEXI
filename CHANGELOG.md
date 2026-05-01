@@ -2,6 +2,44 @@
 
 Newest releases appear first.
 
+## [3.4.0] — 2026-05-01
+
+### Features
+- **Bundled Python 3.12** — self-contained runtime via python-build-standalone; no system Python dependency
+- **Navigation stack** — `PushNav` / `PopNav` / `NavBack` protocol for multi-screen app flows
+- **Async SDK** — Python SDK event loop is fully async; eliminates blocking-in-event-loop deadlocks
+- **Host-managed `ScrollRegion`** — primitive for smooth scrollable app content without manual offset tracking
+- **Mouse events in apps** — `PlexiEvent::Mouse*` now fires correctly inside app panes
+- **`TextInput` primitive** — host-owned single-line entry with auto-focus and Shift+Enter multiline
+- **Sidebar context rename** — double-click to rename; auto-rename on new context creation
+- **Parallax editor app** — GUI wrapper for the Parallax video editor pipeline
+- **Agent Workspace** — modal UI for spawning Claude Code agents with repo context
+- **App registry** — directory-scoped app + agent discovery
+- **Workspace-scoped secret routing** — secrets namespace to the active `.plexi/` workspace
+- **Workspace config merge** — per-project `.plexi/config.toml` merged with global config
+- **App package manager** — `install` / `uninstall` / `update` / `list` with bundled core pack
+- **App lifecycle pill** — observable running/stopped indicator per app
+- **OpenRouter AI backend** — configurable model tiers, real cost tracking
+- **CoreMIDI I/O** — typed pipe for MIDI in/out on macOS
+- **CoreAudio capture** — cpal-backed device enumeration and PCM capture
+- **AVFoundation video decoder** — native macOS video playback backing
+- **Hot reload** — live app reload on source change during development
+- **Agent roster + inter-agent pipes** — directed communication between running agents
+- **Cmd+N split-mirror + lateral focus** — `Shift+Cmd+H/J/K/L` pane navigation
+
+### Infrastructure
+- **Smart `just install`** — reads `.channel` file and dispatches to the right channel automatically
+- **Canonical source identity** — `Cargo.toml` + `src/main.rs` use generic names; channel applied at build time via `sed` + restore trap; eliminates merge conflicts between alpha/beta/main
+- **`.channel` + `merge=ours`** — per-branch identity file protected from merge overwrites
+
+### Fixes
+- Python SDK path corrected in `.app` bundle
+- Quit freeze resolved — subscription busy-loop + child reap moved off render thread
+- Empty context welcome screen on all windows
+- Sidebar drag-drop reordering with visual drop indicator
+- SDK clean shutdown + HiDPI hit-test alignment
+- Terminal scrollback clearing on alt-screen entry
+
 ## [3.0.0-beta.5] — 2026-04-25
 
 ### Host / Notifications
