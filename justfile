@@ -546,6 +546,8 @@ clear-apps channel="":
 bump:
     #!/usr/bin/env bash
     set -e
+    echo "Verifying release build compiles..."
+    cargo build --release
     current=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     echo "Current version: $current"
     echo "1) prerelease (increment beta number)"
