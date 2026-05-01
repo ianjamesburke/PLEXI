@@ -298,7 +298,7 @@ popen profile:
 # Deprecated: use install-alpha or install-beta or install-v3 instead
 install-apps:
     #!/usr/bin/env bash
-    echo "install-apps is deprecated. Use 'just install-alpha', 'just install-beta', or 'just install-v3'."
+    echo "install-apps is deprecated. Use 'just install-alpha' or 'just install-beta'."
     exit 1
 
 install-alpha: fetch-python-runtime
@@ -309,23 +309,6 @@ install-alpha: fetch-python-runtime
       echo "install-alpha is macOS-only."
       exit 1
     fi
-
-    backup_dir="$(mktemp -d)"
-    cp Cargo.toml "$backup_dir/Cargo.toml"
-    cp src/main.rs "$backup_dir/main.rs"
-
-    cleanup() {
-      cp "$backup_dir/Cargo.toml" Cargo.toml
-      cp "$backup_dir/main.rs" src/main.rs
-      rm -rf "$backup_dir"
-    }
-    trap cleanup EXIT
-
-    sed -i '' 's/^name = "plexi"/name = "plexi-alpha"/' Cargo.toml
-    sed -i '' 's/name = "Plexi"/name = "Plexi Alpha"/' Cargo.toml
-    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-alpha"/' Cargo.toml
-    sed -i '' 's/with_title("Plexi")/with_title("Plexi Alpha")/' src/main.rs
-    sed -i '' 's/"plexi",/"plexi-alpha",/' src/main.rs
 
     cargo bundle --release
 
@@ -372,70 +355,6 @@ install-alpha: fetch-python-runtime
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
     echo "Apps: $(ls ~/.plexi-alpha/apps | wc -l | tr -d ' ') synced from examples/"
-
-install-v3: fetch-python-runtime
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    if [[ "$(uname)" != "Darwin" ]]; then
-      echo "install-v3 is macOS-only."
-      exit 1
-    fi
-
-    backup_dir="$(mktemp -d)"
-    cp Cargo.toml "$backup_dir/Cargo.toml"
-    cp src/main.rs "$backup_dir/main.rs"
-
-    cleanup() {
-      cp "$backup_dir/Cargo.toml" Cargo.toml
-      cp "$backup_dir/main.rs" src/main.rs
-      rm -rf "$backup_dir"
-    }
-    trap cleanup EXIT
-
-    sed -i '' 's/^name = "plexi"/name = "plexi-v3"/' Cargo.toml
-    sed -i '' 's/name = "Plexi"/name = "Plexi v3"/' Cargo.toml
-    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-v3"/' Cargo.toml
-    sed -i '' 's/with_title("Plexi")/with_title("Plexi v3")/' src/main.rs
-    sed -i '' 's/"plexi",/"plexi-v3",/' src/main.rs
-
-    cargo bundle --release
-
-    app_src="target/release/bundle/osx/Plexi v3.app"
-    app_dest="/Applications/Plexi v3.app"
-    if [[ ! -d "$app_src" ]]; then
-      echo "Error: bundle not found at $app_src"
-      exit 1
-    fi
-
-    rm -rf "$app_dest"
-    cp -R "$app_src" "$app_dest"
-
-    v3_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
-    cp "$v3_bin" /usr/local/bin/plexi-v3
-
-    mkdir -p ~/.plexi-v3/apps ~/.plexi-v3/sdk
-    rm -rf ~/.plexi-v3/sdk/plexi_sdk.py ~/.plexi-v3/sdk/plexi_sdk
-    cp -R sdk/python/plexi_sdk ~/.plexi-v3/sdk/plexi_sdk
-    find ~/.plexi-v3/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    rsync -a --delete examples/ ~/.plexi-v3/apps/
-    # Remove any stale per-app SDK copies; apps import from ~/.plexi-v3/sdk/ via PYTHONPATH.
-    find ~/.plexi-v3/apps -maxdepth 2 -name 'plexi_sdk.py' -delete
-    find ~/.plexi-v3/apps -name '*.py' -exec chmod +x {} \;
-
-    # STEP-11: refresh macOS Services registration so right-click → Services
-    # shows Plexi v3 entries. CLAUDE.md used to claim these ran; now they
-    # actually do.
-    lsregister_bin="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
-    if [[ -x "$lsregister_bin" ]]; then
-      "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
-    fi
-    /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
-
-    echo "Installed $app_dest"
-    echo "CLI binary: /usr/local/bin/plexi-v3"
-    echo "Config dir: ~/.plexi-v3/"
-    echo "Apps: $(ls ~/.plexi-v3/apps | wc -l | tr -d ' ') installed"
 
 install-beta: fetch-python-runtime
     #!/usr/bin/env bash
