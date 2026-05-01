@@ -21,14 +21,14 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let name = format!("Context {}", self.contexts.len() + 1);
+        let ctx_name = format!("Context {}", self.contexts.len() + 1);
         self.contexts.push(crate::context::Context {
-            name: name.clone(),
+            name: ctx_name,
             path: home.clone(),
             context_id: ctx_id,
         });
         self.windows.push(Window {
-            name,
+            name: String::new(),
             path: home,
             tree,
             panes,
@@ -44,10 +44,8 @@ impl PlexiApp {
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
 
-        // Auto-open inline rename so the user can name the context immediately.
         let new_ctx_idx = self.contexts.len() - 1;
-        self.renaming_window = Some(new_ctx_idx);
-        self.rename_buffer = self.contexts[new_ctx_idx].name.clone();
+        let _ = new_ctx_idx;
     }
 
     /// Create a new page immediately to the right of the active page on the
@@ -75,7 +73,7 @@ impl PlexiApp {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
         };
-        let name = format!("Page {},{}", grid_x, grid_y);
+        let name = String::new();
         let ctx_id = self.contexts[self.active_context].context_id;
         let win_id = self.next_window_id;
         self.next_window_id += 1;
@@ -157,11 +155,23 @@ impl PlexiApp {
             return;
         }
         let removed_ws_id = self.windows[index].context_id;
+        let removed_win_id = self.windows[index].window_id;
         let was_active = self.active_window == index;
         let removed_x = self.windows[index].grid_x;
         let removed_y = self.windows[index].grid_y;
 
         self.windows.remove(index);
+
+        // If the deleted window was the stored last-visited for its context,
+        // point to another window in the same context so the palette doesn't
+        // navigate to a ghost window_id.
+        if self.context_active_window.get(&removed_ws_id) == Some(&removed_win_id) {
+            if let Some(replacement) = self.windows.iter().find(|w| w.context_id == removed_ws_id) {
+                self.context_active_window.insert(removed_ws_id, replacement.window_id);
+            } else {
+                self.context_active_window.remove(&removed_ws_id);
+            }
+        }
 
         // If workspace now has no windows, remove it too.
         let ws_has_windows = self.windows.iter().any(|c| c.context_id == removed_ws_id);

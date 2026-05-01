@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub(crate) enum WindowMenuAction {
-    Rename,
     MoveToTop,
     MoveUp,
     MoveDown,

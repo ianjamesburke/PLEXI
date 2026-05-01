@@ -3,6 +3,30 @@ mod dispatch;
 pub(crate) mod notification_image;
 mod sync;
 
+/// Returns true for old auto-generated window names ("Page 3,1", "Context 2")
+/// written before windows defaulted to an empty name. Stripped on load so they
+/// don't appear as user-given names in the command palette.
+fn is_auto_window_name(name: &str) -> bool {
+    if let Some(rest) = name.strip_prefix("Page ") {
+        let mut parts = rest.splitn(2, ',');
+        let x = parts.next().unwrap_or("");
+        let y = parts.next().unwrap_or("");
+        if !x.is_empty()
+            && x.chars().all(|c| c.is_ascii_digit())
+            && !y.is_empty()
+            && y.chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+    if let Some(rest) = name.strip_prefix("Context ") {
+        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Which layer currently owns keyboard input.
 ///
 /// The top of `PlexiApp.focus_stack` is the active layer. When a non-`Pane`
@@ -444,7 +468,13 @@ impl PlexiApp {
                     continue;
                 }
                 windows.push(Window {
-                    name: saved_win.name,
+                    // Strip old auto-generated "Page X,Y" names — treat them as
+                    // unnamed so they don't pollute the command palette.
+                    name: if is_auto_window_name(&saved_win.name) {
+                        String::new()
+                    } else {
+                        saved_win.name
+                    },
                     path: saved_win.path,
                     tree: saved_win.tree,
                     panes,
@@ -1619,7 +1649,7 @@ impl eframe::App for PlexiApp {
                     self.open_quick_note();
                 }
                 Action::OpenConfig => {
-                    self.open_config_editor();
+                    crate::config::open_config_file();
                 }
                 Action::ReloadConfig => {
                     self.reload_config();
@@ -1794,8 +1824,7 @@ impl eframe::App for PlexiApp {
                     .iter()
                     .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
                     .collect();
-                let suppress_focus = self.renaming_window.is_some()
-                    || self.show_command_palette
+                let suppress_focus = self.show_command_palette
                     || self.renaming_pane.is_some();
 
                 #[cfg(target_os = "macos")]
@@ -2335,33 +2364,6 @@ impl PlexiApp {
                 });
         }
 
-        // Pulse — focused pane border gently breathes
-        if self.features.is_enabled("pulse") {
-            let time = ctx.input(|i| i.time);
-            let pulse_alpha = ((time * 2.0).sin() * 0.5 + 0.5) as f32;
-            let pulse_color = Color32::from_rgba_unmultiplied(
-                self.colors.accent.r(),
-                self.colors.accent.g(),
-                self.colors.accent.b(),
-                (pulse_alpha * 80.0 + 30.0) as u8,
-            );
-
-            egui::Area::new(egui::Id::new("pulse_overlay"))
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .order(egui::Order::Foreground)
-                .interactable(false)
-                .show(ctx, |ui| {
-                    let screen = ctx.screen_rect();
-                    let thickness = 2.0 + pulse_alpha * 1.5;
-                    ui.painter().rect_stroke(
-                        screen.shrink(1.0),
-                        0.0,
-                        Stroke::new(thickness, pulse_color),
-                        egui::StrokeKind::Inside,
-                    );
-                });
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        }
     }
 
     pub(crate) fn abbreviate_home_path(path: &Path) -> String {
