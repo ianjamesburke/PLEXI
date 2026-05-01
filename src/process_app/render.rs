@@ -414,7 +414,8 @@ pub(super) fn render_draw_commands(
             // painter never sees them in the normal path — this arm is the
             // safety net for any stray commands that leak through.
             | DrawCommand::PushNav { .. }
-            | DrawCommand::PopNav { .. } => {}
+            | DrawCommand::PopNav { .. }
+            | DrawCommand::SetMouseTracking { .. } => {}
 
             // ── Host-managed scroll regions (#446) ───────────────────────────
             //

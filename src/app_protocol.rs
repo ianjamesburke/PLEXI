@@ -329,7 +329,7 @@ pub enum PlexiEvent {
     /// Emitted by host to app when Escape is pressed and the app's nav stack
     /// depth is > 0. The app handles this by popping its own internal view
     /// and emitting `DrawCommand::PopNav` to decrement the host counter.
-    NavBack {},
+    NavBack { view_id: String },
 
     /// Emitted by the host when the scroll offset for a `BeginScroll` region
     /// changes (mouse wheel, drag). The app should re-render using `offset_y`
@@ -1135,6 +1135,13 @@ pub enum DrawCommand {
     /// Must be balanced with a preceding `BeginScroll`. Imbalanced pairs are
     /// logged at `warn` level and the stack is reset at frame end.
     EndScroll,
+
+    /// Enable or disable `PlexiEvent::MouseMove` delivery for this pane.
+    ///
+    /// Off by default to avoid flooding apps that don't need continuous pointer
+    /// tracking. Send `{ enabled: true }` after `Ready` to start receiving
+    /// `on_mouse_move` callbacks. Send `{ enabled: false }` to stop.
+    SetMouseTracking { enabled: bool },
 }
 
 /// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.
