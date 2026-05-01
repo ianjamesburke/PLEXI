@@ -1824,6 +1824,16 @@ class RenderContext:
         _emit({"type": "frame_done", "frame_id": self.frame_id})
 
 
+def _log_task_exception(task: "asyncio.Task") -> None:
+    """Done callback for background tasks — logs unhandled exceptions."""
+    try:
+        exc = task.exception()
+    except (asyncio.CancelledError, asyncio.InvalidStateError):
+        return
+    if exc is not None:
+        sys.stderr.write(f"plexi_sdk: unhandled exception in background task: {exc}\n")
+
+
 # ── App base class ────────────────────────────────────────────────────────────
 
 class App:
@@ -1892,6 +1902,10 @@ class App:
         self._pending_measure_text: "dict[str, asyncio.Queue]" = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
+        # Strong references to background asyncio tasks created by
+        # _dispatch_hook_task. Without this, CPython may GC a task before it
+        # completes. The done callback removes each task from the set.
+        self._background_tasks: "set[asyncio.Task]" = set()
         # Pending text-input submissions keyed on TextInput `id`. The
         # event-loop coroutine fills this when `PlexiEvent::TextSubmitted`
         # arrives; `RenderContext.text_input` drains it during render.
@@ -2379,9 +2393,17 @@ class App:
         use asyncio locks or confine mutations to on_render (the poll pattern).
         """
         if inspect.iscoroutinefunction(hook):
-            asyncio.create_task(hook(*args))
+            task = asyncio.create_task(hook(*args))
+            # Keep a strong reference so the GC doesn't collect the task before
+            # it finishes. The done callback removes it from the set.
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(_log_task_exception)
         else:
-            hook(*args)
+            try:
+                hook(*args)
+            except Exception as e:
+                sys.stderr.write(f"plexi_sdk: sync hook {getattr(hook, '__name__', hook)!r} raised: {e}\n")
 
 
 # ── Agent base class (issue #338) ────────────────────────────────────────────
