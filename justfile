@@ -57,7 +57,16 @@ build:
 run:
     cargo run --release
 
+# Smart install — reads .channel to dispatch to the right recipe.
+# Run from any worktree: just install
 install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    channel=$(cat .channel 2>/dev/null || echo "stable")
+    echo "Installing channel: $channel"
+    just install-$channel
+
+install-stable:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo bundle --release
