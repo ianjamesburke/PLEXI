@@ -695,7 +695,10 @@ impl ProcessApp {
             // frame would build a fresh widget and lose the cursor.
             let widget_id = ui.id().with(("text_input", self.pane_id, id.as_str()));
 
-            let resp = {
+            // Use TextEdit::show() instead of ui.add() so we get TextEditOutput,
+            // which carries cursor_range. We need the cursor char index to insert
+            // '\n' at the right position for Shift+Enter (not just append to end).
+            let (resp, cursor_char_idx) = {
                 let buffer = self.text_input_buffers.entry(id.clone()).or_default();
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
@@ -715,17 +718,18 @@ impl ProcessApp {
                         .hint_text(placeholder.as_str())
                         .frame(true)
                 };
-                let r = child.add(edit);
+                let output = edit.show(&mut child);
                 // Auto-focus the first newly-visible input so the user can
                 // type immediately without clicking. Subsequent newly-visible
                 // inputs in the same frame are skipped — request_focus is
                 // last-write-wins in egui, so focusing all of them would
                 // leave only the last one focused.
                 if newly_visible && !focus_granted {
-                    r.request_focus();
+                    output.response.request_focus();
                     focus_granted = true;
                 }
-                r
+                let cursor_idx = output.cursor_range.map(|cr| cr.primary.ccursor.index);
+                (output.response, cursor_idx)
             };
 
             if *multiline {
@@ -753,10 +757,17 @@ impl ProcessApp {
                         }
                         submitted.push(id.clone());
                     } else if shift_enter {
-                        // egui ignores Shift+Enter in multiline mode; push
-                        // the newline ourselves so the UX is consistent.
-                        if let Some(buf) = self.text_input_buffers.get_mut(id.as_str()) {
-                            buf.push('\n');
+                        // egui ignores Shift+Enter in multiline mode; insert '\n'
+                        // at the cursor position (not just the end of the buffer).
+                        if let (Some(buf), Some(char_idx)) =
+                            (self.text_input_buffers.get_mut(id.as_str()), cursor_char_idx)
+                        {
+                            let byte_idx = buf
+                                .char_indices()
+                                .nth(char_idx)
+                                .map(|(i, _)| i)
+                                .unwrap_or(buf.len());
+                            buf.insert(byte_idx, '\n');
                         }
                     }
                 }
