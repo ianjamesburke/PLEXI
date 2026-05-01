@@ -789,6 +789,32 @@ class Emitter:
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
 
+    # ── Navigation stack (#392) ─────────────────────────────────────────────
+
+    def push_nav(self, view_id: str, title: str) -> None:
+        """Push a new view onto the host navigation stack.
+
+        The host appends an entry keyed on `view_id` with display `title`
+        and shows a back arrow + `title` in the pane chrome while this view
+        is active. Cmd+[ (or clicking the back arrow) sends
+        ``PlexiEvent::NavBack { view_id }`` back to the app, where
+        ``view_id`` is the view being navigated *back to* (the entry below
+        the current top, or empty string for root).
+
+        The app is responsible for tracking its own internal view state and
+        calling ``pop_nav()`` after navigating back.
+        """
+        _emit({"type": "push_nav", "view_id": view_id, "title": title})
+
+    def pop_nav(self) -> None:
+        """Pop the current view off the host navigation stack.
+
+        Call this after the app has already rendered the previous view (e.g.
+        inside the ``on_nav_back`` handler). The host removes the top entry
+        from the stack; if the stack becomes empty the back arrow disappears.
+        """
+        _emit({"type": "pop_nav"})
+
     def cd_to(self, cwd: str) -> None:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
         _emit({"type": "cd_request", "cwd": cwd})
@@ -1966,6 +1992,15 @@ class App:
     def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
     def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> Coroutine[Any, Any, None] | None: return None
     def on_inject(self, _ctx: RenderContext, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
+    def on_nav_back(self, _ctx: RenderContext, _view_id: str) -> "Coroutine[Any, Any, None] | None":
+        """Called when the host emits ``NavBack`` — user pressed Cmd+[ or the
+        back arrow in the pane chrome. ``view_id`` is the view being navigated
+        *back to* (the new top of stack, or empty string for root).
+
+        The app should update its own view state to show ``view_id``, then call
+        ``ctx.emit.pop_nav()`` to remove the entry from the host stack.
+        """
+        return None
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> Coroutine[Any, Any, None] | None: return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> Coroutine[Any, Any, None] | None: return None
@@ -2381,6 +2416,15 @@ class App:
                         self.on_app_spawned,
                         int(ev.get("pane_id", 0)),
                         str(ev.get("type_id", "")),
+                    )
+
+                elif t == "nav_back":
+                    # Navigation stack back event (#392). The host pops the top
+                    # nav entry and sends this with the view_id the app should
+                    # navigate back to (empty string = root view).
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(
+                        self.on_nav_back, ctx, str(ev.get("view_id", ""))
                     )
 
         reader_task = asyncio.create_task(_reader())

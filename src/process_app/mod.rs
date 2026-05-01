@@ -73,6 +73,20 @@ enum StdinItem {
 }
 
 // ---------------------------------------------------------------------------
+// NavEntry
+// ---------------------------------------------------------------------------
+
+/// One entry on a pane's navigation stack, pushed by `DrawCommand::PushNav`.
+#[derive(Debug, Clone)]
+pub struct NavEntry {
+    /// Stable identifier for this view (e.g. `"detail"`). Echoed back to the
+    /// app in `PlexiEvent::NavBack { view_id }` when this becomes the active view.
+    pub view_id: String,
+    /// Human-readable title shown in the pane chrome while this view is active.
+    pub title: String,
+}
+
+// ---------------------------------------------------------------------------
 // ProcessApp
 // ---------------------------------------------------------------------------
 
@@ -116,10 +130,11 @@ pub struct ProcessApp {
     pub(crate) run_registry: RunRegistry,
     pub(crate) pending_prompts: VecDeque<PendingPrompt>,
     pub(crate) status_summary: Option<String>,
-    /// Current navigation stack depth as reported by the app via
-    /// `DrawCommand::PushNav` / `DrawCommand::PopNav`. When > 0, Escape emits
-    /// `PlexiEvent::NavBack` to the app instead of closing the pane.
-    pub(crate) nav_stack_depth: usize,
+    /// Navigation stack maintained by `DrawCommand::PushNav` / `PopNav`.
+    /// Each entry carries a stable `view_id` and a display `title`. When the
+    /// stack is non-empty the pane chrome shows a back arrow + the top title,
+    /// and Cmd+[ emits `PlexiEvent::NavBack` to the app.
+    pub(crate) nav_stack: Vec<NavEntry>,
     pub(crate) outbound_events: VecDeque<PlexiEvent>,
     pub(crate) secret_input_buf: String,
     /// Recent stderr lines from the subprocess. Capped at the last
@@ -463,7 +478,7 @@ impl ProcessApp {
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             status_summary: None,
-            nav_stack_depth: 0,
+            nav_stack: Vec::new(),
             outbound_events: VecDeque::new(),
             secret_input_buf: String::new(),
             recent_stderr: Arc::clone(&recent_stderr_capture),
@@ -499,9 +514,26 @@ impl ProcessApp {
     }
 
     /// Current nav stack depth as tracked by `PushNav`/`PopNav` commands.
-    /// Returns 0 for Builtin apps that never emit these commands.
+    /// Returns 0 for apps that have never pushed a view.
     pub fn nav_stack_depth(&self) -> usize {
-        self.nav_stack_depth
+        self.nav_stack.len()
+    }
+
+    /// The title of the current top-of-stack view, or `None` when the stack
+    /// is empty (root view — no back navigation available).
+    pub fn nav_top_title(&self) -> Option<&str> {
+        self.nav_stack.last().map(|e| e.title.as_str())
+    }
+
+    /// The `view_id` the app should navigate *back to* — the entry below the
+    /// current top, or empty string when the stack would return to root.
+    pub fn nav_back_view_id(&self) -> String {
+        let len = self.nav_stack.len();
+        if len >= 2 {
+            self.nav_stack[len - 2].view_id.clone()
+        } else {
+            String::new()
+        }
     }
 
     pub(crate) fn send_event(&mut self, event: &PlexiEvent) {

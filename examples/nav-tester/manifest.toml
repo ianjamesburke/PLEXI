@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "nav-tester"
+type = "app"
+name = "Nav Tester"
+version = "0.1.0"
+description = "POC for the PGAP navigation stack — PushNav/PopNav/NavBack (#392)."
+entry = "nav_tester.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.4 }

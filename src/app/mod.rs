@@ -1506,42 +1506,22 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ClosePane => {
-                    // If the focused app pane has declared internal navigation
-                    // depth (via PushNav), Escape routes NavBack to the app
+                    // If the focused app pane has a non-empty nav stack
+                    // (via PushNav), Escape routes NavBack to the app
                     // instead of closing the pane.
-                    let nav_pane_id = {
-                        let active_ctx = &self.windows[self.active_window];
-                        active_ctx.focused_pane.and_then(|tile_id| {
-                            if let Some(egui_tiles::Tile::Pane(pane_id)) =
-                                active_ctx.tree.tiles.get(tile_id)
-                            {
-                                active_ctx.panes.get(pane_id).and_then(|pane| {
-                                    pane.as_app().and_then(|app| {
-                                        if app.runtime.nav_stack_depth() > 0 {
-                                            Some(*pane_id)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                })
-                            } else {
-                                None
-                            }
-                        })
-                    };
-                    if let Some(pane_id) = nav_pane_id {
-                        let active = self.active_window;
-                        if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
-                            if let Some(app) = pane.as_app_mut() {
-                                app.runtime.queue_outbound_event(
-                                    crate::app_protocol::PlexiEvent::NavBack {},
-                                );
-                            }
+                    if !self.try_nav_back_focused() {
+                        if self.confirm_close() {
+                            self.pending_close = true;
+                        } else if self.execute_close_pane() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-                    } else if self.confirm_close() {
-                        self.pending_close = true;
-                    } else if self.execute_close_pane() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+                Action::NavBackApp => {
+                    // Cmd+[ when a nav-active app pane is focused: go back one
+                    // level. Falls through to cycling tabs backwards if no nav is active.
+                    if !self.try_nav_back_focused() {
+                        self.cycle_tab(false);
                     }
                 }
                 Action::NewTab => self.new_tab(),
@@ -1611,9 +1591,6 @@ impl eframe::App for PlexiApp {
                 }
                 Action::NextTab => {
                     self.cycle_tab(true);
-                }
-                Action::PrevTab => {
-                    self.cycle_tab(false);
                 }
                 Action::IncreasePaneFontSize => {
                     self.adjust_focused_pane_font_size(1.0);
@@ -2090,6 +2067,45 @@ impl PlexiApp {
     /// users get the confirmation dialog unless they explicitly opt out.
     pub(crate) fn confirm_close(&self) -> bool {
         self.config.confirm_close.unwrap_or(true)
+    }
+
+    /// If the currently focused pane is an app with a non-empty nav stack,
+    /// emit `PlexiEvent::NavBack` to it and return `true`. Returns `false`
+    /// when there is no nav-active focused pane (caller may fall back to
+    /// default behaviour such as closing the pane or cycling tabs).
+    pub(crate) fn try_nav_back_focused(&mut self) -> bool {
+        let active = self.active_window;
+        let active_ctx = &self.windows[active];
+
+        // Read nav state under shared borrow first.
+        let nav_result = active_ctx.focused_pane.and_then(|tile_id| {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(tile_id) {
+                active_ctx.panes.get(pane_id).and_then(|pane| {
+                    pane.as_app().and_then(|app| {
+                        if app.runtime.nav_stack_depth() > 0 {
+                            Some((*pane_id, app.runtime.nav_back_view_id()))
+                        } else {
+                            None
+                        }
+                    })
+                })
+            } else {
+                None
+            }
+        });
+
+        if let Some((pane_id, view_id)) = nav_result {
+            if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
+                if let Some(app) = pane.as_app_mut() {
+                    app.runtime.queue_outbound_event(
+                        crate::app_protocol::PlexiEvent::NavBack { view_id },
+                    );
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Re-read configuration from disk and apply changes that can take

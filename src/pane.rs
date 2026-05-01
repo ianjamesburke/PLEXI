@@ -215,6 +215,24 @@ impl AppRuntime {
             AppRuntime::Builtin(_) => 0,
         }
     }
+
+    /// Title of the current top-of-stack view for pane chrome display.
+    /// `None` when the stack is empty (root view — no back arrow shown).
+    pub fn nav_top_title(&self) -> Option<&str> {
+        match self {
+            AppRuntime::Process(app) => app.nav_top_title(),
+            AppRuntime::Builtin(_) => None,
+        }
+    }
+
+    /// The `view_id` the app should navigate back to (the entry below current
+    /// top, or empty string for root). Used to populate `NavBack { view_id }`.
+    pub fn nav_back_view_id(&self) -> String {
+        match self {
+            AppRuntime::Process(app) => app.nav_back_view_id(),
+            AppRuntime::Builtin(_) => String::new(),
+        }
+    }
 }
 
 #[allow(dead_code)]
