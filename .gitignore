@@ -31,6 +31,9 @@ assets/Info.plist
 # Bundled Python runtime (fetched by `just fetch-python-runtime` at build time)
 assets/python/
 
+# Channel (per-worktree, not shared)
+.channel
+
 # Misc
 *.log
 *.swp
