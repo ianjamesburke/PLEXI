@@ -448,9 +448,6 @@ install-beta: fetch-python-runtime
     }
     trap cleanup EXIT
 
-    sed -i '' 's/^name = "plexi"/name = "plexi-beta"/' Cargo.toml
-    sed -i '' 's/name = "Plexi"/name = "Plexi Beta"/' Cargo.toml
-    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-beta"/' Cargo.toml
     sed -i '' 's/with_title("Plexi")/with_title("Plexi Beta")/' src/main.rs
     sed -i '' 's/"plexi",/"plexi-beta",/' src/main.rs
 
