@@ -1316,6 +1316,16 @@ class Emitter:
         """Cancel a pending timer set with set_timer()."""
         _emit({"type": "cancel_timer", "timer_id": timer_id})
 
+    def set_mouse_tracking(self, enabled: bool) -> None:
+        """Enable or disable PlexiEvent::MouseMove delivery for this pane.
+
+        MouseMove is off by default to avoid flooding apps that don't need
+        continuous pointer tracking. Call set_mouse_tracking(True) after
+        on_init to start receiving on_mouse_move callbacks. Call with False
+        to stop.
+        """
+        _emit({"type": "set_mouse_tracking", "enabled": enabled})
+
     # Binary pipe
     def pipe_open(self, pipe_id: str, mode: str = "binary",
                   direction: str = "in") -> "Pipe":
@@ -1834,6 +1844,12 @@ class RenderContext:
     def cancel_timer(self, timer_id: str) -> None:
         self.emit.cancel_timer(timer_id)
 
+    def set_mouse_tracking(self, enabled: bool) -> None:
+        """Enable or disable on_mouse_move delivery for this pane.
+        Call with True in on_init to start receiving mouse-move events.
+        Delegates to emit.set_mouse_tracking()."""
+        self.emit.set_mouse_tracking(enabled)
+
     def schedule_render(self, after_ms: int = 16) -> None:
         """Ask the host to send a new Render event after `after_ms` milliseconds.
         Delegates to emit.schedule_render(). 16 ms ≈ 60 fps. 32 ms ≈ 30 fps."""
@@ -1961,6 +1977,9 @@ class App:
     def on_render(self, _ctx: RenderContext) -> None: pass
     def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> Coroutine[Any, Any, None] | None: return None
     def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_mouse_down(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_mouse_move(self, _ctx: RenderContext, _x: float, _y: float, _buttons: list) -> Coroutine[Any, Any, None] | None: return None
     def on_command(self, _ctx: RenderContext, _text: str) -> Coroutine[Any, Any, None] | None: return None
     def on_paste(self, _ctx: RenderContext, _text: str) -> Coroutine[Any, Any, None] | None: return None
     def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
@@ -2286,6 +2305,21 @@ class App:
                     ctx = self._make_ctx()
                     self._dispatch_hook_task(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
                                              ev.get("button", "primary"))
+
+                elif t == "mouse_down":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_mouse_down, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("button", "primary"))
+
+                elif t == "mouse_up":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_mouse_up, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("button", "primary"))
+
+                elif t == "mouse_move":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_mouse_move, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("buttons", []))
 
                 elif t == "command":
                     ctx = self._make_ctx()

@@ -555,6 +555,16 @@ impl ProcessApp {
                 );
             }
 
+            // ── Mouse tracking toggle ──────────────────────────────────────
+            DrawCommand::SetMouseTracking { enabled } => {
+                self.mouse_tracking_enabled = enabled;
+                log::debug!(
+                    "ProcessApp[{}]: SetMouseTracking → {}",
+                    self.type_id,
+                    enabled
+                );
+            }
+
             // ── Spawn app ──────────────────────────────────────────────────
             DrawCommand::SpawnApp {
                 type_id,

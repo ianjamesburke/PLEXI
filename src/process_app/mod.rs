@@ -185,6 +185,11 @@ pub struct ProcessApp {
     /// When true, the click-to-reveal stderr overlay is displayed in the
     /// pane. Toggled by clicking a non-Running lifecycle pill.
     show_stderr_overlay: bool,
+    /// When true, `PlexiEvent::MouseMove` is delivered to the app every frame
+    /// that the pointer moves over the pane. Controlled by
+    /// `DrawCommand::SetMouseTracking { enabled }`. Off by default to avoid
+    /// flooding apps that don't need continuous pointer tracking.
+    mouse_tracking_enabled: bool,
     /// Per-pane host-owned text input buffers, keyed on the `id` field of
     /// `DrawCommand::TextInput`. Survives across frames and pane resizes
     /// — typed characters never reach the app until Enter triggers a
@@ -483,6 +488,7 @@ impl ProcessApp {
             pending_timers: HashMap::new(),
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,
+            mouse_tracking_enabled: false,
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
             scroll_offsets: HashMap::new(),
@@ -864,7 +870,8 @@ impl ProcessApp {
                 | DrawCommand::RequestCommandPreview { .. }
                 | DrawCommand::OpenArtifact { .. }
                 | DrawCommand::PushNav { .. }
-                | DrawCommand::PopNav { .. }) => {
+                | DrawCommand::PopNav { .. }
+                | DrawCommand::SetMouseTracking { .. }) => {
                     self.route_command(cmd);
                 }
                 // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
@@ -1071,7 +1078,8 @@ impl App for ProcessApp {
                 | DrawCommand::RequestCommandPreview { .. }
                 | DrawCommand::OpenArtifact { .. }
                 | DrawCommand::PushNav { .. }
-                | DrawCommand::PopNav { .. }) => {
+                | DrawCommand::PopNav { .. }
+                | DrawCommand::SetMouseTracking { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),
@@ -1250,22 +1258,94 @@ impl App for ProcessApp {
             false
         };
 
-        // Detect clicks over the pane and forward them as PlexiEvent::Click.
-        let click_response = ui.interact(pane_rect, ui.id(), egui::Sense::click());
+        // Detect pointer interactions over the pane rect and forward as
+        // PlexiEvent::{Click,MouseDown,MouseUp,MouseMove}.
+        //
+        // Sense::click_and_drag() is required here — Sense::click() alone only
+        // fires on button-release and does not track press or motion.
+        let mouse_response = ui.interact(pane_rect, ui.id(), egui::Sense::click_and_drag());
         if !pill_consumed_click {
-            if let Some(pos) = click_response.interact_pointer_pos() {
-                let origin = pane_rect.min;
-                let button = if click_response.secondary_clicked() {
-                    crate::app_protocol::MouseButton::Secondary
-                } else {
-                    crate::app_protocol::MouseButton::Primary
-                };
-                if click_response.clicked() || click_response.secondary_clicked() {
-                    self.send_event(&PlexiEvent::Click {
+            let origin = pane_rect.min;
+
+            // MouseDown — fires on the frame the primary or secondary button goes down.
+            if let Some(pos) = mouse_response.interact_pointer_pos() {
+                let is_primary_down = ui.input(|i| {
+                    i.pointer.button_pressed(egui::PointerButton::Primary)
+                        && pane_rect.contains(i.pointer.interact_pos().unwrap_or(pos))
+                });
+                let is_secondary_down = ui.input(|i| {
+                    i.pointer.button_pressed(egui::PointerButton::Secondary)
+                        && pane_rect.contains(i.pointer.interact_pos().unwrap_or(pos))
+                });
+                if is_primary_down {
+                    self.send_event(&PlexiEvent::MouseDown {
                         x: pos.x - origin.x,
                         y: pos.y - origin.y,
-                        button,
+                        button: crate::app_protocol::MouseButton::Primary,
                     });
+                }
+                if is_secondary_down {
+                    self.send_event(&PlexiEvent::MouseDown {
+                        x: pos.x - origin.x,
+                        y: pos.y - origin.y,
+                        button: crate::app_protocol::MouseButton::Secondary,
+                    });
+                }
+            }
+
+            // MouseUp — fires on the frame the button is released; also emits
+            // the legacy Click event for backwards compatibility with apps that
+            // use on_click rather than on_mouse_down/on_mouse_up.
+            if let Some(pos) = mouse_response.interact_pointer_pos() {
+                let x = pos.x - origin.x;
+                let y = pos.y - origin.y;
+                if mouse_response.clicked() {
+                    self.send_event(&PlexiEvent::MouseUp {
+                        x,
+                        y,
+                        button: crate::app_protocol::MouseButton::Primary,
+                    });
+                    self.send_event(&PlexiEvent::Click {
+                        x,
+                        y,
+                        button: crate::app_protocol::MouseButton::Primary,
+                    });
+                }
+                if mouse_response.secondary_clicked() {
+                    self.send_event(&PlexiEvent::MouseUp {
+                        x,
+                        y,
+                        button: crate::app_protocol::MouseButton::Secondary,
+                    });
+                    self.send_event(&PlexiEvent::Click {
+                        x,
+                        y,
+                        button: crate::app_protocol::MouseButton::Secondary,
+                    });
+                }
+            }
+
+            // MouseMove — only delivered when the app opts in via
+            // DrawCommand::SetMouseTracking { enabled: true }.
+            if self.mouse_tracking_enabled {
+                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    if pane_rect.contains(pos) && ui.input(|i| i.pointer.is_moving()) {
+                        let buttons = {
+                            let mut held = Vec::new();
+                            if ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
+                                held.push(crate::app_protocol::MouseButton::Primary);
+                            }
+                            if ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary)) {
+                                held.push(crate::app_protocol::MouseButton::Secondary);
+                            }
+                            held
+                        };
+                        self.send_event(&PlexiEvent::MouseMove {
+                            x: pos.x - origin.x,
+                            y: pos.y - origin.y,
+                            buttons,
+                        });
+                    }
                 }
             }
         }
