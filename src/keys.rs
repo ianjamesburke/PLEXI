@@ -57,7 +57,6 @@ pub enum Action {
     NewTab,
     SwitchContext(usize),
     NextTab,
-    PrevTab,
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
@@ -109,6 +108,10 @@ pub enum Action {
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
     ReloadConfig,
+    /// Cmd+[ when a nav-active app pane is focused: pop one nav level and
+    /// emit `PlexiEvent::NavBack`. Falls through to cycling tabs backwards
+    /// if no nav is active on the focused pane.
+    NavBackApp,
 }
 
 /// Poll global keyboard actions.
@@ -201,7 +204,7 @@ pub fn poll_actions(
             actions.push(if notification_modal_open {
                 Action::NotificationCyclePrev
             } else {
-                Action::PrevTab
+                Action::NavBackApp
             });
         }
 

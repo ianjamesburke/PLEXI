@@ -1094,15 +1094,16 @@ pub enum DrawCommand {
     OpenArtifact { path: String, mode: ArtifactOpenMode },
 
     // ── Navigation stack ─────────────────────────────────────────────────
-    /// App signals it has pushed a navigation level. The host increments its
-    /// per-pane nav stack depth counter. While depth > 0, pressing Escape
-    /// emits `PlexiEvent::NavBack` to the app instead of closing the pane.
+    /// App signals it has pushed a navigation level. The host appends the
+    /// entry to its per-pane nav stack. While the stack has entries, the pane
+    /// chrome shows a back arrow + the current view's title, and Cmd+[
+    /// emits `PlexiEvent::NavBack` to the app instead of cycling tabs.
     ///
-    /// The optional `title` is reserved for future breadcrumb rendering and
-    /// is ignored by the host in this version.
-    PushNav { title: String },
-    /// App signals it has popped a navigation level. The host decrements its
-    /// per-pane nav stack depth counter (saturating — never below 0).
+    /// `view_id` must be a stable identifier for this view (e.g. `"detail"`);
+    /// `title` is shown in the pane chrome while this view is active.
+    PushNav { view_id: String, title: String },
+    /// App signals it has popped a navigation level. The host removes the top
+    /// entry from the per-pane nav stack (saturating — no-op on empty stack).
     PopNav {},
 
     // ── Host-managed scroll regions (#446) ───────────────────────────────

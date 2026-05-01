@@ -538,20 +538,21 @@ impl ProcessApp {
             }
 
             // ── Navigation stack ───────────────────────────────────────────
-            DrawCommand::PushNav { title: _ } => {
-                self.nav_stack_depth = self.nav_stack_depth.saturating_add(1);
+            DrawCommand::PushNav { view_id, title } => {
+                self.nav_stack.push(crate::process_app::NavEntry { view_id, title });
                 log::debug!(
-                    "ProcessApp[{}]: PushNav → depth={}",
+                    "ProcessApp[{}]: PushNav → depth={} title={:?}",
                     self.type_id,
-                    self.nav_stack_depth
+                    self.nav_stack.len(),
+                    self.nav_stack.last().map(|e| &e.title),
                 );
             }
             DrawCommand::PopNav {} => {
-                self.nav_stack_depth = self.nav_stack_depth.saturating_sub(1);
+                self.nav_stack.pop();
                 log::debug!(
                     "ProcessApp[{}]: PopNav → depth={}",
                     self.type_id,
-                    self.nav_stack_depth
+                    self.nav_stack.len(),
                 );
             }
 
