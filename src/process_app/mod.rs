@@ -1153,7 +1153,10 @@ impl App for ProcessApp {
 
             if scroll_delta.y != 0.0 {
                 if let Some(pos) = pointer_pos {
-                    for (id, viewport, content_height) in &scroll_regions {
+                    // Iterate in reverse so the innermost (last-declared) region wins
+                    // when regions are nested. The outermost BeginScroll appears first
+                    // in the command stream; iterating forward would give it priority.
+                    for (id, viewport, content_height) in scroll_regions.iter().rev() {
                         if viewport.contains(pos) {
                             let viewport_h = viewport.height();
                             let max_offset = (content_height - viewport_h).max(0.0);
@@ -1167,7 +1170,7 @@ impl App for ProcessApp {
                                     offset_y: next,
                                 });
                             }
-                            break; // innermost region wins
+                            break;
                         }
                     }
                 }
