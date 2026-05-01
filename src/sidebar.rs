@@ -1,5 +1,5 @@
 use crate::context::WindowMenuAction;
-use egui::{Align, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, Vec2};
 
 use crate::app::PlexiApp;
 
@@ -62,12 +62,178 @@ impl PlexiApp {
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
 
-            // Single allocation: cursor advances once, one interaction registration.
-            let (row_rect, row_response) = ui.allocate_exact_size(
-                Vec2::new(sidebar_width, ROW_HEIGHT),
-                Sense::click_and_drag(),
-            );
+            let row_rect = {
+                let c = ui.cursor();
+                Rect::from_min_size(c.min, Vec2::new(sidebar_width, ROW_HEIGHT))
+            };
             row_rects.push(row_rect);
+
+            let hover = ui.rect_contains_pointer(row_rect);
+            let row_alpha = if is_dragging { 0.4_f32 } else { 1.0_f32 };
+
+            // Render the row via allocate_ui_with_layout, and register the row's
+            // click_and_drag sense INSIDE the closure. This is the single interaction
+            // registration — no competing pre-registration on the same rect.
+            let row_response = ui
+                .allocate_ui_with_layout(
+                    Vec2::new(sidebar_width, ROW_HEIGHT),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        let row_resp = ui.interact(
+                            ui.max_rect(),
+                            egui::Id::new(("ctx_row", i)),
+                            Sense::click_and_drag(),
+                        );
+
+                        let rect = ui.max_rect();
+
+                        // Background
+                        let fill = if is_active {
+                            self.colors.bg_active
+                        } else if hover && !is_dragging {
+                            self.colors.bg_hover
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        let fill = Color32::from_rgba_unmultiplied(
+                            fill.r(),
+                            fill.g(),
+                            fill.b(),
+                            (fill.a() as f32 * row_alpha) as u8,
+                        );
+                        ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+
+                        // Active accent bar
+                        if is_active {
+                            let accent = self.colors.accent;
+                            let accent = Color32::from_rgba_unmultiplied(
+                                accent.r(),
+                                accent.g(),
+                                accent.b(),
+                                (accent.a() as f32 * row_alpha) as u8,
+                            );
+                            ui.painter().rect_filled(
+                                Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
+                                CornerRadius::ZERO,
+                                accent,
+                            );
+                        }
+
+                        ui.add_space(20.0);
+
+                        if is_renaming {
+                            let te_id = egui::Id::new(("rename_ctx", i));
+                            let te = ui.add(
+                                egui::TextEdit::singleline(&mut self.rename_buffer)
+                                    .id(te_id)
+                                    .desired_width(sidebar_width - 56.0)
+                                    .font(egui::TextStyle::Body),
+                            );
+                            if te.lost_focus() {
+                                if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                                    self.renaming_window = None;
+                                } else {
+                                    let new_name = self.rename_buffer.trim().to_string();
+                                    if !new_name.is_empty() {
+                                        self.contexts[i].name = new_name;
+                                    }
+                                    self.renaming_window = None;
+                                }
+                                ui.input_mut(|inp| {
+                                    inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                    inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                                });
+                            }
+                            if te.gained_focus() || !te.has_focus() {
+                                te.request_focus();
+                                if let Some(mut state) =
+                                    egui::TextEdit::load_state(ui.ctx(), te_id)
+                                {
+                                    state.cursor.set_char_range(Some(
+                                        egui::text::CCursorRange::two(
+                                            egui::text::CCursor::new(0),
+                                            egui::text::CCursor::new(self.rename_buffer.len()),
+                                        ),
+                                    ));
+                                    state.store(ui.ctx(), te_id);
+                                }
+                            }
+                        } else {
+                            let text_color = if is_active {
+                                self.colors.text_primary
+                            } else {
+                                self.colors.text_dim
+                            };
+                            let text_color = Color32::from_rgba_unmultiplied(
+                                text_color.r(),
+                                text_color.g(),
+                                text_color.b(),
+                                (text_color.a() as f32 * row_alpha) as u8,
+                            );
+                            if i < 9 {
+                                ui.label(
+                                    RichText::new(format!("{}", i + 1))
+                                        .size(11.0)
+                                        .color(self.colors.text_dim),
+                                );
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.contexts[i].name)
+                                        .size(12.0)
+                                        .color(text_color),
+                                )
+                                .sense(Sense::hover()),
+                            );
+
+                            // Notification badge
+                            let badge_count = if is_active {
+                                self.visible_notification_count()
+                            } else {
+                                self.context_notification_count(i)
+                            };
+                            if badge_count > 0 && !hover {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.add_space(8.0);
+                                    let badge_text = if badge_count > 9 {
+                                        "9+".to_string()
+                                    } else {
+                                        badge_count.to_string()
+                                    };
+                                    ui.label(
+                                        RichText::new(badge_text)
+                                            .size(10.0)
+                                            .color(self.colors.accent),
+                                    );
+                                });
+                            }
+
+                            // Delete button — hover only, not during drag, 2+ contexts
+                            if hover && num_contexts > 1 && self.drag_context.is_none() {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.add_space(8.0);
+                                    let x_btn = ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("\u{2715}")
+                                                    .size(13.0)
+                                                    .color(self.colors.text_dim),
+                                            )
+                                            .frame(false),
+                                        )
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .on_hover_text("Delete context");
+                                    if x_btn.clicked() {
+                                        delete_context = Some(i);
+                                    }
+                                });
+                            }
+                        }
+
+                        row_resp
+                    },
+                )
+                .inner;
 
             if !is_renaming {
                 if row_response.drag_started() {
@@ -76,174 +242,17 @@ impl PlexiApp {
                 if row_response.drag_stopped() {
                     drag_released = true;
                 }
-            }
 
-            let hover = ui.rect_contains_pointer(row_rect);
-            let row_alpha = if is_dragging { 0.4_f32 } else { 1.0_f32 };
-
-            if !is_renaming && (hover || is_dragging) {
-                let icon = if is_dragging || self.drag_context.is_some() {
-                    egui::CursorIcon::Grabbing
-                } else {
-                    egui::CursorIcon::Grab
-                };
-                ui.ctx().set_cursor_icon(icon);
-            }
-
-            // Background fill
-            let fill = if is_active {
-                self.colors.bg_active
-            } else if hover && !is_dragging {
-                self.colors.bg_hover
-            } else {
-                Color32::TRANSPARENT
-            };
-            let fill = Color32::from_rgba_unmultiplied(
-                fill.r(), fill.g(), fill.b(),
-                (fill.a() as f32 * row_alpha) as u8,
-            );
-            ui.painter().rect_filled(row_rect, CornerRadius::ZERO, fill);
-
-            // Active accent bar
-            if is_active {
-                let accent = self.colors.accent;
-                let accent = Color32::from_rgba_unmultiplied(
-                    accent.r(), accent.g(), accent.b(),
-                    (accent.a() as f32 * row_alpha) as u8,
-                );
-                ui.painter().rect_filled(
-                    Rect::from_min_size(row_rect.min, Vec2::new(3.0, ROW_HEIGHT)),
-                    CornerRadius::ZERO,
-                    accent,
-                );
-            }
-
-            if is_renaming {
-                let te_id = egui::Id::new(("rename_ctx", i));
-                let te_rect = Rect::from_min_max(
-                    row_rect.min + Vec2::new(8.0, 3.0),
-                    row_rect.max - Vec2::new(8.0, 3.0),
-                );
-                let te = ui.put(
-                    te_rect,
-                    egui::TextEdit::singleline(&mut self.rename_buffer)
-                        .id(te_id)
-                        .font(egui::TextStyle::Body),
-                );
-                if te.lost_focus() {
-                    if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
-                        self.renaming_window = None;
+                // Cursor icon
+                if hover || is_dragging {
+                    let icon = if is_dragging || self.drag_context.is_some() {
+                        egui::CursorIcon::Grabbing
                     } else {
-                        let new_name = self.rename_buffer.trim().to_string();
-                        if !new_name.is_empty() {
-                            self.contexts[i].name = new_name;
-                        }
-                        self.renaming_window = None;
-                    }
-                    ui.input_mut(|inp| {
-                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                    });
-                }
-                if te.gained_focus() || !te.has_focus() {
-                    te.request_focus();
-                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                            egui::text::CCursor::new(0),
-                            egui::text::CCursor::new(self.rename_buffer.len()),
-                        )));
-                        state.store(ui.ctx(), te_id);
-                    }
-                }
-            } else {
-                let text_color = if is_active {
-                    self.colors.text_primary
-                } else {
-                    self.colors.text_dim
-                };
-                let text_color = Color32::from_rgba_unmultiplied(
-                    text_color.r(), text_color.g(), text_color.b(),
-                    (text_color.a() as f32 * row_alpha) as u8,
-                );
-
-                // Number label (contexts 1–9)
-                if i < 9 {
-                    ui.painter().text(
-                        egui::pos2(row_rect.min.x + 10.0, row_rect.center().y),
-                        egui::Align2::CENTER_CENTER,
-                        format!("{}", i + 1),
-                        FontId::proportional(11.0),
-                        Color32::from_rgba_unmultiplied(
-                            self.colors.text_dim.r(), self.colors.text_dim.g(),
-                            self.colors.text_dim.b(),
-                            (self.colors.text_dim.a() as f32 * row_alpha) as u8,
-                        ),
-                    );
-                }
-
-                // Context name (truncated to leave room for right-side widgets)
-                let right_margin = if hover && num_contexts > 1 && self.drag_context.is_none() {
-                    28.0_f32
-                } else {
-                    8.0_f32
-                };
-                let name_rect = Rect::from_min_max(
-                    row_rect.min + Vec2::new(20.0, 0.0),
-                    row_rect.max - Vec2::new(right_margin, 0.0),
-                );
-                ui.put(
-                    name_rect,
-                    egui::Label::new(
-                        RichText::new(&self.contexts[i].name).size(12.0).color(text_color),
-                    )
-                    .sense(Sense::hover())
-                    .truncate(),
-                );
-
-                // Notification badge (hidden when delete button is visible)
-                let badge_count = if is_active {
-                    self.visible_notification_count()
-                } else {
-                    self.context_notification_count(i)
-                };
-                if badge_count > 0 && !hover {
-                    let badge_text = if badge_count > 9 {
-                        "9+".to_string()
-                    } else {
-                        badge_count.to_string()
+                        egui::CursorIcon::Grab
                     };
-                    ui.painter().text(
-                        egui::pos2(row_rect.max.x - 8.0, row_rect.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        badge_text,
-                        FontId::proportional(10.0),
-                        self.colors.accent,
-                    );
+                    ui.ctx().set_cursor_icon(icon);
                 }
 
-                // Delete button — hover only, not during drag, requires 2+ contexts
-                if hover && num_contexts > 1 && self.drag_context.is_none() {
-                    let btn_rect = Rect::from_min_max(
-                        row_rect.max - Vec2::new(24.0, ROW_HEIGHT),
-                        row_rect.max,
-                    );
-                    let x_btn = ui
-                        .put(
-                            btn_rect,
-                            egui::Button::new(
-                                RichText::new("\u{2715}").size(13.0).color(self.colors.text_dim),
-                            )
-                            .frame(false),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Delete context");
-                    if x_btn.clicked() {
-                        delete_context = Some(i);
-                    }
-                }
-
-                // All row interactions come from the single row_response.
-                // Gate on delete_context so a delete click never also switches context.
                 if delete_context.is_none() {
                     row_response.context_menu(|ui| {
                         if ui.button("Rename").clicked() {
