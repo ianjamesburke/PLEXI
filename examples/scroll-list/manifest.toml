@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "scroll-list"
+type = "app"
+name = "Scroll List"
+version = "0.1.0"
+description = "POC for host-managed scroll regions (#446). Renders 100 items using BeginScroll/EndScroll."
+entry = "scroll_list.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }

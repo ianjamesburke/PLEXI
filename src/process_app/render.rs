@@ -415,6 +415,33 @@ pub(super) fn render_draw_commands(
             // safety net for any stray commands that leak through.
             | DrawCommand::PushNav { .. }
             | DrawCommand::PopNav { .. } => {}
+
+            // ── Host-managed scroll regions (#446) ───────────────────────────
+            //
+            // BeginScroll declares a clipped viewport. All draw commands until
+            // the matching EndScroll are painted with that viewport as the clip
+            // rect. The app has already translated its content coordinates by
+            // the scroll offset (received via PlexiEvent::ScrollOffset); the
+            // renderer's only job here is enforcing the clip boundary.
+            //
+            // Implementation mirrors PushClip/PopClip — the scroll viewport is
+            // intersected with the current clip top so nested clips tighten
+            // correctly, and the existing balanced-stack warning fires for
+            // unmatched EndScroll calls.
+            DrawCommand::BeginScroll { x, y, w, h, .. } => {
+                let new_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x + x, origin.y + y),
+                    egui::vec2(*w, *h),
+                );
+                let effective = clip.intersect(new_rect);
+                clip_stack.push(effective);
+            }
+
+            DrawCommand::EndScroll => {
+                if clip_stack.pop().is_none() {
+                    log::warn!("render: EndScroll on empty clip stack (app bug)");
+                }
+            }
         }
     }
 
@@ -423,7 +450,7 @@ pub(super) fn render_draw_commands(
     // subsequent frames or other panes.
     if !clip_stack.is_empty() {
         log::warn!(
-            "render: clip stack not empty at frame end (depth={}); app sent unbalanced PushClip/PopClip",
+            "render: clip stack not empty at frame end (depth={}); app sent unbalanced PushClip/PopClip or BeginScroll/EndScroll",
             clip_stack.len()
         );
     }

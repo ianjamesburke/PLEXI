@@ -196,6 +196,11 @@ pub struct ProcessApp {
     /// inputs and call `request_focus()` on them so the user can type
     /// immediately without clicking.
     text_input_visible_prev: std::collections::HashSet<String>,
+    /// Per-region scroll offsets for `DrawCommand::BeginScroll` / `EndScroll`
+    /// (#446). Key = scroll region id; value = current vertical offset in
+    /// logical pixels. Persists across frames — the offset is only reset when
+    /// content_height or viewport size shrinks past it (clamped on emit).
+    pub(crate) scroll_offsets: HashMap<String, f32>,
     /// Test-only seam used by `process_app::agent` unit tests to inject
     /// `DrawCommand`s without spinning up a real subprocess pipeline.
     /// Drained on every `agent_tick` (and thus invisible in production).
@@ -480,6 +485,7 @@ impl ProcessApp {
             show_stderr_overlay: false,
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
+            scroll_offsets: HashMap::new(),
             #[cfg(test)]
             test_injected_commands: Arc::new(Mutex::new(VecDeque::new())),
         })
@@ -1116,6 +1122,60 @@ impl App for ProcessApp {
         // mutable per-app buffer map — they can't share the painter-only
         // render path. Render them in a second pass on top of the frame.
         self.render_text_inputs(ui, pane_rect, &frame_clone);
+
+        // ── Host-managed scroll regions (#446) ──────────────────────────────
+        // Scan the committed frame for BeginScroll regions. For each region,
+        // check if the pointer is hovering inside its viewport rect and a
+        // scroll event occurred this frame. Update the stored offset and emit
+        // PlexiEvent::ScrollOffset whenever the offset changes.
+        //
+        // Scroll events are read from egui's per-frame InputState snapshot;
+        // we do not consume them (no `consume_scroll_delta`) so other egui
+        // widgets in the host still receive them normally.
+        {
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+            let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+
+            // Collect (id, viewport_rect, content_height) for every BeginScroll
+            // in the current frame. We walk the flat command list and match
+            // BeginScroll entries; EndScroll entries are not needed here.
+            let mut scroll_regions: Vec<(String, egui::Rect, f32)> = Vec::new();
+            let origin = pane_rect.min;
+            for cmd in &frame_clone {
+                if let DrawCommand::BeginScroll { id, x, y, w, h, content_height } = cmd {
+                    let viewport = egui::Rect::from_min_size(
+                        egui::pos2(origin.x + x, origin.y + y),
+                        egui::vec2(*w, *h),
+                    );
+                    scroll_regions.push((id.clone(), viewport, *content_height));
+                }
+            }
+
+            if scroll_delta.y != 0.0 {
+                if let Some(pos) = pointer_pos {
+                    // Iterate in reverse so the innermost (last-declared) region wins
+                    // when regions are nested. The outermost BeginScroll appears first
+                    // in the command stream; iterating forward would give it priority.
+                    for (id, viewport, content_height) in scroll_regions.iter().rev() {
+                        if viewport.contains(pos) {
+                            let viewport_h = viewport.height();
+                            let max_offset = (content_height - viewport_h).max(0.0);
+                            let prev = self.scroll_offsets.get(id).copied().unwrap_or(0.0);
+                            // Positive scroll_delta.y = scroll up (reveal content above).
+                            let next = (prev - scroll_delta.y).clamp(0.0, max_offset);
+                            if (next - prev).abs() > 0.01 {
+                                self.scroll_offsets.insert(id.clone(), next);
+                                self.outbound_events.push_back(PlexiEvent::ScrollOffset {
+                                    id: id.clone(),
+                                    offset_y: next,
+                                });
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         // ── Error fallback ──────────────────────────────────────────────────
         // Surface recent stderr in the pane when:
