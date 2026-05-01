@@ -322,6 +322,15 @@ pub enum PlexiEvent {
     /// depth is > 0. The app handles this by popping its own internal view
     /// and emitting `DrawCommand::PopNav` to decrement the host counter.
     NavBack {},
+
+    /// Emitted by the host when the scroll offset for a `BeginScroll` region
+    /// changes (mouse wheel, drag). The app should re-render using `offset_y`
+    /// as the vertical translation applied to all content within that region.
+    ///
+    /// `id` matches the `id` from the `DrawCommand::BeginScroll` that declared
+    /// the region. `offset_y` is always >= 0 and clamped to
+    /// `max(0, content_height - viewport_height)`.
+    ScrollOffset { id: String, offset_y: f32 },
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -1087,6 +1096,36 @@ pub enum DrawCommand {
     /// App signals it has popped a navigation level. The host decrements its
     /// per-pane nav stack depth counter (saturating — never below 0).
     PopNav {},
+
+    // ── Host-managed scroll regions (#446) ───────────────────────────────
+
+    /// Begin a host-managed vertical scroll region.
+    ///
+    /// All draw commands between this and the matching `EndScroll` are clipped
+    /// to the viewport rect `(x, y, w, h)`. The host tracks the scroll offset
+    /// for `id` across frames and emits `PlexiEvent::ScrollOffset { id, offset_y }`
+    /// whenever the user scrolls (mouse wheel / drag). The app translates its
+    /// content coordinates by `offset_y` before emitting draw commands.
+    ///
+    /// `content_height` is the total virtual height of the scrollable content
+    /// in logical pixels. The host uses this to size the scrollbar thumb.
+    ///
+    /// `id` must be stable across frames — use a meaningful string (e.g. the
+    /// region name) rather than a counter that may change.
+    BeginScroll {
+        id: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        content_height: f32,
+    },
+
+    /// Close the most recently opened scroll region.
+    ///
+    /// Must be balanced with a preceding `BeginScroll`. Imbalanced pairs are
+    /// logged at `warn` level and the stack is reset at frame end.
+    EndScroll,
 }
 
 /// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.

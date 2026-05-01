@@ -1688,6 +1688,42 @@ class RenderContext:
                "items": items, "selected": selected,
                "item_height": item_height})
 
+    def begin_scroll(self, id: str, x: float, y: float, w: float, h: float,
+                     content_height: float) -> None:
+        """Begin a host-managed vertical scroll region (#446).
+
+        Declares a viewport at (x, y, w, h) within this pane. All draw
+        commands until the matching `end_scroll()` call are clipped to that
+        viewport. The host tracks the scroll position across frames and calls
+        `on_scroll(ctx, id, offset_y)` whenever the user scrolls so the app
+        can re-render content translated by `offset_y`.
+
+        `content_height` is the total virtual height of the scrollable content
+        in logical pixels — the host uses this to size the scrollbar thumb.
+        Pass the full height of all items even if most are off-screen.
+
+        `id` must be stable across frames — use a descriptive string rather
+        than a counter. Typical pattern::
+
+            def on_scroll(self, ctx, id, offset_y):
+                if id == "main-list":
+                    self.scroll_y = offset_y
+
+            def on_render(self, ctx):
+                ctx.begin_scroll("main-list", 0, 48, ctx.w, ctx.h - 48,
+                                 content_height=100 * ROW_H)
+                for i, item in enumerate(self.items):
+                    y = i * ROW_H - self.scroll_y
+                    ctx.text(8, y, item, size=14, color=FG)
+                ctx.end_scroll()
+        """
+        _emit({"type": "begin_scroll", "id": id, "x": x, "y": y,
+               "w": w, "h": h, "content_height": content_height})
+
+    def end_scroll(self) -> None:
+        """Close the most recently opened scroll region. Must balance begin_scroll."""
+        _emit({"type": "end_scroll"})
+
     def text_input(self, id: str, x: float, y: float, w: float,
                    placeholder: str = "",
                    multiline: bool = False) -> "str | None":
@@ -1932,6 +1968,13 @@ class App:
     def on_inject(self, _ctx: RenderContext, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> Coroutine[Any, Any, None] | None: return None
+    """Called when the host updates the scroll offset for a BeginScroll region.
+
+    `id` matches the id passed to `ctx.begin_scroll`. `offset_y` is the new
+    vertical offset in logical pixels. Override to re-render content at the
+    new position.
+    """
     def on_midi_input_opened(
         self,
         _pipe_id: str,
@@ -2318,6 +2361,18 @@ class App:
                     timer_id = ev.get("timer_id", "")
                     ctx = self._make_ctx()
                     self._dispatch_hook_task(self.on_timer, ctx, timer_id)
+
+                elif t == "scroll_offset":
+                    # Host-managed scroll region (#446): the user scrolled inside
+                    # a BeginScroll viewport. Forward to on_scroll so the app can
+                    # store the new offset and re-render at the translated position.
+                    scroll_id = ev.get("id", "")
+                    offset_y = float(ev.get("offset_y", 0.0))
+                    ctx = self._make_ctx()
+                    try:
+                        await self._dispatch_hook(self.on_scroll, ctx, scroll_id, offset_y)
+                    except Exception as e:
+                        sys.stderr.write(f"on_scroll handler raised: {e}\n")
 
                 elif t == "app_spawned":
                     # Confirmation that a SpawnApp request succeeded. Apps that
