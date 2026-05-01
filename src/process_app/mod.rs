@@ -1293,13 +1293,18 @@ impl App for ProcessApp {
                 }
             }
 
-            // MouseUp — fires on the frame the button is released; also emits
-            // the legacy Click event for backwards compatibility with apps that
-            // use on_click rather than on_mouse_down/on_mouse_up.
+            // MouseUp — fires on the frame any button is released, including
+            // after a drag. clicked() only fires for clean clicks (no significant
+            // drag); drag_released() / drag_released_by() cover the drag-then-
+            // release case. Both paths also emit the legacy Click for compat.
             if let Some(pos) = mouse_response.interact_pointer_pos() {
                 let x = pos.x - origin.x;
                 let y = pos.y - origin.y;
-                if mouse_response.clicked() {
+                let primary_up = mouse_response.clicked()
+                    || mouse_response.drag_released();
+                let secondary_up = mouse_response.secondary_clicked()
+                    || mouse_response.drag_released_by(egui::PointerButton::Secondary);
+                if primary_up {
                     self.send_event(&PlexiEvent::MouseUp {
                         x,
                         y,
@@ -1311,7 +1316,7 @@ impl App for ProcessApp {
                         button: crate::app_protocol::MouseButton::Primary,
                     });
                 }
-                if mouse_response.secondary_clicked() {
+                if secondary_up {
                     self.send_event(&PlexiEvent::MouseUp {
                         x,
                         y,
@@ -1327,9 +1332,15 @@ impl App for ProcessApp {
 
             // MouseMove — only delivered when the app opts in via
             // DrawCommand::SetMouseTracking { enabled: true }.
+            // During a drag the pointer may leave the pane; we continue sending
+            // events while any button is held so the app can track drag-to-outside.
             if self.mouse_tracking_enabled {
                 if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                    if pane_rect.contains(pos) && ui.input(|i| i.pointer.is_moving()) {
+                    let is_dragging = ui.input(|i| {
+                        i.pointer.button_down(egui::PointerButton::Primary)
+                            || i.pointer.button_down(egui::PointerButton::Secondary)
+                    });
+                    if (pane_rect.contains(pos) || is_dragging) && ui.input(|i| i.pointer.is_moving()) {
                         let buttons = {
                             let mut held = Vec::new();
                             if ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
