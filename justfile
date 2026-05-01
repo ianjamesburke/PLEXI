@@ -310,6 +310,17 @@ install-alpha: fetch-python-runtime
       exit 1
     fi
 
+    # HACK: cargo-bundle reads bundle metadata from Cargo.toml directly and
+    # has no env-var or CLI override support. Patch the two bundle fields,
+    # build, then restore. Package `name` is intentionally left as "plexi"
+    # so Cargo.lock stays identical across all channel branches.
+    backup_dir="$(mktemp -d)"
+    cp Cargo.toml "$backup_dir/Cargo.toml"
+    cleanup() { cp "$backup_dir/Cargo.toml" Cargo.toml; rm -rf "$backup_dir"; }
+    trap cleanup EXIT
+    sed -i '' 's/name = "Plexi"/name = "Plexi Alpha"/' Cargo.toml
+    sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-alpha"/' Cargo.toml
+
     cargo bundle --release
 
     app_src="target/release/bundle/osx/Plexi Alpha.app"
@@ -365,22 +376,13 @@ install-beta: fetch-python-runtime
       exit 1
     fi
 
+    # HACK: same as install-alpha — patch bundle metadata only, restore after build.
     backup_dir="$(mktemp -d)"
     cp Cargo.toml "$backup_dir/Cargo.toml"
-    cp src/main.rs "$backup_dir/main.rs"
-
-    cleanup() {
-      cp "$backup_dir/Cargo.toml" Cargo.toml
-      cp "$backup_dir/main.rs" src/main.rs
-      rm -rf "$backup_dir"
-    }
+    cleanup() { cp "$backup_dir/Cargo.toml" Cargo.toml; rm -rf "$backup_dir"; }
     trap cleanup EXIT
-
-    sed -i '' 's/^name = "plexi"/name = "plexi-beta"/' Cargo.toml
     sed -i '' 's/name = "Plexi"/name = "Plexi Beta"/' Cargo.toml
     sed -i '' 's/identifier = "com.ianjamesburke.plexi"/identifier = "com.ianjamesburke.plexi-beta"/' Cargo.toml
-    sed -i '' 's/with_title("Plexi")/with_title("Plexi Beta")/' src/main.rs
-    sed -i '' 's/"plexi",/"plexi-beta",/' src/main.rs
 
     cargo bundle --release
 

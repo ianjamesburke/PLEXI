@@ -1,15 +1,13 @@
 fn main() {
-    let pkg_name = std::env::var("CARGO_PKG_NAME").unwrap();
-    let title: String = pkg_name
-        .split('-')
-        .map(|word| {
-            let mut chars = word.chars();
-            chars
-                .next()
-                .map(|f| f.to_uppercase().collect::<String>() + chars.as_str())
-                .unwrap_or_default()
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    let channel = std::fs::read_to_string(".channel")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let title = match channel.as_str() {
+        "alpha" => "Plexi Alpha",
+        "beta" => "Plexi Beta",
+        _ => "Plexi",
+    };
     println!("cargo:rustc-env=PLEXI_APP_TITLE={title}");
+    println!("cargo:rerun-if-changed=.channel");
 }
