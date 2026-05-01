@@ -46,3 +46,4 @@ __pycache__/
 *.pyo
 sdk/python/**/__pycache__/
 sdk/python/*.egg-info/
+sdk/python/tests/
