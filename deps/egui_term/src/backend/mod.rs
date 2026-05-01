@@ -405,9 +405,9 @@ impl TerminalBackend {
                 }
             }
 
-            open::that(url).unwrap_or_else(|_| {
-                panic!("link opening is failed");
-            })
+            if let Err(e) = open::that(&url) {
+                log::warn!("egui_term: failed to open link {:?}: {}", url, e);
+            }
         }
     }
 
