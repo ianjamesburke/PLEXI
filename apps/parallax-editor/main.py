@@ -152,10 +152,14 @@ class ParallaxEditorApp(App):
             self._last_exit_code = exit_code
             self._running = False
             self._proc = None
-            if exit_code == 0:
-                self._status = "done"
-            else:
-                self._status = f"error (exit {exit_code})"
+            # Don't overwrite "cancelled" — the user explicitly stopped the job
+            # and exit_code will be non-zero (SIGTERM), which would misleadingly
+            # show "error (exit -15)" instead.
+            if self._status != "cancelled":
+                if exit_code == 0:
+                    self._status = "done"
+                else:
+                    self._status = f"error (exit {exit_code})"
 
         return done
 
