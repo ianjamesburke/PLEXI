@@ -657,6 +657,11 @@ impl ProcessApp {
         // `text_input_visible_prev` after the loop.
         let mut visible_this_frame: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        // Auto-focus: only focus the first newly-visible input per frame.
+        // egui's request_focus is last-write-wins within a frame, so calling
+        // it on every newly-visible input would leave only the last one
+        // focused. We want the first one.
+        let mut focus_granted = false;
 
         for cmd in frame {
             let DrawCommand::TextInput {
@@ -690,7 +695,10 @@ impl ProcessApp {
             // frame would build a fresh widget and lose the cursor.
             let widget_id = ui.id().with(("text_input", self.pane_id, id.as_str()));
 
-            let resp = {
+            // Use TextEdit::show() instead of ui.add() so we get TextEditOutput,
+            // which carries cursor_range. We need the cursor char index to insert
+            // '\n' at the right position for Shift+Enter (not just append to end).
+            let (resp, cursor_char_idx) = {
                 let buffer = self.text_input_buffers.entry(id.clone()).or_default();
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
@@ -710,32 +718,58 @@ impl ProcessApp {
                         .hint_text(placeholder.as_str())
                         .frame(true)
                 };
-                let r = child.add(edit);
-                // Auto-focus newly-visible inputs so the user can type
-                // immediately without clicking.
-                if newly_visible {
-                    r.request_focus();
+                let output = edit.show(&mut child);
+                // Auto-focus the first newly-visible input so the user can
+                // type immediately without clicking. Subsequent newly-visible
+                // inputs in the same frame are skipped — request_focus is
+                // last-write-wins in egui, so focusing all of them would
+                // leave only the last one focused.
+                if newly_visible && !focus_granted {
+                    output.response.request_focus();
+                    focus_granted = true;
                 }
-                r
+                let cursor_idx = output.cursor_range.map(|cr| cr.primary.ccursor.index);
+                (output.response, cursor_idx)
             };
 
             if *multiline {
-                // Multiline: Enter submits, Shift+Enter inserts newline.
-                // We check for Enter *without* Shift while the widget is
-                // focused. egui does not consume Enter for multiline edits
-                // (it inserts a newline), so we have to intercept it here.
-                if resp.has_focus()
-                    && ui.input(|i| {
+                // Multiline submit/newline handling:
+                //   Enter (no Shift)  → submit. egui inserts a '\n' first;
+                //                       strip it before submitting.
+                //   Shift+Enter       → insert newline. egui does NOT handle
+                //                       Shift+Enter in multiline mode, so we
+                //                       insert '\n' into the buffer ourselves
+                //                       and consume the key event.
+                if resp.has_focus() {
+                    let enter_no_shift = ui.input(|i| {
                         i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
-                    })
-                {
-                    // Strip the newline egui already inserted before we submit.
-                    if let Some(buf) = self.text_input_buffers.get_mut(id.as_str()) {
-                        if buf.ends_with('\n') {
-                            buf.pop();
+                    });
+                    let shift_enter = ui.input(|i| {
+                        i.key_pressed(egui::Key::Enter) && i.modifiers.shift
+                    });
+
+                    if enter_no_shift {
+                        // Strip the '\n' egui already inserted before submitting.
+                        if let Some(buf) = self.text_input_buffers.get_mut(id.as_str()) {
+                            if buf.ends_with('\n') {
+                                buf.pop();
+                            }
+                        }
+                        submitted.push(id.clone());
+                    } else if shift_enter {
+                        // egui ignores Shift+Enter in multiline mode; insert '\n'
+                        // at the cursor position (not just the end of the buffer).
+                        if let (Some(buf), Some(char_idx)) =
+                            (self.text_input_buffers.get_mut(id.as_str()), cursor_char_idx)
+                        {
+                            let byte_idx = buf
+                                .char_indices()
+                                .nth(char_idx)
+                                .map(|(i, _)| i)
+                                .unwrap_or(buf.len());
+                            buf.insert(byte_idx, '\n');
                         }
                     }
-                    submitted.push(id.clone());
                 }
             } else {
                 // Submit on Enter while focused. The egui idiom for
