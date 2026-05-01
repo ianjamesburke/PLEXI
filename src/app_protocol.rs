@@ -71,6 +71,14 @@ pub enum PlexiEvent {
     Key { key: String, modifiers: Modifiers },
     /// Mouse click at logical coordinates within the app surface.
     Click { x: f32, y: f32, button: MouseButton },
+    /// Pointer button pressed (fires on the frame the button goes down).
+    MouseDown { x: f32, y: f32, button: MouseButton },
+    /// Pointer button released (fires on the frame the button goes up).
+    MouseUp { x: f32, y: f32, button: MouseButton },
+    /// Pointer moved over the app surface. Only fires when the app has opted in
+    /// via `DrawCommand::SetMouseTracking { enabled: true }`. Pane-local
+    /// coordinates; `buttons` lists which buttons are currently held.
+    MouseMove { x: f32, y: f32, buttons: Vec<MouseButton> },
     /// User submitted a command via the command bar.
     Command { text: String },
     /// Response to a runtime CapabilityRequest.
@@ -127,15 +135,6 @@ pub enum PlexiEvent {
         #[serde(default)]
         error: Option<String>,
     },
-    /// Sent when an LlmRequest completes.
-    LlmResponse {
-        request_id: String,
-        /// The text content of the first choice, or empty on error.
-        content: String,
-        /// Set if the call failed.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
     /// Sent when the user responds to a notification that included a notify_id.
     ///
     /// - `action_label`: what was clicked — "acknowledge" for the default,
@@ -158,6 +157,273 @@ pub enum PlexiEvent {
         width: f32,
         height: f32,
     },
+    /// User pressed Enter inside a `DrawCommand::TextInput` field.
+    ///
+    /// `id` matches the `id` the app supplied on the `TextInput` command.
+    /// `value` is the buffered text at submission time. The host clears its
+    /// buffer for `id` after emitting this event so the field is empty for
+    /// the next input.
+    TextSubmitted { id: String, value: String },
+    /// Sent once at agent startup to deliver the manifest's `[launch].system_prompt`.
+    ///
+    /// Only delivered to apps whose manifest declares `[app] type = "agent"`. Apps
+    /// of `type = "app"` will never receive this event. The agent decides how to
+    /// use the prompt — typically by passing it as the `system` field on the
+    /// first `iq.query` call. Apps that don't need a system prompt may simply
+    /// ignore the event.
+    ///
+    /// `system_prompt` is `None` when the manifest omits the `[launch].system_prompt`
+    /// field; the host serialises it as JSON `null` so the value is explicit on
+    /// the wire. Agents must handle the `None` case (no prompt set).
+    AgentInit { system_prompt: Option<String> },
+    /// User submitted text in the host-rendered conversation input box of an
+    /// agent pane.
+    ///
+    /// Only delivered to apps whose manifest declares `[app] type = "agent"`.
+    /// The agent receives the raw user text and decides how to respond
+    /// (typically by appending it to its conversation history and dispatching
+    /// an `iq.query`). The host owns the input widget; the agent owns the
+    /// conversation logic.
+    UserMessage { text: String },
+    /// Clipboard paste forwarded into the focused app pane.
+    ///
+    /// Emitted whenever the host observes `egui::Event::Paste(text)` while an
+    /// app pane has keyboard focus. The text is the OS clipboard contents at
+    /// paste time, already decoded to UTF-8 by egui. Apps receive this both
+    /// for Cmd+V chords and for OS-menu / right-click → Paste actions.
+    ///
+    /// Pre-#200 apps shelled out to `pbpaste` for this; that workaround is
+    /// macOS-only and races with focus changes. This event is the portable
+    /// path.
+    Paste { text: String },
+    /// Response to a `DrawCommand::AiQuery`. Either `content` is `Some` (success)
+    /// or `error` is `Some` (failure) — the two are mutually exclusive. Token
+    /// counts are zero on error.
+    ///
+    /// `error` is set when:
+    ///   - the app does not declare the `ai.query` capability ("capability denied")
+    ///   - the host backend cannot be reached (e.g. missing API key, Ollama not running)
+    ///   - the upstream backend returned an error mid-stream
+    AiResponse {
+        request_id: String,
+        content: Option<String>,
+        tokens_in: u32,
+        tokens_out: u32,
+        error: Option<String>,
+    },
+    /// Response to a `DrawCommand::ListAudioDevices` request (#277).
+    /// Both vectors are always present — empty when enumeration finds no
+    /// devices of that direction. `error` is set only when device
+    /// enumeration itself failed (host without an audio host driver, etc).
+    AudioDevicesListed {
+        request_id: String,
+        inputs: Vec<AudioDeviceWire>,
+        outputs: Vec<AudioDeviceWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Sent when a `DrawCommand::AudioCapture` successfully opened the device
+    /// and started delivering PCM frames on `pipe_id`. The `sample_rate`,
+    /// `channels`, and `buffer_size` are the actual negotiated values — the
+    /// app must use these (not its requested values) when interpreting frames.
+    AudioCaptureStarted {
+        pipe_id: String,
+        sample_rate: u32,
+        channels: u16,
+        buffer_size: u32,
+        device_name: String,
+    },
+    /// Sent when a `DrawCommand::AudioCapture` could not be honoured —
+    /// permission denied, bad device id, no devices, cpal failure.
+    AudioCaptureError {
+        pipe_id: String,
+        error: String,
+    },
+    /// Response to a `DrawCommand::ListMidiDevices` request (#320).
+    /// Both vectors are always present — empty when CoreMIDI finds no
+    /// endpoints of that direction. `error` is set only when MIDI subsystem
+    /// itself failed to enumerate (CoreMIDI unavailable, etc).
+    MidiDevicesListed {
+        request_id: String,
+        inputs: Vec<MidiPortWire>,
+        outputs: Vec<MidiPortWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Sent when a `DrawCommand::OpenMidiInput` successfully opened the port
+    /// and started forwarding incoming MIDI byte streams to the binary pipe
+    /// at `pipe_id`. The host emitted `PipeOpened { pipe_id, socket_path }`
+    /// just before this event so the app can connect to the socket.
+    MidiInputOpened {
+        pipe_id: String,
+        port_id: String,
+        port_name: String,
+    },
+    /// Sent when `DrawCommand::OpenMidiInput` could not be honoured —
+    /// permission denied, port not found, CoreMIDI failure.
+    MidiInputError {
+        pipe_id: String,
+        error: String,
+    },
+    /// Sent when `DrawCommand::SendMidi` could not be honoured. Successful
+    /// sends produce no event (fire-and-forget); only failures surface.
+    MidiSendError {
+        port_id: String,
+        error: String,
+    },
+    /// Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has
+    /// allocated the binary pipe (look for the preceding `PipeOpened`),
+    /// started the decoder, and is now pumping RGBA8 frames into the pipe.
+    /// `handle_id` is the opaque handle the app passes to subsequent
+    /// `SetVideoState` / `CloseVideo` commands.
+    VideoOpenAck {
+        request_id: String,
+        handle_id: u64,
+        width: u32,
+        height: u32,
+        fps: f32,
+        duration_ms: u64,
+    },
+    /// Sent when `DrawCommand::OpenVideo` could not be honoured (#345) —
+    /// capability denied, source not found, decoder error, or the
+    /// production stub's `NotImplemented` (until #346 ships).
+    VideoOpenError {
+        request_id: String,
+        error: String,
+    },
+    /// Response to `DrawCommand::AgentRosterGet` (#286). Lists every live
+    /// `Pane::Agent` in the same workspace context.
+    ///
+    /// `agents` is sorted by `pane_id` ascending so the snapshot is
+    /// reproducible across calls. An app without the `agents.list`
+    /// capability receives an empty `agents` vec — NOT an error. This
+    /// matches the spec: "agents.list" is gated on visibility, not access.
+    AgentRoster {
+        request_id: String,
+        agents: Vec<AgentInfo>,
+    },
+    /// Response to `DrawCommand::RequestLinkedTerminal` (#78). Carries the
+    /// pane id of the freshly-opened terminal so subsequent
+    /// `RunInLinkedTerminal` / `InsertPathToken` / etc. calls can reference
+    /// it. `terminal_pane_id` is the same `PaneId` (`u64`) the host uses
+    /// internally — pass it back verbatim.
+    ///
+    /// Apps without `terminal.bindings` never receive this event; the
+    /// request is dropped at the routing layer with a capability-denied
+    /// log line.
+    LinkedTerminalReady {
+        request_id: String,
+        terminal_pane_id: u64,
+    },
+    /// Response to `DrawCommand::RequestCommandPreview` (#78). Returns the
+    /// command verbatim plus the linked terminal's current cwd so the app
+    /// can render a confirmation modal that says "this would run in
+    /// /tmp/foo". `would_run_in_cwd` is the host's best-effort snapshot of
+    /// the terminal child's cwd at request time — never an expansion of
+    /// shell history or alias.
+    CommandPreview {
+        request_id: String,
+        command: String,
+        would_run_in_cwd: String,
+    },
+    /// Emitted by host to app when Escape is pressed and the app's nav stack
+    /// depth is > 0. The app handles this by popping its own internal view
+    /// and emitting `DrawCommand::PopNav` to decrement the host counter.
+    NavBack { view_id: String },
+
+    /// Emitted by the host when the scroll offset for a `BeginScroll` region
+    /// changes (mouse wheel, drag). The app should re-render using `offset_y`
+    /// as the vertical translation applied to all content within that region.
+    ///
+    /// `id` matches the `id` from the `DrawCommand::BeginScroll` that declared
+    /// the region. `offset_y` is always >= 0 and clamped to
+    /// `max(0, content_height - viewport_height)`.
+    ScrollOffset { id: String, offset_y: f32 },
+}
+
+/// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
+/// on the protocol surface so SDKs in other languages can map it without
+/// depending on the midi module.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MidiPortWire {
+    pub id: String,
+    pub name: String,
+    pub default: bool,
+}
+
+impl From<crate::midi::MidiPortInfo> for MidiPortWire {
+    fn from(info: crate::midi::MidiPortInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            default: info.default,
+        }
+    }
+}
+
+/// One live agent pane on the wire. Returned by `AgentRoster` (#286).
+///
+/// `pane_id` matches the host's internal `PaneId` (`u64`); pass it back
+/// to the host as `target_pane_id` on `PipeOpenDirected` to address
+/// inter-agent pipes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AgentInfo {
+    pub pane_id: u64,
+    pub app_id: String,
+    pub name: String,
+}
+
+/// On-the-wire shape of one audio device. Mirrors `audio::AudioDeviceInfo`
+/// but lives on the protocol surface so SDKs in other languages can map it
+/// without depending on the audio module.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AudioDeviceWire {
+    pub id: String,
+    pub name: String,
+    pub default: bool,
+}
+
+impl From<crate::audio::AudioDeviceInfo> for AudioDeviceWire {
+    fn from(info: crate::audio::AudioDeviceInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            default: info.default,
+        }
+    }
+}
+
+/// One message in an `AiQuery` conversation. Wire shape mirrors Anthropic
+/// Messages API: `role` ∈ {"user", "assistant"}, `content` is plain text.
+/// (Multimodal content blocks are future-scope.)
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AiMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// Tool definition for a future tool-use turn loop. The current broker only
+/// supports text-only turns; if `tools` is non-empty the broker returns
+/// an error response. Reserved on the wire so that v3.4+ can add tool
+/// dispatch without changing the protocol.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AiTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// Coarse model tier requested by the app. The host maps each tier to a
+/// concrete model identifier per backend (spec §ai.query):
+///   - `Low`    → Haiku
+///   - `Medium` → Sonnet
+///   - `High`   → Opus
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTier {
+    Low,
+    Medium,
+    High,
 }
 
 /// A simple rectangle (logical coordinates).
@@ -231,6 +497,13 @@ pub enum DrawCommand {
     /// `max_width` — when `Some(w)`, the text is clipped at `w` pixels.
     /// `elide` — when `true`, a `…` is appended at the clip point; when
     ///           `false`, the text is hard-clipped with no marker.
+    /// `selectable` — when `true`, the host renders this text as a
+    ///                selectable egui label so the user can drag-select
+    ///                inside it and Cmd+C copies the selection. When
+    ///                `false` (default for pre-#200 callers), the text
+    ///                paints via the painter and cannot be selected.
+    ///                Required field — no `serde(default)`. Apps must
+    ///                set it explicitly; omitting it fails deserialisation.
     Text {
         x: f32,
         y: f32,
@@ -245,6 +518,7 @@ pub enum DrawCommand {
         align: String,
         max_width: Option<f32>,
         elide: bool,
+        selectable: bool,
     },
     /// Draw a line segment.
     Line {
@@ -334,6 +608,18 @@ pub enum DrawCommand {
         /// Typical values: 0 (background info), 50 (normal), 100 (important),
         /// 200 (critical/required).
         priority: u32,
+        /// Inline image attachment (PNG / JPEG, base64-encoded). Rendered above
+        /// the action buttons. Decoded size > 50 KB triggers a placeholder.
+        /// `Option` is the natural empty/missing wire shape — no
+        /// `#[serde(default)]` shim. Mutually exclusive with `image_pipe_id`;
+        /// when both set, inline wins and the pipe is ignored (logged warn).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        image_inline: Option<NotificationImage>,
+        /// Pipe-referenced image. Host drains the binary ring lazily when the
+        /// notification is visible. Payload format: `width: u32 LE`,
+        /// `height: u32 LE`, then `width * height * 4` bytes of RGBA.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        image_pipe_id: Option<String>,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
@@ -345,11 +631,38 @@ pub enum DrawCommand {
         /// One of: "in" | "out" | "duplex"
         direction: String,
     },
+    /// Open a *directed* JSON pipe to a specific target pane (#286).
+    ///
+    /// Mirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only
+    /// the caller pane and the pane identified by `target_pane_id` can
+    /// receive messages on this pipe — peer apps are NOT subscribed even
+    /// if they call `pipe_open` with the same `pipe_id`.
+    ///
+    /// Created bidirectionally: both panes receive the other's `PipeSend`
+    /// payloads as `PlexiEvent::PipeMessage`. Either side can close.
+    ///
+    /// Capability gate: caller needs `pipe.open` (the same as `PipeOpen`).
+    /// The target does NOT need `agents.list` — it just needs to be
+    /// addressable. The target also doesn't need to opt in; the host
+    /// subscribes it on this pipe id.
+    ///
+    /// Direction is always `duplex` on directed pipes — there's no use case
+    /// for a one-way agent-to-agent channel today, so the field is omitted.
+    /// Mode is always `json`; binary directed pipes are out of scope until
+    /// a real use case arrives.
+    PipeOpenDirected {
+        pipe_id: String,
+        target_pane_id: u64,
+    },
     /// Send a JSON-mode pipe message (not for binary pipes).
     PipeSend {
         pipe_id: String,
         payload: serde_json::Value,
     },
+    /// Query the live agent roster (#286). Requires `agents.list` capability;
+    /// callers without it receive an empty `agents` vec on the response — not
+    /// an error. The response is `PlexiEvent::AgentRoster { request_id, agents }`.
+    AgentRosterGet { request_id: String },
     /// Update the status text shown in the parent pane chrome.
     StatusSummary { text: String },
 
@@ -379,16 +692,21 @@ pub enum DrawCommand {
         #[serde(default)]
         body: Option<String>,
     },
-    /// Host-brokered LLM call. Requires `llm` capability.
-    /// Calls Anthropic Claude with the given prompt and optional system message.
-    /// Host replies with `PlexiEvent::LlmResponse { request_id, content, error }`.
-    LlmRequest {
+    /// v3.3 brokered AI call. Requires `ai.query` capability.
+    ///
+    /// The host routes this to the active Plexi AI backend, appends an
+    /// `AgentTurn` row to `ai-ledger.jsonl`, and replies with
+    /// `PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.
+    ///
+    /// All fields are required — no `serde(default)`. `tools` may be empty;
+    /// non-empty `tools` is accepted on the wire but rejected at the broker
+    /// (returns an error response) until v3.4 adds tool dispatch.
+    AiQuery {
         request_id: String,
-        prompt: String,
-        #[serde(default = "default_llm_model")]
-        model: String,
-        #[serde(default)]
-        system: Option<String>,
+        model_tier: ModelTier,
+        system: String,
+        messages: Vec<AiMessage>,
+        tools: Vec<AiTool>,
     },
     /// Draw an image from a workspace-scoped path or data URL.
     Image {
@@ -401,13 +719,33 @@ pub enum DrawCommand {
         #[serde(default = "default_image_fit")]
         fit: String,
     },
-    /// Host-owned video decoder: emits frames on a binary pipe.
-    VideoPlayer {
+    /// Open a video decoder (#345). The host responds with
+    /// `PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,
+    /// fps, duration_ms }` on success or `PlexiEvent::VideoOpenError
+    /// { request_id, error }` on failure (capability denied, source not
+    /// found, decoder error, NotImplemented from the production stub).
+    /// Decoded RGBA8 frames flow over the binary pipe at `pipe_id`; one
+    /// pipe frame = one video frame, packed `[R,G,B,A,...]` of length
+    /// `width * height * 4`.
+    ///
+    /// Requires `video.playback` capability. All fields required —
+    /// no `serde(default)`.
+    OpenVideo {
+        request_id: String,
         source: String,
-        rect: Rect,
-        /// One of: "playing" | "paused" | "stopped".
-        state: String,
+        pipe_id: String,
     },
+    /// Drive playback state for a previously-opened video handle (#345).
+    /// `handle_id` is the value returned in `VideoOpenAck`. State variants:
+    /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
+    SetVideoState {
+        handle_id: u64,
+        state: crate::video::VideoState,
+    },
+    /// Close a previously-opened video handle (#345). Tears down the
+    /// decoder thread and the associated binary pipe drains. No response
+    /// event — fire-and-forget.
+    CloseVideo { handle_id: u64 },
     /// Render an amplitude meter reading from a binary pipe.
     AudioMeter { rect: Rect, pipe_id: String },
     /// Host-owned audio playback via `rodio`.
@@ -422,13 +760,51 @@ pub enum DrawCommand {
         state: String,
     },
     /// Host-owned audio capture: mic PCM delivered on a binary pipe.
+    /// `device_id` selects which input device (from `ListAudioDevices`); when
+    /// `None` the host opens the OS default input. The negotiated parameters
+    /// arrive in `PlexiEvent::AudioCaptureStarted`; failures arrive in
+    /// `PlexiEvent::AudioCaptureError`.
     AudioCapture {
         pipe_id: String,
-        #[serde(default = "default_sample_rate")]
+        #[serde(default)]
+        device_id: Option<String>,
         sample_rate: u32,
-        #[serde(default = "default_buffer_size")]
         buffer_size: u32,
     },
+    /// Request enumeration of audio devices (#277). Host responds with
+    /// `PlexiEvent::AudioDevicesListed { request_id, inputs, outputs }`. No
+    /// capability gate — enumeration discloses only device names already
+    /// visible to any macOS app.
+    ListAudioDevices { request_id: String },
+
+    /// Request enumeration of MIDI ports (#320). Host responds with
+    /// `PlexiEvent::MidiDevicesListed { request_id, inputs, outputs }`. No
+    /// capability gate — enumeration discloses only port names already
+    /// visible in Audio MIDI Setup.
+    ListMidiDevices { request_id: String },
+
+    /// Open a MIDI input port and forward every incoming message as a binary
+    /// pipe frame on `pipe_id`. Each frame is a single MIDI 1.0 byte stream
+    /// (1–3 bytes for channel-voice / system real-time). Requires `midi.in`.
+    /// Host emits `PlexiEvent::PipeOpened` then `PlexiEvent::MidiInputOpened`
+    /// on success, or `PlexiEvent::MidiInputError` on failure (port not found,
+    /// capability denied, CoreMIDI error).
+    OpenMidiInput {
+        port_id: String,
+        pipe_id: String,
+    },
+
+    /// Close the MIDI input previously opened on `port_id`. The host
+    /// disconnects from the port and closes the associated binary pipe.
+    /// No-op if the port is not currently open. No response event.
+    CloseMidiInput { port_id: String },
+
+    /// Send one MIDI 1.0 byte stream to `port_id`. Fire-and-forget — the host
+    /// only emits `PlexiEvent::MidiSendError` if the send failed (port not
+    /// open, CoreMIDI error). Requires `midi.out`. The host opens the output
+    /// port lazily on the first `SendMidi` call and keeps it open until the
+    /// app exits.
+    SendMidi { port_id: String, bytes: Vec<u8> },
 
     /// SDK ready handshake. Sent once by the app after receiving Init.
     /// Host captures sdk and features_used; the message is otherwise a no-op.
@@ -567,6 +943,229 @@ pub enum DrawCommand {
         #[serde(default)]
         monospace: bool,
     },
+
+    /// Write `text` to the OS clipboard.
+    ///
+    /// Routed through `egui::Context::copy_text`, which handles platform-
+    /// specific clipboard backends (NSPasteboard / X11 / Wayland / Win32).
+    /// Synchronous from the app's perspective — no acknowledgement event.
+    /// No capability flag required: clipboard write is low-risk and the
+    /// app already controls when it fires (key handler, button, etc.).
+    CopyToClipboard { text: String },
+
+    /// Append a row to the host-owned conversation history of an agent pane.
+    ///
+    /// Only meaningful for panes whose manifest declares `[app] type = "agent"`.
+    /// The host renders the conversation history as the pane's primary surface;
+    /// the agent emits one of these per logical turn boundary (user echo,
+    /// assistant reply, tool result, system note).
+    ///
+    /// `role` is one of `"user"` | `"assistant"` | `"tool"` | `"system"`. Other
+    /// values are accepted at the wire level (forward-compatibility) but the
+    /// host renders unknown roles as plain text. Required field — no
+    /// `serde(default)`.
+    ///
+    /// `content` is the plain-text body of the row. Required field. Empty
+    /// strings are valid (e.g. a placeholder turn while a stream is in flight)
+    /// but discouraged — emit on completion, not on dispatch.
+    AppendConversation { role: String, content: String },
+
+    /// Text input field (host-owned buffer, submit-only).
+    ///
+    /// Emitted by the app each frame at `(x, y)` with width `w`. The host
+    /// owns the underlying buffer keyed on `id` — typed characters never
+    /// reach the app between frames. On Enter the host emits
+    /// `PlexiEvent::TextSubmitted { id, value }` and clears its buffer.
+    ///
+    /// When `multiline` is `false` (the default), the host renders a
+    /// single-line `TextEdit` and Enter submits. When `multiline` is `true`,
+    /// the host renders a multi-line `TextEdit`; Enter still submits but
+    /// Shift+Enter inserts a newline.
+    ///
+    /// Real-time validation (per-keystroke value access) is intentionally
+    /// out of scope — see issue #283 option A. Apps that need it must
+    /// wait for a future protocol revision.
+    TextInput {
+        id: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        placeholder: String,
+        /// When `true`, render as a multi-line editor. Enter submits;
+        /// Shift+Enter inserts a newline. Defaults to `false` so existing
+        /// draw commands without this field continue to work.
+        #[serde(default)]
+        multiline: bool,
+    },
+
+    // ── Canvas Terminal Binding Primitives (#78) ─────────────────────────
+    //
+    // The binding-primitive surface that lets a Canvas app drive a linked
+    // terminal pane. All commands require the `terminal.bindings` capability
+    // — apps without it get capability-denied responses on each call.
+    //
+    // The lifecycle: app emits `RequestLinkedTerminal` once at startup; host
+    // opens a fresh `Pane::Terminal` next to the app and replies with
+    // `PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id }`.
+    // From then on every primitive references the terminal via
+    // `terminal_pane_id`.
+
+    /// Ask the host to open a fresh terminal pane next to this Canvas app
+    /// and link it. Host responds with `PlexiEvent::LinkedTerminalReady
+    /// { request_id, terminal_pane_id }`. `cwd` defaults to the app's
+    /// workspace root when `None`. `label` is reserved for future pane-
+    /// chrome decoration; currently unused by the host but pinned on the
+    /// wire so apps and the host evolve together.
+    ///
+    /// Capability: `terminal.bindings`. Required fields — no `serde(default)`.
+    RequestLinkedTerminal {
+        request_id: String,
+        cwd: Option<String>,
+        label: Option<String>,
+    },
+
+    /// Execute `command` in a linked terminal pane.
+    ///
+    /// `echo: true` — the command is typed into the terminal so the user
+    /// sees it (followed by a newline so the shell executes it). This is
+    /// the default behaviour for click-driven UIs where the user wants to
+    /// know what just ran.
+    /// `echo: false` — the command is still written to the PTY, but the
+    /// caller is signalling intent that the terminal is being driven
+    /// programmatically (the terminal still echoes input by default at
+    /// the PTY level — silent execution is best-effort).
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    RunInLinkedTerminal {
+        terminal_pane_id: u64,
+        command: String,
+        echo: bool,
+    },
+
+    /// Insert `path` into the linked terminal at the cursor position.
+    ///
+    /// `Replace` mode: write a Ctrl-W (kill-word, shell readline default)
+    /// before the path — replaces the partial word the user is typing.
+    /// `Append` mode: write the path verbatim — handy for completing
+    /// drag-and-drop / file-picker style flows where the user is composing
+    /// a command.
+    ///
+    /// The host wraps the path in single quotes (POSIX) when it contains
+    /// shell metacharacters so the shell doesn't expand or split it.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    InsertPathToken {
+        terminal_pane_id: u64,
+        path: String,
+        mode: PathTokenMode,
+    },
+
+    /// Ask the host to compute the command that *would* run for a given
+    /// command string in the linked terminal. Doesn't execute. Used for
+    /// confirmation modals before destructive operations.
+    ///
+    /// Host responds with `PlexiEvent::CommandPreview { request_id, command,
+    /// would_run_in_cwd }`. `would_run_in_cwd` is the terminal's current
+    /// working directory at request time — useful for "rm -rf .git in
+    /// /tmp/foo" style confirmations.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    RequestCommandPreview {
+        request_id: String,
+        terminal_pane_id: u64,
+        command: String,
+    },
+
+    /// Open a workspace artifact (file or directory) via the host.
+    ///
+    /// Modes:
+    ///   - `OpenInPane`        — open the path in a new app pane, e.g. a
+    ///                           file browser at a directory or a text
+    ///                           editor on a file. Implementation: routes
+    ///                           through the file-browser app for
+    ///                           directories; falls through to the OS
+    ///                           default for files in this PR.
+    ///   - `RevealInFinder`    — `open -R <path>` on macOS.
+    ///   - `OpenWithDefault`   — `open <path>` on macOS — uses Launch
+    ///                           Services to pick the registered app for
+    ///                           the file's UTI.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    OpenArtifact { path: String, mode: ArtifactOpenMode },
+
+    // ── Navigation stack ─────────────────────────────────────────────────
+    /// App signals it has pushed a navigation level. The host appends the
+    /// entry to its per-pane nav stack. While the stack has entries, the pane
+    /// chrome shows a back arrow + the current view's title, and Cmd+[
+    /// emits `PlexiEvent::NavBack` to the app instead of cycling tabs.
+    ///
+    /// `view_id` must be a stable identifier for this view (e.g. `"detail"`);
+    /// `title` is shown in the pane chrome while this view is active.
+    PushNav { view_id: String, title: String },
+    /// App signals it has popped a navigation level. The host removes the top
+    /// entry from the per-pane nav stack (saturating — no-op on empty stack).
+    PopNav {},
+
+    // ── Host-managed scroll regions (#446) ───────────────────────────────
+
+    /// Begin a host-managed vertical scroll region.
+    ///
+    /// All draw commands between this and the matching `EndScroll` are clipped
+    /// to the viewport rect `(x, y, w, h)`. The host tracks the scroll offset
+    /// for `id` across frames and emits `PlexiEvent::ScrollOffset { id, offset_y }`
+    /// whenever the user scrolls (mouse wheel / drag). The app translates its
+    /// content coordinates by `offset_y` before emitting draw commands.
+    ///
+    /// `content_height` is the total virtual height of the scrollable content
+    /// in logical pixels. The host uses this to size the scrollbar thumb.
+    ///
+    /// `id` must be stable across frames — use a meaningful string (e.g. the
+    /// region name) rather than a counter that may change.
+    BeginScroll {
+        id: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        content_height: f32,
+    },
+
+    /// Close the most recently opened scroll region.
+    ///
+    /// Must be balanced with a preceding `BeginScroll`. Imbalanced pairs are
+    /// logged at `warn` level and the stack is reset at frame end.
+    EndScroll,
+
+    /// Enable or disable `PlexiEvent::MouseMove` delivery for this pane.
+    ///
+    /// Off by default to avoid flooding apps that don't need continuous pointer
+    /// tracking. Send `{ enabled: true }` after `Ready` to start receiving
+    /// `on_mouse_move` callbacks. Send `{ enabled: false }` to stop.
+    SetMouseTracking { enabled: bool },
+}
+
+/// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PathTokenMode {
+    /// Send Ctrl-W (kill-word) before the path so the shell's readline
+    /// removes the partial word the user was typing, then write the path.
+    Replace,
+    /// Write the path verbatim at the cursor position.
+    Append,
+}
+
+/// Routing target for `DrawCommand::OpenArtifact`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactOpenMode {
+    /// Open the path in a new Plexi pane (file browser for directories;
+    /// OS default for files in v3.5).
+    OpenInPane,
+    /// `open -R <path>` — reveal in Finder.
+    RevealInFinder,
+    /// `open <path>` — Launch Services default app.
+    OpenWithDefault,
 }
 
 /// One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips
@@ -622,6 +1221,16 @@ pub enum NotifyKind {
     Input,
 }
 
+/// Inline image attachment on a Notify command. `mime` is the MIME type
+/// (`image/png` or `image/jpeg`), `base64` is the raw image bytes
+/// base64-encoded. Decoded size cap (50 KB) is enforced host-side at render
+/// time; oversized images render a placeholder badge instead of decoding.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct NotificationImage {
+    pub mime: String,
+    pub base64: String,
+}
+
 /// One option in a `kind = "choice"` notification.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NotifyOption {
@@ -667,14 +1276,929 @@ fn default_volume() -> f32 {
     1.0
 }
 
-fn default_sample_rate() -> u32 {
-    48_000
-}
 
-fn default_buffer_size() -> u32 {
-    1024
-}
+#[cfg(test)]
+mod tests {
+    //! Wire-format round-trip tests for the v3.2 clipboard / paste / selectable
+    //! text additions (#200 + #146). These pin the on-the-wire shape — every
+    //! field is required and must be present. No `#[serde(default)]` papering
+    //! over missing fields.
+    use super::*;
 
-fn default_llm_model() -> String {
-    "claude-haiku-4-5-20251001".to_string()
+    #[test]
+    fn paste_event_round_trips_serde() {
+        let json = r#"{"type":"paste","text":"hello world"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::Paste { text } => assert_eq!(text, "hello world"),
+            other => panic!("expected Paste, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"paste""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""text":"hello world""#),
+            "text missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn copy_to_clipboard_round_trips_serde() {
+        let json = r#"{"type":"copy_to_clipboard","text":"snippet"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::CopyToClipboard { text } => assert_eq!(text, "snippet"),
+            other => panic!("expected CopyToClipboard, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"copy_to_clipboard""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn text_drawcommand_with_selectable_round_trips() {
+        let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":true,"selectable":true}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Text {
+                text, selectable, ..
+            } => {
+                assert_eq!(text, "hi");
+                assert!(*selectable, "selectable should be true");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""selectable":true"#),
+            "selectable flag missing on wire: {serialised}"
+        );
+    }
+
+    #[test]
+    fn text_drawcommand_missing_selectable_fails_deserialise() {
+        // No `selectable` field — must fail because the field is required
+        // (no `#[serde(default)]` on it).
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"x","size":14.0,"color":"#fff","max_width":null,"elide":true}"##;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `selectable` field"
+        );
+    }
+
+    // ── v3.3 iq.query wire shape (#284) ──────────────────────────────────
+    // Pin the on-the-wire shape for AiQuery / AiResponse. All fields are
+    // required — no `serde(default)`.
+
+    #[test]
+    fn ai_query_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"ai_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::AiQuery {
+                request_id,
+                model_tier,
+                system,
+                messages,
+                tools,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(*model_tier, ModelTier::Medium);
+                assert_eq!(system, "You are helpful.");
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].role, "user");
+                assert_eq!(messages[0].content, "hi");
+                assert!(tools.is_empty());
+            }
+            other => panic!("expected AiQuery, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"ai_query""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""model_tier":"medium""#),
+            "model_tier missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn ai_response_round_trips_serde() {
+        let json = r#"{"type":"ai_response","request_id":"req-1","content":"Hello!","tokens_in":12,"tokens_out":4,"error":null}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AiResponse {
+                request_id,
+                content,
+                tokens_in,
+                tokens_out,
+                error,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(content.as_deref(), Some("Hello!"));
+                assert_eq!(*tokens_in, 12);
+                assert_eq!(*tokens_out, 4);
+                assert!(error.is_none());
+            }
+            other => panic!("expected AiResponse, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"ai_response""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn ai_response_with_error_serde() {
+        let json = r#"{"type":"ai_response","request_id":"req-2","content":null,"tokens_in":0,"tokens_out":0,"error":"capability denied: ai.query not declared in manifest"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AiResponse {
+                content,
+                error,
+                tokens_in,
+                tokens_out,
+                ..
+            } => {
+                assert!(content.is_none(), "content must be None on error");
+                assert_eq!(
+                    error.as_deref(),
+                    Some("capability denied: ai.query not declared in manifest")
+                );
+                assert_eq!(*tokens_in, 0);
+                assert_eq!(*tokens_out, 0);
+            }
+            other => panic!("expected AiResponse, got {other:?}"),
+        }
+    }
+
+    // ── v3.3 agent-as-app wire shape (#285) ──────────────────────────────
+    // Pin the on-the-wire shape for the three new variants. All fields are
+    // required — no `serde(default)`.
+
+    #[test]
+    fn user_message_event_round_trips_serde() {
+        let json = r#"{"type":"user_message","text":"tell me a joke"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::UserMessage { text } => assert_eq!(text, "tell me a joke"),
+            other => panic!("expected UserMessage, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"user_message""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""text":"tell me a joke""#),
+            "text missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn user_message_missing_text_fails_deserialise() {
+        // No `text` field — must fail because the field is required (no
+        // `serde(default)`).
+        let json = r#"{"type":"user_message"}"#;
+        let result: Result<PlexiEvent, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `text` field"
+        );
+    }
+
+    #[test]
+    fn agent_init_event_round_trips_serde() {
+        // With a system prompt set.
+        let json = r#"{"type":"agent_init","system_prompt":"You are helpful."}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AgentInit { system_prompt } => {
+                assert_eq!(system_prompt.as_deref(), Some("You are helpful."));
+            }
+            other => panic!("expected AgentInit, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"agent_init""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Null system_prompt — agent manifests without a `[launch].system_prompt`.
+        let json = r#"{"type":"agent_init","system_prompt":null}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AgentInit { system_prompt } => {
+                assert!(system_prompt.is_none(), "system_prompt must be None");
+            }
+            other => panic!("expected AgentInit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_conversation_drawcommand_round_trips() {
+        let json =
+            r#"{"type":"append_conversation","role":"assistant","content":"Hello!"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::AppendConversation { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content, "Hello!");
+            }
+            other => panic!("expected AppendConversation, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"append_conversation""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""role":"assistant""#),
+            "role missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn append_conversation_missing_content_fails_deserialise() {
+        // No `content` field — must fail. Required.
+        let json = r#"{"type":"append_conversation","role":"user"}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `content` field"
+        );
+    }
+
+    #[test]
+    fn ai_query_missing_required_field_fails_deserialise() {
+        // No `tools` field — must fail because the field is required
+        // (no `#[serde(default)]` on it).
+        let json = r#"{"type":"ai_query","request_id":"r","model_tier":"low","system":"","messages":[]}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `tools` field"
+        );
+    }
+
+    // ── v3.4 audio capture wire shape (#277) ─────────────────────────────
+    // Pin the on-the-wire shape for ListAudioDevices / AudioDevicesListed /
+    // AudioCapture. Required fields fail to deserialise when absent.
+
+    #[test]
+    fn list_audio_devices_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"list_audio_devices","request_id":"req-9"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::ListAudioDevices { request_id } => {
+                assert_eq!(request_id, "req-9");
+            }
+            other => panic!("expected ListAudioDevices, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"list_audio_devices""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn audio_devices_listed_event_round_trips_serde() {
+        let json = r#"{"type":"audio_devices_listed","request_id":"req-9","inputs":[{"id":"abc","name":"Built-in Mic","default":true}],"outputs":[{"id":"def","name":"Built-in Speakers","default":true}]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AudioDevicesListed { request_id, inputs, outputs, error } => {
+                assert_eq!(request_id, "req-9");
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(inputs[0].id, "abc");
+                assert!(inputs[0].default);
+                assert_eq!(outputs.len(), 1);
+                assert_eq!(outputs[0].name, "Built-in Speakers");
+                assert!(error.is_none());
+            }
+            other => panic!("expected AudioDevicesListed, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"audio_devices_listed""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    // ── v3.4 CoreMIDI wire shape (#320) ─────────────────────────────────
+    // Pin the on-the-wire shape for ListMidiDevices / MidiDevicesListed /
+    // OpenMidiInput / SendMidi. Required fields fail to deserialise when absent.
+
+    #[test]
+    fn list_midi_devices_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"list_midi_devices","request_id":"req-m1"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::ListMidiDevices { request_id } => {
+                assert_eq!(request_id, "req-m1");
+            }
+            other => panic!("expected ListMidiDevices, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"list_midi_devices""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn midi_devices_listed_event_round_trips_serde() {
+        let json = r#"{"type":"midi_devices_listed","request_id":"req-m1","inputs":[{"id":"123","name":"Mock Controller","default":true}],"outputs":[{"id":"456","name":"Mock Synth","default":true}]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::MidiDevicesListed {
+                request_id,
+                inputs,
+                outputs,
+                error,
+            } => {
+                assert_eq!(request_id, "req-m1");
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(inputs[0].id, "123");
+                assert!(inputs[0].default);
+                assert_eq!(outputs.len(), 1);
+                assert_eq!(outputs[0].name, "Mock Synth");
+                assert!(error.is_none());
+            }
+            other => panic!("expected MidiDevicesListed, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"midi_devices_listed""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn send_midi_drawcommand_round_trips() {
+        // SendMidi carries a Vec<u8> on the wire. JSON encoding is a JSON
+        // array of numbers — the human-readable shape (no base64) keeps the
+        // wire debuggable and side-steps SDK plumbing for binary payloads.
+        let json = r#"{"type":"send_midi","port_id":"123","bytes":[144,60,100]}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::SendMidi { port_id, bytes } => {
+                assert_eq!(port_id, "123");
+                assert_eq!(bytes, &vec![0x90u8, 0x3C, 0x64]);
+            }
+            other => panic!("expected SendMidi, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"send_midi""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline: dropping `bytes` fails deserialisation.
+        let bad = r#"{"type":"send_midi","port_id":"123"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `bytes` field"
+        );
+    }
+
+    // ── v3.3 P2 agent roster + directed pipes (#286) ────────────────────
+    // Pin the on-the-wire shape for the roster query/event and the directed
+    // pipe DrawCommand. All fields required — no `#[serde(default)]`.
+
+    #[test]
+    fn agent_roster_get_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"agent_roster_get","request_id":"req-7"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::AgentRosterGet { request_id } => {
+                assert_eq!(request_id, "req-7");
+            }
+            other => panic!("expected AgentRosterGet, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"agent_roster_get""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn agent_roster_event_round_trips_serde() {
+        let json = r#"{"type":"agent_roster","request_id":"req-7","agents":[{"pane_id":3,"app_id":"agent-worker","name":"Worker"},{"pane_id":7,"app_id":"agent-coordinator","name":"Coordinator"}]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::AgentRoster { request_id, agents } => {
+                assert_eq!(request_id, "req-7");
+                assert_eq!(agents.len(), 2);
+                assert_eq!(agents[0].pane_id, 3);
+                assert_eq!(agents[0].app_id, "agent-worker");
+                assert_eq!(agents[0].name, "Worker");
+                assert_eq!(agents[1].pane_id, 7);
+            }
+            other => panic!("expected AgentRoster, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"agent_roster""#),
+            "wire tag missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn pipe_open_directed_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"pipe_open_directed","pipe_id":"coord-to-worker","target_pane_id":42}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::PipeOpenDirected { pipe_id, target_pane_id } => {
+                assert_eq!(pipe_id, "coord-to-worker");
+                assert_eq!(*target_pane_id, 42);
+            }
+            other => panic!("expected PipeOpenDirected, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"pipe_open_directed""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""target_pane_id":42"#),
+            "target_pane_id missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn pipe_open_directed_missing_target_pane_id_fails_deserialise() {
+        // No `target_pane_id` — must fail. Required.
+        let json = r#"{"type":"pipe_open_directed","pipe_id":"x"}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "deserialise should fail without `target_pane_id` field"
+        );
+    }
+
+    #[test]
+    fn audio_capture_drawcommand_required_fields() {
+        // `sample_rate` and `buffer_size` are now required (no serde-default).
+        // `device_id` is the only optional field.
+        let bad = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required sample_rate/buffer_size"
+        );
+        let good = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null,"sample_rate":48000,"buffer_size":512}"#;
+        let cmd: DrawCommand = serde_json::from_str(good).expect("deserialise");
+        match &cmd {
+            DrawCommand::AudioCapture { pipe_id, device_id, sample_rate, buffer_size } => {
+                assert_eq!(pipe_id, "mic");
+                assert!(device_id.is_none());
+                assert_eq!(*sample_rate, 48_000);
+                assert_eq!(*buffer_size, 512);
+            }
+            other => panic!("expected AudioCapture, got {other:?}"),
+        }
+    }
+
+    // ── v3.4 video substrate (#345) ────────────────────────────────────────
+    // Pin the on-the-wire shape for OpenVideo / SetVideoState / CloseVideo
+    // and the matching VideoOpenAck / VideoOpenError events. All fields
+    // required — no `serde(default)`.
+
+    #[test]
+    fn open_video_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"open_video","request_id":"req-1","source":"mock://gradient","pipe_id":"video-stream"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::OpenVideo { request_id, source, pipe_id } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(source, "mock://gradient");
+                assert_eq!(pipe_id, "video-stream");
+            }
+            other => panic!("expected OpenVideo, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"open_video""#), "wire tag missing: {serialised}");
+
+        // Required-field discipline — dropping any field fails.
+        let bad = r#"{"type":"open_video","source":"mock://gradient","pipe_id":"video-stream"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
+        let bad = r#"{"type":"open_video","request_id":"r","pipe_id":"p"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `source`"
+        );
+        let bad = r#"{"type":"open_video","request_id":"r","source":"mock://x"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `pipe_id`"
+        );
+    }
+
+    #[test]
+    fn set_video_state_drawcommand_round_trips_serde() {
+        let play_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"play"}}"#;
+        let cmd: DrawCommand = serde_json::from_str(play_json).expect("deserialise play");
+        match &cmd {
+            DrawCommand::SetVideoState { handle_id, state } => {
+                assert_eq!(*handle_id, 7);
+                assert_eq!(*state, crate::video::VideoState::Play);
+            }
+            other => panic!("expected SetVideoState, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"set_video_state""#),
+            "wire tag missing: {serialised}"
+        );
+
+        let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
+        let cmd: DrawCommand = serde_json::from_str(pause_json).expect("deserialise pause");
+        if let DrawCommand::SetVideoState { state, .. } = &cmd {
+            assert_eq!(*state, crate::video::VideoState::Pause);
+        } else {
+            panic!("expected SetVideoState pause, got {cmd:?}");
+        }
+
+        let seek_json =
+            r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"seek","position_ms":1500}}"#;
+        let cmd: DrawCommand = serde_json::from_str(seek_json).expect("deserialise seek");
+        if let DrawCommand::SetVideoState { state, .. } = &cmd {
+            assert_eq!(
+                *state,
+                crate::video::VideoState::Seek { position_ms: 1500 }
+            );
+        } else {
+            panic!("expected SetVideoState seek, got {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn close_video_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"close_video","handle_id":42}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::CloseVideo { handle_id } => assert_eq!(*handle_id, 42),
+            other => panic!("expected CloseVideo, got {other:?}"),
+        }
+        let bad = r#"{"type":"close_video"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `handle_id`"
+        );
+    }
+
+    #[test]
+    fn video_open_ack_round_trips_serde() {
+        let json = r#"{"type":"video_open_ack","request_id":"req-1","handle_id":3,"width":640,"height":360,"fps":30.0,"duration_ms":12000}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::VideoOpenAck {
+                request_id,
+                handle_id,
+                width,
+                height,
+                fps,
+                duration_ms,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(*handle_id, 3);
+                assert_eq!(*width, 640);
+                assert_eq!(*height, 360);
+                assert!((*fps - 30.0).abs() < 0.01);
+                assert_eq!(*duration_ms, 12_000);
+            }
+            other => panic!("expected VideoOpenAck, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"video_open_ack""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline.
+        let bad = r#"{"type":"video_open_ack","handle_id":3,"width":1,"height":1,"fps":30.0,"duration_ms":0}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
+    }
+
+    // ── v3.5 Canvas Terminal Binding Primitives (#78) ─────────────────────
+    // Pin the on-the-wire shape for the new primitives. All fields are
+    // required — no `serde(default)`. Enums round-trip as snake_case.
+
+    #[test]
+    fn request_linked_terminal_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"request_linked_terminal","request_id":"req-1","cwd":"/tmp/foo","label":"bindings demo"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::RequestLinkedTerminal { request_id, cwd, label } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(cwd.as_deref(), Some("/tmp/foo"));
+                assert_eq!(label.as_deref(), Some("bindings demo"));
+            }
+            other => panic!("expected RequestLinkedTerminal, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"request_linked_terminal""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline — no `serde(default)` on `request_id`.
+        let bad = r#"{"type":"request_linked_terminal","cwd":null,"label":null}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
+
+        // Optional fields: explicit null deserialises to None.
+        let null_json = r#"{"type":"request_linked_terminal","request_id":"r2","cwd":null,"label":null}"#;
+        let cmd: DrawCommand = serde_json::from_str(null_json).expect("deserialise null");
+        match &cmd {
+            DrawCommand::RequestLinkedTerminal { cwd, label, .. } => {
+                assert!(cwd.is_none());
+                assert!(label.is_none());
+            }
+            other => panic!("expected RequestLinkedTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn linked_terminal_ready_event_round_trips_serde() {
+        let json = r#"{"type":"linked_terminal_ready","request_id":"req-1","terminal_pane_id":42}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(*terminal_pane_id, 42);
+            }
+            other => panic!("expected LinkedTerminalReady, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"linked_terminal_ready""#),
+            "wire tag missing: {serialised}"
+        );
+        let bad = r#"{"type":"linked_terminal_ready","request_id":"r"}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `terminal_pane_id`"
+        );
+    }
+
+    #[test]
+    fn run_in_linked_terminal_round_trips_serde() {
+        let json = r#"{"type":"run_in_linked_terminal","terminal_pane_id":42,"command":"ls -la","echo":true}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
+                assert_eq!(*terminal_pane_id, 42);
+                assert_eq!(command, "ls -la");
+                assert!(*echo);
+            }
+            other => panic!("expected RunInLinkedTerminal, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"run_in_linked_terminal""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Required-field discipline — `echo` has no default.
+        let bad = r#"{"type":"run_in_linked_terminal","terminal_pane_id":1,"command":"ls"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `echo`"
+        );
+    }
+
+    #[test]
+    fn insert_path_token_mode_enum_serde() {
+        let replace_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/x","mode":"replace"}"#;
+        let cmd: DrawCommand = serde_json::from_str(replace_json).expect("deserialise replace");
+        match &cmd {
+            DrawCommand::InsertPathToken { mode, path, terminal_pane_id } => {
+                assert_eq!(*mode, PathTokenMode::Replace);
+                assert_eq!(path, "/tmp/x");
+                assert_eq!(*terminal_pane_id, 7);
+            }
+            other => panic!("expected InsertPathToken, got {other:?}"),
+        }
+
+        let append_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/y","mode":"append"}"#;
+        let cmd: DrawCommand = serde_json::from_str(append_json).expect("deserialise append");
+        if let DrawCommand::InsertPathToken { mode, .. } = &cmd {
+            assert_eq!(*mode, PathTokenMode::Append);
+        } else {
+            panic!("expected InsertPathToken, got {cmd:?}");
+        }
+
+        // Round-trip serialise → snake_case on the wire.
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""mode":"append""#),
+            "mode must serialise as snake_case: {serialised}"
+        );
+
+        // Bad mode rejected loudly.
+        let bad = r#"{"type":"insert_path_token","terminal_pane_id":1,"path":"/x","mode":"INSERT"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "unknown mode must fail to deserialise"
+        );
+    }
+
+    #[test]
+    fn request_command_preview_round_trips_serde() {
+        let json = r#"{"type":"request_command_preview","request_id":"req-9","terminal_pane_id":3,"command":"rm -rf .git"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::RequestCommandPreview { request_id, terminal_pane_id, command } => {
+                assert_eq!(request_id, "req-9");
+                assert_eq!(*terminal_pane_id, 3);
+                assert_eq!(command, "rm -rf .git");
+            }
+            other => panic!("expected RequestCommandPreview, got {other:?}"),
+        }
+
+        let preview_json = r#"{"type":"command_preview","request_id":"req-9","command":"rm -rf .git","would_run_in_cwd":"/tmp/foo"}"#;
+        let event: PlexiEvent = serde_json::from_str(preview_json).expect("deserialise event");
+        match &event {
+            PlexiEvent::CommandPreview { request_id, command, would_run_in_cwd } => {
+                assert_eq!(request_id, "req-9");
+                assert_eq!(command, "rm -rf .git");
+                assert_eq!(would_run_in_cwd, "/tmp/foo");
+            }
+            other => panic!("expected CommandPreview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_artifact_mode_enum_serde() {
+        let cases = [
+            ("open_in_pane", ArtifactOpenMode::OpenInPane),
+            ("reveal_in_finder", ArtifactOpenMode::RevealInFinder),
+            ("open_with_default", ArtifactOpenMode::OpenWithDefault),
+        ];
+        for (wire, expected) in cases {
+            let json = format!(
+                r#"{{"type":"open_artifact","path":"/tmp/x","mode":"{wire}"}}"#
+            );
+            let cmd: DrawCommand = serde_json::from_str(&json).expect("deserialise");
+            match &cmd {
+                DrawCommand::OpenArtifact { path, mode } => {
+                    assert_eq!(path, "/tmp/x");
+                    assert_eq!(*mode, expected, "wire {wire} → {expected:?}");
+                }
+                other => panic!("expected OpenArtifact, got {other:?}"),
+            }
+        }
+
+        // Round-trip serialise → snake_case on the wire.
+        let cmd = DrawCommand::OpenArtifact {
+            path: "/tmp/x".to_string(),
+            mode: ArtifactOpenMode::RevealInFinder,
+        };
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""mode":"reveal_in_finder""#),
+            "snake_case missing: {serialised}"
+        );
+    }
+
+    #[test]
+    fn video_open_error_round_trips_serde() {
+        let json = r#"{"type":"video_open_error","request_id":"req-1","error":"video decoder not implemented"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::VideoOpenError { request_id, error } => {
+                assert_eq!(request_id, "req-1");
+                assert!(error.contains("not implemented"));
+            }
+            other => panic!("expected VideoOpenError, got {other:?}"),
+        }
+        let bad = r#"{"type":"video_open_error","error":"x"}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `request_id`"
+        );
+    }
+
+    // ── v3.5 P2 rich notification panel (#74) ─────────────────────────────
+    // Image attachments — inline base64 + pipe reference. Both are optional;
+    // missing them deserialises to None via serde's natural Option handling
+    // (no `#[serde(default)]` shim). Mutually exclusive at render time.
+
+    #[test]
+    fn notify_choice_action_round_trips_serde() {
+        // Choice action shape: each NotifyOption carries a label, a value
+        // (the structured `payload` from issue #74), and an optional
+        // single-char hotkey (`shortcut`, the `key` from issue #74).
+        let json = r#"{"type":"notify","level":"info","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}],"priority":100}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Notify {
+                kind,
+                options,
+                priority,
+                image_inline,
+                image_pipe_id,
+                ..
+            } => {
+                assert_eq!(*kind, NotifyKind::Choice);
+                assert_eq!(options.len(), 2);
+                assert_eq!(options[0].value, "sidebar");
+                assert_eq!(options[0].shortcut.as_deref(), Some("1"));
+                assert_eq!(options[1].value, "fullwidth");
+                assert_eq!(*priority, 100);
+                assert!(image_inline.is_none(), "image_inline should default to None");
+                assert!(image_pipe_id.is_none(), "image_pipe_id should default to None");
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""kind":"choice""#), "kind missing: {serialised}");
+        assert!(serialised.contains(r#""value":"sidebar""#), "payload missing: {serialised}");
+    }
+
+    #[test]
+    fn notify_with_inline_image_round_trips_serde() {
+        // 4-byte base64 payload — well under the 50 KB cap. The host will
+        // attempt to decode + render; tiny or invalid images render a
+        // placeholder, never crash.
+        let json = r#"{"type":"notify","level":"info","title":"Pic","body":"see image","kind":"message","priority":50,"image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Notify {
+                image_inline,
+                image_pipe_id,
+                ..
+            } => {
+                let img = image_inline.as_ref().expect("inline image present");
+                assert_eq!(img.mime, "image/png");
+                assert_eq!(img.base64, "AAAA");
+                assert!(image_pipe_id.is_none());
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""image_inline":{"mime":"image/png","base64":"AAAA"}"#),
+            "image_inline missing: {serialised}"
+        );
+        // Skip-serializing-if-none means image_pipe_id is absent on the wire
+        // when None — keeps existing notifications byte-identical.
+        assert!(
+            !serialised.contains("image_pipe_id"),
+            "absent fields should not appear: {serialised}"
+        );
+    }
+
+    #[test]
+    fn notify_with_image_pipe_id_round_trips_serde() {
+        let json = r#"{"type":"notify","level":"info","title":"Pic","body":"piped","kind":"message","priority":50,"image_pipe_id":"render-out"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Notify {
+                image_pipe_id,
+                image_inline,
+                ..
+            } => {
+                assert_eq!(image_pipe_id.as_deref(), Some("render-out"));
+                assert!(image_inline.is_none());
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn notify_without_image_fields_round_trips_serde() {
+        // Existing apps that never set image fields must continue to work.
+        // Missing `image_inline` / `image_pipe_id` deserialise as None.
+        let json = r#"{"type":"notify","level":"info","title":"Plain","body":"no image","kind":"message","priority":50}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match cmd {
+            DrawCommand::Notify {
+                image_inline,
+                image_pipe_id,
+                ..
+            } => {
+                assert!(image_inline.is_none());
+                assert!(image_pipe_id.is_none());
+            }
+            other => panic!("expected Notify, got {other:?}"),
+        }
+    }
 }

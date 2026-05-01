@@ -225,19 +225,13 @@ fn append_line(file: &mut std::fs::File, line: &str) {
 
 // ── Workspace detection ───────────────────────────────────────────────────────
 
-/// Walk up from `start` looking for a `.plexi/` directory.
-/// Returns the path to `.plexi/events.jsonl` if found, or `None`.
+/// Returns the path to `.plexi/events.jsonl` for the workspace containing
+/// `start`, or `None` if `start` is not inside a workspace. Uses
+/// [`crate::app_registry::resolve_workspace_root`] so workspace detection
+/// is consistent across registry, secrets, and event logging.
 pub fn find_workspace_events_path(start: &std::path::Path) -> Option<PathBuf> {
-    let mut dir = start.to_path_buf();
-    loop {
-        let candidate = dir.join(".plexi");
-        if candidate.is_dir() {
-            return Some(candidate.join("events.jsonl"));
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
+    crate::app_registry::resolve_workspace_root(start)
+        .map(|root| root.join(".plexi").join("events.jsonl"))
 }
 
 /// Returns the current UTC timestamp as an RFC 3339 string.

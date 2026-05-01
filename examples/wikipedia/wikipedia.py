@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Wikipedia — net.http + text render example for PGAP v3."""
-from __future__ import annotations
 
 import json
 import threading
@@ -72,7 +71,7 @@ class WikiApp(App):
                     "action": "opensearch", "search": query,
                     "limit": 10, "format": "json",
                 })
-                body = self.emit.http_get(f"{API}?{params}")
+                body = self.emit.run_sync(self.emit.http_get(f"{API}?{params}"))
                 data = json.loads(body)
                 self._results = data[1] if len(data) > 1 else []
                 self._selected = 0
@@ -91,7 +90,7 @@ class WikiApp(App):
         def run() -> None:
             try:
                 url = EXTRACT_API + urllib.parse.quote(title)
-                body = self.emit.http_get(url)
+                body = self.emit.run_sync(self.emit.http_get(url))
                 data = json.loads(body)
                 self._extract = data.get("extract", "No extract available.")
                 self._mode = "article"

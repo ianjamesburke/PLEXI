@@ -5,7 +5,6 @@ vertical scrolling. Emits PGAP-compatible DrawCommand dicts (same shape
 as ctx.rect / ctx.text). All coordinates are absolute within the
 render viewport passed to render().
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -192,8 +191,13 @@ class TextArea:
                 "y": text_y,
                 "text": lines[row],
                 "size": t.font_size,
-                "fill": t.foreground,
+                "color": t.foreground,
                 "monospace": t.monospace,
+                "bold": False,
+                "align": "top_left",
+                "max_width": None,
+                "elide": True,
+                "selectable": False,
             })
 
         # 4. Cursor rect: 2px wide, line_height tall.

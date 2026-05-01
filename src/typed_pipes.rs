@@ -67,6 +67,10 @@ struct BinaryPipeEntry {
     socket_path: String,
     shutdown: Arc<AtomicBool>,
     drain_handle: Option<thread::JoinHandle<()>>,
+    /// Frame ring shared with the drain thread. Producers (e.g. the audio
+    /// capture callback) clone this `Arc` and push frames; the drain thread
+    /// pops and writes them to the socket.
+    ring: Arc<ArrayQueue<Vec<u8>>>,
 }
 
 struct JsonPipeEntry {
@@ -195,8 +199,8 @@ impl TypedPipeRegistry {
             socket_path: socket_path.clone(),
             shutdown,
             drain_handle: Some(drain_handle),
+            ring: Arc::clone(&ring),
         };
-        let _ = ring; // ring lives in the drain thread via ring_drain
 
         self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
 
@@ -241,6 +245,21 @@ impl TypedPipeRegistry {
                 Err(PipeError::WriteFailed("pipe is binary mode".to_owned()))
             }
             None => Err(PipeError::NotFound(pipe_id.to_owned())),
+        }
+    }
+
+    /// Borrow a clone of the binary pipe's frame ring, suitable for handing
+    /// to a real-time producer (e.g. the cpal capture callback). Returns
+    /// `None` if the pipe doesn't exist or is JSON-mode.
+    ///
+    /// The producer pushes raw payload bytes via `Arc<ArrayQueue<Vec<u8>>>::push`;
+    /// the drain thread length-prefixes and writes them to the unix socket.
+    /// On a full ring `push` returns `Err(rejected)` so producers should not
+    /// block — drop the frame and (optionally) emit a `PipeOverrun` event.
+    pub fn binary_ring(&self, pipe_id: &str) -> Option<Arc<ArrayQueue<Vec<u8>>>> {
+        match self.pipes.get(pipe_id) {
+            Some(PipeEntry::Binary(b)) => Some(Arc::clone(&b.ring)),
+            _ => None,
         }
     }
 
@@ -289,3 +308,65 @@ fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
 
 // ---------------------------------------------------------------------------
 // Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the typed-pipe registry primitives that the directed
+    //! inter-agent pipe routing (#286) builds on.
+    use super::*;
+
+    #[test]
+    fn directed_pipe_routes_to_target_pane_only() {
+        // Two panes' registries are independent. The sender pane registers
+        // a JSON duplex pipe under id "x"; the target pane registers the
+        // same id under its own registry. Each registry's `has_reader`
+        // reflects only its own subscribers — they do NOT collide.
+        //
+        // This is the substrate for `directed_pipes` scoping in
+        // `app/mod.rs`: the host maintains a `(sender, target)` pair keyed
+        // on pipe_id, and `DeliverPipeMessage` consults that pair to route
+        // ONLY to the target — never broadcasting to other panes that
+        // coincidentally opened the same id. The registry's job is simply
+        // to track per-pane subscription state; the scoping is upstream.
+        let mut sender_reg = TypedPipeRegistry::new();
+        let mut target_reg = TypedPipeRegistry::new();
+
+        sender_reg
+            .open_json("coord-to-worker".to_string(), PipeDirection::Duplex)
+            .expect("sender opens JSON pipe");
+        target_reg
+            .open_json("coord-to-worker".to_string(), PipeDirection::Duplex)
+            .expect("target opens same id on its independent registry");
+
+        assert!(
+            sender_reg.has_reader("coord-to-worker"),
+            "sender side has_reader true (duplex)"
+        );
+        assert!(
+            target_reg.has_reader("coord-to-worker"),
+            "target side has_reader true (duplex)"
+        );
+
+        // A third bystander registry without the pipe must NOT read.
+        let bystander_reg = TypedPipeRegistry::new();
+        assert!(
+            !bystander_reg.has_reader("coord-to-worker"),
+            "bystander pane never opted in — has_reader must be false"
+        );
+    }
+
+    #[test]
+    fn open_json_rejects_duplicate_pipe_id_on_same_registry() {
+        // A single registry must reject opening the same pipe id twice —
+        // this is what the host's `register_directed_pipe_on_target`
+        // helper has to handle gracefully when the target pane has
+        // independently opened the pipe (treats AlreadyOpen as success).
+        let mut reg = TypedPipeRegistry::new();
+        reg.open_json("dup".to_string(), PipeDirection::Duplex).unwrap();
+        let err = reg
+            .open_json("dup".to_string(), PipeDirection::Duplex)
+            .unwrap_err();
+        assert!(matches!(err, PipeError::AlreadyOpen(_)));
+    }
+}

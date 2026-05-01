@@ -35,7 +35,6 @@ than the total fixed-height content, grow spacers collapse to 0 and
 content at the bottom may not render — keep the total intentionally
 below the minimum pane size, or use `ScrollLog` for variable content.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
@@ -304,9 +303,8 @@ class AppBar(Component):
         # structurally impossible, but the backdrop keeps chrome visually
         # solid regardless of rendering order).
         ctx.rect(x, y, w, h, BG)
-        # Vertically centre the title in BAND_H. Empirical -1px nudge to
-        # compensate for proportional-font descent bias at 16pt.
-        text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0 - 1.0
+        # Vertically centre the title in BAND_H.
+        text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0
         ctx.text(x, text_y, self.title,
                  size=self.TITLE_SIZE, color=self.accent, bold=True,
                  max_width=w, elide=True)

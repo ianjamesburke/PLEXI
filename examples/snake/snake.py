@@ -5,7 +5,6 @@ Written in Python (not Rust) to keep the example self-contained and avoid a
 separate Rust sub-project. The spec allows either; Python is 80 lines vs a
 new cargo crate + cross-compile setup. This is the intentional choice.
 """
-from __future__ import annotations
 
 import sys
 import os

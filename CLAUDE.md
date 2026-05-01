@@ -44,6 +44,15 @@ Every issue gets one **type**, one **priority**, one **version**.
 - **version:** `v3.0` | `v3.1+` | `future`
 - **status** (optional): `in-progress` | `ready` | `blocked`
 
+## Milestones
+
+Milestones (`v3.1`, `v3.2`, `v3.3`, …) define the actual release collections — the specific dot releases that ship work. They are distinct from version era labels:
+
+- **Version era label** (`v3.1+`) — "this belongs in the v3.x era." Accepted but not yet slotted.
+- **Milestone** (`v3.2`) — "this is committed to that specific release sprint."
+
+Issues without a milestone are accepted into an era but unslotted. Assign a milestone when the work is actively being planned for a release. An issue can carry `v3.1+` as its version label and a `v3.4` milestone simultaneously — the label is the era, the milestone is the slot.
+
 ## App Installation Paths
 
 Build-specific, resolved at runtime by binary name:
@@ -57,13 +66,80 @@ Build-specific, resolved at runtime by binary name:
 
 Each app is a subdirectory with `manifest.toml` and an executable entry point. Installing to the wrong directory silently does nothing.
 
+## Branch Workflow
+
+Three channels, each more stable than the last:
+
+- `alpha` — active development. All work lands here first.
+- `beta` — staging. Promoted from alpha when a batch of work is stable enough to share.
+- `main` — production. Promoted from beta when ready to release.
+
+Never commit directly to `beta` or `main`. All work flows through alpha.
+
+### Feature branch → alpha
+
+All changes, no matter how small, follow this cycle:
+
+1. **Create a worktree** from inside `worktrees/alpha/`: `wtp add -b <branch-name>`
+2. **Implement** and commit inside that worktree
+3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
+4. **Wait for user approval** — do not merge unilaterally
+5. **Squash-merge on GitHub** (`gh pr merge <number> --squash`) — this lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch that is checked out by a worktree, and the flag will cause the merge command to fail.
+6. **Sync the local alpha worktree**: `git pull` from inside `worktrees/alpha/` — this is how the local copy catches up to what was just merged on GitHub
+7. **Install and verify**: `just install-alpha` from inside `worktrees/alpha/`
+8. **Remove the feature worktree**: `wtp remove <branch-name>` — this must happen *before* branch deletion
+9. **Delete the remote branch**: `git push origin --delete <branch-name>`
+
+Steps 5–8 are mandatory after every merge. Skipping `git pull` + install is how uncommitted-looking work gets silently lost when the next PR lands.
+
+**Always run `wtp add` from inside `worktrees/alpha/`**, not the repo root. This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
+
+**Verify the base immediately after `wtp add`** — before delegating any work to a subagent or writing any code, confirm the new worktree is on the right commit:
+```bash
+git -C worktrees/<new-branch> log --oneline -1   # must match ↓
+git -C worktrees/alpha log --oneline -1
+```
+If they don't match, delete the worktree and branch immediately and redo from inside `worktrees/alpha/`. Discovering the wrong base after a subagent has run wastes the entire run.
+
+**Before creating a worktree:** run `git status` AND `git diff --stat` in `worktrees/alpha`. Alpha must be clean (no uncommitted changes, no unstaged diffs) before branching. If it's dirty, stop and ask: commit first, or is this work meant to be carried into the new branch? Never silently proceed on a dirty base.
+
+**Small-changes batch PR:** Multiple small related fixes may land in one PR if they share a single commit message and a single `Breaks if:` line. Unrelated changes go in separate PRs.
+
+### alpha → beta → main (channel promotion)
+
+When alpha has stabilised enough for broader testing:
+```
+git push origin alpha:beta
+```
+Run from `worktrees/alpha/` (or anywhere with origin access). This fast-forwards beta to alpha's current HEAD. Then `just install-beta` to verify the beta build.
+
+When beta is ready to ship as a release:
+```
+git push origin beta:main
+```
+Then tag the release: `just bump` + `just release`. Update `CHANGELOG.md` before tagging.
+
+Worktrees:
+- `worktrees/alpha` — alpha branch
+- `worktrees/beta` — beta branch
+
+## Releases
+
+Before tagging a release (`just bump` + `just release`):
+1. Update `CHANGELOG.md` at the repo root — add a new `## [x.y.z] — YYYY-MM-DD` section with a brief summary of what changed (features, fixes, breaking changes).
+2. Entries are newest-first. Keep them user-facing (not internal refactor detail).
+
+If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the first entry.
+
 ## Build & Install
 
 `just install` runs `cargo bundle --release`, copies the `.app` to `/Applications`, extracts the binary to `/usr/local/bin/plexi`, then runs `lsregister -f <bundle>` and `pbs -update` to refresh macOS Services.
 
 **After every completed code change, install for the active branch** before reporting the task complete:
-- `alpha` → `just install-alpha`
+- `alpha` → `just install-alpha` (run from inside `worktrees/alpha/`, not the repo root — the recipe builds from CWD, so running from the wrong directory installs from the wrong branch)
 - `main` → `just install`
+
+**Never claim a task complete based on an install from a feature worktree.** `just install-alpha` builds from source files in CWD — uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. Installing from a feature worktree is only valid during development iteration. The full done cycle is: commit → push → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just install-alpha` from `worktrees/alpha/`.
 
 ## Logging
 
@@ -112,6 +188,22 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 - **Coupled state:** When adding state that derives from or shadows existing state, grep every mutation site of the original and update each one.
 - **Fallback chain audit:** When a value looks correct on the surface but behavior is stale, enumerate every fallback source in priority order (cookies, env vars, caches, defaults). Fix the chain, not the surface.
 - **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
+
+## PlexiApp State
+
+`PlexiApp` fields are declared in `src/app/mod.rs`. There are exactly two struct-literal initialization blocks — both contain `renaming_window: None` and are the only places new fields need to be initialized.
+## Host UI Systems — Reuse Before Rolling Your Own
+
+Before writing any keyboard shortcut display, badge, chip, or inline label widget, check `src/widgets.rs` and `src/style.rs`. These modules contain the canonical, already-tested implementations. Re-rolling them inline produces visual inconsistency and duplicated sizing logic.
+
+**`src/style.rs`** — design tokens: spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITLE_XL`), corner radii (`RADIUS_MD/LG`), modal widths, button heights, overlay chrome. Use these constants everywhere — never hard-code magic numbers.
+
+**`src/widgets.rs`** — reusable egui widgets:
+- `key_chip(ui, label, colors)` — renders a single keyboard key as a styled rounded-rect chip (`bg_active` fill, `border` stroke, `TEXT_HINT`-size monospace text).
+- `key_combo(ui, keys, colors)` — renders a sequence of `key_chip`s with `INTRA_COMBO_GAP` between them (e.g. `["⌘", "N"]` → `[⌘][N]`).
+- `key_combo_list(ui, combos, trailing, colors)` — renders multiple combos inline with `INTER_COMBO_GAP` between them and an optional dim description label at the end. This is the standard pattern for keyboard shortcut hint rows.
+
+**Use `key_combo_list` for any shortcut hint row.** Do not render key shortcuts as plain `Label` text — it produces a visually inconsistent result that requires a separate pass to fix.
 
 ## General Rules
 

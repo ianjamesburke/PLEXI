@@ -1,0 +1,17 @@
+schema_version = 1
+
+[app]
+id = "video-player"
+type = "app"
+name = "Video Player"
+version = "0.1.0"
+description = "POC for #345 + #79 — exercises the video substrate via mock or AVFoundation AND echoes the equivalent ffplay/ffmpeg CLI through a linked terminal (GUI↔Terminal media bridge). Set PLEXI_VIDEO=mock://gradient, set PLEXI_VIDEO_PATH for a real H.264 file, or pass a path as argv[1] (the file browser does this for mp4/mov/mkv files)."
+entry = "video_player.py"
+default_notification_scope = "context"
+layout_hint = "split_h"
+
+[app.capabilities]
+capabilities = ["video.playback", "terminal.bindings"]
+
+[launch]
+background = false

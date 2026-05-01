@@ -36,10 +36,33 @@ pub enum Capability {
     AudioPlayback,
     /// Decode and display video via host broker.
     VideoPlayback,
-    /// Make LLM API calls via host broker (uses ANTHROPIC_API_KEY from secrets store).
+    /// Make LLM API calls via host broker (reads OPENROUTER_API_KEY from environment).
     Llm,
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
     Timer,
+    /// Issue tier-routed LLM calls through the Plexi AI broker (`ai.query`).
+    /// The host owns the API key and the cost ledger; apps never see the key.
+    AiQuery,
+    /// Receive MIDI 1.0 byte streams from a connected hardware controller via
+    /// the host CoreMIDI broker (#320). Per-port; the manifest declares the
+    /// capability and the OpenMidiInput dispatch validates the gate.
+    MidiIn,
+    /// Send MIDI 1.0 byte streams to a connected hardware destination via the
+    /// host CoreMIDI broker (#320). Per-port; the SendMidi dispatch validates
+    /// the gate.
+    MidiOut,
+    /// Query the workspace-scoped agent roster (`agents.list`, #286). Allows an
+    /// app to discover other live agent panes via `DrawCommand::AgentRosterGet`.
+    /// Apps without this capability receive an EMPTY roster (per spec) — not
+    /// a denial error. Pair with `pipe.open` to open directed inter-agent pipes.
+    AgentsList,
+    /// Drive a linked terminal pane via the v3.5 Canvas Terminal Binding
+    /// Primitives (`terminal.bindings`, #78). Covers all of:
+    /// `RequestLinkedTerminal`, `RunInLinkedTerminal`, `InsertPathToken`,
+    /// `RequestCommandPreview`, `OpenArtifact`. Single capability across
+    /// the surface so an app's manifest declares one intent ("I drive a
+    /// terminal") rather than enumerating each verb.
+    TerminalBindings,
 }
 
 impl fmt::Display for Capability {
@@ -62,6 +85,11 @@ impl Capability {
             Self::VideoPlayback => "video.playback",
             Self::Llm => "llm",
             Self::Timer => "timer",
+            Self::AiQuery => "ai.query",
+            Self::MidiIn => "midi.in",
+            Self::MidiOut => "midi.out",
+            Self::AgentsList => "agents.list",
+            Self::TerminalBindings => "terminal.bindings",
         }
     }
 }
@@ -96,6 +124,11 @@ impl<'a> TryFrom<&'a str> for Capability {
             "video.playback" => Ok(Self::VideoPlayback),
             "llm" => Ok(Self::Llm),
             "timer" => Ok(Self::Timer),
+            "ai.query" => Ok(Self::AiQuery),
+            "midi.in" => Ok(Self::MidiIn),
+            "midi.out" => Ok(Self::MidiOut),
+            "agents.list" => Ok(Self::AgentsList),
+            "terminal.bindings" => Ok(Self::TerminalBindings),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -185,5 +218,95 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn ai_query_capability_recognized() {
+        // Manifest validator must accept "ai.query" and round-trip through
+        // Capability::try_from / as_str without truncation or coercion.
+        let parsed = Capability::try_from("ai.query").expect("ai.query must parse");
+        assert_eq!(parsed, Capability::AiQuery);
+        assert_eq!(parsed.as_str(), "ai.query");
 
+        // Permissions parser must populate the granted set.
+        let perms = AppPermissions::from_capability_strings(&["ai.query".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::AiQuery),
+            "ai.query must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::AiQuery),
+            PermissionCheck::Allowed
+        ));
+    }
+
+    #[test]
+    fn agents_list_capability_recognized() {
+        // The new v3.3 P2 capability (#286) must round-trip through
+        // `Capability::try_from` / `as_str` and end up in the granted set
+        // when declared. Note: the *runtime* contract for an undeclared
+        // `agents.list` is "empty roster" (not denial) — that is enforced
+        // in the routing layer, not here. This test pins only the parser
+        // layer recognising the capability string.
+        let parsed = Capability::try_from("agents.list").expect("agents.list must parse");
+        assert_eq!(parsed, Capability::AgentsList);
+        assert_eq!(parsed.as_str(), "agents.list");
+
+        let perms = AppPermissions::from_capability_strings(&["agents.list".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::AgentsList),
+            "agents.list must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::AgentsList),
+            PermissionCheck::Allowed
+        ));
+    }
+
+    #[test]
+    fn terminal_bindings_capability_recognized() {
+        // v3.5 #78. The single capability that gates all 5 binding primitives.
+        let parsed = Capability::try_from("terminal.bindings")
+            .expect("terminal.bindings must parse");
+        assert_eq!(parsed, Capability::TerminalBindings);
+        assert_eq!(parsed.as_str(), "terminal.bindings");
+
+        let perms = AppPermissions::from_capability_strings(&[
+            "terminal.bindings".to_string(),
+        ]);
+        assert!(
+            perms.capabilities.contains(&Capability::TerminalBindings),
+            "terminal.bindings must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::TerminalBindings),
+            PermissionCheck::Allowed
+        ));
+
+        let empty = AppPermissions::from_capability_strings(&[]);
+        match check(&empty, Capability::TerminalBindings) {
+            PermissionCheck::Denied(reason) => {
+                assert!(
+                    reason.contains("terminal.bindings"),
+                    "denial reason must name capability: {reason}"
+                );
+            }
+            PermissionCheck::Allowed => {
+                panic!("must be denied without manifest declaration")
+            }
+        }
+    }
+
+    #[test]
+    fn ai_query_denied_when_not_declared() {
+        let perms = AppPermissions::from_capability_strings(&[]);
+        match check(&perms, Capability::AiQuery) {
+            PermissionCheck::Denied(reason) => {
+                assert!(reason.contains("ai.query"), "denial reason must name capability: {reason}");
+            }
+            PermissionCheck::Allowed => panic!("must be denied without manifest declaration"),
+        }
+    }
+}

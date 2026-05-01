@@ -11,14 +11,17 @@ QUICK START
     from plexi_sdk import App, BG, FG, BODY, ACCENT
 
     class CounterApp(App):
-        def on_init(self, ctx):
+        async def on_init(self, ctx):
             # Called once after the host completes the Init handshake.
             # ctx.workspace_root, ctx.capabilities, ctx.feature_flags are set.
+            # Hooks may be async def (to use await) or plain def (fire-and-forget).
             self.count = 0
             self.emit.info("CounterApp ready")
+            # Blocking helpers are coroutines — await them directly:
+            # api_key = await self.emit.secret_get("MY_API_KEY")
 
         def on_render(self, ctx):
-            # Called on every frame. Must not block — use threads for I/O.
+            # Pure-sync render hooks work unchanged — no await needed here.
             # ctx.w / ctx.h are the current pane dimensions.
             # ctx.elapsed is seconds since the previous render (0.0 on first frame).
             ctx.clear(BG)
@@ -158,6 +161,21 @@ thread if the app needs to stay interactive).
 
   ctx.notify_input(title, prompt="", body="", required=False, priority=...) -> str
       Blocking text input. Returns the typed string, or "__cancel__".
+
+  ctx.notify_with_image(title, body, image_bytes, mime, priority=...,
+                        choices=None) -> str | None
+      Convenience wrapper that handles base64 encoding + 50 KB cap.
+      `image_bytes` > 50 KB raises ValueError locally. With `choices=None`
+      this is fire-and-forget (returns None); with `choices` set it routes
+      to notify_choice and blocks for the user's pick. `mime` must be
+      "image/png" or "image/jpeg".
+
+Image attachments (#74) — pass `image_inline={"mime", "base64"}` to any of
+the notify* methods, or use `notify_with_image` for the convenience wrap.
+Inline images cap at 50 KB decoded; oversized images render a placeholder
+badge instead of the bitmap. The `image_pipe_id` field is reserved for a
+future host-side rendering primitive — apps cannot publish frames through
+it today. Use the inline path for now.
 
 Priority — required kwarg on every call. Use the named constants:
 
@@ -301,6 +319,14 @@ All methods are thread-safe (protected by a global write lock).
       Blocks until the response arrives. Raises RuntimeError on failure.
       Call from a background thread to avoid stalling the render loop.
 
+  emit.ai_query(model_tier, system, messages, tools=None) -> AiResponse  [BLOCKING]
+      Plexi AI broker call (#284). Requires the `ai.query` capability declared
+      in manifest.toml. `model_tier` is "low" | "medium" | "high"
+      (Haiku / Sonnet / Opus). Returns an AiResponse with content, tokens_in,
+      tokens_out. Raises CapabilityDeniedError if the manifest didn't grant
+      `ai.query`, or RuntimeError on any other backend failure. Call from a
+      background thread — the host may take seconds to reply.
+
   emit.capability_request(capability) -> bool  [BLOCKING]
       Request a runtime capability (e.g. "net.http", "fs.write"). The host
       may show a permission prompt to the user. Blocks until granted or denied.
@@ -370,20 +396,119 @@ All handlers except on_suspend, on_resume, and on_shutdown receive a
 RenderContext as their first argument. on_render is the only handler that
 auto-emits FrameDone; all others must NOT emit FrameDone.
 
+ASYNC HANDLERS AND BLOCKING I/O (#393)
+
+Input-driven hooks (on_key, on_click, on_command, on_paste, on_pipe_message,
+on_path_changed, on_inject, on_timer) are dispatched as asyncio tasks — the
+event loop does NOT wait for them to finish before processing the next event.
+This means a slow handler never stalls the stdin reader or delays a Render.
+
+Rules:
+
+  1. Declare handlers ``async def`` whenever they need to do any I/O or call
+     ``await``-able Emitter helpers:
+
+         async def on_key(self, ctx, key, mods):
+             result = await self.emit.http_get(url)   # non-blocking — fine
+
+  2. Never call blocking operations directly from a handler. These freeze the
+     event loop thread and starve all other tasks:
+
+         def on_key(self, ctx, key, mods):
+             time.sleep(1)          # BAD — blocks event loop thread
+             requests.get(url)      # BAD — blocks event loop thread
+
+     Instead, use ``asyncio.to_thread`` from an async handler, or kick off a
+     ``threading.Thread`` and bridge back with ``emit.run_sync()``.
+
+  3. ``on_render`` is awaited directly — all draw commands must complete before
+     FrameDone is sent. Keep on_render free of I/O; use on_render to read state
+     that background tasks have already fetched and stored.
+
+  4. ``on_init`` and ``on_shutdown`` are also awaited (startup / teardown
+     ordering). Blocking I/O in on_init should use ``await`` Emitter helpers.
+
 Call MyApp().run() to start the PGAP event loop. This blocks until Shutdown.
 """
-from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
+import asyncio
+import inspect
 import json
-import queue
 import socket
 import struct
 import sys
 import threading
-from typing import Any
+import uuid
+from dataclasses import dataclass
+from typing import Any, Coroutine
+
+
+# ── ai.query (#284) types ─────────────────────────────────────────────────────
+
+@dataclass
+class AiResponse:
+    """Result of `Emitter.ai_query`. `tokens_in`/`tokens_out` are zero on error."""
+    content: str
+    tokens_in: int
+    tokens_out: int
+
+
+class CapabilityDeniedError(RuntimeError):
+    """Raised when the host rejects a brokered call because the app's manifest
+    didn't declare the required capability. Distinct from generic RuntimeError
+    so apps can catch the gate-denial path explicitly."""
+
+
+# ── CoreMIDI (#320) types ─────────────────────────────────────────────────────
+
+@dataclass
+class MidiPortInfo:
+    """One MIDI port (input or output). Mirrors `MidiPortWire` on the wire."""
+    id: str
+    name: str
+    default: bool
+
+
+@dataclass
+class MidiDeviceList:
+    """Result of `Emitter.list_midi_devices`. Both lists may be empty."""
+    inputs: list[MidiPortInfo]
+    outputs: list[MidiPortInfo]
+
+
+# ── Video substrate (#345) types ──────────────────────────────────────────────
+
+@dataclass
+class VideoHandle:
+    """Result of `Emitter.open_video`. `handle_id` is opaque — pass it back to
+    `set_video_state` and `close_video`. The associated `Pipe` delivers
+    decoded RGBA8 frames (one frame per `pipe.read_frame()`) of length
+    `width * height * 4`."""
+    handle_id: int
+    width: int
+    height: int
+    fps: float
+    duration_ms: int
+    pipe: "Pipe"
+
+
+# ── agents.list (#286) types ──────────────────────────────────────────────────
+
+@dataclass
+class AgentInfo:
+    """One row of the agent roster returned by `Emitter.agent_roster`.
+
+    `pane_id` is the host's stable id for the agent pane; pass it to
+    `Emitter.pipe_open_directed(pipe_id, pane_id)` to wire an inter-agent
+    channel. `app_id` is the manifest id for subprocess agents (or the
+    sentinel `"iq"` for the legacy in-process Cmd+I agent backend).
+    """
+    pane_id: int
+    app_id: str
+    name: str
 
 # ── Theme constants ───────────────────────────────────────────────────────────
 TITLE   = 22.0; HEADING = 18.0; BODY = 15.0; CAPTION = 13.0; HINT = 12.0
@@ -432,6 +557,11 @@ def _emit(obj: dict) -> None:
         sys.stdout.flush()
 
 
+def _make_async_queue() -> asyncio.Queue:
+    """Return a fresh asyncio.Queue for one pending request slot."""
+    return asyncio.Queue(maxsize=1)
+
+
 # ── Emitter (always available, even outside a frame) ─────────────────────────
 
 class Emitter:
@@ -463,7 +593,9 @@ class Emitter:
     # the user chooses whether to be interrupted across contexts.
     def notify(self, title: str, body: str = "", level: str = "info",
                priority: int | None = None,
-               actions: list | None = None) -> None:
+               actions: list | None = None,
+               image_inline: dict | None = None,
+               image_pipe_id: str | None = None) -> None:
         """Post a message notification. The modal shows title + body and a
         single Acknowledge button; Enter / Space acknowledge, Esc dismisses
         (unless required=True — use `notify_and_wait` for that flow).
@@ -471,84 +603,181 @@ class Emitter:
         `priority` is required (int, higher = more urgent).
         `actions` is the legacy side-effect list (action_type =
         resume_run | open_intent | run_command). It does NOT render UI.
+        `image_inline` (#74): {"mime": "image/png"|"image/jpeg",
+        "base64": str}. Decoded host-side; >50KB triggers a placeholder.
+        `image_pipe_id` (#74): pipe id of a binary ring carrying RGBA frames
+        prefixed with width/height u32-LE. Mutually exclusive with
+        `image_inline` — host warns + drops the pipe ref if both set.
         """
         if priority is None:
             raise TypeError("notify() requires 'priority' (int, higher = more urgent)")
-        _emit({"type": "notify", "level": level, "title": title,
-               "body": body, "kind": "message",
-               "priority": int(priority),
-               "actions": actions or []})
+        payload = {"type": "notify", "level": level, "title": title,
+                   "body": body, "kind": "message",
+                   "priority": int(priority),
+                   "actions": actions or []}
+        if image_inline is not None:
+            payload["image_inline"] = image_inline
+        if image_pipe_id is not None:
+            payload["image_pipe_id"] = image_pipe_id
+        _emit(payload)
+
+    def run_sync(self, coro: "Any") -> Any:
+        """Run a coroutine from a background thread and return its result.
+
+        Use this when calling async Emitter methods from a non-async context
+        (e.g. inside a ``threading.Thread`` callback)::
+
+            def _worker(self) -> None:
+                result = self.emit.run_sync(self.emit.http_get(url))
+
+        Must NOT be called from within the event loop thread — it will deadlock.
+        Raises ``RuntimeError`` if there is no running event loop to dispatch to
+        (e.g. called before ``App.run()`` starts).
+        """
+        loop = self._app._loop
+        if loop is None:
+            raise RuntimeError(
+                "emit.run_sync() called before the event loop started. "
+                "Only call it after App.run() is running (e.g. from a "
+                "background thread started inside on_init or later)."
+            )
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
 
     # kind = "choice"
-    def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False,
-                      priority: int | None = None) -> str:
-        """Post a choice notification and block until the user picks one.
+    async def notify_choice(self, title: str, options: list, body: str = "",
+                            level: str = "info", required: bool = False,
+                            priority: int | None = None,
+                            image_inline: dict | None = None,
+                            image_pipe_id: str | None = None) -> str:
+        """Post a choice notification and await until the user picks one.
 
         `options` is a list of dicts: {"label": str, "value": str (optional),
         "shortcut": str (optional, single char)}. If `value` is omitted, the
-        label is returned.
+        label is returned. Issue #74's structured-choice spec maps directly:
+        `key` → `shortcut`, `payload` → `value`.
 
         `priority` is required (int, higher = more urgent).
+        `image_inline` (#74): {"mime", "base64"} — same shape as `notify`.
+        `image_pipe_id` (#74): pipe id of a binary ring carrying RGBA frames.
         Returns the chosen option's value (or the label if no value set). If
         `required=False` the user may cancel with Esc — this returns the string
         `"__cancel__"`.
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_choice(...))``.
         """
         if priority is None:
             raise TypeError("notify_choice() requires 'priority' (int, higher = more urgent)")
-        import uuid
         notify_id = str(uuid.uuid4())
-        q: "queue.Queue[str]" = queue.Queue()
+        q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
-        _emit({"type": "notify", "level": level, "title": title, "body": body,
-               "kind": "choice", "options": options, "required": required,
-               "priority": int(priority),
-               "notify_id": notify_id})
-        return q.get()
+        payload = {"type": "notify", "level": level, "title": title, "body": body,
+                   "kind": "choice", "options": options, "required": required,
+                   "priority": int(priority),
+                   "notify_id": notify_id}
+        if image_inline is not None:
+            payload["image_inline"] = image_inline
+        if image_pipe_id is not None:
+            payload["image_pipe_id"] = image_pipe_id
+        _emit(payload)
+        return await q.get()
+
+    # Convenience wrapper for the inline-image case (#74). Handles base64
+    # encoding + size-cap enforcement client-side so we never spend wire
+    # bytes on payloads the host will only reject.
+    async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
+                                mime: str, level: str = "info",
+                                priority: int | None = None,
+                                choices: list | None = None) -> "str | None":
+        """Post a notification with an inline base64-encoded image attachment.
+
+        `image_bytes` must be ≤ 50_000 bytes — anything larger raises
+        `ValueError` here so the app sees a fast, local failure instead of
+        having the host silently render a placeholder. Use the pipe-ref
+        path (`emit.notify(..., image_pipe_id=...)`) for larger images.
+
+        `mime` must be `"image/png"` or `"image/jpeg"`.
+
+        `choices` is optional. When None this posts a fire-and-forget
+        message-kind notification (returns None). When set, this routes to
+        `notify_choice` and awaits until the user picks one (returns the
+        chosen value, or `"__cancel__"`).
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_with_image(...))``.
+        """
+        if priority is None:
+            raise TypeError("notify_with_image() requires 'priority' (int, higher = more urgent)")
+        if mime not in ("image/png", "image/jpeg"):
+            raise ValueError(f"notify_with_image() mime must be image/png or image/jpeg, got {mime!r}")
+        # 50 KB cap: matches the host's `MAX_INLINE_IMAGE_BYTES`. Apps that
+        # exceed this should use the pipe-ref path. Failing locally is the
+        # least surprising behaviour.
+        MAX_INLINE_BYTES = 50 * 1024
+        if len(image_bytes) > MAX_INLINE_BYTES:
+            raise ValueError(
+                f"notify_with_image(): image is {len(image_bytes)} bytes, "
+                f"exceeds {MAX_INLINE_BYTES}-byte cap. Use image_pipe_id for large images."
+            )
+        import base64
+        encoded = base64.standard_b64encode(image_bytes).decode("ascii")
+        image_inline = {"mime": mime, "base64": encoded}
+        if choices is None:
+            self.notify(title=title, body=body, level=level,
+                        priority=priority, image_inline=image_inline)
+            return None
+        return await self.notify_choice(title=title, options=choices, body=body,
+                                        level=level, priority=priority,
+                                        image_inline=image_inline)
 
     # kind = "input"
-    def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False,
-                     priority: int | None = None) -> str:
-        """Post an input notification and block until the user submits or
+    async def notify_input(self, title: str, prompt: str = "", body: str = "",
+                           level: str = "info", required: bool = False,
+                           priority: int | None = None) -> str:
+        """Post an input notification and await until the user submits or
         cancels. Returns the typed text (possibly empty), or "__cancel__" if
         the user dismissed with Esc (only possible when required=False).
 
         `priority` is required (int, higher = more urgent).
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_input(...))``.
         """
         if priority is None:
             raise TypeError("notify_input() requires 'priority' (int, higher = more urgent)")
-        import uuid
         notify_id = str(uuid.uuid4())
-        q: "queue.Queue[str]" = queue.Queue()
+        q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "input", "input_prompt": prompt, "required": required,
                "priority": int(priority),
                "notify_id": notify_id})
-        return q.get()
+        return await q.get()
 
-    def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None,
-                        priority: int | None = None) -> str:
-        """Post a message notification and block until the user acknowledges
+    async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
+                              actions: list | None = None,
+                              priority: int | None = None) -> str:
+        """Post a message notification and await until the user acknowledges
         or cancels. Returns "acknowledge" on Enter/Space/button, "cancel" on Esc.
 
         For richer interaction, use `notify_choice` or `notify_input`.
         `priority` is required (int, higher = more urgent).
         `actions` is the legacy server-side side-effect list.
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.notify_and_wait(...))``.
         """
         if priority is None:
             raise TypeError("notify_and_wait() requires 'priority' (int, higher = more urgent)")
-        import uuid
         notify_id = str(uuid.uuid4())
-        q: "queue.Queue[str]" = queue.Queue()
+        q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
         _emit({"type": "notify", "level": level, "title": title, "body": body,
                "kind": "message", "actions": actions or [],
                "priority": int(priority),
                "notify_id": notify_id})
-        return q.get()
+        return await q.get()
 
     # Terminal commands (legacy back-compat)
     def run_in_terminal(self, command: str) -> None:
@@ -560,10 +789,190 @@ class Emitter:
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
 
+    # ── Navigation stack (#392) ─────────────────────────────────────────────
+
+    def push_nav(self, view_id: str, title: str) -> None:
+        """Push a new view onto the host navigation stack.
+
+        The host appends an entry keyed on `view_id` with display `title`
+        and shows a back arrow + `title` in the pane chrome while this view
+        is active. Cmd+[ (or clicking the back arrow) sends
+        ``PlexiEvent::NavBack { view_id }`` back to the app, where
+        ``view_id`` is the view being navigated *back to* (the entry below
+        the current top, or empty string for root).
+
+        The app is responsible for tracking its own internal view state and
+        calling ``pop_nav()`` after navigating back.
+        """
+        _emit({"type": "push_nav", "view_id": view_id, "title": title})
+
+    def pop_nav(self) -> None:
+        """Pop the current view off the host navigation stack.
+
+        Call this after the app has already rendered the previous view (e.g.
+        inside the ``on_nav_back`` handler). The host removes the top entry
+        from the stack; if the stack becomes empty the back arrow disappears.
+        """
+        _emit({"type": "pop_nav"})
+
     def cd_to(self, cwd: str) -> None:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
         _emit({"type": "cd_request", "cwd": cwd})
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Write `text` to the OS clipboard via the host (issue #146).
+
+        Routed through `egui::Context::copy_text` so the platform backend
+        (NSPasteboard / X11 / Wayland / Win32) handles the actual write.
+        Synchronous from the app's perspective — no acknowledgement event.
+        No capability flag is required; clipboard writes are low-risk and
+        the app already chooses when to fire (key handler, button, etc.).
+        """
+        _emit({"type": "copy_to_clipboard", "text": text})
+
+
+    # ── Canvas Terminal Binding Primitives (#78) ────────────────────────────
+    #
+    # All five gate on the manifest capability `terminal.bindings`. Apps
+    # without it get either a sentinel response (for the request/response
+    # primitives) or a silent drop (for fire-and-forget primitives) — the
+    # host logs `capability denied` either way so the bug is debuggable.
+    #
+    # The lifecycle: call `request_linked_terminal()` once at startup
+    # (typically inside `on_init`) and stash the returned pane id. Pass it
+    # to every subsequent `run_in_linked_terminal` / `insert_path_token` /
+    # `request_command_preview` call.
+    async def request_linked_terminal(
+        self,
+        cwd: "str | None" = None,
+        label: "str | None" = None,
+    ) -> int:
+        """Ask the host to open a fresh terminal pane next to this app and
+        return its `terminal_pane_id` (an integer). Awaits until the host
+        emits `LinkedTerminalReady`.
+
+        Returns 0 if the host denied the request — this happens when the
+        manifest doesn't declare `terminal.bindings`. Apps should treat 0
+        as a hard error (no terminal to drive). Raises `CapabilityDeniedError`
+        in that case so the failure is loud.
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.request_linked_terminal(...))``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[int] = _make_async_queue()
+        self._app._pending_linked_terminal[req_id] = q
+        _emit({
+            "type": "request_linked_terminal",
+            "request_id": req_id,
+            "cwd": cwd,
+            "label": label,
+        })
+        pane_id = await q.get()
+        if pane_id == 0:
+            raise CapabilityDeniedError(
+                "request_linked_terminal: capability 'terminal.bindings' "
+                "not declared in manifest"
+            )
+        return int(pane_id)
+
+    def run_in_linked_terminal(
+        self,
+        terminal_pane_id: int,
+        command: str,
+        echo: bool = True,
+    ) -> None:
+        """Run `command` in the linked terminal. With `echo=True` the user
+        sees the command typed into the terminal; with `echo=False` the
+        signalled intent is silent execution (PTY-level echo is shell-
+        controlled — the flag is best-effort observational).
+
+        Fire-and-forget — capability denial drops silently with a host
+        log line."""
+        _emit({
+            "type": "run_in_linked_terminal",
+            "terminal_pane_id": int(terminal_pane_id),
+            "command": command,
+            "echo": bool(echo),
+        })
+
+    def insert_path_token(
+        self,
+        terminal_pane_id: int,
+        path: str,
+        mode: str = "replace",
+    ) -> None:
+        """Inject `path` at the linked terminal's cursor.
+
+        `mode = "replace"` — Ctrl-W (kill-word) before the path so the
+                            shell readline removes the partial token.
+        `mode = "append"`  — write the path verbatim.
+
+        The host POSIX-quotes the path when it contains shell metacharacters.
+        Fire-and-forget — capability denial drops silently with a host log
+        line."""
+        if mode not in ("replace", "append"):
+            raise ValueError(
+                f"insert_path_token: mode must be 'replace' or 'append', got {mode!r}"
+            )
+        _emit({
+            "type": "insert_path_token",
+            "terminal_pane_id": int(terminal_pane_id),
+            "path": path,
+            "mode": mode,
+        })
+
+    async def request_command_preview(
+        self,
+        terminal_pane_id: int,
+        command: str,
+    ) -> "tuple[str, str]":
+        """Return `(command, would_run_in_cwd)` for `command` in the linked
+        terminal. Doesn't execute. Useful for confirmation modals before
+        destructive operations.
+
+        If the host denies the request, `would_run_in_cwd` is empty string;
+        the SDK does NOT raise — apps that want to be loud should check for
+        empty cwd themselves (the most common failure mode is a missing
+        capability, which the host already logs).
+
+        Await this from async hooks. From background threads use
+        ``self.emit.run_sync(self.emit.request_command_preview(...))``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[tuple[str, str]] = _make_async_queue()
+        self._app._pending_command_preview[req_id] = q
+        _emit({
+            "type": "request_command_preview",
+            "request_id": req_id,
+            "terminal_pane_id": int(terminal_pane_id),
+            "command": command,
+        })
+        return await q.get()
+
+    def open_artifact(
+        self,
+        path: str,
+        mode: str = "open_in_pane",
+    ) -> None:
+        """Open a workspace artifact via the host.
+
+        Modes:
+          - `"open_in_pane"`        — directories open the file browser
+                                      next to the app; files open with
+                                      the OS default app (v3.5).
+          - `"reveal_in_finder"`    — `open -R <path>` on macOS.
+          - `"open_with_default"`   — `open <path>` on macOS.
+
+        Fire-and-forget. Capability denial drops silently with a host log
+        line."""
+        if mode not in ("open_in_pane", "reveal_in_finder", "open_with_default"):
+            raise ValueError(
+                f"open_artifact: mode must be one of "
+                f"open_in_pane / reveal_in_finder / open_with_default, "
+                f"got {mode!r}"
+            )
+        _emit({"type": "open_artifact", "path": path, "mode": mode})
 
     def schedule_render(self, after_ms: int = 16) -> None:
         """Ask the host to send a new Render event after `after_ms` milliseconds.
@@ -579,41 +988,58 @@ class Emitter:
                "payload": payload or {}})
         return run_id
 
-    # Blocking helpers — waits for host response on the stdin reader thread
-    def capability_request(self, capability: str) -> bool:
-        """Block until host grants or denies the capability. Returns True if granted."""
-        import uuid
+    # ── Async blocking helpers ────────────────────────────────────────────────
+    # Each of these is a coroutine — await them from async hooks, or call
+    # self.emit.run_sync(self.emit.method(...)) from a background thread.
+
+    async def capability_request(self, capability: str) -> bool:
+        """Await until host grants or denies the capability. Returns True if granted.
+
+        Await from async hooks. From background threads:
+        ``self.emit.run_sync(self.emit.capability_request(capability))``.
+        """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[bool]" = queue.Queue()
+        q: asyncio.Queue[bool] = _make_async_queue()
         self._app._pending_capability[req_id] = q
         _emit({"type": "capability_request", "request_id": req_id,
                "capability": capability})
-        return q.get()
+        return await q.get()
 
-    def secret_get(self, key: str) -> str | None:
-        """Block until host returns the secret value (or None if denied)."""
-        q: "queue.Queue[str | None]" = queue.Queue()
+    async def secret_get(self, key: str) -> "str | None":
+        """Await until host returns the secret value (or None if denied).
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.secret_get(key))``.
+        """
+        q: asyncio.Queue[str | None] = _make_async_queue()
         self._app._pending_secret[key] = q
         _emit({"type": "secret_get", "key": key})
-        return q.get()
+        return await q.get()
 
-    def get_secret(self, key: str) -> str | None:
+    async def get_secret(self, key: str) -> "str | None":
         """Alias for secret_get(). Preferred name going forward."""
-        return self.secret_get(key)
+        return await self.secret_get(key)
 
-    def http_get(self, url: str) -> str:
-        """Blocking HTTP GET brokered through the host. Requires net.http capability.
-        Call from any thread (background threads included). Raises RuntimeError on failure."""
-        return self.http_request(url)
+    async def http_get(self, url: str) -> str:
+        """HTTP GET brokered through the host. Requires net.http capability.
+        Raises RuntimeError on failure.
 
-    def http_request(self, url: str, method: str = "GET",
-                     headers: "dict[str, str] | None" = None,
-                     body: "str | None" = None) -> str:
-        """Blocking HTTP request brokered through the host. Requires net.http capability.
-        Supports custom method, headers, and body. Raises RuntimeError on failure."""
-        import uuid
+        From background threads:
+        ``self.emit.run_sync(self.emit.http_get(url))``.
+        """
+        return await self.http_request(url)
+
+    async def http_request(self, url: str, method: str = "GET",
+                           headers: "dict[str, str] | None" = None,
+                           body: "str | None" = None) -> str:
+        """HTTP request brokered through the host. Requires net.http capability.
+        Supports custom method, headers, and body. Raises RuntimeError on failure.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.http_request(...))``.
+        """
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        q: asyncio.Queue[tuple[str, str]] = _make_async_queue()
         self._app._pending_http[req_id] = q
         payload: dict = {"type": "http_request", "request_id": req_id,
                          "method": method, "url": url}
@@ -622,29 +1048,291 @@ class Emitter:
         if body is not None:
             payload["body"] = body
         _emit(payload)
-        status, value = q.get()
+        status, value = await q.get()
         if status == "error":
             raise RuntimeError(f"http_request {url!r}: {value}")
         return value
 
-    def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
-            system: str | None = None) -> str:
-        """Blocking LLM call brokered through the host. Requires llm capability.
-        Uses ANTHROPIC_API_KEY from the Plexi secrets store.
-        Returns the text response. Raises RuntimeError on failure."""
-        import uuid
+    async def ai_query(self, model_tier: str, system: str,
+                       messages: "list[dict]",
+                       tools: "list[dict] | None" = None) -> AiResponse:
+        """Call into the host's Plexi AI broker (#284). Requires the
+        `ai.query` capability declared in `manifest.toml`.
+
+        Args:
+            model_tier: one of "low" | "medium" | "high" — the host maps these
+                to Haiku / Sonnet / Opus respectively.
+            system: system prompt (may be empty string).
+            messages: list of `{"role": "user"|"assistant", "content": str}`
+                dicts. At least one message is required.
+            tools: reserved for v3.4 tool-use; pass `None` or `[]` today.
+
+        Returns:
+            AiResponse with `content`, `tokens_in`, `tokens_out`.
+
+        Raises:
+            CapabilityDeniedError: app didn't declare `ai.query` in its manifest
+                (or the host returned any other "capability denied" error).
+            RuntimeError: backend failed (e.g. missing API key, network error).
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.ai_query(...))``.
+        """
+        if model_tier not in ("low", "medium", "high"):
+            raise ValueError(
+                f"ai_query: model_tier must be one of low|medium|high, got {model_tier!r}"
+            )
         req_id = str(uuid.uuid4())
-        q: "queue.Queue[tuple[str, str]]" = queue.Queue()
-        self._app._pending_llm[req_id] = q
-        payload: dict = {"type": "llm_request", "request_id": req_id,
-                         "prompt": prompt, "model": model}
-        if system is not None:
-            payload["system"] = system
+        q: asyncio.Queue[dict] = _make_async_queue()
+        self._app._pending_ai[req_id] = q
+        payload: dict = {
+            "type": "ai_query",
+            "request_id": req_id,
+            "model_tier": model_tier,
+            "system": system,
+            "messages": messages,
+            "tools": tools or [],
+        }
         _emit(payload)
-        status, value = q.get()
-        if status == "error":
-            raise RuntimeError(f"llm call failed: {value}")
-        return value
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=35.0)
+        except asyncio.TimeoutError:
+            self._app._pending_ai.pop(req_id, None)
+            raise RuntimeError(
+                f"ai_query timed out after 35s (req_id={req_id!r}) — "
+                "check OPENROUTER_API_KEY and network connectivity"
+            )
+        error = ev.get("error")
+        if error is not None:
+            if "capability denied" in error:
+                raise CapabilityDeniedError(error)
+            raise RuntimeError(f"ai_query failed: {error}")
+        return AiResponse(
+            content=ev.get("content") or "",
+            tokens_in=int(ev.get("tokens_in", 0) or 0),
+            tokens_out=int(ev.get("tokens_out", 0) or 0),
+        )
+
+    async def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
+        """Enumerate CoreMIDI input + output ports (#320).
+        No capability gate — port names are publicly visible in Audio MIDI
+        Setup. Requires `midi.in` / `midi.out` only on subsequent open/send.
+
+        Returns a MidiDeviceList with `inputs` and `outputs` lists of
+        MidiPortInfo (id, name, default).
+
+        Raises RuntimeError on host enumeration failure or timeout.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.list_midi_devices())``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[dict] = _make_async_queue()
+        self._app._pending_midi_devices[req_id] = q
+        _emit({"type": "list_midi_devices", "request_id": req_id})
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._app._pending_midi_devices.pop(req_id, None)
+            raise RuntimeError(
+                f"list_midi_devices timed out after {timeout}s — host did not respond"
+            )
+        if ev.get("error"):
+            raise RuntimeError(f"list_midi_devices failed: {ev.get('error')}")
+        return MidiDeviceList(
+            inputs=[
+                MidiPortInfo(
+                    id=str(p.get("id", "")),
+                    name=str(p.get("name", "")),
+                    default=bool(p.get("default", False)),
+                )
+                for p in ev.get("inputs", [])
+            ],
+            outputs=[
+                MidiPortInfo(
+                    id=str(p.get("id", "")),
+                    name=str(p.get("name", "")),
+                    default=bool(p.get("default", False)),
+                )
+                for p in ev.get("outputs", [])
+            ],
+        )
+
+    def open_midi_input(self, port_id: str, pipe_id: str) -> "Pipe":
+        """Open a CoreMIDI input port and pipe its MIDI byte streams into a
+        binary pipe. Requires `midi.in` capability declared in manifest.toml.
+
+        Returns the Pipe handle. The host emits `PipeOpened` then
+        `MidiInputOpened`; the Pipe auto-connects to its socket on
+        `PipeOpened`. Apps then call `pipe.read_frame()` in a loop to
+        receive 1–3 byte MIDI messages (channel-voice / system real-time).
+
+        Each pipe frame is one MIDI 1.0 message — apps don't need to parse
+        message boundaries themselves.
+        """
+        # Open the binary pipe FIRST so the App's `_pipes` registry has it
+        # before PipeOpened arrives. The host emits PipeOpened then
+        # MidiInputOpened in order; both events are received by the event
+        # loop and forwarded to the Pipe / on_midi_input_opened handler.
+        p = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
+        self._app._pipes[pipe_id] = p
+        _emit({
+            "type": "open_midi_input",
+            "port_id": port_id,
+            "pipe_id": pipe_id,
+        })
+        return p
+
+    def close_midi_input(self, port_id: str) -> None:
+        """Close a previously-opened MIDI input port. The associated binary
+        pipe drains and closes; the app should drop its Pipe handle."""
+        _emit({"type": "close_midi_input", "port_id": port_id})
+
+    def send_midi(self, port_id: str, bytes_: "bytes | bytearray | list[int]") -> None:
+        """Fire-and-forget send of one MIDI 1.0 byte stream to `port_id`.
+        Requires `midi.out` capability. The host opens the output port lazily
+        on the first send and reuses the handle afterwards.
+
+        `bytes_` is a 1–3 byte sequence: NoteOn `[0x90+ch, note, vel]`,
+        NoteOff `[0x80+ch, note, vel]`, CC `[0xB0+ch, num, val]`, clock
+        pulse `[0xF8]`, etc. Use `plexi_sdk.midi` helpers to construct
+        messages with named arguments.
+
+        Successful sends produce no event; failures arrive as a logged
+        `midi_send_error` warning. Apps that need explicit error handling
+        should validate the destination via `list_midi_devices()` first.
+        """
+        if isinstance(bytes_, (bytes, bytearray)):
+            data = list(bytes_)
+        else:
+            data = list(bytes_)
+        # JSON wire shape: array of integers. The host accepts any ints in
+        # 0..=255 and rejects empty arrays.
+        _emit({"type": "send_midi", "port_id": port_id, "bytes": data})
+
+    async def open_video(
+        self,
+        source: str,
+        pipe_id: str,
+        timeout: float = 10.0,
+    ) -> "VideoHandle":
+        """Open a video decoder against `source` and return a VideoHandle
+        carrying the negotiated width/height/fps/duration_ms plus the
+        attached Pipe (#345). Requires `video.playback` capability.
+
+        Decoded frames flow as raw RGBA8 packets on the Pipe — one packet
+        per video frame, length `width * height * 4`. Apps spin a reader
+        thread that calls `handle.pipe.read_frame()` and either renders
+        the bytes (if a frame-render API is available) or surfaces a
+        frame counter.
+
+        Source schemes:
+          - `mock://gradient` — procedural mock decoder (always works).
+          - `file:///...` — production decoder; returns NotImplemented
+            until #346 lands AVFoundation backing.
+
+        Raises CapabilityDeniedError if `video.playback` is not declared.
+        Raises RuntimeError on any other failure (NotImplemented, bad
+        source, decoder error, timeout).
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.open_video(source, pipe_id))``.
+        """
+        # Open the binary pipe FIRST so the App's `_pipes` registry has it
+        # before PipeOpened arrives. The host emits PipeOpened, then
+        # VideoOpenAck. The Pipe auto-connects to its socket on PipeOpened.
+        pipe = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
+        self._app._pipes[pipe_id] = pipe
+
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[dict] = _make_async_queue()
+        self._app._pending_video_open[req_id] = q
+        _emit({
+            "type": "open_video",
+            "request_id": req_id,
+            "source": source,
+            "pipe_id": pipe_id,
+        })
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._app._pending_video_open.pop(req_id, None)
+            raise RuntimeError(
+                f"open_video timed out after {timeout}s — host did not respond"
+            )
+        error = ev.get("error")
+        if error is not None:
+            if "capability denied" in error:
+                raise CapabilityDeniedError(error)
+            raise RuntimeError(f"open_video failed: {error}")
+        return VideoHandle(
+            handle_id=int(ev.get("handle_id", 0)),
+            width=int(ev.get("width", 0)),
+            height=int(ev.get("height", 0)),
+            fps=float(ev.get("fps", 0.0)),
+            duration_ms=int(ev.get("duration_ms", 0)),
+            pipe=pipe,
+        )
+
+    def set_video_state(self, handle_id: int, state: str, position_ms: int = 0) -> None:
+        """Drive playback for a video opened with `open_video` (#345).
+        `state` is one of `"play"`, `"pause"`, `"seek"`. For `"seek"`,
+        `position_ms` is the absolute target position in milliseconds.
+        Fire-and-forget — no response event."""
+        if state == "seek":
+            payload: dict[str, Any] = {"kind": "seek", "position_ms": int(position_ms)}
+        elif state == "play":
+            payload = {"kind": "play"}
+        elif state == "pause":
+            payload = {"kind": "pause"}
+        else:
+            raise ValueError(
+                f"set_video_state: unknown state {state!r} (expected play|pause|seek)"
+            )
+        _emit({
+            "type": "set_video_state",
+            "handle_id": int(handle_id),
+            "state": payload,
+        })
+
+    def close_video(self, handle_id: int) -> None:
+        """Close a previously-opened video handle (#345). The host tears down
+        the decoder and drains the binary pipe. No response event."""
+        _emit({"type": "close_video", "handle_id": int(handle_id)})
+
+    def audio_capture(
+        self,
+        pipe_id: str,
+        sample_rate: int = 48000,
+        buffer_size: int = 512,
+        device_id: "str | None" = None,
+    ) -> "Pipe":
+        """Start mic capture (#277). PCM frames stream as raw f32 PCM on
+        a binary pipe — interleaved per-channel, ``sample_rate`` per
+        channel per second.
+
+        Returns the binary Pipe immediately (negotiated values arrive
+        async via ``PlexiEvent::AudioCaptureStarted`` and the host log;
+        the app reads ``handle.read_frame()`` once it connects). Failure
+        arrives as ``PlexiEvent::AudioCaptureError``.
+
+        Requires ``audio.in`` capability. Raises ``CapabilityDeniedError``
+        only when the gate fires synchronously at the wire layer; the
+        usual TCC mic-permission denial surfaces async on the first frame
+        attempt as an ``AudioCaptureError`` event.
+        """
+        # Open the binary pipe FIRST so PipeOpened can attach when it
+        # arrives — same shape as ``open_video``.
+        pipe = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
+        self._app._pipes[pipe_id] = pipe
+        _emit({
+            "type": "audio_capture",
+            "pipe_id": pipe_id,
+            "device_id": device_id,
+            "sample_rate": int(sample_rate),
+            "buffer_size": int(buffer_size),
+        })
+        return pipe
 
     def set_timer(self, timer_id: str, after_ms: int) -> None:
         """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
@@ -653,6 +1341,16 @@ class Emitter:
     def cancel_timer(self, timer_id: str) -> None:
         """Cancel a pending timer set with set_timer()."""
         _emit({"type": "cancel_timer", "timer_id": timer_id})
+
+    def set_mouse_tracking(self, enabled: bool) -> None:
+        """Enable or disable PlexiEvent::MouseMove delivery for this pane.
+
+        MouseMove is off by default to avoid flooding apps that don't need
+        continuous pointer tracking. Call set_mouse_tracking(True) after
+        on_init to start receiving on_mouse_move callbacks. Call with False
+        to stop.
+        """
+        _emit({"type": "set_mouse_tracking", "enabled": enabled})
 
     # Binary pipe
     def pipe_open(self, pipe_id: str, mode: str = "binary",
@@ -663,6 +1361,69 @@ class Emitter:
         _emit({"type": "pipe_open", "pipe_id": pipe_id,
                "mode": mode, "direction": direction})
         return p
+
+    def pipe_open_directed(self, pipe_id: str, target_pane_id: int) -> "Pipe":
+        """Open a *directed* JSON pipe to one specific target pane (#286).
+
+        Mirrors `pipe_open` but the host scopes `PipeMessage` delivery so
+        only the caller and `target_pane_id` see traffic on `pipe_id` —
+        peers that coincidentally `pipe_open` the same id stay isolated.
+        Always JSON-mode duplex; `pipe.send(payload)` is symmetric on
+        either end. Used to wire inter-agent channels after discovering
+        a target via `emit.agent_roster()`.
+
+        Capability: `pipe.open` (same as `pipe_open`). The target pane
+        does NOT need `agents.list` to be subscribed — only to be
+        addressable via the roster.
+        """
+        p = Pipe(pipe_id=pipe_id, mode="json", direction="duplex", app=self._app)
+        self._app._pipes[pipe_id] = p
+        _emit({
+            "type": "pipe_open_directed",
+            "pipe_id": pipe_id,
+            "target_pane_id": int(target_pane_id),
+        })
+        return p
+
+    def pipe_send(self, pipe_id: str, payload: Any) -> None:
+        """Send a JSON payload on an already-open pipe by id (#286).
+
+        Use this when you don't own a `Pipe` handle locally — for example
+        when replying on a directed pipe a *peer* opened (you're the target;
+        the host subscribed you, but the SDK doesn't auto-build a handle).
+        Sends a `pipe_send` DrawCommand; the host routes per the existing
+        directed-pipe pair table.
+        """
+        _emit({"type": "pipe_send", "pipe_id": pipe_id, "payload": payload})
+
+    async def agent_roster(self) -> "list[AgentInfo]":
+        """Query for live agent panes in the workspace (#286).
+
+        Returns a list of `AgentInfo` rows sorted by `pane_id` ascending.
+        Each row carries `pane_id`, `app_id`, and `name`. Pass the
+        `pane_id` back to `pipe_open_directed(...)` to address an
+        inter-agent pipe.
+
+        Capability: `agents.list`. Apps without it receive an EMPTY
+        list (NOT an error) — the host returns an empty roster on the
+        wire so the caller can't probe the workspace via this surface.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.agent_roster())``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[list[dict]] = _make_async_queue()
+        self._app._pending_agent_roster[req_id] = q
+        _emit({"type": "agent_roster_get", "request_id": req_id})
+        rows = await q.get()
+        return [
+            AgentInfo(
+                pane_id=int(r.get("pane_id", 0)),
+                app_id=str(r.get("app_id", "")),
+                name=str(r.get("name", "")),
+            )
+            for r in rows
+        ]
 
 
 # ── Pipe ──────────────────────────────────────────────────────────────────────
@@ -788,7 +1549,8 @@ class RenderContext:
              monospace: bool = False, bold: bool = False,
              align: str = "top_left",
              max_width: "float | None" = None,
-             elide: bool = True) -> None:
+             elide: bool = True,
+             selectable: bool = False) -> None:
         """Draw text. `align` controls how `(x, y)` maps to the text box:
 
           - "top_left" (default) — (x, y) is the top-left corner.
@@ -804,14 +1566,22 @@ class RenderContext:
         `max_width` — when set, the host clips the text at this pixel width.
         `elide`     — when True (default), a "…" is appended at the clip point;
                       when False, the text is hard-clipped with no marker.
+        `selectable` — when True, the host renders the text as a real egui
+                       label so the user can drag-select inside it and Cmd+C
+                       copies the current selection. Default False (#200).
 
-        Both `max_width` and `elide` are sent explicitly on the wire so the
-        host always has required fields (no serde defaults). The SDK fills in
-        None / True when the caller omits them.
+        `max_width`, `elide`, and `selectable` are sent explicitly on the wire
+        so the host always has required fields (no serde defaults). The SDK
+        fills in None / True / False when the caller omits them.
         """
         _emit({"type": "text", "x": x, "y": y, "text": text, "size": size,
                "color": color, "monospace": monospace, "bold": bold,
-               "align": align, "max_width": max_width, "elide": elide})
+               "align": align, "max_width": max_width, "elide": elide,
+               "selectable": selectable})
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Convenience shortcut for `emit.copy_to_clipboard(text)` (#146)."""
+        _emit({"type": "copy_to_clipboard", "text": text})
 
     def badge(self, x: float, y_center: float, label: str,
               fill: str = ACCENT, fg: str = BG,
@@ -888,42 +1658,25 @@ class RenderContext:
                "max_width": max_width, "pairs": wire_pairs,
                "font_size": font_size})
 
-    def measure_text(self, text: str, font_size: float,
-                     monospace: bool = False) -> "tuple[float, float]":
+    async def measure_text(self, text: str, font_size: float,
+                           monospace: bool = False) -> "tuple[float, float]":
         """Measure `text` at `font_size` using the host's real font metrics.
 
-        Sends a `MeasureText` DrawCommand and blocks until the host responds
-        with `TextMeasured`. Returns `(width, height)` in logical pixels.
+        Sends a `MeasureText` DrawCommand and awaits `TextMeasured` from the
+        host. Returns `(width, height)` in logical pixels.
 
         Use this only when layout depends on measured text width (e.g. flowing
         multiple badges horizontally). Avoid on hot render paths — prefer
         passing `max_width` on `ctx.text()` for simple truncation.
+
+        Must be called with ``await`` from an async hook.
         """
-        import uuid
         request_id = str(uuid.uuid4())
+        q: asyncio.Queue[tuple[float, float]] = _make_async_queue()
+        self._app._pending_measure_text[request_id] = q
         _emit({"type": "measure_text", "request_id": request_id,
                "text": text, "font_size": font_size, "monospace": monospace})
-        # Block until the matching TextMeasured response arrives on stdin.
-        # The App event loop reads from stdin; we need to read directly here
-        # because we're inside a frame callback. Use the shared stdin lock.
-        import sys as _sys
-        for line in _sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                import json as _json
-                event = _json.loads(line)
-            except Exception:
-                continue
-            if (event.get("type") == "text_measured"
-                    and event.get("request_id") == request_id):
-                return float(event.get("width", 0.0)), float(event.get("height", 0.0))
-            # Stash any non-matching events so the main loop sees them.
-            # NOTE: This is a best-effort flush for the common case (no other
-            # events expected mid-frame). A full async approach would require
-            # a separate thread; apps that need that should use DrawCommand::MeasureText
-            # with an explicit NotifyAction-style async pattern instead.
+        return await q.get()
 
     def push_clip(self, x: float, y: float, w: float, h: float) -> None:
         """Push a clip rect onto the host's clip stack.
@@ -971,6 +1724,75 @@ class RenderContext:
                "items": items, "selected": selected,
                "item_height": item_height})
 
+    def begin_scroll(self, id: str, x: float, y: float, w: float, h: float,
+                     content_height: float) -> None:
+        """Begin a host-managed vertical scroll region (#446).
+
+        Declares a viewport at (x, y, w, h) within this pane. All draw
+        commands until the matching `end_scroll()` call are clipped to that
+        viewport. The host tracks the scroll position across frames and calls
+        `on_scroll(ctx, id, offset_y)` whenever the user scrolls so the app
+        can re-render content translated by `offset_y`.
+
+        `content_height` is the total virtual height of the scrollable content
+        in logical pixels — the host uses this to size the scrollbar thumb.
+        Pass the full height of all items even if most are off-screen.
+
+        `id` must be stable across frames — use a descriptive string rather
+        than a counter. Typical pattern::
+
+            def on_scroll(self, ctx, id, offset_y):
+                if id == "main-list":
+                    self.scroll_y = offset_y
+
+            def on_render(self, ctx):
+                ctx.begin_scroll("main-list", 0, 48, ctx.w, ctx.h - 48,
+                                 content_height=100 * ROW_H)
+                for i, item in enumerate(self.items):
+                    y = i * ROW_H - self.scroll_y
+                    ctx.text(8, y, item, size=14, color=FG)
+                ctx.end_scroll()
+        """
+        _emit({"type": "begin_scroll", "id": id, "x": x, "y": y,
+               "w": w, "h": h, "content_height": content_height})
+
+    def end_scroll(self) -> None:
+        """Close the most recently opened scroll region. Must balance begin_scroll."""
+        _emit({"type": "end_scroll"})
+
+    def text_input(self, id: str, x: float, y: float, w: float,
+                   placeholder: str = "",
+                   multiline: bool = False) -> "str | None":
+        """Text input — host-owned buffer, submit-only.
+
+        Emits a `DrawCommand::TextInput` and returns the most recently
+        submitted value for `id` if any landed since the previous frame,
+        else `None`. The host owns the buffer entirely — typed
+        characters never reach the app between keystrokes. On Enter the
+        host emits `PlexiEvent::TextSubmitted { id, value }` and clears
+        its buffer.
+
+        The host auto-focuses the widget on its first visible frame so
+        the user can type immediately without clicking.
+
+        When `multiline=True`, Enter submits and Shift+Enter inserts a
+        newline. When `multiline=False` (default), Enter submits
+        immediately.
+
+        Pattern (poll on every frame)::
+
+            submitted = ctx.text_input("note", x=12, y=12, w=300,
+                                       placeholder="Type a note…")
+            if submitted is not None:
+                save_note(submitted)
+
+        Real-time validation (per-keystroke access) is out of scope —
+        see issue #283.
+        """
+        _emit({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
+               "placeholder": placeholder, "multiline": multiline})
+        return self._app._take_text_submission(id)
+
     # Logging helpers (in-frame, forwarded to host logger)
     def log(self, level: str, message: str) -> None:
         _emit({"type": "log", "level": level, "message": message})
@@ -981,43 +1803,63 @@ class RenderContext:
     def debug(self, message: str) -> None: self.log("debug", message)
 
     def notify(self, title: str, body: str = "", level: str = "info",
-               priority: int | None = None,
-               actions: list | None = None) -> None:
+               priority: "int | None" = None,
+               actions: "list | None" = None,
+               image_inline: "dict | None" = None,
+               image_pipe_id: "str | None" = None) -> None:
         """Post a message notification. See Emitter.notify.
         `priority` is required (int, higher = more urgent).
+        `image_inline` / `image_pipe_id` (#74) optionally attach an image.
         Scope is resolved from the app's manifest — not an argument."""
         self.emit.notify(title=title, body=body, level=level,
-                         priority=priority, actions=actions)
+                         priority=priority, actions=actions,
+                         image_inline=image_inline, image_pipe_id=image_pipe_id)
 
-    def notify_choice(self, title: str, options: list, body: str = "",
-                      level: str = "info", required: bool = False,
-                      priority: int | None = None) -> str:
-        """Post a choice notification and block until the user picks.
+    async def notify_choice(self, title: str, options: list, body: str = "",
+                            level: str = "info", required: bool = False,
+                            priority: int | None = None,
+                            image_inline: dict | None = None,
+                            image_pipe_id: str | None = None) -> str:
+        """Post a choice notification and await until the user picks.
         `priority` is required (int, higher = more urgent).
+        `image_inline` / `image_pipe_id` (#74) optionally attach an image.
         Returns the chosen option's value (or label if no value set),
-        or "__cancel__" if the user dismissed."""
-        return self.emit.notify_choice(title=title, options=options, body=body,
-                                       level=level, required=required,
-                                       priority=priority)
+        or "__cancel__" if the user dismissed. Use with ``await``."""
+        return await self.emit.notify_choice(title=title, options=options, body=body,
+                                             level=level, required=required,
+                                             priority=priority,
+                                             image_inline=image_inline,
+                                             image_pipe_id=image_pipe_id)
 
-    def notify_input(self, title: str, prompt: str = "", body: str = "",
-                     level: str = "info", required: bool = False,
-                     priority: int | None = None) -> str:
-        """Post an input notification and block until the user submits.
-        `priority` is required (int, higher = more urgent).
-        Returns the typed text, or "__cancel__" if dismissed."""
-        return self.emit.notify_input(title=title, prompt=prompt, body=body,
-                                      level=level, required=required,
-                                      priority=priority)
+    async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
+                                mime: str, level: str = "info",
+                                priority: "int | None" = None,
+                                choices: "list | None" = None) -> "str | None":
+        """Convenience: post a notification with an inline base64 image.
+        See Emitter.notify_with_image — handles base64 + 50KB cap. Use with ``await``."""
+        return await self.emit.notify_with_image(title=title, body=body,
+                                                 image_bytes=image_bytes, mime=mime,
+                                                 level=level, priority=priority,
+                                                 choices=choices)
 
-    def notify_and_wait(self, title: str, body: str = "", level: str = "info",
-                        actions: list | None = None,
-                        priority: int | None = None) -> str:
-        """Post a message notification and block for acknowledge/cancel.
+    async def notify_input(self, title: str, prompt: str = "", body: str = "",
+                           level: str = "info", required: bool = False,
+                           priority: int | None = None) -> str:
+        """Post an input notification and await until the user submits.
         `priority` is required (int, higher = more urgent).
-        See Emitter.notify_and_wait."""
-        return self.emit.notify_and_wait(title=title, body=body, level=level,
-                                         actions=actions, priority=priority)
+        Returns the typed text, or "__cancel__" if dismissed. Use with ``await``."""
+        return await self.emit.notify_input(title=title, prompt=prompt, body=body,
+                                            level=level, required=required,
+                                            priority=priority)
+
+    async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
+                              actions: "list | None" = None,
+                              priority: "int | None" = None) -> str:
+        """Post a message notification and await for acknowledge/cancel.
+        `priority` is required (int, higher = more urgent).
+        See Emitter.notify_and_wait. Use with ``await``."""
+        return await self.emit.notify_and_wait(title=title, body=body, level=level,
+                                               actions=actions, priority=priority)
 
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
@@ -1028,24 +1870,46 @@ class RenderContext:
     def cancel_timer(self, timer_id: str) -> None:
         self.emit.cancel_timer(timer_id)
 
-    def get_secret(self, key: str) -> str | None:
-        """Request a secret by key. Alias for emit.get_secret(). Blocking."""
-        return self.emit.get_secret(key)
+    def set_mouse_tracking(self, enabled: bool) -> None:
+        """Enable or disable on_mouse_move delivery for this pane.
+        Call with True in on_init to start receiving mouse-move events.
+        Delegates to emit.set_mouse_tracking()."""
+        self.emit.set_mouse_tracking(enabled)
 
-    def http_request(self, url: str, method: str = "GET",
-                     headers: "dict[str, str] | None" = None,
-                     body: "str | None" = None) -> str:
-        """Blocking HTTP request with optional method, headers, body. Requires net.http capability."""
-        return self.emit.http_request(url, method=method, headers=headers, body=body)
+    def schedule_render(self, after_ms: int = 16) -> None:
+        """Ask the host to send a new Render event after `after_ms` milliseconds.
+        Delegates to emit.schedule_render(). 16 ms ≈ 60 fps. 32 ms ≈ 30 fps."""
+        self.emit.schedule_render(after_ms=after_ms)
 
-    def llm(self, prompt: str, model: str = "claude-haiku-4-5-20251001",
-            system: str | None = None) -> str:
-        """Blocking LLM call brokered through the host. Requires llm capability.
-        Uses ANTHROPIC_API_KEY from the Plexi secrets store."""
-        return self.emit.llm(prompt=prompt, model=model, system=system)
+    async def get_secret(self, key: str) -> "str | None":
+        """Request a secret by key. Alias for emit.get_secret(). Use with ``await``."""
+        return await self.emit.get_secret(key)
+
+    async def http_request(self, url: str, method: str = "GET",
+                           headers: "dict[str, str] | None" = None,
+                           body: "str | None" = None) -> str:
+        """HTTP request brokered through the host. Requires net.http capability. Use with ``await``."""
+        return await self.emit.http_request(url, method=method, headers=headers, body=body)
+
+    async def ai_query(self, model_tier: str, system: str,
+                       messages: "list[dict]",
+                       tools: "list[dict] | None" = None) -> AiResponse:
+        """AI broker call through the host. Requires ai.query capability. Use with ``await``."""
+        return await self.emit.ai_query(model_tier=model_tier, system=system,
+                                        messages=messages, tools=tools)
 
     def frame_done(self) -> None:
         _emit({"type": "frame_done", "frame_id": self.frame_id})
+
+
+def _log_task_exception(task: "asyncio.Task") -> None:
+    """Done callback for background tasks — logs unhandled exceptions."""
+    try:
+        exc = task.exception()
+    except (asyncio.CancelledError, asyncio.InvalidStateError):
+        return
+    if exc is not None:
+        sys.stderr.write(f"plexi_sdk: unhandled exception in background task: {exc}\n")
 
 
 # ── App base class ────────────────────────────────────────────────────────────
@@ -1055,16 +1919,27 @@ class App:
     Base class for Plexi v3 apps. Subclass and override event handlers.
 
     Override any of:
-        on_init(self, ctx)                            — after Init handshake
-        on_render(self, ctx)                          — on each Render event
-        on_key(self, ctx, key, mods)                  — on Key event
-        on_click(self, ctx, x, y, button)             — on Click event
-        on_command(self, ctx, text)                   — on Command event
-        on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (JSON mode)
-        on_path_changed(self, ctx, cwd)               — on PathChanged broadcast
-        on_suspend(self)                              — on Suspend
-        on_resume(self)                               — on Resume
-        on_shutdown(self)                             — on Shutdown (before exit)
+        on_init(self, ctx)                            — after Init handshake (awaited)
+        on_render(self, ctx)                          — on each Render event (awaited)
+        on_key(self, ctx, key, mods)                  — on Key event (task)
+        on_click(self, ctx, x, y, button)             — on Click event (task)
+        on_command(self, ctx, text)                   — on Command event (task)
+        on_paste(self, ctx, text)                     — on Paste event (task)
+        on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (task)
+        on_path_changed(self, ctx, cwd)               — on PathChanged (task)
+        on_suspend(self)                              — on Suspend (awaited)
+        on_resume(self)                               — on Resume (awaited)
+        on_shutdown(self)                             — on Shutdown (awaited)
+
+    Handlers marked (task) are dispatched as asyncio tasks — the event loop
+    does not wait for them to complete before processing the next event. Declare
+    them ``async def`` whenever they do any I/O. Never call blocking operations
+    (time.sleep, requests.get, etc.) directly from these handlers; use
+    ``await asyncio.to_thread(fn)`` or ``threading.Thread`` + ``emit.run_sync()``.
+
+    Handlers marked (awaited) block the event loop until they return. Use
+    ``await``-able Emitter helpers freely; they do not deadlock because the
+    stdin reader runs as a concurrent task.
     """
 
     def __init__(self) -> None:
@@ -1073,31 +1948,116 @@ class App:
         self.capabilities: list[str] = []
         self.feature_flags: list[str] = []
         self._rect: dict = {"x": 0.0, "y": 0.0, "w": 800.0, "h": 600.0}
-        self._pending_capability: dict[str, queue.Queue] = {}
-        self._pending_secret: dict[str, queue.Queue] = {}
-        self._pending_http: dict[str, queue.Queue] = {}
-        self._pending_llm: dict[str, queue.Queue] = {}
-        self._pending_notify: dict[str, queue.Queue] = {}
+        # The running asyncio event loop. Set by run() before hooks are called.
+        # Background threads use this via emit.run_sync() to schedule coroutines.
+        self._loop: "asyncio.AbstractEventLoop | None" = None
+        # All pending-response maps now hold asyncio.Queue so the event loop
+        # coroutine can await them without blocking the stdin reader.
+        self._pending_capability: "dict[str, asyncio.Queue]" = {}
+        self._pending_secret: "dict[str, asyncio.Queue]" = {}
+        self._pending_http: "dict[str, asyncio.Queue]" = {}
+        # v3.3 ai.query broker (#284): awaits PlexiEvent::AiResponse keyed
+        # on request_id. Each entry is consumed by a single ai_query() call.
+        self._pending_ai: "dict[str, asyncio.Queue]" = {}
+        # v3.4 CoreMIDI (#320): awaits PlexiEvent::MidiDevicesListed keyed
+        # on request_id. Each entry is consumed by a single list_midi_devices().
+        self._pending_midi_devices: "dict[str, asyncio.Queue]" = {}
+        # v3.4 video substrate (#345): awaits PlexiEvent::VideoOpenAck /
+        # VideoOpenError keyed on request_id. Each entry is consumed by a
+        # single open_video() call.
+        self._pending_video_open: "dict[str, asyncio.Queue]" = {}
+        # v3.3 P2 agents.list (#286): awaits PlexiEvent::AgentRoster keyed
+        # on request_id. Each entry is consumed by a single agent_roster() call.
+        self._pending_agent_roster: "dict[str, asyncio.Queue]" = {}
+        self._pending_notify: "dict[str, asyncio.Queue]" = {}
+        # v3.5 Canvas Terminal Binding Primitives (#78). Two response shapes:
+        # `linked_terminal_ready` carries an int pane_id; `command_preview`
+        # carries (command, would_run_in_cwd). Each async helper awaits
+        # its own keyed queue.
+        self._pending_linked_terminal: "dict[str, asyncio.Queue]" = {}
+        self._pending_command_preview: "dict[str, asyncio.Queue]" = {}
+        # RenderContext.measure_text: awaits PlexiEvent::TextMeasured keyed on request_id.
+        self._pending_measure_text: "dict[str, asyncio.Queue]" = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
+        # Strong references to background asyncio tasks created by
+        # _dispatch_hook_task. Without this, CPython may GC a task before it
+        # completes. The done callback removes each task from the set.
+        self._background_tasks: "set[asyncio.Task]" = set()
+        # Pending text-input submissions keyed on TextInput `id`. The
+        # event-loop coroutine fills this when `PlexiEvent::TextSubmitted`
+        # arrives; `RenderContext.text_input` drains it during render.
+        # One pending value per id — a second submit before the app
+        # consumes the first overwrites (apps poll every frame, so
+        # this only matters in a perverse scheduling case).
+        self._text_submissions: dict[str, str] = {}
         self.emit = Emitter(self)
 
     # ── Override these ──────────────────────────────────────────────────────
-    def on_init(self, _ctx: RenderContext) -> None: pass
+    # All hooks may be overridden as either `def` (sync) or `async def`.
+    # _dispatch_hook detects the type at call time — both are valid.
+    # Return type is `Coroutine[Any, Any, None] | None` so Pyright accepts
+    # both sync (`def` → returns None) and async (`async def` → returns
+    # Coroutine) overrides without reportIncompatibleMethodOverride.
+    def on_init(self, _ctx: RenderContext) -> Coroutine[Any, Any, None] | None: return None
     def on_render(self, _ctx: RenderContext) -> None: pass
-    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> None: pass
-    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None: pass
-    def on_command(self, _ctx: RenderContext, _text: str) -> None: pass
-    def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> None: pass
-    def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> None: pass
-    def on_inject(self, _ctx: RenderContext, _payload: Any) -> None: pass
+    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> Coroutine[Any, Any, None] | None: return None
+    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_mouse_down(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_mouse_move(self, _ctx: RenderContext, _x: float, _y: float, _buttons: list) -> Coroutine[Any, Any, None] | None: return None
+    def on_command(self, _ctx: RenderContext, _text: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_paste(self, _ctx: RenderContext, _text: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
+    def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_inject(self, _ctx: RenderContext, _payload: Any) -> Coroutine[Any, Any, None] | None: return None
+    def on_nav_back(self, _ctx: RenderContext, _view_id: str) -> "Coroutine[Any, Any, None] | None":
+        """Called when the host emits ``NavBack`` — user pressed Cmd+[ or the
+        back arrow in the pane chrome. ``view_id`` is the view being navigated
+        *back to* (the new top of stack, or empty string for root).
+
+        The app should update its own view state to show ``view_id``, then call
+        ``ctx.emit.pop_nav()`` to remove the entry from the host stack.
+        """
+        return None
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
-    def on_timer(self, _ctx: "RenderContext", _timer_id: str) -> None: pass
+    def on_timer(self, _ctx: RenderContext, _timer_id: str) -> Coroutine[Any, Any, None] | None: return None
+    def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> Coroutine[Any, Any, None] | None: return None
+    """Called when the host updates the scroll offset for a BeginScroll region.
+
+    `id` matches the id passed to `ctx.begin_scroll`. `offset_y` is the new
+    vertical offset in logical pixels. Override to re-render content at the
+    new position.
+    """
+    def on_midi_input_opened(
+        self,
+        _pipe_id: str,
+        _port_id: str,
+        _port_name: str,
+    ) -> None:
+        """Override to react to a successful OpenMidiInput. Apps that just
+        want the byte stream typically read directly from the binary pipe
+        opened alongside this event — Plexi sends `pipe_opened` first."""
+        pass
+
+    # ── Agent-as-app hooks (#338, type = "agent" manifests only) ────────────
+    # `Agent` subclass wires these. Plain `App` subclasses get no-op defaults
+    # so a misclassified manifest doesn't crash on the host's emit.
+    def on_agent_init(self, _system_prompt: "str | None") -> None: pass
+    def on_user_message(self, _ctx: "RenderContext", _text: str) -> None: pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
 
     # ── Internal ────────────────────────────────────────────────────────────
+    def _take_text_submission(self, id: str) -> "str | None":
+        """Pop the most recent submission for `id` if one is queued, else None.
+
+        Called by `RenderContext.text_input` to surface a buffered
+        `TextSubmitted` value into the current frame's render call.
+        """
+        return self._text_submissions.pop(id, None)
+
     def _make_ctx(self, frame_id: int = 0, elapsed: float = 0.0) -> RenderContext:
         return RenderContext(
             frame_id=frame_id,
@@ -1110,171 +2070,611 @@ class App:
         )
 
     def run(self) -> None:
-        """Start the PGAP v3 event loop. Blocks until Shutdown."""
+        """Start the PGAP v3 asyncio event loop. Blocks until Shutdown."""
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        asyncio.run(self._async_main())
 
-        for raw in sys.stdin:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                ev = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+    async def _async_main(self) -> None:
+        """Asyncio entry point — two concurrent tasks to eliminate deadlocks.
 
-            t = ev.get("type", "")
+        The root cause of the old single-loop design: when the dispatcher
+        awaited a hook (e.g. on_init) that itself called a blocking helper
+        (e.g. request_linked_terminal), the event loop had no concurrent
+        stdin reader in flight. Nothing could deliver the response event
+        while the hook was suspended, causing a permanent deadlock.
 
-            if t == "init":
-                proto = ev.get("protocol", "")
-                if not proto.startswith("pgap/3"):
-                    sys.stderr.write(
-                        f"plexi_sdk: unsupported protocol {proto!r}, expected pgap/3\n"
+        Fix: split into two tasks that run concurrently on the same event loop.
+
+          _reader  — always has a run_in_executor(readline) in flight.
+                     Handles response events inline (put_nowait into pending
+                     queues) so they can unblock awaiting hooks even while the
+                     dispatcher is suspended.
+
+          _dispatcher — drains a hook_q, dispatches hook events sequentially.
+                        Can safely await hooks because _reader is always running
+                        alongside it and will deliver response events.
+
+        Response events MUST be handled inline in _reader — never enqueued —
+        so that hooks awaiting on pending queues can be unblocked even when
+        the dispatcher is suspended mid-hook.
+        """
+        loop = asyncio.get_running_loop()
+        self._loop = loop
+        hook_q: asyncio.Queue = asyncio.Queue()
+
+        async def _reader() -> None:
+            while True:
+                raw = await loop.run_in_executor(None, sys.stdin.readline)
+                if not raw:
+                    # EOF — host closed stdin; signal dispatcher to shut down.
+                    await hook_q.put({"type": "shutdown"})
+                    return
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+
+                t = ev.get("type", "")
+
+                # ── Response events: handled inline so they can unblock ──────
+                # hooks suspended in the dispatcher. These must NEVER go on
+                # hook_q — that would leave awaiting coroutines stuck forever.
+
+                if t == "capability_decision":
+                    req_id = ev.get("request_id", "")
+                    granted = ev.get("granted", False)
+                    q = self._pending_capability.pop(req_id, None)
+                    if q:
+                        q.put_nowait(granted)
+
+                elif t == "secret_value":
+                    key = ev.get("key", "")
+                    value = ev.get("value")
+                    q = self._pending_secret.pop(key, None)
+                    if q:
+                        q.put_nowait(value)
+
+                elif t == "http_response":
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_http.pop(req_id, None)
+                    if q:
+                        if ev.get("error"):
+                            q.put_nowait(("error", ev["error"]))
+                        else:
+                            q.put_nowait(("ok", ev.get("body", "")))
+
+                elif t == "ai_response":
+                    # v3.3 ai.query broker (#284). Hand the whole event dict to
+                    # `Emitter.ai_query` so it can split error vs success and
+                    # attach token counts.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_ai.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
+                    else:
+                        import logging as _logging
+                        _logging.warning(
+                            f"ai_response: no pending request for req_id={req_id!r} — "
+                            "response dropped (query may have timed out already)"
+                        )
+
+                elif t == "midi_devices_listed":
+                    # v3.4 CoreMIDI (#320). Forward to Emitter.list_midi_devices.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_midi_devices.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
+
+                elif t == "video_open_ack":
+                    # v3.4 video substrate (#345). Forward to Emitter.open_video().
+                    req_id = str(ev.get("request_id", ""))
+                    q = self._pending_video_open.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
+
+                elif t == "video_open_error":
+                    # OpenVideo failed (capability denied, NotImplemented from the
+                    # production stub, bad source). Forward the error event so
+                    # `open_video()` can raise CapabilityDeniedError / RuntimeError.
+                    req_id = str(ev.get("request_id", ""))
+                    q = self._pending_video_open.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
+
+                elif t == "linked_terminal_ready":
+                    # v3.5 #78. Forward the terminal_pane_id (int) to the
+                    # awaiting helper. 0 = capability denied — the helper
+                    # raises CapabilityDeniedError when it sees that.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_linked_terminal.pop(req_id, None)
+                    if q:
+                        q.put_nowait(int(ev.get("terminal_pane_id", 0)))
+
+                elif t == "command_preview":
+                    # v3.5 #78. Forward (command, would_run_in_cwd) tuple to the
+                    # awaiting helper. would_run_in_cwd is "" on capability denial.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_command_preview.pop(req_id, None)
+                    if q:
+                        q.put_nowait((
+                            str(ev.get("command", "")),
+                            str(ev.get("would_run_in_cwd", "")),
+                        ))
+
+                elif t == "agent_roster":
+                    # v3.3 P2 agents.list (#286). The `agents` field is always
+                    # a list (empty when the app lacks the `agents.list`
+                    # capability — the host returns an empty roster, not an
+                    # error). Forwarded as-is to the queue waiting in
+                    # `Emitter.agent_roster`.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_agent_roster.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev.get("agents", []) or [])
+
+                elif t == "notify_action":
+                    # notify_choice / notify_input: put the value back.
+                    # notify / notify_and_wait: put action_label back.
+                    # Esc cancel: return "__cancel__" so callers can check easily.
+                    notify_id = ev.get("notify_id", "")
+                    action_label = ev.get("action_label", "")
+                    value = ev.get("value")
+                    q = self._pending_notify.pop(notify_id, None)
+                    if q:
+                        if action_label == "cancel":
+                            q.put_nowait("__cancel__")
+                        elif value is not None:
+                            q.put_nowait(value)
+                        else:
+                            q.put_nowait(action_label or "acknowledge")
+
+                elif t == "text_measured":
+                    # Response to RenderContext.measure_text(). Forward (width, height)
+                    # to the awaiting coroutine keyed on request_id.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_measure_text.pop(req_id, None)
+                    if q:
+                        q.put_nowait((
+                            float(ev.get("width", 0.0)),
+                            float(ev.get("height", 0.0)),
+                        ))
+
+                # ── Inline non-hook events (fast, no user code) ──────────────
+
+                elif t == "pipe_opened":
+                    pipe_id = ev.get("pipe_id", "")
+                    socket_path = ev.get("socket_path", "")
+                    p = self._pipes.get(pipe_id)
+                    if p:
+                        p._on_opened(socket_path)
+
+                elif t == "pipe_overrun":
+                    self.emit.warn(
+                        f"pipe overrun pipe_id={ev.get('pipe_id')} "
+                        f"dropped={ev.get('dropped_frames')}"
                     )
-                    sys.exit(1)
-                self.app_id = ev.get("app_id", "")
-                self.workspace_root = ev.get("workspace_root", "")
-                self.capabilities = ev.get("capabilities", [])
-                self.feature_flags = ev.get("feature_flags", [])
-                # Send Ready
-                features_used = [f for f in self.feature_flags
-                                  if f in ("pane_groups_v1",)]
-                _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
-                self.on_init(self._make_ctx())
 
-            elif t == "render":
-                import time as _time
-                now = _time.monotonic()
-                elapsed = (now - self._last_render_time) if self._last_render_time is not None else 0.0
-                self._last_render_time = now
-                frame_id = ev.get("frame_id", 0)
-                if "rect" in ev:
-                    self._rect = ev["rect"]
-                elif "width" in ev:
-                    # legacy compat
-                    self._rect = {"x": 0.0, "y": 0.0,
-                                  "w": ev["width"], "h": ev["height"]}
-                ctx = self._make_ctx(frame_id, elapsed=elapsed)
-                try:
-                    self.on_render(ctx)
-                except Exception as e:
-                    ctx.error(f"on_render exception: {e}")
-                ctx.frame_done()
+                elif t == "midi_input_error":
+                    # OpenMidiInput failed (capability denied, port_id not found,
+                    # CoreMIDI error). Apps log this; the typical recovery is to
+                    # surface the error in-pane and let the user pick a different
+                    # port from list_midi_devices.
+                    self.emit.warn(
+                        f"midi_input_error pipe_id={ev.get('pipe_id')} "
+                        f"error={ev.get('error')}"
+                    )
 
-            elif t == "key":
-                ctx = self._make_ctx()
-                self.on_key(ctx, ev.get("key", ""), ev.get("modifiers", {}))
+                elif t == "midi_send_error":
+                    # SendMidi failed. Surfaces only on capability denial / open
+                    # failure / coremidi error — successful sends produce no event.
+                    self.emit.warn(
+                        f"midi_send_error port_id={ev.get('port_id')} "
+                        f"error={ev.get('error')}"
+                    )
 
-            elif t == "click":
-                ctx = self._make_ctx()
-                self.on_click(ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                              ev.get("button", "primary"))
+                elif t == "text_submitted":
+                    # Host-owned text input: the user pressed Enter on a
+                    # `DrawCommand::TextInput` field. Stash the value keyed
+                    # on the input id; `RenderContext.text_input(...)` will
+                    # drain it on the next frame the app polls.
+                    tid = ev.get("id", "")
+                    if tid:
+                        self._text_submissions[tid] = ev.get("value", "")
 
-            elif t == "command":
-                ctx = self._make_ctx()
-                self.on_command(ctx, ev.get("text", ""))
+                elif t == "run_update":
+                    pass  # apps can override on_run_update if needed
 
-            elif t == "capability_decision":
-                req_id = ev.get("request_id", "")
-                granted = ev.get("granted", False)
-                q = self._pending_capability.pop(req_id, None)
-                if q:
-                    q.put(granted)
+                # ── Hook events: forwarded to the dispatcher ─────────────────
+                else:
+                    await hook_q.put(ev)
 
-            elif t == "secret_value":
-                key = ev.get("key", "")
-                value = ev.get("value")
-                q = self._pending_secret.pop(key, None)
-                if q:
-                    q.put(value)
+        async def _dispatcher() -> None:
+            while True:
+                ev = await hook_q.get()
+                t = ev.get("type", "")
 
-            elif t == "pipe_message":
-                ctx = self._make_ctx()
-                self.on_pipe_message(ctx, ev.get("pipe_id", ""), ev.get("payload"))
+                if t == "init":
+                    proto = ev.get("protocol", "")
+                    if not proto.startswith("pgap/3"):
+                        sys.stderr.write(
+                            f"plexi_sdk: unsupported protocol {proto!r}, expected pgap/3\n"
+                        )
+                        sys.exit(1)
+                    self.app_id = ev.get("app_id", "")
+                    self.workspace_root = ev.get("workspace_root", "")
+                    self.capabilities = ev.get("capabilities", [])
+                    self.feature_flags = ev.get("feature_flags", [])
+                    # Send Ready
+                    features_used = [f for f in self.feature_flags
+                                      if f in ("pane_groups_v1",)]
+                    _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
+                    await self._dispatch_hook(self.on_init, self._make_ctx())
 
-            elif t == "pipe_opened":
-                pipe_id = ev.get("pipe_id", "")
-                socket_path = ev.get("socket_path", "")
-                p = self._pipes.get(pipe_id)
-                if p:
-                    p._on_opened(socket_path)
+                elif t == "render":
+                    import time as _time
+                    now = _time.monotonic()
+                    elapsed = (now - self._last_render_time) if self._last_render_time is not None else 0.0
+                    self._last_render_time = now
+                    frame_id = ev.get("frame_id", 0)
+                    if "rect" in ev:
+                        self._rect = ev["rect"]
+                    elif "width" in ev:
+                        # legacy compat
+                        self._rect = {"x": 0.0, "y": 0.0,
+                                      "w": ev["width"], "h": ev["height"]}
+                    ctx = self._make_ctx(frame_id, elapsed=elapsed)
+                    try:
+                        await self._dispatch_hook(self.on_render, ctx)
+                    except Exception as e:
+                        ctx.error(f"on_render exception: {e}")
+                    ctx.frame_done()
 
-            elif t == "pipe_overrun":
-                self.emit.warn(
-                    f"pipe overrun pipe_id={ev.get('pipe_id')} "
-                    f"dropped={ev.get('dropped_frames')}"
-                )
+                elif t == "key":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_key, ctx, ev.get("key", ""), ev.get("modifiers", {}))
 
-            elif t == "path_changed":
-                ctx = self._make_ctx()
-                self.on_path_changed(ctx, ev.get("cwd", ""))
+                elif t == "click":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                             ev.get("button", "primary"))
 
-            elif t == "suspend":
-                self.on_suspend()
+                elif t == "mouse_down":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_mouse_down, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("button", "primary"))
 
-            elif t == "resume":
-                self.on_resume()
+                elif t == "mouse_up":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_mouse_up, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("button", "primary"))
 
-            elif t == "shutdown":
-                self.on_shutdown()
-                break
+                elif t == "mouse_move":
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_mouse_move, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("buttons", []))
 
-            elif t == "inject_state":
-                ctx = self._make_ctx()
-                self.on_inject(ctx, ev.get("payload", {}))
+                elif t == "command":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_command, ctx, ev.get("text", ""))
 
-            elif t == "http_response":
-                req_id = ev.get("request_id", "")
-                q = self._pending_http.pop(req_id, None)
-                if q:
-                    if ev.get("error"):
-                        q.put(("error", ev["error"]))
-                    else:
-                        q.put(("ok", ev.get("body", "")))
+                elif t == "paste":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_paste, ctx, ev.get("text", ""))
 
-            elif t == "llm_response":
-                req_id = ev.get("request_id", "")
-                q = self._pending_llm.pop(req_id, None)
-                if q:
-                    if ev.get("error"):
-                        q.put(("error", ev["error"]))
-                    else:
-                        q.put(("ok", ev.get("content", "")))
+                elif t == "pipe_message":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
 
-            elif t == "notify_action":
-                # notify_choice / notify_input: put the value back.
-                # notify / notify_and_wait: put action_label back.
-                # Esc cancel: return "__cancel__" so callers can check easily.
-                notify_id = ev.get("notify_id", "")
-                action_label = ev.get("action_label", "")
-                value = ev.get("value")
-                q = self._pending_notify.pop(notify_id, None)
-                if q:
-                    if action_label == "cancel":
-                        q.put("__cancel__")
-                    elif value is not None:
-                        q.put(value)
-                    else:
-                        q.put(action_label or "acknowledge")
+                elif t == "path_changed":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_path_changed, ctx, ev.get("cwd", ""))
 
-            elif t == "timer":
-                timer_id = ev.get("timer_id", "")
-                ctx = self._make_ctx()
-                self.on_timer(ctx, timer_id)
+                elif t == "suspend":
+                    await self._dispatch_hook(self.on_suspend)
 
-            elif t in ("run_update",):
-                pass  # apps can override on_run_update if needed
+                elif t == "resume":
+                    await self._dispatch_hook(self.on_resume)
 
-            elif t == "app_spawned":
-                # Confirmation that a SpawnApp request succeeded. Apps that
-                # want to track the spawned pane can override on_app_spawned.
-                try:
-                    self.on_app_spawned(
+                elif t == "shutdown":
+                    # Cancel any pending ai_query waiters so their coroutines
+                    # unblock immediately instead of waiting up to 35s for a
+                    # response that will never arrive.
+                    if self._pending_ai:
+                        import logging as _logging
+                        _logging.warning(
+                            f"shutdown: cancelling {len(self._pending_ai)} in-flight "
+                            f"ai_query request(s): {list(self._pending_ai.keys())}"
+                        )
+                        for _pending_q in self._pending_ai.values():
+                            _pending_q.put_nowait(
+                                {"error": "ai_query cancelled: app is shutting down"}
+                            )
+                        self._pending_ai.clear()
+                    await self._dispatch_hook(self.on_shutdown)
+                    return
+
+                elif t == "inject_state":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_inject, ctx, ev.get("payload", {}))
+
+                elif t == "midi_input_opened":
+                    # Confirms an OpenMidiInput call landed a CoreMIDI source.
+                    # Apps that care about "the port is now wired to my pipe"
+                    # see this event after the corresponding PipeOpened — they
+                    # can override on_midi_input_opened to react.
+                    self._dispatch_hook_task(
+                        self.on_midi_input_opened,
+                        str(ev.get("pipe_id", "")),
+                        str(ev.get("port_id", "")),
+                        str(ev.get("port_name", "")),
+                    )
+
+                elif t == "agent_init":
+                    # v3.3 agent-as-app (#338): the host forwards the manifest's
+                    # `[launch].system_prompt` once at startup. Apps that subclass
+                    # `Agent` consume this in `_on_agent_init`; plain App
+                    # subclasses can override `on_agent_init` to receive it.
+                    await self._dispatch_hook(self.on_agent_init, ev.get("system_prompt"))
+
+                elif t == "user_message":
+                    # v3.3 agent-as-app (#338): the user submitted text in the
+                    # host-rendered conversation input box. Forwarded to
+                    # `on_user_message`. Only delivered to type=agent panes.
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_user_message, ctx, ev.get("text", ""))
+
+                elif t == "timer":
+                    timer_id = ev.get("timer_id", "")
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_timer, ctx, timer_id)
+
+                elif t == "scroll_offset":
+                    # Host-managed scroll region (#446): the user scrolled inside
+                    # a BeginScroll viewport. Forward to on_scroll so the app can
+                    # store the new offset and re-render at the translated position.
+                    scroll_id = ev.get("id", "")
+                    offset_y = float(ev.get("offset_y", 0.0))
+                    ctx = self._make_ctx()
+                    try:
+                        await self._dispatch_hook(self.on_scroll, ctx, scroll_id, offset_y)
+                    except Exception as e:
+                        sys.stderr.write(f"on_scroll handler raised: {e}\n")
+
+                elif t == "app_spawned":
+                    # Confirmation that a SpawnApp request succeeded. Apps that
+                    # want to track the spawned pane can override on_app_spawned.
+                    self._dispatch_hook_task(
+                        self.on_app_spawned,
                         int(ev.get("pane_id", 0)),
                         str(ev.get("type_id", "")),
                     )
-                except Exception as e:
-                    sys.stderr.write(f"on_app_spawned handler raised: {e}\n")
 
-        # Ensure all pipes are closed cleanly
-        for p in self._pipes.values():
-            p.close()
+                elif t == "nav_back":
+                    # Navigation stack back event (#392). The host pops the top
+                    # nav entry and sends this with the view_id the app should
+                    # navigate back to (empty string = root view).
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(
+                        self.on_nav_back, ctx, str(ev.get("view_id", ""))
+                    )
+
+        reader_task = asyncio.create_task(_reader())
+        try:
+            await _dispatcher()
+        finally:
+            reader_task.cancel()
+            for p in self._pipes.values():
+                p.close()
+            # _reader is blocked in run_in_executor(sys.stdin.readline) which
+            # cannot be interrupted by task cancellation — the executor thread
+            # stays alive until stdin EOF, which the host may not send within
+            # the 2s shutdown window. os._exit() terminates immediately without
+            # waiting for threads, avoiding the SIGTERM that would otherwise fire.
+            import os as _os
+            _os._exit(0)
+
+    async def _dispatch_hook(self, hook: "Any", *args: Any) -> None:
+        """Dispatch a lifecycle hook and await its completion.
+
+        Use this for hooks where ordering matters — on_render (FrameDone must
+        follow all draw commands), on_init (startup must complete before the
+        first render), on_shutdown (clean-up must finish before exit).
+
+        Async hooks are awaited directly; they may call any ``await``-able
+        Emitter helper without deadlock because _reader runs concurrently as
+        a separate task and will deliver response events while this hook is
+        suspended.
+
+        Sync hooks run on the event loop thread. They are safe for
+        pure-compute / draw-command work (on_render). A sync hook that calls
+        any blocking operation (time.sleep, requests.get, etc.) will freeze
+        the entire event loop — use _dispatch_hook_task for input events where
+        blocking is a realistic concern, or move blocking work to a thread via
+        ``threading.Thread`` + ``emit.run_sync()``.
+        """
+        if inspect.iscoroutinefunction(hook):
+            await hook(*args)
+        else:
+            hook(*args)
+
+    def _dispatch_hook_task(self, hook: "Any", *args: Any) -> None:
+        """Dispatch a lifecycle hook as a non-blocking background task.
+
+        Use this for input-driven hooks (on_key, on_click, on_command, etc.)
+        where a slow or async handler must not stall the stdin reader or delay
+        the next Render event.
+
+        Async hooks are scheduled as asyncio tasks via create_task — the
+        dispatcher returns immediately and the hook runs concurrently on the
+        same event loop. All ``await``-able Emitter helpers work normally.
+
+        Sync hooks that do not block are called directly on the event loop
+        thread (zero overhead, same as before). Sync hooks that *do* block
+        (time.sleep, requests.get, urllib calls, etc.) are the root cause of
+        the deadlock described in issue #393. The correct fix is to declare
+        the handler ``async def`` and use ``await asyncio.to_thread(fn)`` or
+        ``await self.emit.http_get(url)`` for any I/O, or to kick off a
+        ``threading.Thread`` and use ``emit.run_sync(...)`` to bridge back.
+        Sync blocking is logged as a warning so the problem is surfaced at
+        runtime rather than silently freezing the app.
+
+        Note: because tasks run concurrently, a queued on_key task may still
+        be running when on_render fires. Apps with shared mutable state should
+        use asyncio locks or confine mutations to on_render (the poll pattern).
+        """
+        if inspect.iscoroutinefunction(hook):
+            task = asyncio.create_task(hook(*args))
+            # Keep a strong reference so the GC doesn't collect the task before
+            # it finishes. The done callback removes it from the set.
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(_log_task_exception)
+        else:
+            try:
+                hook(*args)
+            except Exception as e:
+                sys.stderr.write(f"plexi_sdk: sync hook {getattr(hook, '__name__', hook)!r} raised: {e}\n")
+
+
+# ── Agent base class (issue #338) ────────────────────────────────────────────
+
+class Agent(App):
+    """Subclass for `type = "agent"` manifests. Wires the conversation loop.
+
+    The host renders the conversation UI (history scrollback + input box).
+    The agent owns the dialogue logic. The contract is symmetric:
+
+        Host → Agent      PlexiEvent::AgentInit  { system_prompt }   (once)
+        Host → Agent      PlexiEvent::UserMessage { text }            (per submit)
+        Agent → Host      DrawCommand::AppendConversation { role, content }
+
+    Author writes a single `on_user_message(text) -> str | None` callback.
+    Returning a string auto-emits an assistant `AppendConversation`. Returning
+    `None` means "I'll append manually" — useful for agents that emit
+    multiple rows per turn (tool use, partial replies).
+
+    Conversation history (`self.history`) is auto-built from `append_*`
+    helpers — pass it directly to `emit.ai_query(...)` for multi-turn.
+
+    Example:
+
+        class JokeAgent(Agent):
+            def on_user_message(self, text: str) -> str:
+                resp = self.emit.ai_query(
+                    model_tier="medium",
+                    system=self.system_prompt or "",
+                    messages=self.history,
+                )
+                return resp.content
+
+        if __name__ == "__main__":
+            JokeAgent().run()
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Populated by AgentInit. None until the host emits it (or forever
+        # if the manifest omits `[launch].system_prompt`).
+        self.system_prompt: "str | None" = None
+        # Conversation history in Anthropic Messages shape — built by the
+        # `append_*` helpers and passed straight to `emit.ai_query`.
+        self.history: list = []
+
+    # ── Wire-up (do not override) ───────────────────────────────────────────
+    def on_agent_init(self, system_prompt: "str | None") -> None:  # type: ignore[override]
+        self.system_prompt = system_prompt
+        self.emit.info(
+            f"agent: AgentInit received (system_prompt={'set' if system_prompt else 'unset'})"
+        )
+
+    async def on_user_message(self, ctx: "RenderContext", text: str) -> None:  # type: ignore[override]
+        # Append the user turn before invoking the override so `self.history`
+        # already contains it when the override calls `emit.ai_query`.
+        self.append_user_message(text)
+        try:
+            if inspect.iscoroutinefunction(self.respond):
+                reply = await self.respond(text)  # type: ignore[misc]
+            else:
+                reply = self.respond(text)
+        except Exception as e:
+            self.emit.error(f"agent: respond() raised: {e}")
+            self.append_system_message(f"Error: {e}")
+            return
+        # `None` means "I'll handle appends myself" — common for agents that
+        # stream multiple rows (tool use, partial replies). A returned string
+        # is the conventional one-shot reply path.
+        if reply is not None:
+            self.append_assistant_message(reply)
+
+    # ── User override ───────────────────────────────────────────────────────
+    def respond(self, _text: str) -> "str | None":
+        """Override this. Called once per `user_message` event.
+
+        May be a regular ``def`` or ``async def``. Return a string to
+        auto-append as the assistant turn. Return ``None`` if you've already
+        called ``append_assistant_message`` (or other ``append_*`` helpers)
+        yourself — useful for tool-use loops.
+        """
+        raise NotImplementedError(
+            "Agent subclasses must override `respond(text) -> str | None`"
+        )
+
+    # ── Conversation surface ────────────────────────────────────────────────
+    def append_user_message(self, text: str) -> None:
+        """Append a user row to the transcript. Updates `self.history` so the
+        next `emit.ai_query` call sees the turn."""
+        self.history.append({"role": "user", "content": text})
+        _emit({"type": "append_conversation", "role": "user", "content": text})
+
+    def append_assistant_message(self, text: str) -> None:
+        """Append an assistant row. Mirrors into `self.history`."""
+        self.history.append({"role": "assistant", "content": text})
+        _emit({"type": "append_conversation", "role": "assistant", "content": text})
+
+    def append_tool_message(self, text: str) -> None:
+        """Append a tool-use status row. Tool messages are NOT mirrored into
+        `self.history` (they're not part of the LLM-visible conversation)."""
+        _emit({"type": "append_conversation", "role": "tool", "content": text})
+
+    def append_system_message(self, text: str) -> None:
+        """Append a system / error status row. NOT mirrored into history."""
+        _emit({"type": "append_conversation", "role": "system", "content": text})
+
+    # ── Inter-agent helpers (#286) ──────────────────────────────────────────
+    async def list_agents(self) -> "list[AgentInfo]":
+        """Return the workspace's live agent roster. Use with ``await``.
+
+        Thin wrapper around ``await self.emit.agent_roster()``. Apps without
+        the `agents.list` capability receive an EMPTY list (not an error).
+
+        Pass an entry's `pane_id` to `open_pipe_to(pane_id, ...)` to start
+        an inter-agent channel.
+        """
+        return await self.emit.agent_roster()
+
+    def open_pipe_to(self, pane_id: int, pipe_id: "str | None" = None) -> Pipe:
+        """Open a duplex JSON pipe to another agent pane (#286).
+
+        `pipe_id` defaults to a fresh uuid4 — pass an explicit id only when
+        both ends agreed on one out-of-band. The pipe is duplex; either
+        side calls `pipe.send(payload)` and the other receives it via
+        `on_pipe_message(ctx, pipe_id, payload)`.
+
+        Capability: `pipe.open`.
+        """
+        pid = pipe_id or f"agent-{uuid.uuid4()}"
+        return self.emit.pipe_open_directed(pid, int(pane_id))
+
+    def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> Coroutine[Any, Any, None] | None:
+        """Override to receive directed inter-agent messages.
+
+        The default `App.on_pipe_message` is a no-op. Override on `Agent`
+        subclasses that act as workers / fan-out targets to handle
+        delegated requests.
+        """
+        # Same default as App.on_pipe_message — overridable by subclasses.
+        del ctx, pipe_id, payload
+        return None

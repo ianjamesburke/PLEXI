@@ -27,6 +27,23 @@ pub enum AppCommand {
         pipe_id: String,
         payload: serde_json::Value,
     },
+    /// Open a *directed* JSON pipe (#286) — only the sender and the named
+    /// target pane subscribe to subsequent `PipeMessage` deliveries.
+    /// Routed by the host because the target pane lives outside the sender's
+    /// process and the sender has no other way to subscribe peers.
+    OpenDirectedPipe {
+        sender_pane_id: u64,
+        pipe_id: String,
+        target_pane_id: u64,
+    },
+    /// Query the workspace agent roster (#286). The host enumerates every
+    /// `Pane::Agent` and emits `PlexiEvent::AgentRoster { request_id, agents }`
+    /// back to `sender_pane_id`. Apps without `agents.list` get an empty
+    /// roster (NOT an error) — see `app_permissions.rs::Capability::AgentsList`.
+    AgentRosterGet {
+        sender_pane_id: u64,
+        request_id: String,
+    },
     /// Deliver a RunUpdate event to the pane that originally issued the run,
     /// identified by its type_id.
     DeliverRunUpdate {
@@ -58,6 +75,15 @@ pub enum AppCommand {
         /// Visibility scope. `Global` notifications are always visible;
         /// `Context` notifications are only visible in their source context.
         scope: crate::app_protocol::NotifyScope,
+        /// Inline base64-encoded image attachment (#74). Decoded + cached
+        /// into a texture on first render. Decoded size > 50 KB triggers a
+        /// placeholder badge instead — never crash the host on bad input.
+        image_inline: Option<crate::app_protocol::NotificationImage>,
+        /// Pipe-referenced image (#74). Drained from the binary ring lazily
+        /// when the notification is visible. Layout: `width: u32 LE`,
+        /// `height: u32 LE`, then RGBA bytes. Mutually exclusive with
+        /// `image_inline` — if both set, inline wins.
+        image_pipe_id: Option<String>,
     },
     /// Route a NotifyAction event back to the app pane that sent the Notify.
     DeliverNotifyAction {
@@ -65,6 +91,59 @@ pub enum AppCommand {
         notify_id: String,
         action_label: String,
         value: Option<String>,
+    },
+    /// Canvas Terminal Binding Primitives (#78). The host opens a fresh
+    /// terminal next to `sender_pane_id`, sets the new terminal as the
+    /// sender app's `linked_pane_id`, and emits
+    /// `PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id }`
+    /// back to the sender. `cwd` falls back to the sender's
+    /// `workspace_root` when `None`.
+    RequestLinkedTerminal {
+        sender_pane_id: u64,
+        request_id: String,
+        cwd: Option<String>,
+        label: Option<String>,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Inject `command` into the
+    /// referenced terminal's PTY. With `echo: true`, the command is
+    /// followed by `\n` so the shell executes it; the user sees the typed
+    /// command and its output. With `echo: false`, the host still writes
+    /// the command + newline (PTY-level echo is shell-controlled — we don't
+    /// suppress it from the host side; the flag is preserved on the wire
+    /// so a future revision can wire shell-aware silent-execute).
+    RunInLinkedTerminal {
+        terminal_pane_id: u64,
+        command: String,
+        echo: bool,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Inject a path token at
+    /// the referenced terminal's cursor. `Replace` mode prefixes a
+    /// Ctrl-W (kill-word) so the shell's readline removes the partial
+    /// word before the path is written. Paths containing shell
+    /// metacharacters are POSIX-quoted by the host before injection.
+    InsertPathToken {
+        terminal_pane_id: u64,
+        path: String,
+        mode: crate::app_protocol::PathTokenMode,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Compute a no-execute
+    /// preview of `command` for the referenced terminal. Host responds
+    /// with `PlexiEvent::CommandPreview { request_id, command,
+    /// would_run_in_cwd }` to `sender_pane_id`. `would_run_in_cwd` is the
+    /// host's best-effort snapshot of the terminal child's cwd.
+    RequestCommandPreview {
+        sender_pane_id: u64,
+        request_id: String,
+        terminal_pane_id: u64,
+        command: String,
+    },
+    /// Canvas Terminal Binding Primitives (#78). Open a workspace
+    /// artifact via the host's pane router (OpenInPane → file browser
+    /// for dirs, Launch Services for files), or shell out to `open`
+    /// with `-R` (RevealInFinder) / no flag (OpenWithDefault) on macOS.
+    OpenArtifact {
+        path: String,
+        mode: crate::app_protocol::ArtifactOpenMode,
     },
 }
 

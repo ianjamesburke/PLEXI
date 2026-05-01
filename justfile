@@ -1,3 +1,53 @@
+PYTHON_VERSION := "3.12.13"
+PYTHON_PBS_DATE := "20260414"
+
+# Download the python-build-standalone runtime into assets/python/ for bundling.
+# Skips if the correct version is already present. macOS only.
+fetch-python-runtime:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ "$(uname)" != "Darwin" ]]; then
+        echo "fetch-python-runtime: macOS only, skipping"
+        exit 0
+    fi
+
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "arm64" ]]; then
+        PBS_ARCH="aarch64-apple-darwin"
+    else
+        PBS_ARCH="x86_64-apple-darwin"
+    fi
+
+    VERSION="{{PYTHON_VERSION}}"
+    DATE="{{PYTHON_PBS_DATE}}"
+    EXPECTED="${VERSION}+${DATE}-${PBS_ARCH}"
+    VERSION_FILE="assets/python/.pbs-version"
+
+    if [[ -f "$VERSION_FILE" ]] && [[ "$(cat "$VERSION_FILE")" == "$EXPECTED" ]]; then
+        echo "Python runtime ${VERSION} (${PBS_ARCH}) already present, skipping download"
+        exit 0
+    fi
+
+    FILENAME="cpython-${VERSION}+${DATE}-${PBS_ARCH}-install_only.tar.gz"
+    URL="https://github.com/astral-sh/python-build-standalone/releases/download/${DATE}/${FILENAME}"
+
+    echo "Downloading Python ${VERSION} (${PBS_ARCH}) from python-build-standalone..."
+    rm -rf assets/python
+    mkdir -p assets
+
+    TMP=$(mktemp -d)
+    trap "rm -rf $TMP" EXIT
+
+    curl -fL --progress-bar "$URL" -o "$TMP/$FILENAME"
+    tar xzf "$TMP/$FILENAME" -C assets/
+
+    # Strip headers — not needed at runtime, saves ~5 MB
+    rm -rf assets/python/include
+
+    echo "$EXPECTED" > "$VERSION_FILE"
+    echo "Python ${VERSION} ready at assets/python/"
+
 dev:
     cargo run
 
@@ -8,10 +58,18 @@ run:
     cargo run --release
 
 install:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo bundle --release
     cp target/release/bundle/osx/Plexi.app/Contents/MacOS/plexi /usr/local/bin/plexi
     rm -rf /Applications/Plexi.app
     cp -r target/release/bundle/osx/Plexi.app /Applications/Plexi.app
+    mkdir -p "$HOME/.plexi"
+    CONFIG="$HOME/.plexi/config.toml"
+    if [ ! -f "$CONFIG" ]; then
+      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
+      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
+    fi
 
 # ── Versions — full lifecycle for parallel .app installs + worktrees ─────────
 #
@@ -234,7 +292,7 @@ install-apps:
     echo "install-apps is deprecated. Use 'just install-alpha', 'just install-beta', or 'just install-v3'."
     exit 1
 
-install-alpha:
+install-alpha: fetch-python-runtime
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -282,7 +340,7 @@ install-alpha:
     rm -rf ~/.plexi-alpha/sdk/plexi_sdk.py ~/.plexi-alpha/sdk/plexi_sdk
     cp -R sdk/python/plexi_sdk ~/.plexi-alpha/sdk/plexi_sdk
     find ~/.plexi-alpha/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    cp -R examples/. ~/.plexi-alpha/apps/
+    rsync -a --delete examples/ ~/.plexi-alpha/apps/
     find ~/.plexi-alpha/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
     find ~/.plexi-alpha/apps -name '*.py' -exec chmod +x {} \;
 
@@ -294,12 +352,19 @@ install-alpha:
     fi
     /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
 
+    # Create a default config.toml if none exists. Never overwrites an existing one.
+    CONFIG="$HOME/.plexi-alpha/config.toml"
+    if [ ! -f "$CONFIG" ]; then
+      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
+      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
+    fi
+
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-alpha"
     echo "Config dir: ~/.plexi-alpha/"
     echo "Apps: $(ls ~/.plexi-alpha/apps | wc -l | tr -d ' ') synced from examples/"
 
-install-v3:
+install-v3: fetch-python-runtime
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -344,7 +409,7 @@ install-v3:
     rm -rf ~/.plexi-v3/sdk/plexi_sdk.py ~/.plexi-v3/sdk/plexi_sdk
     cp -R sdk/python/plexi_sdk ~/.plexi-v3/sdk/plexi_sdk
     find ~/.plexi-v3/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    cp -R examples/. ~/.plexi-v3/apps/
+    rsync -a --delete examples/ ~/.plexi-v3/apps/
     # Remove any stale per-app SDK copies; apps import from ~/.plexi-v3/sdk/ via PYTHONPATH.
     find ~/.plexi-v3/apps -maxdepth 2 -name 'plexi_sdk.py' -delete
     find ~/.plexi-v3/apps -name '*.py' -exec chmod +x {} \;
@@ -363,7 +428,7 @@ install-v3:
     echo "Config dir: ~/.plexi-v3/"
     echo "Apps: $(ls ~/.plexi-v3/apps | wc -l | tr -d ' ') installed"
 
-install-beta:
+install-beta: fetch-python-runtime
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -408,7 +473,7 @@ install-beta:
     rm -rf ~/.plexi-beta/sdk/plexi_sdk.py ~/.plexi-beta/sdk/plexi_sdk
     cp -R sdk/python/plexi_sdk ~/.plexi-beta/sdk/plexi_sdk
     find ~/.plexi-beta/sdk/plexi_sdk -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    cp -R examples/. ~/.plexi-beta/apps/
+    rsync -a --delete examples/ ~/.plexi-beta/apps/
     find ~/.plexi-beta/apps -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
     find ~/.plexi-beta/apps -name '*.py' -exec chmod +x {} \;
 
@@ -421,6 +486,13 @@ install-beta:
       "$lsregister_bin" -f "$app_dest" 2>/dev/null || echo "note: lsregister -f failed"
     fi
     /System/Library/CoreServices/pbs -update 2>/dev/null || echo "note: pbs -update failed"
+
+    # Create a default config.toml if none exists. Never overwrites an existing one.
+    CONFIG="$HOME/.plexi-beta/config.toml"
+    if [ ! -f "$CONFIG" ]; then
+      echo "W2FpXQpiYWNrZW5kID0gIm9wZW5yb3V0ZXIiCgpbYWkub3BlbnJvdXRlcl0KYXBpX2tleV9lbnYgPSAiT1BFTlJPVVRFUl9BUElfS0VZIgptb2RlbF9sb3cgICAgPSAiZ29vZ2xlL2dlbWluaS0yLjAtZmxhc2gtMDAxIgptb2RlbF9tZWRpdW0gPSAiYW50aHJvcGljL2NsYXVkZS1zb25uZXQtNC02Igptb2RlbF9oaWdoICAgPSAiYW50aHJvcGljL2NsYXVkZS1vcHVzLTQtNyIKClthaS5vbGxhbWFdCmhvc3QgICAgICAgICA9ICJodHRwOi8vbG9jYWxob3N0OjExNDM0Igptb2RlbF9sb3cgICAgPSAibGxhbWEzLjI6M2IiCm1vZGVsX21lZGl1bSA9ICJsbGFtYTMuMzo3MGIiCm1vZGVsX2hpZ2ggICA9ICJxd3E6MzJiIgo=" | base64 --decode > "$CONFIG"
+      echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
+    fi
 
     echo "Installed $app_dest"
     echo "CLI binary: /usr/local/bin/plexi-beta"

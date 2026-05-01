@@ -5,7 +5,6 @@ Opens to blank composer. Enter saves note (first line = title).
 Cmd+K or F1 opens note browser. Saves to <workspace_root>/.plexi/notes/<timestamp>.md.
 Posts a notification on save (surfaces in notification palette).
 """
-from __future__ import annotations
 
 import pathlib
 from datetime import datetime

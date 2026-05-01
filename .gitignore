@@ -11,7 +11,8 @@ docs/scratch/
 
 # AI tool configs (local only)
 .agents/
-.claude/
+.claude/*
+!.claude/iteration-cycle.md
 .kiro/
 skills/
 skills-lock.json
@@ -26,6 +27,9 @@ Thumbs.db
 
 # Generated bundle assets (cargo bundle generates its own from Cargo.toml)
 assets/Info.plist
+
+# Bundled Python runtime (fetched by `just fetch-python-runtime` at build time)
+assets/python/
 
 # Misc
 *.log
@@ -42,4 +46,3 @@ __pycache__/
 *.pyo
 sdk/python/**/__pycache__/
 sdk/python/*.egg-info/
-sdk/python/tests/

@@ -14,7 +14,7 @@ fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Colors {
     // Background layers
     pub bg_darkest: Color32,

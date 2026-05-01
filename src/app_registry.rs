@@ -1,4 +1,14 @@
-//! App registry — discovers and loads Plexi apps from `~/.plexi/apps/`.
+//! App registry — discovers and loads Plexi apps and agents.
+//!
+//! # Discovery order (later entries shadow earlier ones)
+//!
+//! 1. `~/.plexi-<channel>/apps/<id>/manifest.toml` — global apps (lowest priority)
+//! 2. `<workspace_root>/.plexi/apps/<id>/manifest.toml` — local app (overrides global)
+//! 3. `<workspace_root>/.plexi/agents/<id>/manifest.toml` — local agent (overrides above)
+//!
+//! `workspace_root` is the nearest ancestor of the current working directory that
+//! contains a `.plexi/` directory; if none is found, only global apps are loaded.
+//! When ids collide, the local entry wins and the shadow is logged at info level.
 //!
 //! # App directory layout
 //!
@@ -31,13 +41,37 @@ use crate::app_trait::App;
 use crate::process_app::ProcessApp;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// The current manifest schema version. Bumped whenever a required field is
+/// added/removed/renamed so older or newer manifests fail loud at install
+/// rather than silently behave wrong. (Issue #308 Phase 2.)
+pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct AppManifest {
+    /// Required schema version — refuses to load if greater than
+    /// `MANIFEST_SCHEMA_VERSION`. No serde-default: a manifest that omits
+    /// `schema_version` is rejected so contributors notice the contract.
+    pub schema_version: u32,
     pub app: AppManifestApp,
     #[serde(default)]
     pub launch: LaunchSection,
+    /// Canonical secret names this app reads via `ctx.secret(...)`. The host
+    /// uses this to validate workspace routes at launch and to surface the
+    /// missing-secret modal proactively. Empty when omitted.
+    #[serde(default)]
+    pub secrets: HashMap<String, SecretDecl>,
+}
+
+/// A `[secrets]` table entry from manifest.toml. `required` is **required**
+/// (no serde default) — apps must explicitly state whether the host should
+/// block on the missing-secret modal at launch.
+#[derive(Deserialize, Debug, Clone)]
+pub struct SecretDecl {
+    pub required: bool,
+    #[serde(default)]
+    pub description: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -45,6 +79,21 @@ pub struct AppManifestApp {
     pub id: String,
     pub name: String,
     pub entry: String,
+    /// Required. Selects host rendering / pane behaviour:
+    ///
+    /// - `App` (`type = "app"`): the host renders the app's draw canvas. The
+    ///   default for nearly every Plexi app — UI is freeform, the app emits
+    ///   `Rect`/`Text`/etc.
+    /// - `Agent` (`type = "agent"`): the host renders a conversation UI
+    ///   (history scrollback + input box), and the agent subprocess emits
+    ///   `AppendConversation` rows in response to `UserMessage` events. The
+    ///   manifest may also declare `[launch].system_prompt` which the host
+    ///   forwards via `AgentInit` at startup.
+    ///
+    /// No `serde(default)` — every manifest must declare its type explicitly.
+    /// Discipline matches `schema_version` (issue #308 Phase 2).
+    #[serde(rename = "type")]
+    pub manifest_type: ManifestType,
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -57,6 +106,29 @@ pub struct AppManifestApp {
     /// the user regardless of which context is active (e.g. stand-up-reminder).
     #[serde(default)]
     pub default_notification_scope: DefaultNotifyScope,
+    /// Hot-reload opt-in (#83). When true AND the app was discovered from a
+    /// workspace-local `.plexi/apps/`, the host watches the app dir and
+    /// reloads the subprocess on save. Off by default — global installs
+    /// never auto-reload regardless of this field.
+    ///
+    /// Modelled as `Option<bool>` (no `serde(default)`): missing → `None`,
+    /// which the host treats as `false`. Standard pattern for an explicitly
+    /// optional field whose absence has a meaningful default. Distinct from
+    /// `serde(default)`, which would conflate "absent" with "false" at the
+    /// type level and lose the diagnostic that the field was never set.
+    pub watch: Option<bool>,
+}
+
+/// Manifest `[app] type` field — chooses the host rendering surface for
+/// the pane. Required; no `serde(default)`.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManifestType {
+    /// Standard draw-canvas app. Host renders whatever the app draws.
+    App,
+    /// Conversation agent. Host renders a chat UI; agent subprocess emits
+    /// `AppendConversation` and reads `UserMessage` / `AgentInit`.
+    Agent,
 }
 
 /// Newtype for the manifest `default_notification_scope` field so it
@@ -121,6 +193,12 @@ pub struct LaunchSection {
     /// instead it parks the process in a background registry keyed by app_id.
     #[serde(default)]
     pub background: bool,
+    /// Agent system prompt — only meaningful when `[app] type = "agent"`.
+    /// Forwarded to the agent subprocess via `PlexiEvent::AgentInit` once at
+    /// startup. The agent decides how to use it (typically as the `system`
+    /// field on `iq.query`). Optional — `None` when the manifest omits it.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 /// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
@@ -146,12 +224,42 @@ impl AppCapabilities {
     }
 }
 
+/// Where a discovered registry entry came from. Used for shadow-logging at
+/// `info` level so users can trace which copy of an id won discovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrySource {
+    /// `~/.plexi-<channel>/apps/<id>/`
+    Global,
+    /// `<workspace_root>/.plexi/apps/<id>/`
+    LocalApp,
+    /// `<workspace_root>/.plexi/agents/<id>/`
+    LocalAgent,
+}
+
+impl RegistrySource {
+    fn label(self) -> &'static str {
+        match self {
+            RegistrySource::Global => "global",
+            RegistrySource::LocalApp => "local-app",
+            RegistrySource::LocalAgent => "local-agent",
+        }
+    }
+}
+
 /// A discovered but not-yet-launched app.
 #[derive(Debug, Clone)]
 pub struct InstalledApp {
     pub manifest: AppManifestApp,
     pub launch: LaunchSection,
+    /// Canonical secret names this app declares in its `[secrets]` table
+    /// (issue #322). Used by the host to validate workspace routes and
+    /// surface the missing-secret prompt at first launch.
+    pub secrets: HashMap<String, SecretDecl>,
     pub bin_path: PathBuf,
+    /// Which discovery layer this entry came from. Set by `scan_dir`; the
+    /// value returned by `load_app` is a placeholder and is overwritten at
+    /// insert time.
+    pub source: RegistrySource,
 }
 
 pub struct AppRegistry {
@@ -162,65 +270,103 @@ pub struct AppRegistry {
 }
 
 impl AppRegistry {
-    /// Scan `~/.plexi/apps/` (global) plus `.plexi/apps/` directories found by
-    /// walking up from `cwd` (local). Local apps override global ones with the same id.
-    pub fn load(cwd: &std::path::Path) -> Self {
-        let mut registry = Self {
-            apps: HashMap::new(),
-            extension_map: HashMap::new(),
-        };
-
-        // Global apps first (lowest priority).
+    /// Scan global apps then walk up from `cwd` looking for a `.plexi/` directory;
+    /// if found, also scan its `apps/` and `agents/` subdirs. Local entries shadow
+    /// global ones with the same id (a single info-level log line per shadow).
+    pub fn load(cwd: &Path) -> Self {
         let global_dir = apps_dir();
         if !global_dir.exists() {
             if let Err(e) = std::fs::create_dir_all(&global_dir) {
                 log::warn!("AppRegistry: could not create global apps dir: {e}");
             }
-        } else {
-            registry.scan_apps_dir(&global_dir);
+        }
+        Self::load_with_global(cwd, &global_dir)
+    }
+
+    /// Same as [`load`], but with an explicit global apps directory. Used by
+    /// tests so they can stage a fake `~/.plexi-<channel>/apps/` without
+    /// touching the real one.
+    pub fn load_with_global(cwd: &Path, global_dir: &Path) -> Self {
+        let mut registry = Self {
+            apps: HashMap::new(),
+            extension_map: HashMap::new(),
+        };
+
+        if global_dir.is_dir() {
+            registry.scan_dir(global_dir, RegistrySource::Global);
         }
 
-        // Local apps — walk up from cwd, deepest last so closest dir wins.
-        for local_dir in collect_local_app_dirs(cwd).into_iter().rev() {
-            registry.scan_apps_dir(&local_dir);
+        // Local apps + agents — only scanned when a workspace root exists.
+        // `.plexi/apps/` is scanned first, then `.plexi/agents/`; both shadow
+        // global, and a colliding id between local apps and local agents lets
+        // the agent win (scanned later).
+        if let Some(root) = resolve_workspace_root(cwd) {
+            let local_apps = root.join(".plexi").join("apps");
+            if local_apps.is_dir() {
+                registry.scan_dir(&local_apps, RegistrySource::LocalApp);
+            }
+            let local_agents = root.join(".plexi").join("agents");
+            if local_agents.is_dir() {
+                registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
+            }
         }
 
         registry
     }
 
-    /// Scan one `apps/` directory, inserting discovered apps.
-    /// Later calls override earlier ones (local beats global).
-    fn scan_apps_dir(&mut self, apps_dir: &std::path::Path) {
-        let read_dir = match std::fs::read_dir(apps_dir) {
+    /// Look up an installed entry by id (returns `None` if not discovered).
+    /// Test-only — runtime code uses `launch` / `is_background` etc.
+    #[cfg(test)]
+    pub fn get(&self, id: &str) -> Option<&InstalledApp> {
+        self.apps.get(id)
+    }
+
+    /// Scan one directory of manifest-bearing subdirs, inserting discovered
+    /// entries. Calls made later in `load()` shadow earlier ones; on shadow
+    /// the displaced entry's source is logged so users can debug discovery.
+    fn scan_dir(&mut self, dir: &Path, source: RegistrySource) {
+        let read_dir = match std::fs::read_dir(dir) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("AppRegistry: failed to read {:?}: {e}", apps_dir);
+                log::warn!("AppRegistry: failed to read {:?}: {e}", dir);
                 return;
             }
         };
 
         for entry in read_dir.flatten() {
-            let app_dir = entry.path();
-            if !app_dir.is_dir() {
+            let entry_dir = entry.path();
+            if !entry_dir.is_dir() {
                 continue;
             }
 
-            match self.load_app(&app_dir) {
+            match self.load_app(&entry_dir) {
                 Ok(installed) => {
-                    log::info!(
-                        "AppRegistry: loaded app '{}' from {:?}",
-                        installed.manifest.id,
-                        apps_dir
-                    );
-                    for ext in &installed.manifest.capabilities.file_types {
-                        // Plain insert — local apps override global for extension map too.
-                        self.extension_map
-                            .insert(ext.to_lowercase(), installed.manifest.id.clone());
+                    let id = installed.manifest.id.clone();
+                    if let Some(existing) = self.apps.get(&id) {
+                        log::info!(
+                            "AppRegistry: {} entry '{}' (from {:?}) shadows {} entry from {:?}",
+                            source.label(),
+                            id,
+                            entry_dir,
+                            existing.source.label(),
+                            existing.bin_path.parent().unwrap_or(&existing.bin_path),
+                        );
+                    } else {
+                        log::info!(
+                            "AppRegistry: loaded {} entry '{}' from {:?}",
+                            source.label(),
+                            id,
+                            entry_dir,
+                        );
                     }
-                    self.apps.insert(installed.manifest.id.clone(), installed);
+                    for ext in &installed.manifest.capabilities.file_types {
+                        // Plain insert — local entries override global for extension map too.
+                        self.extension_map.insert(ext.to_lowercase(), id.clone());
+                    }
+                    self.apps.insert(id, InstalledApp { source, ..installed });
                 }
                 Err(e) => {
-                    log::warn!("AppRegistry: skipping {:?}: {e}", app_dir.file_name());
+                    log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
                 }
             }
         }
@@ -233,6 +379,14 @@ impl AppRegistry {
 
         let manifest: AppManifest =
             toml::from_str(&manifest_str).map_err(|e| format!("invalid manifest: {e}"))?;
+
+        if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
+            return Err(format!(
+                "manifest schema_version = {} is newer than this Plexi build supports (max {}); \
+                 update Plexi to install this app",
+                manifest.schema_version, MANIFEST_SCHEMA_VERSION
+            ));
+        }
 
         // STEP-7: refuse to install an app whose declared capabilities include
         // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
@@ -268,12 +422,25 @@ impl AppRegistry {
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
+        for (name, decl) in &manifest.secrets {
+            log::info!(
+                "AppRegistry: {} declares secret '{name}' (required={}, description=\"{}\")",
+                manifest.app.id,
+                decl.required,
+                decl.description,
+            );
+        }
+
         Ok(InstalledApp {
             manifest: manifest.app,
             launch: manifest.launch,
+            secrets: manifest.secrets,
             bin_path,
+            // Placeholder — `scan_dir` overwrites this with the real source.
+            source: RegistrySource::Global,
         })
     }
+
 
     /// List all installed apps.
     pub fn list(&self) -> Vec<&InstalledApp> {
@@ -306,12 +473,56 @@ impl AppRegistry {
             })
     }
 
+    /// Hot-reload eligibility for an installed app (#83). True when the
+    /// manifest sets `[app] watch = true` AND the app was discovered from
+    /// a workspace-local `.plexi/apps/` (or `.plexi/agents/`). Global
+    /// installs never auto-reload regardless of the manifest field —
+    /// watching a global install is out of scope.
+    pub fn watch_eligible(&self, app_id: &str) -> bool {
+        let Some(installed) = self.apps.get(app_id) else {
+            return false;
+        };
+        let opted_in = installed.manifest.watch.unwrap_or(false);
+        let local = matches!(
+            installed.source,
+            RegistrySource::LocalApp | RegistrySource::LocalAgent
+        );
+        opted_in && local
+    }
+
+    /// Path to the app's installation directory (parent of `bin_path`).
+    /// Used by the file watcher; returns `None` when the app id is unknown.
+    pub fn app_dir_for(&self, app_id: &str) -> Option<PathBuf> {
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.bin_path.parent().map(Path::to_path_buf))
+    }
+
     /// Get the manifest-declared layout_hint.split fraction (None if unset).
     pub fn share_for(&self, app_id: &str) -> Option<f32> {
         self.apps
             .get(app_id)
             .and_then(|a| a.launch.layout_hint.as_ref())
             .map(|h| h.split)
+    }
+
+    /// Return the manifest `[app] type` for an installed app, or `None` when
+    /// no app with this id is registered. Lets the launch path branch on
+    /// agent-vs-app rendering without re-reading the manifest from disk.
+    pub fn manifest_type(&self, app_id: &str) -> Option<ManifestType> {
+        self.apps
+            .get(app_id)
+            .map(|a| a.manifest.manifest_type)
+    }
+
+    /// Return the manifest-declared `[launch].system_prompt` for an installed
+    /// agent. Returns `None` for `type = "app"` manifests OR for agent
+    /// manifests that omit the field — both cases are forwarded as
+    /// `PlexiEvent::AgentInit { system_prompt: None }`.
+    pub fn system_prompt_for(&self, app_id: &str) -> Option<String> {
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.launch.system_prompt.clone())
     }
 
     /// Return the manifest-declared default notification scope for an app.
@@ -334,6 +545,38 @@ impl AppRegistry {
         let caps = perms.capabilities.clone();
         let keyboard_capture = installed.launch.keyboard_capture;
         let default_scope = self.default_notification_scope_for(id);
+
+        // Log manifest type + system_prompt presence for observability. The
+        // host integration that consumes these to switch pane rendering and
+        // forward `AgentInit` lands in the follow-up to #285; logging here
+        // makes the manifest contract visible from day one.
+        log::info!(
+            "AppRegistry: launching '{id}' as type={:?}, system_prompt={}",
+            installed.manifest.manifest_type,
+            installed
+                .launch
+                .system_prompt
+                .as_deref()
+                .map(|s| format!("set ({} chars)", s.len()))
+                .unwrap_or_else(|| "unset".to_string()),
+        );
+
+        // Issue #322: log declared-but-routed status for visibility. The
+        // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
+        // this just makes the manifest's contract observable in the host log.
+        if !installed.secrets.is_empty() {
+            let required: Vec<&str> = installed
+                .secrets
+                .iter()
+                .filter(|(_, d)| d.required)
+                .map(|(k, _)| k.as_str())
+                .collect();
+            log::info!(
+                "AppRegistry: launching '{id}' with declared secrets {:?} (required: {:?})",
+                installed.secrets.keys().collect::<Vec<_>>(),
+                required,
+            );
+        }
         match ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -372,30 +615,23 @@ pub fn apps_dir() -> PathBuf {
     crate::config::config_dir().join("apps")
 }
 
-/// Walk up from `cwd` toward home, collecting `.plexi/apps/` directories that exist.
-/// Returns dirs ordered from home→cwd (deepest last), so callers that iterate in reverse
-/// get the most-local directory applied last (highest priority).
-fn collect_local_app_dirs(cwd: &std::path::Path) -> Vec<PathBuf> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let mut dirs = Vec::new();
-    let mut current = cwd;
-
+/// Walk up from `start` toward the filesystem root looking for the nearest
+/// ancestor that contains a `.plexi/` directory. Returns that ancestor (the
+/// workspace root), or `None` if no `.plexi/` is found before the root.
+///
+/// The home directory is **not** treated as a workspace root unless it
+/// contains a `.plexi/` itself — `~/.plexi-<channel>/` is the global config
+/// dir, which lives next to `~`, not inside it.
+pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
     loop {
-        let candidate = current.join(".plexi").join("apps");
-        if candidate.is_dir() {
-            dirs.push(candidate);
+        if current.join(".plexi").is_dir() {
+            return Some(current);
         }
-        if current == home || current.parent().is_none() {
-            break;
+        if !current.pop() {
+            return None;
         }
-        current = match current.parent() {
-            Some(p) => p,
-            None => break,
-        };
     }
-
-    dirs.reverse(); // home→cwd order; callers iterate .rev() to apply closest last
-    dirs
 }
 
 /// Resolve the `entry` field from manifest.toml to an executable path.
@@ -421,4 +657,398 @@ fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
     }
 
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Create a manifest + executable entry under `dir/<id>/`.
+    /// `name` is what shows up in the manifest's `[app].name` so tests can
+    /// distinguish two entries with the same id but different content.
+    /// Defaults to `type = "app"` — use `write_app_with_type` for agents.
+    fn write_app(dir: &Path, id: &str, name: &str) {
+        write_app_with_type(dir, id, name, "app");
+    }
+
+    fn write_app_with_type(dir: &Path, id: &str, name: &str, manifest_type: &str) {
+        let app_dir = dir.join(id);
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = format!(
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"{manifest_type}\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+        );
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_app_shadows_global_with_same_id() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let local_apps = workspace.path().join(".plexi").join("apps");
+        fs::create_dir_all(&local_apps).unwrap();
+
+        write_app(global.path(), "foo", "Global Foo");
+        write_app(&local_apps, "foo", "Local Foo");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let foo = registry.get("foo").expect("foo should be discovered");
+        assert_eq!(foo.manifest.name, "Local Foo");
+        assert_eq!(foo.source, RegistrySource::LocalApp);
+    }
+
+    #[test]
+    fn global_only_app_still_discovered_when_workspace_open() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        // Workspace exists (.plexi/ dir) but has no local apps/agents.
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+
+        write_app(global.path(), "global-only", "Global Only");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let entry = registry.get("global-only").expect("global app should appear");
+        assert_eq!(entry.source, RegistrySource::Global);
+    }
+
+    #[test]
+    fn workspace_root_resolved_from_deep_descendant() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        let deep = workspace.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep).unwrap();
+
+        let resolved = resolve_workspace_root(&deep).expect("should find ancestor");
+        // Canonicalize both sides — tempfile paths on macOS go through /var → /private/var.
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn workspace_root_returns_none_when_no_dot_plexi() {
+        let bare = tempfile::tempdir().unwrap();
+        assert!(resolve_workspace_root(bare.path()).is_none());
+    }
+
+    #[test]
+    fn agents_directory_is_discovered() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let local_agents = workspace.path().join(".plexi").join("agents");
+        fs::create_dir_all(&local_agents).unwrap();
+
+        write_app(&local_agents, "code-reviewer", "Code Reviewer");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let agent = registry
+            .get("code-reviewer")
+            .expect("agent should be discovered");
+        assert_eq!(agent.source, RegistrySource::LocalAgent);
+    }
+
+    #[test]
+    fn manifest_with_schema_version_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app(global.path(), "ok-app", "Ok App");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(registry.get("ok-app").is_some());
+    }
+
+    #[test]
+    fn manifest_with_future_schema_version_refuses() {
+        let global = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("future-app");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = format!(
+            "schema_version = {}\n\n[app]\nid = \"future-app\"\ntype = \"app\"\nname = \"Future\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n",
+            MANIFEST_SCHEMA_VERSION + 1
+        );
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let bare = tempfile::tempdir().unwrap();
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            registry.get("future-app").is_none(),
+            "future schema_version manifest must be skipped"
+        );
+    }
+
+    #[test]
+    fn manifest_missing_schema_version_errors() {
+        // Direct unit test of the manifest deserialiser: a manifest without
+        // `schema_version` must fail to parse — no serde-default fallback.
+        let raw = r#"
+[app]
+id = "no-version"
+name = "No Version"
+version = "0.0.1"
+entry = "run.sh"
+"#;
+        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "manifest missing schema_version must be rejected, got: {parsed:?}"
+        );
+    }
+
+    // ── v3.3 agent-as-app manifest type field (#285) ─────────────────────
+
+    #[test]
+    fn manifest_with_type_app_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_type(global.path(), "regular-app", "Regular", "app");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let entry = registry
+            .get("regular-app")
+            .expect("type=app manifest should load");
+        assert_eq!(entry.manifest.manifest_type, ManifestType::App);
+    }
+
+    #[test]
+    fn manifest_with_type_agent_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_type(global.path(), "research-agent", "Research", "agent");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let entry = registry
+            .get("research-agent")
+            .expect("type=agent manifest should load");
+        assert_eq!(entry.manifest.manifest_type, ManifestType::Agent);
+    }
+
+    #[test]
+    fn manifest_missing_type_field_errors() {
+        // No `type` field — must fail to parse. Required field, no
+        // `serde(default)`. Discipline matches `schema_version`.
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "no-type"
+name = "No Type"
+version = "0.0.1"
+entry = "run.sh"
+"#;
+        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "manifest missing `type` must be rejected, got: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn manifest_with_unknown_type_errors() {
+        // `type = "wizard"` — must fail to parse. Only `app` and `agent` are
+        // valid; unknown values should not silently fall back.
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "unknown-type"
+type = "wizard"
+name = "Wizard"
+version = "0.0.1"
+entry = "run.sh"
+"#;
+        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "manifest with unknown type variant must be rejected, got: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn agent_manifest_with_system_prompt_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("prompted-agent");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"prompted-agent\"
+type = \"agent\"
+name = \"Prompted\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+
+[launch]
+system_prompt = \"You are terse.\"
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let agent = registry
+            .get("prompted-agent")
+            .expect("agent manifest should load");
+        assert_eq!(agent.manifest.manifest_type, ManifestType::Agent);
+        assert_eq!(
+            agent.launch.system_prompt.as_deref(),
+            Some("You are terse."),
+            "system_prompt must round-trip from manifest"
+        );
+    }
+
+    // ── #83 hot reload — manifest `[app] watch` field ────────────────────
+
+    #[test]
+    fn manifest_with_watch_true_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("watching-app");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"watching-app\"
+type = \"app\"
+name = \"Watching\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+watch = true
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let app = registry.get("watching-app").expect("manifest with watch=true should load");
+        assert_eq!(app.manifest.watch, Some(true));
+    }
+
+    #[test]
+    fn manifest_with_watch_field_absent_treats_as_false() {
+        // The default `write_app` helper omits `watch` — exercise that path.
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app(global.path(), "no-watch", "No Watch");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let app = registry.get("no-watch").expect("default manifest should load");
+        assert_eq!(app.manifest.watch, None);
+        // And `watch_eligible` returns false (also exercises the absent
+        // path on the public API).
+        assert!(!registry.watch_eligible("no-watch"));
+    }
+
+    #[test]
+    fn watch_field_only_engages_for_workspace_local_apps() {
+        // A global-installed manifest with `watch = true` must NOT be
+        // eligible for hot reload — workspace-local installs only.
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let local_apps = workspace.path().join(".plexi").join("apps");
+        fs::create_dir_all(&local_apps).unwrap();
+
+        // Global copy with watch=true.
+        let g_dir = global.path().join("dual-install");
+        fs::create_dir_all(&g_dir).unwrap();
+        let manifest_g = "\
+schema_version = 1
+
+[app]
+id = \"global-watcher\"
+type = \"app\"
+name = \"Global Watcher\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+watch = true
+";
+        fs::write(g_dir.join("manifest.toml"), manifest_g).unwrap();
+        let entry_g = g_dir.join("run.sh");
+        fs::write(&entry_g, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry_g).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry_g, perms).unwrap();
+        }
+
+        // Local copy with watch=true (different id so they don't shadow).
+        let l_dir = local_apps.join("local-watcher");
+        fs::create_dir_all(&l_dir).unwrap();
+        let manifest_l = "\
+schema_version = 1
+
+[app]
+id = \"local-watcher\"
+type = \"app\"
+name = \"Local Watcher\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+watch = true
+";
+        fs::write(l_dir.join("manifest.toml"), manifest_l).unwrap();
+        let entry_l = l_dir.join("run.sh");
+        fs::write(&entry_l, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry_l).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry_l, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        assert!(
+            !registry.watch_eligible("global-watcher"),
+            "global install with watch=true must not be eligible"
+        );
+        assert!(
+            registry.watch_eligible("local-watcher"),
+            "workspace-local install with watch=true must be eligible"
+        );
+    }
+
+    #[test]
+    fn no_workspace_means_only_global_apps_load() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+
+        write_app(global.path(), "g", "Global");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(registry.get("g").is_some());
+        assert_eq!(registry.list().len(), 1);
+    }
 }

@@ -1,5 +1,8 @@
+schema_version = 1
+
 [app]
 id = "ui-playground"
+type = "app"
 name = "UI Playground"
 version = "0.1.0"
 description = "Every SDK v2 component rendered side-by-side. Reference app for building clean UIs."

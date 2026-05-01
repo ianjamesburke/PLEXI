@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "midi-test"
+type = "app"
+name = "MIDI Test"
+version = "0.1.0"
+description = "POC for #320 — exercises CoreMIDI input streaming + output sending. Connect a controller, see notes; click Send NoteOn, hear synth."
+entry = "midi_test.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+capabilities = ["midi.in", "midi.out"]
+
+[launch]
+background = false

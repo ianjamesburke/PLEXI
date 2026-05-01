@@ -4,11 +4,16 @@ version = "3.0.0-beta.5"
 edition = "2021"
 
 [package.metadata.bundle]
-name = "Plexi"
-identifier = "com.ianjamesburke.plexi"
+name = "Plexi Alpha"
+identifier = "com.ianjamesburke.plexi-alpha"
 icon = ["assets/app-icon.icns"]
 short_description = "Spatial terminal window manager"
 osx_minimum_system_version = "12.0"
+# macOS TCC: triggers the system mic-permission prompt on the first
+# `cpal::Stream::play()` call. Without this string the prompt is suppressed
+# and capture silently records zeros (#277).
+osx_info_plist_exts = ["assets/Info.plist.fragment"]
+resources = ["sdk/python/plexi_sdk", "assets/python"]
 
 [dependencies]
 egui = "0.31"
@@ -18,21 +23,20 @@ egui_term = { path = "deps/egui_term" }
 dirs = "6"
 fern = "0.7"
 log = "0.4"
-async-anthropic = "0.6"
-async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 schemars = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "macros"] }
-tokio-stream = "0.1"
 toml = "0.8"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+# Base64 decode for inline notification image attachments (#74).
+base64 = "0.22"
 crossbeam-queue = "0.3"
 hound = "3"
 include_dir = "0.7"
 zeroize = "1"
 thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
 # Headless renderer (step 1 added src/headless_renderer.rs without declaring these).
 tiny-skia = "0.11"
 fontdue = "0.9"
@@ -40,8 +44,66 @@ fontdue = "0.9"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 # FD CLOEXEC (step 9e). fcntl for close-on-exec on pipe sockets.
 libc = "0.2"
+# CoreAudio capture + device enumeration (#277). Cross-platform PCM I/O.
+cpal = "0.17"
+# Hot reload (#83). Cross-platform fs watcher; on macOS uses FSEvents.
+# `macos_fsevent` is the recommended backend (kqueue is the alt, slower for
+# nested dirs). default-features disabled to avoid pulling crossbeam-channel.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl
+# stays available under `cfg(test)`).
+coremidi = "0.9"
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSRunningApplication", "NSWindow"] }
 objc2-foundation = { version = "0.2.2", features = ["NSThread", "NSString"] }
+# AVFoundation video decoder (#346). The 0.3.x family is on objc2 0.6 (already
+# transitive via arboard / cpal / eframe), so this introduces no new obj-c
+# stack — just a direct dep on what's already in the tree. Path of least
+# resistance vs. `av-foundation 0.7` which is capture-only and lacks
+# AVAssetReader. v3.5+ follow-up: consolidate src/macos_menu.rs onto objc2 0.6
+# so we have a single direct dep.
+objc2-av-foundation-06 = { package = "objc2-av-foundation", version = "0.3", features = [
+    "AVAsset",
+    "AVAssetReader",
+    "AVAssetReaderOutput",
+    "AVAssetTrack",
+    "AVMediaFormat",
+    "objc2-core-media",
+    "objc2-core-foundation",
+] }
+objc2-core-media-06 = { package = "objc2-core-media", version = "0.3", features = [
+    "CMSampleBuffer",
+    "CMTime",
+    "CMTimeRange",
+    "objc2-core-video",
+] }
+objc2-core-video-06 = { package = "objc2-core-video", version = "0.3", features = [
+    "CVPixelBuffer",
+    "CVImageBuffer",
+    "CVBuffer",
+    "CVPixelFormatDescription",
+] }
+objc2-foundation-06 = { package = "objc2-foundation", version = "0.3", features = [
+    "NSURL",
+    "NSString",
+    "NSValue",
+    "NSDictionary",
+    "NSArray",
+    "NSError",
+    "NSObject",
+] }
+# Direct dep on objc2 0.6 so video.rs can use Retained / autoreleasepool from
+# the same major version as objc2-av-foundation-06. The existing `objc2 = "0.5"`
+# dep above stays for src/macos_menu.rs (different major; cargo coexists them
+# fine — we just have to be deliberate about the path).
+objc2-06 = { package = "objc2", version = "0.6" }
+objc2-core-foundation-06 = { package = "objc2-core-foundation", version = "0.3", features = [
+    "CFBase",
+    "CFString",
+    "objc2",
+] }
+
+[dev-dependencies]
+tempfile = "3"

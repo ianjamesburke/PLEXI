@@ -1,5 +1,357 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-04-30 — [FIX] Async input handlers stall event loop; import crash from list builtin shadow (PR #466 → alpha)
+
+**Issue #393 — blocking in event handlers freezes frame loop.** `_dispatcher` used `await _dispatch_hook(hook, ...)` for all events including input hooks. A slow `on_key` suspended the dispatcher — no further events processed, app froze. Fix: `_dispatch_hook_task` schedules async hooks via `asyncio.create_task()`. `on_render`, `on_init`, `on_shutdown` still awaited for ordering. Task refs stored in `_background_tasks` set to prevent GC; `_log_task_exception` callback surfaces unhandled errors.
+
+**Pre-existing import crash from PR #460.** `RenderContext.list` shadowed the builtin `list` in the class body, causing `list | None` annotations on later methods to fail at class definition time on Python 3.12. Fixed by quoting the three affected annotations.
+
+**Breaks if:** An async `on_key` that awaits slow I/O freezes the frame loop. Or: `import plexi_sdk` crashes on Python 3.12.
+
+## 2026-04-30 — [FIX] TextInput: auto-focus only first node + Shift+Enter multiline (#404 → alpha)
+
+Two bugs in `render_text_inputs` in `src/process_app/mod.rs`.
+
+**Bug 1 — auto-focus last node wins instead of first:** `request_focus()` was called on every newly-visible TextInput in a frame. egui's `request_focus` is last-write-wins within a frame, so when multiple inputs appear together (e.g. a form), only the last one received focus. Fixed by tracking a `focus_granted` bool per call and only requesting focus on the first newly-visible input.
+
+**Bug 2 — Shift+Enter did nothing in multiline mode:** egui's multiline `TextEdit` only inserts `\n` for plain Enter — it does not handle Shift+Enter at all. The existing code intercepted plain Enter to submit (stripping the egui-inserted `\n`), but the Shift+Enter case fell through to egui with no result. Fixed by explicitly detecting `Shift+Enter` while focused and pushing `\n` into the buffer manually.
+
+**Breaks if:** (1) A form with multiple TextInput nodes — the second and later inputs never auto-focus on first appearance. (2) A multiline TextInput — pressing Shift+Enter does nothing instead of inserting a newline.
+
+## 2026-04-30 — [FIX] Cmd+Q freezes when any full-screen TUI is running in a terminal pane (PR #454 → alpha)
+
+Two bugs in `deps/egui_term/src/backend/mod.rs` combined to freeze the app on Cmd+Q whenever a full-screen TUI (Claude Code, `btop`, `files`) was running. The 25% CPU ghost + indefinite freeze were separate symptoms from separate root causes.
+
+**Bug 1 — `pty_event_subscription` busy-loop on channel close:** The thread used `loop { if let Ok(event) = recv() }`. When `TerminalBackend` drops and the sender is released, `recv()` returns `Err` immediately. The `if let Ok` silently falls through and the loop spins forever — one full CPU core. Fixed by changing to `while let Ok` so the thread exits when the channel closes. Also changed the `panic!` on a failed proxy send to a `break` — the receiver can legitimately be gone during shutdown.
+
+**Bug 2 — `reap_child` blocking the render thread:** `TerminalBackend::drop` (added in PR #442) called `reap_child()` synchronously, which polls `waitpid(WNOHANG)` 8 × 25 ms then blocks on `waitpid(0)`. Full-screen TUIs don't exit within 200 ms of `Msg::Shutdown` — they restore the terminal first — so drop blocked the render thread per pane. Fixed by spawning `reap_child` on a named background thread (`pty-reap-<pid>`).
+
+**False lead:** Moving `lsof` calls off the render thread (PR #453) did not fix it — reverted.
+
+**Breaks if:** Cmd+Q with a full-screen TUI running freezes the app or requires force-quit.
+
+## 2026-04-29 — [FIX] ai.query hangs forever: invalid model ID + missing config + response delivery race (PR #434)
+
+Three compounding bugs caused every `ai.query` call to hang permanently showing "Waiting for the host's AI broker…" with no error surfaced.
+
+**Bug 1 — Invalid model ID in config template (`google/gemini-flash-2.0`).**
+The `CONFIG_TEMPLATE` in `config.rs` had `model_low = "google/gemini-flash-2.0"` which is not a valid OpenRouter model ID (correct: `google/gemini-2.0-flash-001`). OpenRouter stalled the connection rather than returning a 4xx, and `ureq` had no read timeout, so the broker thread blocked forever. Fix: corrected model ID in template; added 30s read + 10s connect timeout via `ureq::AgentBuilder` in `openrouter.rs`.
+
+**Bug 2 — `config.toml` never created on install.**
+`PlexiConfig::load()` returned `unwrap_or_default()` silently when the file was absent — never writing the template. `open_config_file()` (the only function that writes the template) is only called when the user explicitly opens their config, never on launch. Fresh install → no `config.toml` → `ai_config = None` → broker returned an error string that was never visible to the user. Fix (PR #434): `PlexiConfig::load()` now writes `CONFIG_TEMPLATE` before parsing if the file doesn't exist, logging at `info`. The `[ai]` section in the template is uncommented with correct default model IDs.
+
+**Bug 3 — Broker error response silently dropped (response delivery race).**
+The broker dispatches on a spawned thread and returns immediately on config errors. Because the thread can complete and post to `http_tx` before the Python SDK has registered `_pending_ai[req_id]`, the `AiResponse` event arrives at the `_reader` while the dict is still empty — `q = self._pending_ai.pop(req_id, None)` returns `None` and the response is silently dropped. The `await q.get()` in `ai_query` then waits forever. Fix (PR #434): register `_pending_ai[req_id] = q` **before** emitting the `AiQuery` draw command. Also added `asyncio.wait_for(q.get(), timeout=35.0)` so any future dropped response surfaces as a clear error after 35s.
+
+**Bug 4 — SIGTERM on close (app doesn't exit within 2s).**
+When a query is in flight and `Shutdown` arrives, the `ai_query` coroutine is blocked at `await q.get()`. The asyncio event loop can't cleanly finish — app exits only after SIGTERM (2s+ delay). Fix (PR #434): shutdown handler drains `_pending_ai`, cancels all pending waiters with `return_exceptions=True`.
+
+**What NOT to do:** Do not fix `ai.query` hangs by increasing timeouts alone. The core issue was the response delivery race — timeouts only shorten the wait, they don't fix the dropped-response path. Always register `_pending_ai` before emitting the draw command.
+
+**Diagnostic recipe for future hangs:** (1) Check `plexi.log` for `WARN ai broker` — if absent, config is not loaded. (2) Confirm `~/.plexi-alpha/config.toml` exists. (3) Grep for `openrouter: dispatching` — if absent, `AiQuery` never reached the host router. (4) If dispatching appears but no response, check for HTTP 4xx (bad model ID).
+
+**Breaks if:** After a fresh install with no existing `config.toml`, AI queries still hang — `PlexiConfig::load()` didn't write the template on startup.
+
+## 2026-04-29 — [CHANGED] IQ → AI rename + Ollama backend + delete legacy Claude CLI path (PR #433)
+
+Renamed all "IQ" → "AI" across the codebase (92+ sites): protocol types (`IqQuery` → `AiQuery`, `IqResponse` → `AiResponse`), wire strings, capability string (`iq.query` → `ai.query`), module (`src/plexi_iq/` → `src/plexi_ai/`), config section (`[iq]` → `[ai]`), Python SDK (`emit.iq_query` → `emit.ai_query`), and example apps. Added `OllamaBackend` — NDJSON streaming via `/api/chat`, pluggable via `[ai] backend = "ollama"`. Deleted `src/agent_turn.rs` and all `InProcessAgent` code (session persistence, SOUL/MEMORY loading, `claude -p`). Deleted `DrawCommand::LlmRequest` / `PlexiEvent::LlmResponse`. Ledger renamed to `ai-ledger.jsonl`.
+
+**Breaks if:** An installed app still declares `iq.query` in its manifest — skipped at startup with WARN. Any app calling `emit.iq_query()` gets `AttributeError`.
+## 2026-04-28 — [FIX] Minimap hidden after Cmd+1-9 workspace switch
+
+**Root cause:** `Action::SwitchContext` (Cmd+1-9) was inlining the workspace switch — directly setting `self.active_workspace = n` and calling `pick_active_context_from_workspace` — bypassing `switch_workspace` and its minimap save/restore logic. Sidebar clicks correctly called `switch_workspace`; Cmd+1-9 did not.
+
+**Fix:** Replaced the inline block in `app/mod.rs` with a call to `self.switch_workspace(n)`. Three lines removed, one line added.
+
+**What NOT to do:** Do not switch workspaces by setting `self.active_workspace` directly anywhere. The only valid path is `self.switch_workspace(n)`. See issue #380 for the structural fix that makes this impossible to bypass at the type level.
+
+**Breaks if:** Pressing Cmd+1 when on a single-window context, then Cmd+2 to a multi-window context, hides the minimap that was previously visible.
+
+## 2026-04-28 — [GOTCHA] confirm_quit / confirm_close wiring — diagnosis correct, approach superseded
+
+**Root cause found:** On macOS, pressing Cmd+Q fires two simultaneous events: (1) a keyboard event consumed by `keys.rs` → `Action::Quit` → triple-tap logic, and (2) a viewport `close_requested` event generated by NSApp's `applicationShouldTerminate`. The `close_requested` handler at `app/mod.rs` ran unconditionally and called `save_workspace()` without sending `ViewportCommand::CancelClose`, so the OS close always won the race — the triple-tap overlay would briefly appear but the app quit before the user could press Cmd+Q a second time.
+
+**What was changed in this session:** `close_requested` handler updated to send `CancelClose` when `quit_confirm_required && quit_press_count > 0` (keyboard quit flow in progress). X-button close kept working by allowing it through when `quit_press_count == 0`. `~/.plexi-alpha/config.toml` updated to show both `confirm_quit = true` and `confirm_close = true` uncommented. Legacy `quit_confirm` field removed from `BetaConfig` (was `[beta]` section, now gone). Template source updated to match.
+
+**Why this was superseded:** The fix was correct for the Cmd+Q bypass but a broader refactor of the confirmation/close architecture was done by a separate agent. Do not re-apply this patch on top of that refactor — the close_requested handler and the Action::Quit dispatch may both have changed shape.
+
+**What NOT to do:** Do not add `unwrap_or(false)` defaults for `confirm_quit` / `confirm_close` — these should default to `true`. Do not re-introduce `beta.quit_confirm` as a fallback.
+
+## 2026-04-28 — [CHANGED] Minimap fade machinery removed — static colors only
+
+**Why:** The minimap was flickering between two brightness states. Root cause: `alpha_mult()` returned either `1.0` (recently active) or `0.15` (faded), with no smooth interpolation. Any interaction reset `last_activity` and caused a visible binary jump. The fade timer approach was fragile — it required `request_repaint_after(50ms)` scheduling, `on_activity()` call sites across 7 locations, and produced confusing UX.
+
+**What was removed:** `last_activity: Instant`, `FADE_START_SECS`, `FADE_DURATION_SECS`, `FADED_ALPHA` constants, `apply_alpha()` helper, `alpha_mult()`, `needs_repaint()`, `is_faded()`, `on_activity()` — all deleted. The `state: &MinimapState` parameter was removed from `render_minimap`. All 7 `on_activity()` call sites across `mod.rs` and `workspace.rs` removed. The `request_repaint_after(50ms)` scheduling removed from `overlays.rs`.
+
+**What remains:** `MinimapState` is now `{ visible: bool }` only. Colors are used directly from the `Colors` theme struct every frame — no alpha multiplication. The minimap appears and disappears instantly (no fade-in/fade-out animation).
+
+**Breaks if:** The minimap still flickers between bright and dim states, or fades out after a period of inactivity.
+
+## 2026-04-28 — [FIX] Minimap trail stale after horizontal creation + dim-on-workspace-switch
+
+**Bug 1 — Trail indicator stays on source page after horizontal page creation**
+
+The "trail" indicator in the minimap is controlled by `last_page_x_per_row[row] == page.grid_x && !is_active`. When navigating TO an existing page, `navigate_page` fires a post-navigation `insert(dest_row, dest_x)`, clearing the trail from the source. But when navigation FAILS and `create_page_at` runs instead (no page existed to the right), that post-insert never fires — `last_page_x_per_row[row]` stays at the old source x, rendering the source cell as trail even though you've moved past it.
+
+Fix: in `navigate_or_create_page`, after `create_page_at`, call `last_page_x_per_row.insert(ty, create_x)`. This registers the created page's position as the current row's breadcrumb, matching what `navigate_page` would have done had the page already existed.
+
+**The invariant that must always hold:** `last_page_x_per_row[row]` should equal the active page's `grid_x` when you're in that row. Trail only appears in rows you've LEFT (other rows), showing where you were before going vertical. This invariant is maintained by: navigate_page post-insert (for existing pages) + create post-insert (for new pages). Any new code path that changes `active_context` without updating `last_page_x_per_row` will produce stale trails.
+
+**Bug 2 — Minimap renders dim immediately after switching to a workspace where it should be visible**
+
+`switch_workspace` restores `minimap.visible = true` for the target workspace, but `minimap.last_activity` carries over from the old workspace's last navigation. If that was > 3 s ago, `is_faded()` returns true immediately and the minimap renders at 15% opacity. The user then navigates, `on_activity()` fires, and the minimap jumps to 100% — appearing to "randomly become brighter."
+
+Fix: in `switch_workspace`, after `minimap.visible = true`, call `minimap.on_activity()` to reset the fade timer. The minimap starts at full opacity on workspace switch and fades naturally after 3 s of inactivity.
+
+**Breaks if:** moving right to a newly created page still shows the old page highlighted as the trail indicator, or switching to a multi-page workspace shows a dim minimap that only brightens on first navigation.
+
+## 2026-04-27 — [FIX] Vertical navigation regression + minimap visibility per workspace
+
+**Bug 1 — Vertical navigation broken (Cmd+Shift+K goes to wrong page)**
+
+Root cause: a prior change to `navigate_page` replaced the `last_page_x_per_row` preference system with `min_by_key(grid_x)` (always go leftmost). This was intended to fix creation semantics (new rows start at col 0) but incorrectly applied the same logic to navigation of *existing* pages — destroying the column-memory that returns you to the page you came from.
+
+The correct invariants are distinct:
+- **Navigation** (`navigate_page`): go to the closest-by-column page in the target row, preferring the last-visited column for that row via `last_page_x_per_row`.
+- **Creation** (`navigate_or_create_page`): when no page exists in the target row, create at column 0.
+
+These two behaviors live in separate functions for a reason. Changing `navigate_page` to implement creation semantics broke navigation. The fix: restore the original `preferred_x` logic in `navigate_page`; the creation `create_x = 0` change in `navigate_or_create_page` was already correct and was left untouched.
+
+**Systemic fix — pure function + unit tests:**
+
+Extracted the navigation target search into `find_navigation_target()` — a free function with no access to `&mut PlexiApp`, taking only data slices. This function is independently unit-testable. 12 tests now encode the exact contract: same-column preference, `last_page_x_per_row` memory, closest-by-distance fallback, boundary conditions, workspace isolation. Any future regression in navigation logic immediately fails a test — the bug that prompted this entry would have been caught at `cargo test` time.
+
+**Do NOT put creation logic into `navigate_page` or `find_navigation_target`.** Those functions are navigation-only. Creation policy belongs exclusively in `navigate_or_create_page`.
+
+**Bug 2 — Minimap visibility not preserved across workspace switches**
+
+Root cause: `minimap.visible` was a single global bool. Switching workspaces always inherited whatever the previous workspace left it at.
+
+Fix: `minimap_visible_per_workspace: HashMap<u64, bool>` stores saved state per workspace id. All workspace switches now go through `switch_workspace()` which saves the old workspace's visibility before switching and restores (or defaults to `page_count > 1`) for the new workspace. `delete_workspace` and `delete_context` use the same restore logic. `switch_workspace` is now the single required path for workspace switching — inlining `active_workspace = i + pick_active_context_from_workspace` elsewhere bypasses the save/restore.
+
+**Breaks if:** Cmd+Shift+K from window 4 goes to window 1 instead of the column-matched window above it. Or: switching contexts resets the minimap to hidden even when it was previously shown.
+
+## 2026-04-27 — [FIX] Minimap clicks passing through to pane behind it
+
+**Root cause:** In egui, *painting* and *allocating for input* are two entirely separate operations. `painter().rect_filled(panel_rect, ...)` draws pixels but makes no claim on pointer events for that area. Only `ui.allocate_rect(rect, Sense::...)` creates an interactive region that participates in egui's hit-test system. The minimap panel background, title, border, and cell gaps were all drawn visually but never allocated — so any click that didn't land on an exact cell rect fell through to the tile widget behind the overlay, which switched pane focus.
+
+**Fix:** Added `ui.allocate_rect(panel_rect, egui::Sense::hover())` at the top of `render_minimap`, before any cell rendering. egui's area ordering ensures a `Foreground` Area wins hit-testing over `Middle`/`Background` areas, so once the full panel rect is claimed, the pane below receives nothing.
+
+**What this reveals — the deeper architectural asymmetry:**
+
+Plexi has a principled, enforced model for keyboard input ownership (`FocusLayer` stack — non-pane layers push onto it; panes only see keyboard events when nothing else owns the stack). There is no equivalent for pointer events. Each overlay handles its own pointer input ad-hoc. Whether a click is consumed depends entirely on whether the developer remembered to allocate a Sense — an invisible, easy-to-forget requirement with no compile-time enforcement.
+
+**The structural fix planned:** Introduce `OverlayPanel`, a thin wrapper around `egui::Area` that *always* allocates its bounding rect before forwarding to the inner render closure. Using it makes it impossible to render a floating panel without also claiming its input region — you'd have to actively break the abstraction to recreate this bug. All interactive overlays (minimap, notification modal, command palette, confirm-close) migrate to `OverlayPanel`. Optionally, `OverlayPanel` populates a frame-scoped `PlexiApp::overlay_claims: Vec<Rect>` that pane/tile code can consult — the pointer analogue to `FocusLayer`.
+
+**Do NOT:** reach for `Sense::click()` on the background rect to also handle panel-level clicks — `Sense::hover()` is sufficient to block passthrough. `click()` would also suppress the cell `ui.interact()` responses that return the clicked context index.
+
+**Breaks if:** clicking anywhere in the minimap panel (background, title, border) still switches pane focus in the content area behind it.
+
+## 2026-04-27 — [FUTURE] Per-context minimap: open bugs after this session
+
+Three bugs remain after this session. Documenting clearly so the next session doesn't repeat the failed approaches.
+
+**Bug 1 — Minimap count off by one (shows N+1 cells, needs two Cmd+N to appear)**
+
+Root cause attempt 1: Added home context as a synthetic cell at (0,0) in `render_minimap`, alongside spatial pages at (1+,0). Threshold lowered to 1 spatial page. Result: minimap showed 3 cells after 2 Cmd+N (correct = home + 2 spatial), but didn't appear after 1st press. The reason for the delay is still unknown — `minimap.visible = true` + `on_activity()` are called in `create_page_at` which runs on Cmd+N. **Reverted.**
+
+Likely correct approach: the minimap should show the home cell (sidebar context itself) as cell (0,0). Spatial pages should continue starting at x=1 for row 0 (so home at 0 and pages at 1+). The rendering bug probably lies in how `render_minimap` determines the panel bounding box when home is included — max_x based only on spatial pages may produce a panel too narrow to show both home and page(1,0) without a gap. The panel bounding box must include column 0 (home) explicitly, regardless of spatial page positions.
+
+**Bug 2 — Grid gaps after deletion (pages don't collapse inward)**
+
+When a spatial page is deleted, sibling pages to its right keep their `grid_x` unchanged. The minimap renders each page at its stored `grid_x`, leaving empty columns where deleted pages were.
+
+Correct fix: on deletion of a spatial page at `(del_x, del_y)`, decrement `grid_x` of every sibling with `parent_context_id == parent_id && grid_y == del_y && grid_x > del_x`. Same logic for rows when a full row is deleted.
+
+**Bug 3 — Cmd+W on last pane stops here (no blank canvas)**
+
+Current state: Cmd+W on the last pane does nothing (no quit, no context delete — correct). But the intended behavior is: closing the last pane leaves an empty context (blank canvas) and the user presses Cmd+N to create a spatial page. This requires the UI to handle a context with zero panes gracefully — currently untested. The `execute_close_pane` function currently just bails on the last pane; the blank-canvas state and its rendering path need to be designed and built.
+
+**What was changed this session and kept:**
+- `create_page_at`: `minimap.visible = true` + `on_activity()` on first spatial page (threshold was 2, now 1)
+- `execute_close_pane`: removed the quit path (last pane no longer closes app)
+- Spatial pages now start at `grid_x = 0` (was 1 for row 0), eliminating the phantom gap column
+- Per-context minimap with `context_id`/`parent_context_id` filtering is stable
+
+**What was tried and reverted:**
+- Home cell at (0,0) in `render_minimap` with `sidebar_context_idx` extra param — count was wrong and minimap didn't show on first press
+- `spatial.rs` home fallback (navigate left from x=0 → sidebar context) — removed because spatial pages now start at x=0, making left-from-first-page go to tx=-1 which already returns early; the fallback was unreachable
+
+## 2026-04-26 — [FIX] Four regressions from spatial workspace commit → alpha
+
+Mouse blocked app-wide: `draw_minimap_overlay` allocated the full screen with `Sense::hover()` inside a `Foreground` Area, which captured all pointer events before any pane or sidebar widget could see them. Fixed by removing the full-screen `allocate_exact_size` — the Area now auto-sizes to the minimap panel cells via `ui.interact()` calls inside `render_minimap`.
+
+`Cmd+Shift+M` toggled opacity instead of show/hide: `MinimapState` had `override_visible: bool` intended to pin full opacity; `toggle()` flipped it, making the minimap brighter/dimmer but never hiding it. Renamed to `visible: bool` (default `true`), `toggle()` now flips show/hide, `draw_minimap_overlay` returns early when `!visible`.
+
+Spatial pages in sidebar: sidebar loop iterated all contexts with no filter. Added `if self.contexts[i].spatial { continue; }` guard. Pages (`Cmd+N` / `Cmd+Shift+N`) now set `spatial: true`; sidebar contexts set `spatial: false`.
+
+Minimap covering `?` button: `INSET = 8.0` left the panel overlapping the toolbar and shortcuts button (~44px from top). Split into `INSET_TOP = 52.0` / `INSET_RIGHT = 16.0`.
+
+Also: removed `#[serde(default)]` from `spatial` in `SavedContext` — old workspace files without the field will fail to parse, trigger the existing backup-rename logic in `WorkspaceFile::load()`, and start fresh. No backward compat shim needed.
+
+**Breaks if:** clicking in panes or sidebar does nothing (mouse regression), or `Cmd+Shift+M` makes the minimap dimmer rather than hiding it, or spatial pages appear as tabs in the sidebar.
+
+## 2026-04-26 — [CHANGED] Spatial 2D page grid + minimap overlay (PR → alpha)
+
+Added `grid_x / grid_y` to `Context` and `SavedContext` (`#[serde(default)]` for backward compat). `Cmd+N` / `Cmd+Shift+N` now create pages on the grid instead of splitting panes — splits moved to `Cmd+\` / `Cmd+Shift+\`. `Cmd+Shift+H/J/K/L` navigate between pages (was LateralFocus — no free chord available so repurposed). Minimap overlay (`src/minimap.rs`) renders in top-right corner, fades after 3 s idle, pinned by `Cmd+Shift+M`. Page creation and spatial helpers live in `pane_ops/workspace.rs` (co-located with `new_context` for access to `pub(super) create_single_pane_tree`). Navigation-only helpers in `src/spatial.rs`.
+
+Decision: `LateralFocus` variant removed entirely (was never constructed after keybind repurposing — keeping dead code violates project rules). Apps that depended on lateral-focus shortcuts will need to adjust if any existed; none are known.
+
+**Breaks if:** `Cmd+N` opens a pane split instead of a new page, or `Cmd+\` does nothing, or the minimap doesn't appear after creating 2+ pages.
+
+## 2026-04-26 — [FIX] Render event coalescing — try_send drops during slow Python startup (#368 → PR #378)
+
+Root cause: `sync_channel(1024)` + `try_send` filled with `PlexiEvent::Render` bursts during Python import phase. When the channel was full, every subsequent render event was silently dropped → apps appeared frozen, scroll (#371) never re-rendered. The earlier stdin-writer-thread fix (`cbf2799`) moved writes off the GUI thread but left the bounded channel and `try_send` in place.
+
+Fix: introduced `StdinItem` enum (`Event(String)` | `FlushRender`). Channel is now unbounded (`mpsc::channel`). Render events are coalesced: latest payload stored in `Arc<Mutex<Option<String>>> render_slot`; a single `FlushRender` token is queued via `Arc<AtomicBool> render_in_queue` guard. Writer thread resets the flag *before* draining the slot so a concurrent `send_event` can re-queue without a race. Non-render events pass through in-order, never dropped. #371 (scroll broken) resolves as a downstream effect.
+**Breaks if:** apps start up but don't respond to key events or scroll after the first render.
+
+## 2026-04-26 — [FIX] Secret not persisted after granting via prompt — re-prompt loop every launch (#372 → PR #377)
+
+Root cause: `show_prompt_modal` in `src/process_app/prompts.rs` sent `PlexiEvent::SecretValue` to the app on grant but never called `MacKeychain::set()`. Every new launch hit an empty keychain and re-prompted.
+
+Fix: `persist_granted_secret(workspace_root, app_id, key, value, store: &dyn SecretStore)` called immediately after grant. Routing mirrors `routing.rs`: explicit route in `workspace.toml` + `secrets.toml` → workspace-namespaced account (`plexi:<ws-id>:<friendly>`); no route / fallback=true → `plexi:user:<key>`. Guarded by `#[cfg(target_os = "macos")]` using `MacKeychain::new()`. Tests cover no-workspace, explicit-route, fallback, and deny paths.
+**Breaks if:** granting a secret prompt still re-prompts on the next app launch.
+
+## 2026-04-26 — [FIX] Agent workspace modal TextInput ignores keyboard input (#370 → PR #376)
+
+Root cause: auto-focus condition `!r.has_focus() && modal.task.is_empty()` was checked every frame. `request_focus()` is deferred one frame in egui, so `has_focus()` is false when the request fires — the condition re-triggers every frame and fights the user's own focus choices. Once the user typed anything, `task.is_empty()` also permanently prevented re-focus after a tab.
+
+Fix: `focus_initialized: bool` field on `AgentWorkspaceModal`, set `false` in `open()`. `request_focus()` called exactly once on the first render frame; after that the user's explicit focus choices are not overridden.
+**Breaks if:** opening the modal and typing immediately produces no input in the repo path field.
+
+## 2026-04-26 — [FIX] Agent workspace palette commands give no feedback when CLI not installed (#369 → PR #375)
+
+Root cause: `spawn_agent_workspace()` in `command_palette.rs` called `open_agent_workspace_pane()` without first checking `cli.is_installed()`. On failure it only logged — no host notification, so the user saw nothing.
+
+Fix: `is_installed()` checked at the top of `spawn_agent_workspace()`; calls `push_host_notification` on both the not-installed path and the `open_agent_workspace_pane` error path. Mirrors the pattern already used in `spawn_agent_workspace_from_modal`.
+**Breaks if:** clicking "New Agent Workspace: Claude Code" with Claude Code uninstalled produces no visible feedback.
+
+## 2026-04-26 — [FIX] AppBar descender clipping — title text bottom pixel cut off (#373 → PR #374)
+
+Root cause: `text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0 - 1.0` in `sdk/python/plexi_sdk/ui.py`. The `-1.0` nudge shifted the text 1px toward the top clip boundary, clipping descenders (g, p, y, etc.) at 16pt.
+
+Fix: removed the nudge — `text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0`. The original nudge comment described it as "empirical compensation for proportional-font descent bias"; it was wrong and the true centre is correct.
+**Breaks if:** AppBar title sits visibly off-centre vertically.
+
+## 2026-04-26 — [FIX] GUI hang when spawning apps — stdin write blocked egui main thread
+
+Root cause: `ProcessApp::send_event` called `stdin.write_all()` directly on the egui render loop thread. During the "starting" window (Python process importing modules, not reading stdin yet), pipe buffer fills fast. The first `Render` event write blocks indefinitely → macOS hang report → forced kill. Symptom: app shows "starting" pill then the entire host dies.
+
+Fix: background writer thread owns `ChildStdin` and blocks on writes there. GUI thread pushes to a bounded `sync_channel(1024)` via `try_send` — non-blocking in all cases. `cbf2799`.
+
+## 2026-04-26 — [GOTCHA] Info.plist.fragment must NOT include full plist wrapper
+
+`cargo-bundle 0.9.0` handles `osx_info_plist_exts` by doing a raw text insert inside the `<dict>` of the generated Info.plist. The fragment file must contain only bare key-value pairs — **no** `<?xml?>` declaration, no `<!DOCTYPE>`, no `<plist>` or `<dict>` wrappers. Including the full plist boilerplate (as the #277 sub-agent wrote) embeds a second XML document inside the `<dict>`, producing malformed XML that macOS rejects as "damaged or incomplete" at launch. Fix: `assets/Info.plist.fragment` is now just the two `<key>`/`<string>` lines. Re-sign with `codesign --force --deep --sign -` after install.
+
+## 2026-04-25 — [CHANGED] Agent-as-app foundation — manifest type field + protocol variants + broker widening (#285 part 1 → alpha)
+
+First slice of #285 (v3.3 P1 headline "Agent-as-app"). Lands the wire and schema additions that the host integration in part 2 will consume; does NOT yet spawn subprocess agents into `Pane::Agent` or ship the SDK Agent class. Scoped down deliberately to keep the PR reviewable — the host integration ripples through `process_app/routing.rs`, `agent_pane.rs`, `pane.rs`, and the SDK simultaneously, and is its own commit.
+
+**Manifest schema (`src/app_registry.rs`)** — required `[app] type = "app" | "agent"` field on every manifest. Discipline matches `schema_version` (#308 Phase 2): no `serde(default)`, no fallback to `"app"`, missing field → loud parse error. New `ManifestType` enum (`App` | `Agent`). Optional `[launch] system_prompt: Option<String>` for agent manifests; the host forwards it to the agent subprocess via `PlexiEvent::AgentInit` once the host integration lands. All 18 example manifests migrated to add `type = "app"`. Inline manifest fixtures in `src/install.rs` test helpers also migrated.
+
+**Protocol additions (`src/app_protocol.rs`)** — three new variants, all required-field shape, no `serde(default)`:
+  - `PlexiEvent::AgentInit { system_prompt: Option<String> }` — sent once at agent startup with the manifest's `system_prompt`. Only delivered to `type = "agent"` panes. `Option` is explicit on the wire (`null` for unset).
+  - `PlexiEvent::UserMessage { text }` — sent when the user submits text in the host-rendered conversation input box. Only delivered to agent panes.
+  - `DrawCommand::AppendConversation { role, content }` — agent emits one per logical turn; host renders into the conversation history surface. `role` accepted as a string (`"user" | "assistant" | "tool" | "system"`) for forward-compat with future role kinds; unknown roles render as plain text.
+
+**Broker widening (`src/plexi_iq/{broker,loop,backend/{mod,anthropic_api}}.rs`)** — lifted the `flatten_messages` stop-gap from #284. `LlmRequest` now carries `messages: Vec<IqMessage>` directly (the structured Anthropic Messages shape) plus `system: String`. `AnthropicApiBackend::stream_native` translates each `IqMessage` to a `MessageBuilder`-built `Message` with the matching `MessageRole`; empty `messages` is a loud error (`"LlmRequest.messages is empty"`), unknown role values likewise. `turn_loop::run_turn` widened: `messages: Vec<IqMessage>` instead of `prompt: impl Into<String>`. Multi-turn agent conversations now flow natively — no more `[assistant previously]:` prefix joining.
+
+**Out of scope deliberately (filed as follow-up):**
+  - Host integration: spawning subprocess agents into `Pane::Agent` with conversation UI scaffolding from `agent_pane.rs` backed by subprocess `AppendConversation` events (vs. the legacy hardcoded `agent_turn` loop).
+  - SDK `Agent` base class with the `on_user_message(text) -> str` callback pattern.
+  - POC `examples/agent-tester/` end-to-end agent.
+  - `plexi app new --type agent` scaffolder.
+  - Deletion of `agent_turn.rs` / `agent_pane.rs` legacy in-pane turn loop.
+
+Test-first: 11 new tests across `app_protocol::tests` (5), `app_registry::tests` (5), `plexi_iq::broker::tests` (1, replacing the deleted `flatten_messages_joins_user_turns`). All 114 pass; clean `cargo build --release`.
+
+**Breaks if:** any existing manifest loads after this PR without `type = "app"` set; `cargo test --bin plexi` reports any test in `app_protocol::tests::user_message_*`, `agent_init_*`, `append_conversation_*`, or `app_registry::tests::manifest_with_type_*` failing; `LlmRequest.messages` empty no longer surfaces a stream error containing `"messages is empty"`; or an agent manifest's `[launch].system_prompt` field is silently ignored at load (verify by checking `~/.plexi-alpha/plexi.log` — every `launching '<id>'` line should now also log `type=...` and `system_prompt=...`).
+
+## 2026-04-26 — [CHANGED] `iq.query` brokered capability — first v3.3 milestone PR (#284 → alpha)
+
+Opens the v3.3 milestone (Agents as First-Class Citizens). Three new wire types in `src/app_protocol.rs`: `DrawCommand::IqQuery { request_id, model_tier, system, messages, tools }`, `PlexiEvent::IqResponse { request_id, content, tokens_in, tokens_out, error }`, and the `ModelTier` enum (`low | medium | high`). All fields required — no `serde(default)`. Adds `IqQuery` to the `Capability` enum (string `"iq.query"`); manifest validator and `from_capability_strings` recognise it.
+
+New `src/plexi_iq/broker.rs` module owns the brokered path. `IqBroker` trait + `LiveIqBroker` (production) + `CannedBroker` (tests). `route_command` synchronously emits the gate-denied response when the manifest doesn't declare `iq.query`, and otherwise spawns a worker thread that calls `broker.dispatch()` and forwards the response onto `http_tx`. `LiveIqBroker` resolves `ANTHROPIC_API_KEY` per-call through the existing workspace-scoped secrets store, maps `ModelTier` to a concrete model id (`low → claude-haiku-4-5`, `medium → claude-sonnet-4-5`, `high → claude-opus-4-5`), and routes through `AnthropicApiBackend::with_model` + `turn_loop::run_turn` so we re-use the existing streaming + ledger path rather than forking a second LLM client.
+
+`LedgerRow` extended with optional `app_id` and `model` (skipped when None so legacy `Pane::Agent` rows aren't polluted) plus a required `cost_cents: u64` (computed at row construction so dependents don't have to). `LedgerRow::with_attribution` is the new call site for `iq.query`; `LedgerRow::new` stays for the legacy in-process turn loop. The broker appends a row on every successful dispatch — failures are logged but never propagate (a billing miss must never break the conversation).
+
+`plexi_iq` was on disk but never registered as a module; added `mod plexi_iq;` to `main.rs`. Module also gains `pub mod broker`. The existing `src/process_app/routing.rs` `LlmRequest` handler (legacy `llm` capability via raw `ureq` Anthropic call) is left in place — `iq.query` is the v3.3 successor; #285 will eventually retire `LlmRequest`.
+
+Python SDK adds `Emitter.iq_query(model_tier, system, messages, tools=None) -> IqResponse`, an `IqResponse` dataclass, and a `CapabilityDeniedError` exception (raised when the host returns "capability denied" — apps that want to handle the gate-denied path explicitly can `except CapabilityDeniedError`). The blocking pattern matches `secret_get` / `http_request` / `measure_text` — UUID `request_id`, per-request `queue.Queue`, drained by the App's stdin event loop on `iq_response`. `tools` non-empty is rejected at the broker until v3.4 ships tool dispatch — explicit refusal beats a silent drop.
+
+Two POC apps land alongside the protocol work (mandatory per orchestration rule):
+- `examples/iq-query-test/` — manifest declares `iq.query`. Text input + l/m/h keys to dispatch at each tier; renders content + token counts on success, red error card on failure.
+- `examples/iq-query-denied-test/` — manifest declares no capabilities. Press `s` to verify the gate fires; the `CapabilityDeniedError` arrives within a frame.
+
+Test-first: 14 new tests across `app_protocol::tests` (4), `app_permissions::tests` (2), `plexi_iq::broker::tests` (4), `plexi_iq::ledger::ledger_tests` (2), `process_app::iq_tests` (2). The `process_app` tests inject `CannedBroker`/`PanicBroker` into the `iq_broker` field to drive the routing layer deterministically — no real LLM calls.
+
+**Out of scope for this PR (deliberately):** #285 agent-as-app refactor (the existing `Pane::Agent` hardcoded LLM still uses `agent_turn::run_turn` directly — replacing that with subprocess agents calling `iq.query` is the next dispatch); tool-use loops at the broker level (apps drive their own loops by re-calling `iq_query`); cost-cap enforcement / rate limiting beyond what the existing ledger does; streaming responses (spec calls for one `IqResponse` per query).
+
+**Breaks if:** an app whose manifest does NOT declare `iq.query` calls `emit.iq_query(...)` and gets back content instead of `CapabilityDeniedError`; an app declaring `iq.query` calls into Low/Medium/High tier and the response model doesn't differ between tiers (verify by asking the same prompt at Low and High — the wording should differ); `~/.plexi-alpha/ledger.jsonl` doesn't gain a new line per query with `app_id`, `model`, `tokens_in`, `tokens_out`, `cost_cents`; or `ANTHROPIC_API_KEY` ever appears verbatim in the log file or any app's stderr.
+
+## 2026-04-26 — [CHANGED] App package manager — top-level `install`/`uninstall`/`update`/`list`, manifest `schema_version`, bundled core pack (#308 Phase 2 → alpha)
+
+Phase 2 of the v3.2 headline. Adds a required `schema_version: u32` field to every `manifest.toml` (no `serde(default)` — missing → loud parse error; greater than `MANIFEST_SCHEMA_VERSION = 1` → install refused with a clear message), a new `packs.rs` module that parses `pack.toml` (requirements.txt-style app list with a tagged source-spec scheme: `github:owner/repo`, `git+https/ssh/file://...`, `local:<example-name>`), and a new `install.rs` that owns the install/uninstall/update flow plus a `Cloner` trait (mock for tests, `GitCloner` shells out to `git` in prod — no `git2` dependency).
+
+Five new top-level CLI subcommands route through `cli::install_cli` / `install_pack_cli` / `uninstall_cli` / `update_cli` / `list_cli`. `parse_workspace_path_arg::SUBCOMMANDS` was extended with `install`, `uninstall`, `update`, `list`, `pack` so `plexi install foo` isn't misinterpreted as a workspace-path adoption. Existing `plexi app install` (the older github-shorthand-or-URL path that builds Rust apps) stays in place — top-level `plexi install` is the new git-based flow.
+
+The bundled core pack lives at `packs/core.toml`, embedded via `include_str!`, and uses `local:<example-name>` sources that copy from the compile-time-baked `examples/` tree (re-uses `include_dir!` already in deps for `config::ensure_profile_initialized`). On every launch the host calls `apply_core_pack_if_empty` against the channel apps dir; idempotent, no-op when non-empty. Sources point at bundled examples rather than a yet-to-exist `plexi-apps` org repo to keep Phase 2 fully offline-first; once the org repo exists, swap `local:` for `github:` in `packs/core.toml`.
+
+Install staging uses a hand-rolled `.tmp-install-<pid>-<nanos>/clone` sibling dir inside the apps dir (same FS for atomic `rename`); `tempfile` is dev-only so we don't pull it into the release build for one path. Manifest is read out of the staging dir BEFORE the rename so the canonical `manifest.app.id` keys the final dest — the URL's repo name is never trusted. Failed clones cleanup via early-return helper.
+
+POC demo: extended `examples/workspace-config-tester/` (Phase 1's POC) to also walk `~/.plexi-<channel>/apps/*/manifest.toml` and surface every installed app's `id`, `version`, and `schema_version` in a Card. Hit `r` to reload after `plexi install <repo>` and the new app appears without a host restart. ~25 lines of additions; cheaper than a separate proposal doc.
+
+All 15 example manifests migrated to add `schema_version = 1`. 23 new tests across `app_registry::tests` (3), `packs::tests` (10), `install::install_tests` (4), `install::pack_tests` (3), `install::core_pack_tests` (3). Test-first: failing tests written before each code path, including `Cloner` mock pattern lifted from `workspace_secrets::SecretStore`.
+
+**Breaks if:** `plexi-alpha install <real-public-git-url>` doesn't produce `~/.plexi-alpha/apps/<id>/` with the manifest's id (not the repo's URL slug); or `plexi-alpha install` of a manifest with `schema_version = 99` succeeds instead of erroring with "newer than this Plexi build supports"; or `plexi-alpha uninstall <never-installed-id>` succeeds silently instead of erroring; or `plexi-alpha list` shows nothing on a fresh `~/.plexi-alpha/apps/` (core-pack auto-apply on empty); or running `plexi-alpha install --pack core` twice in a row second-time-installs the same apps instead of reporting "up-to-date"; or any existing example loses its `schema_version = 1` line and silently fails to load with a missing-field parse error.
+
+## 2026-04-26 — [CHANGED] Workspace model — config merge, path-arg adoption, outside-workspace badge, auto `.gitignore` (#308 Phase 1 → alpha)
+
+Phase 1 of the v3.2 headline issue. `<workspace_root>/.plexi/config.toml` now overlays the global `~/.plexi-<channel>/config.toml` on a per-field basis — every field is `Option<T>`, project values win, unset project fields preserve globals. Implementation lives entirely in `src/config.rs::PlexiConfig::load_with_workspace`; the existing `Config` shape was already all-Option so the overlay is a one-pass field walk with no struct refactor and no `serde(default)` tricks. Both `main()` (for log-level resolution) and `PlexiApp::new` (for the rest of the host) now route through `load_with_workspace(active_workspace_root().as_deref())` so a single source of truth feeds everything downstream.
+
+`plexi <path>` is parsed in `main()` via a small `parse_workspace_path_arg` that walks up to find the nearest `.plexi/` ancestor — re-uses the `app_registry::resolve_workspace_root` walker already in tree. On adoption we both record the explicit root via `config::set_adopted_workspace_root` and `chdir` into it, so all the existing "look up from CWD" code paths (`AppRegistry::load`, event log, default pane cwd) stay correct without per-callsite plumbing. Bare `plexi` is unchanged. A bad path (no `.plexi/` ancestor) errors and exits 1 before the GUI starts.
+
+Status-line indicator threads `workspace_root: Option<PathBuf>` into `PlexiBehavior`, then into `render::terminal_pane::render`. The check is host-only: `get_pid_cwd(child_pid).starts_with(workspace_root)` after canonicalizing both sides (macOS `/var → /private/var` would otherwise false-positive). When out-of-tree we paint a small amber "↗ outside workspace" badge into the existing name-bar strip; the strip widens to fit the badge when no name is set. No protocol changes.
+
+`plexi workspace init` now also writes `<root>/.plexi/.gitignore` with `secrets.toml` + `cache/` — but only when the file is absent. The check-then-write avoids stomping a user's edits on subsequent `init` runs, and the body of the auto-generated file says so explicitly. Touched `workspace_secrets::init_workspace`; the `init_workspace_creates_workspace_and_secrets_files` test from #322 still passes verbatim.
+
+POC app: `examples/workspace-config-tester/` — one pane, `r` to reload, surfaces the resolved workspace root, the workspace UUID, and a few representative `[log]/[theme]/font_size` keys read from `<root>/.plexi/config.toml` so the user can drop a project config and watch it pick up.
+
+**Breaks if:** dropping `[log] level = "debug"` into a workspace's `.plexi/config.toml` has no effect on the host's log level; or `plexi-alpha /path/to/workspace` doesn't adopt the path (CWD stays elsewhere, registry skips workspace apps); or `plexi-alpha /tmp` (no `.plexi/` ancestor) launches the GUI silently instead of exiting 1 with a clear error; or `plexi-alpha workspace init` does not produce `.plexi/.gitignore` with `secrets.toml` and `cache/`; or re-running `workspace init` overwrites a user-edited `.plexi/.gitignore`; or a terminal whose CWD is outside the workspace root never shows the `↗ outside workspace` badge.
+
+## 2026-04-25 — [CHANGED] Cmd+N / Cmd+Shift+N split-with-mirror + Shift+Cmd+H/J/K/L lateral focus (#306 → alpha)
+
+Cmd+N was previously bound to `Action::NewContext` (create a new context tab). It's now `SplitRight` — split the focused pane to the right with a new pane that mirrors the focused pane's type (terminal → terminal, app → fresh instance of same app, agent → new agent). Cmd+Shift+N adds `SplitDown` with the same mirror rule. Shift+Cmd+H/J/K/L adds explicit `LateralFocus(Direction)` bindings; they share the geometric direction-finder used by Cmd+H/J/K/L (one impl, two surfaces). The new-context shortcut is intentionally OUT OF SCOPE for this PR and was not re-bound — sidebar "+" and `new_context()` are unchanged. Cmd+T still maps to `NewTab` (within-context tab creation). The geometric direction-finder was refactored: pure-geometry logic extracted into `find_in_direction_geometric` (takes `from_rect` + `(T, Rect)` candidates iterator) so it's unit-testable without spinning up egui. Spec: tier 0 = candidates whose perpendicular axis range overlaps the source's; primary distance = source center to candidate's nearest edge along the requested axis; secondary tie-break = perpendicular-axis center distance. App-mirror dispatch reuses `launch_app_by_id_with_layout` with `split_v`/`split_h` layout overrides instead of constructing AppPane manually — keeps a single launch-with-permissions path. Rejected alternatives: per-launch ad-hoc AppPane construction (duplicated permissions/group/share logic); a separate `LateralFocus` direction-finder distinct from `Navigate` (would diverge over time).
+
+**Breaks if:** Cmd+N opens a sidebar/new-context tab instead of splitting the focused pane to the right; Cmd+Shift+N does anything other than split below; Shift+Cmd+L on a pane with a right neighbor lands on the wrong neighbor; splitting an app pane doesn't produce a fresh instance of the same app; existing Cmd+D / Cmd+Shift+D split shortcuts regress; sidebar "+" no longer creates a new context (would mean `new_context()` was accidentally affected).
+
+## 2026-04-25 — [CHANGED] Workspace-namespaced secret routing (#322 → alpha)
+
+Three layers landed: (1) Keychain entries under `plexi:<workspace-id>:<friendly>` (workspace) or `plexi:user:<friendly>` (cross-workspace fallback), workspace ID a UUID stored in `<root>/.plexi/workspace.toml`; (2) app manifests declare `[secrets] X = { required = ..., description = "..." }` (no serde-default on `required`); (3) `<root>/.plexi/secrets.toml` is the router with required `fallback` field plus `[apps.<id>]` and `[default]` route tables. Resolution is a 4-step pure function in `workspace_secrets::resolve`: app-route → default-route → user-scope-on-fallback → hard-miss-or-prompt. New `SecretStore` trait isolates Keychain so tests use `InMemoryKeychain` and never hit `security` CLI. CLI: `plexi workspace init`, `plexi secret {set,list,delete} <friendly>` are workspace-aware (replaces the legacy plexi-run-style flat layout — no compat shim).
+
+**Migration:** `secrets-index.json` schema flipped from `Vec<SecretEntry>` to `Vec<String>` (full account names). Legacy entries are re-stored under `plexi:user:<key>` on first GUI launch via `migrate_legacy_global_secrets`; idempotent, logged per migration. Old global Keychain entries (`plexi-run/<dir>/<key>`) are read once during migration and not deleted — they remain dormant.
+
+**Breaks if:** `plexi-alpha workspace init` doesn't create a `.plexi/workspace.toml` with a valid UUID; or two directories with `init` then different `[apps.<id>]` routes for the same canonical secret return the same Keychain value; or `fallback = false` with no route silently falls through instead of throwing the `hard_missing` SecretDenied event; or an app declaring `[secrets] X = {}` (missing `required`) installs without erroring.
+
+## 2026-04-25 — [GOTCHA] Squash-merged PRs without `Closes #N` trailer leave issues orphan-open
+
+Three v3.1 issues (#312, #314, #317) shipped to alpha in PRs that were squash-merged without `Closes #N` in the PR *body* — only in the title. GitHub's auto-close only scans the body of the squash commit message, so the issues stayed `OPEN` even though the work landed. Discovered when a sub-agent dispatch for #314 reset its worktree to current alpha and found the implementation already there. Cost: one wasted sub-agent run + an audit cycle. Fix: every PR body must include `Closes #N` on its own line (not just the title). Orchestrator pre-dispatch audit now also greps `git log --all -200` for shipped PRs that match the issue's keywords/number; codified in `.claude/iteration-cycle.md`. Also: DEV_LOG itself was not being updated for these shipped PRs — `git log` is the only reliable source for what shipped on alpha after 2026-04-11. This entry serves as a backfill anchor.
+
+## 2026-04-25 — [DECISION] Squash-merge + install-alpha per sub-agent PR (orchestrator merges unilaterally on alpha)
+
+User authorized the orchestrator to merge sub-agent PRs without waiting for human approval, on the condition that every merge is `gh pr merge --squash --delete-branch` so each PR lands as a single revertible commit on alpha. Bad PR → `git revert <sha>` removes it cleanly without unwinding others. Endgame: when v4 starts, alpha is not merged wholesale into v4; the squash history makes it cheap to cherry-pick the keepers. After every merge: orchestrator runs `just install-alpha` (no longer waits on user), pings user with the PR's Human verification checklist. Each new milestone branches from current alpha HEAD (cumulative).
+
+**Breaks if:** any sub-agent PR is merged with `--merge` or `--rebase` (multiple commits per PR breaks the cherry-pick model); or orchestrator skips `install-alpha` post-merge (user can't verify against the built binary).
+
+## 2026-04-25 — [DECISION] Alpha-train release orchestration through v3.5 (PR → alpha)
+
+Locked in the v3.1–v3.5 roadmap (5 milestones, 26 issues) and the orchestration model that will execute it. Specs landed: `docs/specs/process/release-orchestration.md` (durable spec — alpha-train flow, per-PR `Breaks if:` + Human verification + Test added requirements, three-strike rule for sub-agents, no backwards-compat shims, batched alpha→beta promotion only on explicit signal), `docs/specs/releases/v3.1.md`–`v3.5.md` (per-release issue lists + release-level human verification checklists), `.claude/iteration-cycle.md` (operational checklist Claude reads at session start). `.gitignore` flipped from `.claude/` to `.claude/*` + `!.claude/iteration-cycle.md` so the iteration spec is tracked while the rest of `.claude/` stays local.
+
+Rejected alternatives: per-release alpha→beta→main cycles (too much context-switching, batch promotion is cheaper); generic "next-up issue" loop without per-release human gates (verification debt accumulates and 3.5 ships unverifiable). Rejected because: alpha is the active dev branch and beta should only move when the user signals a batch promotion; verification has to be release-bounded so regressions don't compound silently across milestones.
+
+**Breaks if:** new PRs land on alpha without `Breaks if:` lines, without a release-level human verification checklist update in `docs/specs/releases/v3.x.md`, or without a test added — the orchestration spec calls these out as hard gates.
+
 ## 2026-04-24 — [GOTCHA] `wtp add` always branches from main, not the active worktree
 
 `wtp add -b <name>` picks up the repo's default branch (main) as the base, not the worktree you're currently sitting in. Running it from the alpha worktree still produced a branch off main — 14 commits behind. Fix: after every `wtp add`, immediately run `git log --oneline -1` in the new worktree. If it doesn't match alpha HEAD, `git reset --hard alpha` before touching any files.

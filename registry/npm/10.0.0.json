@@ -1,0 +1,60 @@
+{
+  "plexi_version": "0.1",
+  "name": "npm",
+  "version": "10.0.0",
+  "description": "Node Package Manager",
+  "icon": "📦",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "install",
+      "description": "Install a package and any packages it depends on",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "package", "type": "string", "required": false, "description": "Package name(s) to install"}
+      ],
+      "flags": [
+        {"name": "--save-dev", "type": "bool", "default": false, "description": "Save as a devDependency"},
+        {"name": "--global", "type": "bool", "default": false, "description": "Install globally"}
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Run an arbitrary package script defined in package.json",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "script", "type": "string", "required": true, "description": "Script name"}
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Run the tests script defined in package.json",
+      "ui_hint": "stream",
+      "streaming": true
+    },
+    {
+      "name": "publish",
+      "description": "Publish the package to the npm registry",
+      "ui_hint": "form",
+      "flags": [
+        {"name": "--dry-run", "type": "bool", "default": false},
+        {"name": "--tag", "type": "string", "description": "Registers the published package with the given tag"}
+      ]
+    },
+    {
+      "name": "init",
+      "description": "Create a package.json file",
+      "ui_hint": "form",
+      "writes": ["package.json"]
+    },
+    {
+      "name": "uninstall",
+      "description": "Remove a package",
+      "args": [
+        {"name": "package", "type": "string", "required": true}
+      ]
+    }
+  ]
+}

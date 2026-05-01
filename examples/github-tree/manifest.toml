@@ -1,5 +1,8 @@
+schema_version = 1
+
 [app]
 id = "github-tree"
+type = "app"
 name = "Commit Graph"
 version = "0.3.0"
 description = "Subway-style git commit history for the pane's repo."

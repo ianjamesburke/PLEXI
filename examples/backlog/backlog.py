@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Backlog viewer — browse, preview, open, archive, and delete .plexi/backlog items.
+"""Backlog viewer — browse, preview, open, archive, delete, and add .plexi/backlog items.
 
 hjkl navigation. e/Enter opens in default app. a archives. d deletes (confirm).
-r refreshes. / searches. Items are markdown files inside <workspace>/.plexi/backlog/.
+n creates a new item via host TextInput (issue #283). r refreshes. / searches.
+Items are markdown files inside <workspace>/.plexi/backlog/.
 """
-from __future__ import annotations
 
 import os
 import shutil
@@ -37,6 +37,7 @@ class BacklogApp(App):
         self.preview_text = ""
         self.preview_path = None
         self.confirm_delete = False
+        self.in_add = False        # showcase: host-owned TextInput entry mode
         self.status = ""
         self._load()
 
@@ -99,6 +100,36 @@ class BacklogApp(App):
         except OSError as e:
             self.status = f"Error: {e}"
         self.selected = max(0, self.selected - 1)
+        self._load()
+
+    def _create_item(self, title: str) -> None:
+        """Create a new backlog item from a TextInput submission.
+
+        `title` becomes the filename stem (sanitised); the file body is
+        a single-line markdown header so the item shows up in the
+        preview panel immediately.
+        """
+        title = title.strip()
+        if not title:
+            self.in_add = False
+            return
+        # Conservative filename sanitisation — mirror the convention
+        # users follow when creating backlog notes by hand.
+        safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title)
+        safe = safe.strip().replace(" ", "-").lower() or "untitled"
+        self.backlog_dir.mkdir(parents=True, exist_ok=True)
+        path = self.backlog_dir / f"{safe}.md"
+        # If the slug collides, append a numeric suffix until free.
+        n = 2
+        while path.exists():
+            path = self.backlog_dir / f"{safe}-{n}.md"
+            n += 1
+        try:
+            path.write_text(f"# {title}\n")
+            self.status = f"Created {path.name}"
+        except OSError as e:
+            self.status = f"Error: {e}"
+        self.in_add = False
         self._load()
 
     def _delete(self) -> None:
@@ -192,8 +223,27 @@ class BacklogApp(App):
             ctx.text(12, bar_y + 7, self.status, size=11, color=GREEN)
         else:
             ctx.text(12, bar_y + 7,
-                     "j/k  navigate    e  open    a  archive    d  delete    /  search    r  refresh",
+                     "j/k navigate  e open  n new  a archive  d delete  / search  r refresh",
                      size=10, color=MUTED)
+
+        # ── Add-item overlay (host-owned TextInput) ─────────────────────────────
+        # Issue #283 showcase migration: a real callsite for the new
+        # single-line submit-only primitive. The host owns the buffer
+        # entirely — `text_input` returns the value once on submit, then
+        # `None` on subsequent frames.
+        if self.in_add:
+            ox, oy, ow, oh = w / 2 - 200, h / 2 - 36, 400, 86
+            ctx.rect(ox, oy, ow, oh, SURFACE, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, HIGHLIGHT)
+            ctx.text(ox + 16, oy + 12, "New backlog item",
+                     size=12, color=ACCENT, bold=True)
+            submitted = ctx.text_input(
+                "backlog-new",
+                x=ox + 16, y=oy + 36, w=ow - 32,
+                placeholder="Title (Enter to create, Esc to cancel)",
+            )
+            if submitted is not None:
+                self._create_item(submitted)
 
         # ── Delete confirm overlay ────────────────────────────────────────────────
         if self.confirm_delete and self.filtered:
@@ -210,6 +260,15 @@ class BacklogApp(App):
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         self.status = ""   # clear on any key
+
+        # ── Add-item mode (host owns the buffer) ─────────────────────────────────
+        # The TextInput widget eats characters; the app only handles the
+        # exit shortcut. Submission is delivered via PlexiEvent::TextSubmitted
+        # and consumed in `on_render`'s `ctx.text_input(...)` call.
+        if self.in_add:
+            if key == "Escape":
+                self.in_add = False
+            return
 
         # ── Confirm-delete mode ──────────────────────────────────────────────────
         if self.confirm_delete:
@@ -250,6 +309,9 @@ class BacklogApp(App):
             self._archive()
         elif key == "d" and self.filtered:
             self.confirm_delete = True
+        elif key == "n":
+            # Showcase: open the host TextInput overlay for a new item.
+            self.in_add = True
         elif key == "r":
             self._load()
             self.status = "Refreshed"

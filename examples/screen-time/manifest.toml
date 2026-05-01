@@ -1,5 +1,8 @@
+schema_version = 1
+
 [app]
 id = "screen-time"
+type = "app"
 name = "Screen Time"
 version = "0.1.0"
 description = "Pie chart of macOS app usage from the last 7 days."

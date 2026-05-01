@@ -16,6 +16,7 @@ use egui::Vec2;
 use egui_term::{TerminalTheme, TerminalView};
 use egui_tiles::TileId;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Render one frame of a terminal pane. Returns `true` if the process has
 /// exited and the user pressed a key (the caller should close the tile).
@@ -30,6 +31,7 @@ pub fn render(
     colors: &Colors,
     pane_names: &HashMap<PaneId, String>,
     tab_info: &HashMap<TileId, (usize, usize)>,
+    workspace_root: Option<&Path>,
 ) -> bool {
     if terminal.exited {
         let rect = ui.max_rect();
@@ -47,7 +49,16 @@ pub fn render(
             });
     }
 
-    render_name_bar_and_dots(ui, tile_id, pane_id, tab_info, pane_names, colors);
+    let outside_workspace = is_terminal_outside_workspace(terminal, workspace_root);
+    render_name_bar_and_dots(
+        ui,
+        tile_id,
+        pane_id,
+        tab_info,
+        pane_names,
+        colors,
+        outside_workspace,
+    );
 
     let font_size = terminal.font_size;
     let view = TerminalView::new(ui, &mut terminal.backend)
@@ -77,7 +88,9 @@ pub fn render(
 }
 
 /// Render the pane name bar (if named) and reserve tab-dot space for a
-/// terminal in full-pane mode.
+/// terminal in full-pane mode. When `outside_workspace` is true, paint a
+/// small right-aligned "↗ outside workspace" badge so the user can see the
+/// scope drift without it being intrusive.
 fn render_name_bar_and_dots(
     ui: &mut egui::Ui,
     tile_id: TileId,
@@ -85,19 +98,23 @@ fn render_name_bar_and_dots(
     tab_info: &HashMap<TileId, (usize, usize)>,
     pane_names: &HashMap<PaneId, String>,
     colors: &Colors,
+    outside_workspace: bool,
 ) {
     let name_bar_height = 20.0;
     let has_name = pane_names.contains_key(pane_id);
     let has_tabs = tab_info.contains_key(&tile_id);
 
-    if has_name {
+    // The full name-bar strip is allocated when there's a name to print or
+    // an outside-workspace badge to draw. Without one, the slim tab-dot
+    // reservation (or no reservation at all) is enough.
+    let needs_full_bar = has_name || outside_workspace;
+
+    if needs_full_bar {
         let bar_rect = egui::Rect::from_min_size(
             ui.cursor().min,
             egui::vec2(ui.available_width(), name_bar_height),
         );
         ui.advance_cursor_after_rect(bar_rect);
-
-        let name = &pane_names[pane_id];
 
         if let Some(&(active_idx, count)) = tab_info.get(&tile_id) {
             paint_tab_dots(
@@ -111,14 +128,73 @@ fn render_name_bar_and_dots(
             );
         }
 
-        ui.painter().text(
-            bar_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            name,
-            egui::FontId::proportional(11.0),
-            colors.text_dim,
-        );
+        if has_name {
+            let name = &pane_names[pane_id];
+            ui.painter().text(
+                bar_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                name,
+                egui::FontId::proportional(11.0),
+                colors.text_dim,
+            );
+        }
+
+        if outside_workspace {
+            // Right-aligned amber badge. Mirrors the lifecycle-pill pattern
+            // — minimal, glanceable, never intrusive.
+            let label = "↗ outside workspace";
+            let amber = egui::Color32::from_rgb(0xff, 0xb8, 0x6b);
+            let font = egui::FontId::proportional(10.0);
+            let galley =
+                ui.painter().layout_no_wrap(label.to_string(), font.clone(), amber);
+            let pad_x = 6.0;
+            let badge_w = galley.size().x + pad_x * 2.0;
+            let badge_h = 14.0;
+            let badge_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    bar_rect.right() - badge_w - 4.0,
+                    bar_rect.center().y - badge_h / 2.0,
+                ),
+                egui::vec2(badge_w, badge_h),
+            );
+            ui.painter().rect_filled(
+                badge_rect,
+                egui::CornerRadius::same(3),
+                egui::Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x6b, 28),
+            );
+            ui.painter().text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font,
+                amber,
+            );
+        }
     } else if has_tabs {
         ui.add_space(TAB_DOT_RESERVED_HEIGHT);
     }
+}
+
+/// True when the terminal's child PID has a CWD that is not an ancestor of
+/// the workspace root. Returns false when there is no workspace root, when
+/// the CWD can't be probed, or when the terminal has exited.
+fn is_terminal_outside_workspace(
+    terminal: &TerminalPane,
+    workspace_root: Option<&Path>,
+) -> bool {
+    let Some(root) = workspace_root else {
+        return false;
+    };
+    if terminal.exited {
+        return false;
+    }
+    let pid = terminal.backend.child_pid();
+    let Some(cwd) = crate::shell::get_pid_cwd(pid) else {
+        return false;
+    };
+    // Canonicalize both sides so /var → /private/var on macOS doesn't
+    // produce a false-positive "outside" badge.
+    let cwd_canon = cwd.canonicalize().unwrap_or(cwd);
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    !cwd_canon.starts_with(&root_canon)
 }

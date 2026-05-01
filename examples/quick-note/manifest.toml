@@ -1,5 +1,8 @@
+schema_version = 1
+
 [app]
 id = "quick-note"
+type = "app"
 name = "Quick Note"
 version = "0.1.0"
 description = "Markdown note composer and browser. Notes saved to <workspace_root>/.plexi/notes/."

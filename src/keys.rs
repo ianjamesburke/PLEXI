@@ -1,24 +1,29 @@
 // ─── Reserved Plexi shortcuts (apps must NOT consume these) ───────────────
 //
-// Cmd+D / Cmd+Shift+D  — split horizontal / vertical
-// Cmd+W                 — close pane
-// Cmd+H/J/K/L          — navigate panes
-// Cmd+T                 — new tab
-// Cmd+] / Cmd+[         — cycle tabs
-// Cmd+Q                 — quit
-// Cmd+B                 — toggle sidebar
-// Cmd+Enter             — toggle zoom
-// Cmd+/                 — toggle shortcuts overlay
-// Cmd+P                 — command palette
-// Cmd+Shift+R           — rename pane
-// Cmd+N                 — new context
-// Cmd+Up / Cmd+Down     — scroll
-// Cmd+= / Cmd+-         — font size
-// Cmd+E                 — file browser
-// Cmd+0                 — quick note
-// Cmd+1–9               — switch context
-// Escape (app active)   — close app
-// Tab (app active)      — navigate to linked terminal
+// Cmd+D / Cmd+Shift+D       — split horizontal / vertical (terminal)
+// Cmd+\                       — split focused pane to the right (mirror type)
+// Cmd+Shift+\                 — split focused pane below (mirror type)
+// Cmd+N                       — new window to the right on the current grid row
+// Cmd+Shift+N                 — new context (sidebar item)
+// Cmd+W                       — close pane
+// Cmd+H/J/K/L                 — navigate panes
+// Cmd+Shift+H/J/K/L           — navigate to adjacent window (spatial grid)
+// Cmd+Shift+M                 — toggle minimap overlay
+// Cmd+T                       — new tab
+// Cmd+] / Cmd+[               — cycle tabs
+// Cmd+Q                       — quit
+// Cmd+B                       — toggle sidebar
+// Cmd+Enter                   — toggle zoom
+// Cmd+/                       — toggle shortcuts overlay
+// Cmd+P                       — command palette
+// Cmd+Shift+R                 — rename pane
+// Cmd+Up / Cmd+Down           — scroll
+// Cmd+= / Cmd+-               — font size
+// Cmd+E                       — file browser
+// Cmd+0                       — quick note
+// Cmd+1–9                     — switch context (sidebar)
+// Escape (app active)         — close app
+// Tab (app active)            — navigate to linked terminal
 //
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
@@ -41,19 +46,23 @@ pub enum Direction {
 pub enum Action {
     SplitHorizontal,
     SplitVertical,
+    /// Split the focused pane to the right; new pane mirrors the focused pane's type.
+    /// Bound to Cmd+\. If no pane is focused, creates a full-size terminal.
+    SplitRight,
+    /// Split the focused pane below; new pane mirrors the focused pane's type.
+    /// Bound to Cmd+Shift+\. If no pane is focused, creates a full-size terminal.
+    SplitDown,
     Navigate(Direction),
     ClosePane,
     NewTab,
     SwitchContext(usize),
     NextTab,
-    PrevTab,
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
     ToggleZoom,
     ToggleCommandPalette,
     RenamePane,
-    NewContext,
     IncreasePaneFontSize,
     DecreasePaneFontSize,
     ScrollUp,
@@ -78,6 +87,31 @@ pub enum Action {
     ToggleNotificationModal,
     NotificationCycleNext,
     NotificationCyclePrev,
+    /// Force-reload the focused app pane (#83). Bound to Cmd+Option+R.
+    /// Cmd+R is the Run palette and Cmd+Shift+R is RenamePane, so the
+    /// Option (Alt) modifier is the next free chord. No-op when the
+    /// focused pane isn't a process-backed app.
+    ForceReloadApp,
+    /// Create a new window to the right of the active one on the same
+    /// grid row. Bound to Cmd+N.
+    NewPageRight,
+    /// Create a new context (sidebar item) and immediately open the rename modal.
+    /// Bound to Cmd+Shift+N.
+    NewContext,
+    /// Navigate to the adjacent window in the spatial grid. Bound to
+    /// Cmd+Shift+H/J/K/L (left/down/up/right).
+    PageLeft,
+    PageDown,
+    PageUp,
+    PageRight,
+    /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
+    ToggleMinimap,
+    /// Reload configuration from disk. Bound to Cmd+Shift+,.
+    ReloadConfig,
+    /// Cmd+[ when a nav-active app pane is focused: pop one nav level and
+    /// emit `PlexiEvent::NavBack`. Falls through to cycling tabs backwards
+    /// if no nav is active on the focused pane.
+    NavBackApp,
 }
 
 /// Poll global keyboard actions.
@@ -121,6 +155,22 @@ pub fn poll_actions(
             actions.push(Action::SplitHorizontal);
         }
 
+        // Page navigation (Shift+Cmd+HJKL) — check before plain Cmd+HJKL
+        // so the shifted variants are matched first. These now navigate the
+        // spatial grid rather than doing lateral focus jumps within a page.
+        if input.consume_key(cmd_shift, egui::Key::H) {
+            actions.push(Action::PageLeft);
+        }
+        if input.consume_key(cmd_shift, egui::Key::J) {
+            actions.push(Action::PageDown);
+        }
+        if input.consume_key(cmd_shift, egui::Key::K) {
+            actions.push(Action::PageUp);
+        }
+        if input.consume_key(cmd_shift, egui::Key::L) {
+            actions.push(Action::PageRight);
+        }
+
         // Focus navigation (Cmd+HJKL)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::H) {
             actions.push(Action::Navigate(Direction::Left));
@@ -154,7 +204,7 @@ pub fn poll_actions(
             actions.push(if notification_modal_open {
                 Action::NotificationCyclePrev
             } else {
-                Action::PrevTab
+                Action::NavBackApp
             });
         }
 
@@ -188,9 +238,26 @@ pub fn poll_actions(
             actions.push(Action::RenamePane);
         }
 
-        // New context (Cmd+N)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+        // Pane split (Cmd+\ = right, Cmd+Shift+\ = below). Mirror focused
+        // pane's type. Check Cmd+Shift+\ before Cmd+\ so the shifted variant
+        // is matched first.
+        if input.consume_key(cmd_shift, egui::Key::Backslash) {
+            actions.push(Action::SplitDown);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backslash) {
+            actions.push(Action::SplitRight);
+        }
+
+        // New context (Cmd+Shift+N) vs new spatial page (Cmd+N). Check shifted
+        // first so Cmd+Shift+N doesn't fall through to the Cmd+N branch.
+        if input.consume_key(cmd_shift, egui::Key::N) {
             actions.push(Action::NewContext);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+            actions.push(Action::NewPageRight);
+        }
+
+        // Minimap toggle (Cmd+Shift+M).
+        if input.consume_key(cmd_shift, egui::Key::M) {
+            actions.push(Action::ToggleMinimap);
         }
 
         // Scrollback (Cmd+Up / Cmd+Down)
@@ -236,13 +303,32 @@ pub fn poll_actions(
             actions.push(Action::OpenConfig);
         }
 
+        // Reload configuration (Cmd+Shift+,)
+        if input.consume_key(cmd_shift, egui::Key::Comma) {
+            actions.push(Action::ReloadConfig);
+        }
+
         // Open secrets manager (Cmd+Shift+S)
         if input.consume_key(cmd_shift, egui::Key::S) {
             actions.push(Action::OpenSecretsManager);
         }
 
+        // Force-reload focused app (Cmd+Option+R, #83). Check before plain
+        // Cmd+R so the modifier-rich variant matches first. Plain Cmd+R is
+        // the Run palette; Cmd+Shift+R is RenamePane. Option (alt) is the
+        // next free chord.
+        let cmd_alt = egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::COMMAND
+        };
+        if input.consume_key(cmd_alt, egui::Key::R) {
+            actions.push(Action::ForceReloadApp);
+        }
+
         // Run palette (Cmd+R — plain, not Cmd+Shift+R which is RenamePane)
-        if !input.modifiers.shift && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R) {
+        if !input.modifiers.shift && !input.modifiers.alt
+            && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R)
+        {
             actions.push(Action::ToggleRunPalette);
         }
 

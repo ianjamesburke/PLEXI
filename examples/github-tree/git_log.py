@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 """git_log — pure-function git data layer for commit_graph.py.
 

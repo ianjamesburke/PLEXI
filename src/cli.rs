@@ -126,8 +126,11 @@ pub fn run_command(command_name: &str) -> i32 {
     }
 }
 
-/// Entry point for `plexi secret set <key>` — stores a secret for the current directory.
-pub fn set_secret(key: &str) -> i32 {
+// ── plexi workspace subcommands (issue #322) ──────────────────────────────────
+
+/// `plexi workspace init` — scaffold `.plexi/workspace.toml` (UUID) and
+/// `.plexi/secrets.toml` (router with `fallback = true`) in the current dir.
+pub fn workspace_init() -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -135,10 +138,64 @@ pub fn set_secret(key: &str) -> i32 {
             return 1;
         }
     };
+    match crate::workspace_secrets::init_workspace(&cwd) {
+        Ok(cfg) => {
+            println!("Initialized workspace at {}", cwd.display());
+            println!("  workspace id: {}", cfg.id);
+            println!("  router:       .plexi/secrets.toml (fallback = true)");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: workspace init failed: {e}");
+            1
+        }
+    }
+}
 
-    eprint!("Enter value for {key}: ");
+// ── plexi secret subcommands (workspace-aware, issue #322) ───────────────────
+
+/// Resolve the current workspace and config. Errors out with a helpful
+/// message if the user has not run `plexi workspace init`.
+fn require_workspace(
+) -> Result<(std::path::PathBuf, crate::workspace_secrets::WorkspaceConfig), String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let root = match crate::app_registry::resolve_workspace_root(&cwd) {
+        Some(r) => r,
+        None => {
+            return Err(format!(
+                "no .plexi/ workspace found at or above {}.\n\
+                 Run `plexi workspace init` first.",
+                cwd.display()
+            ));
+        }
+    };
+    let cfg = match crate::workspace_secrets::WorkspaceConfig::load(&root)
+        .map_err(|e| format!("read workspace.toml: {e}"))?
+    {
+        Some(c) => c,
+        None => {
+            return Err(format!(
+                ".plexi/ exists at {} but workspace.toml is missing.\n\
+                 Run `plexi workspace init` to create it.",
+                root.display()
+            ));
+        }
+    };
+    Ok((root, cfg))
+}
+
+/// `plexi secret set <friendly-name>` — prompt for a value (no echo) and
+/// store it under `plexi:<workspace-id>:<friendly-name>`.
+pub fn workspace_secret_set(friendly: &str) -> i32 {
+    let (root, cfg) = match require_workspace() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    eprint!("Enter value for {friendly}: ");
     let _ = io::stderr().flush();
-
     let value = match read_secret_from_stdin() {
         Ok(v) => v,
         Err(e) => {
@@ -146,83 +203,124 @@ pub fn set_secret(key: &str) -> i32 {
             return 1;
         }
     };
-    eprintln!(); // newline after hidden input
-
+    eprintln!();
     if value.is_empty() {
         eprintln!("error: empty value, nothing stored");
         return 1;
     }
-
-    let dir_str = cwd.to_string_lossy();
-    if crate::secrets::store_secret(key, &value, APP_ID, &dir_str) {
-        eprintln!("Stored secret '{key}' for {}", cwd.display());
-        0
-    } else {
-        eprintln!("error: failed to store secret '{key}'");
-        1
-    }
-}
-
-/// Entry point for `plexi secret delete <key>` — deletes a secret for the current directory.
-pub fn delete_secret_cli(key: &str) -> i32 {
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error: could not determine current directory: {e}");
-            return 1;
-        }
-    };
-
-    let dir_str = cwd.to_string_lossy();
-    if crate::secrets::delete_secret(key, APP_ID, &dir_str) {
-        eprintln!("Deleted secret '{key}' for {}", cwd.display());
-        0
-    } else {
-        eprintln!("error: failed to delete secret '{key}' (does it exist?)");
-        1
-    }
-}
-
-/// Entry point for `plexi secret list` — lists secrets for the current directory.
-pub fn list_secrets() -> i32 {
-    let accounts = crate::secrets::list_secrets(APP_ID);
-
-    if accounts.is_empty() {
-        eprintln!("No secrets stored for {APP_ID}.");
-        return 0;
-    }
-
-    // accounts are strings like "plexi-run/dir/key"
-    // Group by directory
-    let prefix = format!("{APP_ID}/");
-    let mut by_dir: HashMap<String, Vec<String>> = HashMap::new();
-
-    for account in &accounts {
-        if let Some(rest) = account.strip_prefix(&prefix) {
-            // rest = "dir/key" — split on last '/' to separate dir from key
-            if let Some(last_slash) = rest.rfind('/') {
-                let dir = &rest[..last_slash];
-                let key = &rest[last_slash + 1..];
-                by_dir
-                    .entry(dir.to_string())
-                    .or_default()
-                    .push(key.to_string());
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{keychain_workspace_name, MacKeychain, SecretStore};
+        let account = keychain_workspace_name(&cfg.id, friendly);
+        let store = MacKeychain::new();
+        match store.set(&account, &value) {
+            Ok(()) => {
+                eprintln!(
+                    "Stored '{friendly}' for workspace {} ({})",
+                    root.display(),
+                    cfg.id
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: keychain write failed: {e}");
+                1
             }
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (root, cfg, friendly, value);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
 
-    let mut dirs: Vec<&String> = by_dir.keys().collect();
-    dirs.sort();
+/// `plexi secret list` — list friendly names defined under the current
+/// workspace's namespace plus user-scope. Names only, never values.
+pub fn workspace_secret_list() -> i32 {
+    let (_root, cfg) = match require_workspace() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{
+            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+        };
+        let store = MacKeychain::new();
+        let workspace_prefix = keychain_workspace_name(&cfg.id, "");
+        let user_prefix = keychain_user_name("");
+        let workspace_entries = store.list_with_prefix(&workspace_prefix);
+        let user_entries = store.list_with_prefix(&user_prefix);
+        if workspace_entries.is_empty() && user_entries.is_empty() {
+            eprintln!("No secrets stored.");
+            return 0;
+        }
+        if !workspace_entries.is_empty() {
+            println!("Workspace ({}):", cfg.id);
+            for a in &workspace_entries {
+                if let Some(name) = a.strip_prefix(&workspace_prefix) {
+                    println!("  {name}");
+                }
+            }
+        }
+        if !user_entries.is_empty() {
+            if !workspace_entries.is_empty() {
+                println!();
+            }
+            println!("User scope:");
+            for a in &user_entries {
+                if let Some(name) = a.strip_prefix(&user_prefix) {
+                    println!("  {name}");
+                }
+            }
+        }
+        0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cfg;
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
 
-    for dir in dirs {
-        println!("{}:", dir);
-        let keys = by_dir.get(dir).unwrap();
-        for key in keys {
-            println!("  {key}");
+/// `plexi secret delete <friendly-name>` — remove the workspace-scoped
+/// Keychain entry and update the index.
+pub fn workspace_secret_delete(friendly: &str) -> i32 {
+    let (_root, cfg) = match require_workspace() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{keychain_workspace_name, MacKeychain, SecretStore};
+        let account = keychain_workspace_name(&cfg.id, friendly);
+        let store = MacKeychain::new();
+        match store.delete(&account) {
+            Ok(()) => {
+                eprintln!("Deleted '{friendly}' from workspace {}", cfg.id);
+                0
+            }
+            Err(e) => {
+                eprintln!("error: keychain delete failed: {e}");
+                1
+            }
         }
     }
-
-    0
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (cfg, friendly);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
 }
 
 // ── plexi app subcommands ─────────────────────────────────────────────────────
@@ -285,7 +383,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\ntype = \"app\"\n\n[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
@@ -312,7 +410,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\ntype = \"app\"\n\n[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
@@ -478,6 +576,246 @@ pub fn app_list() -> i32 {
     0
 }
 
+// ── Top-level package manager subcommands (#308 Phase 2) ──────────────────────
+
+/// `plexi install <source-spec>[@ref]` — clone + place one app into the
+/// channel apps dir. Source spec follows `packs::parse_source_spec`.
+pub fn install_cli(spec: &str) -> i32 {
+    let (source_str, git_ref) = crate::install::split_source_and_ref(spec);
+    let source = match crate::packs::parse_source_spec(&source_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let target_root = crate::app_registry::apps_dir();
+    let cloner = crate::install::GitCloner;
+    match crate::install::install_one(&cloner, &source, git_ref.as_deref(), &target_root) {
+        Ok(outcome) => match outcome.status {
+            crate::install::InstallStatus::Installed(path) => {
+                println!("installed '{}' at {}", outcome.id, path.display());
+                0
+            }
+            crate::install::InstallStatus::AlreadyAtVersion => {
+                println!("already at requested version");
+                0
+            }
+            crate::install::InstallStatus::SkippedOtherVersion {
+                installed,
+                requested,
+            } => {
+                eprintln!(
+                    "'{}' already installed at {installed} (requested {requested}); \
+                     uninstall first or use `plexi update`",
+                    outcome.id
+                );
+                1
+            }
+            crate::install::InstallStatus::Failed(msg) => {
+                eprintln!("error: {msg}");
+                1
+            }
+        },
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi install --pack <path|core>` — apply a whole pack file.
+pub fn install_pack_cli(spec: &str) -> i32 {
+    let pack = if spec == "core" {
+        match crate::packs::Pack::from_toml_str(crate::install::CORE_PACK_TOML) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: bundled core pack invalid: {e}");
+                return 1;
+            }
+        }
+    } else {
+        match crate::packs::Pack::from_path(std::path::Path::new(spec)) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    };
+    let target_root = crate::app_registry::apps_dir();
+    if let Err(e) = std::fs::create_dir_all(&target_root) {
+        eprintln!("error: create apps dir {}: {e}", target_root.display());
+        return 1;
+    }
+    let cloner = crate::install::GitCloner;
+    let outcomes = crate::install::apply_pack(&cloner, &pack, &target_root);
+    let mut any_failed = false;
+    for o in &outcomes {
+        match &o.status {
+            crate::install::InstallStatus::Installed(p) => {
+                println!("  installed  {:30} → {}", o.id, p.display());
+            }
+            crate::install::InstallStatus::AlreadyAtVersion => {
+                println!("  up-to-date {:30}", o.id);
+            }
+            crate::install::InstallStatus::SkippedOtherVersion {
+                installed,
+                requested,
+            } => {
+                println!(
+                    "  skipped    {:30} (installed {installed}, requested {requested})",
+                    o.id
+                );
+            }
+            crate::install::InstallStatus::Failed(msg) => {
+                eprintln!("  FAILED     {:30} {msg}", o.id);
+                any_failed = true;
+            }
+        }
+    }
+    if any_failed {
+        1
+    } else {
+        0
+    }
+}
+
+/// `plexi uninstall <id> [--yes]` — remove a globally installed app after
+/// a confirmation prompt (skipped with `--yes`).
+pub fn uninstall_cli(id: &str, assume_yes: bool) -> i32 {
+    let target_root = crate::app_registry::apps_dir();
+    let dest = target_root.join(id);
+    if !dest.exists() {
+        eprintln!("error: '{id}' is not installed at {}", dest.display());
+        return 1;
+    }
+    if !assume_yes {
+        eprint!("Remove {} ? [y/N]: ", dest.display());
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() {
+            eprintln!("error: failed to read confirmation");
+            return 1;
+        }
+        let trimmed = answer.trim().to_lowercase();
+        if trimmed != "y" && trimmed != "yes" {
+            eprintln!("aborted");
+            return 1;
+        }
+    }
+    match crate::install::uninstall_one(id, &target_root) {
+        Ok(()) => {
+            println!("uninstalled '{id}'");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi update [<id>]` — git-pull one installed app, or all of them.
+/// Apps that aren't git checkouts (e.g. bundled core entries) are skipped
+/// with a debug-level log line and reported but not failed.
+pub fn update_cli(maybe_id: Option<&str>) -> i32 {
+    let target_root = crate::app_registry::apps_dir();
+    let cloner = crate::install::GitCloner;
+    let ids: Vec<String> = match maybe_id {
+        Some(id) => vec![id.to_string()],
+        None => crate::install::installed_versions(&target_root)
+            .into_keys()
+            .collect(),
+    };
+    if ids.is_empty() {
+        println!("no apps installed");
+        return 0;
+    }
+    let mut any_failed = false;
+    for id in ids {
+        match crate::install::update_one(&cloner, &id, &target_root) {
+            Ok(()) => println!("  updated  {id}"),
+            Err(e) if e.contains("not a git checkout") => {
+                println!("  skipped  {id} (not a git checkout)");
+            }
+            Err(e) => {
+                eprintln!("  FAILED   {id}: {e}");
+                any_failed = true;
+            }
+        }
+    }
+    if any_failed {
+        1
+    } else {
+        0
+    }
+}
+
+/// `plexi list` — show installed apps grouped by scope (global vs. workspace).
+pub fn list_cli() -> i32 {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let registry = crate::app_registry::AppRegistry::load(&cwd);
+    let installed = registry.list();
+    if installed.is_empty() {
+        println!("no apps installed");
+        println!("install one with: plexi install <source>[@ref]");
+        return 0;
+    }
+    // Read versions directly from the global apps dir for the source-of-truth
+    // version field — the registry only carries `manifest.version` at load time.
+    let global_versions = crate::install::installed_versions(&crate::app_registry::apps_dir());
+    let workspace_root = crate::app_registry::resolve_workspace_root(&cwd);
+    let mut globals = Vec::new();
+    let mut workspace = Vec::new();
+    for app in installed {
+        let version = global_versions
+            .get(&app.manifest.id)
+            .cloned()
+            .unwrap_or_else(|| app.manifest.version.clone());
+        let row = (app.manifest.id.clone(), app.manifest.name.clone(), version);
+        match app.source {
+            crate::app_registry::RegistrySource::Global => globals.push(row),
+            crate::app_registry::RegistrySource::LocalApp
+            | crate::app_registry::RegistrySource::LocalAgent => workspace.push(row),
+        }
+    }
+    if !globals.is_empty() {
+        println!("Global apps ({})", crate::app_registry::apps_dir().display());
+        for (id, name, version) in &globals {
+            println!("  {:30} {:30} {}", id, name, version);
+        }
+    }
+    if !workspace.is_empty() {
+        if let Some(root) = workspace_root {
+            println!();
+            println!("Workspace apps ({})", root.display());
+            for (id, name, version) in &workspace {
+                println!("  {:30} {:30} {}", id, name, version);
+            }
+        }
+    }
+    0
+}
+
+/// `plexi pack export <path>` — write a `pack.toml` for the current set of
+/// installed apps under the channel apps dir to `path`. See
+/// `crate::install::export_pack` for the source-spec inference rules.
+pub fn pack_export_cli(dest_path: &str) -> i32 {
+    let target_root = crate::app_registry::apps_dir();
+    let dest = std::path::PathBuf::from(dest_path);
+    match crate::install::export_pack(&target_root, &dest) {
+        Ok(n) => {
+            println!("wrote {n} apps → {}", dest.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 /// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]`.
 /// Writes a JSON file to the notify queue dir; the running host polls and ingests it.
 pub fn notify_cli(title: &str, body: &str, level: &str) -> i32 {
@@ -551,4 +889,657 @@ fn read_line_plain() -> io::Result<String> {
         .trim_end_matches('\n')
         .trim_end_matches('\r')
         .to_string())
+}
+
+// ── plexi registry (issue #321) ───────────────────────────────────────────────
+/// `plexi registry watch [<cli>]` — walks the seeded registry and reports,
+/// per-CLI, whether the locally installed CLI matches the registered version
+/// and whether `<cli> --help` shows top-level command names absent from the
+/// registry descriptor (a heuristic signal that the descriptor is stale).
+///
+/// Output is human-readable. JSON output is intentionally deferred — the
+/// release-watcher cron that consumes this is itself a follow-up issue (see
+/// #321 PR description).
+pub mod registry {
+    use crate::cli_registry;
+    use std::collections::BTreeSet;
+    use std::process::Command;
+
+    /// Indirection so the watch path can be tested without spawning real
+    /// processes.
+    pub trait CliInspector {
+        /// `which <name>` — `Some(path)` when the CLI is installed.
+        fn which(&self, name: &str) -> Option<String>;
+        /// Captured stdout of `<name> --version`. `None` when the spawn
+        /// itself fails.
+        fn version(&self, name: &str) -> Option<String>;
+        /// Captured stdout of `<name> --help`. Empty string on failure (we
+        /// downgrade to "couldn't read help" rather than blowing up).
+        fn help(&self, name: &str) -> String;
+    }
+
+    pub struct RealInspector;
+
+    impl CliInspector for RealInspector {
+        fn which(&self, name: &str) -> Option<String> {
+            let out = Command::new("which").arg(name).output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if path.is_empty() { None } else { Some(path) }
+        }
+        fn version(&self, name: &str) -> Option<String> {
+            let out = Command::new(name).arg("--version").output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        fn help(&self, name: &str) -> String {
+            match Command::new(name).arg("--help").output() {
+                Ok(out) => {
+                    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if s.is_empty() {
+                        // Some CLIs (e.g. cargo) print --help to stderr.
+                        s = String::from_utf8_lossy(&out.stderr).into_owned();
+                    }
+                    s
+                }
+                Err(_) => String::new(),
+            }
+        }
+    }
+
+    /// Per-CLI status emitted by the watcher. Variants are exhaustive so
+    /// callers can pivot rendering by case (text now, JSON later).
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum WatchStatus {
+        NotInstalled,
+        UpToDate { version: String },
+        Stale { installed: String, registered: String },
+        DescriptorDrift { added: Vec<String>, removed: Vec<String> },
+        RegistryError(String),
+    }
+
+    pub struct WatchReport {
+        pub cli: String,
+        pub status: WatchStatus,
+    }
+
+    /// Compare a CLI's installed `--version`/`--help` against its registry
+    /// descriptor. Pure given an inspector — drives both the real CLI surface
+    /// and the unit tests.
+    pub fn watch_one<I: CliInspector>(inspector: &I, cli: &str) -> WatchReport {
+        if inspector.which(cli).is_none() {
+            return WatchReport {
+                cli: cli.to_string(),
+                status: WatchStatus::NotInstalled,
+            };
+        }
+        let descriptor = match cli_registry::lookup(cli, None) {
+            Ok(d) => d,
+            Err(e) => {
+                return WatchReport {
+                    cli: cli.to_string(),
+                    status: WatchStatus::RegistryError(e.to_string()),
+                };
+            }
+        };
+        let installed_version_raw = inspector.version(cli).unwrap_or_default();
+        let installed_version = extract_version(&installed_version_raw);
+
+        if !installed_version.is_empty() && installed_version != descriptor.version {
+            return WatchReport {
+                cli: cli.to_string(),
+                status: WatchStatus::Stale {
+                    installed: installed_version,
+                    registered: descriptor.version.clone(),
+                },
+            };
+        }
+
+        // Help-diff heuristic: pull top-level command names from --help, diff
+        // against descriptor.commands[].name. Heuristic because every CLI
+        // formats --help differently; we don't try to be exhaustive.
+        let help = inspector.help(cli);
+        let help_commands = parse_top_level_commands(&help);
+        let descriptor_commands: BTreeSet<String> =
+            descriptor.commands.iter().map(|c| c.name.clone()).collect();
+        let added: Vec<String> = help_commands
+            .difference(&descriptor_commands)
+            .cloned()
+            .collect();
+        let removed: Vec<String> = descriptor_commands
+            .difference(&help_commands)
+            .cloned()
+            .collect();
+
+        if !added.is_empty() || !removed.is_empty() {
+            return WatchReport {
+                cli: cli.to_string(),
+                status: WatchStatus::DescriptorDrift { added, removed },
+            };
+        }
+
+        WatchReport {
+            cli: cli.to_string(),
+            status: WatchStatus::UpToDate {
+                version: descriptor.version.clone(),
+            },
+        }
+    }
+
+    /// CLI entry point. Walks every registered CLI (or just the named one),
+    /// prints a human-readable summary, returns 0 on success — failures here
+    /// are *informational* (a stale descriptor is the watcher's whole point),
+    /// so we don't treat them as exit-1.
+    pub fn watch_cli(only: Option<&str>) -> i32 {
+        let inspector = RealInspector;
+        let clis: Vec<String> = match only {
+            Some(c) => vec![c.to_string()],
+            None => cli_registry::list_clis(),
+        };
+        if clis.is_empty() {
+            println!("registry: no CLIs registered");
+            return 0;
+        }
+        for cli in &clis {
+            let report = watch_one(&inspector, cli);
+            print_report(&report);
+        }
+        0
+    }
+
+    fn print_report(report: &WatchReport) {
+        match &report.status {
+            WatchStatus::NotInstalled => {
+                println!("  {}  (not installed — skipping)", report.cli);
+            }
+            WatchStatus::UpToDate { version } => {
+                println!("  {}  up to date (v{version})", report.cli);
+            }
+            WatchStatus::Stale {
+                installed,
+                registered,
+            } => {
+                println!(
+                    "  [STALE] {}  registry has v{registered}; installed v{installed} \
+                     — descriptor may be outdated",
+                    report.cli
+                );
+            }
+            WatchStatus::DescriptorDrift { added, removed } => {
+                println!("  [DRIFT] {}  --help shows commands not in registry:", report.cli);
+                if !added.is_empty() {
+                    println!("    + {}", added.join(", "));
+                }
+                if !removed.is_empty() {
+                    println!("    - {} (in registry but not in --help)", removed.join(", "));
+                }
+            }
+            WatchStatus::RegistryError(msg) => {
+                println!("  [ERROR] {}  {msg}", report.cli);
+            }
+        }
+    }
+
+    /// Pull the first whitespace-separated token that contains a `.` from a
+    /// `<cli> --version` line. Handles "gh version 2.40.0 ..." and
+    /// "cargo 1.75.0 (...)" without baking in per-CLI parsers.
+    fn extract_version(raw: &str) -> String {
+        for token in raw.split_whitespace() {
+            if token.chars().any(|c| c == '.')
+                && token.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            {
+                // Strip trailing punctuation/build-metadata.
+                let cleaned: String = token
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
+                return cleaned;
+            }
+        }
+        String::new()
+    }
+
+    /// Heuristic: scan `--help` output for indented two-column "name<spaces>
+    /// description" rows under a "Commands:" / "COMMANDS" / "CORE COMMANDS"
+    /// header and treat the first column as a command name. The parser is
+    /// intentionally loose — every CLI formats --help differently, and the
+    /// goal is "good enough drift signal", not exhaustive parsing.
+    fn parse_top_level_commands(help: &str) -> BTreeSet<String> {
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        let mut in_commands = false;
+        for line in help.lines() {
+            let trimmed = line.trim_start();
+            let lower = trimmed.trim_end_matches(':').to_ascii_lowercase();
+            // Recognize any section header whose name *contains* "command" /
+            // "subcommand" as an entry point into command-listing mode. This
+            // covers "Commands:", "COMMANDS", "Core Commands", "Management
+            // Commands", "All Commands" without per-CLI special cases.
+            let is_command_header = !line.starts_with(' ')
+                && !line.starts_with('\t')
+                && (lower.ends_with("command")
+                    || lower.ends_with("commands")
+                    || lower.ends_with("subcommand")
+                    || lower.ends_with("subcommands"));
+            if is_command_header {
+                in_commands = true;
+                continue;
+            }
+            // Any other column-0 header that doesn't mention "command" exits
+            // the section (e.g. OPTIONS, FLAGS, EXAMPLES, ENVIRONMENT).
+            if in_commands && !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty()
+            {
+                in_commands = false;
+                continue;
+            }
+            if in_commands {
+                if trimmed.is_empty() {
+                    // Some CLIs (gh) split commands into labelled subsections
+                    // separated by blanks. Stay in command mode across blanks.
+                    continue;
+                }
+                if let Some(first) = trimmed.split_whitespace().next() {
+                    // Strip the gh-style trailing colon.
+                    let name = first.trim_end_matches(':');
+                    if name.is_empty() || name.starts_with('-') {
+                        continue;
+                    }
+                    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[cfg(test)]
+    pub struct MockInspector {
+        pub installed: bool,
+        pub version_str: String,
+        pub help_str: String,
+    }
+
+    #[cfg(test)]
+    impl CliInspector for MockInspector {
+        fn which(&self, _: &str) -> Option<String> {
+            if self.installed {
+                Some("/usr/bin/mock".to_string())
+            } else {
+                None
+            }
+        }
+        fn version(&self, _: &str) -> Option<String> {
+            if self.installed {
+                Some(self.version_str.clone())
+            } else {
+                None
+            }
+        }
+        fn help(&self, _: &str) -> String {
+            self.help_str.clone()
+        }
+    }
+}
+
+#[cfg(test)]
+mod registry_watch_tests {
+    use super::registry::*;
+
+    #[test]
+    fn watch_reports_not_installed_for_missing_binary() {
+        let inspector = MockInspector {
+            installed: false,
+            version_str: String::new(),
+            help_str: String::new(),
+        };
+        let report = watch_one(&inspector, "gh");
+        assert_eq!(report.status, WatchStatus::NotInstalled);
+    }
+
+    #[test]
+    fn watch_reports_up_to_date_when_versions_match() {
+        // The seeded `gh` registry has version 2.40.0. Match it exactly and
+        // give a --help that lists the same top-level commands as the
+        // descriptor.
+        let inspector = MockInspector {
+            installed: true,
+            version_str: "gh version 2.40.0 (2023-12-14)".into(),
+            help_str: "Usage:  gh <command> <subcommand> [flags]\n\n\
+                       CORE COMMANDS\n  \
+                       auth:        do auth\n  \
+                       pr:          do pr\n  \
+                       issue:       do issue\n  \
+                       repo:        do repo\n  \
+                       release:     do release\n"
+                .into(),
+        };
+        let report = watch_one(&inspector, "gh");
+        assert!(
+            matches!(report.status, WatchStatus::UpToDate { .. }),
+            "expected UpToDate, got {:?}",
+            report.status
+        );
+    }
+
+    #[test]
+    fn watch_reports_stale_when_installed_version_exceeds_registry() {
+        let inspector = MockInspector {
+            installed: true,
+            version_str: "gh version 2.99.0 (2026-01-01)".into(),
+            help_str: String::new(),
+        };
+        let report = watch_one(&inspector, "gh");
+        match report.status {
+            WatchStatus::Stale { installed, registered } => {
+                assert_eq!(installed, "2.99.0");
+                assert_eq!(registered, "2.40.0");
+            }
+            other => panic!("expected Stale, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watch_reports_registry_error_for_unknown_cli() {
+        let inspector = MockInspector {
+            installed: true,
+            version_str: "fake 0.0.1".into(),
+            help_str: String::new(),
+        };
+        let report = watch_one(&inspector, "nonexistent-cli-zzz");
+        assert!(
+            matches!(report.status, WatchStatus::RegistryError(_)),
+            "expected RegistryError, got {:?}",
+            report.status
+        );
+    }
+}
+
+// ── plexi descriptor (issue #188) ─────────────────────────────────────────────
+/// `plexi descriptor probe <cmd> [args...]` — invokes the target with
+/// `--plexi` appended, parses the JSON descriptor, prints a summary. Reference
+/// consumer for the v0 `--plexi` format. Used as the POC for #188; the full
+/// auto-UI renderer ships in #78.
+pub mod descriptor {
+    use crate::plexi_descriptor::{self, PlexiDescriptor};
+    use std::process::Command;
+
+    /// Indirection so the probe path can be tested without spawning real
+    /// processes. The `&[&str] -> Output` shape is the smallest contract that
+    /// covers "what command was run with what args".
+    pub trait DescriptorRunner {
+        fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput>;
+    }
+
+    pub struct RunOutput {
+        pub status_success: bool,
+        pub stdout: String,
+        pub stderr: String,
+    }
+
+    pub struct RealRunner;
+
+    impl DescriptorRunner for RealRunner {
+        fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput> {
+            let out = Command::new(command).args(args).output()?;
+            Ok(RunOutput {
+                status_success: out.status.success(),
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            })
+        }
+    }
+
+    /// Knobs governing the Tier-2 registry fallback. The default behavior
+    /// (Tier 1 first, Tier 2 on failure) matches the issue #321 substrate;
+    /// `--no-registry` disables Tier 2.
+    pub struct ProbeOptions {
+        pub use_registry: bool,
+    }
+
+    impl Default for ProbeOptions {
+        fn default() -> Self {
+            Self { use_registry: true }
+        }
+    }
+
+    /// Run `<command> <args...> --plexi`, parse + summarize. On failure (spawn
+    /// error, non-zero exit, or unparseable JSON), optionally fall through to
+    /// the Tier-2 registry lookup (`cli_registry::lookup`). Returns the
+    /// process exit code suitable for `std::process::exit`.
+    ///
+    /// The CLI surface in `main.rs` calls `probe_with_options` directly so
+    /// it can plumb `--no-registry`; this thin wrapper exists for tests and
+    /// for any future caller that wants the default behavior.
+    #[cfg(test)]
+    pub fn probe<R: DescriptorRunner>(runner: &R, command: &str, args: &[&str]) -> i32 {
+        probe_with_options(runner, command, args, &ProbeOptions::default())
+    }
+
+    pub fn probe_with_options<R: DescriptorRunner>(
+        runner: &R,
+        command: &str,
+        args: &[&str],
+        options: &ProbeOptions,
+    ) -> i32 {
+        let mut full_args: Vec<&str> = args.to_vec();
+        full_args.push("--plexi");
+
+        // Tier 1 — ask the CLI itself.
+        let tier1: Option<PlexiDescriptor> = match runner.run(command, &full_args) {
+            Ok(o) if o.status_success => match plexi_descriptor::parse(&o.stdout) {
+                Ok(d) => Some(d),
+                Err(_) => None, // Fall through to Tier 2 — bad/empty stdout.
+            },
+            Ok(_) => None, // Non-zero exit — `--plexi` not implemented.
+            Err(_) => None, // Spawn failed (e.g. command not on PATH).
+        };
+
+        if let Some(descriptor) = tier1 {
+            print_summary(&descriptor, SummarySource::Native);
+            return 0;
+        }
+
+        // Tier 2 — registry. Only consulted when caller passes args=[],
+        // because registry descriptors describe the bare CLI, not arbitrary
+        // subcommand invocations.
+        if options.use_registry && args.is_empty() {
+            match crate::cli_registry::lookup(command, None) {
+                Ok(descriptor) => {
+                    print_summary(&descriptor, SummarySource::Registry);
+                    return 0;
+                }
+                Err(crate::cli_registry::RegistryError::NotFound { .. }) => {
+                    // Fall through to the no-descriptor message below.
+                }
+                Err(e) => {
+                    eprintln!("error: registry lookup for `{command}` failed:\n  {e}");
+                    return 1;
+                }
+            }
+        }
+
+        eprintln!(
+            "error: no descriptor available for `{command}` — neither --plexi nor registry."
+        );
+        eprintln!(
+            "  Tier 3 (--help crawl) is owned by issue #78 and is not yet wired in."
+        );
+        1
+    }
+
+    /// Where the descriptor printed in the summary came from. Used to surface
+    /// a `(via registry)` indicator when Tier-2 won the resolution.
+    pub enum SummarySource {
+        Native,
+        Registry,
+    }
+
+    fn print_summary(d: &PlexiDescriptor, source: SummarySource) {
+        let icon = d.icon.as_deref().unwrap_or("");
+        let via = match source {
+            SummarySource::Native => "",
+            SummarySource::Registry => "  (via registry)",
+        };
+        println!(
+            "{}{}{} v{}  (descriptor {}){}",
+            icon,
+            if icon.is_empty() { "" } else { " " },
+            d.name,
+            d.version,
+            d.plexi_version,
+            via,
+        );
+        if let Some(desc) = &d.description {
+            println!("  {desc}");
+        }
+        println!("commands: {}", d.commands.len());
+        for cmd in d.commands.iter().take(3) {
+            let hint = cmd
+                .ui_hint
+                .map(|h| format!(" [{h:?}]").to_lowercase())
+                .unwrap_or_default();
+            let extra = if cmd.commands.is_empty() {
+                String::new()
+            } else {
+                format!(" (+{} subcommands)", cmd.commands.len())
+            };
+            let desc = cmd
+                .description
+                .as_deref()
+                .map(|s| format!(" — {s}"))
+                .unwrap_or_default();
+            println!("  - {}{hint}{extra}{desc}", cmd.name);
+        }
+        if d.commands.len() > 3 {
+            println!("  ... and {} more", d.commands.len() - 3);
+        }
+        if let Some(ls) = &d.live_state {
+            println!(
+                "live_state: {:?} {} (poll {} ms, {:?})",
+                ls.source, ls.path, ls.poll_ms, ls.format
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub struct MockRunner {
+        pub stdout: String,
+        pub stderr: String,
+        pub success: bool,
+        /// Last (command, args) the probe handed to the runner. Lets tests
+        /// assert that `--plexi` was appended in the right position.
+        pub captured: std::cell::RefCell<Option<(String, Vec<String>)>>,
+    }
+
+    #[cfg(test)]
+    impl DescriptorRunner for MockRunner {
+        fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput> {
+            *self.captured.borrow_mut() =
+                Some((command.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            Ok(RunOutput {
+                status_success: self.success,
+                stdout: self.stdout.clone(),
+                stderr: self.stderr.clone(),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    use super::descriptor::*;
+    use std::cell::RefCell;
+
+    fn ok_descriptor_runner() -> MockRunner {
+        MockRunner {
+            stdout: r#"{
+                "plexi_version": "0.1",
+                "name": "fake",
+                "version": "0.0.1",
+                "commands": []
+            }"#
+            .into(),
+            stderr: String::new(),
+            success: true,
+            captured: RefCell::new(None),
+        }
+    }
+
+    fn no_plexi_runner() -> MockRunner {
+        // Simulates a CLI that exists on PATH but doesn't implement --plexi
+        // (non-zero exit code). This is the common case for the registry
+        // fallback path.
+        MockRunner {
+            stdout: String::new(),
+            stderr: "unknown flag --plexi".into(),
+            success: false,
+            captured: RefCell::new(None),
+        }
+    }
+
+    #[test]
+    fn probe_invokes_command_with_plexi_flag() {
+        let mock = ok_descriptor_runner();
+        let code = probe(&mock, "fake-cli", &[]);
+        // Tier 1 succeeds; result is the parsed descriptor.
+        assert_eq!(code, 0);
+        let captured = mock.captured.borrow();
+        let (cmd, args) = captured.as_ref().expect("runner was invoked");
+        assert_eq!(cmd, "fake-cli");
+        assert_eq!(args.last().map(|s| s.as_str()), Some("--plexi"));
+    }
+
+    #[test]
+    fn probe_appends_plexi_after_user_args() {
+        let mock = ok_descriptor_runner();
+        let code = probe(&mock, "fake-cli", &["sub", "--verbose"]);
+        assert_eq!(code, 0);
+        let captured = mock.captured.borrow();
+        let (_, args) = captured.as_ref().expect("runner was invoked");
+        assert_eq!(args.as_slice(), &["sub", "--verbose", "--plexi"]);
+    }
+
+    #[test]
+    fn probe_falls_back_to_registry_when_native_plexi_fails() {
+        // `gh` ships in the embedded registry. With a runner that simulates
+        // gh's real behavior (no native --plexi), the probe should fall
+        // through to Tier 2 and resolve the registry descriptor.
+        let mock = no_plexi_runner();
+        let code = probe(&mock, "gh", &[]);
+        assert_eq!(code, 0, "registry fallback should succeed for `gh`");
+    }
+
+    #[test]
+    fn probe_no_registry_flag_skips_fallback() {
+        // Same setup, but registry disabled. Should fail because Tier 1
+        // fell through and Tier 2 is gated off.
+        let mock = no_plexi_runner();
+        let opts = ProbeOptions { use_registry: false };
+        let code = probe_with_options(&mock, "gh", &[], &opts);
+        assert_eq!(code, 1, "without registry, gh has no descriptor");
+    }
+
+    #[test]
+    fn probe_surfaces_nonzero_exit_for_unknown_cli_with_no_registry_entry() {
+        // No native --plexi, no registry hit → non-zero exit.
+        let mock = no_plexi_runner();
+        let code = probe(&mock, "nonexistent-cli-zzz", &[]);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn probe_skips_registry_when_user_args_provided() {
+        // Registry descriptors describe the bare CLI; subcommand invocations
+        // shouldn't get a registry hit even if the CLI is registered.
+        let mock = no_plexi_runner();
+        let code = probe(&mock, "gh", &["pr", "create"]);
+        assert_eq!(
+            code, 1,
+            "registry fallback only applies when no user args are passed"
+        );
+    }
 }

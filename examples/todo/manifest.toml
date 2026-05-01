@@ -1,5 +1,8 @@
+schema_version = 1
+
 [app]
 id = "todo"
+type = "app"
 name = "Todo"
 version = "0.1.0"
 description = "Simple todo list persisted to <workspace_root>/.plexi/todos.json."
