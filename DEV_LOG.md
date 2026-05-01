@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-01 — [CHANGED] `just install` now channel-aware — works from any worktree
+
+Updated both `CLAUDE.md` (root) and `worktrees/alpha/CLAUDE.md` to reflect that `just install` reads `.channel` from CWD and dispatches to `install-alpha`, `install-beta`, or `install-stable` automatically. Removed all guidance that said "use `install-alpha` for alpha, `install` for main" — that distinction no longer exists. The canonical install command is now `just install` from whichever worktree you're in.
+
 ## 2026-05-01 — [CHANGED] Remove PLEXI logo + toolbar label; normalize dot sizes
 
 Removed the "PLEXI" heading and divider from the sidebar top (`sidebar.rs`). Removed the context/pane title label from the toolbar (`overlays.rs` `draw_toolbar`). Toolbar dots and tab dots both set to radius 4.0, spacing 12.0 — a slight bump from the original 3.5/4.0 without oversizing.

@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/app-icon.png" width="100" alt="Plexi icon" />
+  <img src="assets/icon.svg" width="80" alt="Plexi" />
 </p>
 
-<h1 align="center">Plexi</h1>
+<h1 align="center">plexi</h1>
 
-<p align="center">A terminal multiplexer that hosts apps.</p>
+<p align="center">The last app you'll ever need.</p>
 
 <p align="center">
   <img src="media/screenshot-3.png" width="96%" alt="Screenshot" />
@@ -12,19 +12,11 @@
 
 **Mac only** — Linux untested.
 
-One window. Everything else installs into it — terminals, apps, agents — all isolated behind a single protocol (PGAP).
+One window. Terminals, apps, and agents all install into it — each isolated behind a single protocol (PGAP). Split any pane, run any app, talk to any agent. Nothing leaks between workspaces.
 
 ---
 
-## Status
-
-Plexi is in active development on a clean v3.0 rewrite. The v2.x tree (on `alpha`) is frozen and being retired. See [`STATE_OF_PLEXI.md`](STATE_OF_PLEXI.md) for the current architecture and [`docs/specs/releases/plexi-v3.0.md`](docs/specs/releases/plexi-v3.0.md) for the v3 spec.
-
-Stable v1 releases continue to work. If you just want tiling terminals today, use a tagged release.
-
----
-
-## Quick Start
+## Install
 
 ### Download
 
@@ -42,32 +34,40 @@ Needs Rust ([rustup.rs](https://rustup.rs)).
 curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/install.sh | bash
 ```
 
+---
+
 ## Keyboard Shortcuts
 
 | Action | Shortcut |
 |---|---|
+| Command palette | `Cmd+P` |
+| New terminal | `Cmd+N` |
 | Split right | `Cmd+D` |
 | Split below | `Cmd+Shift+D` |
 | Navigate panes | `Cmd+H/J/K/L` |
+| Move pane | `Cmd+Shift+H/J/K/L` |
 | Close pane | `Cmd+W` |
-| New tab | `Cmd+T` |
-| Cycle tabs | `Cmd+]` / `Cmd+[` |
+| New context | `Cmd+T` |
+| Cycle contexts | `Cmd+]` / `Cmd+[` |
 | Zoom pane | `Cmd+Enter` |
+| Open config | `Cmd+,` |
+| Reload config | `Cmd+Shift+,` |
 | Show shortcuts | `Cmd+/` |
 | Quit | `Cmd+Q` |
 
 ---
 
-## What v3 adds
+## What's in v3
 
-- **Pane ADT** — every pane is a `Terminal`, an `App`, or an `Agent`. One clear model.
-- **PGAP v3** — clean protocol over stdin/stdout. Binary side channel via typed pipes for audio PCM, video frames, arbitrary media.
-- **Directory-scoped secrets** — hard invariant: a secret granted in one workspace never leaks to a sibling or child without a brokered prompt.
-- **Host-owned media** — audio record/playback and video playback as first-class protocol commands. Mock devices for headless testing.
-- **Plexi IQ** — agent panes wired from day one.
-- **Five example apps:** `snake`, `wikipedia`, `todo`, `audio-recorder`, `video-player`. Plus `quick-note` as a first-party productivity app.
-
-What v3 explicitly drops: recursion / fractal PGAP, `Pane::Embedded`, portals, OpenIntent-as-v2-spec'd. See [`docs/specs/releases/plexi-v3.0.md`](docs/specs/releases/plexi-v3.0.md) §12.
+- **PGAP** — clean protocol over stdin/stdout. Every pane is a `Terminal`, `App`, or `Agent`. Binary side channel via typed pipes for audio, MIDI, and video.
+- **Bundled Python 3.12** — self-contained runtime; no system Python dependency. Write apps in Python with zero setup.
+- **Workspace-scoped secrets** — a secret granted in one workspace never leaks to a sibling without a brokered prompt.
+- **App package manager** — install, uninstall, update, list with a bundled core pack.
+- **OpenRouter AI backend** — configurable model tiers, real cost tracking. `ai.query()` available in any app.
+- **Command palette** (`Cmd+P`) — jump to any context or named pane instantly.
+- **Navigation stack** — `PushNav` / `PopNav` / `NavBack` for multi-screen app flows.
+- **CoreAudio + CoreMIDI** — typed pipes for audio capture and MIDI I/O on macOS.
+- **Agent Workspace** — spawn Claude Code agents with repo context from inside Plexi.
 
 ---
 

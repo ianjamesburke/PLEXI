@@ -86,7 +86,7 @@ All changes, no matter how small, follow this cycle:
 4. **Wait for user approval** — do not merge unilaterally
 5. **Squash-merge on GitHub** (`gh pr merge <number> --squash`) — this lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch that is checked out by a worktree, and the flag will cause the merge command to fail.
 6. **Sync the local alpha worktree**: `git pull` from inside `worktrees/alpha/` — this is how the local copy catches up to what was just merged on GitHub
-7. **Install and verify**: `just install-alpha` from inside `worktrees/alpha/`
+7. **Install and verify**: `just install` from inside `worktrees/alpha/`
 8. **Remove the feature worktree**: `wtp remove <branch-name>` — this must happen *before* branch deletion
 9. **Delete the remote branch**: `git push origin --delete <branch-name>`
 
@@ -111,7 +111,7 @@ When alpha has stabilised enough for broader testing:
 ```
 git push origin alpha:beta
 ```
-Run from `worktrees/alpha/` (or anywhere with origin access). This fast-forwards beta to alpha's current HEAD. Then `just install-beta` to verify the beta build.
+Run from `worktrees/alpha/` (or anywhere with origin access). This fast-forwards beta to alpha's current HEAD. Then `just install` from `worktrees/beta/` to verify the beta build.
 
 When beta is ready to ship as a release:
 ```
@@ -133,13 +133,11 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 
 ## Build & Install
 
-`just install` runs `cargo bundle --release`, copies the `.app` to `/Applications`, extracts the binary to `/usr/local/bin/plexi`, then runs `lsregister -f <bundle>` and `pbs -update` to refresh macOS Services.
+`just install` reads `.channel` from CWD and dispatches to the correct recipe automatically (`install-alpha`, `install-beta`, or `install-stable`). Run it from any worktree — it always installs the right channel for that directory. The per-channel commands (`just install-alpha`, `just install-beta`) still exist but `just install` is the canonical way.
 
-**After every completed code change, install for the active branch** before reporting the task complete:
-- `alpha` → `just install-alpha` (run from inside `worktrees/alpha/`, not the repo root — the recipe builds from CWD, so running from the wrong directory installs from the wrong branch)
-- `main` → `just install`
+**After every completed code change, run `just install` from the active worktree** before reporting the task complete. The recipe builds from CWD, so run it from the worktree you're in (e.g. `worktrees/alpha/`).
 
-**Never claim a task complete based on an install from a feature worktree.** `just install-alpha` builds from source files in CWD — uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. Installing from a feature worktree is only valid during development iteration. The full done cycle is: commit → push → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just install-alpha` from `worktrees/alpha/`.
+**Never claim a task complete based on an install from a feature worktree.** `just install` builds from source files in CWD — uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. Installing from a feature worktree is only valid during development iteration. The full done cycle is: commit → push → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just install` from `worktrees/alpha/`.
 
 ## Logging
 
