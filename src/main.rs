@@ -50,7 +50,6 @@ mod minimap;
 mod sidebar;
 mod spatial;
 mod style;
-mod text_editor_app;
 mod theme;
 mod tiling;
 mod typed_pipes;
