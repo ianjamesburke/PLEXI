@@ -257,11 +257,13 @@ impl<'a> TerminalView<'a> {
         // while the mouse is held stationary near an edge.
         if state.is_dragged {
             if let Some(pos) = layout.ctx.input(|i| i.pointer.latest_pos()) {
-                let edge_zone = 20.0_f32;
-                let scroll_lines = if pos.y < layout.rect.min.y + edge_zone {
-                    1 // scroll up (show earlier content)
-                } else if pos.y > layout.rect.max.y - edge_zone {
-                    -1 // scroll down (show later content)
+                let cell_height = self.backend.last_content().terminal_size.cell_height as f32;
+                let scroll_lines = if pos.y < layout.rect.min.y {
+                    let overshoot = layout.rect.min.y - pos.y;
+                    ((overshoot / cell_height).ceil() as i32).max(1)
+                } else if pos.y > layout.rect.max.y {
+                    let overshoot = pos.y - layout.rect.max.y;
+                    -(((overshoot / cell_height).ceil() as i32).max(1))
                 } else {
                     0
                 };
@@ -271,7 +273,7 @@ impl<'a> TerminalView<'a> {
                         .process_command(BackendCommand::Scroll(scroll_lines));
                     layout
                         .ctx
-                        .request_repaint_after(Duration::from_millis(50));
+                        .request_repaint_after(Duration::from_millis(150));
                 }
 
                 // Always update selection while dragging, clamping to
@@ -539,7 +541,11 @@ fn process_keyboard_event(
             #[cfg(not(any(target_os = "ios", target_os = "macos")))]
             if modifiers.contains(Modifiers::COMMAND | Modifiers::SHIFT) {
                 let content = backend.selectable_content();
-                InputAction::WriteToClipboard(content)
+                if content.trim().is_empty() {
+                    InputAction::Ignore
+                } else {
+                    InputAction::WriteToClipboard(content)
+                }
             } else {
                 // Hotfix - Send ^C when there's not selection on view.
                 InputAction::BackendCall(BackendCommand::Write([0x3].to_vec()))
@@ -547,7 +553,11 @@ fn process_keyboard_event(
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             {
                 let content = backend.selectable_content();
-                InputAction::WriteToClipboard(content)
+                if content.trim().is_empty() {
+                    InputAction::Ignore
+                } else {
+                    InputAction::WriteToClipboard(content)
+                }
             }
         },
         egui::Event::Key {
