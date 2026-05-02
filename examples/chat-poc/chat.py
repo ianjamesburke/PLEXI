@@ -15,6 +15,7 @@ from plexi_sdk.ui import (
     Scrollable,
     Section,
     Spacer,
+    TextInput,
 )
 
 SYSTEM_PROMPT = (
@@ -37,6 +38,7 @@ class ChatApp(App):
         self._turns: list[Turn] = []
         self._in_flight: bool = False
         self._scroll = Scrollable(child=Column([]))
+        self._input = TextInput("chat-input")
         self._scroll_to_bottom_next: bool = False
         ctx.status_summary("Chat — type a message and press Enter")
         self.emit.info("chat-poc started")
@@ -116,11 +118,9 @@ class ChatApp(App):
         return Column(children, padding=0)
 
     def on_render(self, ctx: RenderContext) -> None:
-        ox, oy, ow = ctx.x, ctx.y, ctx.w
-
         self._scroll.child = self._build_history_column()
 
-        placeholder = (
+        self._input.placeholder = (
             "Waiting for response…"
             if self._in_flight
             else "Type a message… (Enter to send, l/m/h to change tier)"
@@ -130,20 +130,15 @@ class ChatApp(App):
             AppBar(title="Chat"),
             Section("Conversation"),
             self._scroll,
-            Spacer(size=56.0),
             Divider(),
+            self._input,
             Footer(
                 f"Tier: {tier_label}  |  l=Low  m=Medium  h=High  |  j/k=scroll"
             ),
         ]))
 
-        submitted = ctx.text_input(
-            "chat-input",
-            x=ox + 16, y=oy + ctx.h - 48, w=ow - 32,
-            placeholder=placeholder,
-        )
-        if submitted is not None and not self._in_flight:
-            self._send(submitted)
+        if self._input.submitted is not None and not self._in_flight:
+            self._send(self._input.submitted)
 
         self._maybe_scroll_to_bottom()
 

@@ -136,6 +136,10 @@ fn main() -> eframe::Result {
     // `gh`/`rg`/`fd`/any-homebrew-tool-not-found bugs when Plexi is launched
     // as a GUI bundle (which inherits only `/usr/bin:/bin:/usr/sbin:/sbin`).
     crate::shell::install_login_shell_path();
+    // Adopt API keys and other user secrets set in ~/.zshrc / ~/.zsh_secrets.
+    // GUI bundles don't inherit these — OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
+    // etc. are invisible without this call.
+    crate::shell::install_login_shell_env();
 
     // One-shot migration from the v3.0 global-namespace secrets index to the
     // workspace-namespaced layout (issue #322). Idempotent: a no-op once the
