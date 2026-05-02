@@ -924,7 +924,17 @@ impl ProcessApp {
                 | DrawCommand::OpenArtifact { .. }
                 | DrawCommand::PushNav { .. }
                 | DrawCommand::PopNav { .. }
-                | DrawCommand::SetMouseTracking { .. }) => {
+                | DrawCommand::SetMouseTracking { .. }
+                // AI
+                | DrawCommand::AiQuery { .. }
+                | DrawCommand::ExposeTools { .. }
+                | DrawCommand::ToolResult { .. }
+                // Video / image / audio meter
+                | DrawCommand::OpenVideo { .. }
+                | DrawCommand::CloseVideo { .. }
+                | DrawCommand::SetVideoState { .. }
+                | DrawCommand::Image { .. }
+                | DrawCommand::AudioMeter { .. }) => {
                     self.route_command(cmd);
                 }
                 // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
@@ -1132,7 +1142,17 @@ impl App for ProcessApp {
                 | DrawCommand::OpenArtifact { .. }
                 | DrawCommand::PushNav { .. }
                 | DrawCommand::PopNav { .. }
-                | DrawCommand::SetMouseTracking { .. }) => {
+                | DrawCommand::SetMouseTracking { .. }
+                // AI
+                | DrawCommand::AiQuery { .. }
+                | DrawCommand::ExposeTools { .. }
+                | DrawCommand::ToolResult { .. }
+                // Video / image / audio meter
+                | DrawCommand::OpenVideo { .. }
+                | DrawCommand::CloseVideo { .. }
+                | DrawCommand::SetVideoState { .. }
+                | DrawCommand::Image { .. }
+                | DrawCommand::AudioMeter { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),
