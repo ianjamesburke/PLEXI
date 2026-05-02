@@ -38,7 +38,7 @@ class CounterApp(App):
             },
         )
         def handle_increment(args: dict) -> dict:
-            n = int(args.get("n", 1))
+            n = int(args.get("n") or 1)
             self._count += n
             self.emit.info(f"tool: increment by {n} → count={self._count}")
             return {"count": self._count, "delta": n}
