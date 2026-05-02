@@ -40,23 +40,25 @@ bump_patch() {
 
 prepend_changelog() {
     local tree="$1" ver="$2"
-    local today commits tmp
+    local today commits_file tmp
     today=$(date '+%Y-%m-%d')
-    commits=$(git -C "$tree" log origin/main..beta --oneline --no-merges \
-        | sed 's/^[a-f0-9]* /- /')
-    [[ -n "$commits" ]] || commits="- (no new commits since last release)"
+    commits_file=$(mktemp)
+    git -C "$tree" log origin/main..beta --oneline --no-merges \
+        | sed 's/^[a-f0-9]* /- /' > "$commits_file"
+    [[ -s "$commits_file" ]] || echo "- (no new commits since last release)" > "$commits_file"
     tmp=$(mktemp)
-    awk -v ver="$ver" -v dt="$today" -v log="$commits" '
+    awk -v ver="$ver" -v dt="$today" -v cf="$commits_file" '
         /^## \[/ && !inserted {
             print "## [" ver "] — " dt
             print ""
             print "### Changes"
-            print log
+            while ((getline line < cf) > 0) print line
             print ""
             inserted=1
         }
         { print }
     ' "$tree/CHANGELOG.md" > "$tmp"
+    rm -f "$commits_file"
     mv "$tmp" "$tree/CHANGELOG.md"
 }
 
