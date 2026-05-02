@@ -2004,7 +2004,7 @@ impl eframe::App for PlexiApp {
 
         // Shortcuts overlay
         if self.show_shortcuts {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.show_shortcuts = false;
             } else {
                 self.draw_shortcuts_overlay(ctx);
