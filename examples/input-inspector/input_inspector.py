@@ -21,11 +21,12 @@ from plexi_sdk import BODY, CAPTION, PAD
 
 MAX_EVENTS = 200
 MOVE_LOG_MIN_INTERVAL = 1.0 / 30.0
+SCROLL_LOG_MIN_INTERVAL = 1.0 / 20.0
 ROW_H = 26.0
 HEADER_H = 44.0
 FOOTER_H = 32.0
 DIVIDER_X_FRAC = 0.4   # left panel takes 40% of width
-SCROLL_ID = "event-log"
+INPUT_SCROLL_ID = "interactive-zone-scroll"
 
 # Colour-code by event category
 CAT_COLOR = {
@@ -46,18 +47,45 @@ def _ts() -> str:
 class InputInspectorApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         self._events: deque[tuple[str, str, str]] = deque(maxlen=MAX_EVENTS)
-        self._scroll_y = 0.0
+        self._input_scroll_offset = 0.0
         self._mouse_pos: tuple[float, float] = (0.0, 0.0)
         self._held_buttons: list[str] = []
         self._last_key = ""
         self._last_move_log_at = 0.0
+        self._last_scroll_log_at = 0.0
         self._last_move_buttons: tuple[str, ...] = ()
+        self._show_inputs_page = False
+        self._enabled_categories = {
+            "key": True,
+            "click": True,
+            "mouse_down": True,
+            "mouse_up": True,
+            "mouse_move": True,
+            "scroll": True,
+        }
         # Enable continuous mouse-move delivery
         ctx.set_mouse_tracking(True)
 
     # ── event handlers ──────────────────────────────────────────────────────
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+        key_lower = key.lower()
+        if key_lower == "i":
+            self._show_inputs_page = not self._show_inputs_page
+            return
+        if key_lower in ("1", "2", "3", "4", "5", "6"):
+            mapping = {
+                "1": "key",
+                "2": "click",
+                "3": "mouse_down",
+                "4": "mouse_up",
+                "5": "mouse_move",
+                "6": "scroll",
+            }
+            cat = mapping[key_lower]
+            self._enabled_categories[cat] = not self._enabled_categories[cat]
+            return
+
         mod_parts = [k for k, v in mods.items() if v and (k != "shift" or len(key) > 1)]
         label = "+".join(mod_parts + [key]) if mod_parts else key
         self._last_key = label
@@ -89,13 +117,23 @@ class InputInspectorApp(App):
             self._last_move_buttons = button_state
 
     def on_scroll(self, ctx: RenderContext, id: str, offset_y: float) -> None:
-        if id == SCROLL_ID:
-            self._scroll_y = offset_y
-        self._push("scroll", f"scroll  id={id!r}  offset={offset_y:.1f}")
+        if id != INPUT_SCROLL_ID:
+            return
+        delta = offset_y - self._input_scroll_offset
+        self._input_scroll_offset = offset_y
+        if abs(delta) < 0.01:
+            return
+        now = time.monotonic()
+        if now - self._last_scroll_log_at >= SCROLL_LOG_MIN_INTERVAL:
+            direction = "down" if delta > 0 else "up"
+            self._push("scroll", f"scroll  zone=interactive  dir={direction}  delta={delta:.1f}")
+            self._last_scroll_log_at = now
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
     def _push(self, cat: str, msg: str) -> None:
+        if not self._enabled_categories.get(cat, True):
+            return
         if cat in ("mouse_move", "scroll") and self._events and self._events[0][1] == cat:
             self._events[0] = (_ts(), cat, msg)
         else:
@@ -105,6 +143,9 @@ class InputInspectorApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         ctx.clear(BG)
+        if self._show_inputs_page:
+            self._draw_inputs_page(ctx)
+            return
         div_x = ctx.w * DIVIDER_X_FRAC
 
         self._draw_left(ctx, div_x)
@@ -116,6 +157,17 @@ class InputInspectorApp(App):
     def _draw_left(self, ctx: RenderContext, div_x: float) -> None:
         # Panel background
         ctx.rect(0, 0, div_x, ctx.h, fill=SURFACE)
+        # Register scroll capture region in the interactive zone only.
+        zone_y = HEADER_H
+        zone_h = max(1.0, ctx.h - HEADER_H)
+        ctx.begin_scroll(
+            INPUT_SCROLL_ID,
+            0,
+            zone_y,
+            div_x,
+            zone_h,
+            content_height=zone_h + 6000.0,
+        )
 
         # Title
         ctx.text(div_x / 2, 22, "Interactive Zone",
@@ -148,8 +200,9 @@ class InputInspectorApp(App):
         # Instruction hint at bottom
         hint_y = ctx.h - FOOTER_H / 2
         ctx.text(cx, hint_y,
-                 "click · drag · type · scroll",
+                 "click · drag · type · scroll · i:inputs",
                  size=CAPTION, color=MUTED, align="center")
+        ctx.end_scroll()
 
     def _draw_right(self, ctx: RenderContext, div_x: float) -> None:
         panel_w = ctx.w - div_x
@@ -163,22 +216,15 @@ class InputInspectorApp(App):
                  size=CAPTION, color=MUTED, align="right_center")
         ctx.line(div_x, HEADER_H - 1, ctx.w, HEADER_H - 1, color=HIGHLIGHT, width=0.5)
 
+        events = list(self._events)
         viewport_y = HEADER_H
         viewport_h = ctx.h - HEADER_H
-        content_h = max(viewport_h + ROW_H, count * ROW_H)
+        visible_rows = max(1, int(viewport_h / ROW_H))
+        display_count = min(count, visible_rows)
 
-        ctx.begin_scroll(SCROLL_ID, 0, viewport_y, ctx.w, viewport_h,
-                         content_height=content_h)
-
-        first = max(0, int(self._scroll_y / ROW_H))
-        last = min(count, int((self._scroll_y + viewport_h) / ROW_H) + 2)
-        events = list(self._events)
-
-        for i in range(first, last):
-            if i >= len(events):
-                break
+        for i in range(display_count):
             ts, cat, msg = events[i]
-            row_y = viewport_y + i * ROW_H - self._scroll_y
+            row_y = viewport_y + i * ROW_H
             bg = SURFACE if i % 2 == 0 else BG
             ctx.rect(div_x, row_y, panel_w, ROW_H, fill=bg)
 
@@ -196,7 +242,56 @@ class InputInspectorApp(App):
             ctx.line(div_x, row_y + ROW_H - 1, ctx.w, row_y + ROW_H - 1,
                      color=HIGHLIGHT, width=0.5)
 
-        ctx.end_scroll()
+    def _draw_inputs_page(self, ctx: RenderContext) -> None:
+        ctx.rect(0, 0, ctx.w, ctx.h, fill=SURFACE)
+        ctx.text(PAD, 22, "Input Sources", size=BODY, color=FG, align="left_center")
+        ctx.text(
+            ctx.w - PAD,
+            22,
+            "i:back  1-6:toggle",
+            size=CAPTION,
+            color=MUTED,
+            align="right_center",
+            monospace=True,
+        )
+        ctx.line(0, HEADER_H - 1, ctx.w, HEADER_H - 1, color=HIGHLIGHT, width=0.5)
+
+        rows = [
+            ("1", "keyboard", "key"),
+            ("2", "mouse click", "click"),
+            ("3", "mouse down", "mouse_down"),
+            ("4", "mouse up", "mouse_up"),
+            ("5", "mouse move", "mouse_move"),
+            ("6", "scroll events", "scroll"),
+        ]
+        y = HEADER_H + 16.0
+        for key, label, cat in rows:
+            enabled = self._enabled_categories.get(cat, True)
+            status = "ON " if enabled else "OFF"
+            color = ACCENT if enabled else MUTED
+            ctx.text_row(
+                PAD,
+                y,
+                items=[
+                    {"text": f"[{key}]", "color": MUTED, "size": CAPTION, "monospace": True},
+                    {"text": f"{label:<14}", "color": FG, "size": CAPTION, "monospace": True},
+                    {"text": status, "color": color, "size": CAPTION, "monospace": True},
+                ],
+                gap=12.0,
+                align="left_top",
+            )
+            y += 24.0
+
+        y += 18.0
+        ctx.text(
+            PAD,
+            y,
+            "MIDI support is temporarily removed from this inspector.",
+            size=CAPTION,
+            color=MUTED,
+            align="left_top",
+            max_width=ctx.w - PAD * 2,
+        )
 
 
 if __name__ == "__main__":
