@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.23] — 2026-05-02
+
+### Changes
+- fix: robust token parsing and deterministic tool dispatch
+- feat(parallax): MVP editor app + SDK ctx.image() (#548)
+
 ## [3.4.22] — 2026-05-02
 
 ### Changes
