@@ -361,16 +361,20 @@ pub(super) fn render_draw_commands(
                 color,
             } => {
                 let text_color = parse_color(color).unwrap_or(colors.text_primary);
-                let md_rect = egui::Rect::from_min_size(
+                let requested_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, pane_rect.max.y - (origin.y + y)),
                 );
+                let md_rect = requested_rect.intersect(clip);
+                if !md_rect.is_positive() {
+                    continue;
+                }
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(md_rect)
                         .layout(egui::Layout::top_down(egui::Align::LEFT)),
                 );
-                child.set_clip_rect(clip);
+                child.set_clip_rect(md_rect);
                 // Override default text colour so markdown body text matches the
                 // app-specified colour. Header/code styling is handled internally
                 // by egui_commonmark but inherits the base visuals.

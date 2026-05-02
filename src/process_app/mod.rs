@@ -772,6 +772,7 @@ impl ProcessApp {
                 egui::pos2(min_x, min_y),
                 egui::pos2(max_x, max_y),
             );
+            let actual_size = widget_rect.size();
 
             // Stable per-(pane, input-id) widget id so egui's focus and
             // cursor state survive across frames. Without this, every
@@ -791,17 +792,17 @@ impl ProcessApp {
                 let output = if *multiline {
                     let edit = egui::TextEdit::multiline(buffer)
                         .id(widget_id)
-                        .desired_width(*w)
+                        .desired_width(actual_size.x)
                         .hint_text(placeholder.as_str())
                         .frame(true);
                     egui::ScrollArea::vertical()
-                        .max_height(desired_h)
+                        .max_height(actual_size.y)
                         .show(&mut child, |ui| edit.show(ui))
                         .inner
                 } else {
                     let edit = egui::TextEdit::singleline(buffer)
                         .id(widget_id)
-                        .desired_width(*w)
+                        .desired_width(actual_size.x)
                         .hint_text(placeholder.as_str())
                         .frame(true);
                     edit.show(&mut child)

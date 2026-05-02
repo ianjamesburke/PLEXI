@@ -125,6 +125,48 @@ def _wrap_to_width(text: str, avail_px: float, font_size: float,
     return lines
 
 
+def _markdown_measure_lines(text: str, avail_px: float, font_size: float,
+                            max_lines: int) -> int:
+    """Conservative line estimate for host-rendered markdown blocks.
+
+    The real markdown renderer lives in Rust/egui, so the Python SDK cannot
+    know exact glyph metrics or list indentation. This estimator intentionally
+    errs tall: chat bubbles should have a little breathing room, not clip the
+    final markdown row outside the bubble.
+    """
+    if avail_px <= 0 or not text:
+        return 0
+
+    char_w = font_size * 0.55
+    base_chars = max(1, int(avail_px / char_w))
+    total = 0
+
+    for raw in text.splitlines() or [text]:
+        line = raw.strip()
+        if not line:
+            total += 1
+            continue
+
+        # CommonMark lists/code blocks reserve horizontal space for markers
+        # and indentation; reduce the wrapping budget to match that shape.
+        budget = base_chars
+        if line.startswith(("- ", "* ", "+ ")) or line[:3].isdigit():
+            budget = max(1, budget - 4)
+            line = line[2:].strip() if not line[:3].isdigit() else line
+        elif line.startswith(("```", "    ")):
+            budget = max(1, int(budget * 0.82))
+
+        # Markdown headings/lists get extra vertical rhythm in egui_commonmark.
+        block_extra = 1 if line.startswith(("#", "- ", "* ", "+ ", "```")) else 0
+        wrapped = _wrap_to_width(line, avail_px=budget * char_w,
+                                 font_size=font_size, max_lines=max_lines)
+        total += max(1, len(wrapped)) + block_extra
+        if total >= max_lines:
+            return max_lines
+
+    return min(total, max_lines)
+
+
 # ── Component base ─────────────────────────────────────────────────────────
 
 
@@ -950,10 +992,11 @@ class ChatBubble(Component):
     role: str = "assistant"
     max_lines: int = 50
 
-    LINE_LEADING = 4.0
-    DESCENDER_PAD = 3.0
+    LINE_LEADING = 5.0
+    DESCENDER_PAD = 5.0
     BUBBLE_PAD = SPACE_MD
     BUBBLE_MAX_FRAC = 0.78
+    BUBBLE_MIN_W = 38.0
 
     def _font_size(self) -> float:
         return TEXT_BODY
@@ -965,8 +1008,22 @@ class ChatBubble(Component):
             return ("#45171e", RED)
         return (SURFACE, FG)
 
+    def _plain_text(self) -> str:
+        text = self.text
+        for marker in ("**", "__", "`"):
+            text = text.replace(marker, "")
+        return text
+
+    def _natural_text_w(self) -> float:
+        char_w = self._font_size() * 0.55
+        lines = self._plain_text().splitlines() or [self._plain_text()]
+        longest = max((len(line.strip()) for line in lines), default=0)
+        return longest * char_w
+
     def _bubble_w(self, avail_w: float) -> float:
-        return min(avail_w, avail_w * self.BUBBLE_MAX_FRAC)
+        max_w = max(self.BUBBLE_MIN_W, avail_w * self.BUBBLE_MAX_FRAC)
+        natural_w = self._natural_text_w() + 2 * self.BUBBLE_PAD
+        return min(avail_w, max(self.BUBBLE_MIN_W, min(max_w, natural_w)))
 
     def _text_w(self, avail_w: float) -> float:
         return self._bubble_w(avail_w) - 2 * self.BUBBLE_PAD
@@ -979,11 +1036,15 @@ class ChatBubble(Component):
         return self._font_size() + self.LINE_LEADING
 
     def measure(self, avail_w: float) -> float:
-        lines = self._lines(avail_w)
-        if not lines:
+        text_w = self._text_w(avail_w)
+        line_count = _markdown_measure_lines(
+            self.text, text_w, self._font_size(), self.max_lines
+        )
+        if line_count <= 0:
             return 0.0
-        text_h = len(lines) * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
-        return text_h + 2 * self.BUBBLE_PAD
+        text_h = line_count * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
+        # egui_commonmark adds small margins around paragraphs and list blocks.
+        return text_h + 2 * self.BUBBLE_PAD + SPACE_XS
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         bg, fg = self._bubble_colors()

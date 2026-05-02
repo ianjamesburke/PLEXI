@@ -98,6 +98,7 @@ class ChatApp(App):
             "Waiting for response…" if self._in_flight
             else "Type a message… (Shift+Enter for newline)"
         )
+        self._maybe_scroll_to_bottom()
         ctx.render(Column([
             AppBar(title="Chat"),
             self._scroll,
@@ -107,8 +108,6 @@ class ChatApp(App):
 
         if self._input.submitted is not None and not self._in_flight:
             self._send(self._input.submitted)
-
-        self._maybe_scroll_to_bottom()
 
 
 ChatApp().run()
