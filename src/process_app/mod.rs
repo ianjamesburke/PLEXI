@@ -839,6 +839,9 @@ impl ProcessApp {
                 // — `lost_focus` alone fires on tab-out / click-away too.
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submitted.push(id.clone());
+                    // Re-focus so the user can type another message immediately
+                    // without clicking the input again (chat UX).
+                    resp.request_focus();
                 }
             }
         }
@@ -1410,6 +1413,11 @@ impl App for ProcessApp {
                 }
             }
         }
+
+        // Flush events accumulated during this frame (broker AiResponse,
+        // TextSubmitted, ScrollOffset, etc.) so apps receive them without
+        // waiting for the next frame's start-of-ui flush.
+        self.flush_outbound_events();
 
         // Idle polling for async HTTP responses. Apps that need faster repaints
         // (games, animations) emit DrawCommand::ScheduleRender { after_ms } each frame.
