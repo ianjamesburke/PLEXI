@@ -36,8 +36,7 @@ The script's `DESCRIPTOR` dict mirrors the example from the issue body:
 
 1. Read the schema at `schemas/plexi-descriptor-schema.json` (draft-07,
    strict — unknown fields fail loudly).
-2. Read the proposal at `docs/specs/proposals/plexi-descriptor.md` for the
-   field semantics and versioning policy.
+2. Refer to `schemas/plexi-descriptor-schema.json` for field semantics and validation.
 3. Add a `--plexi` branch to your CLI's argument parser. Print the JSON.
    Exit 0.
 4. Verify with `plexi-alpha descriptor probe <your-cli>`.

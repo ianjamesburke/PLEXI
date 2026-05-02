@@ -3,10 +3,8 @@ Always confirm best practices by researching the docs.
 ## North Star
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — vision, target architecture diagram, key invariants. Read first.
-- [`docs/specs/releases/plexi-v3.0.md`](docs/specs/releases/plexi-v3.0.md) — the v3 spec. Single source of truth for the protocol, pane ADT, secrets invariant, media, Plexi IQ, example apps.
-- [`docs/specs/README.md`](docs/specs/README.md) — spec index.
 
-If a doc outside these contradicts them, the doc is wrong. Fix or delete it.
+If a doc outside these contradicts it, the doc is wrong. Fix or delete it.
 
 ## Terminology
 
