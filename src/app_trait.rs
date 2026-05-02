@@ -3,7 +3,6 @@ use crate::theme::Colors;
 /// Context passed to an app during rendering.
 pub struct AppRenderContext<'a> {
     pub colors: &'a Colors,
-    pub is_focused: bool,
 }
 
 /// Commands an app can issue back to the system.

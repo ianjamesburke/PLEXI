@@ -48,6 +48,7 @@ mod workspace_secrets;
 mod shell;
 mod minimap;
 mod sidebar;
+mod sidebar_row;
 mod spatial;
 mod style;
 mod theme;

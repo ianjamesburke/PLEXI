@@ -278,7 +278,7 @@ impl AudioDevice for CoreAudioDevice {
         }
 
         let guard = CpalGuard {
-            stream: Some(SendStream(stream)),
+            stream: Some(SendStream { _stream: stream }),
         };
 
         Ok(CaptureSession {
@@ -297,7 +297,9 @@ impl AudioDevice for CoreAudioDevice {
 /// `Stream::drop` is safe from any thread on the platforms we support; the
 /// trait bound is conservative on the upstream type.
 #[cfg(not(test))]
-struct SendStream(cpal::Stream);
+struct SendStream {
+    _stream: cpal::Stream,
+}
 
 #[cfg(not(test))]
 unsafe impl Send for SendStream {}

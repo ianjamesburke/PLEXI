@@ -1,5 +1,4 @@
 use alacritty_terminal::index::Point as TerminalGridPoint;
-use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};

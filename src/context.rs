@@ -60,14 +60,7 @@ impl Window {
         }
     }
 
-    pub(crate) fn activate_tab_for(&mut self, tile_id: TileId) {
-        let result = self.find_ancestor_tabs(tile_id);
-        if let Some((tabs_id, child_tile)) = result {
-            if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(tabs_id) {
-                tabs.set_active(child_tile);
-            }
-        }
-    }
+
 
     pub(crate) fn find_logical_parent(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;

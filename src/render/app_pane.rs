@@ -17,7 +17,7 @@ const NAV_BAR_HEIGHT: f32 = 32.0;
 /// Horizontal padding inside the nav bar.
 const NAV_BAR_PAD: f32 = style::SPACE_SM;
 
-pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_focused: bool) {
+pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, _is_focused: bool) {
     // Check if we need a nav bar (non-empty stack).
     let nav_title: Option<String> = app_pane
         .runtime
@@ -37,7 +37,7 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
             // Dim background for the nav bar to distinguish it from app content.
             ui.painter().rect_filled(bar_rect, 0.0, colors.bg_active);
 
-            ui.allocate_ui_at_rect(bar_rect, |ui| {
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(NAV_BAR_PAD);
 
@@ -68,12 +68,12 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
             });
 
             // App content fills remaining space.
-            let ctx = AppRenderContext { colors, is_focused };
+            let ctx = AppRenderContext { colors };
             app_pane.runtime.ui(ui, &ctx);
         });
     } else {
         // No nav stack — render app content directly (hot path, no allocation).
-        let ctx = AppRenderContext { colors, is_focused };
+        let ctx = AppRenderContext { colors };
         app_pane.runtime.ui(ui, &ctx);
     }
 }

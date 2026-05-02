@@ -196,9 +196,8 @@ impl AgentPane {
             // The agent finished a turn (or part of one) — clear in-flight on
             // any assistant row. Tool / system rows don't toggle the flag.
             if role == "assistant" {
-                if let AgentBackend::Subprocess(ref mut a) = self.backend {
-                    a.in_flight = false;
-                }
+                let AgentBackend::Subprocess(ref mut a) = self.backend;
+                a.in_flight = false;
                 self.in_flight = false;
                 self.needs_focus = true;
             }

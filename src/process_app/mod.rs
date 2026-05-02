@@ -1333,9 +1333,9 @@ impl App for ProcessApp {
                 let x = pos.x - origin.x;
                 let y = pos.y - origin.y;
                 let primary_up = mouse_response.clicked()
-                    || mouse_response.drag_released();
+                    || mouse_response.drag_stopped();
                 let secondary_up = mouse_response.secondary_clicked()
-                    || mouse_response.drag_released_by(egui::PointerButton::Secondary);
+                    || mouse_response.drag_stopped_by(egui::PointerButton::Secondary);
                 if primary_up {
                     self.send_event(&PlexiEvent::MouseUp {
                         x,

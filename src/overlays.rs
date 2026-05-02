@@ -1324,7 +1324,7 @@ impl PlexiApp {
         let center = ui.max_rect().center();
         let box_rect = egui::Rect::from_center_size(center, egui::vec2(480.0, 560.0));
 
-        ui.allocate_ui_at_rect(box_rect, |ui| {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(box_rect), |ui| {
             egui::Frame::new()
                 .fill(colors.bg_sidebar)
                 .stroke(Stroke::new(1.0, colors.border))

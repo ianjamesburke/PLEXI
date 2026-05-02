@@ -1277,7 +1277,6 @@ pub mod descriptor {
     pub struct RunOutput {
         pub status_success: bool,
         pub stdout: String,
-        pub stderr: String,
     }
 
     pub struct RealRunner;
@@ -1288,7 +1287,6 @@ pub mod descriptor {
             Ok(RunOutput {
                 status_success: out.status.success(),
                 stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
             })
         }
     }
@@ -1428,7 +1426,6 @@ pub mod descriptor {
     #[cfg(test)]
     pub struct MockRunner {
         pub stdout: String,
-        pub stderr: String,
         pub success: bool,
         /// Last (command, args) the probe handed to the runner. Lets tests
         /// assert that `--plexi` was appended in the right position.
@@ -1443,7 +1440,6 @@ pub mod descriptor {
             Ok(RunOutput {
                 status_success: self.success,
                 stdout: self.stdout.clone(),
-                stderr: self.stderr.clone(),
             })
         }
     }
@@ -1463,7 +1459,6 @@ mod descriptor_tests {
                 "commands": []
             }"#
             .into(),
-            stderr: String::new(),
             success: true,
             captured: RefCell::new(None),
         }
@@ -1475,7 +1470,6 @@ mod descriptor_tests {
         // fallback path.
         MockRunner {
             stdout: String::new(),
-            stderr: "unknown flag --plexi".into(),
             success: false,
             captured: RefCell::new(None),
         }

@@ -1,5 +1,34 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-01 — [CHANGED] sidebar_row.rs — zone-based row abstraction (issues #480, #481, #483)
+
+Introduced `src/sidebar_row.rs` with `SidebarRow` / `RowLayout` / `RowResult`. The abstraction enforces:
+- **Row rect from cursor origin, not allocation response.** `SidebarRow::new()` captures `ui.cursor().min` before any allocation. The old code used `allocate_ui_with_layout.response.rect` which returns the bounding box of rendered content — a short name like "ff" gave a 70px-wide row rect, placing the X zone at x=40 instead of x=190.
+- **Zones fixed before any rendering.** `RowLayout` derives `full`, `content`, and `action` rects at construction. Content layout cannot retroactively shift zone boundaries.
+- **Single cursor authority.** `RowLayout::resolve_cursor()` is the only place the cursor is set. It checks `rect_contains_pointer` on the zone rects — zone-based, not pixel-based widget response.
+- **No `interact()` inside layout closures.** All interaction registration happens after content rendering, in a predictable order with no overlapping rects.
+- **Typed `RowResult`.** Callers read `result.primary_clicked`, `result.action_clicked`, etc. — no scattered state mutations inside the render path.
+
+**What NOT to do:** Don't compute the row rect from `allocate_ui_with_layout.response.rect` — it's the content bounding box, not the requested size. Always snapshot `ui.cursor().min` before allocating.
+
+**Breaks if:** X button zone appears at wrong horizontal position (cursor origin not captured before allocation). Or: Grab cursor shows over the X zone (cursor set after the zone check). Or: clicking anywhere on a short-name row registers the X button (rects overlap).
+
+## 2026-05-01 — [FIX] Sidebar cursor/click bugs — three root causes (issues #480, #481, #483)
+
+**Bug #483 (separator line on hover):** `SidePanel::left()` is resizable by default — egui renders a drag handle on the right edge. Fixed by adding `.resizable(false)`.
+
+**Bug #481 (I-beam cursor on context names):** In egui 0.31, `Label` shows I-beam for selectable text regardless of `.sense()`. Added `.selectable(false)` to suppress it. Also fixed the cursor override path below.
+
+**Bug #480 (X button unclickable) + cursor inconsistency:** Two compounding causes:
+1. The early `ui.interact(ui.max_rect(), id, Sense::click_and_drag())` inside `allocate_ui_with_layout` claimed the entire row rect before the X button was registered, making event ownership ambiguous.
+2. `ui.ctx().set_cursor_icon(Grab)` ran *after* the entire closure, unconditionally overriding the X button's `on_hover_cursor(PointingHand)` — users saw Grab everywhere and naturally didn't click.
+
+Fix: removed the early `interact()` from inside the closure. Hover detection now uses `ui.rect_contains_pointer()` (pure query, no event registration). Drag interaction is a separate `ui.interact()` on a sub-rect that geometrically excludes the X button zone (`row_rect` minus last 30px when X is visible). Cursor set once after all rendering with correct priority: X button hovered → PointingHand, else row hovered → Grab.
+
+**What NOT to do:** Don't put `ui.interact(max_rect, ...)` inside `allocate_ui_with_layout` when the layout will also contain interactive widgets — the outer interact claims the whole area and competes with inner widgets for both events and cursor icon.
+
+**Breaks if:** X button shows Grab cursor instead of PointingHand when hovering it. Or: I-beam appears on context name labels. Or: sidebar has a visible resize handle/separator line on the right edge.
+
 ## 2026-05-01 — [CHANGED] `just install` now channel-aware — works from any worktree
 
 Updated both `CLAUDE.md` (root) and `worktrees/alpha/CLAUDE.md` to reflect that `just install` reads `.channel` from CWD and dispatches to `install-alpha`, `install-beta`, or `install-stable` automatically. Removed all guidance that said "use `install-alpha` for alpha, `install` for main" — that distinction no longer exists. The canonical install command is now `just install` from whichever worktree you're in.

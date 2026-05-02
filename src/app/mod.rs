@@ -110,7 +110,7 @@ use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme, TerminalView};
 use egui_tiles::{Tile, Tree};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 pub struct PlexiApp {
@@ -1776,6 +1776,7 @@ impl eframe::App for PlexiApp {
         if self.sidebar_visible {
             egui::SidePanel::left("sidebar")
                 .exact_width(220.0)
+                .resizable(false)
                 .frame(
                     egui::Frame::new()
                         .fill(self.colors.bg_sidebar)
@@ -1966,7 +1967,6 @@ impl eframe::App for PlexiApp {
                                     } else if let Some(a) = pane.as_app_mut() {
                                         let app_ctx = crate::app_trait::AppRenderContext {
                                             colors: &self.colors,
-                                            is_focused: true,
                                         };
                                         a.runtime.ui(ui, &app_ctx);
                                     } else if let Some(agent) = pane.as_agent_mut() {
@@ -2367,22 +2367,8 @@ impl PlexiApp {
 
     }
 
-    pub(crate) fn abbreviate_home_path(path: &Path) -> String {
-        let raw = path.display().to_string();
-        if let Some(home) = dirs::home_dir() {
-            let home_display = home.display().to_string();
-            if raw == home_display {
-                "~".to_string()
-            } else if let Some(rest) = raw.strip_prefix(&(home_display + "/")) {
-                format!("~/{rest}")
-            } else {
-                raw
-            }
-        } else {
-            raw
-        }
-    }
 }
+
 
 // ── Directed pipe helpers (#286) ─────────────────────────────────────────────
 
