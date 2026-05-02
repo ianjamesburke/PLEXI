@@ -312,8 +312,8 @@ fn stream_openrouter(
         generation_id: gen_id,
     });
     if input_tokens.is_none() && output_tokens.is_none() {
-        log::warn!(
-            "openrouter: stream completed without usage metadata (model may omit stream usage)"
+        log::debug!(
+            "openrouter: stream completed without usage metadata; broker will use generation endpoint fallback"
         );
     }
 }

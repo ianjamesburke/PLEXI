@@ -757,13 +757,20 @@ impl ProcessApp {
             visible_this_frame.insert(id.clone());
             let newly_visible = !self.text_input_visible_prev.contains(id.as_str());
 
-            // Use SDK-supplied height (falls back to 24.0 for older SDKs
-            // that don't send `h`). Minimum 24px so a zero-height rect
-            // doesn't collapse.
-            let height = h.max(24.0);
-            let widget_rect = egui::Rect::from_min_size(
-                egui::pos2(origin.x + x, origin.y + y),
-                egui::vec2(*w, height),
+            // Clamp widget geometry to the pane rect so oversized/misaligned
+            // app-provided dimensions cannot render outside the frame.
+            let desired_h = h.max(24.0);
+            let min_x = origin.x + x;
+            let min_y = origin.y + y;
+            let max_x = (min_x + *w).min(pane_rect.max.x);
+            let max_y = (min_y + desired_h).min(pane_rect.max.y);
+            if max_x <= min_x || max_y <= min_y {
+                // Fully outside pane bounds; skip rendering this input.
+                continue;
+            }
+            let widget_rect = egui::Rect::from_min_max(
+                egui::pos2(min_x, min_y),
+                egui::pos2(max_x, max_y),
             );
 
             // Stable per-(pane, input-id) widget id so egui's focus and
@@ -788,7 +795,7 @@ impl ProcessApp {
                         .hint_text(placeholder.as_str())
                         .frame(true);
                     egui::ScrollArea::vertical()
-                        .max_height(height)
+                        .max_height(desired_h)
                         .show(&mut child, |ui| edit.show(ui))
                         .inner
                 } else {

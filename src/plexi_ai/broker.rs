@@ -459,14 +459,42 @@ fn run_turn_and_respond(
         }
     }
 
-    // Cost fetch (OpenRouter only).
-    let cost_usd = last_generation_id.as_deref().and_then(|gen_id| {
+    // OpenRouter canonical metrics fetch (cost + native-token accounting).
+    // Docs: `/generation` returns authoritative usage/cost across providers.
+    let generation_metrics = last_generation_id.as_deref().and_then(|gen_id| {
         if api_key.is_empty() {
             None
         } else {
-            fetch_generation_cost(gen_id, &api_key)
+            fetch_generation_metrics(gen_id, &api_key)
         }
     });
+    if let Some(metrics) = generation_metrics {
+        // Prefer generation-endpoint token counts whenever available.
+        if let Some(prompt) = metrics.prompt_tokens {
+            total_tokens_in = prompt;
+        }
+        if let Some(completion) = metrics.completion_tokens {
+            total_tokens_out = completion;
+        }
+        log::info!(
+            "ai_broker[{}]: usage prompt={} completion={} total={} cached={:?} reasoning={:?} cost_usd={:?}",
+            request.app_id,
+            total_tokens_in,
+            total_tokens_out,
+            total_tokens_in.saturating_add(total_tokens_out),
+            metrics.cached_tokens,
+            metrics.reasoning_tokens,
+            metrics.cost_usd,
+        );
+    } else {
+        log::warn!(
+            "ai_broker[{}]: generation metrics unavailable; using stream token counts prompt={} completion={}",
+            request.app_id,
+            total_tokens_in,
+            total_tokens_out,
+        );
+    }
+    let cost_usd = generation_metrics.and_then(|m| m.cost_usd);
 
     let cost_cents = cost_usd
         .map(|usd| (usd * 100.0).round().max(0.0) as u64)
@@ -531,14 +559,23 @@ fn resolve_ollama_model_tier(tier: &ModelTier, config: &OllamaBackendConfig) -> 
 /// Eventual consistency: if the generation is not yet queryable, OpenRouter
 /// returns 404 or a 200 with `data` absent/null. One retry after 500ms.
 /// If still unavailable, logs a warning and returns `None`.
-pub fn fetch_generation_cost(gen_id: &str, api_key: &str) -> Option<f64> {
+#[derive(Debug, Clone, Copy, Default)]
+struct GenerationMetrics {
+    cost_usd: Option<f64>,
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    cached_tokens: Option<u32>,
+    reasoning_tokens: Option<u32>,
+}
+
+fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMetrics> {
     let url = format!("https://openrouter.ai/api/v1/generation?id={gen_id}");
 
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(30))
         .build();
 
-    let try_fetch = || -> Option<f64> {
+    let try_fetch = || -> Option<GenerationMetrics> {
         let resp = agent
             .get(&url)
             .set("Authorization", &format!("Bearer {api_key}"))
@@ -551,23 +588,42 @@ pub fn fetch_generation_cost(gen_id: &str, api_key: &str) -> Option<f64> {
 
         let body_str = resp.into_string().ok()?;
         let body: serde_json::Value = serde_json::from_str(&body_str).ok()?;
-        let total_cost_str = body["data"]["total_cost"].as_str()?;
-        total_cost_str.parse::<f64>().ok()
+        let data = body.get("data")?;
+        let cost_usd = data["total_cost"]
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok());
+        let prompt_tokens = data["tokens_prompt"].as_u64().map(|n| n as u32);
+        let completion_tokens = data["tokens_completion"].as_u64().map(|n| n as u32);
+        let cached_tokens = data["native_tokens_cached"]
+            .as_u64()
+            .or_else(|| data["tokens_cached"].as_u64())
+            .map(|n| n as u32);
+        let reasoning_tokens = data["native_tokens_reasoning"]
+            .as_u64()
+            .or_else(|| data["reasoning_tokens"].as_u64())
+            .map(|n| n as u32);
+        Some(GenerationMetrics {
+            cost_usd,
+            prompt_tokens,
+            completion_tokens,
+            cached_tokens,
+            reasoning_tokens,
+        })
     };
 
-    if let Some(cost) = try_fetch() {
-        return Some(cost);
+    if let Some(metrics) = try_fetch() {
+        return Some(metrics);
     }
 
     // One retry after 500ms for eventual consistency.
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let cost = try_fetch();
-    if cost.is_none() {
+    let metrics = try_fetch();
+    if metrics.is_none() {
         log::warn!(
-            "ai_broker: generation cost unavailable for gen_id={gen_id} — ledger will show cost_usd=null"
+            "ai_broker: generation metrics unavailable for gen_id={gen_id} — cost/tokens fallback unavailable"
         );
     }
-    cost
+    metrics
 }
 
 #[cfg(test)]
