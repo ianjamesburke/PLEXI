@@ -99,7 +99,7 @@ pub(crate) enum NotificationImageState {
 use crate::agent_workspace::MergeOutcome;
 use crate::app_registry::AppRegistry;
 use crate::config;
-use crate::context::{Context, Window};
+use crate::context::Window;
 use crate::keys::{self, Action};
 use crate::pane::{Pane, TerminalPane};
 use crate::shell;
@@ -121,10 +121,9 @@ pub struct PlexiApp {
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
     pub(crate) ctx: egui::Context,
-    pub(crate) contexts: Vec<Context>,
+    pub(crate) router: crate::workspace_router::WorkspaceRouter,
     pub(crate) windows: Vec<Window>,
     pub(crate) active_window: usize,
-    pub(crate) active_context: usize,
     pub(crate) sidebar_visible: bool,
     pub(crate) show_shortcuts: bool,
     pub(crate) quitting: bool,
@@ -522,10 +521,9 @@ impl PlexiApp {
                     colors,
                     default_font_size,
                     ctx: cc.egui_ctx.clone(),
-                    contexts,
+                    router: crate::workspace_router::WorkspaceRouter::new(contexts, active_ctx),
                     windows,
                     active_window: active,
-                    active_context: active_ctx,
                     sidebar_visible: ws.sidebar_visible,
                     show_shortcuts: false,
                     quitting: false,
@@ -588,11 +586,14 @@ impl PlexiApp {
             colors,
             default_font_size,
             ctx: cc.egui_ctx.clone(),
-            contexts: vec![crate::context::Context {
-                name: "Default".into(),
-                path: path.clone(),
-                context_id: 1,
-            }],
+            router: crate::workspace_router::WorkspaceRouter::new(
+                vec![crate::context::Context {
+                    name: "Default".into(),
+                    path: path.clone(),
+                    context_id: 1,
+                }],
+                0,
+            ),
             windows: vec![Window {
                 name: "Default".into(),
                 path,
@@ -606,7 +607,6 @@ impl PlexiApp {
                 context_id: 1,
             }],
             active_window: 0,
-            active_context: 0,
             sidebar_visible: true,
             show_shortcuts: false,
             quitting: false,
@@ -708,7 +708,7 @@ impl PlexiApp {
                 sender_pane_id: 0,
                 // Host-originated notifications are global (they originate
                 // outside any context) and always visible.
-                source_context: self.active_context,
+                source_context: self.router.active_idx(),
                 scope: crate::app_protocol::NotifyScope::Global,
                 level,
                 title,
@@ -792,14 +792,14 @@ impl PlexiApp {
     // push order (we never reorder the Vec; dismissal removes by id).
     //
     // Visibility: Context-scoped notifications are only visible when
-    // `source_context == self.active_context`. Global notifications are
+    // `source_context == self.router.active_idx()`. Global notifications are
     // always visible. The raw `pending_notifications` Vec stays flat;
     // only the *view* changes with the active workspace.
 
     /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
         matches!(n.scope, crate::app_protocol::NotifyScope::Global)
-            || n.source_context == self.active_context
+            || n.source_context == self.router.active_idx()
     }
 
     /// Return ids of all *visible* notifications (for the current context),
@@ -972,7 +972,7 @@ impl PlexiApp {
         self.pending_notifications.push(PendingNotification {
             notify_id: internal_id.clone(),
             sender_pane_id: 0,
-            source_context: self.active_context,
+            source_context: self.router.active_idx(),
             scope: crate::app_protocol::NotifyScope::Global,
             level,
             title,
@@ -1471,7 +1471,7 @@ impl eframe::App for PlexiApp {
                         pane.as_app().map(|a| a.name.clone())
                     }
                 });
-            let ws = &self.contexts[self.active_context];
+            let ws = self.router.active();
             let ws_id = ws.context_id;
             let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
             let context_label = if window_count > 1 {
@@ -1628,7 +1628,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SwitchContext(n) => {
-                    if n < self.contexts.len() {
+                    if n < self.router.len() {
                         self.switch_workspace(n);
                     }
                 }
@@ -2028,7 +2028,7 @@ impl eframe::App for PlexiApp {
         }
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
-        let ws_id = self.contexts[self.active_context].context_id;
+        let ws_id = self.router.active().context_id;
         let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
         if window_count >= 2 {
             self.draw_minimap_overlay(ctx);

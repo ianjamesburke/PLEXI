@@ -37,7 +37,7 @@ impl PlexiApp {
         });
         ui.add_space(4.0);
 
-        let num_contexts = self.contexts.len();
+        let num_contexts = self.router.len();
         let mut clicked_workspace: Option<usize> = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
@@ -45,7 +45,7 @@ impl PlexiApp {
         let mut drag_released = false;
 
         for i in 0..num_contexts {
-            let is_active = i == self.active_context;
+            let is_active = i == self.router.active_idx();
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
             let any_dragging = self.drag_context.is_some();
@@ -86,7 +86,7 @@ impl PlexiApp {
                             } else {
                                 let new_name = self.rename_buffer.trim().to_string();
                                 if !new_name.is_empty() {
-                                    self.contexts[i].name = new_name;
+                                    self.router.get_mut(i).name = new_name;
                                 }
                                 self.renaming_window = None;
                             }
@@ -124,7 +124,7 @@ impl PlexiApp {
                 if is_active { self.colors.text_primary } else { self.colors.text_dim },
                 if is_dragging { 0.4 } else { 1.0 },
             );
-            let ctx_name = self.contexts[i].name.clone();
+            let ctx_name = self.router.get(i).name.clone();
             let badge_count = if is_active {
                 self.visible_notification_count()
             } else {
@@ -208,15 +208,7 @@ impl PlexiApp {
             if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
                 if dst != src && dst != src + 1 {
                     let effective_dst = if dst > src { dst - 1 } else { dst };
-                    let ctx = self.contexts.remove(src);
-                    self.contexts.insert(effective_dst, ctx);
-                    if self.active_context == src {
-                        self.active_context = effective_dst;
-                    } else if src < self.active_context && effective_dst >= self.active_context {
-                        self.active_context -= 1;
-                    } else if src > self.active_context && effective_dst <= self.active_context {
-                        self.active_context += 1;
-                    }
+                    self.router.reorder_tracking_active(src, effective_dst);
                 }
             }
             self.drag_context = None;
@@ -243,30 +235,19 @@ impl PlexiApp {
             match action {
                 WindowMenuAction::Rename => {
                     self.renaming_window = Some(i);
-                    self.rename_buffer = self.contexts[i].name.clone();
+                    self.rename_buffer = self.router.get(i).name.clone();
                 }
                 WindowMenuAction::MoveToTop => {
-                    let ctx = self.contexts.remove(i);
-                    self.contexts.insert(0, ctx);
-                    if self.active_context == i { self.active_context = 0; }
-                    else if self.active_context < i { self.active_context += 1; }
+                    self.router.move_to_front_tracking_active(i);
                 }
                 WindowMenuAction::MoveUp => {
-                    self.contexts.swap(i, i - 1);
-                    if self.active_context == i { self.active_context = i - 1; }
-                    else if self.active_context == i - 1 { self.active_context = i; }
+                    self.router.swap_tracking_active(i, i - 1);
                 }
                 WindowMenuAction::MoveDown => {
-                    self.contexts.swap(i, i + 1);
-                    if self.active_context == i { self.active_context = i + 1; }
-                    else if self.active_context == i + 1 { self.active_context = i; }
+                    self.router.swap_tracking_active(i, i + 1);
                 }
                 WindowMenuAction::MoveToBottom => {
-                    let last = num_contexts - 1;
-                    let ctx = self.contexts.remove(i);
-                    self.contexts.push(ctx);
-                    if self.active_context == i { self.active_context = last; }
-                    else if self.active_context > i { self.active_context -= 1; }
+                    self.router.move_to_back_tracking_active(i);
                 }
                 WindowMenuAction::Delete => {
                     self.delete_context(i);

@@ -80,7 +80,7 @@ impl PlexiApp {
 
             for (ci, w) in self.windows.iter().enumerate() {
                 let ctx_name = self
-                    .contexts
+                    .router
                     .iter()
                     .find(|c| c.context_id == w.context_id)
                     .map(|c| c.name.clone())
@@ -589,11 +589,10 @@ impl PlexiApp {
     fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
         let target_ctx_id = self.windows[ctx_idx].context_id;
         if let Some(ctx_idx_sidebar) = self
-            .contexts
-            .iter()
+            .router
             .position(|c| c.context_id == target_ctx_id)
         {
-            if ctx_idx_sidebar != self.active_context {
+            if ctx_idx_sidebar != self.router.active_idx() {
                 // switch_workspace → pick_active_context_from_workspace sets
                 // active_window based on context_active_window. We override it
                 // immediately below.
@@ -602,7 +601,7 @@ impl PlexiApp {
         }
         self.active_window = ctx_idx;
         self.windows[ctx_idx].zoomed_pane = None;
-        let ctx_id = self.contexts[self.active_context].context_id;
+        let ctx_id = self.router.active().context_id;
         self.context_active_window.insert(ctx_id, win_id);
         self.record_context_visit(win_id);
 
