@@ -82,8 +82,8 @@ All changes, no matter how small, follow this cycle:
 5. **Squash-merge**: `gh pr merge <number> --squash` — lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch checked out by a worktree.
 6. **Sync alpha**: `git pull` from inside `worktrees/alpha/`
 7. **Close related issue(s)**: `gh issue close <number> --comment "Closed by PR #<pr>"`
-8. **Update DEV_LOG.md** with an appropriate entry
-9. **Bump and install**: `just bump-and-install` from inside `worktrees/alpha/` — kick this off in the background while doing steps 7–8
+8. **Update DEV_LOG.md** and commit the update — this must happen before bump-and-install so alpha stays clean at the end
+9. **Bump and install**: `just bump-and-install` from inside `worktrees/alpha/`
 10. **Remove the feature worktree**: `wtp remove <branch-name>`
 11. **Delete the remote branch**: `git push origin --delete <branch-name>`
 
@@ -106,9 +106,12 @@ When the user says **"ship"** (or "ship it"), run the full post-merge cycle:
 
 1. Squash-merge the PR: `gh pr merge <number> --squash`
 2. `git pull` in `worktrees/alpha/`
-3. Kick off `just bump-and-install` from `worktrees/alpha/` in the background
-4. While it runs: close related issue(s) with `gh issue close <number> --comment "Closed by PR #<pr>"` and update DEV_LOG.md
-5. Wait for install to finish, then remove the worktree and delete the remote branch
+3. Update DEV_LOG.md, close related issue(s) with `gh issue close <number> --comment "Closed by PR #<pr>"`, and commit the DEV_LOG update
+4. `just bump-and-install` from `worktrees/alpha/` — kick off in background
+5. While it runs: remove the feature worktree and delete the remote branch
+6. Wait for install to finish
+
+Alpha must be clean (no uncommitted changes) when the ship cycle ends.
 
 Return a short summary in this exact format:
 ```

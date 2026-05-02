@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] Parallax MVP editor + SDK ctx.image() (PR #548 → alpha)
+Added `examples/parallax/` — primitive video editor driven by Parallax V0 CLI. Timeline with draggable clips, transport controls, I/O trim markers, ffmpeg export via linked terminal, 6 AI-callable tools (set_in_point, set_out_point, move_clip, trim_clip, list_clips, select_clip). Loads real clips from a project folder (ffprobe for duration, background thread) or runs in demo mode. Playback is render-driven (no sleep thread).
+
+SDK: added `RenderContext.image(src, x, y, w, h, fit)` — emits `DrawCommand::Image` JSON. Host routing still logs "not yet implemented"; preview falls back to metadata display until the host renderer lands. The app auto-generates thumbnails via ffmpeg and will display them once Image is implemented.
+
+Design choice: playback loop is render-driven (`schedule_render` from `on_render`) rather than a background thread with `time.sleep`. This avoids jitter and aligns with the host refresh cycle. Clip loading runs in a background thread to avoid blocking `on_init` with sequential ffprobe calls.
+**Breaks if:** parallax app crashes on launch in demo mode, timeline clips don't render, or drag-to-reposition doesn't update clip start times.
+
 ## 2026-05-02 — [CHANGED] Chat bubble UI, TextInput refocus fix, review feedback (PR #544 → alpha)
 Rewrote chat-poc with ChatBubble SDK component: user messages right-aligned (accent bg), assistant left-aligned (surface bg), error left-aligned (red bg). Added `multiline` param to TextInput component; chat now uses 64px multiline input with Shift+Enter for newlines. Removed model tier shortcuts (l/m/h) — hardcoded tier to "low".
 
