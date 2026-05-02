@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.24] — 2026-05-02
+
+### Changes
+- chore: update ship cycle to commit DEV_LOG before bump-and-install
+
 ## [3.4.23] — 2026-05-02
 
 ### Changes
