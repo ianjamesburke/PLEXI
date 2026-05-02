@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [FIX] Use `-i -l` for env probe so .zshrc-defined secrets load (PR #533 → alpha)
+
+PR #531 added `install_login_shell_env()` to adopt user secrets from the login shell, but used `zsh -l -c env` (login-only). Login mode loads `~/.zprofile` / `~/.zlogin` but NOT `~/.zshrc` — the shell is non-interactive. Secrets sourced from `.zshrc` (e.g. `~/.zsh_secrets` containing `OPENROUTER_API_KEY`) were therefore invisible to the GUI bundle, and chat-poc would still hit "ai_query timed out after 35s — check OPENROUTER_API_KEY" on a fresh launch.
+
+**Fix:** `zsh -l -c env` → `zsh -i -l -c env`. Interactive mode forces `.zshrc` to load alongside the login profiles. Verified locally: `env -i /bin/zsh -l -c env | grep OPENROUTER` returned empty; same probe with `-i -l` returns the key.
+
+**What NOT to do:** Don't pivot to a Plexi-managed secrets vault for this. The vault is real (issue #296, v3.9 milestone — `crate::secrets` Keychain-backed scaffolding already exists), but shell-env adoption is the standard macOS GUI bundle fix used by every comparable tool (iTerm, Warp, VS Code, Cursor). Users will always have keys in `.zshrc`; we shouldn't force them into a Plexi UI just to make Plexi work. The two systems coexist — vault for first-class Plexi-only secrets, shell-env adoption for existing user setups.
+
+**Breaks if:** chat-poc still times out at 35s on a fresh GUI launch despite `OPENROUTER_API_KEY` being set in `~/.zshrc`. Or: log shows fewer than ~10 vars in "Adopted N env vars from login shell" line for a typical user shell.
+
 ## 2026-05-02 — [FIX] Tighten freeze watchdog + throttle macOS drag-cursor polling (PR #532 → alpha, closes #396? no — closes #530)
 
 Four silent crashes on alpha during a single ~35-min window today (sessions starting 03:27, 03:53, 03:56, all dying without panic or `.ips`). Triggered by dragging an image into a zoomed Claude Code terminal pane — macOS spinning ball, then SIGKILL. Watchdog (added earlier) was running but never logged `[FREEZE]`: the 3453ms peak stall fell under the 5s threshold.
