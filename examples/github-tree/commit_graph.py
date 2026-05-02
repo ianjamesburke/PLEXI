@@ -33,6 +33,13 @@ HEAD_RING   = 8.0
 LEGEND_H    = 22.0   # height of the legend row
 LEGEND_PAD  = 8.0    # vertical padding around the legend strip
 
+# ── Fetch constants ───────────────────────────────────────────────────────────
+MAX_COMMITS = 100
+
+# ── Badge sizing constants ────────────────────────────────────────────────────
+BADGE_CHAR_W = 0.72
+BADGE_PAD    = 24.0
+
 # ── App modes ─────────────────────────────────────────────────────────────────
 MODE_LOADING = "loading"
 MODE_NO_REPO = "no_repo"
@@ -61,9 +68,6 @@ class CommitGraphApp(App):
         self._head_sha: Optional[str] = None
         self._head_branch: Optional[str] = None
         self._origin_url: Optional[str] = None
-
-        # Week viewport: 0 = current week, 1 = last week, etc.
-        self._week_offset: int = 0
 
         # Parsed graph data
         self._commits: list[dict] = []
@@ -134,7 +138,7 @@ class CommitGraphApp(App):
             self._set_mode(MODE_ERROR)
 
     def _fetch_graph(self) -> None:
-        """Fetch refs + commits + numstats for the current week viewport.
+        """Fetch refs + commits + numstats (most recent MAX_COMMITS commits).
 
         First-ever fetch swaps to MODE_LOADING (full-pane spinner). Every
         subsequent fetch keeps MODE_READY mounted and just sets
@@ -155,29 +159,25 @@ class CommitGraphApp(App):
 
         import time as _time
         now_ts = int(_time.time())
-        end_ts = now_ts - self._week_offset * 7 * 86400
-        start_ts = end_ts - 7 * 86400
 
         try:
             self.emit.debug(
                 f"fetch_graph: repo_root={self._repo_root!r} "
-                f"week_offset={self._week_offset} "
-                f"window=[{start_ts}..{end_ts}] "
-                f"now={now_ts}"
+                f"max_count={MAX_COMMITS}"
             )
             # Refs + commits fetched; numstats can run in parallel but we keep
             # it simple (GIL-safe subprocess calls) — sequential is fine.
             refs = gl.fetch_refs(self._repo_root, now_ts)
             self.emit.debug(f"fetch_graph: fetched {len(refs)} refs")
-            commits = gl.fetch_commits(self._repo_root, start_ts, end_ts)
-            self.emit.debug(f"fetch_graph: fetched {len(commits)} commits in window")
+            commits = gl.fetch_commits(self._repo_root, max_count=MAX_COMMITS)
+            self.emit.debug(f"fetch_graph: fetched {len(commits)} commits")
 
             # Assign lanes and colours
             gl.assign_lanes(commits, refs)
 
             # Fetch numstats (capped at 2000 commits)
             stats = gl.fetch_numstats(
-                self._repo_root, start_ts, end_ts, len(commits)
+                self._repo_root, max_count=MAX_COMMITS, commit_count=len(commits)
             )
             self._stats_unavailable = (
                 len(commits) > gl._MAX_COMMITS_FOR_STATS
@@ -265,24 +265,7 @@ class CommitGraphApp(App):
 
         n = len(self._commits)
 
-        if key in ("[",):
-            self._week_offset += 1
-            self._sel = 0
-            self._graph_scroll_offset = 0.0
-            threading.Thread(target=self._fetch_graph, daemon=True).start()
-        elif key in ("]",):
-            if self._week_offset > 0:
-                self._week_offset -= 1
-                self._sel = 0
-                self._graph_scroll_offset = 0.0
-                threading.Thread(target=self._fetch_graph, daemon=True).start()
-        elif key == "t":
-            if self._week_offset != 0:
-                self._week_offset = 0
-                self._sel = 0
-                self._graph_scroll_offset = 0.0
-                threading.Thread(target=self._fetch_graph, daemon=True).start()
-        elif key in ("j", "down") and n > 0:
+        if key in ("j", "down") and n > 0:
             self._sel = min(self._sel + 1, n - 1)
             self._scroll_to_selection()
             self.emit.schedule_render(after_ms=0)
@@ -376,6 +359,11 @@ class CommitGraphApp(App):
                         return
                 break
 
+    def on_scroll(self, ctx: RenderContext, id: str, offset_y: float) -> None:
+        if id == "commit-graph":
+            self._graph_scroll_offset = offset_y
+            self.emit.schedule_render(after_ms=0)
+
     # ── Render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:  # noqa: C901
@@ -444,23 +432,15 @@ class CommitGraphApp(App):
             Card([Label(l, tone="body") for l in lines]),
             Card([KeyRow("r", "Retry")]),
             Spacer(grow=True),
-            Footer("[ ] week  t today  r refresh  ? help"),
+            Footer("r refresh  ? help"),
         ]))
 
     def _render_ready(self, ctx: RenderContext) -> None:  # noqa: C901
         ctx.clear(BG)
 
-        import time as _time
-        now_ts = int(_time.time())
-        end_ts = now_ts - self._week_offset * 7 * 86400
-        start_ts = end_ts - 7 * 86400
-
         # ── Header ────────────────────────────────────────────────────────────
-        week_str = self._format_week(start_ts, end_ts)
         n = len(self._commits)
-        subtitle = f"{self._repo_name} · {week_str} · {n} commit{'s' if n != 1 else ''}"
-        if self._week_offset > 0:
-            subtitle += f" (–{self._week_offset}w)"
+        subtitle = f"{self._repo_name} · {n} commit{'s' if n != 1 else ''}"
 
         # Measure and render Header manually so we can position the rest below it
         header = AppBar(title="Commit Graph")
@@ -470,8 +450,6 @@ class CommitGraphApp(App):
 
         # ── Footer ────────────────────────────────────────────────────────────
         footer = FooterKeys([
-            (["[", "]"], "week"),
-            ("t", "today"),
             (["j", "k"], "commit"),
             (["h", "l"], "lane"),
             (["g", "G"], "ends"),
@@ -582,11 +560,23 @@ class CommitGraphApp(App):
         swatch_gap  = 6.0
         label_gap   = 18.0
         char_w = TEXT_CAPTION * 0.55
-        max_item_w = swatch_size + swatch_gap + 12 * char_w + label_gap
+        start_y = y
+        MAX_LEGEND_ROWS = 2
+        rows_used = 0
 
+        remaining = len(lanes)
         for lane_idx, color, label in lanes:
+            remaining -= 1
+            item_w = swatch_size + swatch_gap + len(label) * char_w + label_gap
             # Wrap to next row if we'd overflow the legend region
-            if x + max_item_w > right_edge - PAD_X and x > PAD_X:
+            if x + item_w > right_edge - PAD_X and x > PAD_X:
+                rows_used += 1
+                if rows_used >= MAX_LEGEND_ROWS:
+                    # Show overflow count instead of more items
+                    overflow = remaining + 1  # +1 for this item
+                    ctx.text(x, y + (LEGEND_H - TEXT_CAPTION) / 2,
+                             f"+{overflow} more", size=TEXT_CAPTION, color=MUTED)
+                    break
                 y += LEGEND_H
                 x = PAD_X
             # Dim stale lanes
@@ -600,7 +590,7 @@ class CommitGraphApp(App):
                      fill=draw_color, radius=2.0)
             ctx.text(x + swatch_size + swatch_gap, y + (LEGEND_H - TEXT_CAPTION) / 2,
                      label, size=TEXT_CAPTION, color=draw_color)
-            x += max_item_w
+            x += item_w
 
     # ── Graph ─────────────────────────────────────────────────────────────────
 
@@ -620,7 +610,7 @@ class CommitGraphApp(App):
             # Empty viewport message — centred in the graph half, not the pane.
             cx = right_edge / 2
             cy = graph_y + graph_h / 2
-            ctx.text(cx, cy, "No commits this week · press [ to go back",
+            ctx.text(cx, cy, "No commits found",
                      size=TEXT_BODY, color=MUTED, align="center")
             return
 
@@ -655,9 +645,8 @@ class CommitGraphApp(App):
         for i, c in enumerate(self._commits):
             c["y"] = content_top + i * ROW_H + ROW_H / 2
 
-        # Clip all graph draws to the graph region so scrolled-out rows
-        # don't bleed into the legend above or footer below.
-        ctx.push_clip(0.0, graph_y, right_edge, graph_h)
+        # Scroll region — clips draws and handles trackpad/wheel scroll events.
+        ctx.begin_scroll("commit-graph", 0.0, graph_y, right_edge, graph_h, content_height=total_content_h)
 
         # ── Draw edges ────────────────────────────────────────────────────────
         for child_h, parent_h in self._edges:
@@ -753,6 +742,14 @@ class CommitGraphApp(App):
                     badge_x += bw + 4.0
                     ref_badge_w += bw + 4.0
 
+            # ── PR badge ─────────────────────────────────────────────────────
+            if c.get("pr_number"):
+                pr_label = f"#{c['pr_number']}"
+                self._draw_badge(ctx, badge_x, cy_node, pr_label, MUTED)
+                bw = self._approx_badge_w(pr_label)
+                badge_x += bw + 4.0
+                ref_badge_w += bw + 4.0
+
             # ── Subject label ─────────────────────────────────────────────────
             subj_x = label_x + ref_badge_w
             subj_avail = right_edge - subj_x - PAD_X
@@ -762,8 +759,7 @@ class CommitGraphApp(App):
                          c["subject"], size=TEXT_CAPTION, color=subj_color,
                          max_width=subj_avail)
 
-        # End of clipped graph region.
-        ctx.pop_clip()
+        ctx.end_scroll()
 
         # ── Scrollbar indicator ───────────────────────────────────────────────
         if total_content_h > graph_h and graph_h > 0:
@@ -823,11 +819,11 @@ class CommitGraphApp(App):
     def _approx_badge_w(label: str) -> float:
         """Approximate badge pixel width for horizontal flow cursor advance.
 
-        Uses the same heuristic as the old badge() — good enough for spacing
-        between consecutive badges. The host renders each badge precisely.
+        The host renders each badge precisely; this estimate is good enough
+        for spacing between consecutive badges.
         """
-        text_w = len(label) * TEXT_HINT * 0.62
-        return max(32.0, text_w + 8.0 * 2)
+        text_w = len(label) * TEXT_HINT * BADGE_CHAR_W
+        return max(32.0, text_w + BADGE_PAD)
 
     # ── Details panel ─────────────────────────────────────────────────────────
     # Always-visible right-side panel showing the currently-selected commit.
@@ -909,8 +905,6 @@ class CommitGraphApp(App):
 
     def _draw_help(self, ctx: RenderContext) -> None:
         help_rows = [
-            (["[", "]"],  "go to older / newer week"),
-            (["t"],       "jump to today"),
             (["j", "/", "k"], "select next / previous commit"),
             (["h", "/", "l"], "select commit in left / right lane"),
             (["g", "/", "G"], "first / last commit"),
@@ -924,16 +918,6 @@ class CommitGraphApp(App):
         bx = (ctx.w - W) / 2
         by = max(8.0, (ctx.h - card_h) / 2)
         card.render(ctx, bx, by, W, card_h)
-
-    # ── Utilities ─────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _format_week(start_ts: int, end_ts: int) -> str:
-        import datetime
-        start = datetime.datetime.fromtimestamp(start_ts)
-        end   = datetime.datetime.fromtimestamp(end_ts)
-        fmt = "%b %-d"
-        return f"{start.strftime(fmt)} – {end.strftime(fmt)}"
 
 
 if __name__ == "__main__":

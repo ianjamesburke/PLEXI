@@ -22,6 +22,7 @@ from typing import Optional
 #   is_merge   bool  — True when len(parents) >= 2
 #   added      int   — lines added (0 if stats unavailable)
 #   removed    int   — lines removed (0 if stats unavailable)
+#   pr_number  int|None — GitHub PR number parsed from "(#NNN)" in subject, or None
 #   lane       int   — assigned by lane_layout(), -1 before assignment
 #   color      str   — assigned by lane_layout()
 #   y          float — assigned by renderer
@@ -168,21 +169,12 @@ _LOG_FORMAT = (
 )
 
 
-def fetch_commits(repo_root: str, since_ts: int, until_ts: int) -> list[dict]:
-    """Return commits (newest-first) in the [since_ts, until_ts] window.
-
-    `git log` does NOT accept a bare unix timestamp for `--since`/`--until` —
-    it tries to parse the value as a relative/absolute date string and
-    silently returns zero results if it can't. Use the `@<seconds>` form,
-    which is git's documented unix-epoch date syntax (see gitrevisions(7)).
-    """
+def fetch_commits(repo_root: str, max_count: int = 100) -> list[dict]:
+    """Return the most recent `max_count` commits across all branches (newest-first)."""
     rc, out, _ = _run(
-        [
-            "git", "log", "--all", "--date-order",
-            f"--format={_LOG_FORMAT}",
-            f"--since=@{since_ts}",
-            f"--until=@{until_ts}",
-        ],
+        ["git", "log", "--all", "--date-order",
+         f"--format={_LOG_FORMAT}",
+         "-n", str(max_count)],
         cwd=repo_root,
         timeout=20.0,
     )
@@ -211,17 +203,21 @@ def _parse_commits(raw: str) -> list[dict]:
         except ValueError:
             ts = 0
         ref_list = [r.strip() for r in refs_raw.split(",") if r.strip()]
+        subject = subject.strip()
+        pr_match = re.search(r'\s\(#(\d+)\)$', subject)
+        pr_number = int(pr_match.group(1)) if pr_match else None
         commits.append({
             "hash": h,
             "short_hash": h[:7],
             "parents": parents,
             "author": author.strip(),
             "ts": ts,
-            "subject": subject.strip(),
+            "subject": subject,
             "refs": ref_list,
             "is_merge": len(parents) >= 2,
             "added": 0,
             "removed": 0,
+            "pr_number": pr_number,
             "lane": -1,
             "color": "#6c7086",
             "y": 0.0,
@@ -240,9 +236,9 @@ _MAX_COMMITS_FOR_STATS = 2000
 
 
 def fetch_numstats(
-    repo_root: str, since_ts: int, until_ts: int, commit_count: int
+    repo_root: str, max_count: int, commit_count: int
 ) -> dict[str, tuple[int, int]]:
-    """Return {hash: (added, removed)} for each commit in the window.
+    """Return {hash: (added, removed)} for each of the most recent `max_count` commits.
 
     Returns an empty dict if commit_count > _MAX_COMMITS_FOR_STATS (too slow).
     """
@@ -251,10 +247,8 @@ def fetch_numstats(
 
     fmt = f"--format={_NUMSTAT_COMMIT_MARKER}%H"
     rc, out, _ = _run(
-        [
-            "git", "log", "--all", "--numstat", fmt,
-            f"--since=@{since_ts}", f"--until=@{until_ts}",
-        ],
+        ["git", "log", "--all", "--numstat", fmt,
+         "-n", str(max_count)],
         cwd=repo_root,
         timeout=30.0,
     )
