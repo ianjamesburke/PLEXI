@@ -15,6 +15,7 @@ pub(crate) struct WorkspaceRouter {
 
 impl WorkspaceRouter {
     pub(crate) fn new(contexts: Vec<Context>, active: usize) -> Self {
+        debug_assert!(contexts.is_empty() || active < contexts.len(), "Active index out of bounds");
         Self { active, contexts }
     }
 
@@ -59,23 +60,22 @@ impl WorkspaceRouter {
         self.active = self.contexts.len().saturating_sub(1);
     }
 
+    /// Remove at `idx` and adjust the active index to stay coherent.
     pub(crate) fn remove_at(&mut self, idx: usize) -> Context {
-        self.contexts.remove(idx)
-    }
-
-    /// After removing at `removed_idx`, clamp/adjust active to stay valid.
-    pub(crate) fn adjust_active_after_remove(&mut self, removed_idx: usize) {
+        let ctx = self.contexts.remove(idx);
         if self.active >= self.contexts.len() {
             self.active = self.contexts.len().saturating_sub(1);
-        } else if self.active > removed_idx {
+        } else if self.active > idx {
             self.active -= 1;
         }
+        ctx
     }
 
     /// Raw set — used by `switch_workspace` (which handles minimap save/restore)
     /// and post-delete sync when the exact target index is known.
     /// Never call from action handlers; call `PlexiApp::switch_workspace` instead.
     pub(crate) fn set_active(&mut self, idx: usize) {
+        debug_assert!(idx < self.contexts.len(), "Target active index out of bounds");
         self.active = idx;
     }
 

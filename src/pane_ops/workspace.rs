@@ -120,7 +120,6 @@ impl PlexiApp {
         // Remove all windows belonging to this context.
         self.windows.retain(|c| c.context_id != ws_id);
         self.router.remove_at(ws_index);
-        self.router.adjust_active_after_remove(ws_index);
 
         // Pick a valid active window in the new active context.
         self.pick_active_context_from_workspace();
@@ -175,7 +174,6 @@ impl PlexiApp {
         if !ws_has_windows {
             if let Some(ws_idx) = self.router.position(|w| w.context_id == removed_ws_id) {
                 self.router.remove_at(ws_idx);
-                self.router.adjust_active_after_remove(ws_idx);
             }
         }
 
