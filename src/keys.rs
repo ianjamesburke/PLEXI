@@ -125,6 +125,7 @@ pub fn poll_actions(
     app_active: bool,
     keyboard_capture_active: bool,
     notification_modal_open: bool,
+    shortcuts_overlay_open: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
     let cmd_shift = egui::Modifiers {
@@ -279,8 +280,11 @@ pub fn poll_actions(
 
         // App surface: Escape closes app, Tab toggles terminal split.
         // Only intercepted when an app is active so Escape/Tab work normally in plain terminals.
+        // Escape is suppressed when the shortcuts overlay is open — the overlay owns it.
         if app_active {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            if !shortcuts_overlay_open
+                && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            {
                 actions.push(Action::CloseApp);
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {

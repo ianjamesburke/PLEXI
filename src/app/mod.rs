@@ -1509,7 +1509,7 @@ impl eframe::App for PlexiApp {
 
         // Handle keyboard shortcuts
         let modal_open = self.show_notification_modal;
-        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active, modal_open) {
+        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
