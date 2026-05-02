@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] WorkspaceRouter — compile-enforced context switching (PR #510 → alpha)
+
+Extracted `active_context` and `contexts` into `src/workspace_router.rs` with private fields. Direct `active_context = n` is now a compile error outside that module. `PlexiApp::switch_workspace` remains the only navigation path (saves/restores minimap). Structural ops (create/delete/reorder) are atomic router methods that maintain active-index coherence internally. `remove_at` adjusts active automatically; `debug_assert!` guards `new` and `set_active`. Closes #380.
+
+**Breaks if:** Context switching via sidebar, ⌘1-9, or command palette doesn't save/restore minimap visibility per context.
+
 ## 2026-05-02 — [CHANGED] v3.5 batch — plexi_iq deletion, config migration, egui-term view fixes (PRs #502–504 → alpha)
 
 Three parallel sub-agent PRs:
