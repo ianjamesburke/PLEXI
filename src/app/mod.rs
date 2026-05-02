@@ -126,6 +126,7 @@ pub struct PlexiApp {
     pub(crate) active_window: usize,
     pub(crate) sidebar_visible: bool,
     pub(crate) show_shortcuts: bool,
+    pub(crate) show_changelog: bool,
     pub(crate) quitting: bool,
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
@@ -526,6 +527,7 @@ impl PlexiApp {
                     active_window: active,
                     sidebar_visible: ws.sidebar_visible,
                     show_shortcuts: false,
+                    show_changelog: false,
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
@@ -609,6 +611,7 @@ impl PlexiApp {
             active_window: 0,
             sidebar_visible: true,
             show_shortcuts: false,
+            show_changelog: false,
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
@@ -2024,6 +2027,15 @@ impl eframe::App for PlexiApp {
                 self.show_shortcuts = false;
             } else {
                 self.draw_shortcuts_overlay(ctx);
+            }
+        }
+
+        // Changelog overlay
+        if self.show_changelog {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.show_changelog = false;
+            } else {
+                self.draw_changelog_overlay(ctx);
             }
         }
 

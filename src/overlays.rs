@@ -54,11 +54,21 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
-                ui.label(
-                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .size(10.0)
-                        .color(self.colors.text_dim),
-                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .size(10.0)
+                                .color(self.colors.text_dim),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Changelog")
+                    .clicked()
+                {
+                    self.show_changelog = !self.show_changelog;
+                }
 
                 let notif_count = self.visible_notification_count();
                 if notif_count > 0 {
@@ -204,6 +214,93 @@ impl PlexiApp {
                                     ui.end_row();
                                 });
                         });
+                    });
+            });
+    }
+
+    pub(crate) fn draw_changelog_overlay(&mut self, ctx: &egui::Context) {
+        const CHANGELOG: &str = include_str!("../CHANGELOG.md");
+
+        egui::Area::new(egui::Id::new("changelog_overlay"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(24, 20))
+                    .show(ui, |ui| {
+                        ui.set_width(560.0);
+                        ui.set_max_height(480.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Changelog")
+                                    .size(13.0)
+                                    .color(self.colors.text_primary)
+                                    .strong(),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("✕")
+                                                .size(11.0)
+                                                .color(self.colors.text_dim),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    self.show_changelog = false;
+                                }
+                            });
+                        });
+
+                        ui.add_space(8.0);
+
+                        egui::ScrollArea::vertical()
+                            .max_height(420.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.set_width(512.0);
+                                for line in CHANGELOG.lines() {
+                                    let clean = |s: &str| s.replace("**", "");
+                                    if line.starts_with("## ") {
+                                        ui.add_space(6.0);
+                                        ui.label(
+                                            RichText::new(clean(&line[3..]))
+                                                .size(style::TEXT_BODY)
+                                                .color(self.colors.text_primary)
+                                                .strong(),
+                                        );
+                                        ui.add_space(2.0);
+                                    } else if line.starts_with("### ") {
+                                        ui.label(
+                                            RichText::new(clean(&line[4..]))
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim)
+                                                .strong(),
+                                        );
+                                    } else if line.starts_with("- ") || line.starts_with("* ") {
+                                        ui.label(
+                                            RichText::new(clean(line))
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_primary),
+                                        );
+                                    } else if line.starts_with('#') || line.trim().is_empty() {
+                                        // skip top-level # heading and blank lines
+                                    } else {
+                                        ui.label(
+                                            RichText::new(clean(line))
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        );
+                                    }
+                                }
+                            });
                     });
             });
     }
