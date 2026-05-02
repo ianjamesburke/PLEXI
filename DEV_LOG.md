@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] Chat bubble UI, TextInput refocus fix, review feedback (PR #544 → alpha)
+Rewrote chat-poc with ChatBubble SDK component: user messages right-aligned (accent bg), assistant left-aligned (surface bg), error left-aligned (red bg). Added `multiline` param to TextInput component; chat now uses 64px multiline input with Shift+Enter for newlines. Removed model tier shortcuts (l/m/h) — hardcoded tier to "low".
+
+Fixed TextInput permanently losing focus when pane is unfocused: the pane-level `Sense::click_and_drag()` interact widget was stealing pointer events from the TextEdit. Added explicit click-to-refocus that detects primary-button press inside TextInput rects.
+
+Also addressed review feedback: `render_text_row` now uses `painter().galley()` with pre-measured galley instead of double-layout via `painter().text()`, default alignment changed to `LEFT_TOP` for consistency. `update_pane_context_snapshot` now skips the rebuild when total pane count hasn't changed.
+**Breaks if:** chat-poc bubbles don't render (no colored backgrounds), TextInput still loses focus after clicking another pane and clicking back, or Shift+Enter doesn't insert newlines in the chat input.
+
 ## 2026-05-02 — [CHANGED] v3.7 context injection + TextInput fixes + list_view rename
 Context injection (#396): AI broker now receives all open panes via a global snapshot updated each frame, not just the requesting pane. Implemented as a `PANE_SNAPSHOT` singleton in `broker.rs` written by `PlexiApp::update()` each frame, read by routing on `AiQuery` dispatch.
 
