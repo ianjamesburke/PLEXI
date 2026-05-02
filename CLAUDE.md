@@ -117,9 +117,12 @@ Return a short summary in this exact format:
 - Closed: Issue #<n> — <title>
 - DEV_LOG: updated
 - Bumped: <old> → <new>, installed
+- To test: <1–3 concrete steps — what to open, what to do, what to expect>
 
 [COMPLETE]
 ```
+
+The "To test" line must be specific enough that the user can verify the feature without reading the PR. Reference the example app if one ships with the feature. Bad: "run the app and check it works." Good: "open `tool-poc` in one pane and `chat-poc` in another — ask 'increment the counter 3 times', counter should reach 3."
 
 ### alpha → beta → main (channel promotion)
 
