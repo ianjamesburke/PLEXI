@@ -22,7 +22,7 @@ const HEARTBEAT_EVERY_N_SAMPLES: u64 = 30;
 /// UI thread is considered frozen after this many seconds without a frame tick.
 /// Lowered from 5s — real stalls of 3–4s (enough for the macOS spinning ball)
 /// were silently missed by the old threshold.
-const FREEZE_THRESHOLD_SECS: u64 = 1;
+const FREEZE_THRESHOLD_SECS: u64 = 2;
 
 /// Return the path of the current log file.
 pub fn log_path() -> PathBuf {
