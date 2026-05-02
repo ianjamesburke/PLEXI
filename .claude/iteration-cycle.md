@@ -64,7 +64,6 @@ Before dispatching any sub-agent, the orchestrator runs a stale-state audit on t
 This audit takes under a minute. Skipping it wastes a sub-agent run on shipped work (happened with #312/#314/#317 during v3.1 kickoff) or sends a sub-agent into work whose substrate doesn't exist (happened with #278 in the v3.4 batch — the AvfVideoDecoder stub the issue referenced was on an abandoned branch, not alpha).
 
 ## Sub-agent dispatch (orchestrator workflow)
-See `docs/specs/process/release-orchestration.md` for the full spec.
 
 Per release:
 1. Decompose each milestone issue into a brief — file paths, defining test, SDK change, smoke invariant, **human-verification steps**.
@@ -73,7 +72,7 @@ Per release:
 4. Review diffs (not summaries) when agents report done.
 5. Pull worktree, run smoke test, **squash-merge** to `alpha` if clean. Use `gh pr merge <N> --squash --delete-branch --body "$(gh pr view <N> --json body -q .body)"` so the squash commit body keeps the full PR description. Never `--merge` or `--rebase`. **Issue auto-close does NOT fire on alpha merges** because `main` is the default branch — every alpha PR's linked issue must be closed manually with `gh issue close <N> --comment "..."`. This stays true until v3.x ships and alpha gets promoted to main.
 6. **Orchestrator runs `just install-alpha` immediately after merge**, then pings user with the human-verification checklist. Green → next dispatch. Red → `git revert <squash-sha>` on alpha + new dispatch with diagnosis.
-7. After all PRs in milestone merged + verified: run release-level checklist from `docs/specs/releases/v3.x.md`.
+7. After all PRs in milestone merged + verified: confirm with user before promoting.
 8. After alpha contains v3.5 (or whenever user calls it): batch-promote alpha → beta, soak, → main.
 
 ## Three-strike rule

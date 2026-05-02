@@ -14,7 +14,6 @@ use std::convert::TryFrom;
 // ── Capability enum ───────────────────────────────────────────────────────────
 
 /// v3 capability set. Matches the strings in manifest.toml / Init handshake.
-/// Nine spec capabilities (`docs/specs/releases/plexi-v3.0.md §4`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {

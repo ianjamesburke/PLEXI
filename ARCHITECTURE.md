@@ -2,7 +2,6 @@
 
 > Timeless reference for what Plexi is and how it's structured.
 > For current build status and progress, see `DEV_LOG.md` and `git log`.
-> For the v3.0 spec (protocol, pane ADT, capabilities, example apps), see [`docs/specs/releases/plexi-v3.0.md`](docs/specs/releases/plexi-v3.0.md).
 
 ---
 
@@ -133,7 +132,7 @@ Newline-delimited JSON over a child process's stdin/stdout. **Host → app:** `P
 
 ### Capability model
 
-Every app declares capabilities in `manifest.toml`. At runtime, any command that needs one is checked against `permissions.json`. Undeclared capabilities queue a modal prompt; decisions persist. Full list: [`docs/specs/releases/plexi-v3.0.md §4`](docs/specs/releases/plexi-v3.0.md).
+Every app declares capabilities in manifest.toml. At runtime, any command that needs one is checked against permissions.jsonl. Undeclared capabilities queue a modal prompt; decisions persist.
 
 ### Directory-scoped secrets (hard invariant)
 
@@ -141,7 +140,7 @@ Secrets are keyed by `(workspace_root, secret_key)` in Keychain. A secret grante
 
 ### HostModel (no egui)
 
-All host business logic lives in `HostModel` — a pure state machine with zero egui dependency. Commands in, effects out. The renderer (egui in prod, tiny-skia headless in CI) reads state and paints; it never owns business logic. Full spec: [`docs/specs/subsystems/host-architecture.md`](docs/specs/subsystems/host-architecture.md).
+All host business logic lives in `HostModel` — a pure state machine with zero egui dependency. Commands in, effects out. The renderer (egui in prod, tiny-skia headless in CI) reads state and paints; it never owns business logic.
 
 ### Event bus
 
