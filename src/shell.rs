@@ -79,7 +79,7 @@ pub fn install_login_shell_env() {
     ];
 
     let Some(vars) = probe_login_shell_env() else { return };
-    let mut count = 0;
+    let mut adopted_keys: Vec<&str> = Vec::new();
     for (k, v) in &vars {
         if SKIP.contains(&k.as_str()) {
             continue;
@@ -87,11 +87,15 @@ pub fn install_login_shell_env() {
         if std::env::var(k).is_err() {
             // SAFETY: called once, early in main(), before any threads read env.
             unsafe { std::env::set_var(k, v); }
-            count += 1;
+            adopted_keys.push(k.as_str());
         }
     }
-    if count > 0 {
-        log::info!("Adopted {count} env vars from login shell");
+    if !adopted_keys.is_empty() {
+        log::info!(
+            "Adopted {} env vars from login shell: [{}]",
+            adopted_keys.len(),
+            adopted_keys.join(", ")
+        );
     }
 }
 
