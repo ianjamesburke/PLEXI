@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "input-inspector"
+type = "app"
+name = "Input Inspector"
+version = "0.1.0"
+description = "POC for #331 — live event log showing all keyboard, mouse, and scroll events."
+entry = "input_inspector.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.6 }
