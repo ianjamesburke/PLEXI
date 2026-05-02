@@ -2,6 +2,24 @@
 
 Newest releases appear first.
 
+## [3.4.3] — 2026-05-02
+
+### Changes
+- fix(install): rename binary in bundle for non-stable channels to match config detection
+- feat(commit-graph): flat N-commit load, host scroll, badge overflow fix, PR badges (#500)
+- feat(logging): heartbeat watchdog + workspace autosave on structural changes (#499)
+- fix(ui): hide sidebar separator line — panel is not resizable (#483) (#495)
+- fix(sidebar): remove hover sense from context label — eliminates I-beam cursor (#481) (#494)
+- fix(ui): Escape dismisses shortcuts overlay (#484) (#496)
+- fix(ui): align shortcuts overlay — use key_combo_list for HJKL rows, add min_col_width (#482) (#498)
+- feat(toolbar): show app version label next to ? button (closes #485) (#497)
+- chore: sync alpha version to 3.4.2
+- refactor(promote): bump+changelog on alpha before push; aggregate all entries since last tag for GitHub release
+- fix: awk newline-in-variable error in prepend_changelog — use temp file + getline
+- fix: bash 3.2 compat in promote.sh — replace ${var,,} with explicit y/Y check
+- feat: channel promotion pipeline (just promote)
+- refactor(sidebar): zone-based row abstraction with single cursor authority
+
 ## [3.4.1] — 2026-05-01
 
 ### Changes
