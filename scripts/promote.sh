@@ -72,7 +72,7 @@ if [[ -z "$to" ]]; then
         *) die "not on alpha or beta (on '$current_branch') — pass target explicitly: promote.sh beta|main" ;;
     esac
     read -r -p "Promote $current_branch → $to? [y/N] " confirm
-    [[ "${confirm,,}" == "y" ]] || { echo "Aborted."; exit 0; }
+    [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 0; }
 fi
 
 case "$to" in
