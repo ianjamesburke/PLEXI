@@ -127,7 +127,7 @@ impl PlexiApp {
                         ..
                     } => {
                         let ws_idx = self.windows.get(ctx_idx)
-                            .and_then(|w| self.contexts.iter().position(|c| c.context_id == w.context_id))
+                            .and_then(|w| self.router.position(|c| c.context_id == w.context_id))
                             .unwrap_or(0);
                         deferred.push(AppCommand::ShowNotification {
                             notify_id,

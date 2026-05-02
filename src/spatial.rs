@@ -83,7 +83,7 @@ impl PlexiApp {
     pub(crate) fn navigate_page(&mut self, dx: i32, dy: i32) {
         let cur_x = self.windows[self.active_window].grid_x;
         let cur_y = self.windows[self.active_window].grid_y;
-        let ws_id = self.contexts[self.active_context].context_id;
+        let ws_id = self.router.active().context_id;
 
         let pages: Vec<(u32, u32, u64)> = self
             .windows
@@ -149,7 +149,7 @@ impl PlexiApp {
         removed_x: u32,
         removed_y: u32,
     ) -> usize {
-        let ws_id = self.contexts[self.active_context].context_id;
+        let ws_id = self.router.active().context_id;
         self.windows
             .iter()
             .enumerate()

@@ -21,8 +21,8 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let ctx_name = format!("Context {}", self.contexts.len() + 1);
-        self.contexts.push(crate::context::Context {
+        let ctx_name = format!("Context {}", self.router.len() + 1);
+        self.router.push(crate::context::Context {
             name: ctx_name,
             path: home.clone(),
             context_id: ctx_id,
@@ -39,21 +39,21 @@ impl PlexiApp {
             window_id: win_id,
             context_id: ctx_id,
         });
-        self.active_context = self.contexts.len() - 1;
+        self.router.activate_last();
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
 
         // Auto-open inline rename so the user can name the context immediately.
-        let new_ctx_idx = self.contexts.len() - 1;
+        let new_ctx_idx = self.router.len() - 1;
         self.renaming_window = Some(new_ctx_idx);
-        self.rename_buffer = self.contexts[new_ctx_idx].name.clone();
+        self.rename_buffer = self.router.get(new_ctx_idx).name.clone();
     }
 
     /// Create a new page immediately to the right of the active page on the
     /// same grid row, then switch to it.
     pub(crate) fn new_page_right(&mut self) {
-        let ws_id = self.contexts[self.active_context].context_id;
+        let ws_id = self.router.active().context_id;
         let active_y = self.windows[self.active_window].grid_y;
         let max_x = self.windows.iter()
             .filter(|c| c.context_id == ws_id && c.grid_y == active_y)
@@ -76,7 +76,7 @@ impl PlexiApp {
             return;
         };
         let name = String::new();
-        let ctx_id = self.contexts[self.active_context].context_id;
+        let ctx_id = self.router.active().context_id;
         let win_id = self.next_window_id;
         self.next_window_id += 1;
         self.windows.push(Window {
@@ -112,25 +112,19 @@ impl PlexiApp {
     }
 
     pub(crate) fn delete_context(&mut self, ws_index: usize) {
-        if self.contexts.len() <= 1 {
+        if self.router.len() <= 1 {
             return;
         }
-        let ws_id = self.contexts[ws_index].context_id;
+        let ws_id = self.router.get(ws_index).context_id;
 
-        // Remove all contexts belonging to this workspace.
+        // Remove all windows belonging to this context.
         self.windows.retain(|c| c.context_id != ws_id);
-        self.contexts.remove(ws_index);
+        self.router.remove_at(ws_index);
 
-        // Fix active indices.
-        if self.active_context >= self.contexts.len() {
-            self.active_context = self.contexts.len().saturating_sub(1);
-        } else if self.active_context > ws_index {
-            self.active_context -= 1;
-        }
-        // Pick a valid active_context in the new active workspace.
+        // Pick a valid active window in the new active context.
         self.pick_active_context_from_workspace();
 
-        // Notifications scoped to this workspace are dropped.
+        // Notifications scoped to this context are dropped.
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
                 && n.source_context == ws_index)
@@ -142,8 +136,8 @@ impl PlexiApp {
             }
         }
 
-        // Restore minimap state for the workspace we landed on.
-        let new_ws_id = self.contexts[self.active_context].context_id;
+        // Restore minimap state for the context we landed on.
+        let new_ws_id = self.router.active().context_id;
         let page_count = self.windows.iter().filter(|c| c.context_id == new_ws_id).count();
         self.minimap.visible = self
             .minimap_visible_per_context
@@ -175,25 +169,20 @@ impl PlexiApp {
             }
         }
 
-        // If workspace now has no windows, remove it too.
+        // If context now has no windows, remove it too.
         let ws_has_windows = self.windows.iter().any(|c| c.context_id == removed_ws_id);
         if !ws_has_windows {
-            if let Some(ws_idx) = self.contexts.iter().position(|w| w.context_id == removed_ws_id) {
-                self.contexts.remove(ws_idx);
-                if self.active_context >= self.contexts.len() {
-                    self.active_context = self.contexts.len().saturating_sub(1);
-                } else if self.active_context > ws_idx {
-                    self.active_context -= 1;
-                }
+            if let Some(ws_idx) = self.router.position(|w| w.context_id == removed_ws_id) {
+                self.router.remove_at(ws_idx);
             }
         }
 
         if was_active {
             self.active_window = self.nearest_context_after_delete(removed_x, removed_y);
-            // Sync context to the new active window.
+            // Sync router active to the new active window's context.
             let new_ctx_id = self.windows[self.active_window].context_id;
-            if let Some(ctx_idx) = self.contexts.iter().position(|w| w.context_id == new_ctx_id) {
-                self.active_context = ctx_idx;
+            if let Some(ctx_idx) = self.router.position(|w| w.context_id == new_ctx_id) {
+                self.router.set_active(ctx_idx);
                 self.context_active_window.insert(new_ctx_id, self.windows[self.active_window].window_id);
             }
         } else if self.active_window >= self.windows.len() {
@@ -213,8 +202,8 @@ impl PlexiApp {
         // ── Compact the grid: shift columns left if a column becomes empty ──
         self.compact_workspace_grid(removed_ws_id);
 
-        // Restore minimap state for the workspace we landed on.
-        let ws_id = self.contexts[self.active_context].context_id;
+        // Restore minimap state for the context we landed on.
+        let ws_id = self.router.active().context_id;
         let page_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
         self.minimap.visible = self
             .minimap_visible_per_context
@@ -267,26 +256,25 @@ impl PlexiApp {
         }
     }
 
-    /// Switch the active workspace to `new_ws_idx`, saving the current
-    /// workspace's minimap state and restoring the target workspace's saved
-    /// state. Falls back to `visible = (page count > 1)` on first visit.
+    /// Switch the active context to `new_ctx_idx`, saving the current
+    /// context's minimap state and restoring the target context's saved state.
+    /// Falls back to `visible = (page count > 1)` on first visit.
     ///
-    /// This is the **only** place workspace switching should be performed —
-    /// do not inline `active_workspace = i` + `pick_active_context_from_workspace`
-    /// elsewhere, as that bypasses the save/restore.
+    /// This is the **only** place context navigation should be performed —
+    /// calling `router.set_active` directly bypasses the minimap save/restore.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
         // Save current context's active window + minimap state.
-        let old_ctx_id = self.contexts[self.active_context].context_id;
+        let old_ctx_id = self.router.active().context_id;
         self.context_active_window
             .insert(old_ctx_id, self.windows[self.active_window].window_id);
         self.minimap_visible_per_context
             .insert(old_ctx_id, self.minimap.visible);
 
-        self.active_context = new_ctx_idx;
+        self.router.set_active(new_ctx_idx);
         self.pick_active_context_from_workspace();
 
         // Restore minimap state for the new context.
-        let new_ctx_id = self.contexts[self.active_context].context_id;
+        let new_ctx_id = self.router.active().context_id;
         let page_count = self
             .windows
             .iter()
@@ -300,7 +288,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn pick_active_context_from_workspace(&mut self) {
-        let ctx_id = self.contexts[self.active_context].context_id;
+        let ctx_id = self.router.active().context_id;
         let preferred = self.context_active_window.get(&ctx_id).copied();
         if let Some(win_id) = preferred {
             if let Some(idx) = self.windows.iter().position(|w| w.window_id == win_id && w.context_id == ctx_id) {
@@ -321,7 +309,7 @@ impl PlexiApp {
         let mut saved_contexts = Vec::new();
         let mut saved_windows = Vec::new();
 
-        for ctx in &self.contexts {
+        for ctx in self.router.iter() {
             saved_contexts.push(crate::workspace::SavedContext {
                 name: ctx.name.clone(),
                 path: ctx.path.clone(),
@@ -398,7 +386,7 @@ impl PlexiApp {
 
         let ws = WorkspaceFile {
             version: 2,
-            active_context: self.active_context,
+            active_context: self.router.active_idx(),
             sidebar_visible: self.sidebar_visible,
             next_pane_id: self.host.next_pane_id(),
             contexts: saved_contexts,

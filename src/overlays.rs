@@ -13,7 +13,7 @@ impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             // Workspace dots
-            let sidebar_contexts: Vec<usize> = (0..self.contexts.len()).collect();
+            let sidebar_contexts: Vec<usize> = (0..self.router.len()).collect();
             if sidebar_contexts.len() > 1 {
                 let dot_radius = 4.0;
                 let dot_spacing = 12.0;
@@ -26,7 +26,7 @@ impl PlexiApp {
                 let start_x = rect.left() + dot_radius;
                 for (dot_i, ctx_i) in sidebar_contexts.iter().enumerate() {
                     let cx = start_x + (dot_i as f32) * dot_spacing;
-                    let color = if *ctx_i == self.active_context {
+                    let color = if *ctx_i == self.router.active_idx() {
                         self.colors.accent
                     } else {
                         self.colors.bg_active
@@ -1292,8 +1292,8 @@ impl PlexiApp {
         let content_rect = ctx.screen_rect();
         let active_context = self.active_window;
         let colors = self.colors;
-        let ws_id = self.contexts[self.active_context].context_id;
-        let ws_name = self.contexts[self.active_context].name.clone();
+        let ws_id = self.router.active().context_id;
+        let ws_name = self.router.active().name.clone();
 
         egui::Area::new(egui::Id::new("minimap_overlay"))
             .order(egui::Order::Foreground)

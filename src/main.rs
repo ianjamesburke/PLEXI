@@ -44,6 +44,7 @@ mod quick_note_app;
 mod runs;
 mod secrets;
 mod secrets_app;
+mod workspace_router;
 mod workspace_secrets;
 mod shell;
 mod minimap;
