@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.21] — 2026-05-02
+
+### Changes
+- fix: update OpenRouter HTTP-Referer to plexiapp.com
+- chore: add DEV_LOG entry for PR #544 (chat UI, TextInput refocus fix)
+
 ## [3.4.20] — 2026-05-02
 
 ### Changes
