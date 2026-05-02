@@ -4,7 +4,7 @@ Always confirm best practices by researching the docs.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — vision, target architecture diagram, key invariants. Read first.
 
-If a doc outside these contradicts it, the doc is wrong. Fix or delete it.
+If a doc outside this contradicts it, the doc is wrong. Fix or delete it.
 
 ## Terminology
 
