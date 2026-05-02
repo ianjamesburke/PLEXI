@@ -6,7 +6,7 @@ Always confirm best practices by researching the docs.
 
 - **What shipped and why** → `DEV_LOG.md` (read the first 100 lines at session start)
 - **What's currently in flight** → `git log --oneline -20` and `git status`
-- **What's planned** → `.plexi/backlog`
+- **What's planned** → GitHub issues
 
 Before reporting anything as "done" or "missing", verify against `git log`. Never trust a status list in this file.
 
@@ -29,7 +29,7 @@ Vision (why we're building this, long-term direction) lives in `ARCHITECTURE.md 
 - `beta` — staging/release channel. Promoted from alpha when ready. Used for rigorous testing before promotion to main.
 - `main` — stable releases only.
 
-Feature branch naming: `feature/<issue-number>-short-description`. Sub-agent workflow: `isolation: "worktree"` off `alpha`, PR back to `alpha`. Never push directly to `main` or `beta`.
+Feature branch naming: `feature/<issue-number>-short-description`. Never push directly to `main` or `beta`.
 
 ## GitHub Issue Labels
 
@@ -80,13 +80,13 @@ All changes, no matter how small, follow this cycle:
 2. **Implement** and commit inside that worktree
 3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
 4. **Wait for user approval** — do not merge unilaterally
-5. **Squash-merge on GitHub** (`gh pr merge <number> --squash`) — this lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch that is checked out by a worktree, and the flag will cause the merge command to fail.
-6. **Sync the local alpha worktree**: `git pull` from inside `worktrees/alpha/` — this is how the local copy catches up to what was just merged on GitHub
-7. **Install and verify**: `just install` from inside `worktrees/alpha/`
-8. **Remove the feature worktree**: `wtp remove <branch-name>` — this must happen *before* branch deletion
-9. **Delete the remote branch**: `git push origin --delete <branch-name>`
-
-Steps 5–8 are mandatory after every merge. Skipping `git pull` + install is how uncommitted-looking work gets silently lost when the next PR lands.
+5. **Squash-merge**: `gh pr merge <number> --squash` — lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch checked out by a worktree.
+6. **Sync alpha**: `git pull` from inside `worktrees/alpha/`
+7. **Close related issue(s)**: `gh issue close <number> --comment "Closed by PR #<pr>"`
+8. **Update DEV_LOG.md** with an appropriate entry
+9. **Bump and install**: `just bump-and-install` from inside `worktrees/alpha/` — kick this off in the background while doing steps 7–8
+10. **Remove the feature worktree**: `wtp remove <branch-name>`
+11. **Delete the remote branch**: `git push origin --delete <branch-name>`
 
 **Always run `wtp add` from inside `worktrees/alpha/`**, not the repo root. This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
 
@@ -100,6 +100,26 @@ If they don't match, delete the worktree and branch immediately and redo from in
 **Before creating a worktree:** run `git status` AND `git diff --stat` in `worktrees/alpha`. Alpha must be clean (no uncommitted changes, no unstaged diffs) before branching. If it's dirty, stop and ask: commit first, or is this work meant to be carried into the new branch? Never silently proceed on a dirty base.
 
 **Small-changes batch PR:** Multiple small related fixes may land in one PR if they share a single commit message and a single `Breaks if:` line. Unrelated changes go in separate PRs.
+
+### Ship Cycle
+
+When the user says **"ship"** (or "ship it"), run the full post-merge cycle:
+
+1. Squash-merge the PR: `gh pr merge <number> --squash`
+2. `git pull` in `worktrees/alpha/`
+3. Kick off `just bump-and-install` from `worktrees/alpha/` in the background
+4. While it runs: close related issue(s) with `gh issue close <number> --comment "Closed by PR #<pr>"` and update DEV_LOG.md
+5. Wait for install to finish, then remove the worktree and delete the remote branch
+
+Return a short summary in this exact format:
+```
+- Merged: PR #<n> — <title>
+- Closed: Issue #<n> — <title>
+- DEV_LOG: updated
+- Bumped: <old> → <new>, installed
+
+[COMPLETE]
+```
 
 ### alpha → beta → main (channel promotion)
 
@@ -129,11 +149,11 @@ If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the fir
 
 ## Build & Install
 
-`just install` reads `.channel` from CWD and installs the correct channel automatically. Run it from any worktree — it always installs the right channel for that directory.
+`just bump-and-install` is the standard post-merge command — bumps the alpha version first, then builds and installs. Always run from inside `worktrees/alpha/`.
 
-**After every completed code change, run `just install` from the active worktree** before reporting the task complete. The recipe builds from CWD, so run it from the worktree you're in (e.g. `worktrees/alpha/`).
+`just install` alone is for re-installing without a version bump (e.g. after editing CHANGELOG or config without a code change). Run from inside `worktrees/alpha/`.
 
-**Never claim a task complete based on an install from a feature worktree.** `just install` builds from source files in CWD — uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. Installing from a feature worktree is only valid during development iteration. The full done cycle is: commit → push → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just install` from `worktrees/alpha/`.
+**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just bump-and-install` from `worktrees/alpha/`.
 
 ## Logging
 
@@ -173,12 +193,9 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 
 **Factory rule:** any impl returned from a factory function (e.g. `audio_device()`, `video_decoder()`) must never panic in a trait method. Unimplemented methods return `Err(NotImplemented)` / `None` / noop — never `todo!()`. When you add a new prod stub, add a `prod_stub_tests` unit test that calls every trait method and asserts no panic.
 
-**Post-install smoke test:** `just install-v3` runs `scripts/smoke-test.sh`, which (1) feeds a PGAP Init to every installed app and asserts `ready` appears within 3s, (2) launches the host for 2s and scans the log for panics. If the smoke test fails, the install is broken — do not report the task complete.
-
 ## Lessons Carried Into v3
 
 - **Python version in GUI app bundles:** macOS GUI bundles do NOT inherit shell PATH. `#!/usr/bin/env python3` → Apple's frozen `/usr/bin/python3` 3.9.6. Always add `from __future__ import annotations` as the first line of every app Python file so `str | None` is safe on 3.7+.
-- **Install doesn't chmod:** `just install-*` syncs files but doesn't set executable bits. Run `chmod +x ~/.plexi-*/apps/*/*.py` after install, or fix the recipe.
 - **Coupled state:** When adding state that derives from or shadows existing state, grep every mutation site of the original and update each one.
 - **Fallback chain audit:** When a value looks correct on the surface but behavior is stale, enumerate every fallback source in priority order (cookies, env vars, caches, defaults). Fix the chain, not the surface.
 - **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
@@ -186,6 +203,7 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 ## PlexiApp State
 
 `PlexiApp` fields are declared in `src/app/mod.rs`. There are exactly two struct-literal initialization blocks — both contain `renaming_window: None` and are the only places new fields need to be initialized.
+
 ## Host UI Systems — Reuse Before Rolling Your Own
 
 Before writing any keyboard shortcut display, badge, chip, or inline label widget, check `src/widgets.rs` and `src/style.rs`. These modules contain the canonical, already-tested implementations. Re-rolling them inline produces visual inconsistency and duplicated sizing logic.
@@ -205,5 +223,4 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 - When the user reports a bug, fix what they asked for first. Don't pivot to QA, refactoring, or tangential improvements until the primary request is resolved.
 - When the user provides multiple distinct ideas, file them separately. Don't combine unrelated concepts.
 - Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Always do the work: delete unused code, wire it up, or move it to a feature-flagged module. If fixing a warning takes a long time, that's the job — do not paper over it with an allow attribute.
-- always run cargo build after work to make sure it passes.
-
+- Always run `cargo build` after work to make sure it passes.
