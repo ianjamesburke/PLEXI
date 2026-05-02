@@ -2,6 +2,68 @@
 
 Newest releases appear first.
 
+## [3.4.14] — 2026-05-02
+
+### Changes
+- fix(promote.sh): auto-push unpushed commits instead of failing
+- chore: bump alpha to 3.4.13, update changelog
+- fix(justfile): bump-alpha SIGPIPE with pipefail — use git log -1 not | head -1 (#537)
+- fix(routing): AiQuery/ExposeTools/ToolResult not dispatched — fell through to render buffer (#536)
+- fix(changelog): accurate per-version deltas + bump-alpha anchors to last bump not last tag (#535)
+- chore: DEV_LOG — entry for PR #534 (text input refocus + AI flush + env diagnostics)
+- chore: bump alpha to 3.4.12, update changelog
+- fix: text input refocus + flush outbound events same-frame + env probe diagnostics (#534)
+- chore: DEV_LOG — record env-adoption failure honestly (still broken)
+- chore: DEV_LOG — entry for PR #533 (zsh -i -l env probe)
+- chore: DEV_LOG — entry for PR #532 (watchdog + drag-cursor fix)
+- chore: bump alpha to 3.4.11, update changelog
+- fix(shell): use -i -l for env probe so .zshrc-defined secrets load (#533)
+- fix: tighten freeze watchdog + throttle macOS drag-cursor polling (#532)
+- chore: DEV_LOG — add entry for PR #531
+- chore: bump alpha to 3.4.10, update changelog
+- fix: adopt login-shell env vars + TextInput layout widget (#531)
+- chore: CLAUDE.md — add 'To test' line to Ship Cycle summary format
+- chore: bump alpha to 3.4.9, update changelog
+- chore: DEV_LOG — v3.7 complete (PR #526, closes #396, #398, #399, #516)
+- feat(v3.7): app tool protocol — ExposeTools/ToolCall/ToolResult + host context injection (#526)
+- chore: promote to beta — v3.4.8
+- chore: CLAUDE.md — clarify post-merge workflow, standardize just bump-and-install, use GitHub issues over backlog
+- chore: justfile bump-alpha fixes, changelog version labels, overlay opacity
+- chore: bump alpha to 3.4.7, update changelog
+- chore: bump alpha to 3.4.6, update changelog
+- chore: DEV_LOG — changelog modal + bump-alpha (PR #524)
+- feat(changelog): clickable version badge opens changelog modal + just bump-alpha (#524)
+- chore: DEV_LOG — v3.8 partial batch (PRs #521-522, closes #388, #424)
+- feat(error-visibility): boot timeout + render exception re-raise (#424, partial) (#522)
+- feat(sdk/ui): ListItem and Row auto-centering components (#388) (#521)
+- chore: DEV_LOG — v3.6 complete (PRs #518, #519, closes #508, #509)
+- feat(#508): chat-poc — conversational chat via AiQuery/AiResponse (#519)
+- chore(#509): delete stale docs/specs/, purge dangling references (#518)
+- chore: DEV_LOG — WorkspaceRouter (#510, closes #380)
+- refactor(#380): WorkspaceRouter — compile-enforced context switching invariant (#510)
+- chore: DEV_LOG — v3.5 batch session (PRs #502-504, #380 deferred)
+- docs: clarify alpha as starting branch for all changes
+- fix(egui-term): empty clipboard guard, auto-scroll boundary, HiDPI column sync (#475, #492, #472) (#504)
+- feat(#425): config migration on install (#503)
+- fix(#429): delete orphaned src/plexi_iq/ (#502)
+- chore(promote): use --force-with-lease instead of --force for alpha→beta
+- chore(promote): force-push alpha→beta to handle diverged history
+- chore: promote to beta — v3.4.3
+- fix(install): rename binary in bundle for non-stable channels to match config detection
+- feat(commit-graph): flat N-commit load, host scroll, badge overflow fix, PR badges (#500)
+- feat(logging): heartbeat watchdog + workspace autosave on structural changes (#499)
+- fix(ui): hide sidebar separator line — panel is not resizable (#483) (#495)
+- fix(sidebar): remove hover sense from context label — eliminates I-beam cursor (#481) (#494)
+- fix(ui): Escape dismisses shortcuts overlay (#484) (#496)
+- fix(ui): align shortcuts overlay — use key_combo_list for HJKL rows, add min_col_width (#482) (#498)
+- feat(toolbar): show app version label next to ? button (closes #485) (#497)
+- chore: sync alpha version to 3.4.2
+- refactor(promote): bump+changelog on alpha before push; aggregate all entries since last tag for GitHub release
+- fix: awk newline-in-variable error in prepend_changelog — use temp file + getline
+- fix: bash 3.2 compat in promote.sh — replace ${var,,} with explicit y/Y check
+- feat: channel promotion pipeline (just promote)
+- refactor(sidebar): zone-based row abstraction with single cursor authority
+
 ## [3.4.13] — 2026-05-02
 
 ### Changes
