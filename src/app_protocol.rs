@@ -211,6 +211,14 @@ pub enum PlexiEvent {
         tokens_out: u32,
         error: Option<String>,
     },
+    /// Host-to-app tool invocation (#399). The broker calls a tool exposed via
+    /// `DrawCommand::ExposeTools` by sending this event to the owning pane.
+    /// The app must reply with `DrawCommand::ToolResult { call_id, … }`.
+    ToolCall {
+        call_id: String,
+        name: String,
+        input_json: String,
+    },
     /// Response to a `DrawCommand::ListAudioDevices` request (#277).
     /// Both vectors are always present — empty when enumeration finds no
     /// devices of that direction. `error` is set only when device
@@ -402,15 +410,17 @@ pub struct AiMessage {
     pub content: String,
 }
 
-/// Tool definition for a future tool-use turn loop. The current broker only
-/// supports text-only turns; if `tools` is non-empty the broker returns
-/// an error response. Reserved on the wire so that v3.4+ can add tool
-/// dispatch without changing the protocol.
+/// Tool definition for the tool-use turn loop (#398).
+/// Apps declare callable tools via `DrawCommand::ExposeTools`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AiTool {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// Maximum milliseconds to wait for this tool's response. Defaults to 30s
+    /// when absent. The broker uses this to bound `ToolCall` round-trips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Coarse model tier requested by the app. The host maps each tier to a
@@ -699,14 +709,34 @@ pub enum DrawCommand {
     /// `PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.
     ///
     /// All fields are required — no `serde(default)`. `tools` may be empty;
-    /// non-empty `tools` is accepted on the wire but rejected at the broker
-    /// (returns an error response) until v3.4 adds tool dispatch.
+    /// non-empty `tools` causes the broker to dispatch through a tool loop
+    /// (#399) — the AI can call tools on any pane that exposed them via
+    /// `DrawCommand::ExposeTools`.
     AiQuery {
         request_id: String,
         model_tier: ModelTier,
         system: String,
         messages: Vec<AiMessage>,
         tools: Vec<AiTool>,
+    },
+    /// v3.7 tool protocol (#398). App declares its callable tools to the host.
+    /// The host registers these in the global tool registry so the broker can
+    /// route `PlexiEvent::ToolCall` events to this pane during AI turns that
+    /// include tool-use.
+    ///
+    /// May be sent at any time (including on_init). Replaces any prior
+    /// registration for this pane — send the full current set each time.
+    ExposeTools { tools: Vec<AiTool> },
+    /// v3.7 tool protocol (#399). App returns the result of a `PlexiEvent::ToolCall`
+    /// invocation. `call_id` must match the `call_id` from the `ToolCall` event.
+    ///
+    /// Either `output_json` or `error` must be set — not both.
+    ToolResult {
+        call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_json: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Draw an image from a workspace-scoped path or data URL.
     Image {

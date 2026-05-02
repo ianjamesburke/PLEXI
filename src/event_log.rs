@@ -258,6 +258,32 @@ pub fn emit(event: HostEvent) {
 
 // ── Typed emit helpers ────────────────────────────────────────────────────────
 
+/// Read the last `limit` lines from a JSONL file and return them as raw
+/// `serde_json::Value`s. Lines that fail to parse are silently skipped.
+/// Returns an empty vec when the file doesn't exist or can't be read.
+pub fn read_recent(path: &std::path::Path, limit: usize) -> Vec<serde_json::Value> {
+    use std::io::BufRead;
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let reader = std::io::BufReader::new(file);
+    let mut lines: std::collections::VecDeque<serde_json::Value> =
+        std::collections::VecDeque::with_capacity(limit + 1);
+    for line in reader.lines().map_while(|l| l.ok()) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            lines.push_back(v);
+            if lines.len() > limit {
+                lines.pop_front();
+            }
+        }
+    }
+    lines.into_iter().collect()
+}
+
 /// Emit a `PipeOpened` event with a host-stamped timestamp.
 pub fn emit_pipe_opened(
     from_app: impl Into<String>,

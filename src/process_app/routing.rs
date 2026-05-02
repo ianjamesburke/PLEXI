@@ -688,6 +688,14 @@ impl ProcessApp {
                 let broker = self.ai_broker.clone();
                 let app_id = self.type_id.clone();
                 let tx = self.http_tx.clone();
+                let workspace_root = self.workspace_root.clone();
+                let open_panes = vec![crate::plexi_ai::broker::PaneContext {
+                    type_id: self.type_id.clone(),
+                    pane_id: self.pane_id,
+                }];
+                let tool_dispatcher = std::sync::Arc::new(
+                    crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(),
+                );
                 std::thread::spawn(move || {
                     let resp = broker.dispatch(AiBrokerRequest {
                         app_id,
@@ -695,6 +703,9 @@ impl ProcessApp {
                         system,
                         messages,
                         tools,
+                        workspace_root: Some(workspace_root),
+                        open_panes,
+                        tool_dispatcher: Some(tool_dispatcher),
                     });
                     let event = PlexiEvent::AiResponse {
                         request_id,
@@ -1055,6 +1066,46 @@ impl ProcessApp {
                     return;
                 }
                 self.pending_commands.push(AppCommand::OpenArtifact { path, mode });
+            }
+
+            // ── Tool protocol (#398, #399) ─────────────────────────────────
+
+            // App declares its callable tools to the host.
+            DrawCommand::ExposeTools { tools } => {
+                log::debug!(
+                    "ProcessApp[{}]: ExposeTools {} tool(s)",
+                    self.type_id,
+                    tools.len(),
+                );
+                self.exposed_tools = tools.clone();
+                if let Some(sender) = self.make_app_event_sender() {
+                    crate::plexi_ai::tool_dispatch::register(self.pane_id, tools, sender);
+                } else {
+                    log::warn!(
+                        "ProcessApp[{}]: ExposeTools — stdin writer gone, skipping registration",
+                        self.type_id
+                    );
+                }
+            }
+
+            // App returns the result of a ToolCall from the broker.
+            DrawCommand::ToolResult {
+                call_id,
+                output_json,
+                error,
+            } => {
+                log::debug!(
+                    "ProcessApp[{}]: ToolResult call_id={call_id:?} ok={}",
+                    self.type_id,
+                    output_json.is_some(),
+                );
+                crate::plexi_ai::tool_dispatch::resolve_pending(
+                    &call_id,
+                    crate::plexi_ai::tool_dispatch::ToolCallResult {
+                        output_json,
+                        error,
+                    },
+                );
             }
 
             _ => unreachable!("route_command called with non-control command"),

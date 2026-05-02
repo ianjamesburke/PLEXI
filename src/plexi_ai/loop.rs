@@ -16,12 +16,12 @@
 
 use std::sync::mpsc;
 
-use crate::app_protocol::AiMessage;
-use crate::plexi_ai::backend::{AiBackend, AiBackendError, AiBackendRequest, StreamEvent};
+use crate::plexi_ai::backend::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
 
 /// Outcome of a completed turn.
 pub struct TurnResult {
     /// Full assistant response text accumulated from streamed chunks.
+    /// Empty when the turn ended with tool calls.
     pub text: String,
     /// Input token count — `Some` only for metered (native API) backend.
     pub input_tokens: Option<u32>,
@@ -31,6 +31,10 @@ pub struct TurnResult {
     /// `Some` when the OpenRouter backend is used; `None` otherwise.
     /// The broker uses this to fetch the real per-call cost after the turn.
     pub generation_id: Option<String>,
+    /// Tool calls requested by the model during this turn. Non-empty only when
+    /// the backend sent `StreamEvent::ToolCalls`. The broker dispatches these
+    /// and runs another turn with the results appended.
+    pub tool_calls: Vec<RawToolCall>,
 }
 
 /// Error variants for a failed turn.
@@ -59,23 +63,17 @@ impl std::fmt::Display for TurnError {
 /// Synchronous — blocks until the backend delivers `StreamEvent::Done` or
 /// `StreamEvent::Error`. For UI use, call from a dedicated worker thread.
 ///
-/// `messages` is the full structured conversation history (Anthropic shape:
-/// alternating user/assistant turns). Multi-turn conversations now flow
-/// natively through this path — no flattening at the broker.
+/// `messages` is the full structured conversation history as `serde_json::Value`
+/// objects. Normal user/assistant turns, tool-call assistant turns, and tool
+/// result turns all flow as JSON values.
 ///
 /// `on_token` is called with each text chunk as it arrives. Pass a no-op
 /// closure if streaming is not needed (e.g. in tests).
 pub fn run_turn(
     backend: &dyn AiBackend,
-    messages: Vec<AiMessage>,
-    system: impl Into<String>,
+    request: AiBackendRequest,
     mut on_token: impl FnMut(&str),
 ) -> Result<TurnResult, TurnError> {
-    let request = AiBackendRequest {
-        messages,
-        system: system.into(),
-    };
-
     let (tx, rx) = mpsc::channel::<StreamEvent>();
 
     backend
@@ -86,12 +84,16 @@ pub fn run_turn(
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
     let mut generation_id: Option<String> = None;
+    let mut tool_calls: Vec<RawToolCall> = Vec::new();
 
     loop {
         match rx.recv() {
             Ok(StreamEvent::Text(chunk)) => {
                 on_token(&chunk);
                 text.push_str(&chunk);
+            }
+            Ok(StreamEvent::ToolCalls(calls)) => {
+                tool_calls = calls;
             }
             Ok(StreamEvent::Done {
                 input_tokens: in_tok,
@@ -108,10 +110,10 @@ pub fn run_turn(
             }
             Err(_) => {
                 // Sender dropped without sending Done — treat as unexpected close.
-                if text.is_empty() {
+                if text.is_empty() && tool_calls.is_empty() {
                     return Err(TurnError::ChannelClosed);
                 }
-                log::warn!("plexi_ai: stream channel closed before Done; returning partial text");
+                log::warn!("plexi_ai: stream channel closed before Done; returning partial result");
                 break;
             }
         }
@@ -122,5 +124,6 @@ pub fn run_turn(
         input_tokens,
         output_tokens,
         generation_id,
+        tool_calls,
     })
 }

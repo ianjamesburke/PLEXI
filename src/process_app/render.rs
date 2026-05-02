@@ -415,7 +415,10 @@ pub(super) fn render_draw_commands(
             // safety net for any stray commands that leak through.
             | DrawCommand::PushNav { .. }
             | DrawCommand::PopNav { .. }
-            | DrawCommand::SetMouseTracking { .. } => {}
+            | DrawCommand::SetMouseTracking { .. }
+            // Tool protocol commands are control-only; the painter never paints them.
+            | DrawCommand::ExposeTools { .. }
+            | DrawCommand::ToolResult { .. } => {}
 
             // ── Host-managed scroll regions (#446) ───────────────────────────
             //

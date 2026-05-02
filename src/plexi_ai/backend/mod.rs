@@ -41,27 +41,45 @@ pub enum StreamEvent {
         /// real per-call cost via the generation endpoint.
         generation_id: Option<String>,
     },
+    /// The model requested one or more tool calls. The turn loop stores these
+    /// and returns them in `TurnResult`; the broker dispatches them and runs
+    /// another turn with the results appended.
+    ToolCalls(Vec<RawToolCall>),
     /// Terminal error. Surface in the conversation buffer.
     Error(String),
 }
 
+/// One tool call as received from the backend (pre-parsed SSE deltas).
+#[derive(Debug, Clone)]
+pub struct RawToolCall {
+    /// Provider-assigned call ID (e.g. `"call_abc123"`).
+    pub id: String,
+    /// Tool name (e.g. `"increment"`).
+    pub name: String,
+    /// Raw JSON arguments string (e.g. `"{\"n\": 3}"`).
+    pub arguments: String,
+}
+
 /// Conversation turn passed to `AiBackend::stream_to_channel`.
 ///
-/// `messages` carries the full conversation history as a structured array —
-/// the same shape the Anthropic Messages API uses. Each entry has `role` ∈
-/// {`"user"`, `"assistant"`} and a plain-text `content`. Backends MUST honour
-/// the array (no flattening to a single prompt string) so multi-turn agent
-/// conversations work correctly.
+/// `messages` carries the full conversation history as `serde_json::Value`
+/// objects so the broker can inject multi-turn tool-call/tool-result messages
+/// directly without an intermediate AiMessage type that can't represent them.
+/// Backends forward the array as-is into the request body.
 ///
 /// `system` is the system prompt; injected on every call. Empty string =
 /// no system prompt.
 #[derive(Debug, Clone, Default)]
 pub struct AiBackendRequest {
-    /// Full structured conversation history. Wire shape mirrors the Anthropic
-    /// Messages API — see `app_protocol::AiMessage`.
-    pub messages: Vec<crate::app_protocol::AiMessage>,
+    /// Full structured conversation history as JSON values.
+    /// Normal turns: `{"role": "user"|"assistant", "content": "…"}`.
+    /// Tool-call turns: `{"role": "assistant", "content": null, "tool_calls": […]}`.
+    /// Tool-result turns: `{"role": "tool", "content": "…", "tool_call_id": "…"}`.
+    pub messages: Vec<serde_json::Value>,
     /// System prompt (injected on every call for the native API).
     pub system: String,
+    /// Tools to inject into the request when non-empty.
+    pub tools: Vec<crate::app_protocol::AiTool>,
 }
 
 /// Error returned when a backend call cannot start.
