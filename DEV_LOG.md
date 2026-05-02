@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] Markdown chat bubbles, TextInput scroll, counter shortcuts, pane focus (PR #549 → alpha)
+Added `egui_commonmark` (v0.20, targeting egui 0.31) for host-side markdown rendering. New `DrawCommand::Markdown` + `ctx.markdown()` SDK method — ChatBubble now passes raw markdown to the host instead of line-by-line `ctx.text()`. Multiline TextEdit wrapped in `ScrollArea::vertical()` so it scrolls after filling its height instead of expanding below the screen. Counter tool-poc gained `on_key` handler (`i`/`+` increment, `r` reset). Pane keyboard navigation now auto-focuses the first TextInput via `pane_just_focused` flag.
+**Breaks if:** chat-poc AI responses render as raw markdown text (no bold/italic), multiline input still expands below the screen instead of scrolling, counter keyboard shortcuts don't work, or navigating to chat pane via keyboard doesn't focus the text input.
+
 ## 2026-05-02 — [CHANGED] Parallax MVP editor + SDK ctx.image() (PR #548 → alpha)
 Added `examples/parallax/` — primitive video editor driven by Parallax V0 CLI. Timeline with draggable clips, transport controls, I/O trim markers, ffmpeg export via linked terminal, 6 AI-callable tools (set_in_point, set_out_point, move_clip, trim_clip, list_clips, select_clip). Loads real clips from a project folder (ffprobe for duration, background thread) or runs in demo mode. Playback is render-driven (no sleep thread).
 
