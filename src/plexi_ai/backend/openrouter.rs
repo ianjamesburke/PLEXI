@@ -97,7 +97,10 @@ fn stream_openrouter(
     let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
-        "stream": true
+        "stream": true,
+        // Request usage in streamed responses so broker token accounting can
+        // populate AiResponse.tokens_in / tokens_out reliably.
+        "stream_options": { "include_usage": true }
     });
 
     // Inject tools when present.

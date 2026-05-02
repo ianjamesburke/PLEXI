@@ -2062,6 +2062,9 @@ class App:
         # v3.7 tool protocol (#399): tool_name → handler callable.
         # Registered via @app.tool(...) decorator.
         self._tool_handlers: dict[str, Any] = {}
+        # Keep the full declared tool set so repeated @app.tool decorator
+        # calls expose the cumulative list instead of replacing prior tools.
+        self._tool_defs: dict[str, dict] = {}
         self.emit = Emitter(self)
 
     # ── Override these ──────────────────────────────────────────────────────
@@ -2145,7 +2148,8 @@ class App:
             }
             if timeout_ms is not None:
                 tool_def["timeout_ms"] = timeout_ms
-            self.emit.expose_tools([tool_def])
+            self._tool_defs[name] = tool_def
+            self.emit.expose_tools(list(self._tool_defs.values()))
             return fn
         return decorator
 
