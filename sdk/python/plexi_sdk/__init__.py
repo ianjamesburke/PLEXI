@@ -2334,6 +2334,8 @@ class App:
                         self._consecutive_render_errors += 1
                         ctx.error(f"on_render exception: {e}")
                         if self._consecutive_render_errors >= 3:
+                            import traceback as _tb
+                            _tb.print_exc()
                             raise
                     ctx.frame_done()
 
