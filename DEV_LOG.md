@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] v3.7 complete — app tool protocol + host context injection (PR #526 → alpha)
+
+Full v3.7 milestone: ExposeTools/ToolCall/ToolResult PGAP protocol, global tool registry (`src/plexi_ai/tool_dispatch.rs`), multi-round broker tool loop, OpenRouter streaming tool_call delta accumulation, host context injection, Python `@app.tool` decorator, and `examples/tool-poc/` counter POC.
+
+**Key decisions:** Tool registry is global (not window-scoped) for MVP — last-write-wins on name collision, log warning. Window scoping is v4 cleanup. Messages type widened to `Vec<serde_json::Value>` inside the backend so the broker can inject assistant tool_call and tool-result turns without changing the PGAP wire format. Tool loop capped at 10 rounds (log warn if hit). `# no-host-context` in system prompt opts out of context injection.
+
+Gemini catch: `int(args.get("n", 1))` → `int(args.get("n") or 1)` in counter.py — `args.get("n", 1)` returns `None` when LLM passes `"n": null` (key exists, value is null), so the default doesn't fire and `int(None)` raises.
+
+**Breaks if:** `from plexi_sdk import App` raises ImportError. Or: chat-poc AI response arrives but counter pane count doesn't change after "increment 3 times". Or: context prefix missing from broker log when `# no-host-context` is NOT in system prompt.
+
 ## 2026-05-02 — [CHANGED] Changelog modal + just bump-alpha (PR #524 → alpha)
 
 Version badge in toolbar (`v3.x.x`) is now a clickable button that opens a scrollable changelog modal. `CHANGELOG.md` is embedded at compile time via `include_str!` — no runtime file access. Escape or ✕ closes it. `show_changelog: bool` follows the same plain-bool pattern as `show_shortcuts` (not FocusLayer — Gemini suggested it but `show_shortcuts` ships fine without it).
