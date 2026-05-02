@@ -92,6 +92,40 @@ clear-apps channel="":
     echo "Cleared $count app directories from $dir"
     echo "Re-run 'just install' from the matching worktree to re-sync from examples/"
 
+bump-alpha:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    current=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    base=$(echo "$current" | sed 's/-.*//')
+    IFS='.' read -r major minor patch <<< "$base"
+    new="$major.$minor.$((patch + 1))"
+    sed -i '' "s/^version = \"$current\"/version = \"$new\"/" Cargo.toml
+    cargo generate-lockfile
+    # Collect commits since last tag, stripping merge commits and chore: DEV_LOG entries
+    last_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+    if [[ -n "$last_tag" ]]; then
+        range="$last_tag..HEAD"
+    else
+        range="HEAD~20..HEAD"
+    fi
+    mapfile -t commits < <(git log "$range" --oneline --no-merges --format="%s" | grep -v '^chore: DEV_LOG' | grep -v '^chore: bump' || true)
+    today=$(date +%Y-%m-%d)
+    # Build the new unreleased section
+    section="## [alpha] — $today\n\n### Changes"
+    for c in "${commits[@]}"; do
+        section="$section\n- $c"
+    done
+    section="$section\n"
+    # Prepend the section after the header line
+    awk -v block="$section" '
+        /^# Changelog/ { print; getline; print; print ""; printf "%s\n", block; next }
+        { print }
+    ' CHANGELOG.md > CHANGELOG.md.tmp
+    mv CHANGELOG.md.tmp CHANGELOG.md
+    git add Cargo.toml Cargo.lock CHANGELOG.md
+    git commit -m "chore: bump alpha to $new, update changelog"
+    echo "Bumped to $new"
+
 bump:
     #!/usr/bin/env bash
     set -e
