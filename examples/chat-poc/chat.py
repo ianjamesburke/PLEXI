@@ -34,7 +34,7 @@ class Turn:
 
 class ChatApp(App):
     def on_init(self, ctx: RenderContext) -> None:
-        self._tier: str = "medium"
+        self._tier: str = "low"
         self._turns: list[Turn] = []
         self._in_flight: bool = False
         self._scroll = Scrollable(child=Column([]))
