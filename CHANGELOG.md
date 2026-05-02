@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.17] — 2026-05-02
+
+### Changes
+- feat(host): add TextRow draw command with host-measured text layout
+
 ## [3.4.16] — 2026-05-02
 
 ### Changes
