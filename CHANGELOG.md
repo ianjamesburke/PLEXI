@@ -2,6 +2,15 @@
 
 Newest releases appear first.
 
+## [3.4.16] — 2026-05-02
+
+### Changes
+- DEV_LOG: log PR #540 text_row() layout primitive
+- feat(sdk): add text_row() host-measured text layout primitive (#540)
+- feat(examples): input-inspector POC for issue #331 (#529)
+- chore: promote to beta — v3.4.14
+- fix(promote.sh): auto-push unpushed commits instead of failing
+
 ## [3.4.15] — 2026-05-02
 
 ### Changes
