@@ -115,6 +115,7 @@ impl PlexiApp {
                             // Left column — window / pane management
                             egui::Grid::new("shortcuts_grid_left")
                                 .num_columns(2)
+                                .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(&mut cols[0], |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -147,18 +148,15 @@ impl PlexiApp {
                             // Right column — navigation
                             egui::Grid::new("shortcuts_grid_right")
                                 .num_columns(2)
+                                .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(&mut cols[1], |ui| {
-                                    // ⌘ + HJKL block
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 2.0;
-                                        crate::widgets::key_chip(ui, "\u{2318}", colors);
-                                        ui.add_space(4.0);
-                                        crate::widgets::key_chip(ui, "H", colors);
-                                        crate::widgets::key_chip(ui, "J", colors);
-                                        crate::widgets::key_chip(ui, "K", colors);
-                                        crate::widgets::key_chip(ui, "L", colors);
-                                    });
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}"], &["H", "J", "K", "L"]],
+                                        None,
+                                        colors,
+                                    );
                                     ui.label(
                                         RichText::new("Move between panes")
                                             .size(style::TEXT_HINT)
@@ -166,17 +164,12 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    // ⌘⇧ + HJKL block
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 2.0;
-                                        crate::widgets::key_chip(ui, "\u{2318}", colors);
-                                        crate::widgets::key_chip(ui, "\u{21E7}", colors);
-                                        ui.add_space(4.0);
-                                        crate::widgets::key_chip(ui, "H", colors);
-                                        crate::widgets::key_chip(ui, "J", colors);
-                                        crate::widgets::key_chip(ui, "K", colors);
-                                        crate::widgets::key_chip(ui, "L", colors);
-                                    });
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}", "\u{21E7}"], &["H", "J", "K", "L"]],
+                                        None,
+                                        colors,
+                                    );
                                     ui.label(
                                         RichText::new("Move/create windows")
                                             .size(style::TEXT_HINT)
