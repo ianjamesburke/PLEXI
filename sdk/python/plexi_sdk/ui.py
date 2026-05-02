@@ -901,6 +901,49 @@ class Card(Component):
 
 
 @dataclass
+class TextInput(Component):
+    """Layout-aware text input. Place inside a Column like any other child.
+
+    After ``ctx.render(column)``, read ``.submitted`` to get the text the user
+    submitted (pressed Enter), or ``None`` if nothing was submitted this frame.
+
+    Create once (in ``on_init``) and update ``placeholder`` as needed — the
+    instance is stable across renders so the host can track focus state.
+
+    Example::
+
+        def on_init(self, ctx):
+            self._input = TextInput("chat-input", placeholder="Type a message…")
+
+        def on_render(self, ctx):
+            ctx.render(Column([
+                ...,
+                self._input,
+                Footer("Enter to send"),
+            ]))
+            if self._input.submitted:
+                self._send(self._input.submitted)
+    """
+    id: str
+    placeholder: str = ""
+    height: float = 48.0
+
+    _submitted: Optional[str] = field(default=None, init=False, repr=False)
+
+    def measure(self, avail_w: float) -> float:
+        return self.height
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._submitted = ctx.text_input(self.id, x=x, y=y, w=w,
+                                         placeholder=self.placeholder)
+
+    @property
+    def submitted(self) -> Optional[str]:
+        """Text submitted this frame (user pressed Enter), else None."""
+        return self._submitted
+
+
+@dataclass
 class Column(Component):
     """The root container. Stacks children vertically. Handles grow spacers:
     measures fixed-height children first, then distributes leftover space to
@@ -988,7 +1031,7 @@ __all__ = [
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
-    "ListItem", "Row",
+    "ListItem", "Row", "TextInput",
     # badge primitive
     "badge",
     # scroll helpers

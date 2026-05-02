@@ -55,6 +55,74 @@ pub fn install_login_shell_path() {
     }
 }
 
+/// Adopt user-defined env vars from the login shell that are missing from the
+/// process environment.
+///
+/// macOS GUI bundles only inherit a minimal environment — API keys, tokens,
+/// and other secrets set in `~/.zshrc` or `~/.zsh_secrets` are invisible to
+/// Plexi and every app it spawns. This probes the login shell for its full
+/// `env` output and sets any var not already present in the process env.
+///
+/// Skips system vars (HOME, USER, SHELL, PWD, etc.) and vars already set —
+/// never overwrites existing values so the GUI context wins on conflicts.
+/// Called after `install_login_shell_path` since PATH is already handled.
+pub fn install_login_shell_env() {
+    // System/terminal vars that are either already correct in the GUI context
+    // or that build_env() sets explicitly later. Never adopt these from the shell.
+    const SKIP: &[&str] = &[
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR",
+        "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM", "TERMINFO",
+        "SHLVL", "OLDPWD", "PWD", "_", "PS1", "PS2",
+        "XPC_FLAGS", "XPC_SERVICE_NAME",
+        "APPLE_SECURITY_ASSESSMENT", "COMMAND_MODE",
+        "SECURITYSESSIONID", "SSH_AUTH_SOCK",
+    ];
+
+    let Some(vars) = probe_login_shell_env() else { return };
+    let mut count = 0;
+    for (k, v) in &vars {
+        if SKIP.contains(&k.as_str()) {
+            continue;
+        }
+        if std::env::var(k).is_err() {
+            // SAFETY: called once, early in main(), before any threads read env.
+            unsafe { std::env::set_var(k, v); }
+            count += 1;
+        }
+    }
+    if count > 0 {
+        log::info!("Adopted {count} env vars from login shell");
+    }
+}
+
+fn probe_login_shell_env() -> Option<HashMap<String, String>> {
+    let shell = detect_shell();
+    let output = Command::new(&shell)
+        .args(["-l", "-c", "env"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        log::warn!(
+            "Login-shell env probe failed: {} exited {}",
+            shell,
+            output.status
+        );
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let mut map = HashMap::new();
+    for line in text.lines() {
+        // Only parse lines that look like KEY=value; skip shell functions and
+        // multiline continuations from the previous key.
+        if let Some((k, v)) = line.split_once('=') {
+            if !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                map.insert(k.to_string(), v.to_string());
+            }
+        }
+    }
+    Some(map)
+}
+
 fn probe_login_shell_path() -> Option<String> {
     let shell = detect_shell();
     let output = Command::new(&shell)
