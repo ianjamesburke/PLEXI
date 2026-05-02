@@ -1,5 +1,16 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] v3.8 partial — ListItem/Row components + error visibility (PRs #521, #522 → alpha)
+
+**#521 (#388):** Added `ListItem` and `Row` components to `sdk/python/plexi_sdk/ui.py`. Both handle vertical centering internally — eliminates the `ctx.text` `align=` omission bug and manual y-offset math (`h * 0.38`, `h * 0.72`) that was producing subtle layout errors in descriptor-renderer. `ListItem` is a single/double-line item card (title, subtitle, leading icon, trailing); `Row` is a horizontal info row (leading icon, label, trailing badge/chevron). Gemini review: used allocated `h` for subtitle positioning instead of `self._h()` for consistency. Declined padding-on-Row suggestion — `Row` has no background rect; inner padding is the container's concern.
+
+**#522 (#424 partial):** Two process_app error visibility fixes that don't require v3.6 AI plumbing:
+- `lifecycle.rs`: `BOOT_TIMEOUT=10s` — apps that never send `Ready` now flip to `Crashed` after 10s instead of hanging on "starting…" indefinitely.
+- SDK: consecutive render exception counter (threshold=3) — after 3 consecutive `on_render` failures, `traceback.print_exc()` + re-raise. Traceback hits stderr before `os._exit(0)` terminates the process; lifecycle flips to `Crashed` via stdout EOF regardless, but diagnostic info now appears in the host log. Counter resets on any successful render.
+Remaining #424 item (AI config error surfacing in-pane) deferred until v3.6 AI plumbing is stable.
+
+**Breaks if:** `from plexi_sdk.ui import ListItem, Row` raises ImportError. Or: an app frozen in `Booting` for >10s doesn't flip to "crashed" pill. Or: an app whose `on_render` always throws shows no "crashed" indicator after 3 frames.
+
 ## 2026-05-02 — [CHANGED] v3.6 complete — chat-poc + docs/specs deletion (PRs #518, #519 → alpha)
 
 **#519 (#508):** Added `examples/chat-poc/` — conversational chat POC proving AiQuery/AiResponse round-trip via OpenRouter end-to-end. Tier selector (l/m/h), full multi-turn history, loading state, inline error display, auto-scroll to bottom on new turns. Replaced `ai-query-test` as the canonical AI demo. Gemini review caught a real render-order bug (text_input must come after ctx.render() — render clears the pane first), private member access for scroll-to-bottom (fixed by setting scroll_offset=1_000_000 and letting Scrollable.render() clamp it), and double-padding on the inner Column (fixed with padding=0).
