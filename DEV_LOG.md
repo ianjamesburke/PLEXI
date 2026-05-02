@@ -1,5 +1,18 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [FIX] Tighten freeze watchdog + throttle macOS drag-cursor polling (PR #532 → alpha, closes #396? no — closes #530)
+
+Four silent crashes on alpha during a single ~35-min window today (sessions starting 03:27, 03:53, 03:56, all dying without panic or `.ips`). Triggered by dragging an image into a zoomed Claude Code terminal pane — macOS spinning ball, then SIGKILL. Watchdog (added earlier) was running but never logged `[FREEZE]`: the 3453ms peak stall fell under the 5s threshold.
+
+**Three changes:**
+1. `logging.rs`: `SAMPLE_INTERVAL` 5s → 1s, `FREEZE_THRESHOLD_SECS` 5s → 1s, `HEARTBEAT_EVERY_N_SAMPLES` 6 → 30 (heartbeat cadence preserved). The next freeze will leave a `[FREEZE]` line in the log before the OS kills the process.
+2. `app/mod.rs`: drag-cursor `request_repaint_after` 16ms → 100ms. Calling `NSApplication.mainWindow` + `mouseLocationOutsideOfEventStream` 60×/sec from the render loop is unjustified regardless of whether it's the root cause.
+3. `app/mod.rs`: skip the entire unsafe ObjC cursor probe when a pane is zoomed. Targeting is moot when one pane fills the window — this removes the suspect code path from the exact #530 scenario.
+
+**What this is NOT:** root-cause fix. Could not prove the ObjC calls cause the freeze; the 3.4s stall could equally be `TerminalView` rendering a large pty output burst. SIGKILL bypasses every Rust handler, so the watchdog can only buy diagnostics, not survival. True per-pane crash isolation requires architectural work not yet started.
+
+**Breaks if:** No `[FREEZE]` lines appear in `~/.plexi-alpha/plexi.log` after a freeze recurs (sample interval not firing). Or: heartbeat cadence drifts off 30s. Or: dragging a file into a non-zoomed pane no longer focuses the correct pane (cursor probe broke after throttle).
+
 ## 2026-05-02 — [FIX] Login-shell env inheritance + TextInput layout widget (PR #531 → alpha)
 
 **Root cause 1 — API keys invisible to Plexi:** `install_login_shell_path()` only adopted `PATH` from the login shell. `OPENROUTER_API_KEY` and other user secrets set in `~/.zsh_secrets` (sourced from `.zshrc`) were never in the process env. Added `install_login_shell_env()`: runs `zsh -l -c env`, skips system/terminal vars (HOME, USER, TERM, etc.), sets any remaining var not already in the process env. Called in `main()` immediately after `install_login_shell_path()`. Log line "Adopted N env vars from login shell" confirms it ran.
