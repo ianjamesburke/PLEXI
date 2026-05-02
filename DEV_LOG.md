@@ -1,14 +1,37 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [GOTCHA] OPENROUTER_API_KEY env-adoption — multiple failed attempts, still broken
+
+**Symptom (still active as of 04:49:55):** chat-poc emits `ai_query timed out after 35s — check OPENROUTER_API_KEY and network connectivity` on every send. `~/.plexi-alpha/plexi.log` shows `Adopted 5 env vars from login shell` on every launch — same value before and after each "fix". Five is suspicious: the user's login shell exports dozens of vars, and `OPENROUTER_API_KEY` is reachable manually (`zsh -i -l -c 'echo $OPENROUTER_API_KEY'` returns the key).
+
+**What was tried — all failed:**
+
+1. **PR #531 — added `install_login_shell_env()` running `zsh -l -c env`.** Hypothesis: GUI bundles only inherit minimal env, so probe the login shell and `set_var` anything missing. Shipped to 3.4.10, installed, log showed "Adopted 5 env vars". Did not fix the timeout. Did not verify whether `OPENROUTER_API_KEY` was one of the 5. **Mistake: shipped without checking which vars were adopted — "5" is the same answer as broken.**
+
+2. **PR #533 — changed `-l -c env` to `-i -l -c env`.** Hypothesis: `~/.zshrc` (which sources `~/.zsh_secrets`) only loads in interactive shells, so `-l` alone misses it. Verified the hypothesis with a clean-env CLI test (`env -i /bin/zsh -l -c env | grep OPENROUTER` → empty; `-i -l` → key present). Shipped to 3.4.11. Log STILL shows "Adopted 5 env vars". **Either the 3.4.11 binary does not actually contain `1bf4eae` (the parallel session that ran `just install` for PR #532's bump may have built from a worktree that pre-dated my merge), or the probe is failing for a different reason and `-i -l` was never the bottleneck.**
+
+3. **Did not consider:** running `just install` *myself* from `worktrees/alpha/` after my fix merged, to guarantee the installed binary contains my commit. I trusted the parallel session's install. The "5 vars" count is direct evidence the running binary is not the one I thought I shipped.
+
+**What I never investigated and should have:**
+
+- Which 5 vars are being adopted? Add a one-line `log::info!` with the adopted keys (or at least the count + a sample) before declaring the probe "working".
+- Is `1bf4eae` actually in the running binary? Add a build-stamp log line tied to git SHA — every `Plexi Alpha.app` should print its commit on startup, so we can rule out stale binaries in 1 second.
+- Does `Command::new(&shell).args(["-i", "-l", "-c", "env"])` behave the same way when invoked from a GUI process (no controlling tty) as it does from a terminal? Interactive zsh may detect no-tty and skip `.zshrc` even with `-i`. **This is the most likely real root cause and was never tested.**
+- The existing `crate::secrets` module (Keychain-backed, issue #296 has the live ticket in v3.9) is a working alternative path that bypasses the shell-probe problem entirely.
+
+**Honest assessment of failure mode:** I treated a probe-output count of "5" as success because the env-adoption code ran without error, then shipped twice without verifying behavior end-to-end. The user's 35s timeout is exactly the same before PR #531, after PR #531, and after PR #533. Two ship cycles burned. The next agent should not assume `-i -l` works in a GUI subprocess context — verify by logging the adopted keys *and* the number, and ideally check whether `Command::new` even sees `~/.zshrc` without a tty.
+
+**Breaks if:** literally still broken — chat-poc times out at 35s. To verify a real fix, look for `OPENROUTER_API_KEY` in the adopted-keys log line *and* see chat-poc reply within ~5s.
+
 ## 2026-05-02 — [FIX] Use `-i -l` for env probe so .zshrc-defined secrets load (PR #533 → alpha)
 
 PR #531 added `install_login_shell_env()` to adopt user secrets from the login shell, but used `zsh -l -c env` (login-only). Login mode loads `~/.zprofile` / `~/.zlogin` but NOT `~/.zshrc` — the shell is non-interactive. Secrets sourced from `.zshrc` (e.g. `~/.zsh_secrets` containing `OPENROUTER_API_KEY`) were therefore invisible to the GUI bundle, and chat-poc would still hit "ai_query timed out after 35s — check OPENROUTER_API_KEY" on a fresh launch.
 
-**Fix:** `zsh -l -c env` → `zsh -i -l -c env`. Interactive mode forces `.zshrc` to load alongside the login profiles. Verified locally: `env -i /bin/zsh -l -c env | grep OPENROUTER` returned empty; same probe with `-i -l` returns the key.
+**Fix (DID NOT WORK — see GOTCHA entry above):** `zsh -l -c env` → `zsh -i -l -c env`. Interactive mode forces `.zshrc` to load alongside the login profiles. Verified locally: `env -i /bin/zsh -l -c env | grep OPENROUTER` returned empty; same probe with `-i -l` returns the key. Shipped to 3.4.11; behaviour unchanged (still "Adopted 5 env vars"; chat-poc still times out at 35s).
 
 **What NOT to do:** Don't pivot to a Plexi-managed secrets vault for this. The vault is real (issue #296, v3.9 milestone — `crate::secrets` Keychain-backed scaffolding already exists), but shell-env adoption is the standard macOS GUI bundle fix used by every comparable tool (iTerm, Warp, VS Code, Cursor). Users will always have keys in `.zshrc`; we shouldn't force them into a Plexi UI just to make Plexi work. The two systems coexist — vault for first-class Plexi-only secrets, shell-env adoption for existing user setups.
 
-**Breaks if:** chat-poc still times out at 35s on a fresh GUI launch despite `OPENROUTER_API_KEY` being set in `~/.zshrc`. Or: log shows fewer than ~10 vars in "Adopted N env vars from login shell" line for a typical user shell.
+**Breaks if:** chat-poc still times out at 35s on a fresh GUI launch despite `OPENROUTER_API_KEY` being set in `~/.zshrc`. Or: log shows fewer than ~10 vars in "Adopted N env vars from login shell" line for a typical user shell. **(Both currently broken — see GOTCHA above.)**
 
 ## 2026-05-02 — [FIX] Tighten freeze watchdog + throttle macOS drag-cursor polling (PR #532 → alpha, closes #396? no — closes #530)
 
