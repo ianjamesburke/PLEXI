@@ -103,10 +103,10 @@ bump-alpha:
     new="$major.$minor.$((patch + 1))"
     sed -i '' "s/^version = \"$current\"/version = \"$new\"/" Cargo.toml
     cargo generate-lockfile
-    # Collect commits since last tag, stripping merge commits and chore: DEV_LOG entries
-    last_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-    if [[ -n "$last_tag" ]]; then
-        range="$last_tag..HEAD"
+    # Collect commits since last alpha bump, stripping merge commits and chore: DEV_LOG entries
+    last_bump=$(git log --grep="^chore: bump alpha" --format="%H" | head -1)
+    if [[ -n "$last_bump" ]]; then
+        range="$last_bump..HEAD"
     else
         range="HEAD~20..HEAD"
     fi
