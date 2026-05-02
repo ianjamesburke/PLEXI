@@ -1980,6 +1980,7 @@ class App:
         self._pending_measure_text: "dict[str, asyncio.Queue]" = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: float | None = None
+        self._consecutive_render_errors: int = 0
         # Strong references to background asyncio tasks created by
         # _dispatch_hook_task. Without this, CPython may GC a task before it
         # completes. The done callback removes each task from the set.
@@ -2328,8 +2329,14 @@ class App:
                     ctx = self._make_ctx(frame_id, elapsed=elapsed)
                     try:
                         await self._dispatch_hook(self.on_render, ctx)
+                        self._consecutive_render_errors = 0
                     except Exception as e:
+                        self._consecutive_render_errors += 1
                         ctx.error(f"on_render exception: {e}")
+                        if self._consecutive_render_errors >= 3:
+                            import traceback as _tb
+                            _tb.print_exc()
+                            raise
                     ctx.frame_done()
 
                 elif t == "key":
