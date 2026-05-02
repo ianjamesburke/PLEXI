@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.19] — 2026-05-02
+
+### Changes
+- feat(v3.7): context injection for all open panes, fix text cutoff and TextInput focus
+- docs: consolidate project docs — remove ARCHITECTURE.md and ROADMAP.md, add GLOSSARY.md, update CLAUDE.md
+
 ## [3.4.18] — 2026-05-02
 
 ### Changes
