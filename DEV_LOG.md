@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] Add text_row() host-measured layout primitive (PR #540 → alpha)
+
+Added `text_row()` method to RenderContext for rendering multiple text segments horizontally with SDK-owned spacing and alignment. Host measures each segment with real font metrics and flows them left-to-right; eliminates manual position math and makes padding mishaps impossible. Configurable via items (dict with text/color/size/monospace), gap spacing (default 8px), and alignment. Updated input-inspector to use it instead of hardcoded `div_x + PAD + 64` offsets, resolving the visual gap between timestamp and event in the log.
+**Breaks if:** text_row is called without a "text" key in an item dict (raises ValueError), or rendered log entries show visual gaps/overlap in input-inspector.
+
 ## 2026-05-02 — [CHANGED] Add input-inspector POC app (PR #529 → alpha)
 
 Added `examples/input-inspector/` — a two-panel PGAP app that exercises every input event type (key, click, mouse movement, scroll). Left panel is interactive with live cursor position and tracking dot; right panel is an event log colour-coded by category. Verifies all input events deliver correctly after issue #331 investigation.
