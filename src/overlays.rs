@@ -54,6 +54,12 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
+                ui.label(
+                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .size(10.0)
+                        .color(self.colors.text_dim),
+                );
+
                 let notif_count = self.visible_notification_count();
                 if notif_count > 0 {
                     let badge_text = if notif_count > 9 {
