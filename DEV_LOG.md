@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [FIX] Login-shell env inheritance + TextInput layout widget (PR #531 → alpha)
+
+**Root cause 1 — API keys invisible to Plexi:** `install_login_shell_path()` only adopted `PATH` from the login shell. `OPENROUTER_API_KEY` and other user secrets set in `~/.zsh_secrets` (sourced from `.zshrc`) were never in the process env. Added `install_login_shell_env()`: runs `zsh -l -c env`, skips system/terminal vars (HOME, USER, TERM, etc.), sets any remaining var not already in the process env. Called in `main()` immediately after `install_login_shell_path()`. Log line "Adopted N env vars from login shell" confirms it ran.
+
+**Root cause 2 — TextInput overlap with Column children:** `ctx.text_input()` requires manual absolute coordinates. Apps that used it alongside a `Column` (which renders `Divider`/`Footer` at the bottom) had the input float at the absolute position, visually overlapping the Column's bottom children. Added `TextInput` to `sdk/python/plexi_sdk/ui.py` — a proper `Component` subclass that participates in Column layout: `measure()` returns fixed height (48px default), `render()` calls `ctx.text_input()` with the layout-computed `(x, y, w)`, and `.submitted` property exposes the result after `ctx.render()`. `chat.py` migrated to use it.
+
+**What NOT to do:** Never use `ctx.text_input()` with manual absolute coords inside an app that also uses a Column — they have no shared coordinate authority. Always use `TextInput` as a Column child instead.
+
+**Breaks if:** chat-poc text input box overlaps the footer (regression). Or: `from plexi_sdk.ui import TextInput` raises ImportError. Or: log does NOT show "Adopted N env vars from login shell" on alpha startup (env probe failed silently).
+
 ## 2026-05-02 — [CHANGED] v3.7 complete — app tool protocol + host context injection (PR #526 → alpha)
 
 Full v3.7 milestone: ExposeTools/ToolCall/ToolResult PGAP protocol, global tool registry (`src/plexi_ai/tool_dispatch.rs`), multi-round broker tool loop, OpenRouter streaming tool_call delta accumulation, host context injection, Python `@app.tool` decorator, and `examples/tool-poc/` counter POC.
