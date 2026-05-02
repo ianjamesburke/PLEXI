@@ -2,6 +2,15 @@
 
 Newest releases appear first.
 
+## [3.4.20] — 2026-05-02
+
+### Changes
+- feat(chat): polished bubble UI + TextInput refocus fix (#544)
+- feat(input-inspector): add inputs page and per-category event filtering
+- fix(logging): add info-level broker tool log, fix [log] section header in config
+- chore: rename bundle to Plexi Alpha, default chat tier to low
+- docs: update DEV_LOG with v3.7 context injection and TextInput fixes
+
 ## [3.4.19] — 2026-05-02
 
 ### Changes
