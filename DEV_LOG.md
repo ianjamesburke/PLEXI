@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] v3.7 context injection + TextInput fixes + list_view rename
+Context injection (#396): AI broker now receives all open panes via a global snapshot updated each frame, not just the requesting pane. Implemented as a `PANE_SNAPSHOT` singleton in `broker.rs` written by `PlexiApp::update()` each frame, read by routing on `AiQuery` dispatch.
+
+Text descender cutoff: `Label.measure()` and `Heading.measure()` in `ui.py` were returning exact baseline height with no room for descenders. Added `DESCENDER_PAD = 3.0` to both.
+
+TextInput focus: host widget rect was hardcoded to 24px while SDK allocates 48px — clicks on the lower half missed the widget entirely. Now uses SDK-supplied `h` field on `DrawCommand::TextInput`. Also added `text_input_has_focus` flag so `handle_key` suppresses app key forwarding while typing (typing "h" in chat input no longer triggers tier change).
+
+Renamed `ctx.list()` → `ctx.list_view()` to fix Pyright error from shadowing Python's `list` builtin.
+**Breaks if:** chat-poc text input is unclickable after AI responds, text descenders still clipped, or example apps using `ctx.list_view()` crash with AttributeError.
+
 ## 2026-05-02 — [CHANGED] Add text_row() host-measured layout primitive (PR #540 → alpha)
 
 Added `text_row()` method to RenderContext for rendering multiple text segments horizontally with SDK-owned spacing and alignment. Host measures each segment with real font metrics and flows them left-to-right; eliminates manual position math and makes padding mishaps impossible. Configurable via items (dict with text/color/size/monospace), gap spacing (default 8px), and alignment. Updated input-inspector to use it instead of hardcoded `div_x + PAD + 64` offsets, resolving the visual gap between timestamp and event in the log.
