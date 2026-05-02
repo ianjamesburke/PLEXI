@@ -16,11 +16,13 @@ use std::time::{Duration, Instant};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 /// How often the watchdog samples the frame counter. Short enough to catch brief freezes.
-const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
-/// How many sample intervals between full heartbeat log lines (5s × 6 = 30s).
-const HEARTBEAT_EVERY_N_SAMPLES: u64 = 6;
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// How many sample intervals between full heartbeat log lines (1s × 30 = 30s).
+const HEARTBEAT_EVERY_N_SAMPLES: u64 = 30;
 /// UI thread is considered frozen after this many seconds without a frame tick.
-const FREEZE_THRESHOLD_SECS: u64 = 5;
+/// Lowered from 5s — real stalls of 3–4s (enough for the macOS spinning ball)
+/// were silently missed by the old threshold.
+const FREEZE_THRESHOLD_SECS: u64 = 2;
 
 /// Return the path of the current log file.
 pub fn log_path() -> PathBuf {
