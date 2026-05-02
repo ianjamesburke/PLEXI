@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.22] — 2026-05-02
+
+### Changes
+- fix: make @app.tool decorator cumulative + include usage in OpenRouter streams
+
 ## [3.4.21] — 2026-05-02
 
 ### Changes
