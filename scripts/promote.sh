@@ -97,8 +97,8 @@ if [[ "$to" == "beta" ]]; then
     git -C "$ALPHA_TREE" commit -m "chore: promote to beta — v$new"
     git -C "$ALPHA_TREE" push
 
-    echo "Fast-forwarding beta and syncing worktree..."
-    git push origin alpha:beta
+    echo "Force-pushing alpha to beta and syncing worktree..."
+    git push origin alpha:beta --force
     git -C "$BETA_TREE" pull
 
     echo ""
