@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.28] — 2026-05-02
+
+### Changes
+- Fetch complete OpenRouter generation metrics; fix text input widget clamping to pane bounds
+
 ## [3.4.27] — 2026-05-02
 
 ### Changes
