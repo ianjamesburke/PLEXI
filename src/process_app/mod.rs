@@ -799,6 +799,21 @@ impl ProcessApp {
                 (output.response, cursor_idx)
             };
 
+            // Click-to-refocus: the pane-level Sense::click_and_drag()
+            // interact widget (below) steals pointer events from the
+            // TextEdit's native focus-on-click. Detect primary-button
+            // press inside this input's rect and grant focus explicitly.
+            let pointer_pressed_inside = ui.input(|i| {
+                i.pointer.button_pressed(egui::PointerButton::Primary)
+            }) && ui.input(|i| {
+                i.pointer
+                    .interact_pos()
+                    .map_or(false, |pos| widget_rect.contains(pos))
+            });
+            if pointer_pressed_inside {
+                resp.request_focus();
+            }
+
             if resp.has_focus() {
                 any_has_focus = true;
             }

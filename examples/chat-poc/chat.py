@@ -7,13 +7,11 @@ from dataclasses import dataclass
 from plexi_sdk import App, RenderContext, CapabilityDeniedError, AiResponse
 from plexi_sdk.ui import (
     AppBar,
+    ChatBubble,
     Column,
     Divider,
-    Footer,
     Label,
-    RED,
     Scrollable,
-    Section,
     Spacer,
     TextInput,
 )
@@ -22,8 +20,6 @@ SYSTEM_PROMPT = (
     "You are a helpful, concise assistant. "
     "Answer clearly without unnecessary padding."
 )
-
-TIER_LABELS = {"low": "Low (fast)", "medium": "Medium", "high": "High (best)"}
 
 
 @dataclass
@@ -34,26 +30,22 @@ class Turn:
 
 class ChatApp(App):
     def on_init(self, ctx: RenderContext) -> None:
-        self._tier: str = "low"
         self._turns: list[Turn] = []
         self._in_flight: bool = False
         self._scroll = Scrollable(child=Column([]))
-        self._input = TextInput("chat-input")
+        self._input = TextInput("chat-input", multiline=True, height=64.0)
         self._scroll_to_bottom_next: bool = False
-        ctx.status_summary("Chat — type a message and press Enter")
+        ctx.status_summary("Chat")
         self.emit.info("chat-poc started")
 
     def _maybe_scroll_to_bottom(self) -> None:
         if not self._scroll_to_bottom_next:
             return
         self._scroll_to_bottom_next = False
-        # Large value — clamped to actual max by Scrollable.render() on the next frame.
         self._scroll.scroll_offset = 1_000_000.0
 
     def _send(self, text: str) -> None:
-        if not text.strip():
-            return
-        if self._in_flight:
+        if not text.strip() or self._in_flight:
             return
 
         self._turns.append(Turn("user", text))
@@ -63,12 +55,11 @@ class ChatApp(App):
 
         history = [{"role": t.role, "content": t.text}
                    for t in self._turns if t.role in ("user", "assistant")]
-        tier = self._tier
 
         def runner() -> None:
             try:
                 resp: AiResponse = self.emit.run_sync(self.emit.ai_query(
-                    model_tier=tier,
+                    model_tier="low",
                     system=SYSTEM_PROMPT,
                     messages=history,
                 ))
@@ -88,53 +79,30 @@ class ChatApp(App):
         threading.Thread(target=runner, daemon=True).start()
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
-        k = key.lower()
-        if k == "l":
-            self._tier = "low"
-            self.emit.schedule_render(after_ms=20)
-        elif k == "m":
-            self._tier = "medium"
-            self.emit.schedule_render(after_ms=20)
-        elif k == "h":
-            self._tier = "high"
-            self.emit.schedule_render(after_ms=20)
-        else:
-            self._scroll.handle_key(key)
+        self._scroll.handle_key(key)
 
-    def _build_history_column(self) -> Column:
+    def _build_history(self) -> Column:
         children: list = []
         for turn in self._turns:
-            if turn.role == "user":
-                children.append(Label(f"You: {turn.text}", bold=True))
-            elif turn.role == "assistant":
-                children.append(Label(turn.text, max_lines=50))
-            else:
-                children.append(Label(turn.text, color=RED, max_lines=10))
-            children.append(Spacer(size=8.0))
+            children.append(ChatBubble(turn.text, role=turn.role))
+            children.append(Spacer(size=6.0))
         if self._in_flight:
             children.append(Label("thinking…", tone="hint"))
         if not children:
-            children.append(Label("No messages yet — type below and press Enter.", tone="hint"))
-        return Column(children, padding=0)
+            children.append(Label("Type a message below to start chatting.", tone="hint"))
+        return Column(children, padding=0, gap=0)
 
     def on_render(self, ctx: RenderContext) -> None:
-        self._scroll.child = self._build_history_column()
-
+        self._scroll.child = self._build_history()
         self._input.placeholder = (
-            "Waiting for response…"
-            if self._in_flight
-            else "Type a message… (Enter to send, l/m/h to change tier)"
+            "Waiting for response…" if self._in_flight
+            else "Type a message… (Shift+Enter for newline)"
         )
-        tier_label = TIER_LABELS.get(self._tier, self._tier)
         ctx.render(Column([
             AppBar(title="Chat"),
-            Section("Conversation"),
             self._scroll,
             Divider(),
             self._input,
-            Footer(
-                f"Tier: {tier_label}  |  l=Low  m=Medium  h=High  |  j/k=scroll"
-            ),
         ]))
 
         if self._input.submitted is not None and not self._in_flight:

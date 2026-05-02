@@ -229,6 +229,9 @@ pub struct PlexiApp {
     /// Monotonically increasing counter. Assigned to each new `Window` as its
     /// stable `window_id`. Never reused — only increments.
     pub(crate) next_window_id: u64,
+    /// Pane count from the last snapshot push. Avoids rebuilding the global
+    /// pane context every frame when no panes were opened or closed.
+    pane_snapshot_len: usize,
 }
 
 impl PlexiApp {
@@ -570,6 +573,7 @@ impl PlexiApp {
                     context_active_window: ws.context_active_window,
                     minimap_visible_per_context: HashMap::new(),
                     next_window_id: next_id,
+                    pane_snapshot_len: 0,
                 };
             }
         }
@@ -654,6 +658,7 @@ impl PlexiApp {
             context_active_window: HashMap::new(),
             minimap_visible_per_context: HashMap::new(),
             next_window_id: 2,
+            pane_snapshot_len: 0,
         }
     }
 

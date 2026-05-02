@@ -65,9 +65,16 @@ impl PlexiApp {
     }
 
     /// Build a snapshot of all open panes across all windows and push it into
-    /// the global pane context used by the AI broker (#396).
-    pub(super) fn update_pane_context_snapshot(&self) {
-        let mut panes = Vec::new();
+    /// the global pane context used by the AI broker (#396). Skips the rebuild
+    /// when the total pane count hasn't changed since the last push.
+    pub(super) fn update_pane_context_snapshot(&mut self) {
+        let current_len: usize = self.windows.iter().map(|w| w.panes.len()).sum();
+        if current_len == self.pane_snapshot_len {
+            return;
+        }
+        self.pane_snapshot_len = current_len;
+
+        let mut panes = Vec::with_capacity(current_len);
         for window in &self.windows {
             for (_, pane) in &window.panes {
                 if let Some(app) = pane.as_app() {

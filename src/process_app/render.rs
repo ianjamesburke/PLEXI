@@ -730,27 +730,24 @@ pub(crate) fn render_text_row(
 
         let color = parse_color(&item.color).unwrap_or(colors.text_primary);
 
-        // Measure the text with real font metrics
         let galley = ui.fonts(|f| {
-            f.layout_no_wrap(item.text.clone(), font_id.clone(), color)
+            f.layout_no_wrap(item.text.clone(), font_id, color)
         });
 
         let text_w = galley.size().x;
 
-        // Render the text segment
         let align2 = match align {
             "center" => egui::Align2::CENTER_CENTER,
+            "left_top" => egui::Align2::LEFT_TOP,
             "left_center" => egui::Align2::LEFT_CENTER,
-            _ => egui::Align2::LEFT_CENTER,
+            _ => egui::Align2::LEFT_TOP,
         };
 
-        ui.painter().with_clip_rect(clip).text(
+        let rect = align2.anchor_size(
             egui::pos2(origin.x + cursor_x, origin.y + y),
-            align2,
-            &item.text,
-            font_id,
-            color,
+            galley.size(),
         );
+        ui.painter().with_clip_rect(clip).galley(rect.min, galley, color);
 
         cursor_x += text_w + gap;
     }
