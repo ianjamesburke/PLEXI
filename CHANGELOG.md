@@ -2,6 +2,13 @@
 
 Newest releases appear first.
 
+## [3.4.15] — 2026-05-02
+
+### Changes
+- feat(examples): input-inspector POC for issue #331 (#529)
+- chore: promote to beta — v3.4.14
+- fix(promote.sh): auto-push unpushed commits instead of failing
+
 ## [3.4.14] — 2026-05-02
 
 ### Changes

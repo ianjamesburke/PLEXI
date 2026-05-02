@@ -20,6 +20,7 @@ from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, FG, MUTED, ACC
 from plexi_sdk import BODY, CAPTION, PAD
 
 MAX_EVENTS = 200
+MOVE_LOG_MIN_INTERVAL = 1.0 / 30.0
 ROW_H = 26.0
 HEADER_H = 44.0
 FOOTER_H = 32.0
@@ -49,6 +50,8 @@ class InputInspectorApp(App):
         self._mouse_pos: tuple[float, float] = (0.0, 0.0)
         self._held_buttons: list[str] = []
         self._last_key = ""
+        self._last_move_log_at = 0.0
+        self._last_move_buttons: tuple[str, ...] = ()
         # Enable continuous mouse-move delivery
         ctx.set_mouse_tracking(True)
 
@@ -74,8 +77,16 @@ class InputInspectorApp(App):
 
     def on_mouse_move(self, ctx: RenderContext, x: float, y: float, buttons: list) -> None:
         self._mouse_pos = (x, y)
-        held = ", ".join(buttons) if buttons else "—"
-        self._push("mouse_move", f"move   ({x:.0f}, {y:.0f})  held={held}")
+        now = time.monotonic()
+        button_state = tuple(buttons)
+        if (
+            now - self._last_move_log_at >= MOVE_LOG_MIN_INTERVAL
+            or button_state != self._last_move_buttons
+        ):
+            held = ", ".join(buttons) if buttons else "—"
+            self._push("mouse_move", f"move   ({x:.0f}, {y:.0f})  held={held}")
+            self._last_move_log_at = now
+            self._last_move_buttons = button_state
 
     def on_scroll(self, ctx: RenderContext, id: str, offset_y: float) -> None:
         if id == SCROLL_ID:
@@ -173,10 +184,15 @@ class InputInspectorApp(App):
             ctx.rect(div_x, row_y, panel_w, ROW_H, fill=bg)
 
             color = CAT_COLOR.get(cat, DEFAULT_COLOR)
-            ctx.text(div_x + PAD, row_y + ROW_H / 2, ts,
-                     size=CAPTION, color=MUTED, align="left_center", monospace=True)
-            ctx.text(div_x + PAD + 64, row_y + ROW_H / 2, msg,
-                     size=CAPTION, color=color, align="left_center", monospace=True)
+            ctx.text_row(
+                div_x + PAD, row_y + ROW_H / 2,
+                items=[
+                    {"text": ts, "color": MUTED, "size": CAPTION, "monospace": True},
+                    {"text": msg, "color": color, "size": CAPTION, "monospace": True},
+                ],
+                gap=12.0,
+                align="left_center",
+            )
 
             ctx.line(div_x, row_y + ROW_H - 1, ctx.w, row_y + ROW_H - 1,
                      color=HIGHLIGHT, width=0.5)

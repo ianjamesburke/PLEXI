@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] Add input-inspector POC app (PR #529 → alpha)
+
+Added `examples/input-inspector/` — a two-panel PGAP app that exercises every input event type (key, click, mouse movement, scroll). Left panel is interactive with live cursor position and tracking dot; right panel is an event log colour-coded by category. Verifies all input events deliver correctly after issue #331 investigation.
+**Breaks if:** mouse movement or scroll events don't appear in the event log of input-inspector.
+
 ## 2026-05-02 — [FIX] AiQuery silently dropped — never reached route_command (PR #536 → alpha)
 
 `DrawCommand::AiQuery`, `ExposeTools`, `ToolResult` (and `OpenVideo`, `CloseVideo`, `SetVideoState`, `Image`, `AudioMeter`) were absent from the dispatch match lists in both `ui()` and `background_tick` in `process_app/mod.rs`. They fell through to `other => pending_frame.push(other)` / `_ => {}` — silently dropped, never routed. Root cause of chat never working since PR #526 introduced `AiQuery`. Any new `DrawCommand` variant that has a `route_command` handler must also be added to both match lists or it will be silently discarded.
