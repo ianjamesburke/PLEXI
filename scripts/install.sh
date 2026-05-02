@@ -80,6 +80,11 @@ if [ ! -f "$CONFIG" ]; then
   echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
 fi
 
+# Ensure all required top-level config sections are present (additive-only migration).
+# Sections: [notifications] [theme] [ai] [beta]
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/migrate-config.sh" "$CONFIG" "[notifications]" "[theme]" "[ai]" "[beta]"
+
 echo "Installed $app_dest"
 echo "CLI binary: $bin_dest"
 echo "Config dir: $profile_dir/"
