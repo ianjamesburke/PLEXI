@@ -132,7 +132,7 @@ Newline-delimited JSON over a child process's stdin/stdout. **Host → app:** `P
 
 ### Capability model
 
-Every app declares capabilities in `manifest.toml`. At runtime, any command that needs one is checked against `permissions.json`. Undeclared capabilities queue a modal prompt; decisions persist.
+Every app declares capabilities in manifest.toml. At runtime, any command that needs one is checked against permissions.jsonl. Undeclared capabilities queue a modal prompt; decisions persist.
 
 ### Directory-scoped secrets (hard invariant)
 
