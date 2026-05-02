@@ -2,6 +2,13 @@
 
 Newest releases appear first.
 
+## [3.4.13] — 2026-05-02
+
+### Changes
+- fix(justfile): bump-alpha SIGPIPE with pipefail — use git log -1 not | head -1 (#537)
+- fix(routing): AiQuery/ExposeTools/ToolResult not dispatched — fell through to render buffer (#536)
+- fix(changelog): accurate per-version deltas + bump-alpha anchors to last bump not last tag (#535)
+
 ## [3.4.12] — 2026-05-02
 
 ### Changes
