@@ -1,5 +1,19 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [FIX] Three root causes behind chat-poc failures (PR #534 → alpha)
+
+**Three bugs found and fixed:**
+
+1. **TextInput loses focus after first Enter (host-side).** egui's singleline TextEdit drops focus on Enter. Auto-focus only fires for `newly_visible` inputs (first frame). After the first submit, focus was never restored — user had to click the input to type again. Fix: `resp.request_focus()` after singleline submit detection.
+
+2. **AiResponse delayed by one frame (outbound flush timing).** `outbound_events` (including broker `AiResponse`) were flushed only at the START of the next `ui()` call. Events drained from `http_rx` during a frame sat in the buffer for one full frame cycle (~100ms with idle polling). Combined with the SDK's 35s async timeout, this created a delivery race. Fix: added `flush_outbound_events()` at the END of `ui()` so events are delivered same-frame.
+
+3. **Env probe logged count but not key names.** "Adopted 5 env vars" gave no way to verify OPENROUTER_API_KEY was among them. Fix: log line now prints `Adopted N env vars from login shell: [KEY1, KEY2, ...]`.
+
+**PGAP integration test confirmed** the SDK-level flow works correctly — two consecutive text_submitted → ai_query round-trips succeed. The follow-up text input bug was purely host-side (egui focus), not a protocol issue. The `-i -l` env probe fix (PR #533) was verified to produce OPENROUTER_API_KEY even from `</dev/null` (no tty). The installed binary was stale (PR #532's parallel install overwrote #533's build).
+
+**Breaks if:** text input loses focus after pressing Enter in chat-poc (regression). Or: `~/.plexi-alpha/plexi.log` shows "Adopted N env vars" without key names. Or: AI response still times out at 35s on a fresh 3.4.12 launch.
+
 ## 2026-05-02 — [GOTCHA] OPENROUTER_API_KEY env-adoption — multiple failed attempts, still broken
 
 **Symptom (still active as of 04:49:55):** chat-poc emits `ai_query timed out after 35s — check OPENROUTER_API_KEY and network connectivity` on every send. `~/.plexi-alpha/plexi.log` shows `Adopted 5 env vars from login shell` on every launch — same value before and after each "fix". Five is suspicious: the user's login shell exports dozens of vars, and `OPENROUTER_API_KEY` is reachable manually (`zsh -i -l -c 'echo $OPENROUTER_API_KEY'` returns the key).
