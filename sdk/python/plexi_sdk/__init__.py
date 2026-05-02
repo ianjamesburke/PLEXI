@@ -1637,6 +1637,48 @@ class RenderContext:
         _emit({"type": "key_chip_row", "x": x, "y": y, "keys": keys,
                "description": description, "font_size": font_size})
 
+    def text_row(self, x: float, y: float, items: "list[dict]",
+                 gap: float = 8.0, align: str = "left_center") -> None:
+        """Render multiple text segments horizontally with configurable spacing.
+
+        The host measures each text segment with real font metrics and flows
+        them left-to-right — no Python width math.
+
+        `x`, `y`    — origin of the text row.
+        `items`     — list of text segment dicts, each with keys:
+                      - `text`      — string to display (required)
+                      - `color`     — color string (default: FG)
+                      - `size`      — font size in pt (default: BODY)
+                      - `monospace` — bool (default: False)
+        `gap`       — spacing between items in pixels (default: 8.0).
+        `align`     — vertical alignment; use "left_center" to center items
+                      on the y-axis at their midline (default: "left_center").
+
+        Example::
+
+            ctx.text_row(
+                x=24.0, y=200.0,
+                items=[
+                    {"text": "12:34:56", "color": "#6c7086", "size": CAPTION, "monospace": True},
+                    {"text": "key pressed", "color": FG, "size": CAPTION},
+                ],
+                gap=12.0,
+            )
+        """
+        # Validate and normalize items: each dict must have 'text', other keys optional.
+        wire_items = []
+        for item in items:
+            if not isinstance(item, dict) or "text" not in item:
+                raise ValueError("Each item in text_row must be a dict with 'text' key")
+            wire_items.append({
+                "text": item["text"],
+                "color": item.get("color", FG),
+                "size": item.get("size", BODY),
+                "monospace": item.get("monospace", False),
+            })
+        _emit({"type": "text_row", "x": x, "y": y, "items": wire_items,
+               "gap": gap, "align": align})
+
     def shortcuts(self, x: float, y: float, max_width: float,
                   pairs: "list[tuple]", font_size: float = 11.0) -> None:
         """Render a multi-group shortcut row with host-measured layout.

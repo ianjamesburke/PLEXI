@@ -1337,6 +1337,7 @@ impl App for ProcessApp {
         // Sense::click_and_drag() is required here — Sense::click() alone only
         // fires on button-release and does not track press or motion.
         let mouse_response = ui.interact(pane_rect, ui.id(), egui::Sense::click_and_drag());
+        let mut needs_tracking_repaint = false;
         if !pill_consumed_click {
             let origin = pane_rect.min;
 
@@ -1408,27 +1409,26 @@ impl App for ProcessApp {
             // During a drag the pointer may leave the pane; we continue sending
             // events while any button is held so the app can track drag-to-outside.
             if self.mouse_tracking_enabled {
-                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                    let is_dragging = ui.input(|i| {
-                        i.pointer.button_down(egui::PointerButton::Primary)
-                            || i.pointer.button_down(egui::PointerButton::Secondary)
-                    });
-                    if (pane_rect.contains(pos) || is_dragging) && ui.input(|i| i.pointer.is_moving()) {
-                        let buttons = {
-                            let mut held = Vec::new();
-                            if ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
-                                held.push(crate::app_protocol::MouseButton::Primary);
-                            }
-                            if ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary)) {
-                                held.push(crate::app_protocol::MouseButton::Secondary);
-                            }
-                            held
-                        };
+                let pointer_state = ui.input(|i| i.pointer.clone());
+                if let Some(pos) = pointer_state.latest_pos() {
+                    let is_dragging =
+                        pointer_state.button_down(egui::PointerButton::Primary)
+                            || pointer_state.button_down(egui::PointerButton::Secondary);
+                    let is_moving = pointer_state.is_moving();
+                    if (pane_rect.contains(pos) || is_dragging) && is_moving {
+                        let mut buttons = Vec::new();
+                        if pointer_state.button_down(egui::PointerButton::Primary) {
+                            buttons.push(crate::app_protocol::MouseButton::Primary);
+                        }
+                        if pointer_state.button_down(egui::PointerButton::Secondary) {
+                            buttons.push(crate::app_protocol::MouseButton::Secondary);
+                        }
                         self.send_event(&PlexiEvent::MouseMove {
                             x: pos.x - origin.x,
                             y: pos.y - origin.y,
                             buttons,
                         });
+                        needs_tracking_repaint = true;
                     }
                 }
             }
@@ -1441,8 +1441,17 @@ impl App for ProcessApp {
 
         // Idle polling for async HTTP responses. Apps that need faster repaints
         // (games, animations) emit DrawCommand::ScheduleRender { after_ms } each frame.
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(100));
+        //
+        // Pointer-tracking apps are a special case: while the pointer is actively
+        // moving we keep the repaint cadence near 60 FPS so host->app hover state
+        // does not feel sticky.
+        if needs_tracking_repaint {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {

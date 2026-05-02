@@ -13,7 +13,6 @@ Before reporting anything as "done" or "missing", verify against `git log`. Neve
 ## North Star
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — vision, target architecture diagram, key invariants. Read first.
-- [`docs/AGENTS.md`](docs/AGENTS.md) — agent development guide: build, test, install, commit rules.
 
 Vision (why we're building this, long-term direction) lives in `ARCHITECTURE.md §0`.
 
