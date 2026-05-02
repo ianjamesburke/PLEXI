@@ -1594,6 +1594,19 @@ class RenderContext:
                "align": align, "max_width": max_width, "elide": elide,
                "selectable": selectable})
 
+    def markdown(self, x: float, y: float, w: float, text: str,
+                 base_size: float = 14.0, color: str = FG) -> None:
+        """Render markdown text via the host's egui_commonmark renderer.
+
+        The host creates a child Ui at (x, y) with width w and renders the
+        markdown with proper formatting (bold, italic, code blocks, lists, etc.).
+
+        `base_size` — body font size in pt (headers scale relative to this).
+        `color`     — default text colour (hex).
+        """
+        _emit({"type": "markdown", "x": x, "y": y, "w": w, "text": text,
+               "base_size": base_size, "color": color})
+
     def copy_to_clipboard(self, text: str) -> None:
         """Convenience shortcut for `emit.copy_to_clipboard(text)` (#146)."""
         _emit({"type": "copy_to_clipboard", "text": text})

@@ -32,6 +32,7 @@ pub(super) fn render_draw_commands(
     pane_rect: egui::Rect,
     commands: &[DrawCommand],
     colors: &Colors,
+    commonmark_cache: &mut egui_commonmark::CommonMarkCache,
 ) {
     let origin = pane_rect.min;
 
@@ -349,6 +350,50 @@ pub(super) fn render_draw_commands(
 
             DrawCommand::TextRow { x, y, items, gap, align } => {
                 render_text_row(ui, origin, clip, *x, *y, items, *gap, align, colors);
+            }
+
+            DrawCommand::Markdown {
+                x,
+                y,
+                w,
+                text,
+                base_size,
+                color,
+            } => {
+                let text_color = parse_color(color).unwrap_or(colors.text_primary);
+                let md_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x + x, origin.y + y),
+                    egui::vec2(*w, pane_rect.max.y - (origin.y + y)),
+                );
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(md_rect)
+                        .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                );
+                child.set_clip_rect(clip);
+                // Override default text colour so markdown body text matches the
+                // app-specified colour. Header/code styling is handled internally
+                // by egui_commonmark but inherits the base visuals.
+                child.style_mut().visuals.override_text_color = Some(text_color);
+                // Scale body font size to match the app's base_size.
+                child.style_mut().text_styles.insert(
+                    egui::TextStyle::Body,
+                    egui::FontId::proportional(*base_size),
+                );
+                child.style_mut().text_styles.insert(
+                    egui::TextStyle::Small,
+                    egui::FontId::proportional(base_size * 0.85),
+                );
+                child.style_mut().text_styles.insert(
+                    egui::TextStyle::Heading,
+                    egui::FontId::proportional(base_size * 1.4),
+                );
+                child.style_mut().text_styles.insert(
+                    egui::TextStyle::Monospace,
+                    egui::FontId::monospace(base_size * 0.9),
+                );
+                egui_commonmark::CommonMarkViewer::new()
+                    .show(&mut child, commonmark_cache, text);
             }
 
             // MeasureText is handled in routing.rs (needs a response channel);

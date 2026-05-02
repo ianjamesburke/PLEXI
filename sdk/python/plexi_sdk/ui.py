@@ -991,12 +991,10 @@ class ChatBubble(Component):
         bx = x + w - bubble_w if self.role == "user" else x
         ctx.rect(bx, y, bubble_w, h, fill=bg, radius=RADIUS_LG)
         fs = self._font_size()
-        line_h = self._line_h()
         text_x = bx + self.BUBBLE_PAD
         text_y = y + self.BUBBLE_PAD
-        for i, line in enumerate(self._lines(w)):
-            ctx.text(text_x, text_y + i * line_h, line,
-                     size=fs, color=fg, bold=False)
+        text_w = bubble_w - 2 * self.BUBBLE_PAD
+        ctx.markdown(text_x, text_y, text_w, self.text, base_size=fs, color=fg)
 
 
 @dataclass

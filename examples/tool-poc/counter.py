@@ -68,9 +68,16 @@ class CounterApp(App):
         ctx.text(ctx.w / 2 - 60, 100, f"Count: {self._count}", size=32.0, color=accent, bold=True)
 
         # Instructions
-        ctx.text(20, ctx.h - 80, "Open chat-poc in another pane.", size=13.0, color=dim)
-        ctx.text(20, ctx.h - 58, 'Ask: "increment the counter 3 times"', size=13.0, color=dim)
-        ctx.text(20, ctx.h - 36, 'or: "reset the counter"', size=13.0, color=dim)
+        ctx.text(20, ctx.h - 100, "Open chat-poc in another pane.", size=13.0, color=dim)
+        ctx.text(20, ctx.h - 78, 'Ask: "increment the counter 3 times"', size=13.0, color=dim)
+        ctx.text(20, ctx.h - 56, 'or: "reset the counter"', size=13.0, color=dim)
+        ctx.text(20, ctx.h - 30, "Keys: [i]/[+] increment  [r] reset", size=13.0, color=dim)
+
+    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+        if key in ("i", "+"):
+            self._count += 1
+        elif key == "r":
+            self._count = 0
 
 
 if __name__ == "__main__":
