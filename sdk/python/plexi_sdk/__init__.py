@@ -1607,6 +1607,16 @@ class RenderContext:
         _emit({"type": "markdown", "x": x, "y": y, "w": w, "text": text,
                "base_size": base_size, "color": color})
 
+    def image(self, src: str, x: float, y: float, w: float, h: float,
+              fit: str = "contain") -> None:
+        """Draw an image from a file path or URL.
+
+        `fit` controls scaling: "contain" (default, letterbox), "cover"
+        (crop to fill), or "fill" (stretch). Host must implement
+        DrawCommand::Image for this to render.
+        """
+        _emit({"type": "image", "src": src, "x": x, "y": y, "w": w, "h": h,
+               "fit": fit})
     def copy_to_clipboard(self, text: str) -> None:
         """Convenience shortcut for `emit.copy_to_clipboard(text)` (#146)."""
         _emit({"type": "copy_to_clipboard", "text": text})
