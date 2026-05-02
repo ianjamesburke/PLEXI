@@ -2004,7 +2004,11 @@ impl eframe::App for PlexiApp {
 
         // Shortcuts overlay
         if self.show_shortcuts {
-            self.draw_shortcuts_overlay(ctx);
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.show_shortcuts = false;
+            } else {
+                self.draw_shortcuts_overlay(ctx);
+            }
         }
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
