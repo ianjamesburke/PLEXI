@@ -640,6 +640,135 @@ class FooterKeys(Component):
         )
 
 
+# ── Composite list components ──────────────────────────────────────────────
+
+
+@dataclass
+class ListItem(Component):
+    """Single or double-line list item with optional leading icon and trailing text.
+
+    Replaces the manual ``ctx.rect`` + y-offset pattern for list rows.
+    All vertical centering is handled internally — no ``align=`` juggling or
+    ``h * 0.38`` / ``h * 0.72`` magic numbers needed.
+
+    Example::
+
+        ListItem(
+            title=cmd["name"],
+            subtitle=cmd.get("description"),
+            trailing="›",
+            selected=(i == self._sel),
+        )
+    """
+    title: str
+    subtitle: Optional[str] = None
+    leading: Optional[str] = None   # icon character or short label
+    trailing: Optional[str] = None  # chevron, badge text
+    selected: bool = False
+    background: Optional[str] = None  # default: SURFACE (or HIGHLIGHT when selected)
+    radius: float = RADIUS_MD
+
+    HEIGHT_SINGLE = 36.0
+    HEIGHT_DOUBLE = 48.0
+    _LEAD_SLOT = SPACE_XL    # fixed slot width for leading icon
+    _TRAIL_SLOT = SPACE_LG   # fixed slot width for trailing text
+    _PAD_H = SPACE_MD        # inner horizontal padding
+
+    def _h(self) -> float:
+        return self.HEIGHT_DOUBLE if self.subtitle else self.HEIGHT_SINGLE
+
+    def measure(self, avail_w: float) -> float:
+        return self._h()
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        bg = HIGHLIGHT if self.selected else (self.background or SURFACE)
+        ctx.rect(x, y, w, h, bg, radius=self.radius)
+
+        inner_x = x + self._PAD_H
+        inner_w = w - self._PAD_H * 2
+
+        if self.leading:
+            ctx.text(inner_x, y + h / 2.0, self.leading,
+                     size=TEXT_BODY, color=MUTED, align="left_center")
+            inner_x += self._LEAD_SLOT
+            inner_w -= self._LEAD_SLOT
+
+        if self.trailing:
+            ctx.text(x + w - self._PAD_H, y + h / 2.0, self.trailing,
+                     size=TEXT_HINT, color=MUTED, align="right_center")
+            inner_w -= self._TRAIL_SLOT
+
+        title_color = ACCENT if self.selected else FG
+        if self.subtitle:
+            item_h = self._h()
+            ctx.text(inner_x, y + item_h * 0.35, self.title,
+                     size=TEXT_BODY, color=title_color, bold=True,
+                     align="left_center", max_width=inner_w, elide=True)
+            ctx.text(inner_x, y + item_h * 0.70, self.subtitle,
+                     size=TEXT_HINT, color=MUTED,
+                     align="left_center", max_width=inner_w, elide=True)
+        else:
+            ctx.text(inner_x, y + h / 2.0, self.title,
+                     size=TEXT_BODY, color=title_color, bold=True,
+                     align="left_center", max_width=inner_w, elide=True)
+
+
+@dataclass
+class Row(Component):
+    """Horizontal row: optional leading icon, main label, optional trailing text.
+
+    Vertically centres all items automatically. Use instead of paired
+    ``ctx.text(x, y + h/2, ..., align="left_center")`` calls when building
+    info rows with an icon, label, and badge or chevron.
+
+    Example::
+
+        Row(label="Workspace", leading="⚡", trailing=f"{count}")
+    """
+    label: str
+    leading: Optional[str] = None           # icon / short text, left slot
+    trailing: Optional[str] = None          # badge / chevron, right slot
+    font_size: float = TEXT_BODY
+    color: str = FG
+    leading_color: Optional[str] = None     # default: MUTED
+    trailing_color: Optional[str] = None    # default: MUTED
+    height: Optional[float] = None          # default: font_size + SPACE_MD
+    bold: bool = False
+
+    _LEAD_SLOT = SPACE_XL
+    _TRAIL_SLOT = SPACE_XL
+
+    def _h(self) -> float:
+        return self.height if self.height is not None else self.font_size + SPACE_MD
+
+    def measure(self, avail_w: float) -> float:
+        return self._h()
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        yc = y + h / 2.0
+        inner_x = x
+        inner_w = w
+
+        if self.leading:
+            ctx.text(inner_x, yc, self.leading,
+                     size=self.font_size,
+                     color=self.leading_color or MUTED,
+                     align="left_center")
+            inner_x += self._LEAD_SLOT
+            inner_w -= self._LEAD_SLOT
+
+        if self.trailing:
+            ctx.text(x + w, yc, self.trailing,
+                     size=self.font_size,
+                     color=self.trailing_color or MUTED,
+                     align="right_center")
+            inner_w -= self._TRAIL_SLOT
+
+        ctx.text(inner_x, yc, self.label,
+                 size=self.font_size, color=self.color, bold=self.bold,
+                 align="left_center", max_width=inner_w, elide=True)
+
+
 # ── Badge primitive ────────────────────────────────────────────────────────
 
 
@@ -860,6 +989,7 @@ __all__ = [
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
+    "ListItem", "Row",
     # badge primitive
     "badge",
     # scroll helpers
