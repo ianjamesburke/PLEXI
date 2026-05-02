@@ -97,8 +97,11 @@ pub fn install_login_shell_env() {
 
 fn probe_login_shell_env() -> Option<HashMap<String, String>> {
     let shell = detect_shell();
+    // `-i -l`: interactive + login. Login alone loads `~/.zprofile` /
+    // `~/.zlogin` but NOT `~/.zshrc`, so secrets sourced from `.zshrc` (e.g.
+    // `~/.zsh_secrets`) are invisible. Interactive forces `.zshrc` to load.
     let output = Command::new(&shell)
-        .args(["-l", "-c", "env"])
+        .args(["-i", "-l", "-c", "env"])
         .output()
         .ok()?;
     if !output.status.success() {
