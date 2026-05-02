@@ -1192,6 +1192,21 @@ pub enum DrawCommand {
     /// tracking. Send `{ enabled: true }` after `Ready` to start receiving
     /// `on_mouse_move` callbacks. Send `{ enabled: false }` to stop.
     SetMouseTracking { enabled: bool },
+
+    /// Render markdown text using the host's `egui_commonmark` renderer.
+    ///
+    /// The host creates a child `Ui` at `(x, y)` with width `w` and renders
+    /// the markdown with proper formatting (bold, italic, code blocks, etc.).
+    /// `base_size` controls the body font size; `color` sets the default text
+    /// colour.
+    Markdown {
+        x: f32,
+        y: f32,
+        w: f32,
+        text: String,
+        base_size: f32,
+        color: String,
+    },
 }
 
 /// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.

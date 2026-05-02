@@ -596,6 +596,20 @@ impl PlexiApp {
         if let Some(focused) = ctx.focused_pane {
             if let Some(target) = ctx.find_pane_in_direction_from(focused, dir) {
                 self.windows[self.active_window].focused_pane = Some(target);
+                // Signal the newly-focused pane so render_text_inputs auto-focuses
+                // the first TextInput on the next frame.
+                if let Some(egui_tiles::Tile::Pane(pane_id)) =
+                    self.windows[self.active_window].tree.tiles.get(target)
+                {
+                    let pane_id = *pane_id;
+                    if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            if let crate::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
+                                proc_app.pane_just_focused = true;
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -20,6 +20,20 @@ use std::thread;
 
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
 
+fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
+    let input = usage["prompt_tokens"]
+        .as_u64()
+        .or_else(|| usage["input_tokens"].as_u64())
+        .or_else(|| usage["tokens_in"].as_u64())
+        .map(|n| n as u32);
+    let output = usage["completion_tokens"]
+        .as_u64()
+        .or_else(|| usage["output_tokens"].as_u64())
+        .or_else(|| usage["tokens_out"].as_u64())
+        .map(|n| n as u32);
+    (input, output)
+}
+
 /// OpenRouter streaming backend.
 pub struct OpenRouterBackend {
     pub api_key: String,
@@ -216,8 +230,9 @@ fn stream_openrouter(
         // Usage-only chunk: choices is empty/absent, usage is present.
         if chunk["choices"].as_array().map_or(true, |c| c.is_empty()) {
             if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
-                input_tokens = usage["prompt_tokens"].as_u64().map(|n| n as u32);
-                output_tokens = usage["completion_tokens"].as_u64().map(|n| n as u32);
+                let (inp, out) = parse_usage_tokens(usage);
+                input_tokens = inp;
+                output_tokens = out;
             }
             continue;
         }
@@ -268,8 +283,9 @@ fn stream_openrouter(
             let _ = tx.send(StreamEvent::ToolCalls(calls));
             // Token counts may arrive in subsequent chunks or in this one.
             if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
-                input_tokens = usage["prompt_tokens"].as_u64().map(|n| n as u32);
-                output_tokens = usage["completion_tokens"].as_u64().map(|n| n as u32);
+                let (inp, out) = parse_usage_tokens(usage);
+                input_tokens = inp;
+                output_tokens = out;
             }
             let _ = tx.send(StreamEvent::Done {
                 input_tokens,
@@ -295,6 +311,11 @@ fn stream_openrouter(
         output_tokens,
         generation_id: gen_id,
     });
+    if input_tokens.is_none() && output_tokens.is_none() {
+        log::warn!(
+            "openrouter: stream completed without usage metadata (model may omit stream usage)"
+        );
+    }
 }
 
 #[cfg(test)]

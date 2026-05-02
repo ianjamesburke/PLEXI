@@ -220,6 +220,13 @@ pub struct ProcessApp {
     /// `render_text_inputs` pass. Used by `handle_key` to suppress
     /// forwarding text/key events to the app while the user is typing.
     text_input_has_focus: bool,
+    /// Set to true when this pane gains focus via keyboard navigation.
+    /// `render_text_inputs` checks this flag and focuses the first TextInput
+    /// in the frame, then clears it.
+    pub(crate) pane_just_focused: bool,
+    /// Cached state for `egui_commonmark` markdown rendering. Persists across
+    /// frames so the parser doesn't re-allocate on every repaint.
+    commonmark_cache: egui_commonmark::CommonMarkCache,
     /// Per-region scroll offsets for `DrawCommand::BeginScroll` / `EndScroll`
     /// (#446). Key = scroll region id; value = current vertical offset in
     /// logical pixels. Persists across frames — the offset is only reset when
@@ -515,6 +522,8 @@ impl ProcessApp {
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
             text_input_has_focus: false,
+            pane_just_focused: false,
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             scroll_offsets: HashMap::new(),
             exposed_tools: Vec::new(),
             #[cfg(test)]
@@ -772,26 +781,30 @@ impl ProcessApp {
                         .max_rect(widget_rect)
                         .id_salt(widget_id),
                 );
-                let edit = if *multiline {
-                    egui::TextEdit::multiline(buffer)
+                let output = if *multiline {
+                    let edit = egui::TextEdit::multiline(buffer)
                         .id(widget_id)
                         .desired_width(*w)
                         .hint_text(placeholder.as_str())
-                        .frame(true)
+                        .frame(true);
+                    egui::ScrollArea::vertical()
+                        .max_height(height)
+                        .show(&mut child, |ui| edit.show(ui))
+                        .inner
                 } else {
-                    egui::TextEdit::singleline(buffer)
+                    let edit = egui::TextEdit::singleline(buffer)
                         .id(widget_id)
                         .desired_width(*w)
                         .hint_text(placeholder.as_str())
-                        .frame(true)
+                        .frame(true);
+                    edit.show(&mut child)
                 };
-                let output = edit.show(&mut child);
-                // Auto-focus the first newly-visible input so the user can
-                // type immediately without clicking. Subsequent newly-visible
-                // inputs in the same frame are skipped — request_focus is
-                // last-write-wins in egui, so focusing all of them would
-                // leave only the last one focused.
-                if newly_visible && !focus_granted {
+                // Auto-focus the first input when: (a) it just appeared in
+                // the frame, or (b) the pane just gained focus via keyboard
+                // navigation. Subsequent inputs in the same frame are skipped
+                // — request_focus is last-write-wins in egui, so focusing all
+                // of them would leave only the last one focused.
+                if (newly_visible || self.pane_just_focused) && !focus_granted {
                     output.response.request_focus();
                     focus_granted = true;
                 }
@@ -871,6 +884,7 @@ impl ProcessApp {
         }
 
         self.text_input_visible_prev = visible_this_frame;
+        self.pane_just_focused = false;
         // Track whether any TextInput has focus so handle_key can suppress
         // key forwarding while the user is typing into an input field.
         self.text_input_has_focus = any_has_focus;
@@ -1225,7 +1239,7 @@ impl App for ProcessApp {
         let pane_rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
         let frame_clone = self.frame.clone();
-        render::render_draw_commands(ui, pane_rect, &frame_clone, ctx.colors);
+        render::render_draw_commands(ui, pane_rect, &frame_clone, ctx.colors, &mut self.commonmark_cache);
         // Interactive widgets (TextInput) need real egui widgets and a
         // mutable per-app buffer map — they can't share the painter-only
         // render path. Render them in a second pass on top of the frame.

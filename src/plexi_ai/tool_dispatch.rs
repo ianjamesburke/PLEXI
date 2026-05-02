@@ -67,11 +67,18 @@ impl ToolRegistry {
     }
 
     /// Snapshot of all tools visible right now, keyed by tool name.
-    /// When the same tool name appears in multiple panes, the last one wins
-    /// (non-deterministic order — callers should ensure unique names).
+    ///
+    /// Duplicate names are resolved deterministically: highest pane_id wins
+    /// (typically the most recently opened pane). This avoids hash-iteration
+    /// nondeterminism when multiple panes expose the same tool name.
     fn snapshot(&self) -> HashMap<String, (u64, AiTool)> {
         let mut map = HashMap::new();
-        for (&pane_id, entry) in &self.entries {
+        let mut pane_ids: Vec<u64> = self.entries.keys().copied().collect();
+        pane_ids.sort_unstable();
+        for pane_id in pane_ids {
+            let Some(entry) = self.entries.get(&pane_id) else {
+                continue;
+            };
             for tool in &entry.tools {
                 map.insert(tool.name.clone(), (pane_id, tool.clone()));
             }
@@ -153,7 +160,27 @@ pub struct ToolDispatcher {
 impl ToolDispatcher {
     /// Build a dispatcher from the current global registry state.
     pub fn from_registry() -> Self {
-        let tools = global_registry().lock().unwrap().snapshot();
+        let registry = global_registry().lock().unwrap();
+        let tools = registry.snapshot();
+        let mut owners_by_name: HashMap<String, Vec<u64>> = HashMap::new();
+        for (&pane_id, entry) in &registry.entries {
+            for tool in &entry.tools {
+                owners_by_name
+                    .entry(tool.name.clone())
+                    .or_default()
+                    .push(pane_id);
+            }
+        }
+        for (name, mut owners) in owners_by_name {
+            if owners.len() > 1 {
+                owners.sort_unstable();
+                log::warn!(
+                    "tool_dispatch: duplicate tool name {:?} exposed by panes {:?}; dispatch will target highest pane_id",
+                    name,
+                    owners
+                );
+            }
+        }
         Self { tools }
     }
 
