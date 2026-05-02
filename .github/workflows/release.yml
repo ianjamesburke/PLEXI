@@ -40,9 +40,17 @@ jobs:
           cd target/release/bundle/osx
           zip -r Plexi-${{ github.ref_name }}.zip Plexi.app
 
+      - name: Extract release notes
+        id: notes
+        run: |
+          notes=$(awk '/^## \[/{if(found)exit; found=1; next} found{print}' CHANGELOG.md)
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$notes" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}
           prerelease: ${{ contains(github.ref_name, '-') }}

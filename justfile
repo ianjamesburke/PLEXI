@@ -132,6 +132,13 @@ bump:
     git tag "v$new"
     echo "Tagged v$new"
 
+# Promote to the next channel. Auto-detects current branch and prompts.
+#   just promote        — detects alpha→beta or beta→main and confirms
+#   just promote beta   — skip prompt, promote alpha→beta
+#   just promote main   — skip prompt, promote beta→main
+promote to="":
+    bash scripts/promote.sh "{{to}}"
+
 release:
     #!/usr/bin/env bash
     set -e
