@@ -916,23 +916,12 @@ class TextInput(Component):
     Create once (in ``on_init``) and update ``placeholder`` as needed — the
     instance is stable across renders so the host can track focus state.
 
-    Example::
-
-        def on_init(self, ctx):
-            self._input = TextInput("chat-input", placeholder="Type a message…")
-
-        def on_render(self, ctx):
-            ctx.render(Column([
-                ...,
-                self._input,
-                Footer("Enter to send"),
-            ]))
-            if self._input.submitted:
-                self._send(self._input.submitted)
+    When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
     """
     id: str
     placeholder: str = ""
     height: float = 48.0
+    multiline: bool = False
 
     _submitted: Optional[str] = field(default=None, init=False, repr=False)
 
@@ -941,12 +930,73 @@ class TextInput(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         self._submitted = ctx.text_input(self.id, x=x, y=y, w=w,
-                                         placeholder=self.placeholder, h=h)
+                                         placeholder=self.placeholder, h=h,
+                                         multiline=self.multiline)
 
     @property
     def submitted(self) -> Optional[str]:
         """Text submitted this frame (user pressed Enter), else None."""
         return self._submitted
+
+
+@dataclass
+class ChatBubble(Component):
+    """A chat message bubble with left/right alignment and colored background.
+
+    ``align="right"`` for user messages (accent bg), ``"left"`` for
+    assistant messages (surface bg). Error messages use ``role="error"``.
+    """
+    text: str
+    role: str = "assistant"
+    max_lines: int = 50
+
+    LINE_LEADING = 4.0
+    DESCENDER_PAD = 3.0
+    BUBBLE_PAD = SPACE_MD
+    BUBBLE_MAX_FRAC = 0.78
+
+    def _font_size(self) -> float:
+        return TEXT_BODY
+
+    def _bubble_colors(self) -> tuple:
+        if self.role == "user":
+            return (ACCENT, "#1e1e2e")
+        if self.role == "error":
+            return ("#45171e", RED)
+        return (SURFACE, FG)
+
+    def _bubble_w(self, avail_w: float) -> float:
+        return min(avail_w, avail_w * self.BUBBLE_MAX_FRAC)
+
+    def _text_w(self, avail_w: float) -> float:
+        return self._bubble_w(avail_w) - 2 * self.BUBBLE_PAD
+
+    def _lines(self, avail_w: float) -> List[str]:
+        return _wrap_to_width(self.text, self._text_w(avail_w),
+                              self._font_size(), max_lines=self.max_lines)
+
+    def _line_h(self) -> float:
+        return self._font_size() + self.LINE_LEADING
+
+    def measure(self, avail_w: float) -> float:
+        lines = self._lines(avail_w)
+        if not lines:
+            return 0.0
+        text_h = len(lines) * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
+        return text_h + 2 * self.BUBBLE_PAD
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        bg, fg = self._bubble_colors()
+        bubble_w = self._bubble_w(w)
+        bx = x + w - bubble_w if self.role == "user" else x
+        ctx.rect(bx, y, bubble_w, h, fill=bg, radius=RADIUS_LG)
+        fs = self._font_size()
+        line_h = self._line_h()
+        text_x = bx + self.BUBBLE_PAD
+        text_y = y + self.BUBBLE_PAD
+        for i, line in enumerate(self._lines(w)):
+            ctx.text(text_x, text_y + i * line_h, line,
+                     size=fs, color=fg, bold=False)
 
 
 @dataclass
@@ -1037,7 +1087,7 @@ __all__ = [
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
-    "ListItem", "Row", "TextInput",
+    "ListItem", "Row", "TextInput", "ChatBubble",
     # badge primitive
     "badge",
     # scroll helpers
