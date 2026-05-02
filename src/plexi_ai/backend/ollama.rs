@@ -59,6 +59,7 @@ fn stream_ollama(
     }
 
     // Build messages in Ollama format (same as OpenAI: role + content).
+    // Messages are already serde_json::Value — pass them through directly.
     let mut messages: Vec<serde_json::Value> = Vec::new();
     if !request.system.is_empty() {
         messages.push(serde_json::json!({
@@ -66,12 +67,7 @@ fn stream_ollama(
             "content": request.system
         }));
     }
-    for m in &request.messages {
-        messages.push(serde_json::json!({
-            "role": m.role,
-            "content": m.content
-        }));
-    }
+    messages.extend(request.messages.iter().cloned());
 
     let body = serde_json::json!({
         "model": model,

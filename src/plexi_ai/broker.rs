@@ -22,9 +22,17 @@ use crate::config::{AiConfig, OllamaBackendConfig, OpenRouterBackendConfig};
 use crate::event_log::{self, HostEvent};
 use crate::plexi_ai::backend::ollama::OllamaBackend;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
-use crate::plexi_ai::backend::{BillingModel, AiBackend};
+use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
 use crate::plexi_ai::ledger::{self, LedgerRow};
+use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
+
+/// Lightweight context for a single open pane (injected into system prompt).
+#[derive(Debug, Clone)]
+pub struct PaneContext {
+    pub type_id: String,
+    pub pane_id: u64,
+}
 
 /// One brokered request — what the routing layer hands to a broker. `app_id`
 /// is required so the ledger can attribute spend per-app.
@@ -35,6 +43,14 @@ pub struct AiBrokerRequest {
     pub system: String,
     pub messages: Vec<AiMessage>,
     pub tools: Vec<AiTool>,
+    /// Workspace root for host-context injection. When `Some`, the broker
+    /// prepends a compact workspace context block to the system prompt.
+    pub workspace_root: Option<std::path::PathBuf>,
+    /// Currently open panes — listed in the host context block.
+    pub open_panes: Vec<PaneContext>,
+    /// Tool dispatcher snapshot. When `Some`, the broker runs a tool loop
+    /// and dispatches any tool calls the model makes.
+    pub tool_dispatcher: Option<std::sync::Arc<ToolDispatcher>>,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
@@ -100,13 +116,6 @@ impl LiveAiBroker {
 
 impl AiBroker for LiveAiBroker {
     fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
-        // v3.3: text-in / text-out only. Tool dispatch lands in v3.4.
-        if !request.tools.is_empty() {
-            let msg = "tools not yet supported by ai.query broker (v3.4)";
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-
         let ai_config = match &self.ai_config {
             Some(c) => c,
             None => {
@@ -206,6 +215,60 @@ fn dispatch_ollama(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrokerRe
     run_turn_and_respond(request, &backend, BillingModel::Subscription, model_id, String::new())
 }
 
+/// Build a compact host context block to prepend to the system prompt.
+/// Budget: ≤2000 tokens (~8000 chars). Skipped when the system prompt
+/// starts with `# no-host-context`.
+fn build_context_prefix(
+    workspace_root: &std::path::Path,
+    open_panes: &[PaneContext],
+) -> String {
+    let mut out = String::new();
+    out.push_str("# Host context\n");
+    out.push_str(&format!("workspace: {}\n", workspace_root.display()));
+    if !open_panes.is_empty() {
+        out.push_str("open panes:");
+        for p in open_panes {
+            out.push_str(&format!(" {}(pane_id={})", p.type_id, p.pane_id));
+        }
+        out.push('\n');
+    }
+
+    // Append up to 20 recent workspace events (~8000 chars budget).
+    let events_path = workspace_root
+        .join(".plexi")
+        .join("events.jsonl");
+    let recent = crate::event_log::read_recent(&events_path, 20);
+    if !recent.is_empty() {
+        out.push_str("recent events:\n");
+        for ev in &recent {
+            let line = serde_json::to_string(ev).unwrap_or_default();
+            // Truncate long lines.
+            if line.len() > 200 {
+                out.push_str(&line[..200]);
+                out.push_str("…\n");
+            } else {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+    }
+    out.push_str("---\n");
+    // Hard cap: 8000 chars (~2000 tokens at 4 chars/token).
+    if out.len() > 8000 {
+        out.truncate(8000);
+        out.push_str("\n---\n");
+    }
+    out
+}
+
+/// Convert `Vec<AiMessage>` to `Vec<serde_json::Value>` for the backend.
+fn messages_to_json(messages: &[AiMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
+        .collect()
+}
+
 /// Run a turn through the given backend and build an `AiBrokerResponse`.
 /// The `api_key` is only needed for the cost-fetch step (OpenRouter); pass
 /// an empty string for other backends.
@@ -216,63 +279,190 @@ fn run_turn_and_respond(
     model_id: String,
     api_key: String,
 ) -> AiBrokerResponse {
-    let turn = turn_loop::run_turn(
-        backend,
-        request.messages.clone(),
-        request.system.clone(),
-        |_| {},
-    );
+    // Build effective system prompt (optionally prepend host context).
+    let system = if request
+        .system
+        .starts_with("# no-host-context")
+    {
+        request.system.clone()
+    } else if let Some(root) = &request.workspace_root {
+        let prefix = build_context_prefix(root, &request.open_panes);
+        format!("{prefix}{}", request.system)
+    } else {
+        request.system.clone()
+    };
 
-    match turn {
-        Ok(result) => {
-            let tokens_in = result.input_tokens.unwrap_or(0);
-            let tokens_out = result.output_tokens.unwrap_or(0);
-
-            // Fetch real per-call cost from the OpenRouter generation endpoint.
-            // One retry after 500ms for eventual consistency; non-fatal on failure.
-            let cost_usd = result.generation_id.as_deref().and_then(|gen_id| {
-                if api_key.is_empty() {
-                    None
-                } else {
-                    fetch_generation_cost(gen_id, &api_key)
-                }
-            });
-
-            let cost_cents = cost_usd
-                .map(|usd| (usd * 100.0).round().max(0.0) as u64)
-                .unwrap_or(0);
-
-            let row = LedgerRow::with_attribution(
-                backend.name(),
-                billing,
-                Some(request.app_id.clone()),
-                Some(model_id),
-                result.input_tokens,
-                result.output_tokens,
-                cost_usd,
-            );
-            ledger::append(&row);
-
-            event_log::emit(HostEvent::AgentTurn {
-                pane_id: None,
-                tokens_in,
-                tokens_out,
-                cost_cents,
-                timestamp: event_log::now_timestamp(),
-            });
-
-            AiBrokerResponse::ok(result.text, tokens_in, tokens_out)
-        }
-        Err(e) => {
-            log::warn!("ai_broker[{}]: turn failed: {e}", request.app_id);
-            let message = match e {
-                TurnError::BackendError(be) => format!("backend error: {be}"),
-                TurnError::StreamError(s) => format!("stream error: {s}"),
-                TurnError::ChannelClosed => "stream closed before completion".to_string(),
-            };
-            AiBrokerResponse::err(message)
+    // Collect tools: from request AND from global registry via dispatcher.
+    let registry_tools = request
+        .tool_dispatcher
+        .as_ref()
+        .map(|d| d.all_tools())
+        .unwrap_or_default();
+    let mut all_tools: Vec<AiTool> = request.tools.clone();
+    for t in registry_tools {
+        if !all_tools.iter().any(|existing| existing.name == t.name) {
+            all_tools.push(t);
         }
     }
+
+    // Convert messages to JSON values for the backend.
+    let mut conv: Vec<serde_json::Value> = messages_to_json(&request.messages);
+
+    const MAX_TOOL_ITERATIONS: usize = 10;
+    let mut total_tokens_in: u32 = 0;
+    let mut total_tokens_out: u32 = 0;
+    let mut last_generation_id: Option<String> = None;
+    let mut final_text = String::new();
+
+    for iteration in 0..=MAX_TOOL_ITERATIONS {
+        if iteration == MAX_TOOL_ITERATIONS {
+            log::warn!(
+                "ai_broker[{}]: tool loop hit max iterations ({MAX_TOOL_ITERATIONS}), forcing stop",
+                request.app_id
+            );
+            break;
+        }
+
+        let backend_req = AiBackendRequest {
+            messages: conv.clone(),
+            system: system.clone(),
+            tools: all_tools.clone(),
+        };
+
+        let turn = turn_loop::run_turn(backend, backend_req, |_| {});
+
+        match turn {
+            Err(e) => {
+                log::warn!("ai_broker[{}]: turn failed: {e}", request.app_id);
+                let message = match e {
+                    TurnError::BackendError(be) => format!("backend error: {be}"),
+                    TurnError::StreamError(s) => format!("stream error: {s}"),
+                    TurnError::ChannelClosed => "stream closed before completion".to_string(),
+                };
+                return AiBrokerResponse::err(message);
+            }
+            Ok(result) => {
+                total_tokens_in += result.input_tokens.unwrap_or(0);
+                total_tokens_out += result.output_tokens.unwrap_or(0);
+                if result.generation_id.is_some() {
+                    last_generation_id = result.generation_id.clone();
+                }
+
+                if result.tool_calls.is_empty() {
+                    // No tool calls — done.
+                    final_text = result.text;
+                    break;
+                }
+
+                // Append assistant tool-call message.
+                let tc_json: Vec<serde_json::Value> = result
+                    .tool_calls
+                    .iter()
+                    .map(|tc| {
+                        serde_json::json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments
+                            }
+                        })
+                    })
+                    .collect();
+                conv.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": tc_json
+                }));
+
+                // Dispatch each tool call and append tool result messages.
+                let dispatcher = match &request.tool_dispatcher {
+                    Some(d) => d,
+                    None => {
+                        log::warn!(
+                            "ai_broker[{}]: model requested tool calls but no dispatcher available",
+                            request.app_id
+                        );
+                        // Append error result for each call so the model can recover.
+                        for tc in &result.tool_calls {
+                            conv.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": "error: tool_dispatch_unavailable"
+                            }));
+                        }
+                        continue;
+                    }
+                };
+
+                // Dispatch all tool calls (sequentially for now — parallel
+                // dispatch would require spawning threads and joining, adding
+                // complexity for marginal gain on typical 1-2 tool call batches).
+                let mut call_counter: u64 = 0;
+                for tc in &result.tool_calls {
+                    call_counter += 1;
+                    let call_id = format!("{}-{call_counter}", tc.id);
+                    log::debug!(
+                        "ai_broker[{}]: dispatching tool '{}' call_id={call_id}",
+                        request.app_id,
+                        tc.name,
+                    );
+                    let tool_result = dispatcher.dispatch_call(
+                        call_id.clone(),
+                        &tc.name,
+                        tc.arguments.clone(),
+                    );
+                    let content = if let Some(out) = tool_result.output_json {
+                        out
+                    } else {
+                        format!(
+                            "error: {}",
+                            tool_result.error.unwrap_or_else(|| "unknown".to_string())
+                        )
+                    };
+                    conv.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": content
+                    }));
+                }
+            }
+        }
+    }
+
+    // Cost fetch (OpenRouter only).
+    let cost_usd = last_generation_id.as_deref().and_then(|gen_id| {
+        if api_key.is_empty() {
+            None
+        } else {
+            fetch_generation_cost(gen_id, &api_key)
+        }
+    });
+
+    let cost_cents = cost_usd
+        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
+        .unwrap_or(0);
+
+    let row = LedgerRow::with_attribution(
+        backend.name(),
+        billing,
+        Some(request.app_id.clone()),
+        Some(model_id),
+        Some(total_tokens_in),
+        Some(total_tokens_out),
+        cost_usd,
+    );
+    ledger::append(&row);
+
+    event_log::emit(HostEvent::AgentTurn {
+        pane_id: None,
+        tokens_in: total_tokens_in,
+        tokens_out: total_tokens_out,
+        cost_cents,
+        timestamp: event_log::now_timestamp(),
+    });
+
+    AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
 }
 
 fn tier_name(tier: &ModelTier) -> &'static str {
@@ -412,10 +602,9 @@ mod tests {
 
     #[test]
     fn broker_accepts_structured_messages_after_widening() {
-        // Multi-turn conversations now flow as a structured `Vec<AiMessage>`
-        // through the broker — no flattening into a single prompt. This test
-        // pins the contract: the broker hands the full message array to the
-        // backend and `AiBrokerRequest` accepts the structured form unchanged.
+        // Multi-turn conversations flow as `Vec<AiMessage>` through the broker
+        // (PGAP wire format). This test pins the contract: `AiBrokerRequest`
+        // accepts the structured form unchanged.
         let broker = CannedBroker::ok("response");
         let messages = vec![
             AiMessage {
@@ -437,33 +626,15 @@ mod tests {
             system: "be helpful".to_string(),
             messages: messages.clone(),
             tools: vec![],
+            workspace_root: None,
+            open_panes: vec![],
+            tool_dispatcher: None,
         });
         assert_eq!(resp.content.as_deref(), Some("response"));
         let seen = broker.seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "broker should have seen exactly one request");
         assert_eq!(seen[0].messages, messages, "messages must round-trip unchanged");
         assert_eq!(seen[0].system, "be helpful");
-    }
-
-    #[test]
-    fn live_broker_rejects_tools_until_v3_4() {
-        let broker = LiveAiBroker::new(Some(test_ai_config()));
-        let resp = broker.dispatch(AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
-            system: String::new(),
-            messages: vec![],
-            tools: vec![AiTool {
-                name: "x".into(),
-                description: "y".into(),
-                input_schema: serde_json::json!({}),
-            }],
-        });
-        assert!(resp.error.is_some(), "tools must be rejected");
-        assert!(
-            resp.error.unwrap().contains("tools not yet supported"),
-            "error message must call out tools"
-        );
     }
 
     #[test]
@@ -481,6 +652,9 @@ mod tests {
                 content: "hi".to_string(),
             }],
             tools: vec![],
+            workspace_root: None,
+            open_panes: vec![],
+            tool_dispatcher: None,
         });
 
         if let Some(v) = orig {
@@ -506,6 +680,9 @@ mod tests {
                 content: "hi".to_string(),
             }],
             tools: vec![],
+            workspace_root: None,
+            open_panes: vec![],
+            tool_dispatcher: None,
         });
         assert!(resp.error.is_some());
         assert!(
@@ -530,6 +707,9 @@ mod tests {
                 content: "hi".to_string(),
             }],
             tools: vec![],
+            workspace_root: None,
+            open_panes: vec![],
+            tool_dispatcher: None,
         });
         assert!(resp.error.is_some());
         assert!(

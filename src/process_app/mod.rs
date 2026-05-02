@@ -65,7 +65,7 @@ pub enum PendingPrompt {
 /// `Render` events are coalesced: only the latest matters, so we store it in
 /// `render_slot` and send a single `FlushRender` token. Non-render events are
 /// queued in order and never dropped.
-enum StdinItem {
+pub(crate) enum StdinItem {
     /// A non-render event serialised as a newline-terminated JSON string.
     Event(String),
     /// Consume and write the latest render payload from the render slot.
@@ -221,6 +221,10 @@ pub struct ProcessApp {
     /// logical pixels. Persists across frames — the offset is only reset when
     /// content_height or viewport size shrinks past it (clamped on emit).
     pub(crate) scroll_offsets: HashMap<String, f32>,
+    /// Tools exposed by this pane via `DrawCommand::ExposeTools` (#398).
+    /// Updated each time a new `ExposeTools` command arrives. The routing
+    /// layer re-registers these in the global tool registry on each update.
+    pub(crate) exposed_tools: Vec<crate::app_protocol::AiTool>,
     /// Test-only seam used by `process_app::agent` unit tests to inject
     /// `DrawCommand`s without spinning up a real subprocess pipeline.
     /// Drained on every `agent_tick` (and thus invisible in production).
@@ -507,6 +511,7 @@ impl ProcessApp {
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
             scroll_offsets: HashMap::new(),
+            exposed_tools: Vec::new(),
             #[cfg(test)]
             test_injected_commands: Arc::new(Mutex::new(VecDeque::new())),
         })
@@ -574,6 +579,19 @@ impl ProcessApp {
             }
             Err(e) => log::error!("ProcessApp: failed to serialize event: {e}"),
         }
+    }
+
+    /// Build an `AppEventSender` that can deliver `PlexiEvent`s to this pane
+    /// from outside the `ProcessApp` (e.g. the tool dispatcher). Returns `None`
+    /// when the stdin writer thread has already exited.
+    pub(crate) fn make_app_event_sender(
+        &self,
+    ) -> Option<crate::plexi_ai::tool_dispatch::AppEventSender> {
+        self.event_tx.as_ref().map(|tx| {
+            crate::plexi_ai::tool_dispatch::AppEventSender {
+                tx: tx.clone(),
+            }
+        })
     }
 
     fn flush_outbound_events(&mut self) {
@@ -1833,6 +1851,8 @@ mod text_input_tests {
 
 impl Drop for ProcessApp {
     fn drop(&mut self) {
+        // Unregister any tools this pane exposed so the global registry stays clean.
+        crate::plexi_ai::tool_dispatch::unregister(self.pane_id);
         self.send_event(&PlexiEvent::Shutdown);
         event_log::emit(HostEvent::AppClosed {
             app_id: self.type_id.clone(),

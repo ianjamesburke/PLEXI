@@ -13,11 +13,12 @@
 //! reading the SSE body. Threaded back via `StreamEvent::Done` so the broker
 //! can query the real cost after the turn completes.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc;
 use std::thread;
 
-use super::{AiBackend, AiBackendError, AiBackendRequest, StreamEvent};
+use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
 
 /// OpenRouter streaming backend.
 pub struct OpenRouterBackend {
@@ -59,6 +60,14 @@ impl AiBackend for OpenRouterBackend {
     }
 }
 
+/// Partial accumulator for a streaming tool-call delta.
+#[derive(Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
 /// Worker: calls OpenRouter SSE endpoint and delivers events to `tx`.
 fn stream_openrouter(
     api_key: String,
@@ -75,6 +84,7 @@ fn stream_openrouter(
 
     // Build the messages array. OpenRouter uses OpenAI format:
     // system prompt goes as a leading {"role":"system"} entry, NOT top-level.
+    // Messages are already serde_json::Value — pass them through directly.
     let mut messages: Vec<serde_json::Value> = Vec::new();
     if !request.system.is_empty() {
         messages.push(serde_json::json!({
@@ -82,18 +92,32 @@ fn stream_openrouter(
             "content": request.system
         }));
     }
-    for m in &request.messages {
-        messages.push(serde_json::json!({
-            "role": m.role,
-            "content": m.content
-        }));
-    }
+    messages.extend(request.messages.iter().cloned());
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
         "stream": true
     });
+
+    // Inject tools when present.
+    if !request.tools.is_empty() {
+        let tools_json: Vec<serde_json::Value> = request
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema
+                    }
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::Value::Array(tools_json);
+    }
 
     let body_str = match serde_json::to_string(&body) {
         Ok(s) => s,
@@ -105,11 +129,10 @@ fn stream_openrouter(
         }
     };
 
-    // 10s connect timeout, 30s overall timeout — fail fast on invalid models /
-    // stalled streams rather than hanging the broker thread indefinitely.
+    // 10s connect timeout, 90s overall timeout — tool calls add latency.
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(90))
         .build();
 
     let resp = agent
@@ -152,6 +175,8 @@ fn stream_openrouter(
 
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
+    // Accumulate tool-call deltas across SSE chunks, keyed by index.
+    let mut partial_tool_calls: HashMap<usize, PartialToolCall> = HashMap::new();
 
     for line_result in reader.lines() {
         let line = match line_result {
@@ -194,20 +219,65 @@ fn stream_openrouter(
             continue;
         }
 
+        let choice = &chunk["choices"][0];
+        let finish_reason = choice["finish_reason"].as_str();
+
         // Check for mid-stream error
-        if let Some(finish_reason) = chunk["choices"][0]["finish_reason"].as_str() {
-            if finish_reason == "error" {
-                let msg = chunk["choices"][0]["error"]["message"]
-                    .as_str()
-                    .unwrap_or("unknown error")
-                    .to_string();
-                let _ = tx.send(StreamEvent::Error(format!("openrouter stream error: {msg}")));
-                return;
+        if finish_reason == Some("error") {
+            let msg = choice["error"]["message"]
+                .as_str()
+                .unwrap_or("unknown error")
+                .to_string();
+            let _ = tx.send(StreamEvent::Error(format!("openrouter stream error: {msg}")));
+            return;
+        }
+
+        // Accumulate tool-call deltas.
+        if let Some(tc_deltas) = choice["delta"]["tool_calls"].as_array() {
+            for delta in tc_deltas {
+                let idx = delta["index"].as_u64().unwrap_or(0) as usize;
+                let entry = partial_tool_calls.entry(idx).or_default();
+                if let Some(id) = delta["id"].as_str() {
+                    entry.id.push_str(id);
+                }
+                if let Some(name) = delta["function"]["name"].as_str() {
+                    entry.name.push_str(name);
+                }
+                if let Some(args) = delta["function"]["arguments"].as_str() {
+                    entry.arguments.push_str(args);
+                }
             }
         }
 
+        // When finish_reason == "tool_calls", finalize and emit.
+        if finish_reason == Some("tool_calls") {
+            let calls: Vec<RawToolCall> = partial_tool_calls
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into_values()
+                .map(|p| RawToolCall {
+                    id: p.id,
+                    name: p.name,
+                    arguments: p.arguments,
+                })
+                .collect();
+            // Sort is stable from BTreeMap — calls are in index order.
+            let _ = tx.send(StreamEvent::ToolCalls(calls));
+            // Token counts may arrive in subsequent chunks or in this one.
+            if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
+                input_tokens = usage["prompt_tokens"].as_u64().map(|n| n as u32);
+                output_tokens = usage["completion_tokens"].as_u64().map(|n| n as u32);
+            }
+            let _ = tx.send(StreamEvent::Done {
+                input_tokens,
+                output_tokens,
+                generation_id: gen_id,
+            });
+            return;
+        }
+
         // Text delta
-        if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
+        if let Some(text) = choice["delta"]["content"].as_str() {
             if !text.is_empty() {
                 if tx.send(StreamEvent::Text(text.to_string())).is_err() {
                     // Receiver dropped — caller cancelled.
@@ -227,17 +297,13 @@ fn stream_openrouter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_protocol::AiMessage;
 
     /// Verify that the system prompt is injected as a leading messages-array
     /// entry (OpenAI format), not as a top-level "system" field (Anthropic).
     #[test]
     fn system_prompt_goes_in_messages_array_not_top_level() {
         let system = "You are a helpful assistant.".to_string();
-        let msgs = vec![AiMessage {
-            role: "user".to_string(),
-            content: "hello".to_string(),
-        }];
+        let msgs = vec![serde_json::json!({"role": "user", "content": "hello"})];
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
         if !system.is_empty() {
@@ -246,12 +312,7 @@ mod tests {
                 "content": system
             }));
         }
-        for m in &msgs {
-            messages.push(serde_json::json!({
-                "role": m.role,
-                "content": m.content
-            }));
-        }
+        messages.extend(msgs.iter().cloned());
 
         let body = serde_json::json!({
             "model": "anthropic/claude-sonnet-4-6",
@@ -283,18 +344,13 @@ mod tests {
     #[test]
     fn empty_system_omits_system_message() {
         let system = String::new();
-        let msgs = vec![AiMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let msgs = vec![serde_json::json!({"role": "user", "content": "hi"})];
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
         if !system.is_empty() {
             messages.push(serde_json::json!({"role": "system", "content": system}));
         }
-        for m in &msgs {
-            messages.push(serde_json::json!({"role": m.role, "content": m.content}));
-        }
+        messages.extend(msgs.iter().cloned());
 
         assert_eq!(messages.len(), 1, "only user message — no system entry");
         assert_eq!(messages[0]["role"].as_str(), Some("user"));

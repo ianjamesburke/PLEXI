@@ -1113,6 +1113,21 @@ class Emitter:
             tokens_out=int(ev.get("tokens_out", 0) or 0),
         )
 
+    def expose_tools(self, tools: "list[dict]") -> None:
+        """Declare callable tools to the host (#398, #399).
+
+        Each entry in `tools` must have:
+          - ``name`` (str): unique tool identifier.
+          - ``description`` (str): human-readable description for the LLM.
+          - ``input_schema`` (dict): JSON Schema object (type=object).
+          - ``timeout_ms`` (int, optional): max ms to wait for result (default 30 000).
+
+        The host registers these tools in the global registry. When an AI turn
+        requests a tool call the host sends a ``PlexiEvent::ToolCall``; the SDK
+        routes it to the handler registered via ``@app.tool(…)``.
+        """
+        _emit({"type": "expose_tools", "tools": tools})
+
     async def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
         """Enumerate CoreMIDI input + output ports (#320).
         No capability gate — port names are publicly visible in Audio MIDI
@@ -1992,6 +2007,9 @@ class App:
         # consumes the first overwrites (apps poll every frame, so
         # this only matters in a perverse scheduling case).
         self._text_submissions: dict[str, str] = {}
+        # v3.7 tool protocol (#399): tool_name → handler callable.
+        # Registered via @app.tool(...) decorator.
+        self._tool_handlers: dict[str, Any] = {}
         self.emit = Emitter(self)
 
     # ── Override these ──────────────────────────────────────────────────────
@@ -2041,6 +2059,44 @@ class App:
         opened alongside this event — Plexi sends `pipe_opened` first."""
         pass
 
+    # ── Tool protocol (#398, #399) ──────────────────────────────────────────
+
+    def tool(self, name: str, description: str, schema: dict,
+             timeout_ms: "int | None" = None):
+        """Decorator — register a method as an AI-callable tool and expose it.
+
+        Usage::
+
+            @app.tool("increment", description="Increment counter", schema={
+                "type": "object",
+                "properties": {"n": {"type": "integer"}},
+            })
+            def handle_increment(self_or_args, args=None):
+                ...
+
+        The decorated method is called with ``(args_dict)`` where
+        ``args_dict`` is the parsed JSON arguments from the LLM. The method
+        may be a plain function or a bound method; the decorator normalises
+        the call convention.
+
+        Returns are JSON-serialised and sent as ``DrawCommand::ToolResult``.
+        Exceptions are caught and sent as the ``error`` field.
+
+        ``expose_tools`` is called automatically when the decorator runs.
+        """
+        def decorator(fn: Any) -> Any:
+            self._tool_handlers[name] = fn
+            tool_def: dict = {
+                "name": name,
+                "description": description,
+                "input_schema": schema,
+            }
+            if timeout_ms is not None:
+                tool_def["timeout_ms"] = timeout_ms
+            self.emit.expose_tools([tool_def])
+            return fn
+        return decorator
+
     # ── Agent-as-app hooks (#338, type = "agent" manifests only) ────────────
     # `Agent` subclass wires these. Plain `App` subclasses get no-op defaults
     # so a misclassified manifest doesn't crash on the host's emit.
@@ -2051,6 +2107,61 @@ class App:
     def on_shutdown(self) -> None: pass
 
     # ── Internal ────────────────────────────────────────────────────────────
+
+    async def _handle_tool_call(self, ev: dict) -> None:
+        """Dispatch a ``PlexiEvent::ToolCall`` to the registered handler.
+
+        Sends ``DrawCommand::ToolResult`` with the return value (JSON-serialised)
+        or with an error string if the handler raises or is not registered.
+        """
+        call_id: str = ev.get("call_id", "")
+        name: str = ev.get("name", "")
+        input_json: str = ev.get("input_json", "{}")
+
+        try:
+            args = json.loads(input_json) if input_json else {}
+        except json.JSONDecodeError as exc:
+            _emit({
+                "type": "tool_result",
+                "call_id": call_id,
+                "output_json": None,
+                "error": f"tool_input_parse_error: {exc}",
+            })
+            return
+
+        handler = self._tool_handlers.get(name)
+        if handler is None:
+            _emit({
+                "type": "tool_result",
+                "call_id": call_id,
+                "output_json": None,
+                "error": f"tool_not_found: no handler registered for tool {name!r}",
+            })
+            return
+
+        try:
+            import inspect as _inspect
+            if _inspect.iscoroutinefunction(handler):
+                result = await handler(args)
+            else:
+                result = handler(args)
+            output_json = json.dumps(result) if result is not None else json.dumps({})
+            _emit({
+                "type": "tool_result",
+                "call_id": call_id,
+                "output_json": output_json,
+                "error": None,
+            })
+        except Exception as exc:
+            import traceback as _tb
+            _tb.print_exc()
+            _emit({
+                "type": "tool_result",
+                "call_id": call_id,
+                "output_json": None,
+                "error": f"tool_handler_error: {exc}",
+            })
+
     def _take_text_submission(self, id: str) -> "str | None":
         """Pop the most recent submission for `id` if one is queued, else None.
 
@@ -2467,6 +2578,12 @@ class App:
                     await self._dispatch_hook(
                         self.on_nav_back, ctx, str(ev.get("view_id", ""))
                     )
+
+                elif t == "tool_call":
+                    # v3.7 tool protocol (#399). Host asks this pane to execute
+                    # a registered tool. Dispatched as a background task so it
+                    # doesn't block the event loop while the handler runs.
+                    self._dispatch_hook_task(self._handle_tool_call, ev)
 
         reader_task = asyncio.create_task(_reader())
         try:

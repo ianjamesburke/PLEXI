@@ -11,5 +11,6 @@
 pub mod backend;
 pub mod broker;
 pub mod ledger;
+pub mod tool_dispatch;
 #[path = "loop.rs"]
 pub mod turn_loop;
