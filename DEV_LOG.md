@@ -1,5 +1,19 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] v3.6 complete — chat-poc + docs/specs deletion (PRs #518, #519 → alpha)
+
+**#519 (#508):** Added `examples/chat-poc/` — conversational chat POC proving AiQuery/AiResponse round-trip via OpenRouter end-to-end. Tier selector (l/m/h), full multi-turn history, loading state, inline error display, auto-scroll to bottom on new turns. Replaced `ai-query-test` as the canonical AI demo. Gemini review caught a real render-order bug (text_input must come after ctx.render() — render clears the pane first), private member access for scroll-to-bottom (fixed by setting scroll_offset=1_000_000 and letting Scrollable.render() clamp it), and double-padding on the inner Column (fixed with padding=0).
+
+**#518 (#509):** Deleted entire `docs/specs/` directory — all release specs, subsystem specs, proposals, and process docs were out of date. Removed all dangling references from CLAUDE.md, AGENTS.md, ARCHITECTURE.md, .claude/iteration-cycle.md, examples/plexi-descriptor-demo/README.md, and three Rust source comments.
+
+**Breaks if:** chat-poc crashes on launch, or `grep -r "docs/specs" .` (outside DEV_LOG/SPRINT) returns results.
+
+## 2026-05-02 — [DECISION] v3.8 partial start — #388 and #424 independent work split off
+
+v3.8 has 4 issues. #394 (streaming) and #395 (in-pane agent) depend on v3.6's AiQuery plumbing and are deferred until that lands. #388 (SDK layout components) and part of #424 (error visibility) are independent and open as PRs now.
+
+PRs open: #521 (#388 ListItem/Row), #522 (#424 partial). Remaining v3.8 work (#394, #395, AI config error surfacing from #424) waits on v3.6.
+
 ## 2026-05-02 — [CHANGED] WorkspaceRouter — compile-enforced context switching (PR #510 → alpha)
 
 Extracted `active_context` and `contexts` into `src/workspace_router.rs` with private fields. Direct `active_context = n` is now a compile error outside that module. `PlexiApp::switch_workspace` remains the only navigation path (saves/restores minimap). Structural ops (create/delete/reorder) are atomic router methods that maintain active-index coherence internally. `remove_at` adjusts active automatically; `debug_assert!` guards `new` and `set_active`. Closes #380.
