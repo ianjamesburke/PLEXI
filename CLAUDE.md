@@ -12,13 +12,13 @@ Before reporting anything as "done" or "missing", verify against `git log`. Neve
 
 ## North Star
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — vision, target architecture diagram, key invariants. Read first.
-
-Vision (why we're building this, long-term direction) lives in `ARCHITECTURE.md §0`.
+- [`GLOSSARY.md`](GLOSSARY.md) — shared vocabulary. Refer here when terms like "pane," "context," "PGAP," "capability," "secret" are new to you.
 
 ## Terminology
 
-**PGAP** — Plexi Generic App Protocol. Newline-delimited JSON over stdin/stdout. `PlexiEvent` flows host→app, `DrawCommand` flows app→host. Binary data (audio PCM, video frames, raw bytes) travels on typed pipes, not stdio. PGAP is the isolation boundary — no shared memory, no inherited FDs.
+See [`GLOSSARY.md`](GLOSSARY.md) for the full shared vocabulary — context, pane, PGAP, capability, secret, etc.
+
+When a DEV_LOG entry introduces or significantly changes terminology, update `GLOSSARY.md` in the same commit. Keep it brief — a one-line addition is enough.
 
 ## Branches
 
