@@ -59,8 +59,11 @@ impl LifecycleState {
 // Tunables. `HUNG_FRAME_GAP` is the spec's 5s stall threshold. The
 // protocol-error counter ticks N=3 within M=10s — three malformed lines
 // from an app is catastrophic regardless of why; show the user something
-// is wrong.
+// is wrong. `BOOT_TIMEOUT` caps how long an app may stay in Booting before
+// the pane transitions to Crashed — prevents silent "starting…" hangs when
+// an app deadlocks during init or never emits Ready.
 pub const HUNG_FRAME_GAP: Duration = Duration::from_secs(5);
+pub const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PROTOCOL_ERROR_THRESHOLD: u32 = 3;
 pub const PROTOCOL_ERROR_WINDOW: Duration = Duration::from_secs(10);
 
@@ -218,13 +221,16 @@ impl LifecycleTracker {
         if current.is_terminal() || current == LifecycleState::Hung {
             return current;
         }
+        let now = self.elapsed_ms();
         let last_frame = self.last_frame_done_ms.load(Ordering::Acquire);
         if last_frame == 0 {
-            // Still booting — Hung doesn't apply until we've at least seen
-            // one frame land.
+            // Still booting — flip to Crashed if boot timeout exceeded.
+            if now > BOOT_TIMEOUT.as_millis() as u64 {
+                self.set_terminal(LifecycleState::Crashed);
+                return LifecycleState::Crashed;
+            }
             return current;
         }
-        let now = self.elapsed_ms();
         let gap_ms = now.saturating_sub(last_frame);
         if gap_ms < HUNG_FRAME_GAP.as_millis() as u64 {
             return current;
@@ -342,10 +348,22 @@ mod tests {
 
     #[test]
     fn hung_requires_a_frame_already_landed() {
-        let t = tracker();
-        // No FrameDone ever — Hung must not trigger.
+        // Use a fresh tracker so we're well within BOOT_TIMEOUT.
+        let t = LifecycleTracker::new();
+        // No FrameDone ever — must stay Booting, not flip to Hung.
         t.on_user_input();
         assert_eq!(t.tick_check_hung(), LifecycleState::Booting);
+    }
+
+    #[test]
+    fn boot_timeout_flips_to_crashed() {
+        // tracker() pins origin 60s in the past — well beyond BOOT_TIMEOUT.
+        let t = tracker();
+        // No FrameDone ever → boot timeout fires.
+        assert_eq!(t.tick_check_hung(), LifecycleState::Crashed);
+        // Must be sticky.
+        t.on_frame_done();
+        assert_eq!(t.state(), LifecycleState::Crashed);
     }
 
     #[test]
