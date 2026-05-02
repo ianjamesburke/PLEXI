@@ -29,8 +29,10 @@ If a doc outside these contradicts them, the doc is wrong. Fix or delete it.
 
 ## Branches
 
+**`alpha` is the starting branch for all changes.** Every feature branch, worktree, and PR originates from alpha. Never branch from `main` or `beta`.
+
 - `alpha` — active development. All PRs land here.
-- `beta` — staging/release channel. Promoted from alpha when ready.
+- `beta` — staging/release channel. Promoted from alpha when ready. Used for rigorous testing before promotion to main.
 - `main` — stable releases only.
 
 Feature branch naming: `feature/<issue-number>-short-description`. Sub-agent workflow: `isolation: "worktree"` off `alpha`, PR back to `alpha`. Never push directly to `main` or `beta`.
