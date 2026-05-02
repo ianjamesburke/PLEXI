@@ -10,8 +10,14 @@
 //! noise; everything under `plexi::` logs at the caller-supplied level.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// UI thread is considered frozen after this many seconds without a frame tick.
+const FREEZE_THRESHOLD_SECS: u64 = 5;
 
 /// Return the path of the current log file.
 pub fn log_path() -> PathBuf {
@@ -79,4 +85,83 @@ pub fn init(level: log::LevelFilter) {
     if let Err(e) = dispatch.apply() {
         eprintln!("[plexi::logging] failed to install logger: {e}");
     }
+}
+
+/// Shared counter bumped by the UI thread each frame so the heartbeat can detect freezes.
+pub type FrameTick = Arc<AtomicU64>;
+
+/// Create a new frame tick counter. Pass the clone to `spawn_heartbeat`, store the
+/// original in `PlexiApp` and call `.fetch_add(1, Relaxed)` each frame.
+pub fn new_frame_tick() -> FrameTick {
+    Arc::new(AtomicU64::new(0))
+}
+
+/// Spawn a background thread that:
+/// - Writes a heartbeat line every 30s (grep `[HEARTBEAT]` for last-alive timestamp)
+/// - Detects UI-thread freezes via `frame_tick` and logs `[FREEZE]` / `[THAW]` lines
+///
+/// Both writes go directly to the file, bypassing the logger, so they survive
+/// even if the logger thread is itself blocked by a freeze.
+pub fn spawn_heartbeat(frame_tick: FrameTick) {
+    let log_path = log_path();
+    std::thread::Builder::new()
+        .name("plexi-heartbeat".into())
+        .spawn(move || {
+            let born = Instant::now();
+            let mut beat: u64 = 0;
+            let mut last_tick = frame_tick.load(Ordering::Relaxed);
+            let mut freeze_start: Option<Instant> = None;
+
+            loop {
+                std::thread::sleep(HEARTBEAT_INTERVAL);
+                beat += 1;
+
+                let now_tick = frame_tick.load(Ordering::Relaxed);
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                let uptime = born.elapsed().as_secs();
+                let h = uptime / 3600;
+                let m = (uptime % 3600) / 60;
+                let s = uptime % 60;
+
+                let mut lines = String::new();
+
+                // Freeze detection: tick hasn't advanced since last heartbeat.
+                if now_tick == last_tick {
+                    if freeze_start.is_none() {
+                        freeze_start = Some(Instant::now());
+                        lines.push_str(&format!(
+                            "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread stopped responding\n"
+                        ));
+                    } else {
+                        let frozen_secs = freeze_start.unwrap().elapsed().as_secs();
+                        if frozen_secs >= FREEZE_THRESHOLD_SECS {
+                            lines.push_str(&format!(
+                                "[{now}] [WARN] [plexi::heartbeat] [FREEZE] still frozen — {frozen_secs}s unresponsive\n"
+                            ));
+                        }
+                    }
+                } else if let Some(start) = freeze_start.take() {
+                    let frozen_secs = start.elapsed().as_secs();
+                    lines.push_str(&format!(
+                        "[{now}] [INFO] [plexi::heartbeat] [THAW] UI thread resumed after {frozen_secs}s\n"
+                    ));
+                }
+
+                last_tick = now_tick;
+
+                lines.push_str(&format!(
+                    "[{now}] [INFO] [plexi::heartbeat] beat={beat} uptime={h:02}:{m:02}:{s:02}\n"
+                ));
+
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                {
+                    use std::io::Write;
+                    let _ = f.write_all(lines.as_bytes());
+                }
+            }
+        })
+        .expect("failed to spawn heartbeat thread");
 }

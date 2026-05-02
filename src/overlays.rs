@@ -441,6 +441,8 @@ impl PlexiApp {
             self.pending_close = false;
             if self.execute_close_pane() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                self.save_workspace();
             }
         } else if cancelled {
             self.pending_close = false;
