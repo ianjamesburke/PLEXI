@@ -43,7 +43,7 @@ prepend_changelog() {
     local today commits_file tmp
     today=$(date '+%Y-%m-%d')
     commits_file=$(mktemp)
-    git -C "$tree" log origin/main..beta --oneline --no-merges \
+    git -C "$tree" log origin/main..alpha --oneline --no-merges \
         | sed 's/^[a-f0-9]* /- /' > "$commits_file"
     [[ -s "$commits_file" ]] || echo "- (no new commits since last release)" > "$commits_file"
     tmp=$(mktemp)
@@ -90,16 +90,16 @@ if [[ "$to" == "beta" ]]; then
     check_pushed "$ALPHA_TREE" "alpha" "alpha"
     check_clean "$BETA_TREE" "beta"
 
-    echo "Promoting alpha → beta..."
-    git push origin alpha:beta
+    echo "Bumping version and updating changelog on alpha..."
+    new=$(bump_patch "$ALPHA_TREE")
+    prepend_changelog "$ALPHA_TREE" "$new"
+    git -C "$ALPHA_TREE" add Cargo.toml Cargo.lock CHANGELOG.md
+    git -C "$ALPHA_TREE" commit -m "chore: promote to beta — v$new"
+    git -C "$ALPHA_TREE" push
 
-    echo "Syncing beta worktree and bumping version..."
+    echo "Fast-forwarding beta and syncing worktree..."
+    git push origin alpha:beta
     git -C "$BETA_TREE" pull
-    new=$(bump_patch "$BETA_TREE")
-    prepend_changelog "$BETA_TREE" "$new"
-    git -C "$BETA_TREE" add Cargo.toml Cargo.lock CHANGELOG.md
-    git -C "$BETA_TREE" commit -m "chore: promote to beta — v$new"
-    git -C "$BETA_TREE" push
 
     echo ""
     echo "v$new is on beta — worktrees/beta/ is synced and ready."
