@@ -2,6 +2,10 @@
 
 Newest releases appear first.
 
+## [3.4.26] — 2026-05-02
+
+### Changes
+
 ## [3.4.25] — 2026-05-02
 
 ### Changes
