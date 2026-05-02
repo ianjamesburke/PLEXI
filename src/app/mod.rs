@@ -1777,6 +1777,7 @@ impl eframe::App for PlexiApp {
             egui::SidePanel::left("sidebar")
                 .exact_width(220.0)
                 .resizable(false)
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(self.colors.bg_sidebar)
