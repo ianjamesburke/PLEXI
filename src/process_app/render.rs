@@ -347,6 +347,10 @@ pub(super) fn render_draw_commands(
                 render_shortcuts(ui, origin, clip, *x, *y, *max_width, pairs, *font_size, colors);
             }
 
+            DrawCommand::TextRow { x, y, items, gap, align } => {
+                render_text_row(ui, origin, clip, *x, *y, items, *gap, align, colors);
+            }
+
             // MeasureText is handled in routing.rs (needs a response channel);
             // it is never a frame-scoped visual command.
             DrawCommand::MeasureText { .. } => {}
@@ -702,6 +706,53 @@ pub(crate) fn render_shortcuts(
         cursor_x += lp.total_w;
         on_line_first = false;
         let _ = lp.desc_w; // (unused beyond total_w; kept on the struct for future tuning)
+    }
+}
+
+pub(crate) fn render_text_row(
+    ui: &mut egui::Ui,
+    origin: egui::Pos2,
+    clip: egui::Rect,
+    x: f32,
+    y: f32,
+    items: &[crate::app_protocol::TextRowItem],
+    gap: f32,
+    align: &str,
+    colors: &Colors,
+) {
+    let mut cursor_x = x;
+    for item in items {
+        let font_id = if item.monospace {
+            egui::FontId::monospace(item.size)
+        } else {
+            egui::FontId::proportional(item.size)
+        };
+
+        let color = parse_color(&item.color).unwrap_or(colors.text_primary);
+
+        // Measure the text with real font metrics
+        let galley = ui.fonts(|f| {
+            f.layout_no_wrap(item.text.clone(), font_id.clone(), color)
+        });
+
+        let text_w = galley.size().x;
+
+        // Render the text segment
+        let align2 = match align {
+            "center" => egui::Align2::CENTER_CENTER,
+            "left_center" => egui::Align2::LEFT_CENTER,
+            _ => egui::Align2::LEFT_CENTER,
+        };
+
+        ui.painter().with_clip_rect(clip).text(
+            egui::pos2(origin.x + cursor_x, origin.y + y),
+            align2,
+            &item.text,
+            font_id,
+            color,
+        );
+
+        cursor_x += text_w + gap;
     }
 }
 

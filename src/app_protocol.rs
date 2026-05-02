@@ -960,6 +960,22 @@ pub enum DrawCommand {
         font_size: f32,
     },
 
+    /// Multiple text segments rendered horizontally with host-measured layout.
+    /// The host measures each segment with real font metrics and flows them
+    /// left-to-right with configurable gap spacing.
+    ///
+    /// `x`, `y`  — origin of the text row.
+    /// `items`   — list of text segments, each with text, color, size, monospace.
+    /// `gap`     — spacing between items in pixels.
+    /// `align`   — vertical alignment (e.g., "left_center").
+    TextRow {
+        x: f32,
+        y: f32,
+        items: Vec<TextRowItem>,
+        gap: f32,
+        align: String,
+    },
+
     /// Request a one-shot text measurement. The host measures `text` at
     /// `font_size` with the proportional font and replies immediately with
     /// `PlexiEvent::TextMeasured { request_id, width, height }`.
@@ -1196,6 +1212,15 @@ pub enum ArtifactOpenMode {
     RevealInFinder,
     /// `open <path>` — Launch Services default app.
     OpenWithDefault,
+}
+
+/// One text segment inside a `DrawCommand::TextRow`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TextRowItem {
+    pub text: String,
+    pub color: String,
+    pub size: f32,
+    pub monospace: bool,
 }
 
 /// One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips
