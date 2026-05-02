@@ -268,8 +268,11 @@ class ParallaxEditor(App):
         folder = sys.argv[1] if len(sys.argv) >= 2 and sys.argv[1] else os.environ.get("PARALLAX_PROJECT", "")
         if folder and os.path.isdir(folder):
             self._project_folder = folder
-            self._clips = _load_project_clips(folder)
-            self._status_msg = f"Loaded {len(self._clips)} clips from {os.path.basename(folder)}"
+            self._clips = _demo_clips()
+            self._status_msg = f"Loading clips from {os.path.basename(folder)}..."
+            threading.Thread(
+                target=self._load_clips_bg, args=(folder,), daemon=True
+            ).start()
         else:
             self._clips = _demo_clips()
             self._status_msg = "Demo mode — set PARALLAX_PROJECT or pass a folder as argv[1]"
@@ -288,6 +291,14 @@ class ParallaxEditor(App):
 
     def on_shutdown(self) -> None:
         self._playing = False
+
+    def _load_clips_bg(self, folder: str) -> None:
+        clips = _load_project_clips(folder)
+        self._clips = clips if clips else _demo_clips()
+        self._sel = 0
+        self._status_msg = f"Loaded {len(clips)} clips from {os.path.basename(folder)}" if clips else "No media found — showing demo"
+        self.emit.info(self._status_msg)
+        self.emit.schedule_render(after_ms=16)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -336,20 +347,7 @@ class ParallaxEditor(App):
     def _start(self) -> None:
         self._t0 = time.monotonic() - self._ph
         self._playing = True
-
-        def tick() -> None:
-            total = self._total_duration()
-            while self._playing:
-                time.sleep(0.033)
-                if not self._playing:
-                    break
-                self._ph = time.monotonic() - self._t0
-                if self._ph >= total:
-                    self._ph = total
-                    self._playing = False
-                self.emit.schedule_render(after_ms=16)
-
-        threading.Thread(target=tick, daemon=True).start()
+        self.emit.schedule_render(after_ms=16)
 
     def _stop(self) -> None:
         self._playing = False
@@ -464,6 +462,16 @@ class ParallaxEditor(App):
     # ── Render ───────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
+        # Advance playhead from wall clock when playing
+        if self._playing:
+            total = self._total_duration()
+            self._ph = time.monotonic() - self._t0
+            if self._ph >= total:
+                self._ph = total
+                self._playing = False
+            else:
+                self.emit.schedule_render(after_ms=16)
+
         W, H = ctx.w, ctx.h
         tl_h = min(TIMELINE_H, max(100, H // 3))
         content_h = H - TOOLBAR_H - tl_h
