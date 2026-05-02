@@ -328,6 +328,12 @@ fn run_turn_and_respond(
         }
     }
 
+    let tool_names: Vec<&str> = all_tools.iter().map(|t| t.name.as_str()).collect();
+    log::info!(
+        "ai_broker[{}]: model={model_id}, tools={tool_names:?}",
+        request.app_id,
+    );
+
     // Convert messages to JSON values for the backend.
     let mut conv: Vec<serde_json::Value> = messages_to_json(&request.messages);
 
