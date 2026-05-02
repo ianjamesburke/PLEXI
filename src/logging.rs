@@ -15,7 +15,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the watchdog samples the frame counter. Short enough to catch brief freezes.
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+/// How many sample intervals between full heartbeat log lines (5s × 6 = 30s).
+const HEARTBEAT_EVERY_N_SAMPLES: u64 = 6;
 /// UI thread is considered frozen after this many seconds without a frame tick.
 const FREEZE_THRESHOLD_SECS: u64 = 5;
 
@@ -109,49 +112,58 @@ pub fn spawn_heartbeat(frame_tick: FrameTick) {
         .spawn(move || {
             let born = Instant::now();
             let mut beat: u64 = 0;
+            let mut sample: u64 = 0;
             let mut last_tick = frame_tick.load(Ordering::Relaxed);
-            let mut freeze_start: Option<Instant> = None;
+            // Track when we last saw the frame counter advance so freeze duration is accurate.
+            let mut last_tick_seen_at = Instant::now();
+            let mut freeze_reported = false;
 
             loop {
-                std::thread::sleep(HEARTBEAT_INTERVAL);
-                beat += 1;
+                std::thread::sleep(SAMPLE_INTERVAL);
+                sample += 1;
 
                 let now_tick = frame_tick.load(Ordering::Relaxed);
                 let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                let uptime = born.elapsed().as_secs();
-                let h = uptime / 3600;
-                let m = (uptime % 3600) / 60;
-                let s = uptime % 60;
 
                 let mut lines = String::new();
 
-                // Freeze detection: tick hasn't advanced since last heartbeat.
                 if now_tick == last_tick {
-                    if freeze_start.is_none() {
-                        freeze_start = Some(Instant::now());
+                    // Frame counter stalled — UI thread may be frozen.
+                    let frozen_secs = last_tick_seen_at.elapsed().as_secs();
+                    if frozen_secs >= FREEZE_THRESHOLD_SECS && !freeze_reported {
+                        freeze_reported = true;
                         lines.push_str(&format!(
-                            "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread stopped responding\n"
+                            "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s\n"
                         ));
-                    } else {
-                        let frozen_secs = freeze_start.unwrap().elapsed().as_secs();
-                        if frozen_secs >= FREEZE_THRESHOLD_SECS {
-                            lines.push_str(&format!(
-                                "[{now}] [WARN] [plexi::heartbeat] [FREEZE] still frozen — {frozen_secs}s unresponsive\n"
-                            ));
-                        }
+                    } else if frozen_secs >= FREEZE_THRESHOLD_SECS {
+                        lines.push_str(&format!(
+                            "[{now}] [WARN] [plexi::heartbeat] [FREEZE] still frozen — {frozen_secs}s unresponsive\n"
+                        ));
                     }
-                } else if let Some(start) = freeze_start.take() {
-                    let frozen_secs = start.elapsed().as_secs();
-                    lines.push_str(&format!(
-                        "[{now}] [INFO] [plexi::heartbeat] [THAW] UI thread resumed after {frozen_secs}s\n"
-                    ));
+                } else {
+                    // Frame counter advanced — UI thread is alive.
+                    if freeze_reported {
+                        let frozen_secs = last_tick_seen_at.elapsed().as_secs();
+                        lines.push_str(&format!(
+                            "[{now}] [INFO] [plexi::heartbeat] [THAW] UI thread resumed after ~{frozen_secs}s\n"
+                        ));
+                        freeze_reported = false;
+                    }
+                    last_tick = now_tick;
+                    last_tick_seen_at = Instant::now();
                 }
 
-                last_tick = now_tick;
-
-                lines.push_str(&format!(
-                    "[{now}] [INFO] [plexi::heartbeat] beat={beat} uptime={h:02}:{m:02}:{s:02}\n"
-                ));
+                // Write a full heartbeat line every 30s (every Nth sample).
+                if sample % HEARTBEAT_EVERY_N_SAMPLES == 0 {
+                    beat += 1;
+                    let uptime = born.elapsed().as_secs();
+                    let h = uptime / 3600;
+                    let m = (uptime % 3600) / 60;
+                    let s = uptime % 60;
+                    lines.push_str(&format!(
+                        "[{now}] [INFO] [plexi::heartbeat] beat={beat} uptime={h:02}:{m:02}:{s:02}\n"
+                    ));
+                }
 
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
