@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.25] — 2026-05-02
+
+### Changes
+- chore: add DEV_LOG entry for PR #549 (chat UI improvements)
+
 ## [3.4.24] — 2026-05-02
 
 ### Changes
