@@ -108,17 +108,17 @@ bump-alpha:
     else
         range="HEAD~20..HEAD"
     fi
-    mapfile -t commits < <(git log "$range" --oneline --no-merges --format="%s" | grep -v '^chore: DEV_LOG' | grep -v '^chore: bump' || true)
+    commits=()
+    while IFS= read -r line; do [[ -n "$line" ]] && commits+=("$line"); done < <(git log "$range" --no-merges --format="%s" | grep -v '^chore: DEV_LOG' | grep -v '^chore: bump' || true)
     today=$(date +%Y-%m-%d)
-    # Build the new unreleased section
-    section="## [alpha] — $today\n\n### Changes"
+    # Build the new alpha section with real newlines
+    section="## [alpha] — $today"$'\n\n'"### Changes"
     for c in "${commits[@]}"; do
-        section="$section\n- $c"
+        section="$section"$'\n'"- $c"
     done
-    section="$section\n"
-    # Prepend the section after the header line
+    # Insert before the first ## version header
     awk -v block="$section" '
-        /^# Changelog/ { print; getline; print; print ""; printf "%s\n", block; next }
+        /^## / && !inserted { printf "%s\n\n", block; inserted=1 }
         { print }
     ' CHANGELOG.md > CHANGELOG.md.tmp
     mv CHANGELOG.md.tmp CHANGELOG.md

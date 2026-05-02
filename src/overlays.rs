@@ -267,10 +267,11 @@ impl PlexiApp {
                             .show(ui, |ui| {
                                 ui.set_width(512.0);
                                 for line in CHANGELOG.lines() {
+                                    let clean = |s: &str| s.replace("**", "");
                                     if line.starts_with("## ") {
                                         ui.add_space(6.0);
                                         ui.label(
-                                            RichText::new(&line[3..])
+                                            RichText::new(clean(&line[3..]))
                                                 .size(style::TEXT_BODY)
                                                 .color(self.colors.text_primary)
                                                 .strong(),
@@ -278,14 +279,14 @@ impl PlexiApp {
                                         ui.add_space(2.0);
                                     } else if line.starts_with("### ") {
                                         ui.label(
-                                            RichText::new(&line[4..])
+                                            RichText::new(clean(&line[4..]))
                                                 .size(style::TEXT_HINT)
                                                 .color(self.colors.text_dim)
                                                 .strong(),
                                         );
                                     } else if line.starts_with("- ") || line.starts_with("* ") {
                                         ui.label(
-                                            RichText::new(line)
+                                            RichText::new(clean(line))
                                                 .size(style::TEXT_HINT)
                                                 .color(self.colors.text_primary),
                                         );
@@ -293,7 +294,7 @@ impl PlexiApp {
                                         // skip top-level # heading and blank lines
                                     } else {
                                         ui.label(
-                                            RichText::new(line)
+                                            RichText::new(clean(line))
                                                 .size(style::TEXT_HINT)
                                                 .color(self.colors.text_dim),
                                         );
