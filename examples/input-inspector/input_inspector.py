@@ -91,8 +91,7 @@ class InputInspectorApp(App):
     def on_scroll(self, ctx: RenderContext, id: str, offset_y: float) -> None:
         if id == SCROLL_ID:
             self._scroll_y = offset_y
-        else:
-            self._push("scroll", f"scroll  id={id!r}  offset={offset_y:.1f}")
+        self._push("scroll", f"scroll  id={id!r}  offset={offset_y:.1f}")
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
