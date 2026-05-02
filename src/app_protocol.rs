@@ -1036,6 +1036,10 @@ pub enum DrawCommand {
         x: f32,
         y: f32,
         w: f32,
+        /// Height of the input widget in pixels. Defaults to 24.0 for
+        /// backwards compatibility with older SDKs that don't send `h`.
+        #[serde(default = "default_text_input_h")]
+        h: f32,
         placeholder: String,
         /// When `true`, render as a multi-line editor. Enter submits;
         /// Shift+Enter inserts a newline. Defaults to `false` so existing
@@ -1329,6 +1333,10 @@ fn default_image_fit() -> String {
 
 fn default_volume() -> f32 {
     1.0
+}
+
+fn default_text_input_h() -> f32 {
+    24.0
 }
 
 

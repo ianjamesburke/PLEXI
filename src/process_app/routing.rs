@@ -689,10 +689,7 @@ impl ProcessApp {
                 let app_id = self.type_id.clone();
                 let tx = self.http_tx.clone();
                 let workspace_root = self.workspace_root.clone();
-                let open_panes = vec![crate::plexi_ai::broker::PaneContext {
-                    type_id: self.type_id.clone(),
-                    pane_id: self.pane_id,
-                }];
+                let open_panes = crate::plexi_ai::broker::get_pane_snapshot();
                 let tool_dispatcher = std::sync::Arc::new(
                     crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(),
                 );

@@ -1010,6 +1010,10 @@ impl eframe::App for PlexiApp {
         self.drain_pty_events();
         self.tick_agent_workspaces();
 
+        // Update the global pane context snapshot so that AiQuery dispatches
+        // include all open panes in the workspace context (#396).
+        self.update_pane_context_snapshot();
+
         // Focus stack: reconcile layer state BEFORE any input routing so
         // `input_captured_by_overlay()` answers correctly this frame.
         self.sync_notification_modal_focus();

@@ -216,6 +216,10 @@ pub struct ProcessApp {
     /// inputs and call `request_focus()` on them so the user can type
     /// immediately without clicking.
     text_input_visible_prev: std::collections::HashSet<String>,
+    /// True when any `TextInput` widget had egui focus during the last
+    /// `render_text_inputs` pass. Used by `handle_key` to suppress
+    /// forwarding text/key events to the app while the user is typing.
+    text_input_has_focus: bool,
     /// Per-region scroll offsets for `DrawCommand::BeginScroll` / `EndScroll`
     /// (#446). Key = scroll region id; value = current vertical offset in
     /// logical pixels. Persists across frames — the offset is only reset when
@@ -510,6 +514,7 @@ impl ProcessApp {
             mouse_tracking_enabled: false,
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
+            text_input_has_focus: false,
             scroll_offsets: HashMap::new(),
             exposed_tools: Vec::new(),
             #[cfg(test)]
@@ -724,6 +729,7 @@ impl ProcessApp {
         // it on every newly-visible input would leave only the last one
         // focused. We want the first one.
         let mut focus_granted = false;
+        let mut any_has_focus = false;
 
         for cmd in frame {
             let DrawCommand::TextInput {
@@ -731,6 +737,7 @@ impl ProcessApp {
                 x,
                 y,
                 w,
+                h,
                 placeholder,
                 multiline,
             } = cmd
@@ -741,12 +748,10 @@ impl ProcessApp {
             visible_this_frame.insert(id.clone());
             let newly_visible = !self.text_input_visible_prev.contains(id.as_str());
 
-            // Single-line height tuned to read as a proper input row
-            // rather than a hairline — matches the SDK's BODY size + a
-            // sensible vertical margin. Multiline widgets use the app's
-            // declared height (derived from `w`/layout), but we keep the
-            // same 24px minimum so a zero-height rect doesn't collapse.
-            let height = 24.0;
+            // Use SDK-supplied height (falls back to 24.0 for older SDKs
+            // that don't send `h`). Minimum 24px so a zero-height rect
+            // doesn't collapse.
+            let height = h.max(24.0);
             let widget_rect = egui::Rect::from_min_size(
                 egui::pos2(origin.x + x, origin.y + y),
                 egui::vec2(*w, height),
@@ -793,6 +798,10 @@ impl ProcessApp {
                 let cursor_idx = output.cursor_range.map(|cr| cr.primary.ccursor.index);
                 (output.response, cursor_idx)
             };
+
+            if resp.has_focus() {
+                any_has_focus = true;
+            }
 
             if *multiline {
                 // Multiline submit/newline handling:
@@ -847,6 +856,9 @@ impl ProcessApp {
         }
 
         self.text_input_visible_prev = visible_this_frame;
+        // Track whether any TextInput has focus so handle_key can suppress
+        // key forwarding while the user is typing into an input field.
+        self.text_input_has_focus = any_has_focus;
 
         for id in submitted {
             self.submit_text_input(&id);
@@ -1455,6 +1467,13 @@ impl App for ProcessApp {
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
+        // When a TextInput widget has focus, egui owns the keyboard — all
+        // text and key events are consumed by the TextEdit widget. Don't
+        // forward them to the app's on_key handler (typing "h" in the chat
+        // input shouldn't trigger a tier change, for example).
+        if self.text_input_has_focus {
+            return false;
+        }
         let mut consumed = false;
         for event in &input.events {
             match event {

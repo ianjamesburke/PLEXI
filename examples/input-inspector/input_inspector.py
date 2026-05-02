@@ -96,7 +96,7 @@ class InputInspectorApp(App):
     # ── helpers ─────────────────────────────────────────────────────────────
 
     def _push(self, cat: str, msg: str) -> None:
-        if cat == "mouse_move" and self._events and self._events[0][1] == "mouse_move":
+        if cat in ("mouse_move", "scroll") and self._events and self._events[0][1] == cat:
             self._events[0] = (_ts(), cat, msg)
         else:
             self._events.appendleft((_ts(), cat, msg))
@@ -165,9 +165,9 @@ class InputInspectorApp(App):
 
         viewport_y = HEADER_H
         viewport_h = ctx.h - HEADER_H
-        content_h = max(viewport_h, count * ROW_H)
+        content_h = max(viewport_h + ROW_H, count * ROW_H)
 
-        ctx.begin_scroll(SCROLL_ID, div_x, viewport_y, panel_w, viewport_h,
+        ctx.begin_scroll(SCROLL_ID, 0, viewport_y, ctx.w, viewport_h,
                          content_height=content_h)
 
         first = max(0, int(self._scroll_y / ROW_H))

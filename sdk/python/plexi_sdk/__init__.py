@@ -273,7 +273,7 @@ Drawing methods:
   ctx.line(x1, y1, x2, y2, color, width=1.0)
       Draw a straight line segment.
 
-  ctx.list(items, selected=0, item_height=40.0, x=0, y=0, w=None, h=None)
+  ctx.list_view(items, selected=0, item_height=40.0, x=0, y=0, w=None, h=None)
       Draw a scrollable list. w defaults to ctx.w; h defaults to ctx.h - y.
       Each item is a dict — see ListItem shape below.
 
@@ -352,7 +352,7 @@ STRUCTURED ARGUMENT SHAPES
 mods  (passed to on_key):
     {"shift": bool, "ctrl": bool, "alt": bool, "meta": bool}
 
-ListItem  (each element of the items list passed to ctx.list):
+ListItem  (each element of the items list passed to ctx.list_view):
     {
         "title":    str,          # primary label (required)
         "subtitle": str,          # secondary label (optional)
@@ -1772,7 +1772,7 @@ class RenderContext:
         from plexi_sdk.ui import render_tree
         render_tree(self, tree, fill=fill)
 
-    def list(self, items: list[dict], selected: int = 0,
+    def list_view(self, items: list[dict], selected: int = 0,
              item_height: float = 40.0, x: float = 0.0, y: float = 0.0,
              w: float | None = None, h: float | None = None) -> None:
         _emit({"type": "list", "x": x, "y": y,
@@ -1785,9 +1785,18 @@ class RenderContext:
                      content_height: float) -> None:
         """Begin a host-managed vertical scroll region (#446).
 
-        Declares a viewport at (x, y, w, h) within this pane. All draw
-        commands until the matching `end_scroll()` call are clipped to that
-        viewport. The host tracks the scroll position across frames and calls
+        Declares a viewport at (x, y, w, h) within this pane. This rect does
+        two things: it clips all draw commands until the matching `end_scroll()`
+        call, AND it defines where the host detects scroll gestures. The host
+        only fires `on_scroll` when the pointer is inside this rect.
+
+        **Common mistake:** if your scrollable list occupies only part of the
+        pane (e.g. the right half), set x/w to cover the full pane width anyway
+        so the user can scroll from anywhere — not just when hovering over the
+        list. Clipping is only applied to content drawn *inside* the block, so
+        content drawn before `begin_scroll` is unaffected regardless of x/w.
+
+        The host tracks the scroll position across frames and calls
         `on_scroll(ctx, id, offset_y)` whenever the user scrolls so the app
         can re-render content translated by `offset_y`.
 
@@ -1819,7 +1828,8 @@ class RenderContext:
 
     def text_input(self, id: str, x: float, y: float, w: float,
                    placeholder: str = "",
-                   multiline: bool = False) -> "str | None":
+                   multiline: bool = False,
+                   h: float = 24.0) -> "str | None":
         """Text input — host-owned buffer, submit-only.
 
         Emits a `DrawCommand::TextInput` and returns the most recently
@@ -1847,7 +1857,7 @@ class RenderContext:
         see issue #283.
         """
         _emit({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
-               "placeholder": placeholder, "multiline": multiline})
+               "h": h, "placeholder": placeholder, "multiline": multiline})
         return self._app._take_text_submission(id)
 
     # Logging helpers (in-frame, forwarded to host logger)

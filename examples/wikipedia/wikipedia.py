@@ -127,7 +127,7 @@ class WikiApp(App):
             elif app._mode == "results":
                 ctx.text(x, y, f'Results for "{app._query}":', size=BODY, color=FG)
                 items = [{"label": r, "secondary": None} for r in app._results]
-                ctx.list(items, selected=app._selected, item_height=40.0,
+                ctx.list_view(items, selected=app._selected, item_height=40.0,
                          x=x, y=y + 28, w=w, h=max(0.0, h - 28))
             elif app._mode == "article":
                 title = app._results[app._selected] if app._results else ""

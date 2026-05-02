@@ -1,6 +1,7 @@
-//! CWD synchronization — polls linked terminals and broadcasts PathChanged to pane groups.
+//! CWD synchronization + global pane context snapshot.
 
 use super::PlexiApp;
+use crate::plexi_ai::broker::PaneContext;
 use crate::shell;
 
 impl PlexiApp {
@@ -61,5 +62,37 @@ impl PlexiApp {
                 }
             }
         }
+    }
+
+    /// Build a snapshot of all open panes across all windows and push it into
+    /// the global pane context used by the AI broker (#396).
+    pub(super) fn update_pane_context_snapshot(&self) {
+        let mut panes = Vec::new();
+        for window in &self.windows {
+            for (_, pane) in &window.panes {
+                if let Some(app) = pane.as_app() {
+                    panes.push(PaneContext {
+                        type_id: app.manifest_id.clone(),
+                        pane_id: app.id,
+                    });
+                } else if let Some(term) = pane.as_terminal() {
+                    panes.push(PaneContext {
+                        type_id: "terminal".to_string(),
+                        pane_id: term.id,
+                    });
+                } else if let Some(agent) = pane.as_agent() {
+                    panes.push(PaneContext {
+                        type_id: "agent".to_string(),
+                        pane_id: agent.id,
+                    });
+                } else if let Some(ws) = pane.as_agent_workspace() {
+                    panes.push(PaneContext {
+                        type_id: "agent-workspace".to_string(),
+                        pane_id: ws.id,
+                    });
+                }
+            }
+        }
+        crate::plexi_ai::broker::update_pane_snapshot(panes);
     }
 }

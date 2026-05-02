@@ -17,6 +17,8 @@
 //! thread with a blocking call. The broker's `dispatch` method is therefore
 //! expected to be invoked from a worker thread spawned by the routing layer.
 
+use std::sync::{Arc, Mutex, OnceLock};
+
 use crate::app_protocol::{AiMessage, AiTool, ModelTier};
 use crate::config::{AiConfig, OllamaBackendConfig, OpenRouterBackendConfig};
 use crate::event_log::{self, HostEvent};
@@ -32,6 +34,27 @@ use crate::plexi_ai::turn_loop::{self, TurnError};
 pub struct PaneContext {
     pub type_id: String,
     pub pane_id: u64,
+}
+
+// ── Global pane context snapshot ────────────────────────────────────────────
+
+/// Singleton holding a snapshot of all open panes across all windows.
+/// Written by `PlexiApp::update()` each frame; read by `route_command` when
+/// dispatching `AiQuery` so the broker receives the full workspace context.
+static PANE_SNAPSHOT: OnceLock<Arc<Mutex<Vec<PaneContext>>>> = OnceLock::new();
+
+fn pane_snapshot() -> &'static Arc<Mutex<Vec<PaneContext>>> {
+    PANE_SNAPSHOT.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+}
+
+/// Replace the global pane context snapshot. Called once per frame by the host.
+pub fn update_pane_snapshot(panes: Vec<PaneContext>) {
+    *pane_snapshot().lock().unwrap() = panes;
+}
+
+/// Read the current pane context snapshot. Called by routing on `AiQuery`.
+pub fn get_pane_snapshot() -> Vec<PaneContext> {
+    pane_snapshot().lock().unwrap().clone()
 }
 
 /// One brokered request — what the routing layer hands to a broker. `app_id`

@@ -112,7 +112,7 @@ class TodoApp(App):
                 bar_h = 56.0
                 list_h = max(0.0, h - bar_h - 8.0)
                 if items:
-                    ctx.list(items, selected=app._selected, item_height=40.0,
+                    ctx.list_view(items, selected=app._selected, item_height=40.0,
                              x=x, y=y, w=w, h=list_h)
                 bar_y = y + h - bar_h
                 ctx.rect(x, bar_y, w, bar_h, fill=SURFACE, radius=4.0)
@@ -121,7 +121,7 @@ class TodoApp(App):
                          size=BODY, color=FG, monospace=True)
                 return
             if items:
-                ctx.list(items, selected=app._selected, item_height=40.0,
+                ctx.list_view(items, selected=app._selected, item_height=40.0,
                          x=x, y=y, w=w, h=h)
             else:
                 ctx.text(x, y + 12, "No items. Press 'a' to add.",

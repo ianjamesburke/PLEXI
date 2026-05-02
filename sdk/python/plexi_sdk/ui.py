@@ -167,12 +167,14 @@ class Heading(Component):
 
     `ctx.text(x, y, ...)` treats `y` as the TOP of the text box (host renders
     with egui::Align2::LEFT_TOP). A Heading with font size `fs` occupies rows
-    `y` .. `y + fs` exactly — no added descent, no baseline offset.
+    `y` .. `y + fs` plus descender padding.
     """
     text: str
     level: int = 1
     color: str = FG
     bold: bool = True
+
+    DESCENDER_PAD = 3.0
 
     def _font_size(self) -> float:
         return {
@@ -182,7 +184,7 @@ class Heading(Component):
         }.get(self.level, TEXT_TITLE)
 
     def measure(self, avail_w: float) -> float:
-        return self._font_size()
+        return self._font_size() + self.DESCENDER_PAD
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         fs = self._font_size()
@@ -204,6 +206,9 @@ class Label(Component):
     max_lines: int = 3
 
     LINE_LEADING = 4.0
+    # Extra space below the last line's baseline to avoid clipping
+    # descenders (g, y, p, q). Roughly 20% of body font size.
+    DESCENDER_PAD = 3.0
 
     def _font_size(self) -> float:
         return {
@@ -233,7 +238,8 @@ class Label(Component):
         if not lines:
             return 0.0
         # n lines = n-1 leadings + n font heights; equivalently n*line_h - leading.
-        return len(lines) * self._line_h() - self.LINE_LEADING
+        # Add descender padding so the last line's descenders aren't clipped.
+        return len(lines) * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         fs = self._font_size()
@@ -935,7 +941,7 @@ class TextInput(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         self._submitted = ctx.text_input(self.id, x=x, y=y, w=w,
-                                         placeholder=self.placeholder)
+                                         placeholder=self.placeholder, h=h)
 
     @property
     def submitted(self) -> Optional[str]:

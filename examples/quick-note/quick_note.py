@@ -154,7 +154,7 @@ class QuickNoteApp(App):
             # Browse mode — list on the left, optional preview on the right.
             items = [{"label": p.stem, "secondary": None} for p in self._notes]
             if items:
-                ctx.list(items, selected=self._selected, item_height=40.0,
+                ctx.list_view(items, selected=self._selected, item_height=40.0,
                          x=x, y=y, w=w, h=h)
             else:
                 ctx.text(x, y + 16, "No notes yet.", size=BODY, color=MUTED)
