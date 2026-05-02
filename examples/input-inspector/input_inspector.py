@@ -86,7 +86,10 @@ class InputInspectorApp(App):
     # ── helpers ─────────────────────────────────────────────────────────────
 
     def _push(self, cat: str, msg: str) -> None:
-        self._events.appendleft((_ts(), cat, msg))
+        if cat == "mouse_move" and self._events and self._events[0][1] == "mouse_move":
+            self._events[0] = (_ts(), cat, msg)
+        else:
+            self._events.appendleft((_ts(), cat, msg))
 
     # ── render ───────────────────────────────────────────────────────────────
 
