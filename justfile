@@ -92,6 +92,8 @@ clear-apps channel="":
     echo "Cleared $count app directories from $dir"
     echo "Re-run 'just install' from the matching worktree to re-sync from examples/"
 
+bump-and-install: bump-alpha install
+
 bump-alpha:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -112,13 +114,13 @@ bump-alpha:
     while IFS= read -r line; do [[ -n "$line" ]] && commits+=("$line"); done < <(git log "$range" --no-merges --format="%s" | grep -v '^chore: DEV_LOG' | grep -v '^chore: bump' || true)
     today=$(date +%Y-%m-%d)
     # Build the new alpha section with real newlines
-    section="## [alpha] — $today"$'\n\n'"### Changes"
+    section="## [$new] — $today"$'\n\n'"### Changes"
     for c in "${commits[@]}"; do
         section="$section"$'\n'"- $c"
     done
-    # Insert before the first ## version header
-    awk -v block="$section" '
-        /^## / && !inserted { printf "%s\n\n", block; inserted=1 }
+    # Insert before the first ## version header (ENVIRON avoids awk -v newline parsing bug)
+    PLEXI_SECTION="$section" awk '
+        /^## / && !inserted { printf "%s\n\n", ENVIRON["PLEXI_SECTION"]; inserted=1 }
         { print }
     ' CHANGELOG.md > CHANGELOG.md.tmp
     mv CHANGELOG.md.tmp CHANGELOG.md

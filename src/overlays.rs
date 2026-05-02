@@ -105,7 +105,7 @@ impl PlexiApp {
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(self.colors.bg_sidebar.gamma_multiply(0.8))
+                    .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
                     .stroke(Stroke::new(1.0, self.colors.border))
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(24, 20))

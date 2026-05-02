@@ -2,7 +2,7 @@
 
 Newest releases appear first.
 
-## [alpha] — 2026-05-02
+## [3.4.7] — 2026-05-02
 
 ### Changes
 - feat(changelog): clickable version badge opens changelog modal + just bump-alpha (#524)
@@ -43,7 +43,7 @@ Newest releases appear first.
 - docs: update CLAUDE.md, README, DEV_LOG and add icon.svg (#479)
 - ci: bump actions to Node.js 24-compatible versions (#477)
 
-## [alpha] — 2026-05-02
+## [3.4.6] — 2026-05-02
 
 ### Changes
 - feat(changelog): clickable version badge opens changelog modal + just bump-alpha (#524)
