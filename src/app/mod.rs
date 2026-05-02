@@ -1848,14 +1848,22 @@ impl eframe::App for PlexiApp {
                     || self.renaming_pane.is_some()
                     || self.renaming_window.is_some();
 
+                // When a pane is zoomed, drag targeting is moot (the whole
+                // window targets one pane), so skip the unsafe ObjC cursor
+                // probe entirely. Otherwise, throttle the repaint to 100ms
+                // — 60fps polling of NSApplication APIs from the render
+                // loop is wasteful and a candidate cause of the file-drag
+                // spinning ball seen in production.
                 #[cfg(target_os = "macos")]
-                let drag_cursor_pos: Option<egui::Pos2> = {
+                let drag_cursor_pos: Option<egui::Pos2> = if zoomed_pane.is_some() {
+                    None
+                } else {
                     let has_drag = ui.input(|i| {
                         !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty()
                     });
                     if has_drag {
                         ui.ctx()
-                            .request_repaint_after(std::time::Duration::from_millis(16)); // continuous repaints while dragging
+                            .request_repaint_after(std::time::Duration::from_millis(100));
                         use objc2_app_kit::NSApplication;
                         use objc2_foundation::MainThreadMarker;
                         MainThreadMarker::new()
