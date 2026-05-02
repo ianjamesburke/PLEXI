@@ -11,6 +11,7 @@ from plexi_sdk.ui import (
     Divider,
     Footer,
     Label,
+    RED,
     Scrollable,
     Section,
     Spacer,
@@ -44,9 +45,8 @@ class ChatApp(App):
         if not self._scroll_to_bottom_next:
             return
         self._scroll_to_bottom_next = False
-        self._scroll.scroll_offset = max(
-            0.0, self._scroll._child_h - self._scroll._avail_h
-        )
+        # Large value — clamped to actual max by Scrollable.render() on the next frame.
+        self._scroll.scroll_offset = 1_000_000.0
 
     def _send(self, text: str) -> None:
         if not text.strip():
@@ -107,32 +107,24 @@ class ChatApp(App):
             elif turn.role == "assistant":
                 children.append(Label(turn.text, max_lines=50))
             else:
-                children.append(Label(turn.text, color="#f38ba8", max_lines=10))
+                children.append(Label(turn.text, color=RED, max_lines=10))
             children.append(Spacer(size=8.0))
         if self._in_flight:
             children.append(Label("thinking…", tone="hint"))
         if not children:
             children.append(Label("No messages yet — type below and press Enter.", tone="hint"))
-        return Column(children)
+        return Column(children, padding=0)
 
     def on_render(self, ctx: RenderContext) -> None:
         ox, oy, ow = ctx.x, ctx.y, ctx.w
+
+        self._scroll.child = self._build_history_column()
 
         placeholder = (
             "Waiting for response…"
             if self._in_flight
             else "Type a message… (Enter to send, l/m/h to change tier)"
         )
-        submitted = ctx.text_input(
-            "chat-input",
-            x=ox + 16, y=oy + ctx.h - 48, w=ow - 32,
-            placeholder=placeholder,
-        )
-        if submitted is not None and not self._in_flight:
-            self._send(submitted)
-
-        self._scroll.child = self._build_history_column()
-
         tier_label = TIER_LABELS.get(self._tier, self._tier)
         ctx.render(Column([
             AppBar(title="Chat"),
@@ -144,6 +136,15 @@ class ChatApp(App):
                 f"Tier: {tier_label}  |  l=Low  m=Medium  h=High  |  j/k=scroll"
             ),
         ]))
+
+        submitted = ctx.text_input(
+            "chat-input",
+            x=ox + 16, y=oy + ctx.h - 48, w=ow - 32,
+            placeholder=placeholder,
+        )
+        if submitted is not None and not self._in_flight:
+            self._send(submitted)
+
         self._maybe_scroll_to_bottom()
 
 
