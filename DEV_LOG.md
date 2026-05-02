@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [CHANGED] Changelog modal + just bump-alpha (PR #524 → alpha)
+
+Version badge in toolbar (`v3.x.x`) is now a clickable button that opens a scrollable changelog modal. `CHANGELOG.md` is embedded at compile time via `include_str!` — no runtime file access. Escape or ✕ closes it. `show_changelog: bool` follows the same plain-bool pattern as `show_shortcuts` (not FocusLayer — Gemini suggested it but `show_shortcuts` ships fine without it).
+
+`just bump-alpha` added: patch-only bump, no release build, no tag. Pulls commits since last tag via `git log`, strips `chore: DEV_LOG` and bump commits, prepends an `## [alpha]` block to `CHANGELOG.md`, commits. After `just install` the modal shows alpha work at the top.
+
+Gemini fixes applied: `mapfile` → `while read` (Bash 3.2 compat), `\n` strings → `$'\n'` for real newlines, `awk` now matches first `## ` header to insert before (not the `# Changelog` title), `**` bold markers stripped before rendering.
+
+**Breaks if:** clicking `v3.x.x` in toolbar has no effect, or changelog modal doesn't open.
+
 ## 2026-05-02 — [CHANGED] v3.8 partial — ListItem/Row components + error visibility (PRs #521, #522 → alpha)
 
 **#521 (#388):** Added `ListItem` and `Row` components to `sdk/python/plexi_sdk/ui.py`. Both handle vertical centering internally — eliminates the `ctx.text` `align=` omission bug and manual y-offset math (`h * 0.38`, `h * 0.72`) that was producing subtle layout errors in descriptor-renderer. `ListItem` is a single/double-line item card (title, subtitle, leading icon, trailing); `Row` is a horizontal info row (leading icon, label, trailing badge/chevron). Gemini review: used allocated `h` for subtitle positioning instead of `self._h()` for consistency. Declined padding-on-Row suggestion — `Row` has no background rect; inner padding is the container's concern.
