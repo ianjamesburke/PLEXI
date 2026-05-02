@@ -139,7 +139,7 @@ fn stream_openrouter(
         .post("https://openrouter.ai/api/v1/chat/completions")
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
-        .set("HTTP-Referer", "https://plexi.app")
+        .set("HTTP-Referer", "https://www.plexiapp.com/")
         .set("X-Title", "Plexi")
         .send_string(&body_str);
 
