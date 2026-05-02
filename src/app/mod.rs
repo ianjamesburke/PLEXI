@@ -131,6 +131,7 @@ pub struct PlexiApp {
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
+    pub(crate) frame_tick: crate::logging::FrameTick,
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
@@ -231,7 +232,7 @@ pub struct PlexiApp {
 }
 
 impl PlexiApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::logging::FrameTick) -> Self {
         #[cfg(target_os = "macos")]
         crate::macos_menu::customize_app_menu();
 
@@ -532,6 +533,7 @@ impl PlexiApp {
                     quit_last_press: None,
                     config: config.clone(),
                     pending_close: false,
+                    frame_tick: frame_tick.clone(),
                     renaming_window: None,
                     rename_buffer: String::new(),
                     drag_context: None,
@@ -612,6 +614,7 @@ impl PlexiApp {
             quit_last_press: None,
             config,
             pending_close: false,
+            frame_tick,
             renaming_window: None,
             rename_buffer: String::new(),
             drag_context: None,
@@ -995,6 +998,7 @@ impl PlexiApp {
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame_tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _frame_start = std::time::Instant::now();
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
@@ -1514,18 +1518,22 @@ impl eframe::App for PlexiApp {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused(false);
+                    self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused(true);
+                    self.save_workspace();
                 }
                 Action::SplitRight => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused_mirror(crate::host::command::Placement::Right);
+                    self.save_workspace();
                 }
                 Action::SplitDown => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.split_focused_mirror(crate::host::command::Placement::Below);
+                    self.save_workspace();
                 }
                 Action::Navigate(dir) => {
                     let was_zoomed = self.windows[self.active_window].zoomed_pane.is_some();
@@ -1544,6 +1552,8 @@ impl eframe::App for PlexiApp {
                             self.pending_close = true;
                         } else if self.execute_close_pane() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        } else {
+                            self.save_workspace();
                         }
                     }
                 }
@@ -1554,7 +1564,10 @@ impl eframe::App for PlexiApp {
                         self.cycle_tab(false);
                     }
                 }
-                Action::NewTab => self.new_tab(),
+                Action::NewTab => {
+                    self.new_tab();
+                    self.save_workspace();
+                }
                 Action::ToggleZoom => {
                     let ctx = &mut self.windows[self.active_window];
                     if let Some(focused) = ctx.focused_pane {
@@ -1691,9 +1704,11 @@ impl eframe::App for PlexiApp {
                     } else {
                         self.new_page_right();
                     }
+                    self.save_workspace();
                 }
                 Action::NewContext => {
                     self.new_context();
+                    self.save_workspace();
                 }
                 Action::PageLeft => {
                     self.navigate_or_create_page(-1, 0);

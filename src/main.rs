@@ -128,6 +128,8 @@ fn main() -> eframe::Result {
         .and_then(|l| l.level_filter())
         .unwrap_or(log::LevelFilter::Info);
     crate::logging::init(log_level);
+    let frame_tick = crate::logging::new_frame_tick();
+    crate::logging::spawn_heartbeat(frame_tick.clone());
 
     // Resolve the login-shell PATH once for the whole process. Fixes
     // `gh`/`rg`/`fd`/any-homebrew-tool-not-found bugs when Plexi is launched
@@ -516,7 +518,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         env!("CARGO_PKG_NAME"),
         native_options,
-        Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc, frame_tick)))),
     )
 }
 
