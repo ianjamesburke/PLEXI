@@ -1509,7 +1509,7 @@ impl eframe::App for PlexiApp {
 
         // Handle keyboard shortcuts
         let modal_open = self.show_notification_modal;
-        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active, modal_open) {
+        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
@@ -2004,7 +2004,11 @@ impl eframe::App for PlexiApp {
 
         // Shortcuts overlay
         if self.show_shortcuts {
-            self.draw_shortcuts_overlay(ctx);
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.show_shortcuts = false;
+            } else {
+                self.draw_shortcuts_overlay(ctx);
+            }
         }
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
