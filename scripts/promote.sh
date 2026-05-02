@@ -23,7 +23,10 @@ check_pushed() {
     local tree="$1" branch="$2" label="$3"
     local n
     n=$(git -C "$tree" log "origin/$branch..$branch" --oneline 2>/dev/null | wc -l | tr -d ' ')
-    [[ "$n" -eq 0 ]] || die "$label has $n unpushed commit(s) — run: git push from $label"
+    if [[ "$n" -gt 0 ]]; then
+        echo "info: $label has $n unpushed commit(s) — pushing..."
+        git -C "$tree" push origin "$branch"
+    fi
 }
 
 bump_patch() {
