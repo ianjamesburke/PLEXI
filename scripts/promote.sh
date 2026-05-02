@@ -98,7 +98,7 @@ if [[ "$to" == "beta" ]]; then
     git -C "$ALPHA_TREE" push
 
     echo "Force-pushing alpha to beta and syncing worktree..."
-    git push origin alpha:beta --force
+    git push origin alpha:beta --force-with-lease
     git -C "$BETA_TREE" pull
 
     echo ""
