@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.18] — 2026-05-02
+
+### Changes
+- fix(examples): log scroll events in input-inspector
+
 ## [3.4.17] — 2026-05-02
 
 ### Changes
