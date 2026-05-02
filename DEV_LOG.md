@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-01 — [CHANGED] commit-graph batch — flat load, host scroll, badge fixes, PR badges (PR #500 → alpha)
+
+Four issues landed as one PR:
+- **#488:** Replaced week-window navigation (`[`/`]`/`t`) with flat `max_count=100` load. `fetch_commits` and `fetch_numstats` now take `max_count` instead of time bounds. `_week_offset` state removed entirely.
+- **#487:** Migrated `push_clip`/`pop_clip` → `begin_scroll`/`end_scroll`. Added `on_scroll` handler — host sends `offset_y` on trackpad/wheel events, app stores it and schedules render. j/k still updates `_graph_scroll_offset` directly; it's reconciled on the next `begin_scroll` call.
+- **#489:** Badge overlap fixed by computing `item_w` per-item in `_draw_legend` instead of a single `max_item_w`. Legend capped at 2 rows with `+N more` overflow.
+- **#490:** `_parse_commits` now extracts `pr_number` via `re.search(r'\s\(#(\d+)\)$', subject)`. Rendered as a muted `#NNN` badge after ref badges in the node loop.
+
+**Breaks if:** Trackpad scroll doesn't move the commit list (begin_scroll not wired). Or: `[`/`]` keys still appear in footer/help (cleanup incomplete). Or: Legend items overlap on multi-branch repos (per-item width regression).
+
 ## 2026-05-01 — [CHANGED] sidebar_row.rs — zone-based row abstraction (issues #480, #481, #483)
 
 Introduced `src/sidebar_row.rs` with `SidebarRow` / `RowLayout` / `RowResult`. The abstraction enforces:

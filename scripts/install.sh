@@ -47,6 +47,16 @@ fi
 rm -rf "$app_dest"
 cp -R "$app_src" "$app_dest"
 
+# For non-stable channels, rename the binary inside the installed bundle from
+# "plexi" to "plexi-<channel>" and update CFBundleExecutable to match.
+# config_dir_name() detects the channel from current_exe() file_name(), so the
+# binary name inside the bundle must contain the channel suffix or the app
+# silently reads ~/.plexi/apps/ instead of ~/.plexi-<channel>/apps/.
+if [[ -n "$suffix" ]]; then
+  mv "$app_dest/Contents/MacOS/plexi" "$app_dest/Contents/MacOS/plexi${suffix}"
+  /usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
+fi
+
 channel_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
 cp "$channel_bin" "$bin_dest"
 
