@@ -104,7 +104,7 @@ bump-alpha:
     sed -i '' "s/^version = \"$current\"/version = \"$new\"/" Cargo.toml
     cargo generate-lockfile
     # Collect commits since last alpha bump, stripping merge commits and chore: DEV_LOG entries
-    last_bump=$(git log --grep="^chore: bump alpha" --format="%H" | head -1)
+    last_bump=$(git log --grep="^chore: bump alpha" -1 --format="%H")
     if [[ -n "$last_bump" ]]; then
         range="$last_bump..HEAD"
     else

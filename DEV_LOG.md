@@ -1,5 +1,14 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
 
+## 2026-05-02 — [FIX] AiQuery silently dropped — never reached route_command (PR #536 → alpha)
+
+`DrawCommand::AiQuery`, `ExposeTools`, `ToolResult` (and `OpenVideo`, `CloseVideo`, `SetVideoState`, `Image`, `AudioMeter`) were absent from the dispatch match lists in both `ui()` and `background_tick` in `process_app/mod.rs`. They fell through to `other => pending_frame.push(other)` / `_ => {}` — silently dropped, never routed. Root cause of chat never working since PR #526 introduced `AiQuery`. Any new `DrawCommand` variant that has a `route_command` handler must also be added to both match lists or it will be silently discarded.
+**Breaks if:** chat-poc sends a message and gets no response (35s timeout in log).
+
+## 2026-05-02 — [GOTCHA] bump-alpha SIGPIPE with pipefail — use `git log -1` not `| head -1`
+
+`git log --grep=... --format="%H" | head -1` causes git to receive SIGPIPE when `head` closes after the first line. With `set -euo pipefail`, this fails the whole script. Fix: pass `-1` directly to `git log` so it emits one line and exits cleanly — no pipe truncation needed.
+
 ## 2026-05-02 — [FIX] Three root causes behind chat-poc failures (PR #534 → alpha)
 
 **Three bugs found and fixed:**
