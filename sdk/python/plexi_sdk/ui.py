@@ -700,11 +700,10 @@ class ListItem(Component):
 
         title_color = ACCENT if self.selected else FG
         if self.subtitle:
-            item_h = self._h()
-            ctx.text(inner_x, y + item_h * 0.35, self.title,
+            ctx.text(inner_x, y + h * 0.35, self.title,
                      size=TEXT_BODY, color=title_color, bold=True,
                      align="left_center", max_width=inner_w, elide=True)
-            ctx.text(inner_x, y + item_h * 0.70, self.subtitle,
+            ctx.text(inner_x, y + h * 0.70, self.subtitle,
                      size=TEXT_HINT, color=MUTED,
                      align="left_center", max_width=inner_w, elide=True)
         else:
