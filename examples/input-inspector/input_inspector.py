@@ -55,7 +55,7 @@ class InputInspectorApp(App):
     # ── event handlers ──────────────────────────────────────────────────────
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        mod_parts = [k for k, v in mods.items() if v and k != "shift"]
+        mod_parts = [k for k, v in mods.items() if v and (k != "shift" or len(key) > 1)]
         label = "+".join(mod_parts + [key]) if mod_parts else key
         self._last_key = label
         self._push("key", f"key  {label!r}")
