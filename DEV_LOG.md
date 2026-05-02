@@ -1,4 +1,18 @@
-<!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
+<!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't replace mistakes. -->
+
+## 2026-05-02 — [CHANGED] v3.5 batch — plexi_iq deletion, config migration, egui-term view fixes (PRs #502–504 → alpha)
+
+Three parallel sub-agent PRs:
+
+- **#502 (#429):** Deleted `src/plexi_iq/` — 1,238 lines of dead code. All IQ→AI rename work was already done; the directory was just orphaned (no `mod plexi_iq` in `main.rs`).
+- **#503 (#425):** Added `scripts/migrate-config.sh` + wired into `scripts/install.sh`. Checks for missing top-level sections (`[ai]`, `[notifications]`, `[theme]`, `[beta]`) and appends them additive-only. Tested live: caught missing `[notifications]` and `[ai]` on an existing install.
+- **#504 (#475, #492, #472):** `view.rs` fixes — empty clipboard guard (`trim().is_empty()` before WriteToClipboard), auto-scroll boundary fixed (triggers on pane exit, not 20px inside), scroll speed proportional to overshoot. `cell_height.max(1.0)` guard added to prevent divide-by-zero at tiny font sizes. #472 (HiDPI column mismatch) investigated — no mismatch found in current code; both SIGWINCH cols and renderer cell_width floor the same value identically.
+
+**Breaks if:** `cargo build` references `plexi_iq` module. Or: `just install` on a config missing a section doesn't add it. Or: drag-selecting an empty terminal region overwrites clipboard.
+
+## 2026-05-02 — [DECISION] #380 WorkspaceRouter deferred to v3.6
+
+The actual bug (SwitchContext bypassing `switch_workspace`) was already fixed. No direct `self.active_workspace =` assignments exist outside `switch_workspace`. The issue is a structural refactor to make the bug class a compile error — valid engineering but no active risk. Cost is high (touches 6+ files), benefit is insurance only. Deferred.
 
 ## 2026-05-01 — [CHANGED] commit-graph batch — flat load, host scroll, badge fixes, PR badges (PR #500 → alpha)
 
