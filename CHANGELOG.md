@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.55] — 2026-05-03 19:46 ET
+
+### Changes
+- docs: scrollback navigation + copy-mode design spec (#602, #603)
+- feat(cli): implement plexi update — binary self-update for stable channel (#594) (#601)
+
 ## [3.4.54] — 2026-05-03 19:18 ET
 
 ### Changes
