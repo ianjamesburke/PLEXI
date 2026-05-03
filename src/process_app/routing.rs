@@ -556,6 +556,37 @@ impl ProcessApp {
                 );
             }
 
+            // ── File picker (#514) ─────────────────────────────────────────
+            DrawCommand::OpenFilePicker { request_id, filter, multiple } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::FsPick)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenFilePicker {request_id} denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::FilePickCancelled { request_id });
+                    return;
+                }
+                log::debug!(
+                    "ProcessApp[{}]: OpenFilePicker {request_id} filter={filter:?} multiple={multiple}",
+                    self.type_id
+                );
+                let tx = self.file_picker_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    let result = pick_files(&filter, multiple);
+                    log::debug!("ProcessApp[{type_id}]: OpenFilePicker {request_id} → {result:?}");
+                    let event = match result {
+                        Some(paths) if !paths.is_empty() => {
+                            PlexiEvent::FilePicked { request_id, paths }
+                        }
+                        _ => PlexiEvent::FilePickCancelled { request_id },
+                    };
+                    let _ = tx.send(event);
+                });
+            }
+
             // ── Mouse tracking toggle ──────────────────────────────────────
             DrawCommand::SetMouseTracking { enabled } => {
                 self.mouse_tracking_enabled = enabled;
@@ -1533,5 +1564,62 @@ fn host_matches(host: &str, pattern: &str) -> bool {
         host.ends_with(suffix) || host == &pattern[2..]
     } else {
         host == pattern
+    }
+}
+
+/// Show a native file picker dialog on macOS using rfd's async API.
+/// Blocks the calling (background) thread; must NOT be called on the main thread.
+/// Returns `Some(paths)` with the selected paths, or `None` if cancelled.
+fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::pin::pin;
+
+    // Minimal block_on that parks the current thread while a future is pending.
+    // Works correctly with rfd::AsyncFileDialog, which resolves its future via
+    // AppKit's completion handler fired on the main thread.
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        let signal = Arc::new((Mutex::new(false), Condvar::new()));
+        struct Signal(Arc<(Mutex<bool>, Condvar)>);
+        impl Wake for Signal {
+            fn wake(self: Arc<Self>) { self.signal(); }
+            fn wake_by_ref(self: &Arc<Self>) { self.signal(); }
+        }
+        impl Signal {
+            fn signal(&self) {
+                let (lock, cvar) = &*self.0;
+                *lock.lock().unwrap() = true;
+                cvar.notify_one();
+            }
+        }
+        let waker: Waker = Arc::new(Signal(Arc::clone(&signal))).into();
+        let mut cx = Context::from_waker(&waker);
+        let mut f = pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(val) => return val,
+                Poll::Pending => {
+                    let (lock, cvar) = &*signal;
+                    let mut ready = lock.lock().unwrap();
+                    while !*ready { ready = cvar.wait(ready).unwrap(); }
+                    *ready = false;
+                }
+            }
+        }
+    }
+
+    let mut dialog = rfd::AsyncFileDialog::new();
+    // Group all extensions under a single "Files" label.
+    if !filter.is_empty() {
+        let refs: Vec<&str> = filter.iter().map(|s| s.as_str()).collect();
+        dialog = dialog.add_filter("Files", &refs);
+    }
+
+    if multiple {
+        let handles = block_on(dialog.pick_files())?;
+        Some(handles.into_iter().map(|h| h.path().to_string_lossy().into_owned()).collect())
+    } else {
+        let handle = block_on(dialog.pick_file())?;
+        Some(vec![handle.path().to_string_lossy().into_owned()])
     }
 }

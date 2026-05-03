@@ -51,6 +51,8 @@ cpal = "0.17"
 # nested dirs). default-features disabled to avoid pulling crossbeam-channel.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 egui_commonmark = "0.20"
+# Native file picker dialog (#514). Uses NSOpenPanel on macOS.
+rfd = "0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl

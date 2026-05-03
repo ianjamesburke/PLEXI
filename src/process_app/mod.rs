@@ -151,6 +151,11 @@ pub struct ProcessApp {
     /// result here so the UI thread never blocks on network I/O.
     pub(crate) http_tx: Sender<PlexiEvent>,
     pub(crate) http_rx: Receiver<PlexiEvent>,
+    /// Channel for async file picker results from background dialog threads.
+    /// `route_command` spawns one thread per `OpenFilePicker`; the thread
+    /// sends `PlexiEvent::FilePicked` or `FilePickCancelled` here when done.
+    pub(crate) file_picker_tx: Sender<PlexiEvent>,
+    pub(crate) file_picker_rx: Receiver<PlexiEvent>,
     /// `ai.query` broker (#284). `Arc<dyn AiBroker>` so production panes share
     /// a `LiveAiBroker` while tests can inject a `CannedBroker`. Dispatch runs
     /// on a worker thread so the UI never blocks on the LLM call.
@@ -467,6 +472,7 @@ impl ProcessApp {
             allowed_hosts: vec![],
         };
         let (http_tx, http_rx) = mpsc::channel::<PlexiEvent>();
+        let (file_picker_tx, file_picker_rx) = mpsc::channel::<PlexiEvent>();
 
         event_log::emit(HostEvent::AppSpawned {
             app_id: type_id.clone(),
@@ -506,6 +512,8 @@ impl ProcessApp {
             net: Arc::new(UreqNetService::new()),
             http_tx,
             http_rx,
+            file_picker_tx,
+            file_picker_rx,
             ai_broker: Arc::new(default_live_broker()),
             audio_device: default_audio_device(),
             audio_capture_sessions: HashMap::new(),
@@ -1037,6 +1045,9 @@ impl ProcessApp {
         while let Ok(event) = self.http_rx.try_recv() {
             self.outbound_events.push_back(event);
         }
+        while let Ok(event) = self.file_picker_rx.try_recv() {
+            self.outbound_events.push_back(event);
+        }
         self.flush_outbound_events();
         for cmd in self.drain_draw_commands() {
             match cmd {
@@ -1089,7 +1100,9 @@ impl ProcessApp {
                 | DrawCommand::CloseVideo { .. }
                 | DrawCommand::SetVideoState { .. }
                 | DrawCommand::Image { .. }
-                | DrawCommand::AudioMeter { .. }) => {
+                | DrawCommand::AudioMeter { .. }
+                // File picker (#514)
+                | DrawCommand::OpenFilePicker { .. }) => {
                     self.route_command(cmd);
                 }
                 // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
@@ -1200,6 +1213,10 @@ impl App for ProcessApp {
         while let Ok(event) = self.http_rx.try_recv() {
             self.outbound_events.push_back(event);
         }
+        // Drain file picker results from background dialog threads.
+        while let Ok(event) = self.file_picker_rx.try_recv() {
+            self.outbound_events.push_back(event);
+        }
 
         let new_cmds = self.drain_draw_commands();
 
@@ -1307,7 +1324,9 @@ impl App for ProcessApp {
                 | DrawCommand::CloseVideo { .. }
                 | DrawCommand::SetVideoState { .. }
                 | DrawCommand::Image { .. }
-                | DrawCommand::AudioMeter { .. }) => {
+                | DrawCommand::AudioMeter { .. }
+                // File picker (#514)
+                | DrawCommand::OpenFilePicker { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),

@@ -62,6 +62,10 @@ pub enum Capability {
     /// the surface so an app's manifest declares one intent ("I drive a
     /// terminal") rather than enumerating each verb.
     TerminalBindings,
+    /// Show a native macOS file picker dialog (`fs.pick`, #514).
+    /// Returns picked paths via `PlexiEvent::FilePicked`. Apps without this
+    /// capability receive `PlexiEvent::FilePickCancelled` immediately.
+    FsPick,
 }
 
 impl fmt::Display for Capability {
@@ -89,6 +93,7 @@ impl Capability {
             Self::MidiOut => "midi.out",
             Self::AgentsList => "agents.list",
             Self::TerminalBindings => "terminal.bindings",
+            Self::FsPick => "fs.pick",
         }
     }
 }
@@ -128,6 +133,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "midi.out" => Ok(Self::MidiOut),
             "agents.list" => Ok(Self::AgentsList),
             "terminal.bindings" => Ok(Self::TerminalBindings),
+            "fs.pick" => Ok(Self::FsPick),
             other => Err(UnknownCapability(other.to_string())),
         }
     }

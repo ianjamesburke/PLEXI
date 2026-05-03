@@ -471,7 +471,9 @@ pub(super) fn render_draw_commands(
             | DrawCommand::SetMouseTracking { .. }
             // Tool protocol commands are control-only; the painter never paints them.
             | DrawCommand::ExposeTools { .. }
-            | DrawCommand::ToolResult { .. } => {}
+            | DrawCommand::ToolResult { .. }
+            // File picker is a control command; result arrives via PlexiEvent.
+            | DrawCommand::OpenFilePicker { .. } => {}
 
             // ── Host-managed scroll regions (#446) ───────────────────────────
             //
