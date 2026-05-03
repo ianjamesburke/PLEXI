@@ -1876,6 +1876,7 @@ impl eframe::App for PlexiApp {
 
         // Reload configuration from disk when the user clicks
         // "Reload Configuration" in the app menu.
+        crate::macos_menu::apply_version_title_once();
         if crate::macos_menu::take_reload_config_flag() {
             self.reload_config();
         }

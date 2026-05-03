@@ -24,6 +24,25 @@ pub fn take_reload_config_flag() -> bool {
     RELOAD_CONFIG_FLAG.swap(false, Ordering::SeqCst)
 }
 
+/// Guards the one-shot version title application. winit resets the app menu
+/// item title during activation (after `PlexiApp::new`), so we defer the write
+/// to the first `update()` frame instead.
+static VERSION_TITLE_APPLIED: AtomicBool = AtomicBool::new(false);
+
+/// Apply the versioned menu bar title on the first call; no-op thereafter.
+/// Call from `PlexiApp::update()` so it runs after winit's activation delegate.
+pub fn apply_version_title_once() {
+    if VERSION_TITLE_APPLIED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(title) = menu_bar_title() else { return };
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(main_menu) = (unsafe { app.mainMenu() }) else { return };
+    let Some(app_menu_item) = (unsafe { main_menu.itemAtIndex(0) }) else { return };
+    unsafe { app_menu_item.setTitle(&NSString::from_str(&title)) };
+}
+
 fn register_handler_class() -> &'static objc2::runtime::AnyClass {
     static CLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
     CLASS.get_or_init(|| {
@@ -128,6 +147,24 @@ pub fn customize_app_menu() {
     unsafe { item.setTarget(Some(&*handler)) };
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     app_menu.addItem(&item);
+}
+
+/// Returns the versioned menu bar title for non-stable builds, or None for stable.
+/// Derives the channel from the running binary name (e.g. "plexi-pr-580" → "Plexi PR580 3.4.44").
+fn menu_bar_title() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let stem = exe.file_stem()?.to_string_lossy().into_owned();
+    let suffix = stem.strip_prefix("plexi-")?; // stable binary is just "plexi"
+    let channel = if let Some(n) = suffix.strip_prefix("pr-") {
+        format!("PR{n}")
+    } else {
+        let mut chars = suffix.chars();
+        chars
+            .next()
+            .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+            .unwrap_or_default()
+    };
+    Some(format!("Plexi {} {}", channel, env!("CARGO_PKG_VERSION")))
 }
 
 fn remove_items_with_action(menu: &NSMenu, action: objc2::runtime::Sel) {
