@@ -2021,6 +2021,24 @@ impl eframe::App for PlexiApp {
                 #[cfg(not(target_os = "macos"))]
                 let drag_cursor_pos: Option<egui::Pos2> = None;
 
+                // Cache once per frame — used by PlexiBehavior to avoid O(n) ui.input() reads.
+                let hovered_files = ui.input(|i| !i.raw.hovered_files.is_empty());
+
+                // Edge-trigger: log the first frame a file drag enters the window (zoomed path).
+                // Subsequent frames are silent. Used to pinpoint freeze location in the log.
+                if hovered_files && zoomed_pane.is_some() {
+                    let hover_id = egui::Id::new("drag_hover_was_active");
+                    let was_hovering: bool =
+                        ui.ctx().data(|d| d.get_temp(hover_id).unwrap_or(false));
+                    if !was_hovering {
+                        log::info!("[DRAG] hover: hovered_files became non-empty on zoomed pane");
+                    }
+                    ui.ctx().data_mut(|d| d.insert_temp(hover_id, true));
+                } else {
+                    let hover_id = egui::Id::new("drag_hover_was_active");
+                    ui.ctx().data_mut(|d| d.insert_temp(hover_id, false));
+                }
+
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     focused_tile: if suppress_focus {
@@ -2036,9 +2054,12 @@ impl eframe::App for PlexiApp {
                     colors: self.colors,
                     pane_names,
                     drag_cursor_pos,
+                    hovered_files,
                     workspace_root: crate::config::active_workspace_root(),
                 };
+                log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ctx.tree.ui(&mut behavior, ui);
+                log::debug!("[DRAG] tiling: done");
 
                 if let Some(new) = behavior.new_focused {
                     ctx.focused_pane = Some(new);
@@ -2116,6 +2137,28 @@ impl eframe::App for PlexiApp {
                                                     });
                                                 },
                                             );
+                                        } else if hovered_files {
+                                            // Skip TerminalView render while a file is being
+                                            // dragged over the zoomed pane. TerminalView::show()
+                                            // calls backend.sync() which clones the full grid
+                                            // under FairMutex contention — on a large terminal
+                                            // (e.g. a full-window Claude Code session) this
+                                            // blocked the main thread for several seconds.
+                                            // The drop itself is handled above (dropped_to_zoom
+                                            // guard), so we skip only the hover-frame renders.
+                                            log::debug!("[DRAG] zoom overlay: skipping TerminalView render during file hover");
+                                            let rect = ui.max_rect();
+                                            ui.allocate_new_ui(
+                                                egui::UiBuilder::new().max_rect(rect),
+                                                |ui| {
+                                                    ui.centered_and_justified(|ui| {
+                                                        ui.colored_label(
+                                                            self.colors.text_dim,
+                                                            "Drop to paste path",
+                                                        );
+                                                    });
+                                                },
+                                            );
                                         } else {
                                             // Reserve space for tab dots if in a tab group
                                             if zoomed_tab_info.is_some() {
@@ -2124,6 +2167,7 @@ impl eframe::App for PlexiApp {
                                                 );
                                             }
                                             let font_size = t.font_size;
+                                            log::debug!("[DRAG] zoom overlay: TerminalView render start");
                                             let terminal = TerminalView::new(ui, &mut t.backend)
                                                 .set_focus(true)
                                                 .set_theme(self.theme.clone())
@@ -2133,6 +2177,7 @@ impl eframe::App for PlexiApp {
                                                     ui.available_height(),
                                                 ));
                                             ui.add(terminal);
+                                            log::debug!("[DRAG] zoom overlay: TerminalView render done");
                                         }
                                     } else if let Some(a) = pane.as_app_mut() {
                                         let app_ctx = crate::app_trait::AppRenderContext {
