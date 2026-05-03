@@ -698,8 +698,52 @@ impl PlexiApp {
         // never set, pick the highest-priority remaining — never arbitrarily
         // index into the Vec.
         if self.pending_notifications.is_empty() {
-            self.show_notification_modal = false;
-            self.current_notify_id = None;
+            // Show an empty-state card so Cmd+Shift+A always gives feedback.
+            let screen_rect = ctx.screen_rect();
+            egui::Area::new(egui::Id::new("notification_modal_scrim"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(screen_rect.min)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(
+                        screen_rect.size(),
+                        egui::Sense::click(),
+                    );
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::ZERO,
+                        Color32::from_black_alpha(style::SCRIM_ALPHA),
+                    );
+                });
+            egui::Area::new(egui::Id::new("notification_modal"))
+                .order(egui::Order::Tooltip)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    egui::Frame::new()
+                        .fill(self.colors.bg_sidebar)
+                        .stroke(Stroke::new(1.0, self.colors.border))
+                        .corner_radius(style::RADIUS_LG)
+                        .inner_margin(egui::Margin::symmetric(
+                            style::MODAL_PADDING_H,
+                            style::MODAL_PADDING_V,
+                        ))
+                        .show(ui, |ui| {
+                            ui.set_width(style::MODAL_WIDTH_MD);
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(style::SPACE_MD);
+                                ui.label(
+                                    RichText::new("No notifications")
+                                        .size(style::TEXT_BODY)
+                                        .color(self.colors.text_dim),
+                                );
+                                ui.add_space(style::SPACE_MD);
+                            });
+                        });
+                });
+            let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            if esc_pressed {
+                self.show_notification_modal = false;
+            }
             return cmds;
         }
         if self

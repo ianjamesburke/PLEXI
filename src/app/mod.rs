@@ -1856,7 +1856,7 @@ impl eframe::App for PlexiApp {
                 Action::ToggleNotificationModal => {
                     if self.show_notification_modal {
                         self.show_notification_modal = false;
-                    } else if self.visible_notification_count() > 0 {
+                    } else {
                         self.show_notification_modal = true;
                         // Pick highest-priority when re-opening the modal and
                         // nothing is currently pinned. If something IS pinned
