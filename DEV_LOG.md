@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] Welcome screen: Plexi logo + centered wordmark (PR #562 → alpha)
+Replaced the plain "PLEXI" text header with the Plexi 4-square logo alongside the PLEXI wordmark, centered as a unit. Logo is drawn via egui painter primitives (3 outlined squares + 1 purple-filled square, scaled from the icon.svg geometry) — no new dependencies. Centering uses the same manual-leading-pad pattern as the email row: measure text width via `ui.fonts()`, compute `pad = (available - total_w) / 2`, add it inside `horizontal()`.
+**Breaks if:** welcome screen shows only the PLEXI text with no logo to its left, or the logo+wordmark group is left-aligned.
+
 ## 2026-05-03 — [CHANGED] Welcome screen email + clipboard (PR #560 → alpha)
 Added contact section to the welcome screen: a dim caption message ("If you have any ideas, want to help, or just want to say what's up..."), ADHDISNTREAL@GMAIL.COM as a centered mailto: link, and an inline 📋 clipboard button that flips to ✓ for 2s after clicking. Centering is achieved by measuring the email text width via `ui.fonts()` before entering the horizontal layout, then adding explicit leading padding — egui's `vertical_centered` can't center a full-width `horizontal()` container directly. Also fixed `config_dir_name()` in `src/config.rs` to handle `pr-NNN` binary names so PR builds use their own isolated profile directory instead of falling through to stable.
 **Breaks if:** email row is left-aligned on the welcome screen, or a PR build opens using `~/.plexi/` instead of `~/.plexi-pr-<n>/`.
