@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.53] — 2026-05-03 18:57 ET
+
+### Changes
+- docs: DEV_LOG PR #598 — SpawnPane, plexi open CLI, SDK ctx.spawn_pane()
+
 ## [3.4.52] — 2026-05-03 18:23 ET
 
 ### Changes
