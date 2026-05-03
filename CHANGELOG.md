@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.47] — 2026-05-03 15:34 ET
+
+### Changes
+- docs: DEV_LOG PR #580 + platform behavior validation lesson
+- feat(macos): show version in menu bar for non-stable builds (#580)
+
 ## [3.4.46] — 2026-05-03 15:30 ET
 
 ### Changes
