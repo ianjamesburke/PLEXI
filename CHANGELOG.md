@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.42] — 2026-05-03 14:32 ET
+
+### Changes
+- chore: add ET timestamps to all changelog entries; emit time in bump-alpha (#574)
+
 ## [3.4.41] — 2026-05-03 14:26 ET
 
 ### Changes
