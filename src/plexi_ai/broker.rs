@@ -575,20 +575,50 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         .timeout(std::time::Duration::from_secs(30))
         .build();
 
-    let try_fetch = || -> Option<GenerationMetrics> {
-        let resp = agent
+    let try_fetch = |attempt: u32| -> Option<GenerationMetrics> {
+        let result = agent
             .get(&url)
             .set("Authorization", &format!("Bearer {api_key}"))
-            .call()
-            .ok()?;
+            .call();
 
-        if resp.status() != 200 {
-            return None;
-        }
+        let resp = match result {
+            Ok(r) => r,
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                log::debug!(
+                    "ai_broker: generation fetch attempt {attempt} returned {status} for gen_id={gen_id}: {body}"
+                );
+                return None;
+            }
+            Err(e) => {
+                log::debug!(
+                    "ai_broker: generation fetch attempt {attempt} failed for gen_id={gen_id}: {e}"
+                );
+                return None;
+            }
+        };
 
-        let body_str = resp.into_string().ok()?;
-        let body: serde_json::Value = serde_json::from_str(&body_str).ok()?;
-        let data = body.get("data")?;
+        let body_str = match resp.into_string() {
+            Ok(s) => s,
+            Err(e) => {
+                log::debug!("ai_broker: generation response read error: {e}");
+                return None;
+            }
+        };
+        let body: serde_json::Value = match serde_json::from_str(&body_str) {
+            Ok(v) => v,
+            Err(e) => {
+                log::debug!("ai_broker: generation response parse error: {e} — body={body_str}");
+                return None;
+            }
+        };
+        let data = match body.get("data") {
+            Some(d) if !d.is_null() => d,
+            _ => {
+                log::debug!("ai_broker: generation response missing 'data' field — body={body_str}");
+                return None;
+            }
+        };
         let cost_usd = data["total_cost"]
             .as_str()
             .and_then(|s| s.parse::<f64>().ok());
@@ -611,13 +641,16 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         })
     };
 
-    if let Some(metrics) = try_fetch() {
+    // OpenRouter has eventual consistency — the generation record may not be
+    // queryable immediately after the stream completes. Wait 1s before the
+    // first attempt, then retry after another 1.5s.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    if let Some(metrics) = try_fetch(1) {
         return Some(metrics);
     }
 
-    // One retry after 500ms for eventual consistency.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let metrics = try_fetch();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let metrics = try_fetch(2);
     if metrics.is_none() {
         log::warn!(
             "ai_broker: generation metrics unavailable for gen_id={gen_id} — cost/tokens fallback unavailable"
