@@ -183,6 +183,7 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 - **Coupled state:** When adding state that derives from or shadows existing state, grep every mutation site of the original and update each one.
 - **Fallback chain audit:** When a value looks correct on the surface but behavior is stale, enumerate every fallback source in priority order (cookies, env vars, caches, defaults). Fix the chain, not the surface.
 - **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
+- **Uncommitted bump on alpha:** When alpha shows a dirty Cargo.toml with a version change, `just bump` ran without its commit — commit manually as `chore: bump alpha to X.Y.Z` before creating a worktree.
 
 ## PlexiApp State
 
