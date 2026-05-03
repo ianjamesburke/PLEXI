@@ -2152,22 +2152,10 @@ impl eframe::App for PlexiApp {
             });
 
         // Shortcuts overlay
-        if self.show_shortcuts {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                self.show_shortcuts = false;
-            } else {
-                self.draw_shortcuts_overlay(ctx);
-            }
-        }
+        self.draw_shortcuts_overlay(ctx);
 
         // Changelog overlay
-        if self.show_changelog {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                self.show_changelog = false;
-            } else {
-                self.draw_changelog_overlay(ctx);
-            }
-        }
+        self.draw_changelog_overlay(ctx);
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
         let ws_id = self.router.active().context_id;
