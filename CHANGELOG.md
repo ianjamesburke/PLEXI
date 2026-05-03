@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.36] — 2026-05-03
+
+### Changes
+- feat: add issue template with Meta YAML convention for dependency tracking
+
 ## [3.4.35] — 2026-05-03
 
 ### Changes
