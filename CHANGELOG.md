@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.31] — 2026-05-02
+
+### Changes
+- dev_log: PR #551 tool registration + token diagnostics
+- docs: add in-progress label to feature branch and ship cycle workflows
+
 ## [3.4.30] — 2026-05-02
 
 ### Changes
