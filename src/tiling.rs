@@ -46,6 +46,9 @@ pub struct PlexiBehavior<'a> {
     pub colors: Colors,
     pub pane_names: HashMap<PaneId, String>,
     pub drag_cursor_pos: Option<egui::Pos2>,
+    /// Cached once per frame — true if files are being dragged over the window.
+    /// Avoids O(n) `ui.input()` calls inside `pane_ui` for each background pane.
+    pub hovered_files: bool,
     /// The active workspace root (or `None` when running outside a workspace).
     /// Used by `terminal_pane::render` to flag terminal panes whose CWD has
     /// drifted outside the workspace tree. See issue #308 Phase 1.
@@ -54,46 +57,38 @@ pub struct PlexiBehavior<'a> {
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
     fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
-        // Detect clicks or file drags for focus (skip when a pane is zoomed — input belongs to the overlay)
+        // While any pane is zoomed, paint background panes as dark placeholders
+        // and skip all input detection — the zoom overlay owns focus and drop
+        // handling. This avoids per-pane `ui.input()` calls during hover, which
+        // were O(n) and ran even when the results could never be acted on.
+        if self.zoomed_pane.is_some() {
+            let pane_rect = ui.available_rect_before_wrap();
+            ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            return UiResponse::None;
+        }
+
+        // Detect clicks or file drags for focus.
         let is_click =
             ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect());
         let is_drag_hovering = match self.drag_cursor_pos {
             Some(pos) => ui.max_rect().contains(pos),
-            None => {
-                ui.input(|i| !i.raw.hovered_files.is_empty())
-                    && ui.rect_contains_pointer(ui.max_rect())
-            }
+            None => self.hovered_files && ui.rect_contains_pointer(ui.max_rect()),
         };
-        if self.zoomed_pane.is_none() && (is_click || is_drag_hovering) {
+        if is_click || is_drag_hovering {
             self.new_focused = Some(tile_id);
         }
 
         let is_focused = self.focused_tile == Some(tile_id);
 
-        // Drop target matches the visual focus rect above.
-        //
-        // Skip when a pane is zoomed: background tiles are still rendered
-        // as dark placeholders and still receive pointer input, but the
-        // user can't see them. Without this guard, dropping a file onto a
-        // zoomed pane silently writes its path into a terminal *behind*
-        // the overlay. The zoomed overlay in `app.rs` owns drop handling
-        // for the zoomed pane itself.
-        if is_drag_hovering && self.zoomed_pane.is_none() {
+        // Drop target: the zoomed overlay owns drops when a pane is zoomed,
+        // so this path only runs when zoomed_pane.is_none() (guaranteed above).
+        if is_drag_hovering {
             if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
                 write_dropped_paths_to_terminal(ui, t);
             }
         }
 
-        // While any pane is zoomed, paint background panes as dark placeholders.
-        // The zoomed pane itself is rendered by the overlay in `app.rs`.
-        // Painter-only fill: wrapping in `egui::Frame` collapses to a grey
-        // square in the top-left when inner renderers don't allocate UI space.
         let pane_rect = ui.available_rect_before_wrap();
-        if self.zoomed_pane.is_some() {
-            ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-            return UiResponse::None;
-        }
-
         let Some(pane) = self.panes.get_mut(pane_id) else {
             return UiResponse::None;
         };
