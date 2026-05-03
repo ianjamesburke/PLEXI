@@ -89,6 +89,14 @@ pub fn customize_app_menu() {
         return;
     };
 
+    // Show version in the menu bar for non-stable builds (alpha, beta, PR).
+    // Reads CFBundleName at runtime so pr-install's bundle rename is respected.
+    let current_title = unsafe { app_menu_item.title() }.to_string();
+    if current_title != "Plexi" {
+        let versioned = format!("{} {}", current_title, env!("CARGO_PKG_VERSION"));
+        unsafe { app_menu_item.setTitle(&NSString::from_str(&versioned)) };
+    }
+
     remove_items_with_action(&app_menu, sel!(hide:));
     // Also remove "Hide Others" (Cmd+Opt+H) to avoid confusion
     remove_items_with_action(&app_menu, sel!(hideOtherApplications:));
