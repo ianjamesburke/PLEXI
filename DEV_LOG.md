@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Reserve 'plexi update' for binary self-update; app updates → 'plexi update apps' (PR #600 → alpha)
+
+`plexi update [<id>]` (app git-pull) renamed to `plexi update apps [<id>]`. Bare `plexi update` now routes to `self_update_cli()` — a stub that prints "not yet implemented" until #594 (binary download) lands. Dispatch change in `main.rs`; doc comments and error strings in `cli.rs` and `install.rs` updated. Breaking rename intentional on alpha before any scripts depend on the old surface.
+
+**Breaks if:** `plexi update apps` fails to git-pull installed apps, or `plexi update` exits 0 instead of printing the not-implemented error.
+
 ## 2026-05-03 — [CHANGED] DrawCommand::SpawnPane — plexi open CLI, SDK ctx.spawn_pane(), panes.spawn capability (PR #598 → alpha)
 
 Unified pane-spawn primitive: `DrawCommand::SpawnPane { type_id, layout, args, pipe_id }` replaces the narrow `SpawnApp` for new code. Adds `PlexiEvent::PaneSpawned`/`PaneSpawnError`, `Capability::PanesSpawn` ("panes.spawn"), `plexi open` CLI (file-based spawn-queue, same pattern as notify-queue), Python SDK `emit.spawn_pane()` + `on_pane_spawned`/`on_pane_spawn_error` hooks. `pipe_id` appended as `--pipe=<id>` to spawned app args for the AI↔human handoff loop. `layout: "background"` returns `PaneSpawnError` (blocked on #291). Overlay rendering (Z3 backdrop, Z2 anchor) deferred. Quick Note migration deferred. Also fixed pre-existing test harness struct literal errors (`show_cli_setup_prompt`, `file_picker_tx/rx` missing from `new_for_test`).
