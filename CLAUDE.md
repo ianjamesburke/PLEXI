@@ -37,7 +37,7 @@ Every issue gets one **type**, one **priority**, one **version**.
 - **type:** `bug` | `enhancement` | `idea`
 - **priority:** `P1` (shipping blocker) | `P2` | `P3` | `P4`
 - **version:** `v3.0` | `v3.1+` | `future`
-- **status** (optional): `in-progress` | `ready` | `blocked`
+- **status** (optional): `in progress` | `ready` | `blocked`
 
 ## Milestones
 
@@ -75,6 +75,7 @@ Never commit directly to `beta` or `main`. All work flows through alpha.
 
 All changes, no matter how small, follow this cycle:
 
+0. **Label the issue** `in progress`: `gh issue edit <number> --add-label "in progress"`
 1. **Create a worktree** from inside `worktrees/alpha/`: `wtp add -b <branch-name>`
 2. **Implement** and commit inside that worktree
 3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
@@ -106,7 +107,7 @@ When the user says **"ship"** (or "ship it"), run the full post-merge cycle:
 
 1. Squash-merge the PR: `gh pr merge <number> --squash`
 2. `git pull` in `worktrees/alpha/`
-3. Update DEV_LOG.md, close related issue(s) with `gh issue close <number> --comment "Closed by PR #<pr>"`, and commit the DEV_LOG update
+3. Update DEV_LOG.md, close related issue(s) with `gh issue close <number> --comment "Closed by PR #<pr>"`, remove the `in progress` label (`gh issue edit <number> --remove-label "in progress"`), and commit the DEV_LOG update
 4. `just bump-and-install` from `worktrees/alpha/` — kick off in background
 5. While it runs: remove the feature worktree and delete the remote branch
 6. Wait for install to finish
