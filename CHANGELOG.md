@@ -2,6 +2,13 @@
 
 Newest releases appear first.
 
+## [3.4.51] — 2026-05-03 18:08 ET
+
+### Changes
+- docs: DEV_LOG PR #586 — notify choice response file fix
+- docs(lessons): command self-containment — handler data belongs in the command, not ambient state
+- feat(cli): plexi notify --choice blocking flow (#586)
+
 ## [3.4.50] — 2026-05-03 17:47 ET
 
 ### Changes
