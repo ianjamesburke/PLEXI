@@ -2,6 +2,15 @@
 
 Newest releases appear first.
 
+## [3.4.32] — 2026-05-02
+
+### Changes
+- dev_log: PR #556 sidebar hit-rect fix
+- fix(sidebar): stabilise hit rects + clear renaming_window on reorder (#556)
+- docs: add Failed PR reset protocol to CLAUDE.md
+- Add project-level triage skill; unignore .claude/ directory
+- docs: replace ship cycle with /ship skill reference, add testing label
+
 ## [3.4.31] — 2026-05-02
 
 ### Changes
