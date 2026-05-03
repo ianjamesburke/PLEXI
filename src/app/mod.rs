@@ -1856,7 +1856,7 @@ impl eframe::App for PlexiApp {
                 Action::ToggleNotificationModal => {
                     if self.show_notification_modal {
                         self.show_notification_modal = false;
-                    } else if self.visible_notification_count() > 0 {
+                    } else {
                         self.show_notification_modal = true;
                         // Pick highest-priority when re-opening the modal and
                         // nothing is currently pinned. If something IS pinned
@@ -2289,10 +2289,6 @@ impl eframe::App for PlexiApp {
         // path at the top of `update()` — they own a `FocusLayer` and render
         // their own keystrokes before the drain. Drawing again here would
         // double-dispatch Enter/Escape after keys have been drained.
-        if self.visible_notification_count() == 0 {
-            self.show_notification_modal = false;
-        }
-
         // Quit confirmation overlay
         if self.confirm_quit() && self.quit_press_count > 0 {
             // Reset on Escape or timeout
@@ -2476,8 +2472,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
-        let should_own = self.show_notification_modal
-            && self.visible_notification_count() > 0;
+        let should_own = self.show_notification_modal;
         let has_layer = self
             .focus_stack
             .iter()
