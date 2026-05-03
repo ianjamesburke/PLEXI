@@ -339,6 +339,14 @@ pub enum PlexiEvent {
     /// and emitting `DrawCommand::PopNav` to decrement the host counter.
     NavBack { view_id: String },
 
+    /// Response to `DrawCommand::OpenFilePicker`. At least one file was selected.
+    /// `paths` contains the absolute paths chosen by the user.
+    FilePicked { request_id: String, paths: Vec<String> },
+
+    /// Response to `DrawCommand::OpenFilePicker` when the user cancelled the
+    /// dialog without selecting a file, or the app lacks `fs.pick` capability.
+    FilePickCancelled { request_id: String },
+
     /// Emitted by the host when the scroll offset for a `BeginScroll` region
     /// changes (mouse wheel, drag). The app should re-render using `offset_y`
     /// as the vertical translation applied to all content within that region.
@@ -1206,6 +1214,22 @@ pub enum DrawCommand {
         text: String,
         base_size: f32,
         color: String,
+    },
+
+    // ── File picker (#514) ────────────────────────────────────────────────────
+    /// Show a native macOS file picker dialog. Requires `fs.pick` capability.
+    ///
+    /// `filter` is a list of file extensions without leading dots
+    /// (e.g. `["mp4", "mov"]`). Empty list = accept all files.
+    ///
+    /// `multiple` allows selecting more than one file.
+    ///
+    /// Host responds with `PlexiEvent::FilePicked` (paths) or
+    /// `PlexiEvent::FilePickCancelled` (user dismissed / capability denied).
+    OpenFilePicker {
+        request_id: String,
+        filter: Vec<String>,
+        multiple: bool,
     },
 }
 

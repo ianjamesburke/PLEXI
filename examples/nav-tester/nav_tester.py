@@ -12,7 +12,7 @@ view is active.  When the user navigates back, the host emits NavBack and the
 app calls pop_nav() + returns to the list.
 """
 
-from plexi_sdk import App, RenderContext, FG, MUTED, SURFACE, ACCENT, BODY, CAPTION  # type: ignore[attr-defined]
+from plexi_sdk import App, RenderContext, FG, MUTED, SURFACE, ACCENT, BG, BODY, CAPTION  # type: ignore[attr-defined]
 
 # ── View identifiers ──────────────────────────────────────────────────────────
 VIEW_LIST   = ""          # root — empty string means "no back target"
@@ -81,7 +81,7 @@ class NavTesterApp(App):
     # ── Render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.background()
+        ctx.clear(BG)
 
         if self._view == VIEW_LIST:
             self._render_list(ctx)

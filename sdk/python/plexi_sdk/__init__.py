@@ -815,6 +815,33 @@ class Emitter:
         """
         _emit({"type": "pop_nav"})
 
+    # ── File picker (#514) ──────────────────────────────────────────────────
+
+    def open_file_picker(
+        self,
+        request_id: str,
+        filter: "list[str] | None" = None,
+        multiple: bool = False,
+    ) -> None:
+        """Show a native macOS file picker dialog. Requires ``fs.pick`` capability.
+
+        The host responds asynchronously with either:
+        - ``on_file_picked(ctx, request_id, paths)`` — one or more files selected
+        - ``on_file_pick_cancelled(ctx, request_id)`` — user dismissed the dialog
+
+        Args:
+            request_id: Caller-supplied correlation ID echoed back in the response.
+            filter: File extension whitelist without leading dots
+                    (e.g. ``["mp4", "mov"]``). ``None`` or empty = all files.
+            multiple: Allow picking more than one file.
+        """
+        _emit({
+            "type": "open_file_picker",
+            "request_id": request_id,
+            "filter": filter or [],
+            "multiple": multiple,
+        })
+
     def cd_to(self, cwd: str) -> None:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
         _emit({"type": "cd_request", "cwd": cwd})
@@ -2120,6 +2147,18 @@ class App:
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> Coroutine[Any, Any, None] | None: return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> Coroutine[Any, Any, None] | None: return None
+    def on_file_picked(self, _ctx: RenderContext, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
+        """Called when the user selected one or more files in the picker.
+
+        ``_request_id`` matches the id passed to ``ctx.emit.open_file_picker``.
+        ``_paths`` is a list of absolute file paths chosen by the user.
+        """
+        return None
+    def on_file_pick_cancelled(self, _ctx: RenderContext, _request_id: str) -> "Coroutine[Any, Any, None] | None":
+        """Called when the user dismissed the file picker without selecting a file,
+        or if the ``fs.pick`` capability was not declared.
+        """
+        return None
     """Called when the host updates the scroll offset for a BeginScroll region.
 
     `id` matches the id passed to `ctx.begin_scroll`. `offset_y` is the new
@@ -2657,6 +2696,19 @@ class App:
                     await self._dispatch_hook(
                         self.on_nav_back, ctx, str(ev.get("view_id", ""))
                     )
+
+                elif t == "file_picked":
+                    # File picker result (#514) — user selected one or more files.
+                    request_id = str(ev.get("request_id", ""))
+                    paths: list[str] = list(ev.get("paths", []))
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_file_picked, ctx, request_id, paths)
+
+                elif t == "file_pick_cancelled":
+                    # File picker cancelled (#514) — dialog dismissed or capability denied.
+                    request_id = str(ev.get("request_id", ""))
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_file_pick_cancelled, ctx, request_id)
 
                 elif t == "tool_call":
                     # v3.7 tool protocol (#399). Host asks this pane to execute
