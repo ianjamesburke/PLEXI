@@ -16,6 +16,7 @@ mod app_trait;
 mod audio;
 mod cli;
 mod cli_registry;
+mod cli_setup;
 mod command_palette;
 mod config;
 mod context;
