@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] File picker capability — fs.pick / OpenFilePicker (PR #567 → alpha)
+Added native file picker support: `DrawCommand::OpenFilePicker { request_id, filter, multiple }` triggers a native NSOpenPanel via `rfd::AsyncFileDialog` on a background thread (condvar-based `block_on` keeps the egui render loop unblocked). Result returns as `PlexiEvent::FilePicked` / `FilePickCancelled` through a dedicated `file_picker_rx` channel drained in both `background_tick()` and `ui()`. New `Capability::FsPick` (`"fs.pick"`) gates the call — denied apps get `FilePickCancelled` immediately. Python SDK gains `ctx.emit.open_file_picker()` + `on_file_picked` / `on_file_pick_cancelled` hooks. POC app ships under `examples/file-picker-poc/`.
+**Breaks if:** Clicking the "Pick File" button in the file-picker-poc app opens no dialog, or a dialog opens but selecting a file never updates the displayed path.
+
 ## 2026-05-03 — [FIX] Terminal copy drops first character — iter_from excludes start point (PR #569 → alpha)
 `selectable_content()` called `iter_from(range.start)` which excludes the start point, silently dropping the first character of every copy. Root cause: `open_link()` in the same file already demonstrates the correct pattern — explicitly index `grid[range.start]` before the loop. Fix: initialize `prev_line = Some(range.start.line)` and push the start cell before entering the `iter_from` loop.
 **Breaks if:** Copying any text in a terminal pane still drops the first character (e.g. selecting `pass` pastes `ass`).
