@@ -13,16 +13,17 @@ pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
 pub struct RowLayout {
     /// The full row rect: background, border, hover detection.
     pub full: Rect,
-    /// The drag/click/context-menu zone (left portion).
+    /// The drag/click/context-menu zone (left portion). Stable regardless of hover state.
     pub content: Rect,
-    /// The action zone (delete button) — right-anchored, None when hidden.
+    /// The action zone (delete button) — right-anchored, None when the action is disabled.
+    /// Geometry is always carved out when Some; glyph + interaction are gated on hover in draw().
     pub action: Option<Rect>,
 }
 
 impl RowLayout {
-    fn new(origin: Pos2, width: f32, show_action: bool) -> Self {
+    fn new(origin: Pos2, width: f32, action_enabled: bool) -> Self {
         let full = Rect::from_min_size(origin, Vec2::new(width, ROW_HEIGHT));
-        let action = show_action.then(|| {
+        let action = action_enabled.then(|| {
             Rect::from_min_size(
                 egui::pos2(full.max.x - ACTION_ZONE_WIDTH, full.min.y),
                 Vec2::new(ACTION_ZONE_WIDTH, ROW_HEIGHT),
@@ -74,14 +75,13 @@ pub struct SidebarRow {
 
 impl SidebarRow {
     /// Compute layout zones from the current cursor position.
-    /// `show_action_if_hovered`: whether to show the action zone when hovered.
-    /// Pass `false` when dragging is active, only one context exists, or row is renaming.
-    pub fn new(ui: &egui::Ui, width: f32, show_action_if_hovered: bool) -> Self {
+    /// `action_enabled`: whether to carve out the action zone.
+    /// Pass `false` when only one context exists or dragging is active.
+    /// The action glyph and interaction are gated on hover inside draw() — geometry is stable.
+    pub fn new(ui: &egui::Ui, width: f32, action_enabled: bool) -> Self {
         let origin = ui.cursor().min;
-        let probe = Rect::from_min_size(origin, Vec2::new(width, ROW_HEIGHT));
-        let show_action = show_action_if_hovered && ui.rect_contains_pointer(probe);
         Self {
-            layout: RowLayout::new(origin, width, show_action),
+            layout: RowLayout::new(origin, width, action_enabled),
             is_active: false,
             is_this_dragging: false,
             is_any_dragging: false,
@@ -109,7 +109,6 @@ impl SidebarRow {
     ) -> RowResult {
         let row_alpha = if self.is_this_dragging { 0.4_f32 } else { 1.0_f32 };
         let hovered = self.layout.hovered(ui);
-        let in_action = self.layout.in_action(ui);
 
         // Advance the layout cursor — must happen before any allocate_new_ui calls
         // that would otherwise try to use the same origin.
@@ -142,25 +141,31 @@ impl SidebarRow {
             |ui| content_fn(ui, hovered),
         );
 
-        // Action zone — glyph painted then full-zone interaction registered
+        // Action zone — glyph and interaction only active when hovered.
+        // Geometry is always carved out (content rect is stable), so no hit-rect shifts on hover.
         let action_clicked = if let Some(az) = self.layout.action {
-            let glyph_color = with_alpha(
-                if in_action { colors.text_primary } else { colors.text_dim },
-                row_alpha,
-            );
-            ui.painter().text(
-                az.center(),
-                egui::Align2::CENTER_CENTER,
-                "\u{2715}",
-                egui::FontId::proportional(13.0),
-                glyph_color,
-            );
-            let resp = ui.interact(az, id.with("action"), Sense::click());
-            let clicked = resp.clicked();
-            if in_action {
-                resp.on_hover_text("Delete context");
+            if hovered && !self.is_this_dragging {
+                let in_action = self.layout.in_action(ui);
+                let glyph_color = with_alpha(
+                    if in_action { colors.text_primary } else { colors.text_dim },
+                    row_alpha,
+                );
+                ui.painter().text(
+                    az.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "\u{2715}",
+                    egui::FontId::proportional(13.0),
+                    glyph_color,
+                );
+                let resp = ui.interact(az, id.with("action"), Sense::click());
+                let clicked = resp.clicked();
+                if in_action {
+                    resp.on_hover_text("Delete context");
+                }
+                clicked
+            } else {
+                false
             }
-            clicked
         } else {
             false
         };

@@ -191,6 +191,7 @@ impl PlexiApp {
                 } else if result.primary_double_clicked && !any_dragging {
                     menu_action = Some((i, WindowMenuAction::Rename));
                 } else if result.primary_clicked && !any_dragging {
+                    log::debug!("sidebar: primary_clicked ctx={i} active={}", self.router.active_idx());
                     clicked_workspace = Some(i);
                 }
             }
@@ -208,6 +209,7 @@ impl PlexiApp {
             if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
                 if dst != src && dst != src + 1 {
                     let effective_dst = if dst > src { dst - 1 } else { dst };
+                    self.renaming_window = None;
                     self.router.reorder_tracking_active(src, effective_dst);
                 }
             }
@@ -238,15 +240,19 @@ impl PlexiApp {
                     self.rename_buffer = self.router.get(i).name.clone();
                 }
                 WindowMenuAction::MoveToTop => {
+                    self.renaming_window = None;
                     self.router.move_to_front_tracking_active(i);
                 }
                 WindowMenuAction::MoveUp => {
+                    self.renaming_window = None;
                     self.router.swap_tracking_active(i, i - 1);
                 }
                 WindowMenuAction::MoveDown => {
+                    self.renaming_window = None;
                     self.router.swap_tracking_active(i, i + 1);
                 }
                 WindowMenuAction::MoveToBottom => {
+                    self.renaming_window = None;
                     self.router.move_to_back_tracking_active(i);
                 }
                 WindowMenuAction::Delete => {
