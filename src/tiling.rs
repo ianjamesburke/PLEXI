@@ -199,6 +199,7 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
     for file in dropped {
         let Some(path) = &file.path else { continue };
         let path_str = path.display().to_string();
+        log::info!("drop: writing path to terminal: {path_str}");
         let escaped = if path_str.contains(|c: char| {
             c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)
         }) {
@@ -208,5 +209,6 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
         };
         t.backend
             .process_command(BackendCommand::Write(escaped.as_bytes().to_vec()));
+        log::info!("drop: path written ok");
     }
 }

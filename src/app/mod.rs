@@ -2070,10 +2070,15 @@ impl eframe::App for PlexiApp {
                         // zoomed terminal, NOT a background tile. The
                         // per-tile drop path in `tiling.rs` is gated off
                         // while zoomed; we handle the drop here instead.
-                        let dropped_to_zoom = child_ui.input(|i| {
-                            !i.raw.dropped_files.is_empty()
-                                && child_ui.rect_contains_pointer(inner_rect)
-                        });
+                        let has_drop =
+                            child_ui.input(|i| !i.raw.dropped_files.is_empty());
+                        let dropped_to_zoom =
+                            has_drop && child_ui.rect_contains_pointer(inner_rect);
+                        if has_drop {
+                            log::info!(
+                                "drop: zoomed overlay received drop event — dropped_to_zoom={dropped_to_zoom}, pane_id={pane_id:?}"
+                            );
+                        }
                         egui::Frame::new()
                             .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
