@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] HostHarness: headless egui test harness (PR #564 → alpha)
+`src/testing.rs` adds `HostHarness` for host self-validation without a real GPU or subprocess. `ProcessApp::new_for_test(pane_id, permissions)` takes explicit `AppPermissions` — pass `AppPermissions::builtin()` for normal tests, `from_capability_strings(&[])` for synchronous denial tests. AiQuery regression guard uses the denial path (no `ai.query` cap) so it's synchronous and deterministic — no sleep required. `background_tick()` drives routing directly when egui frames don't call `ui()` (zero-allocation headless panes). Pre-existing lint fixes: irrefutable `if let` patterns in `agent_pane.rs`, unused `use super::*` in two test modules.
+**Breaks if:** `cargo test` reports fewer than 294 passed, or any of the 6 harness tests in `testing::tests` fail.
+
 ## 2026-05-03 — [CHANGED] Welcome screen: Plexi logo + centered wordmark (PR #562 → alpha)
 Replaced the plain "PLEXI" text header with the Plexi 4-square logo alongside the PLEXI wordmark, centered as a unit. Logo is drawn via egui painter primitives (3 outlined squares + 1 purple-filled square, scaled from the icon.svg geometry) — no new dependencies. Centering uses the same manual-leading-pad pattern as the email row: measure text width via `ui.fonts()`, compute `pad = (available - total_w) / 2`, add it inside `horizontal()`.
 **Breaks if:** welcome screen shows only the PLEXI text with no logo to its left, or the logo+wordmark group is left-aligned.
