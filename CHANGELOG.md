@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.35] — 2026-05-03
+
+### Changes
+- feat(welcome): add Plexi logo + centered wordmark (#562)
+
 ## [3.4.34] — 2026-05-03
 
 ### Changes
