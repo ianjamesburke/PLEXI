@@ -292,7 +292,10 @@ impl TerminalBackend {
         let content = self.last_content();
         let mut result = String::new();
         if let Some(range) = content.selectable_range {
-            let mut prev_line: Option<Line> = None;
+            // iter_from excludes the start point, so grab the first character
+            // explicitly before the loop — same pattern used in open_link().
+            result.push(content.grid.index(range.start).c);
+            let mut prev_line: Option<Line> = Some(range.start.line);
             let last_col = content.grid.last_column();
             // iter_from(range.start) instead of display_iter() — display_iter
             // only covers the current viewport, so a selection that starts in
