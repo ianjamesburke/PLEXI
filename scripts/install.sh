@@ -13,6 +13,9 @@ channel="${1:-$(cat .channel 2>/dev/null || echo "stable")}"
 if [[ "$channel" == "stable" ]]; then
   cap=""
   suffix=""
+elif [[ "$channel" =~ ^pr-([0-9]+)$ ]]; then
+  cap=" PR${BASH_REMATCH[1]}"
+  suffix="-$channel"
 else
   cap=" $(echo "$channel" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
   suffix="-$channel"
