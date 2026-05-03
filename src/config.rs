@@ -151,6 +151,8 @@ impl LogConfig {
 pub struct BetaConfig {
     pub crt: Option<bool>,
     pub ghost: Option<bool>,
+    /// Opacity of the zoomed (full-screen) pane overlay (0.0–1.0, default 0.98).
+    pub zoom_opacity: Option<f32>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -409,8 +411,9 @@ model_high   = "anthropic/claude-opus-4-7"
 # ── Experimental Features ──────────────────────────────────────
 # Flip any flag to true and restart to enable.
 [beta]
-# crt   = false    # Retro CRT scanlines + green phosphor tint
-# ghost = false    # Unfocused panes render at reduced opacity
+# crt          = false    # Retro CRT scanlines + green phosphor tint
+# ghost        = false    # Unfocused panes render at reduced opacity
+# zoom_opacity = 0.98     # Zoomed pane opacity (0.0–1.0)
 
 # ── Logging ────────────────────────────────────────────────────
 # [log]
@@ -579,6 +582,9 @@ impl BetaConfig {
         }
         if other.ghost.is_some() {
             self.ghost = other.ghost;
+        }
+        if other.zoom_opacity.is_some() {
+            self.zoom_opacity = other.zoom_opacity;
         }
     }
 }
