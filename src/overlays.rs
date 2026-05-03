@@ -1708,6 +1708,7 @@ impl PlexiApp {
                                 self.show_cli_setup_prompt = false;
                             }
                             if skip_btn.clicked() {
+                                log::info!("cli_setup: user declined — marking prompted, no symlink created");
                                 crate::cli_setup::mark_prompted();
                                 self.show_cli_setup_prompt = false;
                             }
@@ -1716,6 +1717,7 @@ impl PlexiApp {
             });
 
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            log::info!("cli_setup: dismissed via Escape — marking prompted, no symlink created");
             crate::cli_setup::mark_prompted();
             self.show_cli_setup_prompt = false;
         }

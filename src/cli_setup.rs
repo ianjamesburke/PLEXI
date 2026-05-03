@@ -21,6 +21,19 @@ pub fn mark_prompted() {
     let _ = std::fs::write(sentinel_path(), "");
 }
 
+/// Compute whether to show the first-launch prompt, logging the decision.
+pub fn should_prompt() -> bool {
+    if was_prompted() {
+        return false;
+    }
+    if is_installed() {
+        log::info!("cli_setup: {} already installed — skipping prompt", cli_name());
+        return false;
+    }
+    log::info!("cli_setup: {} not installed — showing first-launch prompt", cli_name());
+    true
+}
+
 /// Returns true if the CLI command for this build already exists in a
 /// well-known install location (avoids spawning a shell on every startup).
 pub fn is_installed() -> bool {
