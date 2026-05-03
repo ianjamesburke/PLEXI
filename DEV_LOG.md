@@ -1,4 +1,16 @@
-<!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
+<!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
+
+## 2026-05-03 — [FIX] UI freeze + silent drop failure when dragging file onto zoomed pane (PR #585 → alpha)
+
+Two root causes, both from misuse of egui pointer state during macOS OS-level file drags:
+
+1. **Freeze (5-7s hang):** `TerminalView::show()` calls `backend.sync()` which clones the full terminal grid under `FairMutex` contention on every hover frame. On a full-window Claude Code session (zoomed = large grid), this blocked the main thread. Fix: during file hover on the zoomed overlay, skip `TerminalView` entirely and show a "Drop to paste path" indicator instead. The drop write happens before the render path so drop behavior is unchanged.
+
+2. **Silent drop failure:** `dropped_to_zoom = has_drop && child_ui.rect_contains_pointer(inner_rect)` used egui's tracked pointer position, which is stale during macOS OS-level drags (the `NSApplication.mouseLocationOutsideOfEventStream()` probe is skipped when zoomed). The stale position only fell inside `inner_rect` by accident — when the pointer happened to be over the original split-pane location before zooming. Fix: when zoomed, unconditionally treat any drop as targeting the zoomed pane — there is no ambiguity since the entire overlay is one pane.
+
+Also: cache `hovered_files` once per frame instead of O(n) per-pane `ui.input()` reads; move the zoomed early-return to the top of `pane_ui` to skip all input detection for background panes when zoomed.
+
+**Breaks if:** dropping a file onto a zoomed terminal pane does not paste the path, or the freeze returns on drag hover.
 
 ## 2026-05-03 — [CHANGED] Show version in macOS menu bar for non-stable builds (PR #580 → alpha)
 
