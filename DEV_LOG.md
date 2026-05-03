@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] Inject PLEXI_PANE_ID + PLEXI_SOCKET into every PTY (PR #565 → alpha)
+Every PTY-backed terminal pane now receives `PLEXI_PANE_ID` (the numeric pane id) and `PLEXI_SOCKET` (variant-correct path to `~/.plexi-{channel}/notify.sock`) in its environment. Child processes inherit both vars naturally. `make_backend_settings()` gained a `pane_id: u64` first parameter; all six call sites updated. Socket path derived from `config::config_dir()` so it's automatically correct for alpha/beta/stable/PR builds. No new dependencies.
+**Breaks if:** `echo $PLEXI_PANE_ID` in any terminal pane prints empty, or `echo $PLEXI_SOCKET` doesn't contain the channel-specific path.
+
 ## 2026-05-03 — [CHANGED] HostHarness: headless egui test harness (PR #564 → alpha)
 `src/testing.rs` adds `HostHarness` for host self-validation without a real GPU or subprocess. `ProcessApp::new_for_test(pane_id, permissions)` takes explicit `AppPermissions` — pass `AppPermissions::builtin()` for normal tests, `from_capability_strings(&[])` for synchronous denial tests. AiQuery regression guard uses the denial path (no `ai.query` cap) so it's synchronous and deterministic — no sleep required. `background_tick()` drives routing directly when egui frames don't call `ui()` (zero-allocation headless panes). Pre-existing lint fixes: irrefutable `if let` patterns in `agent_pane.rs`, unused `use super::*` in two test modules.
 **Breaks if:** `cargo test` reports fewer than 294 passed, or any of the 6 harness tests in `testing::tests` fail.
