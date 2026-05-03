@@ -173,6 +173,15 @@ Use `uv` for all Python projects. `pyproject.toml` with `requires-python = ">=3.
 
 Try-catch on all I/O, network, external API calls, and anything that can reasonably fail. Every catch logs where + what failed with enough context to diagnose. Never swallow errors silently. If a failure can't be meaningfully recovered from, propagate or re-throw.
 
+## Issue Visibility Before Work Begins
+
+Before making any progress on a bug or issue, establish visibility of the problem. Never take a reporter's word alone — you need to see it yourself:
+
+- **Preferred:** reproduce it in a `HostHarness` test that fails. This becomes the done condition.
+- **Acceptable:** add a targeted `log::info!` or `log::warn!` that fires when the bad state occurs, then confirm it appears in `plexi.log` against the alpha build before writing any fix.
+
+If you can't reproduce it or instrument it, stop and flag it. A fix written against an unconfirmed symptom is a guess. This check belongs at the triage step — before the issue is labeled `in progress` and before any worktree is created.
+
 ## Implementation Discipline (no half-refactors)
 
 **Define done by the test, not the code.** Before writing any new module or refactoring an existing one, write the test that must pass when the work is complete. A PR is done when `cargo test` is green — not when the code looks right.
