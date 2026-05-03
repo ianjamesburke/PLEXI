@@ -1,5 +1,12 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] First-launch CLI setup dialog + /usr/local/bin symlink (PR #566 → alpha)
+
+On first GUI launch (drag-to-Applications path), a centered modal prompts the user to install the `plexi` CLI command. "Install" symlinks `/usr/local/bin/<cli-name>` → current binary and writes a sentinel (`config_dir/cli_setup_done`). "Not now" / Escape dismiss for the session only — dialog reappears next launch until installed. `just install` also creates the symlink (no dialog). Sentinel is channel-aware via `config_dir()` which reads the binary name from `current_exe()`.
+
+Dropped the earlier `~/.local/bin` + `~/.zshrc` PATH-patching approach. `/usr/local/bin` is always on macOS PATH (Homebrew standard), user-writable without sudo, and requires zero shell config changes — same model as VS Code's `code` command.
+**Breaks if:** CLI setup modal appears after clicking Install, or `/usr/local/bin/plexi` (or `-alpha`/`-pr-N`) symlink not created after clicking Install.
+
 ## 2026-05-03 — [FIX] Ghost empty state — welcome screen and Cmd+N guards + pr-install sed fix (PR #576 → alpha)
 
 Closing a zoomed/fullscreen app pane could leave the window in a blank void: no terminals, no welcome screen, and Cmd+N misdirecting to a new page. Root cause: welcome-screen and Cmd+N guards both keyed on `panes.is_empty()` alone — when the tree had no root but panes retained stale entries, neither guard fired. Fix: both guards now also check `tree.root.is_none()`, making the empty void structurally impossible. `close_focused_app()` now clears `zoomed_pane` after `close_tile` to prevent stale tile references. Also fixed `scripts/install.sh` sed pattern (`"Plexi"` → `"Plexi[^\"]*"`) so `just pr-install` works correctly from the alpha channel (bundle name is `"Plexi Alpha"`, not `"Plexi"`).
