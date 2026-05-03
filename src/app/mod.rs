@@ -1373,28 +1373,15 @@ impl eframe::App for PlexiApp {
                         self.current_notify_id = Some(new_id);
                     }
                 }
-                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } => {
+                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file } => {
                     log::info!(
                         "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?}"
                     );
-                    // Write response to the CLI response file when this was a
-                    // host-originated blocking notification (sender_pane_id == 0).
-                    if pane_id == 0 {
-                        let found = self.pending_notifications.iter()
-                            .find(|n| n.notify_id == notify_id);
-                        log::info!(
-                            "notify:action: host-originated, found={} response_file={:?}",
-                            found.is_some(),
-                            found.and_then(|n| n.response_file.as_deref())
-                        );
-                        if let Some(notif) = found {
-                            if let Some(ref rf) = notif.response_file {
-                                let content = value.as_deref().unwrap_or("");
-                                match std::fs::write(rf, content) {
-                                    Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
-                                    Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
-                                }
-                            }
+                    if let Some(rf) = &response_file {
+                        let content = value.as_deref().unwrap_or("");
+                        match std::fs::write(rf, content) {
+                            Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
+                            Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
                         }
                     }
                     let active = self.active_window;
@@ -2610,7 +2597,17 @@ impl PlexiApp {
     pub(crate) fn dispatch_notify_action_cmds(&mut self, cmds: Vec<crate::app_trait::AppCommand>) {
         use crate::app_trait::AppCommand;
         for cmd in cmds {
-            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } = cmd {
+            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file } = cmd {
+                log::info!(
+                    "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?}"
+                );
+                if let Some(rf) = &response_file {
+                    let content = value.as_deref().unwrap_or("");
+                    match std::fs::write(rf, content) {
+                        Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
+                        Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
+                    }
+                }
                 let active = self.active_window;
                 if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                     if let Some(app) = pane.as_app_mut() {

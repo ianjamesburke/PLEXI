@@ -90,6 +90,8 @@ pub enum AppCommand {
         notify_id: String,
         action_label: String,
         value: Option<String>,
+        /// Path to write the chosen value for host-originated blocking notifications.
+        response_file: Option<String>,
     },
     /// Canvas Terminal Binding Primitives (#78). The host opens a fresh
     /// terminal next to `sender_pane_id`, sets the new terminal as the
