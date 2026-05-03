@@ -37,7 +37,7 @@ Every issue gets one **type**, one **priority**, one **version**.
 - **type:** `bug` | `enhancement` | `idea`
 - **priority:** `P1` (shipping blocker) | `P2` | `P3` | `P4`
 - **version:** `v3.0` | `v3.1+` | `future`
-- **status** (optional): `in progress` | `ready` | `blocked`
+- **status** (optional): `in progress` | `testing` | `ready` | `blocked`
 
 ## Milestones
 
@@ -103,29 +103,7 @@ If they don't match, delete the worktree and branch immediately and redo from in
 
 ### Ship Cycle
 
-When the user says **"ship"** (or "ship it"), run the full post-merge cycle:
-
-1. Squash-merge the PR: `gh pr merge <number> --squash`
-2. `git pull` in `worktrees/alpha/`
-3. Update DEV_LOG.md, close related issue(s) with `gh issue close <number> --comment "Closed by PR #<pr>"`, remove the `in progress` label (`gh issue edit <number> --remove-label "in progress"`), and commit the DEV_LOG update
-4. `just bump-and-install` from `worktrees/alpha/` — kick off in background
-5. While it runs: remove the feature worktree and delete the remote branch
-6. Wait for install to finish
-
-Alpha must be clean (no uncommitted changes) when the ship cycle ends.
-
-Return a short summary in this exact format:
-```
-- Merged: PR #<n> — <title>
-- Closed: Issue #<n> — <title>
-- DEV_LOG: updated
-- Bumped: <old> → <new>, installed
-- To test: <1–3 concrete steps — what to open, what to do, what to expect>
-
-[COMPLETE]
-```
-
-The "To test" line must be specific enough that the user can verify the feature without reading the PR. Reference the example app if one ships with the feature. Bad: "run the app and check it works." Good: "open `tool-poc` in one pane and `chat-poc` in another — ask 'increment the counter 3 times', counter should reach 3."
+When the user says **"ship"** (or "ship it"), invoke the `/ship` skill. It defines the full merge → install → testing → complete cycle with a human verification gate before closing the issue.
 
 ### alpha → beta → main (channel promotion)
 
