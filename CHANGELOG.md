@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.44] — 2026-05-03 14:58 ET
+
+### Changes
+- docs: add lesson about uncommitted bump on alpha
+
 ## [3.4.43] — 2026-05-03 14:40 ET
 
 ### Changes
