@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [FIX] notify --choice round-trip: response file never written (PR #586 → alpha)
+
+`DeliverNotifyAction` has two dispatch paths: `dispatch_notify_action_cmds` (for early modal commands) and the main deferred handler. Response file write logic was only in the deferred path. Modal actions go through the early path — which also removes the notification from `pending_notifications` before dispatch fires. The main handler's lookup always returned `None` because the notification was already gone. Fix: added `response_file: Option<String>` to the `DeliverNotifyAction` variant so it travels with the command and is available on any path regardless of queue state.
+
+**Breaks if:** `plexi notify --title "x" --choice "y:Yes" --timeout 10` blocks and then exits without printing the chosen key after clicking a choice button in the notification panel.
+
 ## 2026-05-03 — [FIX] False FREEZE alerts at startup from heartbeat spawning before shell probes (PR #589 → alpha)
 
 `spawn_heartbeat` was called before `install_login_shell_path/env`, which spawn `zsh -i -l -c env` on the main thread. With `frame_tick` still 0 (eframe not started yet), the heartbeat correctly flagged 8-12s of no frames as a `[FREEZE]` — but incorrectly, since there was no UI thread to freeze. The false alerts contaminated every startup log and made the freeze appear correlated with the first eframe frames (including notify drain logs), blocking clean testing of PR #586's choice notification flow.
