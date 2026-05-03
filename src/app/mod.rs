@@ -2289,10 +2289,6 @@ impl eframe::App for PlexiApp {
         // path at the top of `update()` — they own a `FocusLayer` and render
         // their own keystrokes before the drain. Drawing again here would
         // double-dispatch Enter/Escape after keys have been drained.
-        if self.visible_notification_count() == 0 {
-            self.show_notification_modal = false;
-        }
-
         // Quit confirmation overlay
         if self.confirm_quit() && self.quit_press_count > 0 {
             // Reset on Escape or timeout
