@@ -150,9 +150,10 @@ bump-alpha:
     fi
     commits=()
     while IFS= read -r line; do [[ -n "$line" ]] && commits+=("$line"); done < <(git log "$range" --no-merges --format="%s" | grep -v '^chore: DEV_LOG' | grep -v '^chore: bump' || true)
-    today=$(date +%Y-%m-%d)
+    today=$(TZ=America/New_York date +%Y-%m-%d)
+    time_et=$(TZ=America/New_York date +%H:%M)
     # Build the new alpha section with real newlines
-    section="## [$new] — $today"$'\n\n'"### Changes"
+    section="## [$new] — $today $time_et ET"$'\n\n'"### Changes"
     for c in "${commits[@]}"; do
         section="$section"$'\n'"- $c"
     done
