@@ -1519,17 +1519,35 @@ impl PlexiApp {
                             "https://buymeacoffee.com/ianjamesbu8",
                         );
                         ui.add_space(style::SPACE_SM);
-                        ui.horizontal(|ui| {
-                            ui.hyperlink_to(
-                                RichText::new("ADHDisntreal@gmail.com")
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
-                                "mailto:ADHDisntreal@gmail.com",
+                        ui.hyperlink_to(
+                            RichText::new("ADHDISNTREAL@GMAIL.COM")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                            "mailto:ADHDisntreal@gmail.com",
+                        );
+                        ui.add_space(2.0);
+                        {
+                            let copy_id = egui::Id::new("welcome_email_copy_t");
+                            let now = ui.ctx().input(|i| i.time);
+                            let copied_at: Option<f64> =
+                                ui.ctx().memory(|m| m.data.get_temp(copy_id));
+                            let just_copied =
+                                copied_at.map_or(false, |t| now - t < 2.0);
+                            let label = if just_copied { "✓  Copied" } else { "📋  Copy email" };
+                            let btn = ui.button(
+                                RichText::new(label).size(style::TEXT_CAPTION),
                             );
-                            if ui.small_button("⎘").on_hover_text("Copy email").clicked() {
+                            if btn.clicked() && !just_copied {
                                 ui.ctx().copy_text("ADHDisntreal@gmail.com".to_string());
+                                ui.ctx()
+                                    .memory_mut(|m| m.data.insert_temp(copy_id, now));
                             }
-                        });
+                            if just_copied {
+                                ui.ctx().request_repaint_after(
+                                    std::time::Duration::from_millis(100),
+                                );
+                            }
+                        }
                     });
                 });
         });
