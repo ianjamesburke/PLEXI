@@ -536,6 +536,17 @@ impl ProcessApp {
     /// exclude the sending pane.
     pub fn set_pane_id(&mut self, id: u64) {
         self.pane_id = id;
+        // ExposeTools may arrive before set_pane_id (deferred from routing to
+        // avoid registering under the default pane_id=0). Flush them now.
+        if !self.exposed_tools.is_empty() {
+            if let Some(sender) = self.make_app_event_sender() {
+                crate::plexi_ai::tool_dispatch::register(
+                    id,
+                    self.exposed_tools.clone(),
+                    sender,
+                );
+            }
+        }
     }
 
     /// Current nav stack depth as tracked by `PushNav`/`PopNav` commands.

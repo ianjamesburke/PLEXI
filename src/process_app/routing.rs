@@ -1075,13 +1075,18 @@ impl ProcessApp {
                     tools.len(),
                 );
                 self.exposed_tools = tools.clone();
-                if let Some(sender) = self.make_app_event_sender() {
-                    crate::plexi_ai::tool_dispatch::register(self.pane_id, tools, sender);
-                } else {
-                    log::warn!(
-                        "ProcessApp[{}]: ExposeTools — stdin writer gone, skipping registration",
-                        self.type_id
-                    );
+                // Defer registration until set_pane_id assigns the real id.
+                // Registering under pane_id=0 (the default before set_pane_id)
+                // causes a race when multiple apps launch simultaneously.
+                if self.pane_id != 0 {
+                    if let Some(sender) = self.make_app_event_sender() {
+                        crate::plexi_ai::tool_dispatch::register(self.pane_id, tools, sender);
+                    } else {
+                        log::warn!(
+                            "ProcessApp[{}]: ExposeTools — stdin writer gone, skipping registration",
+                            self.type_id
+                        );
+                    }
                 }
             }
 

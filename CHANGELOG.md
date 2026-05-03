@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.30] — 2026-05-02
+
+### Changes
+- Add protocol scheme to OpenRouter HTTP-Referer header
+- Improve bump message generation; simplify OpenRouter Referer header
+
 ## [3.4.29] — 2026-05-02
 
 ### Changes
