@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [FIX] Cmd+Shift+A shows empty-state modal when notification queue is empty (PR #596 → alpha)
+
+Three guards were fighting each other: (1) `ToggleNotificationModal` had an `else if visible_notification_count() > 0` that silently swallowed the action when empty. (2) `sync_notification_modal_focus` also checked count > 0, so Esc wouldn't close. (3) A frame-level `count == 0 → show_notification_modal = false` guard ran every frame and immediately killed the modal before the empty-state could render. All three removed. `draw_notification_modal` now handles the empty case by rendering the scrim + centered card with "No notifications" and Esc to close, instead of returning early.
+
+**Breaks if:** Cmd+Shift+A with no pending notifications does nothing (no modal appears).
+
 ## 2026-05-03 — [FIX] notify --choice round-trip: response file never written (PR #586 → alpha)
 
 `DeliverNotifyAction` has two dispatch paths: `dispatch_notify_action_cmds` (for early modal commands) and the main deferred handler. Response file write logic was only in the deferred path. Modal actions go through the early path — which also removes the notification from `pending_notifications` before dispatch fires. The main handler's lookup always returned `None` because the notification was already gone. Fix: added `response_file: Option<String>` to the `DeliverNotifyAction` variant so it travels with the command and is available on any path regardless of queue state.
