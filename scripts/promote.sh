@@ -46,9 +46,14 @@ prepend_changelog() {
     local today commits_file tmp
     today=$(date '+%Y-%m-%d')
     commits_file=$(mktemp)
-    git -C "$tree" log origin/main..alpha --oneline --no-merges \
-        | sed 's/^[a-f0-9]* /- /' > "$commits_file"
-    [[ -s "$commits_file" ]] || echo "- (no new commits since last release)" > "$commits_file"
+    git -C "$tree" log origin/beta..alpha --oneline --no-merges \
+        | sed 's/^[a-f0-9]* /- /' \
+        | grep -v '^- chore: DEV_LOG' \
+        | grep -v '^- chore: bump' \
+        | grep -v '^- chore: promote' \
+        | grep -v '^- - ' \
+        > "$commits_file"
+    [[ -s "$commits_file" ]] || echo "- (no new commits since last beta)" > "$commits_file"
     tmp=$(mktemp)
     awk -v ver="$ver" -v dt="$today" -v cf="$commits_file" '
         /^## \[/ && !inserted {
