@@ -391,6 +391,8 @@ fn main() -> eframe::Result {
                 let mut title = String::new();
                 let mut body = String::new();
                 let mut level = "info";
+                let mut choices: Vec<(String, String)> = Vec::new();
+                let mut timeout_secs: u64 = 0;
                 let mut i = 2;
                 while i < args.len() {
                     match args[i].as_str() {
@@ -406,6 +408,28 @@ fn main() -> eframe::Result {
                             level = args[i + 1].as_str();
                             i += 2;
                         }
+                        "--choice" if i + 1 < args.len() => {
+                            let raw = &args[i + 1];
+                            if let Some(colon) = raw.find(':') {
+                                let key = raw[..colon].to_string();
+                                let label = raw[colon + 1..].to_string();
+                                choices.push((key, label));
+                            } else {
+                                eprintln!("error: --choice value must be key:Label");
+                                std::process::exit(1);
+                            }
+                            i += 2;
+                        }
+                        "--timeout" if i + 1 < args.len() => {
+                            match args[i + 1].parse::<u64>() {
+                                Ok(n) => timeout_secs = n,
+                                Err(_) => {
+                                    eprintln!("error: --timeout must be a non-negative integer");
+                                    std::process::exit(1);
+                                }
+                            }
+                            i += 2;
+                        }
                         _ => {
                             i += 1;
                         }
@@ -413,11 +437,11 @@ fn main() -> eframe::Result {
                 }
                 if title.is_empty() {
                     eprintln!(
-                        "Usage: plexi notify --title <text> --body <text> [--level info|warn|error]"
+                        "Usage: plexi notify --title <text> --body <text> [--level info|warn|error] [--choice key:Label]... [--timeout N]"
                     );
                     std::process::exit(1);
                 }
-                std::process::exit(cli::notify_cli(&title, &body, level));
+                std::process::exit(cli::notify_cli(&title, &body, level, &choices, timeout_secs));
             }
             "descriptor" => {
                 // `plexi descriptor probe <cmd> [args...] [--no-registry]` —
