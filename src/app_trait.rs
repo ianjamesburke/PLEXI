@@ -17,6 +17,13 @@ pub enum AppCommand {
         layout: Option<String>,
         args: Vec<String>,
     },
+    /// Unified spawn (#592). Mirrors DrawCommand::SpawnPane after capability check.
+    SpawnPane {
+        type_id: String,
+        layout: String,
+        args: Vec<String>,
+        pipe_id: Option<String>,
+    },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest { cwd: String, sender_pane_id: u64 },
     /// Deliver a JSON pipe message to all peer panes that have the given

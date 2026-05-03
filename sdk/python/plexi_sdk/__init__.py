@@ -71,6 +71,8 @@ PlexiEvent  (host → app):
   PipeOverrun        — host dropped frames on a pipe; carries pipe_id and dropped_frames count
   PathChanged        — terminal cwd broadcast; carries cwd string
   AppSpawned         — confirmation that a SpawnApp request completed; carries pane_id and type_id
+  PaneSpawned        — confirmation that a SpawnPane request completed; carries pane_id
+  PaneSpawnError     — SpawnPane could not be fulfilled; carries reason
   InjectState        — host-initiated state injection; carries payload dict
   Suspend            — app is being hidden/backgrounded
   Resume             — app is visible again
@@ -100,6 +102,7 @@ DrawCommand (app → host):
   StatusSummary — set the status bar summary text for this pane
   ScheduleRender — ask the host to send a Render event after N milliseconds
   SpawnApp      — request the host to open a new pane with a given app type
+  SpawnPane     — request the host to open a pane with given app, layout, args, and optional pipe_id
   CdRequest     — request the host to cd all terminals in the pane group to a path
   Ready         — sent automatically after Init; do not emit manually
 
@@ -841,6 +844,37 @@ class Emitter:
             "filter": filter or [],
             "multiple": multiple,
         })
+
+    def spawn_pane(
+        self,
+        type_id: str,
+        layout: str = "split_v",
+        args: "list[str] | None" = None,
+        pipe_id: "str | None" = None,
+    ) -> None:
+        """Request the host to open a new pane with the given app (#592).
+
+        Requires the ``panes.spawn`` capability. The host responds with
+        ``on_pane_spawned(pane_id)`` on success or ``on_pane_spawn_error(reason)``
+        on failure.
+
+        Args:
+            type_id: App manifest id or ``"terminal"``.
+            layout: One of ``"split_v"`` (default, below), ``"split_h"`` (right),
+                    ``"split_above"``, ``"split_left"``, ``"overlay"``.
+            args: Extra argv passed to the spawned app.
+            pipe_id: Optional. If set, the host appends ``--pipe=<id>`` to the
+                     spawned app's args so it can reply via ``emit.pipe_send()``.
+        """
+        cmd: "dict[str, object]" = {
+            "type": "spawn_pane",
+            "type_id": type_id,
+            "layout": layout,
+            "args": args or [],
+        }
+        if pipe_id is not None:
+            cmd["pipe_id"] = pipe_id
+        _emit(cmd)
 
     def cd_to(self, cwd: str) -> None:
         """Request the host to cd all terminals in the same pane group to `cwd`."""
@@ -2145,6 +2179,12 @@ class App:
         """
         return None
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
+    def on_pane_spawned(self, pane_id: int) -> None:
+        """Called when a SpawnPane request succeeded (#592). Override to track the spawned pane."""
+
+    def on_pane_spawn_error(self, reason: str) -> None:
+        """Called when a SpawnPane request failed (#592). Override to handle the error."""
+
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> Coroutine[Any, Any, None] | None: return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> Coroutine[Any, Any, None] | None: return None
     def on_file_picked(self, _ctx: RenderContext, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
@@ -2686,6 +2726,18 @@ class App:
                         self.on_app_spawned,
                         int(ev.get("pane_id", 0)),
                         str(ev.get("type_id", "")),
+                    )
+
+                elif t == "pane_spawned":
+                    self._dispatch_hook_task(
+                        self.on_pane_spawned,
+                        int(ev.get("pane_id", 0)),
+                    )
+
+                elif t == "pane_spawn_error":
+                    self._dispatch_hook_task(
+                        self.on_pane_spawn_error,
+                        str(ev.get("reason", "")),
                     )
 
                 elif t == "nav_back":

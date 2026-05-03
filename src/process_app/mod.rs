@@ -595,6 +595,7 @@ impl ProcessApp {
 
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
         let (http_tx, http_rx) = mpsc::channel::<PlexiEvent>();
+        let (file_picker_tx, file_picker_rx) = mpsc::channel::<PlexiEvent>();
         let lifecycle = Arc::new(LifecycleTracker::new());
         let app = Self {
             type_id: "test".to_string(),
@@ -648,6 +649,8 @@ impl ProcessApp {
             scroll_offsets: HashMap::new(),
             exposed_tools: Vec::new(),
             test_injected_commands: Arc::new(Mutex::new(VecDeque::new())),
+            file_picker_tx,
+            file_picker_rx,
         };
         (app, draw_tx)
     }
@@ -1071,6 +1074,7 @@ impl ProcessApp {
                 | DrawCommand::AgentRosterGet { .. }
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
+                | DrawCommand::SpawnPane { .. }
                 | DrawCommand::HttpRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }
@@ -1295,6 +1299,7 @@ impl App for ProcessApp {
                 | DrawCommand::AgentRosterGet { .. }
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
+                | DrawCommand::SpawnPane { .. }
                 | DrawCommand::HttpRequest { .. }
                 | DrawCommand::AudioPlay { .. }
                 | DrawCommand::AudioCapture { .. }

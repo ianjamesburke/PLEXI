@@ -939,6 +939,35 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
+/// `plexi open <type_id> [args...] [--layout=X]`
+///
+/// Writes a spawn request to the spawn-queue directory. The running Plexi host
+/// drains this queue each second and launches the app.
+/// Returns 0 on success, 1 on error.
+pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
+    let queue_dir = crate::config::config_dir().join("spawn-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        eprintln!("error: could not create spawn queue: {e}");
+        return 1;
+    }
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let payload = serde_json::json!({
+        "type_id": type_id,
+        "args": args,
+        "layout": layout.unwrap_or("split_v"),
+    });
+    let file = queue_dir.join(format!("{id}.json"));
+    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+        eprintln!("error: could not write spawn request: {e}");
+        return 1;
+    }
+    println!("queued: open {type_id}");
+    0
+}
+
 /// Read a line from stdin with echo disabled (for password-style input).
 fn read_secret_from_stdin() -> io::Result<String> {
     // Disable echo via stty (avoids libc dependency).

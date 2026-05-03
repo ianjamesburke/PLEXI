@@ -620,6 +620,33 @@ impl ProcessApp {
                 });
             }
 
+            // ── Spawn pane (#592) ──────────────────────────────────────────────────────
+            DrawCommand::SpawnPane {
+                type_id,
+                layout,
+                args,
+                pipe_id,
+            } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::PanesSpawn)
+                {
+                    log::warn!("ProcessApp[{}]: SpawnPane denied — {reason}", self.type_id);
+                    self.outbound_events
+                        .push_back(PlexiEvent::PaneSpawnError { reason });
+                    return;
+                }
+                log::info!(
+                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout}' args={args:?} pipe_id={pipe_id:?}",
+                    self.type_id
+                );
+                self.pending_commands.push(AppCommand::SpawnPane {
+                    type_id,
+                    layout,
+                    args,
+                    pipe_id,
+                });
+            }
+
             // ── HTTP request (broker via HostServices::net) ───────────────
             DrawCommand::HttpRequest {
                 request_id,
