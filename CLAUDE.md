@@ -35,9 +35,11 @@ Feature branch naming: `feature/<issue-number>-short-description`. Never push di
 Every issue gets one **type**, one **priority**, one **version**.
 
 - **type:** `bug` | `enhancement` | `idea`
-- **priority:** `P1` (shipping blocker) | `P2` | `P3` | `P4`
+- **priority:** `mit` (Most Important Thing — supersedes P1, drop everything) | `P1` (shipping blocker) | `P2` | `P3` | `P4`
 - **version:** `v3.0` | `v3.1+` | `future`
 - **status** (optional): `in progress` | `testing` | `ready` | `blocked`
+
+**`mit` label:** The single most critical issue at any given moment. There should only ever be one `mit` issue open. It supersedes all P1s — when `/ship mit` is invoked, this is the issue that gets picked. When an `mit` issue is resolved, promote the next most critical P1 to `mit` or leave it empty until something warrants it.
 
 ## Milestones
 
