@@ -191,6 +191,7 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 - **Fallback chain audit:** When a value looks correct on the surface but behavior is stale, enumerate every fallback source in priority order (cookies, env vars, caches, defaults). Fix the chain, not the surface.
 - **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
 - **Uncommitted bump on alpha:** When alpha shows a dirty Cargo.toml with a version change, `just bump` ran without its commit — commit manually as `chore: bump alpha to X.Y.Z` before creating a worktree.
+- **Platform behavior validation:** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns — observe first, then code.
 
 ## PlexiApp State
 

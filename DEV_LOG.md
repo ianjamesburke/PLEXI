@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] Show version in macOS menu bar for non-stable builds (PR #580 → alpha)
+
+Appends the semver version to the bold app name in the macOS menu bar for alpha, beta, and PR builds. Stable shows "Plexi" unchanged. Derives the channel from `current_exe().file_stem()` (e.g. "plexi-pr-580" → "Plexi PR580 3.4.44") — the binary name is the canonical channel ID used throughout the codebase. Applied on the first `update()` frame via a one-shot `AtomicBool` because winit's activation delegate resets the menu item title after `PlexiApp::new()`.
+
+Two wrong approaches tried first: (1) reading `app_menu_item.title()` — eframe/winit always sets this from `CARGO_PKG_NAME` regardless of `CFBundleName`; (2) calling `setTitle` in `new()` — winit resets it during activation. Both would have been caught by a single `log::info!()` before writing any code.
+
+**Breaks if:** menu bar shows "Plexi" with no version on alpha or a PR build.
+
 ## 2026-05-03 — [FIX] Context naming modal when sidebar is hidden (PR #575 → alpha)
 
 Creating a new context (⌘T) with the sidebar hidden left `renaming_window` set but the inline rename TextEdit never rendered — `suppress_focus` fired on every frame, locking the terminal permanently. Fix adds a `ContextRename` focus layer: when `renaming_window.is_some() && !sidebar_visible`, a centred modal (same UX as "Rename Pane") pops up. After Enter or Escape, terminal is immediately interactive. Sidebar-visible path unchanged.
