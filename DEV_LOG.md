@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [FIX] Terminal copy drops first character — iter_from excludes start point (PR #569 → alpha)
+`selectable_content()` called `iter_from(range.start)` which excludes the start point, silently dropping the first character of every copy. Root cause: `open_link()` in the same file already demonstrates the correct pattern — explicitly index `grid[range.start]` before the loop. Fix: initialize `prev_line = Some(range.start.line)` and push the start cell before entering the `iter_from` loop.
+**Breaks if:** Copying any text in a terminal pane still drops the first character (e.g. selecting `pass` pastes `ass`).
+
 ## 2026-05-03 — [CHANGED] Inject PLEXI_PANE_ID + PLEXI_SOCKET into every PTY (PR #565 → alpha)
 Every PTY-backed terminal pane now receives `PLEXI_PANE_ID` (the numeric pane id) and `PLEXI_SOCKET` (variant-correct path to `~/.plexi-{channel}/notify.sock`) in its environment. Child processes inherit both vars naturally. `make_backend_settings()` gained a `pane_id: u64` first parameter; all six call sites updated. Socket path derived from `config::config_dir()` so it's automatically correct for alpha/beta/stable/PR builds. No new dependencies.
 **Breaks if:** `echo $PLEXI_PANE_ID` in any terminal pane prints empty, or `echo $PLEXI_SOCKET` doesn't contain the channel-specific path.
