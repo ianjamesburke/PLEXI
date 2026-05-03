@@ -133,7 +133,9 @@ fn main() -> eframe::Result {
         .unwrap_or(log::LevelFilter::Info);
     crate::logging::init(log_level);
     let frame_tick = crate::logging::new_frame_tick();
-    crate::logging::spawn_heartbeat(frame_tick.clone());
+    // Note: spawn_heartbeat is deferred to just before eframe::run_native so
+    // the shell probes below don't trigger false FREEZE alerts. The heartbeat
+    // should only monitor actual eframe operation, not pre-startup work.
 
     // Resolve the login-shell PATH once for the whole process. Fixes
     // `gh`/`rg`/`fd`/any-homebrew-tool-not-found bugs when Plexi is launched
@@ -513,6 +515,10 @@ fn main() -> eframe::Result {
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("failed to load app icon");
+
+    // Shell probes are done. Start the heartbeat now so it only monitors
+    // eframe operation — not pre-startup shell work (#588).
+    crate::logging::spawn_heartbeat(frame_tick.clone());
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
