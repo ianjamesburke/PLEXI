@@ -53,6 +53,10 @@ fetch-python-runtime:
 dev:
     cargo run
 
+# Run the full test suite — HostHarness regression tests + unit tests.
+test:
+    cargo test
+
 build:
     cargo build --release
 
