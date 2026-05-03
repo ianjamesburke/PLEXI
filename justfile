@@ -125,7 +125,17 @@ bump-alpha:
     ' CHANGELOG.md > CHANGELOG.md.tmp
     mv CHANGELOG.md.tmp CHANGELOG.md
     git add Cargo.toml Cargo.lock CHANGELOG.md
-    git commit -m "chore: bump alpha to $new, update changelog"
+    footer="chore: bump alpha to $new"
+    if [[ ${#commits[@]} -eq 0 ]]; then
+        msg="$footer"
+    elif [[ ${#commits[@]} -eq 1 ]]; then
+        msg="${commits[0]}"$'\n\n'"$footer"
+    else
+        body=""
+        for c in "${commits[@]}"; do body="$body"$'\n'"- $c"; done
+        msg="${body:1}"$'\n\n'"$footer"
+    fi
+    git commit -m "$msg"
     echo "Bumped to $new"
 
 bump:
