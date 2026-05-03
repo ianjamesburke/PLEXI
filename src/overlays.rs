@@ -1665,14 +1665,21 @@ impl PlexiApp {
                             );
                             ui.add_space(style::SPACE_SM);
                             ui.label(
-                                RichText::new(
-                                    "Adds a CLI command so shell scripts, agents, and hooks \
-                                     can send notifications, trigger actions, and pipe data \
-                                     into Plexi from outside the app.",
-                                )
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
+                                RichText::new("Lets shell scripts, agents, and hooks:")
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim),
                             );
+                            ui.add_space(2.0);
+                            for item in &["send notifications", "trigger actions", "pipe data into Plexi"] {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(style::SPACE_SM);
+                                    ui.label(
+                                        RichText::new(format!("· {item}"))
+                                            .size(style::TEXT_CAPTION)
+                                            .color(colors.text_dim),
+                                    );
+                                });
+                            }
                             ui.add_space(style::SPACE_SM);
                             ui.label(
                                 RichText::new(format!(
