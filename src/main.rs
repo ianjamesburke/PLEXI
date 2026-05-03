@@ -347,12 +347,16 @@ fn main() -> eframe::Result {
                 }
             }
             "update" => {
-                let id = args
-                    .iter()
-                    .skip(2)
-                    .find(|a| !a.starts_with("--"))
-                    .cloned();
-                std::process::exit(cli::update_cli(id.as_deref()));
+                if args.get(2).map(String::as_str) == Some("apps") {
+                    let id = args
+                        .iter()
+                        .skip(3)
+                        .find(|a| !a.starts_with("--"))
+                        .cloned();
+                    std::process::exit(cli::update_cli(id.as_deref()));
+                } else {
+                    std::process::exit(cli::self_update_cli());
+                }
             }
             "list" => {
                 std::process::exit(cli::list_cli());

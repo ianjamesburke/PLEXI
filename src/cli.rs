@@ -607,7 +607,7 @@ pub fn install_cli(spec: &str) -> i32 {
             } => {
                 eprintln!(
                     "'{}' already installed at {installed} (requested {requested}); \
-                     uninstall first or use `plexi update`",
+                     uninstall first or use `plexi update apps`",
                     outcome.id
                 );
                 1
@@ -716,7 +716,7 @@ pub fn uninstall_cli(id: &str, assume_yes: bool) -> i32 {
     }
 }
 
-/// `plexi update [<id>]` — git-pull one installed app, or all of them.
+/// `plexi update apps [<id>]` — git-pull one installed app, or all of them.
 /// Apps that aren't git checkouts (e.g. bundled core entries) are skipped
 /// with a debug-level log line and reported but not failed.
 pub fn update_cli(maybe_id: Option<&str>) -> i32 {
@@ -750,6 +750,13 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
     } else {
         0
     }
+}
+
+/// `plexi update` — update the Plexi binary itself (binary self-update; see #594 for implementation).
+pub fn self_update_cli() -> i32 {
+    eprintln!("Binary self-update is not yet implemented.");
+    eprintln!("To update installed apps, use: plexi update apps [<id>]");
+    1
 }
 
 /// `plexi list` — show installed apps grouped by scope (global vs. workspace).

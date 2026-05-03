@@ -3,7 +3,7 @@
 //! Three top-level CLI subcommands route here:
 //!   - `plexi install <source-spec>[@ref]` — clone + place one app
 //!   - `plexi install --pack <path|core>`  — apply every [[app]] in a pack
-//!   - `plexi update [<id>]`               — git-pull installed app(s)
+//!   - `plexi update apps [<id>]`           — git-pull installed app(s)
 //!   - `plexi uninstall <id>`              — remove the install dir
 //!   - `plexi list`                        — show installed apps
 //!
@@ -64,7 +64,7 @@ pub trait Cloner: Send + Sync {
     /// Check out a specific ref (tag, branch, or sha) inside an existing
     /// clone. Optional — `None` = leave on the default branch.
     fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), String>;
-    /// `git fetch && git pull` — used by `plexi update`.
+    /// `git fetch && git pull` — used by `plexi update apps`.
     fn pull(&self, repo_dir: &Path) -> Result<(), String>;
 }
 
@@ -229,7 +229,7 @@ fn install_one_git(
         cleanup(&stage_root);
         return Err(format!(
             "app '{id}' already installed at {}; \
-             run `plexi uninstall {id}` or `plexi update {id}` first",
+             run `plexi uninstall {id}` or `plexi update apps {id}` first",
             dest.display()
         ));
     }
