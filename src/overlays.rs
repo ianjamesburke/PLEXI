@@ -1639,4 +1639,85 @@ impl PlexiApp {
                 });
         });
     }
+
+    pub(crate) fn draw_cli_setup_modal(&mut self, ctx: &egui::Context) {
+        let cli_name = crate::cli_setup::cli_name();
+        let colors = self.colors;
+
+        egui::Area::new(egui::Id::new("cli_setup_modal"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(24, 20))
+                    .show(ui, |ui| {
+                        ui.set_width(400.0);
+
+                        ui.label(
+                            RichText::new(format!("Install `{cli_name}` command?"))
+                                .size(style::TEXT_BODY)
+                                .color(colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(style::SPACE_SM);
+                        ui.label(
+                            RichText::new(
+                                "Lets shell scripts, agents, and hooks talk to Plexi.",
+                            )
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                        );
+                        ui.add_space(style::SPACE_SM);
+                        ui.label(
+                            RichText::new(format!(
+                                "Creates ~/.local/bin/{cli_name} and adds it to ~/.zshrc."
+                            ))
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                        );
+                        ui.add_space(style::SPACE_MD);
+
+                        ui.horizontal(|ui| {
+                            let install_btn = ui.add(
+                                egui::Button::new(
+                                    RichText::new("Install")
+                                        .size(style::TEXT_BODY)
+                                        .color(colors.text_primary),
+                                )
+                                .min_size(egui::vec2(80.0, 28.0)),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            let skip_btn = ui.add(
+                                egui::Button::new(
+                                    RichText::new("Not now")
+                                        .size(style::TEXT_BODY)
+                                        .color(colors.text_dim),
+                                )
+                                .frame(false),
+                            );
+
+                            if install_btn.clicked() {
+                                match crate::cli_setup::install_symlink() {
+                                    Ok(msg) => log::info!("cli_setup: {msg}"),
+                                    Err(e) => log::warn!("cli_setup: install failed: {e}"),
+                                }
+                                crate::cli_setup::mark_prompted();
+                                self.show_cli_setup_prompt = false;
+                            }
+                            if skip_btn.clicked() {
+                                crate::cli_setup::mark_prompted();
+                                self.show_cli_setup_prompt = false;
+                            }
+                        });
+                    });
+            });
+
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            crate::cli_setup::mark_prompted();
+            self.show_cli_setup_prompt = false;
+        }
+    }
 }

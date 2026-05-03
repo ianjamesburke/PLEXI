@@ -127,6 +127,7 @@ pub struct PlexiApp {
     pub(crate) sidebar_visible: bool,
     pub(crate) show_shortcuts: bool,
     pub(crate) show_changelog: bool,
+    pub(crate) show_cli_setup_prompt: bool,
     pub(crate) quitting: bool,
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
@@ -531,6 +532,8 @@ impl PlexiApp {
                     sidebar_visible: ws.sidebar_visible,
                     show_shortcuts: false,
                     show_changelog: false,
+                    show_cli_setup_prompt: !crate::cli_setup::was_prompted()
+                        && !crate::cli_setup::is_installed(),
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
@@ -616,6 +619,8 @@ impl PlexiApp {
             sidebar_visible: true,
             show_shortcuts: false,
             show_changelog: false,
+            show_cli_setup_prompt: !crate::cli_setup::was_prompted()
+                && !crate::cli_setup::is_installed(),
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
@@ -2054,6 +2059,11 @@ impl eframe::App for PlexiApp {
             } else {
                 self.draw_changelog_overlay(ctx);
             }
+        }
+
+        // First-launch CLI setup prompt
+        if self.show_cli_setup_prompt {
+            self.draw_cli_setup_modal(ctx);
         }
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
