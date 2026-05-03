@@ -80,3 +80,9 @@ just install      # build + install to /Applications and /usr/local/bin
 ```
 
 Built with Rust, [egui](https://github.com/emilk/egui), and [egui_term](https://github.com/niceda/egui_term).
+
+---
+
+## Contact
+
+ADHDISNTREAL@GMAIL.COM
