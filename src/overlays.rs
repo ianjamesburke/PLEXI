@@ -1433,14 +1433,65 @@ impl PlexiApp {
                 ))
                 .show(ui, |ui| {
                     ui.add_space(style::SPACE_XL);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("PLEXI")
-                                .size(style::TEXT_TITLE_XL)
-                                .color(colors.text_primary)
-                                .strong(),
-                        );
-                    });
+                    {
+                        let logo_size = style::TEXT_TITLE_XL + 4.0; // 32px — matches SVG native size
+                        let gap = style::SPACE_SM;
+                        let font_id = egui::FontId::proportional(style::TEXT_TITLE_XL);
+                        let text_w = ui.fonts(|f| {
+                            f.layout_no_wrap(
+                                "PLEXI".to_string(),
+                                font_id,
+                                colors.text_primary,
+                            )
+                            .size()
+                            .x
+                        });
+                        let total_w = logo_size + gap + text_w;
+                        let pad = ((ui.available_width() - total_w) / 2.0).max(0.0);
+
+                        ui.horizontal(|ui| {
+                            ui.add_space(pad);
+                            let (logo_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(logo_size, logo_size),
+                                egui::Sense::hover(),
+                            );
+                            let painter = ui.painter().clone();
+                            let scale = logo_size / 32.0;
+                            let cell = egui::vec2(10.0 * scale, 10.0 * scale);
+                            let s1 = 5.0 * scale;
+                            let s2 = 17.0 * scale;
+                            let rx =
+                                egui::CornerRadius::same((1.5 * scale).round() as u8);
+                            let outline = Stroke::new(
+                                0.9 * scale,
+                                egui::Color32::from_rgb(0xe4, 0xe4, 0xe7),
+                            );
+                            let purple = egui::Color32::from_rgb(0x3b, 0x07, 0x64);
+                            for (dx, dy, filled) in [
+                                (s1, s1, false),
+                                (s2, s1, false),
+                                (s1, s2, false),
+                                (s2, s2, true),
+                            ] {
+                                let r = egui::Rect::from_min_size(
+                                    logo_rect.min + egui::vec2(dx, dy),
+                                    cell,
+                                );
+                                if filled {
+                                    painter.rect_filled(r, rx, purple);
+                                } else {
+                                    painter.rect_stroke(r, rx, outline, egui::StrokeKind::Inside);
+                                }
+                            }
+                            ui.add_space(gap);
+                            ui.label(
+                                RichText::new("PLEXI")
+                                    .size(style::TEXT_TITLE_XL)
+                                    .color(colors.text_primary)
+                                    .strong(),
+                            );
+                        });
+                    }
                     ui.add_space(style::SPACE_XL);
 
                     // Each entry: (chip groups for one combo, description).
