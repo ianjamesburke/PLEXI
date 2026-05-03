@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.41] — 2026-05-03
+
+### Changes
+- feat(widgets): dismissable_modal helper — escape + click-outside for overlays (#570)
+
 ## [3.4.40] — 2026-05-03
 
 ### Changes
