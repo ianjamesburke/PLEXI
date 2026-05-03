@@ -40,7 +40,7 @@ Every issue gets one **type**, one **priority**, one **version**.
 - **status** (optional): `in progress` | `testing` | `ready` | `blocked`
 
 **Priority definitions:**
-- `P0` — Won't fix. Known platform limitation or deliberate non-solution. Explicitly closed and documented so it's never re-investigated. Keep P0s rare.
+- `P0` — Drop everything. On-fire critical; fix before anything else.
 - `P1` — Shipping blocker or severe user-facing bug. Must be resolved before the next release.
 - `P2` — Important but not blocking a release. Should happen in the near term.
 - `P3` — Nice to have. Polish, ergonomics, or low-urgency improvements.
@@ -206,6 +206,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **Platform behavior validation:** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns — observe first, then code.
 - **Egui pointer state during macOS file drags:** `ui.rect_contains_pointer()` and `i.pointer.hover_pos()` are stale during macOS OS-level file drags — winit only updates them from its own events, not the drag-tracking run loop. Never gate drop-target detection on egui pointer checks; test for drop event presence alone. When the drop target is unambiguous (e.g. a single zoomed pane covering the whole overlay), drop the check entirely.
 - **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame. If you find yourself writing `self.some_collection.iter().find(|x| x.id == cmd.id)` inside a handler, the missing data belongs in the command variant instead. This also means split dispatch paths (e.g. early modal cmds vs. deferred queue) both get complete handling automatically, since the data travels with the command.
+- **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
 
 ## PlexiApp State
 
