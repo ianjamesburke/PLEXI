@@ -1519,12 +1519,19 @@ impl PlexiApp {
                             "https://buymeacoffee.com/ianjamesbu8",
                         );
                         ui.add_space(style::SPACE_SM);
-                        ui.hyperlink_to(
-                            RichText::new("ianjamesburke@gmail.com")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                            "mailto:ianjamesburke@gmail.com",
-                        );
+                        ui.horizontal(|ui| {
+                            ui.hyperlink_to(
+                                RichText::new("ADHDisntreal@gmail.com")
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim),
+                                "mailto:ADHDisntreal@gmail.com",
+                            );
+                            if ui.small_button("⎘").on_hover_text("Copy email").clicked() {
+                                ui.output_mut(|o| {
+                                    o.copied_text = "ADHDisntreal@gmail.com".to_string();
+                                });
+                            }
+                        });
                     });
                 });
         });
