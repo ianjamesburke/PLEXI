@@ -24,6 +24,25 @@ pub fn take_reload_config_flag() -> bool {
     RELOAD_CONFIG_FLAG.swap(false, Ordering::SeqCst)
 }
 
+/// Guards the one-shot version title application. winit resets the app menu
+/// item title during activation (after `PlexiApp::new`), so we defer the write
+/// to the first `update()` frame instead.
+static VERSION_TITLE_APPLIED: AtomicBool = AtomicBool::new(false);
+
+/// Apply the versioned menu bar title on the first call; no-op thereafter.
+/// Call from `PlexiApp::update()` so it runs after winit's activation delegate.
+pub fn apply_version_title_once() {
+    if VERSION_TITLE_APPLIED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(title) = menu_bar_title() else { return };
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(main_menu) = (unsafe { app.mainMenu() }) else { return };
+    let Some(app_menu_item) = (unsafe { main_menu.itemAtIndex(0) }) else { return };
+    unsafe { app_menu_item.setTitle(&NSString::from_str(&title)) };
+}
+
 fn register_handler_class() -> &'static objc2::runtime::AnyClass {
     static CLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
     CLASS.get_or_init(|| {
@@ -88,13 +107,6 @@ pub fn customize_app_menu() {
     let Some(app_menu) = (unsafe { app_menu_item.submenu() }) else {
         return;
     };
-
-    // Show channel + version in the menu bar for non-stable builds.
-    // Reads the binary name (canonical channel ID) rather than CFBundleName,
-    // because eframe/winit always sets the menu item title from CARGO_PKG_NAME.
-    if let Some(title) = menu_bar_title() {
-        unsafe { app_menu_item.setTitle(&NSString::from_str(&title)) };
-    }
 
     remove_items_with_action(&app_menu, sel!(hide:));
     // Also remove "Hide Others" (Cmd+Opt+H) to avoid confusion
