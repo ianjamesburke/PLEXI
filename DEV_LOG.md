@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] Welcome screen email + clipboard (PR #560 → alpha)
+Added contact section to the welcome screen: a dim caption message ("If you have any ideas, want to help, or just want to say what's up..."), ADHDISNTREAL@GMAIL.COM as a centered mailto: link, and an inline 📋 clipboard button that flips to ✓ for 2s after clicking. Centering is achieved by measuring the email text width via `ui.fonts()` before entering the horizontal layout, then adding explicit leading padding — egui's `vertical_centered` can't center a full-width `horizontal()` container directly. Also fixed `config_dir_name()` in `src/config.rs` to handle `pr-NNN` binary names so PR builds use their own isolated profile directory instead of falling through to stable.
+**Breaks if:** email row is left-aligned on the welcome screen, or a PR build opens using `~/.plexi/` instead of `~/.plexi-pr-<n>/`.
+
 ## 2026-05-03 — [CHANGED] PR test-install flow: just pr-install / pr-clean (PR #559 → alpha)
 Added `just pr-install <n>` and `just pr-clean <n>` to the justfile. `pr-install` compiles the current worktree and installs it as an isolated `Plexi PR<n>.app` with its own `~/.plexi-pr-<n>/` profile — lets you verify a feature in a real build before merging. `pr-clean` removes the app, binary, and profile dir after approval. Also fixed `install.sh` display name for `pr-NNN` channels: `pr-123` now produces `Plexi PR123` instead of `Plexi Pr-123`. Updated ship skill to run `pr-install` before the merge gate.
 **Breaks if:** `just pr-install 123` from a feature worktree doesn't produce `/Applications/Plexi PR123.app`, or `just pr-clean 123` leaves artifacts behind.
