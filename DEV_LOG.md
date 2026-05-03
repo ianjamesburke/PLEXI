@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] plexi update — binary self-update for stable channel (PR #601 → alpha)
+
+Implemented `self_update_cli()` in `src/cli.rs` (was a stub). Stable channel: fetches `/releases/latest` from GitHub API, compares versions, downloads `Plexi-<tag>.zip`, extracts via `unzip`, stages to `Plexi.app.update-staging`, atomically swaps old bundle, re-symlinks `/usr/local/bin/plexi`. Alpha/PR builds exit 1 with "update from source". Beta exits 1 with link to releases page (bundle rename requires install script). In-Plexi detached-relaunch flow deferred to #604.
+
+**Breaks if:** `plexi update` on a stable build hangs or errors instead of printing "Already up to date" / downloading. Or: `plexi update apps` stops working (dispatches to the wrong handler).
+
 ## 2026-05-03 — [CHANGED] Reserve 'plexi update' for binary self-update; app updates → 'plexi update apps' (PR #600 → alpha)
 
 `plexi update [<id>]` (app git-pull) renamed to `plexi update apps [<id>]`. Bare `plexi update` now routes to `self_update_cli()` — a stub that prints "not yet implemented" until #594 (binary download) lands. Dispatch change in `main.rs`; doc comments and error strings in `cli.rs` and `install.rs` updated. Breaking rename intentional on alpha before any scripts depend on the old surface.
