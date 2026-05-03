@@ -237,7 +237,7 @@ impl PlexiApp {
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
         let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(cwd, &self.colors);
+        let settings = Self::make_backend_settings(new_id, cwd, &self.colors);
         let Some(pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
@@ -315,7 +315,7 @@ impl PlexiApp {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[self.active_window].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
-            let settings = Self::make_backend_settings(None, &self.colors);
+            let settings = Self::make_backend_settings(new_id, None, &self.colors);
             let Some(pane) = TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
@@ -342,7 +342,7 @@ impl PlexiApp {
         let new_id = self.host.alloc_pane_id();
 
         let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(cwd, &self.colors);
+        let settings = Self::make_backend_settings(new_id, cwd, &self.colors);
         let Some(pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),

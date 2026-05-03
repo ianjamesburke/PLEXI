@@ -455,7 +455,7 @@ impl PlexiApp {
                     }
 
                     if pane_entry.is_none() {
-                        let settings = Self::make_backend_settings(cwd, &colors);
+                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors);
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
                             cc.egui_ctx.clone(),
@@ -780,13 +780,21 @@ impl PlexiApp {
     }
 
     pub(crate) fn make_backend_settings(
+        pane_id: u64,
         working_directory: Option<PathBuf>,
         colors: &Colors,
     ) -> BackendSettings {
+        let mut env = shell::build_env();
+        env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
+        let socket = crate::config::config_dir()
+            .join("notify.sock")
+            .to_string_lossy()
+            .into_owned();
+        env.insert("PLEXI_SOCKET".into(), socket);
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
-            env: shell::build_env(),
+            env,
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
         }
