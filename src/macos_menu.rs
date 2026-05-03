@@ -89,12 +89,11 @@ pub fn customize_app_menu() {
         return;
     };
 
-    // Show version in the menu bar for non-stable builds (alpha, beta, PR).
-    // Reads CFBundleName at runtime so pr-install's bundle rename is respected.
-    let current_title = unsafe { app_menu_item.title() }.to_string();
-    if current_title != "Plexi" {
-        let versioned = format!("{} {}", current_title, env!("CARGO_PKG_VERSION"));
-        unsafe { app_menu_item.setTitle(&NSString::from_str(&versioned)) };
+    // Show channel + version in the menu bar for non-stable builds.
+    // Reads the binary name (canonical channel ID) rather than CFBundleName,
+    // because eframe/winit always sets the menu item title from CARGO_PKG_NAME.
+    if let Some(title) = menu_bar_title() {
+        unsafe { app_menu_item.setTitle(&NSString::from_str(&title)) };
     }
 
     remove_items_with_action(&app_menu, sel!(hide:));
@@ -136,6 +135,24 @@ pub fn customize_app_menu() {
     unsafe { item.setTarget(Some(&*handler)) };
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     app_menu.addItem(&item);
+}
+
+/// Returns the versioned menu bar title for non-stable builds, or None for stable.
+/// Derives the channel from the running binary name (e.g. "plexi-pr-580" → "Plexi PR580 3.4.44").
+fn menu_bar_title() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let stem = exe.file_stem()?.to_string_lossy().into_owned();
+    let suffix = stem.strip_prefix("plexi-")?; // stable binary is just "plexi"
+    let channel = if let Some(n) = suffix.strip_prefix("pr-") {
+        format!("PR{n}")
+    } else {
+        let mut chars = suffix.chars();
+        chars
+            .next()
+            .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+            .unwrap_or_default()
+    };
+    Some(format!("Plexi {} {}", channel, env!("CARGO_PKG_VERSION")))
 }
 
 fn remove_items_with_action(menu: &NSMenu, action: objc2::runtime::Sel) {
