@@ -2,6 +2,14 @@
 
 Newest releases appear first.
 
+## [3.4.46] — 2026-05-03 15:30 ET
+
+### Changes
+- docs: DEV_LOG PR #575 context naming modal when sidebar hidden
+- docs: add contact section to README
+- docs: fix DEV_LOG issue reference #580 → #582
+- docs: clarify mit priority label — sits atop P1-P4, usually paired with P1
+
 ## [3.4.45] — 2026-05-03 15:21 ET
 
 ### Changes
