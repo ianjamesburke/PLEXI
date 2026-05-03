@@ -208,3 +208,4 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 - When the user provides multiple distinct ideas, file them separately. Don't combine unrelated concepts.
 - Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Always do the work: delete unused code, wire it up, or move it to a feature-flagged module. If fixing a warning takes a long time, that's the job — do not paper over it with an allow attribute.
 - Always run `cargo build` after work to make sure it passes.
+- **Failed PR reset:** If a PR fails its first test pass and the diff is under ~1000 lines: close the PR without merging, revert the worktree to clean, comment on the original issue (what was tried, what failed, why), re-label the issue `ready`, and start a fresh agent with only the updated issue as context. Don't patch a broken attempt — start clean.
