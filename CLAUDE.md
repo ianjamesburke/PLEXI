@@ -35,11 +35,16 @@ Feature branch naming: `feature/<issue-number>-short-description`. Never push di
 Every issue gets one **type**, one **priority**, one **version**.
 
 - **type:** `bug` | `enhancement` | `idea`
-- **priority:** `mit` (Most Important Thing — supersedes P1, drop everything) | `P1` (shipping blocker) | `P2` | `P3` | `P4`
+- **priority:** `mit` → `P1` → `P2` → `P3` → `P4`
 - **version:** `v3.0` | `v3.1+` | `future`
 - **status** (optional): `in progress` | `testing` | `ready` | `blocked`
 
-**`mit` label:** The single most critical issue at any given moment. There should only ever be one `mit` issue open. It supersedes all P1s — when `/ship mit` is invoked, this is the issue that gets picked. When an `mit` issue is resolved, promote the next most critical P1 to `mit` or leave it empty until something warrants it.
+**Priority definitions:**
+- `mit` — Most Important Thing. The single highest-priority issue at this moment. Only one `mit` exists at a time. Usually also tagged `P1`. When `/ship mit` is invoked, this is what gets picked.
+- `P1` — Shipping blocker or severe user-facing bug. Must be resolved before the next release. `mit` issues typically carry this too.
+- `P2` — Important but not blocking a release. Should happen in the near term.
+- `P3` — Nice to have. Polish, ergonomics, or low-urgency improvements.
+- `P4` — Backlog. Good ideas that aren't a current priority.
 
 ## Milestones
 
