@@ -1,5 +1,9 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] dismissable_modal helper — escape + click-outside for overlays (PR #570 → alpha)
+Added `widgets::dismissable_modal(ctx, id, |ui| { ... }) -> bool` — handles Escape consumption and a click-absorbing scrim at `Order::Middle`. Shortcuts and changelog overlays both use it; the ✕ button in the changelog header was removed. Callers guard with `if !open { return; }` and apply `if dismissed { open = false; }` after. Any future centered info overlay should follow the same pattern.
+**Breaks if:** Pressing Escape or clicking outside the shortcuts (⌘/) or changelog overlay does nothing.
+
 ## 2026-05-03 — [CHANGED] File picker capability — fs.pick / OpenFilePicker (PR #567 → alpha)
 Added native file picker support: `DrawCommand::OpenFilePicker { request_id, filter, multiple }` triggers a native NSOpenPanel via `rfd::AsyncFileDialog` on a background thread (condvar-based `block_on` keeps the egui render loop unblocked). Result returns as `PlexiEvent::FilePicked` / `FilePickCancelled` through a dedicated `file_picker_rx` channel drained in both `background_tick()` and `ui()`. New `Capability::FsPick` (`"fs.pick"`) gates the call — denied apps get `FilePickCancelled` immediately. Python SDK gains `ctx.emit.open_file_picker()` + `on_file_picked` / `on_file_pick_cancelled` hooks. POC app ships under `examples/file-picker-poc/`.
 **Breaks if:** Clicking the "Pick File" button in the file-picker-poc app opens no dialog, or a dialog opens but selecting a file never updates the displayed path.
