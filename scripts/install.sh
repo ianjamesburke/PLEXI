@@ -60,8 +60,7 @@ if [[ -n "$suffix" ]]; then
   /usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
 fi
 
-channel_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
-cp "$channel_bin" "$bin_dest"
+ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
 rm -rf "$profile_dir/sdk/plexi_sdk.py" "$profile_dir/sdk/plexi_sdk"
@@ -89,6 +88,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$SCRIPT_DIR/migrate-config.sh" "$CONFIG" "[notifications]" "[theme]" "[ai]" "[beta]"
 
 echo "Installed $app_dest"
-echo "CLI binary: $bin_dest"
+echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
 echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from examples/"

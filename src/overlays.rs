@@ -1626,4 +1626,102 @@ impl PlexiApp {
                 });
         });
     }
+
+    pub(crate) fn draw_cli_setup_modal(&mut self, ctx: &egui::Context) {
+        let cli_name = crate::cli_setup::cli_name();
+        let colors = self.colors;
+
+        egui::Area::new(egui::Id::new("cli_setup_modal"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(24, 20))
+                    .show(ui, |ui| {
+                        ui.set_width(400.0);
+
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new(format!("Install `{cli_name}`?"))
+                                    .size(style::TEXT_BODY)
+                                    .color(colors.text_primary)
+                                    .strong(),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            ui.label(
+                                RichText::new("Lets shell scripts, agents, and hooks:")
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(2.0);
+                            for item in &["send notifications", "trigger actions", "pipe data into Plexi"] {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(style::SPACE_SM);
+                                    ui.label(
+                                        RichText::new(format!("· {item}"))
+                                            .size(style::TEXT_CAPTION)
+                                            .color(colors.text_dim),
+                                    );
+                                });
+                            }
+                            ui.add_space(style::SPACE_SM);
+                            ui.label(
+                                RichText::new(format!(
+                                    "Symlinks /usr/local/bin/{cli_name} → this binary."
+                                ))
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                            );
+                            ui.add_space(style::SPACE_MD);
+
+                            ui.horizontal(|ui| {
+                                // Centre the two buttons manually.
+                                let btn_w = 100.0;
+                                let gap = style::SPACE_SM;
+                                let pad = ((ui.available_width() - btn_w * 2.0 - gap) / 2.0).max(0.0);
+                                ui.add_space(pad);
+
+                                let install_btn = ui.add(
+                                    egui::Button::new(
+                                        RichText::new("Install")
+                                            .size(style::TEXT_BODY)
+                                            .color(colors.text_primary),
+                                    )
+                                    .min_size(egui::vec2(btn_w, 28.0)),
+                                );
+                                ui.add_space(gap);
+                                let skip_btn = ui.add(
+                                    egui::Button::new(
+                                        RichText::new("Not now")
+                                            .size(style::TEXT_BODY)
+                                            .color(colors.text_dim),
+                                    )
+                                    .min_size(egui::vec2(btn_w, 28.0)),
+                                );
+
+                                if install_btn.clicked() {
+                                    match crate::cli_setup::install_symlink() {
+                                        Ok(msg) => log::info!("cli_setup: {msg}"),
+                                        Err(e) => log::warn!("cli_setup: install failed: {e}"),
+                                    }
+                                    crate::cli_setup::mark_prompted();
+                                    self.show_cli_setup_prompt = false;
+                                }
+                                if skip_btn.clicked() {
+                                    log::info!("cli_setup: user chose Not now — will ask again next launch");
+                                    self.show_cli_setup_prompt = false;
+                                }
+                            });
+                        });
+                    });
+            });
+
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            log::info!("cli_setup: dismissed via Escape — will ask again next launch");
+            self.show_cli_setup_prompt = false;
+        }
+    }
 }

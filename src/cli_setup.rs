@@ -1,0 +1,61 @@
+use std::os::unix::fs::symlink;
+use std::path::PathBuf;
+
+/// CLI name for the running build variant (e.g. `plexi`, `plexi-alpha`).
+pub fn cli_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "plexi".to_string())
+}
+
+fn install_path() -> PathBuf {
+    PathBuf::from("/usr/local/bin").join(cli_name())
+}
+
+pub fn sentinel_path() -> PathBuf {
+    crate::config::config_dir().join("cli_setup_done")
+}
+
+pub fn was_prompted() -> bool {
+    sentinel_path().exists()
+}
+
+pub fn mark_prompted() {
+    let _ = std::fs::write(sentinel_path(), "");
+}
+
+/// Shows every launch until the user clicks Install (writes sentinel).
+/// "Not now" and Escape dismiss for the session only.
+pub fn should_prompt() -> bool {
+    if was_prompted() {
+        return false;
+    }
+    if is_installed() {
+        log::info!("cli_setup: {} already installed — skipping prompt", cli_name());
+        return false;
+    }
+    log::info!("cli_setup: {} not installed — showing prompt", cli_name());
+    true
+}
+
+pub fn is_installed() -> bool {
+    install_path().exists()
+}
+
+/// Symlink `/usr/local/bin/<cli_name>` → current binary.
+pub fn install_symlink() -> Result<String, String> {
+    let name = cli_name();
+    let link_path = install_path();
+    let current_binary =
+        std::env::current_exe().map_err(|e| format!("could not locate binary: {e}"))?;
+
+    if link_path.exists() || link_path.symlink_metadata().is_ok() {
+        std::fs::remove_file(&link_path)
+            .map_err(|e| format!("could not remove existing link: {e}"))?;
+    }
+    symlink(&current_binary, &link_path)
+        .map_err(|e| format!("could not create /usr/local/bin/{name}: {e}"))?;
+
+    Ok(format!("/usr/local/bin/{name} → {}", current_binary.display()))
+}
