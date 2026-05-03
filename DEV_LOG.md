@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [FIX] Ghost empty state — welcome screen and Cmd+N guards + pr-install sed fix (PR #576 → alpha)
+
+Closing a zoomed/fullscreen app pane could leave the window in a blank void: no terminals, no welcome screen, and Cmd+N misdirecting to a new page. Root cause: welcome-screen and Cmd+N guards both keyed on `panes.is_empty()` alone — when the tree had no root but panes retained stale entries, neither guard fired. Fix: both guards now also check `tree.root.is_none()`, making the empty void structurally impossible. `close_focused_app()` now clears `zoomed_pane` after `close_tile` to prevent stale tile references. Also fixed `scripts/install.sh` sed pattern (`"Plexi"` → `"Plexi[^\"]*"`) so `just pr-install` works correctly from the alpha channel (bundle name is `"Plexi Alpha"`, not `"Plexi"`).
+**Breaks if:** welcome screen appears while a pane is open, or Cmd+N no longer creates new pages in a legitimate multi-page layout.
+
 ## 2026-05-03 — [CHANGED] ET timestamps on all changelog entries; bump-alpha now emits time (PR #574 → alpha)
 
 Backfilled HH:MM ET onto every existing `## [X.Y.Z] — DATE` header in CHANGELOG.md using `git log -S "## [X.Y.Z]" --format="%ai" -- CHANGELOG.md` to find the actual commit time per version. Updated `bump-alpha` in justfile: `today` now uses `TZ=America/New_York date +%Y-%m-%d` and a new `time_et` var captures `HH:MM`; the section header is emitted as `## [X.Y.Z] — DATE HH:MM ET`. Some commits with `-0500` offsets (incorrect timezone on a machine) were normalized to EDT correctly by Python's `datetime.astimezone`.
