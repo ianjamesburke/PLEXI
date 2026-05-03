@@ -154,6 +154,13 @@ App logs forward into the host log tagged `app::<app_id>`. Python SDK: `ctx.info
 
 **When debugging, check the log file first.**
 
+**Every new feature must be instrumented.** Logging is not optional polish — it's the first diagnostic tool when something breaks:
+- **Host (Rust):** `log::info!` at entry points for new `HostCommand`/`HostEffect`/`DrawCommand` handlers and any user-visible state change.
+- **Apps/SDK:** `ctx.info()` or `emit.info()` at meaningful state transitions (init, key actions, errors).
+- **CLI:** log the resolved command and any path it acted on.
+
+No new capability, command, or user-visible behavior ships without at least one `info`-level trace that confirms it ran.
+
 ## Configuration Philosophy
 
 Required fields have no defaults — fail fast with a clear error. Optional fields are clearly marked. Never paper over ambiguity with invisible magic. Prefer a verbose generated config with all options visible over a sparse one with hidden behavior.
@@ -188,6 +195,7 @@ Try-catch on all I/O, network, external API calls, and anything that can reasona
 - **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
 - **Uncommitted bump on alpha:** When alpha shows a dirty Cargo.toml with a version change, `just bump` ran without its commit — commit manually as `chore: bump alpha to X.Y.Z` before creating a worktree.
 - **Platform behavior validation:** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns — observe first, then code.
+- **Egui pointer state during macOS file drags:** `ui.rect_contains_pointer()` and `i.pointer.hover_pos()` are stale during macOS OS-level file drags — winit only updates them from its own events, not the drag-tracking run loop. Never gate drop-target detection on egui pointer checks; test for drop event presence alone. When the drop target is unambiguous (e.g. a single zoomed pane covering the whole overlay), drop the check entirely.
 
 ## PlexiApp State
 
