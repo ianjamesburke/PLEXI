@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.38] — 2026-05-03
+
+### Changes
+- feat(pty): inject PLEXI_PANE_ID + PLEXI_SOCKET into every managed PTY environment (#565)
+
 ## [3.4.37] — 2026-05-03
 
 ### Changes
