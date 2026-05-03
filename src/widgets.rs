@@ -1,4 +1,4 @@
-use egui::{Color32, CornerRadius, Pos2, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, CornerRadius, Pos2, Stroke, StrokeKind, Vec2};
 
 use crate::style;
 use crate::theme::Colors;
@@ -168,4 +168,44 @@ pub(crate) fn key_combo_list(
             );
         }
     });
+}
+
+/// Renders a dismissable centered modal overlay. Handles Escape and click-outside.
+/// Returns `true` if the user dismissed it this frame. Callers guard with
+/// `if !open { return; }` and apply `if dismissed { open = false; }` after.
+pub fn dismissable_modal(
+    ctx: &egui::Context,
+    id: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        return true;
+    }
+
+    let screen_rect = ctx.screen_rect();
+    let mut dismissed = false;
+
+    let base_id = egui::Id::new(id);
+    egui::Area::new(base_id.with("scrim"))
+        .fixed_pos(screen_rect.min)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            ui.painter()
+                .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(80));
+            if ui
+                .allocate_rect(screen_rect, egui::Sense::click())
+                .clicked()
+            {
+                dismissed = true;
+            }
+        });
+
+    egui::Area::new(base_id.with("overlay"))
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            add_contents(ui);
+        });
+
+    dismissed
 }
