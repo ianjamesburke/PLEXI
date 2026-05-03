@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] Drop-event breadcrumbs in zoomed overlay path (PR #581 → alpha)
+
+Added `info`-level log lines around the drag-drop path in the zoomed overlay (`src/app/mod.rs`, `src/tiling.rs`). On drop into a zoomed pane the log now emits: overlay received (with `dropped_to_zoom` and `pane_id`), path written, and write completed. First use confirmed the freeze happens before any drop code fires — no `drop:` lines appeared despite the heartbeat catching a 2s+ UI-thread stall. Root cause is upstream of the drop path; see issue #580.
+**Breaks if:** no `drop:` lines appear in the log after successfully dragging a file into any terminal pane (zoomed or not).
+
 ## 2026-05-03 — [CHANGED] First-launch CLI setup dialog + /usr/local/bin symlink (PR #566 → alpha)
 
 On first GUI launch (drag-to-Applications path), a centered modal prompts the user to install the `plexi` CLI command. "Install" symlinks `/usr/local/bin/<cli-name>` → current binary and writes a sentinel (`config_dir/cli_setup_done`). "Not now" / Escape dismiss for the session only — dialog reappears next launch until installed. `just install` also creates the symlink (no dialog). Sentinel is channel-aware via `config_dir()` which reads the binary name from `current_exe()`.
