@@ -53,7 +53,7 @@ class FilePickerApp(App):
                 y += 18.0
 
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
-        if button != "left" or self._pending:
+        if button != "primary" or self._pending:
             return
         if BUTTON_X <= x <= BUTTON_X + BUTTON_W and BUTTON_Y <= y <= BUTTON_Y + BUTTON_H:
             self._pending = True
