@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.39] — 2026-05-03
+
+### Changes
+- fix(terminal): explicitly push first char before iter_from in selectable_content (#569)
+
 ## [3.4.38] — 2026-05-03
 
 ### Changes
