@@ -160,7 +160,30 @@ Apply `ready` only if all three axes are fully satisfied.
 
 ---
 
-## Step 9 — Apply Labels
+## Step 9 — Agentic Reproduction Path
+
+An agent cannot verify a fix without a failing test that proves the bug exists first. Before an agent starts implementation work, it needs a reproduction path it can drive programmatically.
+
+Ask: **can the expected behavior be expressed as a `HostHarness` assertion?**
+
+Score the issue on this axis:
+
+| Verdict | Signal |
+|---------|--------|
+| **Test-first required** | Bug in host behavior — hitbox wrong, command dropped/misrouted, focus lost, state corrupt, event not delivered. The symptom maps directly to a `HostHarness` assertion (e.g. `click(x, y)` → `state.selected == pane_id`, or `inject(AiQuery)` → `effects not empty`). |
+| **Test-first recommended** | UI regression or interaction bug where the failure mode is observable but not purely state-based. Write a snapshot test or a state test that approximates the failure. |
+| **Test not applicable** | New feature (no existing behavior to assert against), pure refactor, docs, config, or CI change. Skip. |
+
+**If test-first required or recommended:** record the concrete failing assertion in plain English. This becomes the first line of work — the agent writes the test before touching any implementation code. A fix without a passing test does not ship.
+
+Example verdicts to include in the triage comment:
+- `Reproduction test: click sidebar row at pane_2's y-coordinate → assert sidebar_selected == pane_2. Must fail before the fix lands.`
+- `Reproduction test: inject DrawCommand::AiQuery → run 2 frames → assert effects_drain() is non-empty.`
+- `Reproduction test: not applicable — new feature, no prior behavior to assert.`
+
+---
+
+## Step 10 — Apply Labels
 
 ```bash
 gh issue edit <number> --add-label "<type>,<priority>,<era>"
@@ -172,7 +195,7 @@ gh issue edit <number> --milestone "<title>"
 
 ---
 
-## Step 10 — Post Triage Summary
+## Step 11 — Post Triage Summary
 
 ```bash
 gh issue comment <number> --body "$(cat <<'COMMENT'
@@ -184,9 +207,12 @@ gh issue comment <number> --body "$(cat <<'COMMENT'
 - **Milestone:** unslotted
 - **Size:** M (~400 LOC, high confidence) — [1-sentence reasoning]
 - **Actionable:** partial — [what's missing and what would close the gap]
-- **Recommended next step:** [one concrete action — e.g. "resolve the in-process vs subprocess question, then this is ready to implement"]
+- **Reproduction test:** [failing assertion in plain English, or "not applicable"]
+- **Recommended next step:** [one concrete action — e.g. "write the HostHarness reproduction test, then implement the fix in the same PR"]
 COMMENT
 )"
 ```
 
 The "Recommended next step" line is required. It should name one concrete action that moves the issue forward — not "needs more info" but "answer question X in a comment and update the action plan."
+
+For bug issues with a test-first verdict: the recommended next step is always "write the `HostHarness` reproduction test first, confirm it fails, then implement the fix."
