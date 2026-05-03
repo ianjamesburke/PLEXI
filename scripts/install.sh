@@ -36,8 +36,8 @@ if [[ -n "$suffix" ]]; then
   cp Cargo.toml "$backup_dir/Cargo.toml"
   cleanup() { cp "$backup_dir/Cargo.toml" Cargo.toml; rm -rf "$backup_dir"; }
   trap cleanup EXIT
-  sed -i '' "s/name = \"Plexi\"/name = \"${display}\"/" Cargo.toml
-  sed -i '' "s/identifier = \"com.ianjamesburke.plexi\"/identifier = \"${bundle_id}\"/" Cargo.toml
+  sed -i '' "s/name = \"Plexi[^\"]*\"/name = \"${display}\"/" Cargo.toml
+  sed -i '' "s/identifier = \"com.ianjamesburke.plexi[^\"]*\"/identifier = \"${bundle_id}\"/" Cargo.toml
 fi
 
 cargo bundle --release

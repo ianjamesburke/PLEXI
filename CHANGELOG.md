@@ -2,26 +2,58 @@
 
 Newest releases appear first.
 
-## [3.4.36] — 2026-05-03
+## [3.4.43] — 2026-05-03 14:40 ET
+
+### Changes
+
+## [3.4.42] — 2026-05-03 14:32 ET
+
+### Changes
+- chore: add ET timestamps to all changelog entries; emit time in bump-alpha (#574)
+
+## [3.4.41] — 2026-05-03 14:26 ET
+
+### Changes
+- feat(widgets): dismissable_modal helper — escape + click-outside for overlays (#570)
+
+## [3.4.40] — 2026-05-03 14:01 ET
+
+### Changes
+
+## [3.4.39] — 2026-05-03 13:59 ET
+
+### Changes
+- fix(terminal): explicitly push first char before iter_from in selectable_content (#569)
+
+## [3.4.38] — 2026-05-03 13:47 ET
+
+### Changes
+- feat(pty): inject PLEXI_PANE_ID + PLEXI_SOCKET into every managed PTY environment (#565)
+
+## [3.4.37] — 2026-05-03 13:37 ET
+
+### Changes
+
+## [3.4.36] — 2026-05-03 13:37 ET
 
 ### Changes
 - feat: add issue template with Meta YAML convention for dependency tracking
 
-## [3.4.35] — 2026-05-03
+## [3.4.35] — 2026-05-03 01:11 ET
 
 ### Changes
 - feat(welcome): add Plexi logo + centered wordmark (#562)
 
-## [3.4.34] — 2026-05-03
+## [3.4.34] — 2026-05-03 00:36 ET
 
 ### Changes
 
-## [3.4.33] — 2026-05-03
+## [3.4.33] — 2026-05-03 00:35 ET
 
 ### Changes
 - feat: add just pr-install and pr-clean for PR testing flow (#559)
 
-## [3.4.32] — 2026-05-02
+## [3.4.32] — 2026-05-02 23:37 ET
 
 ### Changes
 - dev_log: PR #556 sidebar hit-rect fix
@@ -30,64 +62,64 @@ Newest releases appear first.
 - Add project-level triage skill; unignore .claude/ directory
 - docs: replace ship cycle with /ship skill reference, add testing label
 
-## [3.4.31] — 2026-05-02
+## [3.4.31] — 2026-05-02 22:14 ET
 
 ### Changes
 - dev_log: PR #551 tool registration + token diagnostics
 - docs: add in-progress label to feature branch and ship cycle workflows
 
-## [3.4.30] — 2026-05-02
+## [3.4.30] — 2026-05-02 22:13 ET
 
 ### Changes
 - Add protocol scheme to OpenRouter HTTP-Referer header
 - Improve bump message generation; simplify OpenRouter Referer header
 
-## [3.4.29] — 2026-05-02
+## [3.4.29] — 2026-05-02 19:58 ET
 
 ### Changes
 - Improve text input widget clamping and chat bubble sizing against pane bounds
 
-## [3.4.28] — 2026-05-02
+## [3.4.28] — 2026-05-02 19:30 ET
 
 ### Changes
 - Fetch complete OpenRouter generation metrics; fix text input widget clamping to pane bounds
 
-## [3.4.27] — 2026-05-02
+## [3.4.27] — 2026-05-02 19:18 ET
 
 ### Changes
 
-## [3.4.26] — 2026-05-02
+## [3.4.26] — 2026-05-02 19:18 ET
 
 ### Changes
 
-## [3.4.25] — 2026-05-02
+## [3.4.25] — 2026-05-02 19:17 ET
 
 ### Changes
 - chore: add DEV_LOG entry for PR #549 (chat UI improvements)
 
-## [3.4.24] — 2026-05-02
+## [3.4.24] — 2026-05-02 19:17 ET
 
 ### Changes
 - chore: update ship cycle to commit DEV_LOG before bump-and-install
 
-## [3.4.23] — 2026-05-02
+## [3.4.23] — 2026-05-02 19:09 ET
 
 ### Changes
 - fix: robust token parsing and deterministic tool dispatch
 - feat(parallax): MVP editor app + SDK ctx.image() (#548)
 
-## [3.4.22] — 2026-05-02
+## [3.4.22] — 2026-05-02 18:45 ET
 
 ### Changes
 - fix: make @app.tool decorator cumulative + include usage in OpenRouter streams
 
-## [3.4.21] — 2026-05-02
+## [3.4.21] — 2026-05-02 18:44 ET
 
 ### Changes
 - fix: update OpenRouter HTTP-Referer to plexiapp.com
 - chore: add DEV_LOG entry for PR #544 (chat UI, TextInput refocus fix)
 
-## [3.4.20] — 2026-05-02
+## [3.4.20] — 2026-05-02 18:31 ET
 
 ### Changes
 - feat(chat): polished bubble UI + TextInput refocus fix (#544)
@@ -96,23 +128,23 @@ Newest releases appear first.
 - chore: rename bundle to Plexi Alpha, default chat tier to low
 - docs: update DEV_LOG with v3.7 context injection and TextInput fixes
 
-## [3.4.19] — 2026-05-02
+## [3.4.19] — 2026-05-02 18:00 ET
 
 ### Changes
 - feat(v3.7): context injection for all open panes, fix text cutoff and TextInput focus
 - docs: consolidate project docs — remove ARCHITECTURE.md and ROADMAP.md, add GLOSSARY.md, update CLAUDE.md
 
-## [3.4.18] — 2026-05-02
+## [3.4.18] — 2026-05-02 17:21 ET
 
 ### Changes
 - fix(examples): log scroll events in input-inspector
 
-## [3.4.17] — 2026-05-02
+## [3.4.17] — 2026-05-02 17:18 ET
 
 ### Changes
 - feat(host): add TextRow draw command with host-measured text layout
 
-## [3.4.16] — 2026-05-02
+## [3.4.16] — 2026-05-02 17:15 ET
 
 ### Changes
 - DEV_LOG: log PR #540 text_row() layout primitive
@@ -121,14 +153,14 @@ Newest releases appear first.
 - chore: promote to beta — v3.4.14
 - fix(promote.sh): auto-push unpushed commits instead of failing
 
-## [3.4.15] — 2026-05-02
+## [3.4.15] — 2026-05-02 17:14 ET
 
 ### Changes
 - feat(examples): input-inspector POC for issue #331 (#529)
 - chore: promote to beta — v3.4.14
 - fix(promote.sh): auto-push unpushed commits instead of failing
 
-## [3.4.14] — 2026-05-02
+## [3.4.14] — 2026-05-02 16:24 ET
 
 ### Changes
 - fix(promote.sh): auto-push unpushed commits instead of failing
@@ -190,31 +222,31 @@ Newest releases appear first.
 - feat: channel promotion pipeline (just promote)
 - refactor(sidebar): zone-based row abstraction with single cursor authority
 
-## [3.4.13] — 2026-05-02
+## [3.4.13] — 2026-05-02 06:17 ET
 
 ### Changes
 - fix(justfile): bump-alpha SIGPIPE with pipefail — use git log -1 not | head -1 (#537)
 - fix(routing): AiQuery/ExposeTools/ToolResult not dispatched — fell through to render buffer (#536)
 - fix(changelog): accurate per-version deltas + bump-alpha anchors to last bump not last tag (#535)
 
-## [3.4.12] — 2026-05-02
+## [3.4.12] — 2026-05-02 05:33 ET
 
 ### Changes
 - fix: text input refocus + flush outbound events same-frame + env probe diagnostics (#534)
 
-## [3.4.11] — 2026-05-02
+## [3.4.11] — 2026-05-02 04:46 ET
 
 ### Changes
 - fix(shell): use -i -l for env probe so .zshrc-defined secrets load (#533)
 - fix: tighten freeze watchdog + throttle macOS drag-cursor polling (#532)
 
-## [3.4.10] — 2026-05-02
+## [3.4.10] — 2026-05-02 04:22 ET
 
 ### Changes
 - fix: adopt login-shell env vars + TextInput layout widget (#531)
 - chore: CLAUDE.md — add 'To test' line to Ship Cycle summary format
 
-## [3.4.9] — 2026-05-02
+## [3.4.9] — 2026-05-02 04:01 ET
 
 ### Changes
 - feat(v3.7): app tool protocol — ExposeTools/ToolCall/ToolResult + host context injection (#526)
@@ -222,18 +254,18 @@ Newest releases appear first.
 - chore: CLAUDE.md — clarify post-merge workflow, standardize just bump-and-install, use GitHub issues over backlog
 - chore: justfile bump-alpha fixes, changelog version labels, overlay opacity
 
-## [3.4.8] — 2026-05-02
+## [3.4.8] — 2026-05-02 03:40 ET
 
 ### Changes
 - chore: CLAUDE.md — clarify post-merge workflow, standardize just bump-and-install, use GitHub issues over backlog
 - chore: justfile bump-alpha fixes, changelog version labels, overlay opacity
 
-## [3.4.6] — 2026-05-02
+## [3.4.6] — 2026-05-02 03:34 ET
 
 ### Changes
 - feat(changelog): clickable version badge opens changelog modal + just bump-alpha (#524)
 
-## [3.4.3] — 2026-05-02
+## [3.4.3] — 2026-05-02 00:08 ET
 
 ### Changes
 - fix(install): rename binary in bundle for non-stable channels to match config detection
@@ -251,7 +283,7 @@ Newest releases appear first.
 - feat: channel promotion pipeline (just promote)
 - refactor(sidebar): zone-based row abstraction with single cursor authority
 
-## [3.4.1] — 2026-05-01
+## [3.4.1] — 2026-05-01 16:31 ET
 
 ### Changes
 - **Command palette overhaul** — context/pane model rewrite; named pane entries with direct focus jump; strip stale auto window names on load
@@ -264,7 +296,7 @@ Newest releases appear first.
 - **Shortcuts overlay** — two-column layout, HJKL navigation blocks, wider overlay
 - **Minimap** — page numbers switched to 0-based
 
-## [3.4.0] — 2026-05-01
+## [3.4.0] — 2026-05-01 16:03 ET
 
 ### Features
 - **Bundled Python 3.12** — self-contained runtime via python-build-standalone; no system Python dependency
@@ -302,13 +334,13 @@ Newest releases appear first.
 - SDK clean shutdown + HiDPI hit-test alignment
 - Terminal scrollback clearing on alt-screen entry
 
-## [3.0.0-beta.5] — 2026-04-25
+## [3.0.0-beta.5] — 2026-04-25 19:41 ET
 
 ### Host / Notifications
 
 - **Background app cross-context tick fix** — Global notification apps running in the background were not receiving tick events when the active pane changed context. Fix ensures the tick is dispatched correctly regardless of which context is active.
 
-## [3.0.0-beta.4] — 2026-04-24
+## [3.0.0-beta.4] — 2026-04-24 04:33 ET
 
 ### Apps
 
@@ -332,7 +364,7 @@ Newest releases appear first.
 - `render_draw_commands` takes `pane_rect` explicitly — single source of geometry, no more `ui.min_rect()` surprise.
 - Clip stack (PushClip/PopClip) intersects with current stack top so nested clips only ever tighten.
 
-## [3.0.0-beta.3] — 2026-04-23
+## [3.0.0-beta.3] — 2026-04-23 23:30 ET
 
 ### Notifications — major rework
 
@@ -379,7 +411,7 @@ Newest releases appear first.
 
 - **`just clear-apps <channel>`** — explicit mirror-install helper. `cp -R` in `install-*` is sync-not-mirror; apps deleted from `examples/` don't disappear from the install dir on upgrade. Run `just clear-apps alpha && just install-alpha` for a clean slate.
 
-## [3.0.0-beta.2] — 2026-04-23
+## [3.0.0-beta.2] — 2026-04-23 07:51 ET
 
 ### Added
 - **Commit Graph app (github-tree, replaces file browser)** — subway-style git history viewer for the pane's repo. Vertical time, horizontal branch lanes, weekly viewport with `[` / `]` navigation, click-to-select with full message + diff-stat tooltip. No `gh` dependency — pure local git. Ships as `github-tree` (same launch slot as before).
@@ -400,7 +432,7 @@ Newest releases appear first.
 - **Tiling decomposition** — `tiling.rs` split into `render/{terminal,app,agent}_pane.rs`; `pane_ops.rs` broken up into `create / layout / workspace` submodules. Pure refactor, zero behavior change.
 - **Header top padding** — `Column.padding_top` default dropped from 16px to 8px so top-of-pane headers feel anchored instead of dropped.
 
-## [1.1.2] — 2026-04-10
+## [1.1.2] — 2026-04-10 17:19 ET
 
 ### Fixed
 - **Cloud folder crash** — file browser no longer freezes when opening Google Drive, iCloud, or other FUSE-backed cloud folders. Eliminated per-entry `stat` syscalls in favor of cached directory entry types.
@@ -409,14 +441,14 @@ Newest releases appear first.
 ### Improved
 - **CWD tracking performance** — cached `lsof` lookups with 300ms TTL instead of calling every frame.
 
-## [1.1.1] — 2026-04-10
+## [1.1.1] — 2026-04-10 08:45 ET
 
 ### Added
 - **Theme presets** — set `theme_preset = "dracula"` (or `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `nord`, `solarized-dark`) in `config.toml` to apply a full UI + terminal color scheme. Individual `[theme]` overrides layer on top.
 - **CRT & pulse effects** — opt-in via `[beta]` section in `config.toml`. `crt = true` adds green phosphor tint + scanlines. `pulse = true` animates the focused pane border.
 - **`just install-alpha` / `just install-beta`** — build and install variant app bundles (`Plexi Alpha.app`, `Plexi Beta.app`) with fully isolated config directories (`~/.plexi-alpha`, `~/.plexi-beta`). Deprecates `just install-apps`.
 
-## [1.1.0] — 2026-04-10
+## [1.1.0] — 2026-04-10 08:45 ET
 
 ### Added
 - Cmd+Comma opens config in embedded text editor.

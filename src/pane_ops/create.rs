@@ -337,7 +337,7 @@ impl PlexiApp {
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
 
-        let settings = Self::make_backend_settings(cwd, &self.colors);
+        let settings = Self::make_backend_settings(new_id, cwd, &self.colors);
         let pane = TerminalPane::new(
             new_id,
             self.ctx.clone(),

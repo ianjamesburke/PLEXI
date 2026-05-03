@@ -1,11 +1,11 @@
 [package]
 name = "plexi"
-version = "3.4.36"
+version = "3.4.43"
 edition = "2021"
 
 [package.metadata.bundle]
-name = "Plexi"
-identifier = "com.ianjamesburke.plexi"
+name = "Plexi Alpha"
+identifier = "com.ianjamesburke.plexi-alpha"
 icon = ["assets/app-icon.icns"]
 short_description = "Spatial terminal window manager"
 osx_minimum_system_version = "12.0"
@@ -51,6 +51,8 @@ cpal = "0.17"
 # nested dirs). default-features disabled to avoid pulling crossbeam-channel.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 egui_commonmark = "0.20"
+# Native file picker dialog (#514). Uses NSOpenPanel on macOS.
+rfd = "0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl

@@ -151,6 +151,11 @@ pub struct ProcessApp {
     /// result here so the UI thread never blocks on network I/O.
     pub(crate) http_tx: Sender<PlexiEvent>,
     pub(crate) http_rx: Receiver<PlexiEvent>,
+    /// Channel for async file picker results from background dialog threads.
+    /// `route_command` spawns one thread per `OpenFilePicker`; the thread
+    /// sends `PlexiEvent::FilePicked` or `FilePickCancelled` here when done.
+    pub(crate) file_picker_tx: Sender<PlexiEvent>,
+    pub(crate) file_picker_rx: Receiver<PlexiEvent>,
     /// `ai.query` broker (#284). `Arc<dyn AiBroker>` so production panes share
     /// a `LiveAiBroker` while tests can inject a `CannedBroker`. Dispatch runs
     /// on a worker thread so the UI never blocks on the LLM call.
@@ -467,6 +472,7 @@ impl ProcessApp {
             allowed_hosts: vec![],
         };
         let (http_tx, http_rx) = mpsc::channel::<PlexiEvent>();
+        let (file_picker_tx, file_picker_rx) = mpsc::channel::<PlexiEvent>();
 
         event_log::emit(HostEvent::AppSpawned {
             app_id: type_id.clone(),
@@ -506,6 +512,8 @@ impl ProcessApp {
             net: Arc::new(UreqNetService::new()),
             http_tx,
             http_rx,
+            file_picker_tx,
+            file_picker_rx,
             ai_broker: Arc::new(default_live_broker()),
             audio_device: default_audio_device(),
             audio_capture_sessions: HashMap::new(),
@@ -547,6 +555,101 @@ impl ProcessApp {
                 );
             }
         }
+    }
+
+    /// Create a `ProcessApp` suitable for host-harness tests. No subprocess is
+    /// spawned. The returned `Sender<DrawCommand>` feeds the harness's `inject()`
+    /// calls directly into `drain_draw_commands()` so the full `route_command`
+    /// path executes without a real Python app.
+    #[cfg(test)]
+    pub fn new_for_test(pane_id: u64, permissions: crate::app_permissions::AppPermissions) -> (Self, Sender<DrawCommand>) {
+        use crate::app_permissions::AppPermissions;
+        use crate::audio::MockAudioDevice;
+        use crate::midi::MockMidiDevice;
+        use crate::video::{MockVideoDecoder, MockVideoDecoderConfig};
+        use crate::plexi_ai::broker::{AiBrokerRequest, AiBrokerResponse};
+
+        struct NoopBroker;
+        impl AiBroker for NoopBroker {
+            fn dispatch(&self, _req: AiBrokerRequest) -> AiBrokerResponse {
+                AiBrokerResponse::ok("noop".to_string(), 0, 0)
+            }
+        }
+
+        struct NoopNet;
+        impl NetService for NoopNet {
+            fn http(
+                &self,
+                _method: &str,
+                _url: &str,
+                _headers: &std::collections::HashMap<String, String>,
+                _body: Option<&str>,
+            ) -> crate::host::services::HttpResponse {
+                crate::host::services::HttpResponse {
+                    status: 0,
+                    body: String::new(),
+                    error: Some("no network in tests".to_string()),
+                }
+            }
+        }
+
+        let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
+        let (http_tx, http_rx) = mpsc::channel::<PlexiEvent>();
+        let lifecycle = Arc::new(LifecycleTracker::new());
+        let app = Self {
+            type_id: "test".to_string(),
+            pane_id,
+            display_name: "Test App".to_string(),
+            process: None,
+            event_tx: None,
+            render_slot: Arc::new(Mutex::new(None)),
+            render_in_queue: Arc::new(AtomicBool::new(false)),
+            draw_rx: Some(draw_rx),
+            frame: Vec::new(),
+            pending_frame: Vec::new(),
+            pending_commands: Vec::new(),
+            last_size: egui::Vec2::ZERO,
+            initialized: true,
+            frame_counter: 0,
+            sdk: None,
+            features_used: Vec::new(),
+            workspace_root: std::env::temp_dir(),
+            permissions,
+            pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new())),
+            run_registry: RunRegistry::new(),
+            pending_prompts: VecDeque::new(),
+            status_summary: None,
+            nav_stack: Vec::new(),
+            outbound_events: VecDeque::new(),
+            secret_input_buf: String::new(),
+            recent_stderr: Arc::new(Mutex::new(VecDeque::new())),
+            keyboard_capture: false,
+            net: Arc::new(NoopNet),
+            http_tx,
+            http_rx,
+            ai_broker: Arc::new(NoopBroker),
+            audio_device: Arc::new(MockAudioDevice::new()),
+            audio_capture_sessions: HashMap::new(),
+            midi_device: Arc::new(MockMidiDevice::new()),
+            midi_input_sessions: HashMap::new(),
+            midi_output_handles: HashMap::new(),
+            video_device: Arc::new(MockVideoDecoder::new(MockVideoDecoderConfig::default())),
+            video_handles: HashMap::new(),
+            video_pipe_ids: HashMap::new(),
+            pending_timers: HashMap::new(),
+            lifecycle,
+            show_stderr_overlay: false,
+            mouse_tracking_enabled: false,
+            text_input_buffers: HashMap::new(),
+            text_input_visible_prev: std::collections::HashSet::new(),
+            text_input_has_focus: false,
+            pane_just_focused: false,
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
+            scroll_offsets: HashMap::new(),
+            exposed_tools: Vec::new(),
+            test_injected_commands: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        (app, draw_tx)
     }
 
     /// Current nav stack depth as tracked by `PushNav`/`PopNav` commands.
@@ -942,6 +1045,9 @@ impl ProcessApp {
         while let Ok(event) = self.http_rx.try_recv() {
             self.outbound_events.push_back(event);
         }
+        while let Ok(event) = self.file_picker_rx.try_recv() {
+            self.outbound_events.push_back(event);
+        }
         self.flush_outbound_events();
         for cmd in self.drain_draw_commands() {
             match cmd {
@@ -994,7 +1100,9 @@ impl ProcessApp {
                 | DrawCommand::CloseVideo { .. }
                 | DrawCommand::SetVideoState { .. }
                 | DrawCommand::Image { .. }
-                | DrawCommand::AudioMeter { .. }) => {
+                | DrawCommand::AudioMeter { .. }
+                // File picker (#514)
+                | DrawCommand::OpenFilePicker { .. }) => {
                     self.route_command(cmd);
                 }
                 // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
@@ -1105,6 +1213,10 @@ impl App for ProcessApp {
         while let Ok(event) = self.http_rx.try_recv() {
             self.outbound_events.push_back(event);
         }
+        // Drain file picker results from background dialog threads.
+        while let Ok(event) = self.file_picker_rx.try_recv() {
+            self.outbound_events.push_back(event);
+        }
 
         let new_cmds = self.drain_draw_commands();
 
@@ -1212,7 +1324,9 @@ impl App for ProcessApp {
                 | DrawCommand::CloseVideo { .. }
                 | DrawCommand::SetVideoState { .. }
                 | DrawCommand::Image { .. }
-                | DrawCommand::AudioMeter { .. }) => {
+                | DrawCommand::AudioMeter { .. }
+                // File picker (#514)
+                | DrawCommand::OpenFilePicker { .. }) => {
                     self.route_command(cmd);
                 }
                 other => self.pending_frame.push(other),

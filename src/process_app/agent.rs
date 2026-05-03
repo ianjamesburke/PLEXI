@@ -230,7 +230,8 @@ impl ProcessApp {
                 | DrawCommand::SetTimer { .. }
                 | DrawCommand::CancelTimer { .. }
                 | DrawCommand::PushNav { .. }
-                | DrawCommand::PopNav { .. }) => {
+                | DrawCommand::PopNav { .. }
+                | DrawCommand::OpenFilePicker { .. }) => {
                     self.route_command(cmd);
                 }
                 // FrameDone, ScheduleRender, MeasureText, CopyToClipboard, and

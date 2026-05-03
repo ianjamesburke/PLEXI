@@ -672,8 +672,6 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn palette_spawn_not_installed_pushes_notification() {
         let result = std::panic::catch_unwind(|| {

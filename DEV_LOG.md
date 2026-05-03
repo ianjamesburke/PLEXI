@@ -1,5 +1,35 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [FIX] Ghost empty state — welcome screen and Cmd+N guards + pr-install sed fix (PR #576 → alpha)
+
+Closing a zoomed/fullscreen app pane could leave the window in a blank void: no terminals, no welcome screen, and Cmd+N misdirecting to a new page. Root cause: welcome-screen and Cmd+N guards both keyed on `panes.is_empty()` alone — when the tree had no root but panes retained stale entries, neither guard fired. Fix: both guards now also check `tree.root.is_none()`, making the empty void structurally impossible. `close_focused_app()` now clears `zoomed_pane` after `close_tile` to prevent stale tile references. Also fixed `scripts/install.sh` sed pattern (`"Plexi"` → `"Plexi[^\"]*"`) so `just pr-install` works correctly from the alpha channel (bundle name is `"Plexi Alpha"`, not `"Plexi"`).
+**Breaks if:** welcome screen appears while a pane is open, or Cmd+N no longer creates new pages in a legitimate multi-page layout.
+
+## 2026-05-03 — [CHANGED] ET timestamps on all changelog entries; bump-alpha now emits time (PR #574 → alpha)
+
+Backfilled HH:MM ET onto every existing `## [X.Y.Z] — DATE` header in CHANGELOG.md using `git log -S "## [X.Y.Z]" --format="%ai" -- CHANGELOG.md` to find the actual commit time per version. Updated `bump-alpha` in justfile: `today` now uses `TZ=America/New_York date +%Y-%m-%d` and a new `time_et` var captures `HH:MM`; the section header is emitted as `## [X.Y.Z] — DATE HH:MM ET`. Some commits with `-0500` offsets (incorrect timezone on a machine) were normalized to EDT correctly by Python's `datetime.astimezone`.
+**Breaks if:** `just bump-and-install` produces a new changelog entry with no time suffix (only `YYYY-MM-DD`).
+
+## 2026-05-03 — [CHANGED] dismissable_modal helper — escape + click-outside for overlays (PR #570 → alpha)
+Added `widgets::dismissable_modal(ctx, id, |ui| { ... }) -> bool` — handles Escape consumption and a click-absorbing scrim at `Order::Middle`. Shortcuts and changelog overlays both use it; the ✕ button in the changelog header was removed. Callers guard with `if !open { return; }` and apply `if dismissed { open = false; }` after. Any future centered info overlay should follow the same pattern.
+**Breaks if:** Pressing Escape or clicking outside the shortcuts (⌘/) or changelog overlay does nothing.
+
+## 2026-05-03 — [CHANGED] File picker capability — fs.pick / OpenFilePicker (PR #567 → alpha)
+Added native file picker support: `DrawCommand::OpenFilePicker { request_id, filter, multiple }` triggers a native NSOpenPanel via `rfd::AsyncFileDialog` on a background thread (condvar-based `block_on` keeps the egui render loop unblocked). Result returns as `PlexiEvent::FilePicked` / `FilePickCancelled` through a dedicated `file_picker_rx` channel drained in both `background_tick()` and `ui()`. New `Capability::FsPick` (`"fs.pick"`) gates the call — denied apps get `FilePickCancelled` immediately. Python SDK gains `ctx.emit.open_file_picker()` + `on_file_picked` / `on_file_pick_cancelled` hooks. POC app ships under `examples/file-picker-poc/`.
+**Breaks if:** Clicking the "Pick File" button in the file-picker-poc app opens no dialog, or a dialog opens but selecting a file never updates the displayed path.
+
+## 2026-05-03 — [FIX] Terminal copy drops first character — iter_from excludes start point (PR #569 → alpha)
+`selectable_content()` called `iter_from(range.start)` which excludes the start point, silently dropping the first character of every copy. Root cause: `open_link()` in the same file already demonstrates the correct pattern — explicitly index `grid[range.start]` before the loop. Fix: initialize `prev_line = Some(range.start.line)` and push the start cell before entering the `iter_from` loop.
+**Breaks if:** Copying any text in a terminal pane still drops the first character (e.g. selecting `pass` pastes `ass`).
+
+## 2026-05-03 — [CHANGED] Inject PLEXI_PANE_ID + PLEXI_SOCKET into every PTY (PR #565 → alpha)
+Every PTY-backed terminal pane now receives `PLEXI_PANE_ID` (the numeric pane id) and `PLEXI_SOCKET` (variant-correct path to `~/.plexi-{channel}/notify.sock`) in its environment. Child processes inherit both vars naturally. `make_backend_settings()` gained a `pane_id: u64` first parameter; all six call sites updated. Socket path derived from `config::config_dir()` so it's automatically correct for alpha/beta/stable/PR builds. No new dependencies.
+**Breaks if:** `echo $PLEXI_PANE_ID` in any terminal pane prints empty, or `echo $PLEXI_SOCKET` doesn't contain the channel-specific path.
+
+## 2026-05-03 — [CHANGED] HostHarness: headless egui test harness (PR #564 → alpha)
+`src/testing.rs` adds `HostHarness` for host self-validation without a real GPU or subprocess. `ProcessApp::new_for_test(pane_id, permissions)` takes explicit `AppPermissions` — pass `AppPermissions::builtin()` for normal tests, `from_capability_strings(&[])` for synchronous denial tests. AiQuery regression guard uses the denial path (no `ai.query` cap) so it's synchronous and deterministic — no sleep required. `background_tick()` drives routing directly when egui frames don't call `ui()` (zero-allocation headless panes). Pre-existing lint fixes: irrefutable `if let` patterns in `agent_pane.rs`, unused `use super::*` in two test modules.
+**Breaks if:** `cargo test` reports fewer than 294 passed, or any of the 6 harness tests in `testing::tests` fail.
+
 ## 2026-05-03 — [CHANGED] Welcome screen: Plexi logo + centered wordmark (PR #562 → alpha)
 Replaced the plain "PLEXI" text header with the Plexi 4-square logo alongside the PLEXI wordmark, centered as a unit. Logo is drawn via egui painter primitives (3 outlined squares + 1 purple-filled square, scaled from the icon.svg geometry) — no new dependencies. Centering uses the same manual-leading-pad pattern as the email row: measure text width via `ui.fonts()`, compute `pad = (available - total_w) / 2`, add it inside `horizontal()`.
 **Breaks if:** welcome screen shows only the PLEXI text with no logo to its left, or the logo+wordmark group is left-aligned.

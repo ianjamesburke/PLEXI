@@ -235,6 +235,14 @@ pub struct PlexiApp {
     pane_snapshot_len: usize,
 }
 
+#[cfg(test)]
+fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
+    theme::setup_fonts(ctx);
+    ctx.set_visuals(egui::Visuals::dark());
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
+    theme::setup_style(ctx, colors);
+}
+
 impl PlexiApp {
     pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::logging::FrameTick) -> Self {
         #[cfg(target_os = "macos")]
@@ -448,7 +456,7 @@ impl PlexiApp {
                     }
 
                     if pane_entry.is_none() {
-                        let settings = Self::make_backend_settings(cwd, &colors);
+                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors);
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
                             cc.egui_ctx.clone(),
@@ -666,6 +674,103 @@ impl PlexiApp {
         }
     }
 
+    /// Create a `PlexiApp` for headless tests. No workspace restore, no macOS
+    /// menu setup, no PTY or audio hardware. Initialises a single empty window
+    /// so `state().open_panes` is empty and the harness can add panes via
+    /// `inject_app_pane`.
+    #[cfg(test)]
+    pub fn new_for_test(
+        ctx: egui::Context,
+        frame_tick: crate::logging::FrameTick,
+    ) -> Self {
+        let config = config::PlexiConfig::default();
+        let theme_cfg = Self::resolve_theme_config(&config);
+        let colors = Colors::from_config(&theme_cfg);
+        configure_egui_ctx(&ctx, &colors);
+        let (tx, rx) = mpsc::channel();
+        let (hr_watcher, hr_rx) = crate::hot_reload::HotReloadWatcher::new();
+        let path = std::env::temp_dir();
+        let features = crate::features::FeatureFlags::from_config(&config);
+        Self {
+            pty_event_rx: rx,
+            pty_event_tx: tx,
+            last_notify_poll: std::time::Instant::now(),
+            theme: theme::terminal_theme(&theme_cfg),
+            colors,
+            default_font_size: theme::FONT_SIZE,
+            ctx: ctx.clone(),
+            router: crate::workspace_router::WorkspaceRouter::new(
+                vec![crate::context::Context {
+                    name: "Test".into(),
+                    path: path.clone(),
+                    context_id: 1,
+                }],
+                0,
+            ),
+            windows: vec![Window {
+                name: "Test".into(),
+                path: path.clone(),
+                tree: egui_tiles::Tree::empty("test_tree"),
+                panes: HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 0,
+                window_id: 1,
+                context_id: 1,
+            }],
+            active_window: 0,
+            sidebar_visible: false,
+            show_shortcuts: false,
+            show_changelog: false,
+            quitting: false,
+            quit_press_count: 0,
+            quit_last_press: None,
+            config,
+            pending_close: false,
+            frame_tick,
+            renaming_window: None,
+            rename_buffer: String::new(),
+            drag_context: None,
+            show_command_palette: false,
+            palette_query: String::new(),
+            palette_selected: 0,
+            context_visit_history: Vec::new(),
+            renaming_pane: None,
+            registry: AppRegistry::load_with_global(
+                &path,
+                &path.join("nonexistent-apps-dir"),
+            ),
+            features,
+            show_run_palette: false,
+            pending_notifications: Vec::new(),
+            show_notification_modal: false,
+            current_notify_id: None,
+            modal_focused_option: 0,
+            modal_input_buffer: String::new(),
+            modal_state_notify_id: String::new(),
+            notification_images: HashMap::new(),
+            notifications_enabled: false,
+            notifications_focus_mode: false,
+            notifications_interrupt_threshold: 100,
+            focus_stack: Vec::new(),
+            host: crate::host::model::HostModel::new(),
+            host_services: crate::host::services::HostServices::new(),
+            background_apps: HashMap::new(),
+            directed_pipes: HashMap::new(),
+            hot_reload: hr_watcher,
+            hot_reload_rx: hr_rx,
+            agent_workspace_modal: None,
+            last_cli_map: Default::default(),
+            minimap: crate::minimap::MinimapState::new(),
+            last_page_x_per_row: HashMap::new(),
+            context_active_window: HashMap::new(),
+            minimap_visible_per_context: HashMap::new(),
+            next_window_id: 2,
+            pane_snapshot_len: 0,
+        }
+    }
+
     fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
         let user_theme = config.theme.clone().unwrap_or_default();
         if let Some(preset_name) = &config.theme_preset {
@@ -679,13 +784,21 @@ impl PlexiApp {
     }
 
     pub(crate) fn make_backend_settings(
+        pane_id: u64,
         working_directory: Option<PathBuf>,
         colors: &Colors,
     ) -> BackendSettings {
+        let mut env = shell::build_env();
+        env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
+        let socket = crate::config::config_dir()
+            .join("notify.sock")
+            .to_string_lossy()
+            .into_owned();
+        env.insert("PLEXI_SOCKET".into(), socket);
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
-            env: shell::build_env(),
+            env,
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
         }
@@ -1715,7 +1828,9 @@ impl eframe::App for PlexiApp {
                     self.force_reload_focused_app();
                 }
                 Action::NewPageRight => {
-                    if self.windows[self.active_window].panes.is_empty() {
+                    if self.windows[self.active_window].panes.is_empty()
+                        || self.windows[self.active_window].tree.root.is_none()
+                    {
                         self.reset_active_context();
                     } else {
                         self.new_page_right();
@@ -1829,7 +1944,7 @@ impl eframe::App for PlexiApp {
             })
             .show(ctx, |ui| {
                 let active = self.active_window;
-                if self.windows[active].panes.is_empty() {
+                if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
                     self.draw_welcome_screen(ui);
                     return;
                 }
@@ -2043,22 +2158,10 @@ impl eframe::App for PlexiApp {
             });
 
         // Shortcuts overlay
-        if self.show_shortcuts {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                self.show_shortcuts = false;
-            } else {
-                self.draw_shortcuts_overlay(ctx);
-            }
-        }
+        self.draw_shortcuts_overlay(ctx);
 
         // Changelog overlay
-        if self.show_changelog {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                self.show_changelog = false;
-            } else {
-                self.draw_changelog_overlay(ctx);
-            }
-        }
+        self.draw_changelog_overlay(ctx);
 
         // First-launch CLI setup prompt
         if self.show_cli_setup_prompt {

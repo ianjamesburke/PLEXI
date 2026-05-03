@@ -165,8 +165,6 @@ fn stream_ollama(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Verify that a `done: true` NDJSON line with token counts is parsed correctly.
     #[test]
     fn done_line_extracts_token_counts() {
