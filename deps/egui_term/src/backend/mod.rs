@@ -308,15 +308,18 @@ impl TerminalBackend {
                 if range.contains(indexed.point) {
                     if let Some(prev) = prev_line {
                         if prev != indexed.point.line {
-                            // Only insert a newline if the previous row was NOT
-                            // soft-wrapped (WRAPLINE flag on its last cell).
-                            let was_wrapped = content.grid[prev][last_col]
-                                .flags
-                                .contains(CellFlags::WRAPLINE);
+                            let last_cell = &content.grid[prev][last_col];
+                            let was_wrapped =
+                                last_cell.flags.contains(CellFlags::WRAPLINE);
                             // Trim trailing spaces from the completed line
                             let trimmed_len = result.trim_end_matches(' ').len();
                             result.truncate(trimmed_len);
-                            if !was_wrapped {
+                            // Skip \n for terminal soft-wraps (WRAPLINE) or for
+                            // rows that filled to the last column — a strong signal
+                            // that the CLI tool hard-wrapped the line itself (e.g.
+                            // Claude Code, git log). Empty last columns default to
+                            // ' ', so last_cell.c == ' ' means a genuine line break.
+                            if !was_wrapped && last_cell.c == ' ' {
                                 result.push('\n');
                             }
                         }
