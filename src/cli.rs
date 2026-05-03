@@ -869,10 +869,15 @@ pub fn notify_cli(
         "response_file": response_file.to_string_lossy(),
     });
     let queue_file = queue_dir.join(format!("{id}.json"));
+    log::info!(
+        "notify:cli: writing queue file {:?} choices={} response_file={:?}",
+        queue_file, choices.len(), response_file
+    );
     if let Err(e) = std::fs::write(&queue_file, payload.to_string()) {
         eprintln!("error: could not write notification: {e}");
         return 1;
     }
+    log::info!("notify:cli: queue file written, polling for response");
 
     let deadline = if timeout_secs > 0 {
         Some(
@@ -887,11 +892,13 @@ pub fn notify_cli(
         if response_file.exists() {
             match std::fs::read_to_string(&response_file) {
                 Ok(key) => {
+                    log::info!("notify:cli: response received {:?}", key.trim());
                     let _ = std::fs::remove_file(&response_file);
                     print!("{}", key.trim());
                     return 0;
                 }
                 Err(e) => {
+                    log::warn!("notify:cli: could not read response file: {e}");
                     eprintln!("error: could not read response file: {e}");
                     return 1;
                 }
@@ -899,6 +906,7 @@ pub fn notify_cli(
         }
         if let Some(dl) = deadline {
             if std::time::Instant::now() >= dl {
+                log::info!("notify:cli: timed out after {timeout_secs}s");
                 return 2;
             }
         }

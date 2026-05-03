@@ -850,6 +850,10 @@ impl PlexiApp {
                 crate::app_protocol::NotifyKind::Choice
             };
             let response_file = val["response_file"].as_str().map(|s| s.to_string());
+            log::info!(
+                "notify:drain: title={:?} choices={} response_file={:?}",
+                title, options.len(), response_file
+            );
             let internal_id = format!(
                 "__host__:{}",
                 std::time::SystemTime::now()
@@ -1370,17 +1374,26 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } => {
+                    log::info!(
+                        "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?}"
+                    );
                     // Write response to the CLI response file when this was a
                     // host-originated blocking notification (sender_pane_id == 0).
                     if pane_id == 0 {
-                        if let Some(notif) = self
-                            .pending_notifications
-                            .iter()
-                            .find(|n| n.notify_id == notify_id)
-                        {
+                        let found = self.pending_notifications.iter()
+                            .find(|n| n.notify_id == notify_id);
+                        log::info!(
+                            "notify:action: host-originated, found={} response_file={:?}",
+                            found.is_some(),
+                            found.and_then(|n| n.response_file.as_deref())
+                        );
+                        if let Some(notif) = found {
                             if let Some(ref rf) = notif.response_file {
                                 let content = value.as_deref().unwrap_or("");
-                                let _ = std::fs::write(rf, content);
+                                match std::fs::write(rf, content) {
+                                    Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
+                                    Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
+                                }
                             }
                         }
                     }
