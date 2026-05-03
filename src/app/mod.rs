@@ -2103,11 +2103,16 @@ impl eframe::App for PlexiApp {
                         // while zoomed; we handle the drop here instead.
                         let has_drop =
                             child_ui.input(|i| !i.raw.dropped_files.is_empty());
-                        let dropped_to_zoom =
-                            has_drop && child_ui.rect_contains_pointer(inner_rect);
+                        // When zoomed there is only one pane covering the entire overlay —
+                        // no ambiguity about the target. Skip rect_contains_pointer: egui's
+                        // pointer position is stale during macOS OS-level file drags (we skip
+                        // the NSApplication cursor query when zoomed), so rect_contains_pointer
+                        // would only return true if the last known position happened to fall
+                        // inside inner_rect (typically the original split-pane location).
+                        let dropped_to_zoom = has_drop;
                         if has_drop {
                             log::info!(
-                                "drop: zoomed overlay received drop event — dropped_to_zoom={dropped_to_zoom}, pane_id={pane_id:?}"
+                                "drop: zoomed overlay received drop event — pane_id={pane_id:?}"
                             );
                         }
                         egui::Frame::new()
