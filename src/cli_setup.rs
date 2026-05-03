@@ -21,7 +21,9 @@ pub fn mark_prompted() {
     let _ = std::fs::write(sentinel_path(), "");
 }
 
-/// Compute whether to show the first-launch prompt, logging the decision.
+/// Compute whether to show the install prompt, logging the decision.
+/// Shows every launch until the user clicks Install (which writes the sentinel).
+/// "Not now" and Escape dismiss for the session only.
 pub fn should_prompt() -> bool {
     if was_prompted() {
         return false;
@@ -30,7 +32,7 @@ pub fn should_prompt() -> bool {
         log::info!("cli_setup: {} already installed — skipping prompt", cli_name());
         return false;
     }
-    log::info!("cli_setup: {} not installed — showing first-launch prompt", cli_name());
+    log::info!("cli_setup: {} not installed — showing prompt", cli_name());
     true
 }
 
