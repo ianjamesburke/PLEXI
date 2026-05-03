@@ -422,6 +422,7 @@ pub(super) fn render_draw_commands(
             | DrawCommand::PipeSend { .. }
             | DrawCommand::StatusSummary { .. }
             | DrawCommand::SpawnApp { .. }
+            | DrawCommand::SpawnPane { .. }
             | DrawCommand::HttpRequest { .. }
             | DrawCommand::AiQuery { .. }
             | DrawCommand::CdRequest { .. }

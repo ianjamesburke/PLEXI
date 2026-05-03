@@ -777,6 +777,7 @@ impl PlexiApp {
             minimap_visible_per_context: HashMap::new(),
             next_window_id: 2,
             pane_snapshot_len: 0,
+            show_cli_setup_prompt: false,
         }
     }
 
@@ -892,6 +893,42 @@ impl PlexiApp {
                     self.current_notify_id = Some(internal_id);
                 }
             }
+        }
+    }
+
+    fn drain_spawn_queue(&mut self) {
+        let queue_dir = crate::config::config_dir().join("spawn-queue");
+        let Ok(entries) = std::fs::read_dir(&queue_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let _ = std::fs::remove_file(&path);
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else {
+                continue;
+            };
+            let type_id = val["type_id"].as_str().unwrap_or("").to_string();
+            if type_id.is_empty() {
+                log::warn!("spawn-queue: entry missing type_id, skipping");
+                continue;
+            }
+            let layout = val["layout"].as_str().map(|s| s.to_string());
+            let args: Vec<String> = val["args"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            log::info!("spawn-queue: launching '{type_id}' layout={layout:?}");
+            self.launch_app_by_id_with_layout(&type_id, layout, &args);
         }
     }
 
@@ -1163,6 +1200,7 @@ impl eframe::App for PlexiApp {
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_notify_queue();
+            self.drain_spawn_queue();
         }
         self.drain_pty_events();
         self.tick_agent_workspaces();
@@ -1279,6 +1317,78 @@ impl eframe::App for PlexiApp {
                             };
                             if let Some(a) = pane.as_app_mut() {
                                 a.runtime.queue_outbound_event(event);
+                            }
+                        }
+                    }
+                }
+                AppCommand::SpawnPane {
+                    type_id,
+                    layout,
+                    args,
+                    pipe_id,
+                } => {
+                    // "background" layout is not yet implemented (blocked on #291).
+                    if layout == "background" {
+                        let active = self.active_window;
+                        let requesting_pane_id = self.windows[active]
+                            .focused_pane
+                            .and_then(|tile| self.windows[active].tree.tiles.get(tile))
+                            .and_then(|tile| {
+                                if let egui_tiles::Tile::Pane(pid) = tile {
+                                    Some(*pid)
+                                } else {
+                                    None
+                                }
+                            });
+                        if let Some(req_pane_id) = requesting_pane_id {
+                            let active = self.active_window;
+                            if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
+                                if let Some(a) = pane.as_app_mut() {
+                                    a.runtime.queue_outbound_event(
+                                        crate::app_protocol::PlexiEvent::PaneSpawnError {
+                                            reason: "layout 'background' not yet implemented".to_string(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        log::warn!("SpawnPane: layout='background' not implemented, rejected");
+                        continue;
+                    }
+
+                    // If pipe_id is set, append --pipe=<id> to args so the spawned app knows
+                    // which pipe_id to send its result on.
+                    let mut effective_args = args;
+                    if let Some(ref pid) = pipe_id {
+                        effective_args.push(format!("--pipe={pid}"));
+                    }
+
+                    // Predict the pane id that will be allocated (next_pane_id peeks without allocating).
+                    let active = self.active_window;
+                    let requesting_pane_id = self.windows[active]
+                        .focused_pane
+                        .and_then(|tile| self.windows[active].tree.tiles.get(tile))
+                        .and_then(|tile| {
+                            if let egui_tiles::Tile::Pane(pid) = tile {
+                                Some(*pid)
+                            } else {
+                                None
+                            }
+                        });
+                    let new_pane_id = self.host.next_pane_id();
+                    self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
+                    log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
+
+                    // Send PaneSpawned back to the requesting pane.
+                    if let Some(req_pane_id) = requesting_pane_id {
+                        let active = self.active_window;
+                        if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
+                            if let Some(a) = pane.as_app_mut() {
+                                a.runtime.queue_outbound_event(
+                                    crate::app_protocol::PlexiEvent::PaneSpawned {
+                                        pane_id: new_pane_id,
+                                    },
+                                );
                             }
                         }
                     }

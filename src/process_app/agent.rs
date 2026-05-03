@@ -222,6 +222,7 @@ impl ProcessApp {
                 | DrawCommand::AgentRosterGet { .. }
                 | DrawCommand::StatusSummary { .. }
                 | DrawCommand::SpawnApp { .. }
+                | DrawCommand::SpawnPane { .. }
                 | DrawCommand::HttpRequest { .. }
                 | DrawCommand::AiQuery { .. }
                 | DrawCommand::AudioPlay { .. }

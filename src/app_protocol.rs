@@ -112,6 +112,10 @@ pub enum PlexiEvent {
         pane_id: u64,
         type_id: String,
     },
+    /// Confirmation that a SpawnPane request succeeded (#592).
+    PaneSpawned { pane_id: u64 },
+    /// SpawnPane could not be fulfilled (#592). `reason` is a human-readable error.
+    PaneSpawnError { reason: String },
     /// Binary pipe opened — app connects to `socket_path` as a unix socket client.
     PipeOpened {
         pipe_id: String,
@@ -695,6 +699,24 @@ pub enum DrawCommand {
         layout: Option<String>,
         #[serde(default)]
         args: Vec<String>,
+    },
+
+    /// Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.
+    /// Requires `panes.spawn` capability.
+    /// `layout`: one of "split_v", "split_h", "split_above", "split_left", "overlay".
+    ///   "overlay_pane" and "background" are reserved but not yet implemented.
+    /// `pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch
+    ///   so the spawned app can reply via PipeSend on completion.
+    /// Host responds: `PlexiEvent::PaneSpawned { pane_id }` on success,
+    ///               `PlexiEvent::PaneSpawnError { reason }` on failure.
+    SpawnPane {
+        type_id: String,
+        #[serde(default = "default_spawn_layout")]
+        layout: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pipe_id: Option<String>,
     },
 
     // ── Media + HTTP primitives ──────────────────────────────────────────
@@ -1352,6 +1374,10 @@ pub struct ListItem {
     pub icon: Option<String>, // reserved for future use
     #[serde(default)]
     pub is_dir: bool,
+}
+
+fn default_spawn_layout() -> String {
+    "split_v".to_string()
 }
 
 fn default_stroke_width() -> f32 {

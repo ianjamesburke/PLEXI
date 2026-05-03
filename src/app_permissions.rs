@@ -66,6 +66,8 @@ pub enum Capability {
     /// Returns picked paths via `PlexiEvent::FilePicked`. Apps without this
     /// capability receive `PlexiEvent::FilePickCancelled` immediately.
     FsPick,
+    /// Spawn a new pane via DrawCommand::SpawnPane (#592).
+    PanesSpawn,
 }
 
 impl fmt::Display for Capability {
@@ -94,6 +96,7 @@ impl Capability {
             Self::AgentsList => "agents.list",
             Self::TerminalBindings => "terminal.bindings",
             Self::FsPick => "fs.pick",
+            Self::PanesSpawn => "panes.spawn",
         }
     }
 }
@@ -134,6 +137,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "agents.list" => Ok(Self::AgentsList),
             "terminal.bindings" => Ok(Self::TerminalBindings),
             "fs.pick" => Ok(Self::FsPick),
+            "panes.spawn" => Ok(Self::PanesSpawn),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -301,6 +305,28 @@ mod tests {
             PermissionCheck::Allowed => {
                 panic!("must be denied without manifest declaration")
             }
+        }
+    }
+
+    #[test]
+    fn panes_spawn_capability_recognized() {
+        let parsed = Capability::try_from("panes.spawn").expect("panes.spawn must parse");
+        assert_eq!(parsed, Capability::PanesSpawn);
+        assert_eq!(parsed.as_str(), "panes.spawn");
+        let perms = AppPermissions::from_capability_strings(&["panes.spawn".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::PanesSpawn),
+            "panes.spawn must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::PanesSpawn),
+            PermissionCheck::Allowed
+        ));
+        match check(&AppPermissions::from_capability_strings(&[]), Capability::PanesSpawn) {
+            PermissionCheck::Denied(reason) => {
+                assert!(reason.contains("panes.spawn"), "denial must name capability: {reason}");
+            }
+            PermissionCheck::Allowed => panic!("must be denied without declaration"),
         }
     }
 

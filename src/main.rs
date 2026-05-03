@@ -435,6 +435,29 @@ fn main() -> eframe::Result {
                 }
                 std::process::exit(cli::notify_cli(&title, &body, level, &choices, timeout_secs));
             }
+            "open" => {
+                // plexi open <type_id> [args...] [--layout=split_v|split_h|split_above|split_left|overlay]
+                if args.len() < 3 {
+                    eprintln!(
+                        "Usage: plexi open <type_id> [args...] [--layout=split_v|split_h|split_above|split_left|overlay]"
+                    );
+                    std::process::exit(1);
+                }
+                let type_id = &args[2];
+                let mut layout: Option<String> = None;
+                let mut extra_args: Vec<String> = Vec::new();
+                let mut i = 3;
+                while i < args.len() {
+                    let a = &args[i];
+                    if let Some(rest) = a.strip_prefix("--layout=") {
+                        layout = Some(rest.to_string());
+                    } else {
+                        extra_args.push(a.clone());
+                    }
+                    i += 1;
+                }
+                std::process::exit(cli::open_cli(type_id, &extra_args, layout.as_deref()));
+            }
             "descriptor" => {
                 // `plexi descriptor probe <cmd> [args...] [--no-registry]` —
                 // runs `<cmd> [args...] --plexi`, parses the result against
@@ -577,6 +600,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "app",
         "workspace",
         "notify",
+        "open",
         "--render",
         // #308 Phase 2 — top-level package manager subcommands
         "install",
