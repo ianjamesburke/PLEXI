@@ -2476,8 +2476,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
-        let should_own = self.show_notification_modal
-            && self.visible_notification_count() > 0;
+        let should_own = self.show_notification_modal;
         let has_layer = self
             .focus_stack
             .iter()
