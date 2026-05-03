@@ -2,6 +2,15 @@
 
 Newest releases appear first.
 
+## [3.4.49] — 2026-05-03 16:25 ET
+
+### Changes
+- docs: DEV_LOG PR #585 — freeze + drop fix on zoomed pane
+- fix(promote): correct changelog range + clean up corrupt 3.4.48 entry
+- fix(drag): skip TerminalView render during file hover on zoomed pane (#585)
+- chore: remove redundant skill callouts from CLAUDE.md; add triage YAML frontmatter
+- chore: promote to beta — v3.4.48
+
 ## [3.4.48] — 2026-05-03
 
 ### Changes
