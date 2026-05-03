@@ -2,6 +2,14 @@
 
 Newest releases appear first.
 
+## [3.4.50] — 2026-05-03 17:47 ET
+
+### Changes
+- docs: DEV_LOG PR #589 — defer heartbeat until after shell probes
+- chore: replace mit label with P0 (won't fix) in priority scale
+- fix(startup): defer heartbeat until after shell probes (#588) (#589)
+- docs: require instrumentation for new features; document macOS file drag pointer state gotcha
+
 ## [3.4.49] — 2026-05-03 16:25 ET
 
 ### Changes
