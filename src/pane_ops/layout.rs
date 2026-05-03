@@ -676,6 +676,7 @@ impl PlexiApp {
             .is_some();
         if is_app {
             self.close_tile(active, focused_tile);
+            self.windows[active].zoomed_pane = None;
         }
     }
 

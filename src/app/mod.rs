@@ -1824,7 +1824,9 @@ impl eframe::App for PlexiApp {
                     self.force_reload_focused_app();
                 }
                 Action::NewPageRight => {
-                    if self.windows[self.active_window].panes.is_empty() {
+                    if self.windows[self.active_window].panes.is_empty()
+                        || self.windows[self.active_window].tree.root.is_none()
+                    {
                         self.reset_active_context();
                     } else {
                         self.new_page_right();
@@ -1938,7 +1940,7 @@ impl eframe::App for PlexiApp {
             })
             .show(ctx, |ui| {
                 let active = self.active_window;
-                if self.windows[active].panes.is_empty() {
+                if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
                     self.draw_welcome_screen(ui);
                     return;
                 }
