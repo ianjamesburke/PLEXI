@@ -60,20 +60,7 @@ if [[ -n "$suffix" ]]; then
   /usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
 fi
 
-channel_bin="$(find "$app_src/Contents/MacOS" -maxdepth 1 -type f | head -n 1)"
-cp "$channel_bin" "$bin_dest"
-
-# Create ~/.local/bin/plexi<suffix> symlink pointing to the installed bundle binary.
-# Needed so the CLI works without /usr/local/bin access (drag-install path).
-local_bin_dir="$HOME/.local/bin"
-local_bin_link="$local_bin_dir/plexi${suffix}"
-mkdir -p "$local_bin_dir"
-ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$local_bin_link"
-# Patch ~/.zshrc if ~/.local/bin is not already referenced there.
-if ! grep -q '\.local/bin' "$HOME/.zshrc" 2>/dev/null; then
-  printf '\n# Added by Plexi\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.zshrc"
-  echo "PATH: added ~/.local/bin to ~/.zshrc — restart your terminal or run: source ~/.zshrc"
-fi
+ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
 rm -rf "$profile_dir/sdk/plexi_sdk.py" "$profile_dir/sdk/plexi_sdk"
@@ -101,7 +88,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$SCRIPT_DIR/migrate-config.sh" "$CONFIG" "[notifications]" "[theme]" "[ai]" "[beta]"
 
 echo "Installed $app_dest"
-echo "CLI binary: $bin_dest"
-echo "CLI symlink: $local_bin_link"
+echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
 echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from examples/"

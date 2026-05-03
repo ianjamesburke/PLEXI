@@ -1683,7 +1683,7 @@ impl PlexiApp {
                             ui.add_space(style::SPACE_SM);
                             ui.label(
                                 RichText::new(format!(
-                                    "Symlinks ~/.local/bin/{cli_name} → this binary."
+                                    "Symlinks /usr/local/bin/{cli_name} → this binary."
                                 ))
                                 .size(style::TEXT_CAPTION)
                                 .color(colors.text_dim),
