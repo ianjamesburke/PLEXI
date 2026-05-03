@@ -64,7 +64,41 @@ run:
 install: fetch-python-runtime
     bash scripts/install.sh
 
+# Build and install the current worktree as a testable PR build.
+# Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
+# Run from inside the feature worktree: just pr-install 123
+pr-install number: fetch-python-runtime
+    bash scripts/install.sh "pr-{{number}}"
 
+# Remove a PR build: app bundle, CLI binary, and profile directory.
+# Run after the PR is merged and approved: just pr-clean 123
+pr-clean number:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    app="/Applications/Plexi PR{{number}}.app"
+    bin="/usr/local/bin/plexi-pr-{{number}}"
+    profile="$HOME/.plexi-pr-{{number}}"
+    removed=0
+    if [[ -d "$app" ]]; then
+      rm -rf "$app"
+      echo "Removed $app"
+      removed=1
+    fi
+    if [[ -f "$bin" ]]; then
+      rm -f "$bin"
+      echo "Removed $bin"
+      removed=1
+    fi
+    if [[ -d "$profile" ]]; then
+      rm -rf "$profile"
+      echo "Removed $profile"
+      removed=1
+    fi
+    if [[ $removed -eq 0 ]]; then
+      echo "Nothing to clean for PR {{number}}"
+    else
+      echo "PR {{number}} cleaned up"
+    fi
 
 # Wipe a channel's installed apps directory then re-sync from examples/.
 # Useful when an app is renamed or removed — rsync won't delete stale dirs.
