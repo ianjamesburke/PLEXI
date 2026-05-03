@@ -2,6 +2,13 @@
 
 Newest releases appear first.
 
+## [3.4.45] — 2026-05-03 15:21 ET
+
+### Changes
+- docs: add mit label to issue priority scheme in CLAUDE.md
+- docs: DEV_LOG PR #581 drop-event breadcrumbs in zoomed overlay
+- feat(logging): add drop-event breadcrumbs in zoomed overlay path (#581)
+
 ## [3.4.44] — 2026-05-03 14:58 ET
 
 ### Changes
