@@ -11,11 +11,11 @@ docs/scratch/
 
 # AI tool configs (local only)
 .agents/
-.claude/*
-!.claude/iteration-cycle.md
+.claude/settings.local.json
+.claude/*.lock
 .kiro/
-skills/
-skills-lock.json
+/skills/
+/skills-lock.json
 
 # OS
 .DS_Store
