@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [FIX] False FREEZE alerts at startup from heartbeat spawning before shell probes (PR #589 → alpha)
+
+`spawn_heartbeat` was called before `install_login_shell_path/env`, which spawn `zsh -i -l -c env` on the main thread. With `frame_tick` still 0 (eframe not started yet), the heartbeat correctly flagged 8-12s of no frames as a `[FREEZE]` — but incorrectly, since there was no UI thread to freeze. The false alerts contaminated every startup log and made the freeze appear correlated with the first eframe frames (including notify drain logs), blocking clean testing of PR #586's choice notification flow.
+
+Fix: defer `spawn_heartbeat` to just before `eframe::run_native`. Shell probes complete on the main thread first; heartbeat only monitors actual eframe operation.
+
+**Breaks if:** `[FREEZE]` lines appear in the log during the first 15s of idle launch with no user input.
+
 ## 2026-05-03 — [FIX] UI freeze + silent drop failure when dragging file onto zoomed pane (PR #585 → alpha)
 
 Two root causes, both from misuse of egui pointer state during macOS OS-level file drags:
