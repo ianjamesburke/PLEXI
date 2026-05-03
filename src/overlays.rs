@@ -995,6 +995,7 @@ impl PlexiApp {
                                             notify_id: notif.notify_id.clone(),
                                             action_label: opt.label.clone(),
                                             value: Some(value),
+                                            response_file: notif.response_file.clone(),
                                         });
                                     }
                                     ui.add_space(style::SPACE_SM);
@@ -1046,6 +1047,7 @@ impl PlexiApp {
                                         notify_id: notif.notify_id.clone(),
                                         action_label: "acknowledge".to_string(),
                                         value: None,
+                                        response_file: notif.response_file.clone(),
                                     });
                                 }
                             });
@@ -1158,6 +1160,7 @@ impl PlexiApp {
                             notify_id: notif.notify_id.clone(),
                             action_label: "acknowledge".to_string(),
                             value: None,
+                            response_file: notif.response_file.clone(),
                         });
                     }
                 }
@@ -1196,6 +1199,7 @@ impl PlexiApp {
                             notify_id: notif.notify_id.clone(),
                             action_label: opt.label.clone(),
                             value: Some(value),
+                            response_file: notif.response_file.clone(),
                         });
                     }
                 }
@@ -1210,6 +1214,7 @@ impl PlexiApp {
                                 notify_id: notif.notify_id.clone(),
                                 action_label: "submit".to_string(),
                                 value: Some(buf),
+                                response_file: notif.response_file.clone(),
                             });
                         }
                     }

@@ -816,9 +816,20 @@ pub fn pack_export_cli(dest_path: &str) -> i32 {
     }
 }
 
-/// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]`.
-/// Writes a JSON file to the notify queue dir; the running host polls and ingests it.
-pub fn notify_cli(title: &str, body: &str, level: &str) -> i32 {
+/// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]
+///   [--choice key:Label]... [--timeout N]`.
+///
+/// With no choices: fire-and-forget (writes queue file, prints "notification queued", exits 0).
+/// With choices: writes queue file with `choices` + `response_file`, polls the response file
+/// until the user selects an option, prints the chosen key to stdout, exits 0.
+/// On timeout: exits 2. On queue write error: exits 1.
+pub fn notify_cli(
+    title: &str,
+    body: &str,
+    level: &str,
+    choices: &[(String, String)],
+    timeout_secs: u64,
+) -> i32 {
     let queue_dir = crate::config::config_dir().join("notify-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         eprintln!("error: could not create notify queue: {e}");
@@ -828,18 +839,79 @@ pub fn notify_cli(title: &str, body: &str, level: &str) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let file = queue_dir.join(format!("{id}.json"));
+
+    if choices.is_empty() {
+        let file = queue_dir.join(format!("{id}.json"));
+        let payload = serde_json::json!({
+            "level": level,
+            "title": title,
+            "body": body,
+        });
+        if let Err(e) = std::fs::write(&file, payload.to_string()) {
+            eprintln!("error: could not write notification: {e}");
+            return 1;
+        }
+        println!("notification queued");
+        return 0;
+    }
+
+    // Blocking path: create a response file path and poll for it.
+    let response_file = crate::config::config_dir().join(format!("notify-response-{id}.txt"));
+    let choices_json: Vec<serde_json::Value> = choices
+        .iter()
+        .map(|(key, label)| serde_json::json!({"key": key, "label": label}))
+        .collect();
     let payload = serde_json::json!({
         "level": level,
         "title": title,
         "body": body,
+        "choices": choices_json,
+        "response_file": response_file.to_string_lossy(),
     });
-    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+    let queue_file = queue_dir.join(format!("{id}.json"));
+    log::info!(
+        "notify:cli: writing queue file {:?} choices={} response_file={:?}",
+        queue_file, choices.len(), response_file
+    );
+    if let Err(e) = std::fs::write(&queue_file, payload.to_string()) {
         eprintln!("error: could not write notification: {e}");
         return 1;
     }
-    println!("notification queued");
-    0
+    log::info!("notify:cli: queue file written, polling for response");
+
+    let deadline = if timeout_secs > 0 {
+        Some(
+            std::time::Instant::now()
+                + std::time::Duration::from_secs(timeout_secs),
+        )
+    } else {
+        None
+    };
+
+    loop {
+        if response_file.exists() {
+            match std::fs::read_to_string(&response_file) {
+                Ok(key) => {
+                    log::info!("notify:cli: response received {:?}", key.trim());
+                    let _ = std::fs::remove_file(&response_file);
+                    print!("{}", key.trim());
+                    return 0;
+                }
+                Err(e) => {
+                    log::warn!("notify:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if let Some(dl) = deadline {
+            if std::time::Instant::now() >= dl {
+                log::info!("notify:cli: timed out after {timeout_secs}s");
+                return 2;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 fn to_title_case(s: &str) -> String {
@@ -1535,5 +1607,20 @@ mod descriptor_tests {
             code, 1,
             "registry fallback only applies when no user args are passed"
         );
+    }
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::notify_cli;
+
+    /// Fire-and-forget path: no choices → exit 0, queue file written.
+    #[test]
+    fn notify_cli_fire_and_forget_returns_zero() {
+        // Uses the real config_dir() path; just verifies the function exits 0
+        // without blocking. The queue file creation may fail in sandboxed
+        // environments, but the function must not panic.
+        let code = notify_cli("Test title", "Test body", "info", &[], 0);
+        assert_eq!(code, 0);
     }
 }

@@ -137,14 +137,6 @@ fn main() -> eframe::Result {
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat
     // should only monitor actual eframe operation, not pre-startup work.
 
-    // Resolve the login-shell PATH once for the whole process. Fixes
-    // `gh`/`rg`/`fd`/any-homebrew-tool-not-found bugs when Plexi is launched
-    // as a GUI bundle (which inherits only `/usr/bin:/bin:/usr/sbin:/sbin`).
-    crate::shell::install_login_shell_path();
-    // Adopt API keys and other user secrets set in ~/.zshrc / ~/.zsh_secrets.
-    // GUI bundles don't inherit these — OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
-    // etc. are invisible without this call.
-    crate::shell::install_login_shell_env();
 
     // One-shot migration from the v3.0 global-namespace secrets index to the
     // workspace-namespaced layout (issue #322). Idempotent: a no-op once the
@@ -391,6 +383,8 @@ fn main() -> eframe::Result {
                 let mut title = String::new();
                 let mut body = String::new();
                 let mut level = "info";
+                let mut choices: Vec<(String, String)> = Vec::new();
+                let mut timeout_secs: u64 = 0;
                 let mut i = 2;
                 while i < args.len() {
                     match args[i].as_str() {
@@ -406,6 +400,28 @@ fn main() -> eframe::Result {
                             level = args[i + 1].as_str();
                             i += 2;
                         }
+                        "--choice" if i + 1 < args.len() => {
+                            let raw = &args[i + 1];
+                            if let Some(colon) = raw.find(':') {
+                                let key = raw[..colon].to_string();
+                                let label = raw[colon + 1..].to_string();
+                                choices.push((key, label));
+                            } else {
+                                eprintln!("error: --choice value must be key:Label");
+                                std::process::exit(1);
+                            }
+                            i += 2;
+                        }
+                        "--timeout" if i + 1 < args.len() => {
+                            match args[i + 1].parse::<u64>() {
+                                Ok(n) => timeout_secs = n,
+                                Err(_) => {
+                                    eprintln!("error: --timeout must be a non-negative integer");
+                                    std::process::exit(1);
+                                }
+                            }
+                            i += 2;
+                        }
                         _ => {
                             i += 1;
                         }
@@ -413,11 +429,11 @@ fn main() -> eframe::Result {
                 }
                 if title.is_empty() {
                     eprintln!(
-                        "Usage: plexi notify --title <text> --body <text> [--level info|warn|error]"
+                        "Usage: plexi notify --title <text> --body <text> [--level info|warn|error] [--choice key:Label]... [--timeout N]"
                     );
                     std::process::exit(1);
                 }
-                std::process::exit(cli::notify_cli(&title, &body, level));
+                std::process::exit(cli::notify_cli(&title, &body, level, &choices, timeout_secs));
             }
             "descriptor" => {
                 // `plexi descriptor probe <cmd> [args...] [--no-registry]` —
@@ -516,9 +532,17 @@ fn main() -> eframe::Result {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("failed to load app icon");
 
+    // Resolve the login-shell PATH and adopt API keys only for the GUI.
+    // CLI subcommands already inherit the full shell environment from the
+    // calling terminal — running this there corrupts terminal signal state
+    // (zsh -i hijacks SIGINT) and spams the user's stdout with log noise.
+    crate::shell::install_login_shell_path();
+    crate::shell::install_login_shell_env();
+
     // Shell probes are done. Start the heartbeat now so it only monitors
     // eframe operation — not pre-startup shell work (#588).
     crate::logging::spawn_heartbeat(frame_tick.clone());
+
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

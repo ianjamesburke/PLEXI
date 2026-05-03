@@ -84,6 +84,11 @@ pub(crate) struct PendingNotification {
     /// matching binary ring on first render and caches the texture under
     /// `PlexiApp::notification_images`.
     pub image_pipe_id: Option<String>,
+    /// Path to a file the CLI polls for the chosen key. Set when the
+    /// notification was queued by `plexi notify --choice …`. The host writes
+    /// the chosen value here when the user picks an option so the blocking CLI
+    /// process can read it and exit.
+    pub response_file: Option<String>,
 }
 
 /// Render state for a notification's image attachment. Computed once and
@@ -825,6 +830,30 @@ impl PlexiApp {
             let level = val["level"].as_str().unwrap_or("info").to_string();
             let title = val["title"].as_str().unwrap_or("").to_string();
             let body = val["body"].as_str().unwrap_or("").to_string();
+            let choices_json = val["choices"].as_array();
+            let options: Vec<crate::app_protocol::NotifyOption> = choices_json
+                .map(|arr| {
+                    arr.iter()
+                        .map(|item| crate::app_protocol::NotifyOption {
+                            label: item["label"].as_str().unwrap_or("").to_string(),
+                            value: item["key"].as_str().unwrap_or("").to_string(),
+                            shortcut: Some(
+                                item["key"].as_str().unwrap_or("").to_string(),
+                            ),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let kind = if options.is_empty() {
+                crate::app_protocol::NotifyKind::Message
+            } else {
+                crate::app_protocol::NotifyKind::Choice
+            };
+            let response_file = val["response_file"].as_str().map(|s| s.to_string());
+            log::info!(
+                "notify:drain: title={:?} choices={} response_file={:?}",
+                title, options.len(), response_file
+            );
             let internal_id = format!(
                 "__host__:{}",
                 std::time::SystemTime::now()
@@ -842,13 +871,14 @@ impl PlexiApp {
                 level,
                 title,
                 body,
-                kind: crate::app_protocol::NotifyKind::Message,
-                options: vec![],
+                kind,
+                options,
                 input_prompt: None,
                 required: false,
                 priority: 0,
                 image_inline: None,
                 image_pipe_id: None,
+                response_file,
             });
             // Host-originated notifications are always LOW (priority 0) —
             // below any reasonable interrupt threshold — so they queue
@@ -1113,6 +1143,7 @@ impl PlexiApp {
             priority: 0,
             image_inline: None,
             image_pipe_id: None,
+            response_file: None,
         });
         let should_auto_open = !self.notifications_focus_mode
             && 0 >= self.notifications_interrupt_threshold;
@@ -1313,6 +1344,7 @@ impl eframe::App for PlexiApp {
                         scope,
                         image_inline,
                         image_pipe_id,
+                        response_file: None,
                     });
                     // Auto-open rules:
                     //   1. Visibility (Global or in active context) — else
@@ -1341,7 +1373,17 @@ impl eframe::App for PlexiApp {
                         self.current_notify_id = Some(new_id);
                     }
                 }
-                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } => {
+                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file } => {
+                    log::info!(
+                        "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?}"
+                    );
+                    if let Some(rf) = &response_file {
+                        let content = value.as_deref().unwrap_or("");
+                        match std::fs::write(rf, content) {
+                            Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
+                            Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
+                        }
+                    }
                     let active = self.active_window;
                     if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                         if let Some(app) = pane.as_app_mut() {
@@ -2555,7 +2597,17 @@ impl PlexiApp {
     pub(crate) fn dispatch_notify_action_cmds(&mut self, cmds: Vec<crate::app_trait::AppCommand>) {
         use crate::app_trait::AppCommand;
         for cmd in cmds {
-            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value } = cmd {
+            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file } = cmd {
+                log::info!(
+                    "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?}"
+                );
+                if let Some(rf) = &response_file {
+                    let content = value.as_deref().unwrap_or("");
+                    match std::fs::write(rf, content) {
+                        Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
+                        Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
+                    }
+                }
                 let active = self.active_window;
                 if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                     if let Some(app) = pane.as_app_mut() {
