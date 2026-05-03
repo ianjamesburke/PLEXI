@@ -441,14 +441,11 @@ mod tests {
         );
         // Inject the row directly into the test seam. `agent_tick()` will
         // pull it into the transcript on the next drain.
-        if let AgentBackend::Subprocess(agent) = &mut pane.backend {
-            agent.process.test_inject_draw_command(DrawCommand::AppendConversation {
-                role: "assistant".to_string(),
-                content: "Hello!".to_string(),
-            });
-        } else {
-            panic!("expected Subprocess backend");
-        }
+        let AgentBackend::Subprocess(agent) = &mut pane.backend;
+        agent.process.test_inject_draw_command(DrawCommand::AppendConversation {
+            role: "assistant".to_string(),
+            content: "Hello!".to_string(),
+        });
 
         pane.drain_results();
 
@@ -489,9 +486,7 @@ mod tests {
         assert_eq!(pane.input_buf, "", "input buffer must clear after submit");
 
         // Inspect the outbound event queue on the underlying ProcessApp.
-        let AgentBackend::Subprocess(agent) = &pane.backend else {
-            panic!("expected Subprocess backend");
-        };
+        let AgentBackend::Subprocess(agent) = &pane.backend;
         let outbound = agent.process.test_outbound_events();
         let queued: Vec<&PlexiEvent> = outbound
             .into_iter()
