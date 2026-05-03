@@ -1518,6 +1518,13 @@ impl PlexiApp {
                             RichText::new("☕  Buy Me a Coffee").size(style::TEXT_BODY),
                             "https://buymeacoffee.com/ianjamesbu8",
                         );
+                        ui.add_space(style::SPACE_SM);
+                        ui.hyperlink_to(
+                            RichText::new("ianjamesburke@gmail.com")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                            "mailto:ianjamesburke@gmail.com",
+                        );
                     });
                 });
         });
