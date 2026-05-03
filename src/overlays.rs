@@ -1527,9 +1527,7 @@ impl PlexiApp {
                                 "mailto:ADHDisntreal@gmail.com",
                             );
                             if ui.small_button("⎘").on_hover_text("Copy email").clicked() {
-                                ui.output_mut(|o| {
-                                    o.copied_text = "ADHDisntreal@gmail.com".to_string();
-                                });
+                                ui.ctx().copy_text("ADHDisntreal@gmail.com".to_string());
                             }
                         });
                     });
