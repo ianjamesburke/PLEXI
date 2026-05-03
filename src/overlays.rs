@@ -1518,6 +1518,72 @@ impl PlexiApp {
                             RichText::new("☕  Buy Me a Coffee").size(style::TEXT_BODY),
                             "https://buymeacoffee.com/ianjamesbu8",
                         );
+                        ui.add_space(style::SPACE_SM);
+                        ui.label(
+                            RichText::new(
+                                "If you have any ideas, want to help, or just want to say what's up...",
+                            )
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                        );
+                        ui.add_space(style::SPACE_SM / 2.0);
+                        {
+                            // Measure email text so we can manually center the inline row.
+                            // ui.horizontal() fills full width, so vertical_centered won't
+                            // center it — we add explicit leading padding instead.
+                            let email = "ADHDISNTREAL@GMAIL.COM";
+                            let mailto = "mailto:ADHDisntreal@gmail.com";
+                            let font_id =
+                                egui::FontId::proportional(style::TEXT_CAPTION);
+                            let email_w = ui.fonts(|f| {
+                                f.layout_no_wrap(
+                                    email.to_string(),
+                                    font_id,
+                                    colors.text_dim,
+                                )
+                                .size()
+                                .x
+                            });
+                            let btn_w = 24.0;
+                            let gap = ui.spacing().item_spacing.x;
+                            let pad = ((ui.available_width() - email_w - gap - btn_w)
+                                / 2.0)
+                                .max(0.0);
+
+                            let copy_id = egui::Id::new("welcome_email_copy_t");
+                            let now = ui.ctx().input(|i| i.time);
+                            let copied_at: Option<f64> =
+                                ui.ctx().memory(|m| m.data.get_temp(copy_id));
+                            let just_copied =
+                                copied_at.map_or(false, |t| now - t < 2.0);
+                            let icon = if just_copied { "✓" } else { "📋" };
+
+                            ui.horizontal(|ui| {
+                                ui.add_space(pad);
+                                ui.hyperlink_to(
+                                    RichText::new(email)
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.text_dim),
+                                    mailto,
+                                );
+                                let btn = ui
+                                    .button(RichText::new(icon).size(style::TEXT_CAPTION))
+                                    .on_hover_text("Copy email");
+                                if btn.clicked() && !just_copied {
+                                    ui.ctx().copy_text(
+                                        "ADHDisntreal@gmail.com".to_string(),
+                                    );
+                                    ui.ctx().memory_mut(|m| {
+                                        m.data.insert_temp(copy_id, now)
+                                    });
+                                }
+                                if just_copied {
+                                    ui.ctx().request_repaint_after(
+                                        std::time::Duration::from_millis(100),
+                                    );
+                                }
+                            });
+                        }
                     });
                 });
         });

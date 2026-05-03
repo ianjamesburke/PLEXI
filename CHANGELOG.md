@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.33] — 2026-05-03
+
+### Changes
+- feat: add just pr-install and pr-clean for PR testing flow (#559)
+
 ## [3.4.32] — 2026-05-02
 
 ### Changes

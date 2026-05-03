@@ -266,6 +266,10 @@ fn config_dir_name() -> String {
         Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
         Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
         Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
+        Some(name) if name.contains("pr-") => {
+            let suffix = name.trim_start_matches("plexi-");
+            format!(".plexi-{suffix}")
+        }
         _ => ".plexi".to_string(),
     }
 }
