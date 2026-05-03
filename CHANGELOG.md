@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.54] — 2026-05-03 19:18 ET
+
+### Changes
+- docs: DEV_LOG PR #600 — plexi update namespace rename
+- refactor(cli): reserve 'plexi update' for self-update; move app updates to 'plexi update apps' (#600)
+
 ## [3.4.53] — 2026-05-03 18:57 ET
 
 ### Changes
