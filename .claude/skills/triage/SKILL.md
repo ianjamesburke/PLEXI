@@ -1,6 +1,13 @@
+---
+name: triage
+description: "PLEXI issue triage — turn a raw GitHub issue into an actionable, prioritized, slotted ticket. Use when the user says 'triage this', 'label this issue', or wants to slot an issue into the right priority/version."
+risk: low
+source: local
+---
+
 # PLEXI Issue Triage
 
-Turn a raw, unlabeled GitHub issue into an actionable, prioritized, slotted ticket. Run when the user invokes `/triage` or asks to triage an issue.
+Turn a raw, unlabeled GitHub issue into an actionable, prioritized, slotted ticket.
 
 ---
 

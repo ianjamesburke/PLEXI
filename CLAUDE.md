@@ -108,10 +108,6 @@ If they don't match, delete the worktree and branch immediately and redo from in
 
 **Small-changes batch PR:** Multiple small related fixes may land in one PR if they share a single commit message and a single `Breaks if:` line. Unrelated changes go in separate PRs.
 
-### Ship Cycle
-
-When the user says **"ship"** (or "ship it"), invoke the `/ship` skill. It defines the full merge → install → testing → complete cycle with a human verification gate before closing the issue.
-
 ### alpha → beta → main (channel promotion)
 
 When alpha has stabilised enough for broader testing:
