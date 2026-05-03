@@ -2068,8 +2068,9 @@ impl eframe::App for PlexiApp {
                             !i.raw.dropped_files.is_empty()
                                 && child_ui.rect_contains_pointer(inner_rect)
                         });
+                        let bg = self.colors.terminal_bg;
                         egui::Frame::new()
-                            .fill(self.colors.terminal_bg)
+                            .fill(Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 252))
                             .inner_margin(egui::Margin::same(8))
                             .show(&mut child_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
