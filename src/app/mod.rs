@@ -49,6 +49,10 @@ pub(crate) enum FocusLayer {
     /// "New Agent Workspace…" modal (#349) — CLI dropdown, repo picker, task
     /// textarea.
     AgentWorkspaceModal,
+    /// Context naming modal shown when a new context is created while the
+    /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
+    /// overlay so the terminal is immediately usable after dismissal.
+    ContextRename,
 }
 
 #[derive(Clone)]
@@ -1140,6 +1144,7 @@ impl eframe::App for PlexiApp {
         self.sync_run_palette_focus();
         self.sync_rename_pane_focus();
         self.sync_agent_workspace_modal_focus();
+        self.sync_context_rename_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind, the palette's
@@ -1169,6 +1174,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::AgentWorkspaceModal) => {
                     self.draw_agent_workspace_modal(ctx);
                 }
+                Some(FocusLayer::ContextRename) => {
+                    self.draw_rename_context_overlay(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
@@ -1182,6 +1190,7 @@ impl eframe::App for PlexiApp {
             self.sync_run_palette_focus();
             self.sync_rename_pane_focus();
             self.sync_agent_workspace_modal_focus();
+            self.sync_context_rename_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -2226,6 +2235,7 @@ impl PlexiApp {
                 | Some(FocusLayer::RunPalette)
                 | Some(FocusLayer::RenamePane)
                 | Some(FocusLayer::AgentWorkspaceModal)
+                | Some(FocusLayer::ContextRename)
         )
     }
 
@@ -2423,6 +2433,22 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::RenamePane);
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::RenamePane);
+        }
+    }
+
+    /// Reconcile the context-rename focus layer. Active when `renaming_window`
+    /// is set AND the sidebar is hidden — in that case the inline sidebar row
+    /// never renders, so we promote the rename to a modal overlay instead.
+    pub(crate) fn sync_context_rename_focus(&mut self) {
+        let should_own = self.renaming_window.is_some() && !self.sidebar_visible;
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::ContextRename);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::ContextRename);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::ContextRename);
         }
     }
 

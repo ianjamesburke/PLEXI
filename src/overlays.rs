@@ -384,6 +384,73 @@ impl PlexiApp {
     }
 
 
+    /// Modal for naming a newly-created context when the sidebar is hidden.
+    /// Mirrors the inline sidebar rename but as a centred overlay so the
+    /// terminal becomes immediately usable after the user hits Enter or Escape.
+    pub(crate) fn draw_rename_context_overlay(&mut self, ctx: &egui::Context) {
+        let ctx_idx = match self.renaming_window {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        let (commit, cancel) = ctx.input_mut(|i| {
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            (enter, esc)
+        });
+
+        egui::Area::new(egui::Id::new("rename_context_overlay"))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+                        ui.label(
+                            RichText::new("Name this context")
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+
+                        let te_id = egui::Id::new("rename_context_input");
+                        let te = ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_buffer)
+                                .id(te_id)
+                                .desired_width(MODAL_WIDTH)
+                                .hint_text("Context name...")
+                                .font(egui::TextStyle::Body),
+                        );
+
+                        if !te.has_focus() {
+                            te.request_focus();
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(self.rename_buffer.len()),
+                                )));
+                                state.store(ui.ctx(), te_id);
+                            }
+                        }
+                    });
+            });
+
+        if cancel {
+            self.renaming_window = None;
+        } else if commit {
+            let new_name = self.rename_buffer.trim().to_string();
+            if !new_name.is_empty() {
+                self.router.get_mut(ctx_idx).name = new_name;
+            }
+            self.renaming_window = None;
+        }
+    }
+
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
         let count = self.quit_press_count;
         egui::Area::new(egui::Id::new("quit_confirm_overlay"))
