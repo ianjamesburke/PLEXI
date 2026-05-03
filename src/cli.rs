@@ -752,11 +752,254 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
     }
 }
 
-/// `plexi update` — update the Plexi binary itself (binary self-update; see #594 for implementation).
+/// `plexi update` — download and install the latest Plexi release from GitHub.
+/// Only supports stable channel. Alpha (dev) and PR builds must use `just install`.
+/// Beta builds require a channel-renamed bundle that can't yet be produced without
+/// the install script, so they are also unsupported here.
 pub fn self_update_cli() -> i32 {
-    eprintln!("Binary self-update is not yet implemented.");
-    eprintln!("To update installed apps, use: plexi update apps [<id>]");
-    1
+    use std::io::Read;
+
+    // Detect channel from binary name (mirrors config_dir_name in config.rs).
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let binary_name = binary.as_deref().unwrap_or("plexi");
+
+    if binary_name.contains("alpha") || binary_name.contains("pr-") {
+        eprintln!("Self-update is not available for dev builds.");
+        eprintln!("Update from source: git pull && just install");
+        return 1;
+    }
+    if binary_name.contains("beta") {
+        eprintln!("Self-update for beta builds is not yet supported.");
+        eprintln!(
+            "Download the latest beta from: https://github.com/ianjamesburke/PLEXI/releases"
+        );
+        return 1;
+    }
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Checking for updates...");
+    println!("Current: v{current_version}");
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+
+    let release_body = match agent
+        .get("https://api.github.com/repos/ianjamesburke/PLEXI/releases/latest")
+        .set("User-Agent", "plexi-self-update")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+    {
+        Ok(r) => match r.into_string() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: failed to read release response: {e}");
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprintln!("error: failed to fetch release info: {e}");
+            return 1;
+        }
+    };
+
+    let release: serde_json::Value = match serde_json::from_str(&release_body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: failed to parse release response: {e}");
+            return 1;
+        }
+    };
+
+    let tag_name = match release["tag_name"].as_str() {
+        Some(t) => t.to_string(),
+        None => {
+            eprintln!("error: release has no tag_name");
+            return 1;
+        }
+    };
+
+    let latest_version = tag_name.trim_start_matches('v');
+    if latest_version == current_version {
+        println!("Already up to date (v{current_version}).");
+        return 0;
+    }
+    println!("Latest:  {tag_name}");
+
+    // Find the zip asset in the release.
+    let asset_name = format!("Plexi-{tag_name}.zip");
+    let download_url = match release["assets"]
+        .as_array()
+        .and_then(|arr| {
+            arr.iter()
+                .find(|a| a["name"].as_str() == Some(asset_name.as_str()))
+        })
+        .and_then(|a| a["browser_download_url"].as_str())
+    {
+        Some(url) => url.to_string(),
+        None => {
+            eprintln!("error: no asset named {asset_name} in release {tag_name}");
+            eprintln!(
+                "Check: https://github.com/ianjamesburke/PLEXI/releases/tag/{tag_name}"
+            );
+            return 1;
+        }
+    };
+
+    // Determine the installed app bundle path from current_exe():
+    // .../Plexi.app/Contents/MacOS/plexi  →  walk up 3 levels
+    let current_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: could not determine current binary path: {e}");
+            return 1;
+        }
+    };
+    let app_bundle = current_exe
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .filter(|p| p.extension().map_or(false, |e| e == "app"))
+        .map(|p| p.to_path_buf());
+    let app_bundle = match app_bundle {
+        Some(p) => p,
+        None => {
+            eprintln!("error: binary does not appear to be inside a .app bundle");
+            eprintln!("Self-update requires a bundled installation.");
+            return 1;
+        }
+    };
+
+    println!("Downloading {asset_name}...");
+
+    let download_resp = match agent
+        .get(&download_url)
+        .set("User-Agent", "plexi-self-update")
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: failed to download {asset_name}: {e}");
+            return 1;
+        }
+    };
+
+    // Write zip to a temp directory.
+    let tmp_dir = std::env::temp_dir().join("plexi-update");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+        eprintln!("error: failed to create temp dir: {e}");
+        return 1;
+    }
+    let zip_path = tmp_dir.join(&asset_name);
+    let mut zip_file = match std::fs::File::create(&zip_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: failed to create temp file: {e}");
+            return 1;
+        }
+    };
+    let mut buf = Vec::new();
+    if let Err(e) = download_resp.into_reader().read_to_end(&mut buf) {
+        eprintln!("error: failed to download file: {e}");
+        return 1;
+    }
+    if let Err(e) = std::io::Write::write_all(&mut zip_file, &buf) {
+        eprintln!("error: failed to write download to disk: {e}");
+        return 1;
+    }
+    drop(zip_file);
+
+    // Extract using system unzip.
+    println!("Installing...");
+    let extract_dir = tmp_dir.join("extracted");
+    let _ = std::fs::create_dir_all(&extract_dir);
+    let unzip_out = std::process::Command::new("unzip")
+        .arg("-o")
+        .arg(&zip_path)
+        .arg("-d")
+        .arg(&extract_dir)
+        .output();
+    match unzip_out {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            eprintln!("error: unzip failed: {}", String::from_utf8_lossy(&out.stderr));
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("error: failed to run unzip: {e}");
+            return 1;
+        }
+    }
+
+    let extracted_app = extract_dir.join("Plexi.app");
+    if !extracted_app.is_dir() {
+        eprintln!("error: Plexi.app not found in downloaded archive");
+        return 1;
+    }
+
+    // Replace the installed app bundle. Write to a temp path first so that
+    // if cp fails we still have the old bundle to fall back to.
+    let app_parent = app_bundle.parent().unwrap_or_else(|| std::path::Path::new("/Applications"));
+    let staging = app_parent.join("Plexi.app.update-staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    let cp_stage = std::process::Command::new("cp")
+        .arg("-R")
+        .arg(&extracted_app)
+        .arg(&staging)
+        .output();
+    match cp_stage {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            eprintln!(
+                "error: failed to stage new app (permission denied?): {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            eprintln!("Run with sudo if /Applications is not user-writable.");
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("error: failed to run cp: {e}");
+            return 1;
+        }
+    }
+
+    if let Err(e) = std::fs::remove_dir_all(&app_bundle) {
+        eprintln!("error: failed to remove old app bundle: {e}");
+        eprintln!("Run with sudo if /Applications is not user-writable.");
+        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return 1;
+    }
+    if let Err(e) = std::fs::rename(&staging, &app_bundle) {
+        eprintln!("error: failed to move new app into place: {e}");
+        eprintln!(
+            "Staged bundle is at {}. Move it manually to {}.",
+            staging.display(),
+            app_bundle.display()
+        );
+        return 1;
+    }
+
+    // Re-symlink the CLI binary at /usr/local/bin/plexi (non-fatal if missing).
+    if let Some(bin_name) = current_exe.file_name().and_then(|n| n.to_str()) {
+        let new_binary = app_bundle.join("Contents/MacOS").join(bin_name);
+        let bin_link = std::path::Path::new("/usr/local/bin").join(bin_name);
+        if bin_link.is_symlink() || bin_link.exists() {
+            let _ = std::fs::remove_file(&bin_link);
+            if let Err(e) = std::os::unix::fs::symlink(&new_binary, &bin_link) {
+                eprintln!("warning: could not update CLI symlink: {e}");
+            }
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    println!("Installed v{latest_version}. Restart Plexi to apply.");
+    0
 }
 
 /// `plexi list` — show installed apps grouped by scope (global vs. workspace).
