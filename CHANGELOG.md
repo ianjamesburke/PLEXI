@@ -2,6 +2,13 @@
 
 Newest releases appear first.
 
+## [3.4.52] — 2026-05-03 18:23 ET
+
+### Changes
+- docs: DEV_LOG PR #596 — empty-state notification modal
+- docs: SpawnPane design spec — overlay layout types, plexi open CLI, pipe-back handoff
+- fix(notifications): Cmd+Shift+A always opens modal, empty state when queue is empty (#596)
+
 ## [3.4.51] — 2026-05-03 18:08 ET
 
 ### Changes
