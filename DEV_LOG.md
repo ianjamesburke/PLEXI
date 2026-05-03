@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] DrawCommand::SpawnPane — plexi open CLI, SDK ctx.spawn_pane(), panes.spawn capability (PR #598 → alpha)
+
+Unified pane-spawn primitive: `DrawCommand::SpawnPane { type_id, layout, args, pipe_id }` replaces the narrow `SpawnApp` for new code. Adds `PlexiEvent::PaneSpawned`/`PaneSpawnError`, `Capability::PanesSpawn` ("panes.spawn"), `plexi open` CLI (file-based spawn-queue, same pattern as notify-queue), Python SDK `emit.spawn_pane()` + `on_pane_spawned`/`on_pane_spawn_error` hooks. `pipe_id` appended as `--pipe=<id>` to spawned app args for the AI↔human handoff loop. `layout: "background"` returns `PaneSpawnError` (blocked on #291). Overlay rendering (Z3 backdrop, Z2 anchor) deferred. Quick Note migration deferred. Also fixed pre-existing test harness struct literal errors (`show_cli_setup_prompt`, `file_picker_tx/rx` missing from `new_for_test`).
+
+**Breaks if:** `plexi open <app-id>` silently does nothing (no new pane within ~2s), or an SDK app with `panes.spawn` calling `ctx.spawn_pane()` never receives `on_pane_spawned`.
+
 ## 2026-05-03 — [FIX] Cmd+Shift+A shows empty-state modal when notification queue is empty (PR #596 → alpha)
 
 Three guards were fighting each other: (1) `ToggleNotificationModal` had an `else if visible_notification_count() > 0` that silently swallowed the action when empty. (2) `sync_notification_modal_focus` also checked count > 0, so Esc wouldn't close. (3) A frame-level `count == 0 → show_notification_modal = false` guard ran every frame and immediately killed the modal before the empty-state could render. All three removed. `draw_notification_modal` now handles the empty case by rendering the scrim + centered card with "No notifications" and Esc to close, instead of returning early.
