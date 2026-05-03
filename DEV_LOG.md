@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't preserve mistakes. -->
 
+## 2026-05-03 — [CHANGED] ET timestamps on all changelog entries; bump-alpha now emits time (PR #574 → alpha)
+
+Backfilled HH:MM ET onto every existing `## [X.Y.Z] — DATE` header in CHANGELOG.md using `git log -S "## [X.Y.Z]" --format="%ai" -- CHANGELOG.md` to find the actual commit time per version. Updated `bump-alpha` in justfile: `today` now uses `TZ=America/New_York date +%Y-%m-%d` and a new `time_et` var captures `HH:MM`; the section header is emitted as `## [X.Y.Z] — DATE HH:MM ET`. Some commits with `-0500` offsets (incorrect timezone on a machine) were normalized to EDT correctly by Python's `datetime.astimezone`.
+**Breaks if:** `just bump-and-install` produces a new changelog entry with no time suffix (only `YYYY-MM-DD`).
+
 ## 2026-05-03 — [CHANGED] dismissable_modal helper — escape + click-outside for overlays (PR #570 → alpha)
 Added `widgets::dismissable_modal(ctx, id, |ui| { ... }) -> bool` — handles Escape consumption and a click-absorbing scrim at `Order::Middle`. Shortcuts and changelog overlays both use it; the ✕ button in the changelog header was removed. Callers guard with `if !open { return; }` and apply `if dismissed { open = false; }` after. Any future centered info overlay should follow the same pattern.
 **Breaks if:** Pressing Escape or clicking outside the shortcuts (⌘/) or changelog overlay does nothing.
