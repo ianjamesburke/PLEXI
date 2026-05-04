@@ -579,10 +579,85 @@ pub fn app_list() -> i32 {
 // ── Top-level package manager subcommands (#308 Phase 2) ──────────────────────
 
 /// `plexi install <source-spec>[@ref]` — clone + place one app into the
+/// Returns true if `s` looks like a bare app ID (no scheme prefix, no path separators).
+fn is_bare_id(s: &str) -> bool {
+    !s.contains(':') && !s.contains('/') && !s.is_empty()
+}
+
+/// Fetch the plexi app registry and resolve a bare app ID to a source spec string.
+///
+/// Registry entries in `ianjamesburke/PLEXI` with a `path` field resolve to `local:<dir>`
+/// so the bundled copy is used without a network clone. Third-party repos resolve to
+/// `github:owner/repo`.
+fn resolve_registry_id(id: &str) -> Result<String, String> {
+    const REGISTRY_URL: &str =
+        "https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json";
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+
+    let body = match agent.get(REGISTRY_URL).call() {
+        Ok(r) => match r.into_string() {
+            Ok(s) => s,
+            Err(e) => return Err(format!("failed to read registry response: {e}")),
+        },
+        Err(e) => return Err(format!("failed to fetch registry: {e}")),
+    };
+
+    let entries: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("failed to parse registry: {e}"))?;
+
+    let arr = entries
+        .as_array()
+        .ok_or_else(|| "registry response is not a JSON array".to_string())?;
+
+    for entry in arr {
+        if entry["id"].as_str() != Some(id) {
+            continue;
+        }
+        let repo = entry["repo"]
+            .as_str()
+            .ok_or_else(|| format!("registry entry '{id}' has no 'repo' field"))?;
+        let path = entry["path"].as_str();
+
+        let spec = if repo == "ianjamesburke/PLEXI" {
+            if let Some(p) = path {
+                // Use the bundled copy — no network clone needed.
+                let dir = p.split('/').next_back().unwrap_or(p);
+                format!("local:{dir}")
+            } else {
+                format!("github:{repo}")
+            }
+        } else {
+            format!("github:{repo}")
+        };
+
+        log::info!("registry: resolved '{id}' → {spec}");
+        return Ok(spec);
+    }
+
+    Err(format!(
+        "unknown app id '{id}' — run `plexi app list` or visit plexiapp.com/apps"
+    ))
+}
+
 /// channel apps dir. Source spec follows `packs::parse_source_spec`.
 pub fn install_cli(spec: &str) -> i32 {
     let (source_str, git_ref) = crate::install::split_source_and_ref(spec);
-    let source = match crate::packs::parse_source_spec(&source_str) {
+    let resolved = if is_bare_id(&source_str) {
+        match resolve_registry_id(&source_str) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    } else {
+        source_str
+    };
+    let source = match crate::packs::parse_source_spec(&resolved) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e}");
