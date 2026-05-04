@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.58] — 2026-05-03 21:27 ET
+
+### Changes
+- fix(config): confirm_close defaults to false, matching template and UX intent (#614)
+
 ## [3.4.57] — 2026-05-03 21:24 ET
 
 ### Changes
