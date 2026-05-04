@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.67] — 2026-05-03 23:35 ET
+
+### Changes
+- feat: plexi install <id> resolves bare app IDs via plexi-registry (#633)
+- chore: promote to beta — v3.4.66
+
 ## [3.4.66] — 2026-05-03
 
 ### Changes
