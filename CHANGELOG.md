@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.56] — 2026-05-03 20:36 ET
+
+### Changes
+- feat(cli): plexi update — detached relaunch when run from inside Plexi (#606)
+
 ## [3.4.55] — 2026-05-03 19:46 ET
 
 ### Changes
