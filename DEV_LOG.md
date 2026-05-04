@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] release workflow --bin plexi for cargo bundle (PR #642 → alpha)
+
+`cargo bundle --release` without `--bin` uses the display name from `[package]` metadata ("Plexi Alpha"), producing `Plexi Alpha.app` instead of `plexi.app`. Codesign and zip steps expected `plexi.app` and failed. Added `--bin plexi` to force the binary name as the bundle name.
+**Breaks if:** release workflow codesign step fails with `No such file or directory`.
+
 ## 2026-05-04 — [CHANGED] promote main chains alpha→beta→main (PR #641 → alpha)
 
 `just promote main` from alpha now auto-promotes alpha→beta first, then beta→main. One command from alpha releases all the way to main. From beta it still does beta→main only.
