@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Zoom overlay at 88% opacity — scrim bleed-through (PR #629 → alpha)
+
+`child_ui.set_opacity(0.88)` added immediately before the `egui::Frame` in the zoom overlay path of `src/app/mod.rs`. Prior attempts at 0.99 and 0.95 were visually imperceptible on dark themes; 0.88 is the first value that makes the scrim bleed-through visible. The frame fill alpha approach was also tried (Attempt 1) and failed — the terminal renderer paints fully-opaque cell backgrounds on top, overriding any fill alpha. `set_opacity` is the only path that propagates through the full paint chain.
+
+**Breaks if:** Zooming any pane shows the overlay frame as fully opaque with no visible bleed-through from the scrim, or the overlay is distractingly transparent.
+
 ## 2026-05-03 — [CHANGED] Batch Python frame output; remove frame.clone() hot-path (PR #630 → alpha)
 
 Python: `RenderContext` now buffers all draw commands in `self._buf` instead of calling `sys.stdout.flush()` per command. `frame_done()` writes the entire frame (all draw commands + the sentinel) in one `sys.stdout.write()` + `flush()`. A 150-command frame goes from 151 flushes to 1. Out-of-frame signals (`log`, `notify`, `status_summary`) still flush immediately. `measure_text` flushes the buffer before sending so the host can process prior commands in order.
