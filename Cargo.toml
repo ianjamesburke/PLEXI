@@ -1,6 +1,6 @@
 [package]
 name = "plexi"
-version = "3.4.82"
+version = "3.4.83"
 edition = "2021"
 
 [package.metadata.bundle]
