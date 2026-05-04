@@ -90,8 +90,8 @@ All changes, no matter how small, follow this cycle:
 5. **Squash-merge**: `gh pr merge <number> --squash` — lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch checked out by a worktree.
 6. **Sync alpha**: `git pull` from inside `worktrees/alpha/`
 7. **Close related issue(s)**: `gh issue close <number> --comment "Closed by PR #<pr>"`
-8. **Update DEV_LOG.md** and commit the update — this must happen before bump-and-install so alpha stays clean at the end
-9. **Bump and install**: `just bump-and-install` from inside `worktrees/alpha/`
+8. **Update DEV_LOG.md** and commit the update — this must happen before bump+install so alpha stays clean at the end
+9. **Bump and install**: `just bump && just install` from inside `worktrees/alpha/`
 10. **Remove the feature worktree**: `wtp remove <branch-name>`
 11. **Delete the remote branch**: `git push origin --delete <branch-name>`
 
@@ -118,9 +118,9 @@ Run from `worktrees/alpha/` (or anywhere with origin access). This fast-forwards
 
 When beta is ready to ship as a release:
 ```
-git push origin beta:main
+just promote main
 ```
-Then tag the release: `just bump` + `just release`. Update `CHANGELOG.md` before tagging.
+This pushes beta→main, creates and pushes the version tag, and triggers the GitHub Actions release workflow.
 
 Worktrees:
 - `worktrees/alpha` — alpha branch
@@ -128,19 +128,21 @@ Worktrees:
 
 ## Releases
 
-Before tagging a release (`just bump` + `just release`):
-1. Update `CHANGELOG.md` at the repo root — add a new `## [x.y.z] — YYYY-MM-DD` section with a brief summary of what changed (features, fixes, breaking changes).
-2. Entries are newest-first. Keep them user-facing (not internal refactor detail).
-
-If `CHANGELOG.md` doesn't exist yet, create it with a header comment and the first entry.
+Release flow:
+1. `just bump [patch|minor|major]` — bumps version, generates CHANGELOG via git-cliff, commits `chore: release vX.Y.Z`
+2. `just promote beta` — pushes alpha→beta, syncs beta worktree
+3. Test on beta
+4. `just promote main` — pushes beta→main, tags `vX.Y.Z`, triggers GitHub Actions release
 
 ## Build & Install
 
-`just bump-and-install` is the standard post-merge command — bumps the alpha version first, then builds and installs. Always run from inside `worktrees/alpha/`.
+`just bump && just install` is the standard post-merge command — bumps the version and regenerates CHANGELOG via git-cliff, then builds and installs. Always run from inside `worktrees/alpha/`.
 
-`just install` alone is for re-installing without a version bump (e.g. after editing CHANGELOG or config without a code change). Run from inside `worktrees/alpha/`.
+`just install` alone is for re-installing without a version bump (e.g. after editing config or docs without a code change). Run from inside `worktrees/alpha/`.
 
-**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just bump-and-install` from `worktrees/alpha/`.
+`just bump [minor|major]` without install is for explicit pre-promote version bumps when you need a minor or major release.
+
+**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just bump && just install` from `worktrees/alpha/`.
 
 ## Logging
 

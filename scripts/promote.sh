@@ -3,6 +3,8 @@
 # Usage: promote.sh [beta|main]
 #   No argument: auto-detects current branch and prompts for confirmation.
 #   With argument: skips prompt (useful for scripting).
+#
+# Run `just bump` on alpha before promoting to beta if you haven't already.
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
@@ -26,57 +28,6 @@ check_pushed() {
     if [[ "$n" -gt 0 ]]; then
         echo "info: $label has $n unpushed commit(s) — pushing..."
         git -C "$tree" push origin "$branch"
-    fi
-}
-
-bump_patch() {
-    local tree="$1"
-    local current base major minor patch new
-    current=$(grep '^version' "$tree/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
-    base=$(echo "$current" | sed 's/-.*//')
-    IFS='.' read -r major minor patch <<< "$base"
-    new="$major.$minor.$((patch + 1))"
-    sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$tree/Cargo.toml"
-    (cd "$tree" && cargo generate-lockfile)
-    echo "$new"
-}
-
-prepend_changelog() {
-    local tree="$1" ver="$2"
-    if command -v git-cliff >/dev/null 2>&1; then
-        git-cliff \
-            --config "$tree/cliff.toml" \
-            --workdir "$tree" \
-            --unreleased \
-            --tag "v$ver" \
-            --prepend "$tree/CHANGELOG.md"
-    else
-        # fallback: manual log when git-cliff is unavailable
-        local today commits_file tmp
-        today=$(date '+%Y-%m-%d')
-        commits_file=$(mktemp)
-        git -C "$tree" log origin/beta..alpha --oneline --no-merges \
-            | sed 's/^[a-f0-9]* /- /' \
-            | grep -v '^- chore: DEV_LOG' \
-            | grep -v '^- chore: bump' \
-            | grep -v '^- chore: promote' \
-            | grep -v '^- - ' \
-            > "$commits_file"
-        [[ -s "$commits_file" ]] || echo "- (no new commits since last beta)" > "$commits_file"
-        tmp=$(mktemp)
-        awk -v ver="$ver" -v dt="$today" -v cf="$commits_file" '
-            /^## \[/ && !inserted {
-                print "## [" ver "] — " dt
-                print ""
-                print "### Changes"
-                while ((getline line < cf) > 0) print line
-                print ""
-                inserted=1
-            }
-            { print }
-        ' "$tree/CHANGELOG.md" > "$tmp"
-        rm -f "$commits_file"
-        mv "$tmp" "$tree/CHANGELOG.md"
     fi
 }
 
@@ -108,19 +59,14 @@ if [[ "$to" == "beta" ]]; then
     check_pushed "$ALPHA_TREE" "alpha" "alpha"
     check_clean "$BETA_TREE" "beta"
 
-    echo "Bumping version and updating changelog on alpha..."
-    new=$(bump_patch "$ALPHA_TREE")
-    prepend_changelog "$ALPHA_TREE" "$new"
-    git -C "$ALPHA_TREE" add Cargo.toml Cargo.lock CHANGELOG.md
-    git -C "$ALPHA_TREE" commit -m "chore: promote to beta — v$new"
-    git -C "$ALPHA_TREE" push
+    version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
     echo "Force-pushing alpha to beta and syncing worktree..."
     git push origin alpha:beta --force-with-lease
     git -C "$BETA_TREE" pull
 
     echo ""
-    echo "v$new is on beta — worktrees/beta/ is synced and ready."
+    echo "v$version is on beta — worktrees/beta/ is synced and ready."
 
     read -r -p "Install beta now? [y/N] " install_confirm
     if [[ "$install_confirm" == "y" || "$install_confirm" == "Y" ]]; then

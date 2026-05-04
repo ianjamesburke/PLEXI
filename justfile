@@ -73,28 +73,18 @@ pr-clean-merged:
 clear-apps channel="":
     bash scripts/clear-apps.sh {{channel}}
 
-bump-and-install: bump-alpha install
-
-bump-alpha:
-    bash scripts/bump-alpha.sh
-
-bump:
-    bash scripts/bump.sh
+# Bump version, generate CHANGELOG via git-cliff, and commit. Defaults to patch.
+# Run after merging a PR to alpha, before promoting to beta.
+#   just bump           — patch bump
+#   just bump minor     — minor bump
+#   just bump major     — major bump
+bump bump="patch":
+    bash scripts/release-version.sh "{{bump}}"
 
 # Promote to the next channel. Auto-detects current branch and prompts.
+# Run just bump before promoting if you haven't already.
 #   just promote        — detects alpha→beta or beta→main and confirms
 #   just promote beta   — skip prompt, promote alpha→beta
 #   just promote main   — skip prompt, promote beta→main
 promote to="":
     bash scripts/promote.sh "{{to}}"
-
-release:
-    bash scripts/release.sh
-
-# Bump version, generate CHANGELOG via git-cliff, and commit.
-# Defaults to patch. Run before: just promote beta
-#   just release-version          — patch bump
-#   just release-version minor    — minor bump
-#   just release-version major    — major bump
-release-version bump="patch":
-    bash scripts/release-version.sh "{{bump}}"
