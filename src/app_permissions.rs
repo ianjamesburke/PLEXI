@@ -99,6 +99,29 @@ impl Capability {
             Self::PanesSpawn => "panes.spawn",
         }
     }
+
+    pub fn all_str_values() -> &'static [&'static str] {
+        &[
+            "fs.read",
+            "fs.write",
+            "net.http",
+            "secrets.get",
+            "pipe.open",
+            "spawn.app",
+            "audio.record",
+            "audio.playback",
+            "video.playback",
+            "llm",
+            "timer",
+            "ai.query",
+            "midi.in",
+            "midi.out",
+            "agents.list",
+            "terminal.bindings",
+            "fs.pick",
+            "panes.spawn",
+        ]
+    }
 }
 
 /// Error produced when a manifest or decision log names a capability that is not
