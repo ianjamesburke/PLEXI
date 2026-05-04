@@ -56,6 +56,8 @@ pub fn render_minimap(
         return None;
     }
 
+    ui.set_opacity(0.75);
+
     // ── Collapse empty rows so the grid is always compact ─────────────────
     let mut raw_ys: Vec<u32> = visible.iter().map(|(_, c)| c.grid_y).collect();
     raw_ys.sort_unstable();
