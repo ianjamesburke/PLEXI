@@ -2,6 +2,11 @@
 
 Newest releases appear first.
 
+## [3.4.57] — 2026-05-03 21:24 ET
+
+### Changes
+- refactor(pane): kill Pane::Agent and Pane::AgentWorkspace (#523) (#612)
+
 ## [3.4.56] — 2026-05-03 20:36 ET
 
 ### Changes
