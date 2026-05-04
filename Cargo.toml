@@ -15,13 +15,16 @@ osx_minimum_system_version = "12.0"
 osx_info_plist_exts = ["assets/Info.plist.fragment"]
 resources = ["sdk/python/plexi_sdk", "assets/python"]
 
-# Prevent cargo-bundle from co-bundling gen_schema under the main app name.
-# Without a per-binary override, cargo-bundle assigns the package metadata
-# (name = "Plexi Alpha") to the first binary alphabetically, leaving the
-# plexi binary to fall back to "plexi.app". Setting a distinct name here
-# keeps the two bundles separate.
+# cargo-bundle assigns package metadata to the first binary alphabetically.
+# gen_schema < plexi, so without overrides gen_schema would steal "Plexi Alpha"
+# and plexi would fall back to its binary name. Both bins need explicit overrides.
 [package.metadata.bundle.bin.gen_schema]
 name = "gen_schema_tool"
+
+# install.sh sed-patches both name and identifier lines for non-stable channels.
+[package.metadata.bundle.bin.plexi]
+name = "Plexi Alpha"
+identifier = "com.ianjamesburke.plexi-alpha"
 
 [[bin]]
 name = "gen_schema"
