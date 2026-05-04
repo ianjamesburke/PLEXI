@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Zoom overlay inset 5px → 10px (PR #618 → alpha)
+
+Wider gap makes the zoomed state read as an intentional overlay rather than nearly full-bleed. One-line change: `let inset = 5.0` → `10.0` in the zoom overlay block of `src/app/mod.rs`. `zoom_rect = panel_rect.shrink(inset)` propagates the change uniformly to all four sides.
+
+Opacity (issue #572) was attempted in the same PR (`child_ui.set_opacity(0.95)`) but reverted — dark terminal background blending against dark scrim produces no visible difference. See #572 for prior attempts and investigation notes.
+
+**Breaks if:** Zooming any pane shows the overlay flush with the window edge (~5px gap) instead of a clearly distinct inset (~10px).
+
 ## 2026-05-03 — [CHANGED] Split DrawCommand into RenderCommand + HostCommand + ControlCommand (PR #621 → alpha)
 
 `DrawCommand` split into three typed sub-enums: `RenderCommand` (paint primitives → `pending_frame`), `HostCommand` (side-effectful → `route_command`), `ControlCommand` (frame lifecycle + clipboard + logging, handled inline). The outer `DrawCommand` is now `#[serde(untagged)]` — wire format unchanged, existing apps require no updates. `route_command` takes `HostCommand` with an exhaustive match; adding a new variant without a handler is a compile error. The four manually-maintained dispatch lists (two in `mod.rs`, one in `routing.rs`, one in `render.rs`) collapse to a single exhaustive match per site. Also fixed a live bug: `AgentRosterGet` was missing from `background_tick()`'s dispatch list and was being silently dropped for background apps.
