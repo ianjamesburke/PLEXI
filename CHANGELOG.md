@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.68] — 2026-05-04 00:34 ET
+
+### Changes
+- chore: add just pr-clean-merged recipe to remove stale PR build artifacts
+- feat(sdk): Rust-owned canonical PGAP schema + generated Python protocol models (#634)
+
 ## [3.4.67] — 2026-05-03 23:35 ET
 
 ### Changes
