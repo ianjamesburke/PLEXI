@@ -2039,7 +2039,10 @@ impl eframe::App for PlexiApp {
                             );
                         }
                         egui::Frame::new()
-                            .fill(self.colors.terminal_bg)
+                            .fill({
+                                let c = self.colors.terminal_bg;
+                                Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 252)
+                            })
                             .inner_margin(egui::Margin::same(8))
                             .show(&mut child_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
