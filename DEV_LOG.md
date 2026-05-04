@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Minimap at 75% opacity (PR #615 → alpha)
+
+`ui.set_opacity(0.75)` added at the top of `render_minimap` in `src/minimap.rs`. Affects all painter calls (background, border, cells, labels) via egui's built-in opacity propagation — no per-color changes needed.
+
+**Breaks if:** minimap appears fully opaque (no visible bleed-through of content behind it) after toggling on with ⌘⇧M.
+
 ## 2026-05-03 — [FIX] confirm_close default corrected to false (PR #614 → alpha)
 
 `confirm_close()` used `unwrap_or(true)`, so users without a config file got pane-close confirmation dialogs on first launch. The generated config template always wrote `confirm_close = false`, creating a split: new-install behavior contradicted the documented default. Fixed by changing the fallback to `unwrap_or(false)`.
