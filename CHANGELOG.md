@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.62] — 2026-05-03 22:29 ET
+
+### Changes
+- chore: replace issue template with typed feature/bug/idea templates + depends_on front matter
+- feat(palette): Cmd+J / Cmd+K as ArrowDown / ArrowUp aliases in command palette (#620)
+
 ## [3.4.61] — 2026-05-03 22:20 ET
 
 ### Changes
