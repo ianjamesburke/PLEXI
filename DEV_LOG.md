@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Batch Python frame output; remove frame.clone() hot-path (PR #630 → alpha)
+
+Python: `RenderContext` now buffers all draw commands in `self._buf` instead of calling `sys.stdout.flush()` per command. `frame_done()` writes the entire frame (all draw commands + the sentinel) in one `sys.stdout.write()` + `flush()`. A 150-command frame goes from 151 flushes to 1. Out-of-frame signals (`log`, `notify`, `status_summary`) still flush immediately. `measure_text` flushes the buffer before sending so the host can process prior commands in order.
+
+Rust: removed `let frame_clone = self.frame.clone()` from `ProcessApp::ui()`. `render_text_inputs` no longer accepts a `frame` parameter — it reads `self.frame` directly, which resolves the borrow-checker conflict that previously required the clone.
+
+**Breaks if:** Any canvas app pane renders blank or partially after merge, or text inputs / scroll regions stop responding.
+
 ## 2026-05-03 — [CHANGED] Remove stale iq.query POC apps, fix capability hint (PR #628 → alpha)
 
 Deleted `examples/agent-tester`, `agent-worker`, `agent-coordinator` — POC apps for closed issues #338 and #286 that still declared `iq.query` (renamed to `ai.query`), generating 3 WARN skip lines on every startup. Added `Capability::all_str_values()` and used it in the `app_registry` error message so the valid-values hint derives from the enum rather than a hardcoded string. Installed copies in `~/.plexi-alpha/apps/` still need manual removal to silence the WARNs on the running build.
