@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import List, Optional
 
 
 class CapabilityDeniedError(RuntimeError):
@@ -39,3 +40,116 @@ class AgentInfo:
     pane_id: int
     app_id: str
     name: str
+
+
+# ── Typed draw command dataclasses (#627) ─────────────────────────────────────
+
+_VALID_TEXT_ALIGN = {"top_left", "center", "top_center", "right"}
+
+
+@dataclass
+class RectCommand:
+    """Typed constructor for ctx.rect(). Validates geometry at construction."""
+    x: float
+    y: float
+    w: float
+    h: float
+    fill: str
+    radius: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.w < 0 or self.h < 0:
+            raise ValueError(f"RectCommand: w and h must be non-negative, got w={self.w}, h={self.h}")
+        if not self.fill.startswith("#"):
+            raise ValueError(f"RectCommand: fill must be a hex color string (e.g. '#1e1e2e'), got {self.fill!r}")
+
+
+@dataclass
+class TextCommand:
+    """Typed constructor for ctx.text(). Validates align at construction."""
+    x: float
+    y: float
+    text: str
+    size: float
+    color: str
+    monospace: bool = False
+    bold: bool = False
+    align: str = "top_left"
+    max_width: Optional[float] = None
+    elide: bool = True
+    selectable: bool = False
+
+    def __post_init__(self) -> None:
+        if self.align not in _VALID_TEXT_ALIGN:
+            raise ValueError(
+                f"TextCommand: align must be one of {sorted(_VALID_TEXT_ALIGN)}, got {self.align!r}"
+            )
+        if self.size <= 0:
+            raise ValueError(f"TextCommand: size must be positive, got {self.size}")
+
+
+@dataclass
+class BadgeCommand:
+    """Typed constructor for ctx.badge()."""
+    x: float
+    y_center: float
+    label: str
+    fill: str = "#89b4fa"  # ACCENT
+    fg: str = "#1e1e2e"    # BG
+    font_size: float = 11.0
+    radius: float = 8.0
+
+    def __post_init__(self) -> None:
+        if self.font_size <= 0:
+            raise ValueError(f"BadgeCommand: font_size must be positive, got {self.font_size}")
+        if self.radius < 0:
+            raise ValueError(f"BadgeCommand: radius must be non-negative, got {self.radius}")
+
+
+@dataclass
+class TextInputSpec:
+    """Typed constructor for ctx.text_input()."""
+    id: str
+    x: float
+    y: float
+    w: float
+    placeholder: str = ""
+    multiline: bool = False
+    h: float = 24.0
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            raise ValueError("TextInputSpec: id must be a non-empty string")
+        if self.w <= 0:
+            raise ValueError(f"TextInputSpec: w must be positive, got {self.w}")
+
+
+@dataclass
+class ShortcutPair:
+    """Typed constructor for one entry in ctx.shortcuts() pairs."""
+    keys: List[str]
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.keys:
+            raise ValueError("ShortcutPair: keys must be a non-empty list")
+
+
+@dataclass
+class NotifyOption:
+    """Typed constructor for one option in ctx.notify_choice()."""
+    label: str
+    value: Optional[str] = None
+    shortcut: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not self.label:
+            raise ValueError("NotifyOption: label must be a non-empty string")
+
+    def to_dict(self) -> dict:
+        d: dict = {"label": self.label}
+        if self.value is not None:
+            d["value"] = self.value
+        if self.shortcut is not None:
+            d["shortcut"] = self.shortcut
+        return d

@@ -28,3 +28,15 @@ packages = ["plexi_sdk"]
 
 [tool.hatch.build.targets.sdist]
 include = ["plexi_sdk/", "README.md"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = false
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_return_any = false
+warn_unused_ignores = false
+exclude = ["testing.py"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"plexi_sdk/py.typed" = "plexi_sdk/py.typed"
