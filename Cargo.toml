@@ -16,12 +16,12 @@ osx_info_plist_exts = ["assets/Info.plist.fragment"]
 resources = ["sdk/python/plexi_sdk", "assets/python"]
 
 [[bin]]
-name = "plexi"
-path = "src/main.rs"
-
-[[bin]]
 name = "gen_schema"
 path = "src/bin/gen_schema.rs"
+
+[[bin]]
+name = "plexi"
+path = "src/main.rs"
 
 [dependencies]
 egui = "0.31"
