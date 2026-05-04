@@ -2,6 +2,14 @@
 
 Newest releases appear first.
 
+## [3.4.71] — 2026-05-04 01:55 ET
+
+### Changes
+- feat(release): git-cliff changelog + explicit release-version command (#637)
+- chore: promote to beta — v3.4.70
+- Add app architecture brainstorm docs and build automation scripts
+- improve: add cargo-bundle multi-bin and SDK import proxy lessons to CLAUDE.md
+
 ## [3.4.70] — 2026-05-04
 
 ### Changes
