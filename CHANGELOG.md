@@ -1,6 +1,9 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.81] — 2026-05-04
+
+### Changes
 ## [3.4.80] — 2026-05-04
 
 ### Changes
