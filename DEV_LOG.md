@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] Keyboard pane swap Cmd+Ctrl+HJKL + edge pulse (PR #646 → alpha)
+
+Swaps `PaneId` values at two `Tile::Pane` leaf nodes in the egui_tiles tree — tree structure and rects stay fixed, only pane content moves. Focus follows the swapped pane to its new tile. Boundary press produces a 120ms accent edge glow on the blocked side. Swap shows a 160ms ease-out cubic rect overlay. Issue #517 (`feat(media): video decode`) was found fully implemented on alpha already — closed without new code.
+**Breaks if:** `Cmd+Ctrl+L` on a 2-pane split does nothing, or app crashes/shows blank panes after a swap.
+
 ## 2026-05-04 — [FIX] BSD awk compat in release notes extraction (PR #643 → alpha)
 
 `match($0, /regex/, arr)` three-argument form is GNU awk only — macOS CI runners use BSD awk and fail with `syntax error`. Replaced with `index($0, "[" stop "]") > 0` which is POSIX/BSD compatible.
