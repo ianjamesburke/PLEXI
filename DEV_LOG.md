@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [FIX] confirm_close default corrected to false (PR #614 → alpha)
+
+`confirm_close()` used `unwrap_or(true)`, so users without a config file got pane-close confirmation dialogs on first launch. The generated config template always wrote `confirm_close = false`, creating a split: new-install behavior contradicted the documented default. Fixed by changing the fallback to `unwrap_or(false)`.
+
+**Breaks if:** Cmd+W on a pane shows a confirmation dialog when `confirm_close` is absent from config.
+
 ## 2026-05-03 — [CHANGED] Kill Pane::Agent and Pane::AgentWorkspace — pane ADT is now Terminal | App (PR #612 → alpha)
 
 Removed ~4,000 lines across 30 files. Deleted entirely: `agent_pane.rs`, `agent_workspace/`, `agent_workspace_modal.rs`, `render/agent_pane.rs`, `render/agent_workspace_pane.rs`, `process_app/agent.rs`. Removed from protocol: `AgentInit`, `AgentRoster`, `AgentInfo`, `AgentRosterGet`, `AppCommand::AgentRosterGet`. Removed from persistence: `SavedPaneKind::Agent/AgentWorkspace`, `SavedAgentWorkspace`. Removed from UI: `Action::OpenAgentPane`, `FocusLayer::AgentWorkspaceModal`, command palette agent workspace entries, `PaletteEntry::Action` infrastructure. Also removed: `AppRegistry::manifest_type()` / `system_prompt_for()` (only callers were in the deleted agent launch path), `process_app/mod.rs` roster test module. AI broker preserved — still processes `AiQuery`/`AiResponse` from PGAP apps. Agents are now regular apps that declare `ai.query` and own their turn loop (chat-poc proves the model).
