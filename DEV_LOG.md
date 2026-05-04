@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] release pipeline cleanup — single-responsibility commands (PR #638 → alpha)
+
+Removed `bump-and-install`, `bump-alpha`, `release`, `release-version`. `just bump [patch|minor|major]` is now the single bump command (calls `release-version.sh`, git-cliff, commits). `just promote` is now a clean channel push — no bump, no changelog. Post-merge cycle is `just bump && just install`. Deleted `scripts/bump-alpha.sh`, `scripts/bump.sh`, `scripts/release.sh`. Ship skill and CLAUDE.md updated.
+**Breaks if:** `just promote beta` bumps the version or modifies CHANGELOG (should be a clean push only).
+
 ## 2026-05-04 — [CHANGED] git-cliff changelog + release-version command (PR #637 → alpha)
 
 Replaced manual awk changelog generation in `promote.sh` with git-cliff. Added `cliff.toml` (flat list, first-line-only to strip squash bodies, skips bump/promote/DEV_LOG/merge noise). Added `scripts/release-version.sh` and `just release-version [patch|minor|major]` for explicit semantic version bumps before promote. `just promote` still auto-bumps patch but now calls git-cliff when available. Added `jc` shell function to dotfiles (runs `just <recipe>`; on failure opens Claude with error context); renamed old `jc='just --choose'` alias to `jj`.
