@@ -46,9 +46,6 @@ pub(crate) enum FocusLayer {
     CommandPalette,
     RunPalette,
     RenamePane,
-    /// "New Agent Workspace…" modal (#349) — CLI dropdown, repo picker, task
-    /// textarea.
-    AgentWorkspaceModal,
     /// Context naming modal shown when a new context is created while the
     /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
     /// overlay so the terminal is immediately usable after dismissal.
@@ -105,7 +102,6 @@ pub(crate) enum NotificationImageState {
     Pending,
 }
 
-use crate::agent_workspace::MergeOutcome;
 use crate::app_registry::AppRegistry;
 use crate::config;
 use crate::context::Window;
@@ -217,11 +213,6 @@ pub struct PlexiApp {
     /// existing `AppPane` envelope.
     pub(crate) hot_reload: crate::hot_reload::HotReloadWatcher,
     pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::hot_reload::ReloadRequest>,
-    /// Active "New Agent Workspace…" modal state (#349). `None` when closed.
-    pub(crate) agent_workspace_modal: Option<crate::agent_workspace_modal::AgentWorkspaceModal>,
-    /// Cached last-CLI-per-repo map. Loaded at startup, persisted on every
-    /// successful spawn. The modal consults this to pre-select the dropdown.
-    pub(crate) last_cli_map: crate::agent_workspace::persistence::LastCliMap,
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
     /// and the `Cmd+Shift+M` override-visible flag.
     pub(crate) minimap: crate::minimap::MinimapState,
@@ -407,63 +398,6 @@ impl PlexiApp {
                         }
                     }
 
-                    if pane_entry.is_none()
-                        && matches!(
-                            saved_pane.kind,
-                            crate::workspace::SavedPaneKind::Agent
-                        )
-                    {
-                        // In-process agent removed (#429). Saved sessions of
-                        // type Agent are skipped on restore; subprocess agents
-                        // are re-launched via the app launcher on next open.
-                        log::info!(
-                            "session restore: skipping saved in-process agent pane {} (#429)",
-                            saved_pane.id
-                        );
-                    }
-
-                    if pane_entry.is_none()
-                        && matches!(
-                            saved_pane.kind,
-                            crate::workspace::SavedPaneKind::AgentWorkspace
-                        )
-                    {
-                        if let Some(meta) = saved_pane.agent_workspace.clone() {
-                            let env = crate::shell::build_env();
-                            let dynamic_colors =
-                                crate::theme::terminal_dynamic_colors(&colors);
-                            if let Some(pane) =
-                                crate::agent_workspace::AgentWorkspacePane::restore(
-                                    saved_pane.id,
-                                    meta.cli,
-                                    meta.repo_path,
-                                    meta.branch_name,
-                                    meta.worktree_path,
-                                    meta.task_label,
-                                    cc.egui_ctx.clone(),
-                                    tx.clone(),
-                                    env,
-                                    dynamic_colors,
-                                    default_font_size,
-                                )
-                            {
-                                pane_entry = Some(crate::pane::Pane::AgentWorkspace(
-                                    Box::new(pane),
-                                ));
-                            } else {
-                                log::warn!(
-                                    "agent_workspace restore: PTY spawn failed for pane {}",
-                                    saved_pane.id
-                                );
-                            }
-                        } else {
-                            log::warn!(
-                                "agent_workspace restore: pane {} has kind=AgentWorkspace but no metadata",
-                                saved_pane.id
-                            );
-                        }
-                    }
-
                     if pane_entry.is_none() {
                         let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors);
                         if let Some(mut pane) = TerminalPane::new(
@@ -585,8 +519,6 @@ impl PlexiApp {
                     directed_pipes: HashMap::new(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
-                    agent_workspace_modal: None,
-                    last_cli_map: crate::agent_workspace::persistence::load(),
                     minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
                     context_active_window: ws.context_active_window,
@@ -672,8 +604,6 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher2,
             hot_reload_rx: hr_rx2,
-            agent_workspace_modal: None,
-            last_cli_map: crate::agent_workspace::persistence::load(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -769,8 +699,6 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
-            agent_workspace_modal: None,
-            last_cli_map: Default::default(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -934,20 +862,8 @@ impl PlexiApp {
 
     fn drain_pty_events(&mut self) {
         let mut panes_to_close: Vec<u64> = Vec::new();
-        let now = std::time::Instant::now();
 
         while let Ok((id, event)) = self.pty_event_rx.try_recv() {
-            // Forward Wakeup / ChildExit to AgentWorkspace status heuristics
-            // (#349). Other panes ignore these — only the agent workspace
-            // tracks activity timing.
-            for win in &mut self.windows {
-                if let Some(pane) = win.panes.get_mut(&id) {
-                    if let Some(workspace) = pane.as_agent_workspace_mut() {
-                        workspace.record_pty_activity(&event, now);
-                    }
-                    break;
-                }
-            }
             match &event {
                 PtyEvent::Exit => {
                     for win in &mut self.windows {
@@ -1080,117 +996,6 @@ impl PlexiApp {
             .count()
     }
 
-    /// Per-frame tick for Agent Workspace panes (#349): refresh status against
-    /// the current clock (so Thinking → Idle transitions don't wait for the
-    /// next Wakeup), refresh the diff sidebar at most once every 2s, clear
-    /// stale "merged" badges, and surface conflict outcomes via the
-    /// notification queue.
-    fn tick_agent_workspaces(&mut self) {
-        let now = std::time::Instant::now();
-        let mut conflict_surfaces: Vec<(String, Vec<String>)> = Vec::new();
-        let mut merge_failures: Vec<(String, String)> = Vec::new();
-        for win in &mut self.windows {
-            for pane in win.panes.values_mut() {
-                let Some(workspace) = pane.as_agent_workspace_mut() else {
-                    continue;
-                };
-                workspace.refresh_status(now);
-                workspace.maybe_refresh_diff(now);
-                workspace.maybe_clear_merge_flash(now);
-
-                // Promote a fresh Conflict / Failed outcome into a notification
-                // so the user sees the file list / stderr without staring at
-                // the badge. We consume the outcome (replace with `None`) so
-                // we don't re-fire the notification every frame.
-                let surface = matches!(
-                    workspace.merge_outcome,
-                    Some(MergeOutcome::Conflict { .. }) | Some(MergeOutcome::Failed { .. })
-                );
-                if surface {
-                    let outcome = workspace.merge_outcome.take();
-                    let branch = workspace.branch_name.clone();
-                    workspace.merge_outcome_at = None;
-                    match outcome {
-                        Some(MergeOutcome::Conflict { files }) => {
-                            conflict_surfaces.push((branch, files));
-                        }
-                        Some(MergeOutcome::Failed { stderr }) => {
-                            merge_failures.push((branch, stderr));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        for (branch, files) in conflict_surfaces {
-            let body = if files.is_empty() {
-                "No conflict file list available — run `git status` in the repo.".to_string()
-            } else {
-                format!(
-                    "Resolve these files in a terminal, then commit:\n{}",
-                    files.join("\n")
-                )
-            };
-            self.push_host_notification(
-                "warn".to_string(),
-                format!("Merge conflict — {branch}"),
-                body,
-            );
-        }
-        for (branch, stderr) in merge_failures {
-            self.push_host_notification(
-                "error".to_string(),
-                format!("Merge failed — {branch}"),
-                stderr,
-            );
-        }
-    }
-
-    /// Push a host-originated notification onto the modal queue. Mirrors the
-    /// drain_notify_queue path but skips the file IO (caller already has the
-    /// title/body strings).
-    pub(crate) fn push_host_notification(
-        &mut self,
-        level: String,
-        title: String,
-        body: String,
-    ) {
-        if !self.notifications_enabled {
-            return;
-        }
-        let internal_id = format!(
-            "__host__:{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        self.pending_notifications.push(PendingNotification {
-            notify_id: internal_id.clone(),
-            sender_pane_id: 0,
-            source_context: self.router.active_idx(),
-            scope: crate::app_protocol::NotifyScope::Global,
-            level,
-            title,
-            body,
-            kind: crate::app_protocol::NotifyKind::Message,
-            options: vec![],
-            input_prompt: None,
-            required: false,
-            priority: 0,
-            image_inline: None,
-            image_pipe_id: None,
-            response_file: None,
-        });
-        let should_auto_open = !self.notifications_focus_mode
-            && 0 >= self.notifications_interrupt_threshold;
-        if should_auto_open {
-            self.show_notification_modal = true;
-            if self.current_notify_id.is_none() {
-                self.current_notify_id = Some(internal_id);
-            }
-        }
-    }
 }
 
 impl eframe::App for PlexiApp {
@@ -1203,7 +1008,6 @@ impl eframe::App for PlexiApp {
             self.drain_spawn_queue();
         }
         self.drain_pty_events();
-        self.tick_agent_workspaces();
 
         // Update the global pane context snapshot so that AiQuery dispatches
         // include all open panes in the workspace context (#396).
@@ -1216,7 +1020,6 @@ impl eframe::App for PlexiApp {
         self.sync_command_palette_focus();
         self.sync_run_palette_focus();
         self.sync_rename_pane_focus();
-        self.sync_agent_workspace_modal_focus();
         self.sync_context_rename_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
@@ -1244,9 +1047,6 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::RenamePane) => {
                     self.draw_rename_pane_overlay(ctx);
                 }
-                Some(FocusLayer::AgentWorkspaceModal) => {
-                    self.draw_agent_workspace_modal(ctx);
-                }
                 Some(FocusLayer::ContextRename) => {
                     self.draw_rename_context_overlay(ctx);
                 }
@@ -1262,7 +1062,6 @@ impl eframe::App for PlexiApp {
             self.sync_command_palette_focus();
             self.sync_run_palette_focus();
             self.sync_rename_pane_focus();
-            self.sync_agent_workspace_modal_focus();
             self.sync_context_rename_focus();
         }
 
@@ -1533,10 +1332,6 @@ impl eframe::App for PlexiApp {
                                 };
                                 if let Some(app) = pane.as_app_mut() {
                                     app.runtime.queue_outbound_event(event);
-                                } else if let Some(agent) = pane.as_agent_mut() {
-                                    let crate::agent_pane::AgentBackend::Subprocess(sub) =
-                                        &mut agent.backend;
-                                    sub.process.queue_outbound_event_direct(event);
                                 }
                             }
                         }
@@ -1588,13 +1383,11 @@ impl eframe::App for PlexiApp {
                         .panes
                         .get(&target_pane_id)
                         .map(|p| match p {
-                            crate::pane::Pane::Agent(_) => "agent",
                             crate::pane::Pane::App(_) => "app",
                             crate::pane::Pane::Terminal(_) => "terminal",
-                            crate::pane::Pane::AgentWorkspace(_) => "agent_workspace",
                         });
                     match target_kind {
-                        Some("agent") | Some("app") => {
+                        Some("app") => {
                             // Register pipe on target's registry so it can
                             // PipeSend back through the same id.
                             let registered = if let Some(pane) =
@@ -1617,30 +1410,11 @@ impl eframe::App for PlexiApp {
                             );
                         }
                         Some(other) => log::warn!(
-                            "OpenDirectedPipe: target {target_pane_id} is a {other}; expected agent/app — pipe '{pipe_id}' not subscribed"
+                            "OpenDirectedPipe: target {target_pane_id} is a {other}; expected app — pipe '{pipe_id}' not subscribed"
                         ),
                         None => log::warn!(
                             "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped"
                         ),
-                    }
-                }
-                AppCommand::AgentRosterGet { sender_pane_id, request_id } => {
-                    let active = self.active_window;
-                    let agents = crate::agent_pane::enumerate_agents(
-                        self.windows[active].panes.values(),
-                    );
-                    let event = crate::app_protocol::PlexiEvent::AgentRoster {
-                        request_id,
-                        agents,
-                    };
-                    if let Some(pane) = self.windows[active].panes.get_mut(&sender_pane_id) {
-                        if let Some(app) = pane.as_app_mut() {
-                            app.runtime.queue_outbound_event(event);
-                        } else if let Some(agent) = pane.as_agent_mut() {
-                            let crate::agent_pane::AgentBackend::Subprocess(sub) =
-                                &mut agent.backend;
-                            sub.process.queue_outbound_event_direct(event);
-                        }
                     }
                 }
                 AppCommand::RequestLinkedTerminal {
@@ -1981,9 +1755,6 @@ impl eframe::App for PlexiApp {
                 }
                 Action::NotificationCyclePrev => {
                     self.cycle_notification(-1);
-                }
-                Action::OpenAgentPane => {
-                    self.open_agent_pane();
                 }
                 Action::ForceReloadApp => {
                     self.force_reload_focused_app();
@@ -2341,10 +2112,6 @@ impl eframe::App for PlexiApp {
                                             colors: &self.colors,
                                         };
                                         a.runtime.ui(ui, &app_ctx);
-                                    } else if let Some(agent) = pane.as_agent_mut() {
-                                        if crate::agent_pane::render_and_drain(ui, agent, &self.colors) {
-                                            ui.ctx().request_repaint();
-                                        }
                                     }
                                 }
 
@@ -2437,7 +2204,6 @@ impl PlexiApp {
                 | Some(FocusLayer::CommandPalette)
                 | Some(FocusLayer::RunPalette)
                 | Some(FocusLayer::RenamePane)
-                | Some(FocusLayer::AgentWorkspaceModal)
                 | Some(FocusLayer::ContextRename)
         )
     }
@@ -2784,15 +2550,7 @@ fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str)
             crate::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
             crate::pane::AppRuntime::Builtin(_) => None,
         },
-        crate::pane::Pane::Agent(agent) => match &agent.backend {
-            crate::agent_pane::AgentBackend::Subprocess(sub) => {
-                Some(sub.process.pipe_registry.clone())
-            }
-        },
         crate::pane::Pane::Terminal(_) => None,
-        // AgentWorkspace panes (#348) are PTY shells running a CLI binary —
-        // no PGAP process registry, so directed pipes have nothing to bind to.
-        crate::pane::Pane::AgentWorkspace(_) => None,
     };
     let Some(registry) = registry else {
         return false;

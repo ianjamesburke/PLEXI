@@ -249,7 +249,7 @@ impl PlexiApp {
         }
     }
 
-    /// Queue an outbound `PlexiEvent` to the app/agent pane identified by
+    /// Queue an outbound `PlexiEvent` to the app pane identified by
     /// `pane_id`. No-op when the pane has gone away (it can during a
     /// pending dispatch — the user closed the canvas app between request
     /// and response).
@@ -258,9 +258,6 @@ impl PlexiApp {
         if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
             if let Some(app) = pane.as_app_mut() {
                 app.runtime.queue_outbound_event(event);
-            } else if let Some(agent) = pane.as_agent_mut() {
-                let crate::agent_pane::AgentBackend::Subprocess(sub) = &mut agent.backend;
-                sub.process.queue_outbound_event_direct(event);
             }
         }
     }

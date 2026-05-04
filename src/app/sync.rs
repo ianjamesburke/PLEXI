@@ -87,16 +87,6 @@ impl PlexiApp {
                         type_id: "terminal".to_string(),
                         pane_id: term.id,
                     });
-                } else if let Some(agent) = pane.as_agent() {
-                    panes.push(PaneContext {
-                        type_id: "agent".to_string(),
-                        pane_id: agent.id,
-                    });
-                } else if let Some(ws) = pane.as_agent_workspace() {
-                    panes.push(PaneContext {
-                        type_id: "agent-workspace".to_string(),
-                        pane_id: ws.id,
-                    });
                 }
             }
         }

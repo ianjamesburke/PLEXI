@@ -428,9 +428,6 @@ impl PlexiApp {
     ///   "split_v" (default) — vertical split, new pane below
     ///   "split_h"           — horizontal split, new pane to the right
     ///   "overlay"           — full pane, no terminal split
-    ///
-    /// Manifests declaring `[app] type = "agent"` (#338) bypass the normal
-    /// app-canvas pane and land in `Pane::Agent` with the subprocess backend.
     pub(crate) fn launch_app_by_id_with_layout(
         &mut self,
         id: &str,
@@ -445,26 +442,6 @@ impl PlexiApp {
         let group = self.registry.group_for(id);
         let hint = layout.or_else(|| self.registry.layout_hint_for(id));
 
-        // Agent path (#338) — manifest type=agent gets the conversation UI
-        // backed by the subprocess. Background re-attach is intentionally
-        // not supported for agents in this PR (parking + resume of an
-        // active conversation is its own design problem; tracked under
-        // v3.3.5+).
-        if matches!(
-            self.registry.manifest_type(id),
-            Some(crate::app_registry::ManifestType::Agent)
-        ) {
-            if let Some(process) = self.registry.launch_process(id, &cwd, args) {
-                let system_prompt = self.registry.system_prompt_for(id);
-                self.open_subprocess_agent_pane(id, process, system_prompt);
-            } else {
-                log::warn!(
-                    "launch_app_by_id: agent '{id}' not found or failed to launch"
-                );
-            }
-            return;
-        }
-
         // Re-attach a parked background app if one is waiting
         if let Some(mut parked) = self.background_apps.remove(id) {
             log::info!("re-attaching background app '{id}'");
@@ -478,98 +455,6 @@ impl PlexiApp {
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
         }
-    }
-
-    /// Open a `Pane::Agent` whose backend is the freshly launched subprocess
-    /// (#338). Vertical 1:1 split alongside the focused pane — same default as
-    /// `open_agent_pane` (Cmd+I path) for now; layout hints are deferred to
-    /// v3.3.5+ so the agent UI lands in a predictable place every time.
-    fn open_subprocess_agent_pane(
-        &mut self,
-        manifest_id: &str,
-        mut process: crate::process_app::ProcessApp,
-        system_prompt: Option<String>,
-    ) {
-        let active = self.active_window;
-        let new_id = self.host.alloc_pane_id();
-        process.set_pane_id(new_id);
-        let pane = crate::agent_pane::AgentPane::new_subprocess(
-            new_id,
-            Box::new(process),
-            system_prompt,
-            manifest_id.to_string(),
-        );
-        self.windows[active]
-            .panes
-            .insert(new_id, Pane::Agent(Box::new(pane)));
-        let share = ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
-        let _ = self.split_with_new_pane(new_id, true, share, false);
-    }
-
-    /// Cmd+I: in-process agent was removed (#429). This is a no-op — the
-    /// Action::OpenAgentPane binding remains but does nothing until a default
-    /// subprocess agent is configured.
-    pub(crate) fn open_agent_pane(&mut self) {
-        log::info!("open_agent_pane: in-process agent removed (#429); use a subprocess agent app instead");
-    }
-
-    /// Open an Agent Workspace pane (#348): create a git worktree, spawn the
-    /// CLI inside it, drop the pane into a vertical split alongside the
-    /// focused pane.
-    ///
-    /// On `Err`, no pane is inserted — the worktree was either never created
-    /// (non-git repo) or has been rolled back (PTY spawn failure). The error
-    /// is logged; a higher layer (the modal in #349) is responsible for any
-    /// user-facing surfacing.
-    pub(crate) fn open_agent_workspace_pane(
-        &mut self,
-        cli: crate::agent_workspace::AgentCli,
-        task_label: String,
-    ) -> Result<(), crate::agent_workspace::AgentWorkspaceError> {
-        let active = self.active_window;
-        let cwd = self.windows[active]
-            .focused_pane
-            .and_then(|fp| self.windows[active].get_focused_pane_cwd(fp))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-
-        let repo_root = crate::agent_workspace::find_git_repo_root(&cwd).ok_or_else(|| {
-            crate::agent_workspace::AgentWorkspaceError::NotAGitRepository(cwd.clone())
-        })?;
-
-        self.spawn_agent_workspace_with_repo(cli, repo_root, task_label)
-    }
-
-    /// Modal-driven variant (#349) — caller supplies the resolved repo root
-    /// directly (the modal accepts arbitrary subdirs and resolves to the
-    /// nearest `.git` ancestor before calling).
-    pub(crate) fn spawn_agent_workspace_with_repo(
-        &mut self,
-        cli: crate::agent_workspace::AgentCli,
-        repo_root: PathBuf,
-        task_label: String,
-    ) -> Result<(), crate::agent_workspace::AgentWorkspaceError> {
-        let active = self.active_window;
-        let new_id = self.host.alloc_pane_id();
-        let env = crate::shell::build_env();
-        let dynamic_colors = crate::theme::terminal_dynamic_colors(&self.colors);
-        let pane = crate::agent_workspace::AgentWorkspacePane::create(
-            new_id,
-            cli,
-            repo_root,
-            task_label,
-            self.ctx.clone(),
-            self.pty_event_tx.clone(),
-            env,
-            dynamic_colors,
-            self.default_font_size,
-        )?;
-
-        self.windows[active]
-            .panes
-            .insert(new_id, Pane::AgentWorkspace(Box::new(pane)));
-        let share = crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
-        let _ = self.split_with_new_pane(new_id, true, share, false);
-        Ok(())
     }
 
     /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).

@@ -98,18 +98,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         if let Some(app_pane) = pane.as_app_mut() {
             render::app_pane::render(ui, app_pane, &self.colors, is_focused);
-        } else if let Some(agent_pane) = pane.as_agent_mut() {
-            if render::agent_pane::render(ui, agent_pane, &self.colors) {
-                ui.ctx().request_repaint();
-            }
-        } else if let Some(workspace) = pane.as_agent_workspace_mut() {
-            render::agent_workspace_pane::render(
-                ui,
-                workspace,
-                is_focused,
-                &self.theme,
-                &self.colors,
-            );
         } else if let Some(terminal) = pane.as_terminal_mut() {
             let close_exited = render::terminal_pane::render(
                 ui,

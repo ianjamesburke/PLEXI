@@ -1,4 +1,3 @@
-use crate::agent_workspace::AgentCli;
 use crate::tiling::PaneId;
 use egui_tiles::{TileId, Tree};
 use serde::{Deserialize, Serialize};
@@ -56,11 +55,6 @@ pub struct SavedPane {
     pub app_id: Option<String>,
     #[serde(default)]
     pub app_state: Option<serde_json::Value>,
-    /// Agent Workspace (#348) — populated only when `kind == AgentWorkspace`.
-    /// `None` for every other variant; restoring a non-AgentWorkspace pane
-    /// ignores this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_workspace: Option<SavedAgentWorkspace>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -69,21 +63,6 @@ pub enum SavedPaneKind {
     #[default]
     Terminal,
     App,
-    Agent,
-    AgentWorkspace,
-}
-
-/// Persisted state for `Pane::AgentWorkspace`. The worktree is NOT recreated
-/// on restore — `worktree_path` already exists on disk; the PTY just relaunches
-/// the CLI inside it. If the worktree was removed externally between runs the
-/// PTY spawn will surface ENOENT in scrollback (#349 modal will pre-flight).
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct SavedAgentWorkspace {
-    pub cli: AgentCli,
-    pub repo_path: PathBuf,
-    pub branch_name: String,
-    pub worktree_path: PathBuf,
-    pub task_label: String,
 }
 
 fn workspace_path() -> PathBuf {
@@ -145,16 +124,12 @@ mod tests {
     use super::*;
 
     /// `SavedPaneKind` must serialise every Pane variant produced by mirror-split
-    /// (Cmd+N / Cmd+Shift+N): Terminal, App, Agent. Round-tripping through JSON
+    /// (Cmd+N / Cmd+Shift+N): Terminal, App. Round-tripping through JSON
     /// preserves the kind so a workspace saved after a split restores the same
     /// pane type on next launch.
     #[test]
     fn workspace_save_restore_preserves_split_panes() {
-        let kinds = [
-            SavedPaneKind::Terminal,
-            SavedPaneKind::App,
-            SavedPaneKind::Agent,
-        ];
+        let kinds = [SavedPaneKind::Terminal, SavedPaneKind::App];
         for kind in kinds {
             let pane = SavedPane {
                 id: 42,
@@ -164,7 +139,6 @@ mod tests {
                 app_id: matches!(kind, SavedPaneKind::App)
                     .then(|| "snake".to_string()),
                 app_state: None,
-                agent_workspace: None,
             };
             let json = serde_json::to_string(&pane).expect("serialize");
             let restored: SavedPane = serde_json::from_str(&json).expect("deserialize");
@@ -172,40 +146,6 @@ mod tests {
             assert_eq!(restored.id, 42);
             assert_eq!(restored.cwd, PathBuf::from("/tmp"));
         }
-    }
-
-    /// #348 — Agent Workspace pane round-trips through workspace persistence:
-    /// kind, CLI, repo path, branch name, worktree path, task label all
-    /// preserved across serialize/deserialize.
-    #[test]
-    fn saved_agent_workspace_round_trips_through_persistence() {
-        let pane = SavedPane {
-            id: 7,
-            kind: SavedPaneKind::AgentWorkspace,
-            cwd: PathBuf::from("/repo/.git/worktrees/plexi-abcd1234"),
-            name: None,
-            app_id: None,
-            app_state: None,
-            agent_workspace: Some(SavedAgentWorkspace {
-                cli: AgentCli::ClaudeCode,
-                repo_path: PathBuf::from("/repo"),
-                branch_name: "plexi/agent-fix-bug-abcd1234".to_string(),
-                worktree_path: PathBuf::from("/repo/.git/worktrees/plexi-abcd1234"),
-                task_label: "fix the auth bug".to_string(),
-            }),
-        };
-        let json = serde_json::to_string(&pane).expect("serialize");
-        let restored: SavedPane = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored.kind, SavedPaneKind::AgentWorkspace);
-        let aw = restored.agent_workspace.expect("agent_workspace must round-trip");
-        assert_eq!(aw.cli, AgentCli::ClaudeCode);
-        assert_eq!(aw.repo_path, PathBuf::from("/repo"));
-        assert_eq!(aw.branch_name, "plexi/agent-fix-bug-abcd1234");
-        assert_eq!(
-            aw.worktree_path,
-            PathBuf::from("/repo/.git/worktrees/plexi-abcd1234")
-        );
-        assert_eq!(aw.task_label, "fix the auth bug");
     }
 
     /// SavedWindow omits `grid_x` / `grid_y` defaults cleanly.
@@ -233,21 +173,16 @@ mod tests {
         assert_eq!(restored.grid_y, 0, "grid_y must default to 0");
     }
 
-    /// Regression guard: existing variants still round-trip after the new
-    /// optional field was added (`agent_workspace: Option<...>` must not
-    /// break legacy saved-workspace files that omit it).
+    /// Legacy workspace files without optional fields still deserialize cleanly.
     #[test]
-    fn existing_round_trip_test_still_passes_after_variant_added() {
-        // Synthesize a JSON blob without the new field — simulates a
-        // workspace.json written by a prior Plexi version.
+    fn legacy_saved_pane_deserializes_cleanly() {
         let legacy_json = r#"{
             "id": 1,
             "kind": "terminal",
             "cwd": "/tmp"
         }"#;
         let restored: SavedPane = serde_json::from_str(legacy_json)
-            .expect("legacy SavedPane without agent_workspace must deserialize");
+            .expect("legacy SavedPane must deserialize");
         assert_eq!(restored.kind, SavedPaneKind::Terminal);
-        assert!(restored.agent_workspace.is_none());
     }
 }

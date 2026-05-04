@@ -449,12 +449,9 @@ pub(super) fn render_draw_commands(
             // command stream before this painter sees it; this arm is the safety
             // net for the wire-only landing.
             | DrawCommand::AppendConversation { .. }
-            // PipeOpenDirected and AgentRosterGet are control commands routed
-            // by `route_command`; they never paint and the painter sees them
-            // only as a safety net (the dispatcher should already have peeled
-            // them off via the routing path).
+            // PipeOpenDirected is a control command routed by `route_command`;
+            // it never paints and the painter sees it only as a safety net.
             | DrawCommand::PipeOpenDirected { .. }
-            | DrawCommand::AgentRosterGet { .. }
             // Canvas Terminal Binding Primitives (#78). All five are control
             // commands routed by `route_command`; the painter never sees them
             // unless the dispatcher missed a peel-off — silent no-op is the

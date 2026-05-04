@@ -7,10 +7,8 @@
 //!
 //!   1. Tests can replace `LiveAiBroker` with a canned `AiBroker` mock and
 //!      drive `process_app::routing` deterministically (no real LLM).
-//!   2. v3.4 (issue #285, "agent-as-app") can reuse the same broker — the
-//!      hardcoded `Pane::Agent` turn loop becomes a degenerate case where
-//!      the in-process agent calls into `LiveAiBroker` exactly the same way
-//!      a subprocess agent does over PGAP.
+//!   2. Any PGAP app with `ai.query` can reuse the same broker — the turn
+//!      loop is owned by the app, which calls into `LiveAiBroker` over PGAP.
 //!
 //! Today the broker drives the synchronous `turn_loop::run_turn` path (which
 //! itself spawns a worker thread inside the backend) so we never hit the UI

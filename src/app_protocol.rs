@@ -168,26 +168,7 @@ pub enum PlexiEvent {
     /// buffer for `id` after emitting this event so the field is empty for
     /// the next input.
     TextSubmitted { id: String, value: String },
-    /// Sent once at agent startup to deliver the manifest's `[launch].system_prompt`.
-    ///
-    /// Only delivered to apps whose manifest declares `[app] type = "agent"`. Apps
-    /// of `type = "app"` will never receive this event. The agent decides how to
-    /// use the prompt — typically by passing it as the `system` field on the
-    /// first `iq.query` call. Apps that don't need a system prompt may simply
-    /// ignore the event.
-    ///
-    /// `system_prompt` is `None` when the manifest omits the `[launch].system_prompt`
-    /// field; the host serialises it as JSON `null` so the value is explicit on
-    /// the wire. Agents must handle the `None` case (no prompt set).
-    AgentInit { system_prompt: Option<String> },
-    /// User submitted text in the host-rendered conversation input box of an
-    /// agent pane.
-    ///
-    /// Only delivered to apps whose manifest declares `[app] type = "agent"`.
-    /// The agent receives the raw user text and decides how to respond
-    /// (typically by appending it to its conversation history and dispatching
-    /// an `iq.query`). The host owns the input widget; the agent owns the
-    /// conversation logic.
+    /// User submitted text in the focused app pane.
     UserMessage { text: String },
     /// Clipboard paste forwarded into the focused app pane.
     ///
@@ -303,17 +284,6 @@ pub enum PlexiEvent {
         request_id: String,
         error: String,
     },
-    /// Response to `DrawCommand::AgentRosterGet` (#286). Lists every live
-    /// `Pane::Agent` in the same workspace context.
-    ///
-    /// `agents` is sorted by `pane_id` ascending so the snapshot is
-    /// reproducible across calls. An app without the `agents.list`
-    /// capability receives an empty `agents` vec — NOT an error. This
-    /// matches the spec: "agents.list" is gated on visibility, not access.
-    AgentRoster {
-        request_id: String,
-        agents: Vec<AgentInfo>,
-    },
     /// Response to `DrawCommand::RequestLinkedTerminal` (#78). Carries the
     /// pane id of the freshly-opened terminal so subsequent
     /// `RunInLinkedTerminal` / `InsertPathToken` / etc. calls can reference
@@ -379,18 +349,6 @@ impl From<crate::midi::MidiPortInfo> for MidiPortWire {
             default: info.default,
         }
     }
-}
-
-/// One live agent pane on the wire. Returned by `AgentRoster` (#286).
-///
-/// `pane_id` matches the host's internal `PaneId` (`u64`); pass it back
-/// to the host as `target_pane_id` on `PipeOpenDirected` to address
-/// inter-agent pipes.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct AgentInfo {
-    pub pane_id: u64,
-    pub app_id: String,
-    pub name: String,
 }
 
 /// On-the-wire shape of one audio device. Mirrors `audio::AudioDeviceInfo`
@@ -681,10 +639,6 @@ pub enum DrawCommand {
         pipe_id: String,
         payload: serde_json::Value,
     },
-    /// Query the live agent roster (#286). Requires `agents.list` capability;
-    /// callers without it receive an empty `agents` vec on the response — not
-    /// an error. The response is `PlexiEvent::AgentRoster { request_id, agents }`.
-    AgentRosterGet { request_id: String },
     /// Update the status text shown in the parent pane chrome.
     StatusSummary { text: String },
 
@@ -1603,34 +1557,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_init_event_round_trips_serde() {
-        // With a system prompt set.
-        let json = r#"{"type":"agent_init","system_prompt":"You are helpful."}"#;
-        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
-        match &event {
-            PlexiEvent::AgentInit { system_prompt } => {
-                assert_eq!(system_prompt.as_deref(), Some("You are helpful."));
-            }
-            other => panic!("expected AgentInit, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&event).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"agent_init""#),
-            "wire tag missing: {serialised}"
-        );
-
-        // Null system_prompt — agent manifests without a `[launch].system_prompt`.
-        let json = r#"{"type":"agent_init","system_prompt":null}"#;
-        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
-        match &event {
-            PlexiEvent::AgentInit { system_prompt } => {
-                assert!(system_prompt.is_none(), "system_prompt must be None");
-            }
-            other => panic!("expected AgentInit, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn append_conversation_drawcommand_round_trips() {
         let json =
             r#"{"type":"append_conversation","role":"assistant","content":"Hello!"}"#;
@@ -1794,49 +1720,6 @@ mod tests {
         assert!(
             serde_json::from_str::<DrawCommand>(bad).is_err(),
             "must fail without required `bytes` field"
-        );
-    }
-
-    // ── v3.3 P2 agent roster + directed pipes (#286) ────────────────────
-    // Pin the on-the-wire shape for the roster query/event and the directed
-    // pipe DrawCommand. All fields required — no `#[serde(default)]`.
-
-    #[test]
-    fn agent_roster_get_drawcommand_round_trips_serde() {
-        let json = r#"{"type":"agent_roster_get","request_id":"req-7"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::AgentRosterGet { request_id } => {
-                assert_eq!(request_id, "req-7");
-            }
-            other => panic!("expected AgentRosterGet, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"agent_roster_get""#),
-            "wire tag missing: {serialised}"
-        );
-    }
-
-    #[test]
-    fn agent_roster_event_round_trips_serde() {
-        let json = r#"{"type":"agent_roster","request_id":"req-7","agents":[{"pane_id":3,"app_id":"agent-worker","name":"Worker"},{"pane_id":7,"app_id":"agent-coordinator","name":"Coordinator"}]}"#;
-        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
-        match &event {
-            PlexiEvent::AgentRoster { request_id, agents } => {
-                assert_eq!(request_id, "req-7");
-                assert_eq!(agents.len(), 2);
-                assert_eq!(agents[0].pane_id, 3);
-                assert_eq!(agents[0].app_id, "agent-worker");
-                assert_eq!(agents[0].name, "Worker");
-                assert_eq!(agents[1].pane_id, 7);
-            }
-            other => panic!("expected AgentRoster, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&event).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"agent_roster""#),
-            "wire tag missing: {serialised}"
         );
     }
 
