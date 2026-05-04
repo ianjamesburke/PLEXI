@@ -395,9 +395,8 @@ impl AppRegistry {
             &manifest.app.capabilities.capabilities,
         ) {
             return Err(format!(
-                "manifest lists {e}; valid values: fs.read, fs.write, net.http, \
-                 secrets.get, pipe.open, spawn.app, audio.record, audio.playback, \
-                 video.playback"
+                "manifest lists {e}; valid values: {}",
+                crate::app_permissions::Capability::all_str_values().join(", ")
             ));
         }
 
