@@ -93,10 +93,11 @@ Note: `size:*` labels don't exist in the repo yet — include size in the triage
 
 ## Step 4 — Priority
 
-Score P1–P4:
+Score P0–P4:
 
 | Priority | Criteria |
 |----------|----------|
+| P0 | On fire — drop everything; the app is broken or data is at risk right now |
 | P1 | Breaks a shipped feature for real users; blocks the current milestone from shipping |
 | P2 | High-value — users actively need this; should happen in the near term |
 | P3 | Clear value but not blocking anything; nice-to-have |
@@ -163,7 +164,15 @@ For `size:XS` through `size:M`, score actionability on three axes:
 
 Don't treat this as pass/fail. Note which axes are incomplete and what specifically would close the gap — this becomes the comment you post.
 
-Apply `ready` only if all three axes are fully satisfied.
+Apply `ready` only if all three axes are fully satisfied AND there are no open blocking dependencies.
+
+**Dependency check:** If the issue depends on other open issues before work can start, populate the `depends_on` front matter and apply `blocked` instead of `ready`. If the issue body doesn't already have the front matter block, prepend it:
+```
+---
+depends_on: [N, M]
+---
+```
+Then: `gh issue edit <number> --add-label "blocked"`
 
 ---
 
@@ -192,10 +201,21 @@ Example verdicts to include in the triage comment:
 
 ## Step 10 — Apply Labels
 
+If the issue body is missing the `depends_on` front matter block, prepend it before applying labels:
+```bash
+gh issue edit <number> --body "---
+depends_on: []
+---
+
+$(gh issue view <number> --json body --jq '.body')"
+```
+
 ```bash
 gh issue edit <number> --add-label "<type>,<priority>,<era>"
-# If actionable:
+# If actionable and no open dependencies:
 gh issue edit <number> --add-label "ready"
+# If has open dependencies (depends_on populated):
+gh issue edit <number> --add-label "blocked"
 # If slotted:
 gh issue edit <number> --milestone "<title>"
 ```
