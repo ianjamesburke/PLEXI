@@ -12,6 +12,12 @@ use egui_term::BackendCommand;
 use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
 use std::collections::HashMap;
 
+pub(crate) enum SwapResult {
+    Swapped { rect_a: egui::Rect, rect_b: egui::Rect },
+    AtBoundary,
+    NoFocus,
+}
+
 /// If `pane_id` is an app pane that was opened as an overlay over another
 /// pane (`hint = Some("overlay")`), restore the original pane and return
 /// `true`. Otherwise return `false` and leave the map unchanged.
@@ -575,6 +581,50 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn swap_pane(&mut self, dir: Direction) -> SwapResult {
+        use egui_tiles::Tile;
+        let active = self.active_window;
+        let ctx = &mut self.windows[active];
+
+        let Some(focused) = ctx.focused_pane else {
+            return SwapResult::NoFocus;
+        };
+
+        let Some(neighbor) = ctx.find_pane_in_direction_from(focused, dir) else {
+            log::info!("swap_pane({:?}): at boundary, no neighbor", dir);
+            return SwapResult::AtBoundary;
+        };
+
+        let rect_a = ctx.tree.tiles.rect(focused).unwrap_or(egui::Rect::ZERO);
+        let rect_b = ctx.tree.tiles.rect(neighbor).unwrap_or(egui::Rect::ZERO);
+
+        let pane_a = match ctx.tree.tiles.get(focused) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+        let pane_b = match ctx.tree.tiles.get(neighbor) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+
+        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(focused) {
+            *id = pane_b;
+        }
+        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(neighbor) {
+            *id = pane_a;
+        }
+
+        // Focus follows content: move focus to the tile now containing this pane.
+        ctx.focused_pane = Some(neighbor);
+
+        log::info!(
+            "swap_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?})",
+            dir, pane_a, pane_b, focused, neighbor
+        );
+
+        SwapResult::Swapped { rect_a, rect_b }
+    }
+
     pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
         let ctx = &mut self.windows[self.active_window];
         let Some(focused_tile) = ctx.focused_pane else {
@@ -652,5 +702,31 @@ impl PlexiApp {
             self.delete_window(self.active_window);
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod swap_tests {
+    use super::*;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft)
+    }
+
+    #[test]
+    fn swap_pane_no_focus_returns_no_focus() {
+        let mut app = test_app();
+        assert!(matches!(app.swap_pane(Direction::Right), SwapResult::NoFocus));
+    }
+
+    #[test]
+    fn swap_pane_at_boundary_with_single_pane() {
+        let mut app = test_app();
+        let tile = app.windows[0].tree.tiles.insert_pane(1u64);
+        app.windows[0].focused_pane = Some(tile);
+        // No neighbors (rects unset = Rect::ZERO, geometric search returns None)
+        assert!(matches!(app.swap_pane(Direction::Right), SwapResult::AtBoundary));
     }
 }

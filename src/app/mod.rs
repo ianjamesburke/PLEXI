@@ -118,6 +118,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
+struct PaneSwapAnim {
+    from: egui::Rect,
+    to: egui::Rect,
+    started_at: std::time::Instant,
+}
+
+struct EdgePulse {
+    tile: egui_tiles::TileId,
+    dir: crate::keys::Direction,
+    started_at: std::time::Instant,
+}
+
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
@@ -233,6 +245,10 @@ pub struct PlexiApp {
     /// Pane count from the last snapshot push. Avoids rebuilding the global
     /// pane context every frame when no panes were opened or closed.
     pane_snapshot_len: usize,
+    /// In-flight pane swap animations. Each entry fades out over 160 ms.
+    pane_anims: Vec<PaneSwapAnim>,
+    /// Boundary edge pulse — shown when a swap is attempted at the wall.
+    edge_pulse: Option<EdgePulse>,
 }
 
 #[cfg(test)]
@@ -525,6 +541,8 @@ impl PlexiApp {
                     minimap_visible_per_context: HashMap::new(),
                     next_window_id: next_id,
                     pane_snapshot_len: 0,
+                    pane_anims: Vec::new(),
+                    edge_pulse: None,
                 };
             }
         }
@@ -610,6 +628,8 @@ impl PlexiApp {
             minimap_visible_per_context: HashMap::new(),
             next_window_id: 2,
             pane_snapshot_len: 0,
+            pane_anims: Vec::new(),
+            edge_pulse: None,
         }
     }
 
@@ -705,6 +725,8 @@ impl PlexiApp {
             minimap_visible_per_context: HashMap::new(),
             next_window_id: 2,
             pane_snapshot_len: 0,
+            pane_anims: Vec::new(),
+            edge_pulse: None,
             show_cli_setup_prompt: false,
         }
     }
@@ -1607,6 +1629,32 @@ impl eframe::App for PlexiApp {
                             self.windows[self.active_window].focused_pane;
                     }
                 }
+                Action::SwapPane(dir) => {
+                    match self.swap_pane(dir) {
+                        crate::pane_ops::SwapResult::Swapped {
+                            rect_a, rect_b, ..
+
+                        } => {
+                            let now = std::time::Instant::now();
+                            self.pane_anims = vec![
+                                PaneSwapAnim { from: rect_a, to: rect_b, started_at: now },
+                                PaneSwapAnim { from: rect_b, to: rect_a, started_at: now },
+                            ];
+                            self.ctx.request_repaint();
+                        }
+                        crate::pane_ops::SwapResult::AtBoundary => {
+                            if let Some(focused) = self.windows[self.active_window].focused_pane {
+                                self.edge_pulse = Some(EdgePulse {
+                                    tile: focused,
+                                    dir,
+                                    started_at: std::time::Instant::now(),
+                                });
+                                self.ctx.request_repaint();
+                            }
+                        }
+                        crate::pane_ops::SwapResult::NoFocus => {}
+                    }
+                }
                 Action::ClosePane => {
                     // If the focused app pane has a non-empty nav stack
                     // (via PushNav), Escape routes NavBack to the app
@@ -2135,6 +2183,64 @@ impl eframe::App for PlexiApp {
                     }
                 } else {
                     drop(behavior);
+                }
+
+                // ── Pane swap animation overlays ────────────────────────────────────────
+                {
+                    let anim_dur = std::time::Duration::from_millis(160);
+                    let edge_dur = std::time::Duration::from_millis(120);
+                    let now_anim = std::time::Instant::now();
+
+                    self.pane_anims.retain(|a| now_anim.duration_since(a.started_at) < anim_dur);
+                    if let Some(ref pulse) = self.edge_pulse {
+                        if now_anim.duration_since(pulse.started_at) >= edge_dur {
+                            self.edge_pulse = None;
+                        }
+                    }
+
+                    for anim in &self.pane_anims {
+                        let elapsed = now_anim.duration_since(anim.started_at).as_secs_f32();
+                        let t = (elapsed / anim_dur.as_secs_f32()).clamp(0.0, 1.0);
+                        let t_eased = 1.0 - (1.0 - t).powi(3);
+                        let animated_rect = egui::Rect {
+                            min: anim.from.min.lerp(anim.to.min, t_eased),
+                            max: anim.from.max.lerp(anim.to.max, t_eased),
+                        };
+                        ui.painter().rect_filled(
+                            animated_rect,
+                            egui::CornerRadius::same(4),
+                            self.colors.accent.gamma_multiply(0.25),
+                        );
+                        self.ctx.request_repaint();
+                    }
+
+                    if let Some(ref pulse) = self.edge_pulse {
+                        if let Some(pane_rect) = self.windows[self.active_window].tree.tiles.rect(pulse.tile) {
+                            let elapsed = now_anim.duration_since(pulse.started_at).as_secs_f32();
+                            let alpha = (1.0 - elapsed / edge_dur.as_secs_f32()).max(0.0);
+                            let edge_color = self.colors.accent.gamma_multiply(alpha);
+                            let (p1, p2) = match pulse.dir {
+                                crate::keys::Direction::Left => (
+                                    egui::pos2(pane_rect.left(), pane_rect.top()),
+                                    egui::pos2(pane_rect.left(), pane_rect.bottom()),
+                                ),
+                                crate::keys::Direction::Right => (
+                                    egui::pos2(pane_rect.right(), pane_rect.top()),
+                                    egui::pos2(pane_rect.right(), pane_rect.bottom()),
+                                ),
+                                crate::keys::Direction::Up => (
+                                    egui::pos2(pane_rect.left(), pane_rect.top()),
+                                    egui::pos2(pane_rect.right(), pane_rect.top()),
+                                ),
+                                crate::keys::Direction::Down => (
+                                    egui::pos2(pane_rect.left(), pane_rect.bottom()),
+                                    egui::pos2(pane_rect.right(), pane_rect.bottom()),
+                                ),
+                            };
+                            ui.painter().line_segment([p1, p2], egui::Stroke::new(3.0, edge_color));
+                            self.ctx.request_repaint();
+                        }
+                    }
                 }
 
                 if should_close_exited {
