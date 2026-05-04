@@ -2038,6 +2038,7 @@ impl eframe::App for PlexiApp {
                                 "drop: zoomed overlay received drop event — pane_id={pane_id:?}"
                             );
                         }
+                        child_ui.set_opacity(0.88);
                         egui::Frame::new()
                             .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
