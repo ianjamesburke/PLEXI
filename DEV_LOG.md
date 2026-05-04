@@ -1,5 +1,13 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] Rust-owned canonical PGAP schema + generated Python protocol models (PR #634 → alpha)
+
+Added `JsonSchema` derives (via `schemars`, already in Cargo.toml) to all 23 protocol types in `src/app_protocol.rs`. New `src/bin/gen_schema.rs` binary emits a combined JSON Schema for `PlexiEvent`, `RenderCommand`, `HostCommand`, `ControlCommand` to stdout; checked-in as `sdk/protocol/pgap.schema.json`. `sdk/protocol/pgap.version.json` declares `{"protocol": "pgap/3", "version": 3}`. `tools/gen_protocol_py.py` reads the schema and generates `sdk/python/plexi_sdk/_protocol.py` with `PROTOCOL_VERSION`, `AiResponse`, `MidiPortInfo`, `MidiDeviceList` dataclasses, replacing the handwritten mirrors in `__init__.py`. `just gen-schema` regenerates both artifacts; `.github/workflows/check-protocol.yml` CI fails if `src/app_protocol.rs` changes without regenerating the schema.
+
+Required adding `src/lib.rs` to expose `app_protocol` as a library target (with stub `midi`/`audio`/`video` modules) so `gen_schema.rs` can depend on `plexi::app_protocol` without pulling in the full GUI dependency tree. `install.sh` changed to `cargo bundle --release --bin plexi` with `app_src="target/release/bundle/osx/plexi.app"` — cargo-bundle assigns the metadata bundle name to the first `[[bin]]` it encounters, so without `--bin` the wrong binary (gen_schema) ends up in the app bundle.
+
+**Breaks if:** Any canvas app pane shows a blank screen or ImportError on launch (would mean `_protocol.py` broke the SDK import chain). Check: open todo app — if it renders, SDK is intact.
+
 ## 2026-05-03 — [CHANGED] plexi install <id> — registry-aware bare app ID shorthand (PR #633 → alpha)
 
 `install_cli` in `src/cli.rs` now detects bare IDs (no `:`, `/`, or `@`) and resolves them via `https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json` before calling `parse_source_spec`. Registry entries in `ianjamesburke/PLEXI` with a `path` field resolve to `local:<dir>` (uses the bundled copy, no clone). Third-party repos resolve to `github:owner/repo`. Unknown IDs print a helpful error with `plexi app list` and `plexiapp.com/apps`. No changes to `install.rs`, `main.rs`, or `packs.rs`.
