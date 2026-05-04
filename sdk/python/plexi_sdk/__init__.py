@@ -448,38 +448,13 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Coroutine
 
-
-# ── ai.query (#284) types ─────────────────────────────────────────────────────
-
-@dataclass
-class AiResponse:
-    """Result of `Emitter.ai_query`. `tokens_in`/`tokens_out` are zero on error."""
-    content: str
-    tokens_in: int
-    tokens_out: int
+from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, PROTOCOL_VERSION
 
 
 class CapabilityDeniedError(RuntimeError):
     """Raised when the host rejects a brokered call because the app's manifest
     didn't declare the required capability. Distinct from generic RuntimeError
     so apps can catch the gate-denial path explicitly."""
-
-
-# ── CoreMIDI (#320) types ─────────────────────────────────────────────────────
-
-@dataclass
-class MidiPortInfo:
-    """One MIDI port (input or output). Mirrors `MidiPortWire` on the wire."""
-    id: str
-    name: str
-    default: bool
-
-
-@dataclass
-class MidiDeviceList:
-    """Result of `Emitter.list_midi_devices`. Both lists may be empty."""
-    inputs: list[MidiPortInfo]
-    outputs: list[MidiPortInfo]
 
 
 # ── Video substrate (#345) types ──────────────────────────────────────────────
@@ -2586,9 +2561,9 @@ class App:
 
                 if t == "init":
                     proto = ev.get("protocol", "")
-                    if not proto.startswith("pgap/3"):
+                    if not proto.startswith(PROTOCOL_VERSION):
                         sys.stderr.write(
-                            f"plexi_sdk: unsupported protocol {proto!r}, expected pgap/3\n"
+                            f"plexi_sdk: unsupported protocol {proto!r}, expected {PROTOCOL_VERSION}\n"
                         )
                         sys.exit(1)
                     self.app_id = ev.get("app_id", "")

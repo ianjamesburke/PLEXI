@@ -48,7 +48,7 @@ use crossbeam_queue::ArrayQueue;
 /// `{"play": null}` / `{"pause": null}` / `{"seek": <ms>}` via serde's
 /// default `untagged`-friendly encoding. The PGAP wire serialises this as a
 /// nested struct under `state` in `DrawCommand::SetVideoState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VideoState {
     Play,
