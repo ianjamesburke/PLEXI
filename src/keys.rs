@@ -81,8 +81,6 @@ pub enum Action {
     OpenSecretsManager,
     /// Toggle the Run palette (shows active runs, BlockedOnUser prompts).
     ToggleRunPalette,
-    /// Open a new agent pane (Cmd+I).
-    OpenAgentPane,
     /// Toggle the notification panel overlay (Cmd+Shift+A).
     ToggleNotificationModal,
     NotificationCycleNext,
@@ -227,11 +225,6 @@ pub fn poll_actions(
         // Command palette (Cmd+P)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
             actions.push(Action::ToggleCommandPalette);
-        }
-
-        // Open agent pane (Cmd+I)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::I) {
-            actions.push(Action::OpenAgentPane);
         }
 
         // Rename pane (Cmd+Shift+R)

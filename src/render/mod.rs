@@ -7,7 +7,5 @@
 //! and shrinking into the inner UI — these renderers operate on the inner UI
 //! and should not repaint the background.
 
-pub mod agent_pane;
-pub mod agent_workspace_pane;
 pub mod app_pane;
 pub mod terminal_pane;

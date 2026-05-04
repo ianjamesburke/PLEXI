@@ -129,7 +129,6 @@ impl PlexiApp {
     ///
     /// - Terminal → new terminal in the same cwd
     /// - App      → fresh instance of the same app (`launch_app_by_id`)
-    /// - Agent    → new agent
     ///
     /// If no pane is focused, falls back to creating a full-size terminal.
     pub(crate) fn split_focused_mirror(&mut self, placement: Placement) {
@@ -162,18 +161,10 @@ impl PlexiApp {
         enum Kind {
             Terminal,
             App(String),
-            Agent,
-            /// Mirror-split for an Agent Workspace pane is a no-op in this PR
-            /// (#348). The modal picker lands in #349 and is the right surface
-            /// for "spawn another agent" — silently dropping the request here
-            /// would be confusing, so we fall back to a plain terminal split.
-            AgentWorkspace,
         }
         let kind = match self.windows[active].panes.get(&focused_pane_id) {
             Some(Pane::Terminal(_)) => Kind::Terminal,
             Some(Pane::App(a)) => Kind::App(a.manifest_id.clone()),
-            Some(Pane::Agent(_)) => Kind::Agent,
-            Some(Pane::AgentWorkspace(_)) => Kind::AgentWorkspace,
             None => return,
         };
 
@@ -198,18 +189,6 @@ impl PlexiApp {
                     Some(layout.to_string()),
                     &[],
                 );
-            }
-            Kind::Agent => {
-                // In-process agent removed (#429). Mirror-split of an Agent pane
-                // falls through to a no-op; subprocess agents are spawned via
-                // the app launcher, not the layout mirror path.
-                log::info!("mirror_split: in-process agent removed (#429); no-op");
-            }
-            Kind::AgentWorkspace => {
-                // Substrate-only: mirror-split of an Agent Workspace falls
-                // through to a plain terminal split. The modal picker (#349)
-                // owns "spawn another agent in a new worktree".
-                self.split_focused(vertical);
             }
         }
     }
@@ -566,24 +545,6 @@ impl PlexiApp {
                 }
                 // else: builtin app pane drops here
             }
-            Some(Pane::AgentWorkspace(workspace)) => {
-                // Tear down the worktree so the directory disappears. The
-                // branch survives — review/merge happens after pane close.
-                let repo = workspace.repo_path.clone();
-                let wt = workspace.worktree_path.clone();
-                let branch = workspace.branch_name.clone();
-                drop(workspace); // release PTY (TerminalBackend Drop kills child)
-                match crate::agent_workspace::remove_worktree(&repo, &wt) {
-                    Ok(()) => log::info!(
-                        "agent_workspace: removed worktree {} (branch '{branch}' kept for review)",
-                        wt.display()
-                    ),
-                    Err(e) => log::warn!(
-                        "agent_workspace: failed to remove worktree {}: {e}",
-                        wt.display()
-                    ),
-                }
-            }
             _ => {}
         }
     }
@@ -642,8 +603,6 @@ impl PlexiApp {
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             if let Some(t) = pane.as_terminal_mut() {
                 t.font_size = (t.font_size + delta).clamp(8.0, 32.0);
-            } else if let Some(a) = pane.as_agent_mut() {
-                a.font_size = (a.font_size + delta).clamp(8.0, 32.0);
             }
         }
     }

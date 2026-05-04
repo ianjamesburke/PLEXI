@@ -480,33 +480,6 @@ impl ProcessApp {
                 }
             }
 
-            // ── Agent roster query — #286 ─────────────────────────────────
-            // Capability gate is unusual: an undeclared `agents.list` does
-            // NOT return an error — it returns an empty roster. The check
-            // happens here (loud log) but we still defer to the host to
-            // emit the response so the wire shape is identical regardless.
-            DrawCommand::AgentRosterGet { request_id } => {
-                if let PermissionCheck::Denied(_) =
-                    check(&self.permissions, Capability::AgentsList)
-                {
-                    // Per-spec: undeclared → empty roster, not an error.
-                    log::debug!(
-                        "ProcessApp[{}]: AgentRosterGet without agents.list — empty roster",
-                        self.type_id
-                    );
-                    self.outbound_events
-                        .push_back(PlexiEvent::AgentRoster {
-                            request_id,
-                            agents: Vec::new(),
-                        });
-                    return;
-                }
-                self.pending_commands.push(AppCommand::AgentRosterGet {
-                    sender_pane_id: self.pane_id,
-                    request_id,
-                });
-            }
-
             // ── Pipe send ──────────────────────────────────────────────────
             DrawCommand::PipeSend { pipe_id, payload } => {
                 if let PermissionCheck::Denied(reason) =

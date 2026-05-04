@@ -18,12 +18,6 @@ enum PaletteEntry {
         name: String,
         description: String,
     },
-    /// Static action — flat command not tied to a context or installed app.
-    Action {
-        id: String,
-        name: String,
-        description: String,
-    },
 }
 
 impl PlexiApp {
@@ -208,42 +202,6 @@ impl PlexiApp {
             });
         }
 
-        // ── Static actions ─────────────────────────────────────────────────
-        let action_specs: &[(&str, &str, &str)] = &[
-            (
-                "agent_workspace:modal",
-                "New Agent Workspace…",
-                "Open the picker with CLI dropdown, repo picker, and task prompt",
-            ),
-            (
-                "agent_workspace:claude_code",
-                "New Agent Workspace: Claude Code",
-                "Spawn Claude Code in a fresh git worktree",
-            ),
-            (
-                "agent_workspace:codex",
-                "New Agent Workspace: Codex",
-                "Spawn Codex in a fresh git worktree",
-            ),
-            (
-                "agent_workspace:gemini_cli",
-                "New Agent Workspace: Gemini CLI",
-                "Spawn Gemini CLI in a fresh git worktree",
-            ),
-        ];
-        for (id, name, description) in action_specs {
-            if query.is_empty()
-                || name.to_lowercase().contains(&query)
-                || id.to_lowercase().contains(&query)
-            {
-                entries.push(PaletteEntry::Action {
-                    id: (*id).to_string(),
-                    name: (*name).to_string(),
-                    description: (*description).to_string(),
-                });
-            }
-        }
-
         let total = entries.len();
 
         if self.palette_selected >= total && total > 0 {
@@ -255,7 +213,6 @@ impl PlexiApp {
         enum Action {
             JumpContext(usize, u64, Option<u64>),
             LaunchApp(String),
-            RunAction(String),
         }
         let mut action: Option<Action> = None;
         let prev_selected = self.palette_selected;
@@ -291,9 +248,6 @@ impl PlexiApp {
                     Some(PaletteEntry::App { id, .. }) => {
                         action = Some(Action::LaunchApp(id.clone()));
                     }
-                    Some(PaletteEntry::Action { id, .. }) => {
-                        action = Some(Action::RunAction(id.clone()));
-                    }
                     None => {}
                 }
             }
@@ -310,12 +264,6 @@ impl PlexiApp {
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 self.launch_app_by_id(&id);
-                return;
-            }
-            Some(Action::RunAction(id)) => {
-                self.show_command_palette = false;
-                self.palette_query.clear();
-                self.run_palette_action(&id);
                 return;
             }
             None => {}
@@ -508,49 +456,6 @@ impl PlexiApp {
                                             }
                                         }
 
-                                        PaletteEntry::Action {
-                                            id,
-                                            name,
-                                            description,
-                                        } => {
-                                            let (r, _) = selectable_row(
-                                                ui,
-                                                is_selected,
-                                                &colors,
-                                                |ui| {
-                                                    ui.horizontal(|ui| {
-                                                        ui.label(
-                                                            RichText::new("⚡")
-                                                                .size(10.0)
-                                                                .color(colors.accent),
-                                                        );
-                                                        ui.add_space(4.0);
-                                                        ui.label(
-                                                            RichText::new(name.as_str())
-                                                                .size(12.0)
-                                                                .color(colors.text_primary),
-                                                        );
-                                                    });
-                                                    if !description.is_empty() {
-                                                        ui.label(
-                                                            RichText::new(description.as_str())
-                                                                .size(9.0)
-                                                                .color(colors.text_dim),
-                                                        );
-                                                    }
-                                                },
-                                            );
-                                            if is_selected && should_scroll {
-                                                r.scroll_to_me(None);
-                                            }
-                                            if r.clicked() {
-                                                click_action =
-                                                    Some(Action::RunAction(id.clone()));
-                                            }
-                                            if r.hovered() {
-                                                hover_select = Some(i);
-                                            }
-                                        }
                                     }
                                 }
                             });
@@ -572,11 +477,6 @@ impl PlexiApp {
                                     self.show_command_palette = false;
                                     self.palette_query.clear();
                                     self.launch_app_by_id(&id);
-                                }
-                                Action::RunAction(id) => {
-                                    self.show_command_palette = false;
-                                    self.palette_query.clear();
-                                    self.run_palette_action(&id);
                                 }
                             }
                         }
@@ -625,60 +525,4 @@ impl PlexiApp {
         }
     }
 
-    /// Dispatch a static palette action. Adding a new action means
-    /// (1) appending to `action_specs` above, and (2) extending this match.
-    pub(crate) fn run_palette_action(&mut self, id: &str) {
-        match id {
-            "agent_workspace:modal" => self.open_agent_workspace_modal(),
-            "agent_workspace:claude_code" => self.spawn_agent_workspace(
-                crate::agent_workspace::AgentCli::ClaudeCode,
-            ),
-            "agent_workspace:codex" => self.spawn_agent_workspace(
-                crate::agent_workspace::AgentCli::Codex,
-            ),
-            "agent_workspace:gemini_cli" => self.spawn_agent_workspace(
-                crate::agent_workspace::AgentCli::GeminiCli,
-            ),
-            other => {
-                log::warn!("run_palette_action: unknown action id '{other}'");
-            }
-        }
-    }
-
-    fn spawn_agent_workspace(&mut self, cli: crate::agent_workspace::AgentCli) {
-        if !cli.is_installed() {
-            self.push_host_notification(
-                "warn".to_string(),
-                format!("{} is not installed", cli.display_name()),
-                format!(
-                    "The `{}` binary was not found on PATH or in common installer dirs.",
-                    cli.binary_name()
-                ),
-            );
-            return;
-        }
-        match self.open_agent_workspace_pane(cli, String::new()) {
-            Ok(()) => log::info!("agent_workspace: spawned {}", cli.display_name()),
-            Err(e) => {
-                self.push_host_notification(
-                    "warn".to_string(),
-                    format!("Failed to spawn {}", cli.display_name()),
-                    e.to_string(),
-                );
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn palette_spawn_not_installed_pushes_notification() {
-        let result = std::panic::catch_unwind(|| {
-            let _ = crate::agent_workspace::AgentCli::ClaudeCode.is_installed();
-            let _ = crate::agent_workspace::AgentCli::Codex.is_installed();
-            let _ = crate::agent_workspace::AgentCli::GeminiCli.is_installed();
-        });
-        assert!(result.is_ok(), "AgentCli::is_installed() panicked unexpectedly");
-    }
 }

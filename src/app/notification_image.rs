@@ -164,11 +164,6 @@ fn drain_pipe_frame(
                 crate::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
                 crate::pane::AppRuntime::Builtin(_) => None,
             },
-            crate::pane::Pane::Agent(agent) => match &agent.backend {
-                crate::agent_pane::AgentBackend::Subprocess(sub) => {
-                    Some(sub.process.pipe_registry.clone())
-                }
-            },
             _ => None,
         };
         let Some(registry) = registry else {

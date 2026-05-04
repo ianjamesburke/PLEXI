@@ -65,19 +65,6 @@ impl PlexiApp {
                     }
                     continue;
                 }
-                // Subprocess agent panes (#286) — the agent emits AppCommands
-                // (e.g. AgentRosterGet, OpenDirectedPipe, DeliverPipeMessage)
-                // through its inner ProcessApp. Drain those here so the host
-                // dispatch loop sees them.
-                if let Some(agent_pane) = pane.as_agent_mut() {
-                    let crate::agent_pane::AgentBackend::Subprocess(sub) =
-                        &mut agent_pane.backend;
-                    let type_id = sub.manifest_id.clone();
-                    let cmds = std::mem::take(&mut sub.process.pending_commands);
-                    if !cmds.is_empty() {
-                        per_pane.push((ctx_idx, *pane_id, type_id, cmds));
-                    }
-                }
             }
         }
 
@@ -96,7 +83,6 @@ impl PlexiApp {
                     | AppCommand::SpawnPane { .. }
                     | AppCommand::DeliverPipeMessage { .. }
                     | AppCommand::OpenDirectedPipe { .. }
-                    | AppCommand::AgentRosterGet { .. }
                     | AppCommand::DeliverRunUpdate { .. }
                     // Canvas Terminal Binding Primitives (#78) — sender_pane_id
                     // is already populated by `route_command` (the originating

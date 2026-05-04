@@ -44,8 +44,6 @@ impl HostSnapshot {
                 let title = match pane {
                     Pane::App(p) => p.name.clone(),
                     Pane::Terminal(_) => "Terminal".to_string(),
-                    Pane::Agent(_) => "Agent".to_string(),
-                    Pane::AgentWorkspace(_) => "AgentWorkspace".to_string(),
                 };
                 (*id, title)
             })

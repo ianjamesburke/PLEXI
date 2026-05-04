@@ -506,25 +506,6 @@ impl AppRegistry {
             .map(|h| h.split)
     }
 
-    /// Return the manifest `[app] type` for an installed app, or `None` when
-    /// no app with this id is registered. Lets the launch path branch on
-    /// agent-vs-app rendering without re-reading the manifest from disk.
-    pub fn manifest_type(&self, app_id: &str) -> Option<ManifestType> {
-        self.apps
-            .get(app_id)
-            .map(|a| a.manifest.manifest_type)
-    }
-
-    /// Return the manifest-declared `[launch].system_prompt` for an installed
-    /// agent. Returns `None` for `type = "app"` manifests OR for agent
-    /// manifests that omit the field — both cases are forwarded as
-    /// `PlexiEvent::AgentInit { system_prompt: None }`.
-    pub fn system_prompt_for(&self, app_id: &str) -> Option<String> {
-        self.apps
-            .get(app_id)
-            .and_then(|a| a.launch.system_prompt.clone())
-    }
-
     /// Return the manifest-declared default notification scope for an app.
     /// Used by operators and the host to understand the app's intent;
     /// the actual scope is set per-notification by the app via the SDK.

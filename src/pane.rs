@@ -6,17 +6,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 // ---------------------------------------------------------------------------
-// Pane ADT (spec §2) — Terminal | App | Agent. Adding a variant requires a spec amendment.
+// Pane ADT (spec §2) — Terminal | App. Adding a variant requires a spec amendment.
 // ---------------------------------------------------------------------------
 
 pub enum Pane {
     Terminal(Box<TerminalPane>),
     App(Box<AppPane>),
-    Agent(Box<AgentPane>),
-    /// Agent Workspace (#348): a CLI (Claude Code / Codex / Gemini CLI) running
-    /// inside an auto-created git worktree. State lives in
-    /// `crate::agent_workspace::AgentWorkspacePane`.
-    AgentWorkspace(Box<crate::agent_workspace::AgentWorkspacePane>),
 }
 
 impl Pane {
@@ -24,8 +19,6 @@ impl Pane {
         match self {
             Pane::Terminal(t) => t.id,
             Pane::App(a) => a.id,
-            Pane::Agent(a) => a.id,
-            Pane::AgentWorkspace(w) => w.id,
         }
     }
 
@@ -53,36 +46,6 @@ impl Pane {
     pub fn as_app_mut(&mut self) -> Option<&mut AppPane> {
         match self {
             Pane::App(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn as_agent(&self) -> Option<&AgentPane> {
-        match self {
-            Pane::Agent(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn as_agent_mut(&mut self) -> Option<&mut AgentPane> {
-        match self {
-            Pane::Agent(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn as_agent_workspace(&self) -> Option<&crate::agent_workspace::AgentWorkspacePane> {
-        match self {
-            Pane::AgentWorkspace(w) => Some(w),
-            _ => None,
-        }
-    }
-
-    pub fn as_agent_workspace_mut(
-        &mut self,
-    ) -> Option<&mut crate::agent_workspace::AgentWorkspacePane> {
-        match self {
-            Pane::AgentWorkspace(w) => Some(w),
             _ => None,
         }
     }
@@ -253,6 +216,4 @@ pub struct AppPane {
     pub overlay_replaced: Option<Box<Pane>>,
 }
 
-// AgentPane is defined in agent_pane.rs — re-exported here so Pane variants compile.
-pub use crate::agent_pane::AgentPane;
 

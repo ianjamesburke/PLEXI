@@ -331,7 +331,6 @@ impl PlexiApp {
                         name: t.name.clone(),
                         app_id: None,
                         app_state: None,
-                        agent_workspace: None,
                     });
                 } else if let Some(a) = pane.as_app() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -341,33 +340,6 @@ impl PlexiApp {
                         name: Some(a.name.clone()),
                         app_id: Some(a.runtime.type_id().to_string()),
                         app_state: a.runtime.serialize_state(),
-                        agent_workspace: None,
-                    });
-                } else if let Some(ag) = pane.as_agent() {
-                    saved_panes.push(crate::workspace::SavedPane {
-                        id,
-                        kind: crate::workspace::SavedPaneKind::Agent,
-                        cwd: ag.cwd(),
-                        name: None,
-                        app_id: None,
-                        app_state: None,
-                        agent_workspace: None,
-                    });
-                } else if let Some(w) = pane.as_agent_workspace() {
-                    saved_panes.push(crate::workspace::SavedPane {
-                        id,
-                        kind: crate::workspace::SavedPaneKind::AgentWorkspace,
-                        cwd: w.worktree_path.clone(),
-                        name: None,
-                        app_id: None,
-                        app_state: None,
-                        agent_workspace: Some(crate::workspace::SavedAgentWorkspace {
-                            cli: w.cli,
-                            repo_path: w.repo_path.clone(),
-                            branch_name: w.branch_name.clone(),
-                            worktree_path: w.worktree_path.clone(),
-                            task_label: w.task_label.clone(),
-                        }),
                     });
                 }
             }
