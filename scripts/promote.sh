@@ -54,17 +54,25 @@ esac
 
 # ── promote alpha → beta ──────────────────────────────────────────────────────
 
-if [[ "$to" == "beta" ]]; then
+promote_alpha_to_beta() {
     check_clean "$ALPHA_TREE" "alpha"
     check_pushed "$ALPHA_TREE" "alpha" "alpha"
     check_clean "$BETA_TREE" "beta"
 
+    local version
     version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
     echo "Force-pushing alpha to beta and syncing worktree..."
     git push origin alpha:beta --force-with-lease
     git -C "$BETA_TREE" pull
 
+    echo "v$version is on beta."
+}
+
+if [[ "$to" == "beta" ]]; then
+    promote_alpha_to_beta
+
+    version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
     echo ""
     echo "v$version is on beta — worktrees/beta/ is synced and ready."
 
@@ -76,7 +84,13 @@ if [[ "$to" == "beta" ]]; then
     exit 0
 fi
 
-# ── promote beta → main ───────────────────────────────────────────────────────
+# ── promote beta → main (optionally chaining through alpha first) ─────────────
+
+if [[ "$current_branch" == "alpha" ]]; then
+    echo "On alpha — promoting alpha → beta first..."
+    promote_alpha_to_beta
+    echo ""
+fi
 
 check_clean "$BETA_TREE" "beta"
 check_pushed "$BETA_TREE" "beta" "beta"
