@@ -968,6 +968,67 @@ pub fn self_update_cli() -> i32 {
         }
     }
 
+    // When running inside Plexi the bundle can't be replaced while the app is live.
+    // Write a relaunch script, launch it detached, trigger app quit, and exit.
+    if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
+        let bin_name = current_exe
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("plexi");
+        let app_display_name = app_bundle
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Plexi");
+        let script = format!(
+            "#!/bin/bash\n\
+             while pgrep -x '{bin_name}' > /dev/null 2>&1; do sleep 0.3; done\n\
+             rm -rf '{bundle}'\n\
+             mv '{staging_path}' '{bundle}'\n\
+             ln -sf '{bundle}/Contents/MacOS/{bin_name}' /usr/local/bin/{bin_name} 2>/dev/null || true\n\
+             open '{bundle}'\n",
+            bin_name = bin_name,
+            staging_path = staging.display(),
+            bundle = app_bundle.display(),
+        );
+        let script_path = tmp_dir.join("plexi-relaunch.sh");
+        if let Err(e) = std::fs::write(&script_path, &script) {
+            eprintln!("error: failed to write relaunch script: {e}");
+            let _ = std::fs::remove_dir_all(&staging);
+            return 1;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &script_path,
+                std::fs::Permissions::from_mode(0o755),
+            );
+        }
+        match std::process::Command::new("nohup")
+            .arg("bash")
+            .arg(&script_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("error: failed to launch relaunch script: {e}");
+                let _ = std::fs::remove_dir_all(&staging);
+                return 1;
+            }
+        }
+        println!("Plexi will restart to apply the update.");
+        let _ = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                &format!("tell application \"{app_display_name}\" to quit"),
+            ])
+            .status();
+        return 0;
+    }
+
     if let Err(e) = std::fs::remove_dir_all(&app_bundle) {
         eprintln!("error: failed to remove old app bundle: {e}");
         eprintln!("Run with sudo if /Applications is not user-writable.");
