@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] README overhaul — composability lede, Features + Roadmap (PR #647 → alpha)
+
+Rewrote the lede around the Unix composability angle ("one binary, everything speaks one protocol, pipe output between processes"). Removed: keyboard shortcuts table (in-app `Cmd+/` is the source of truth and won't drift), "What's in v3" heading (temporal, meaningless to a new reader), "agents all install into it" (agents don't install — they run in panes), "Nothing leaks between workspaces" (vacuous). Added: Features section (present-tense, accurate), Roadmap section (6 near-term items, plain bullets, no issue links). Bundled Python demoted from headline feature to impl detail inside the app runtime bullet.
+**Breaks if:** README on GitHub still shows "What's in v3" heading or the keyboard shortcuts table.
+
 ## 2026-05-04 — [CHANGED] Keyboard pane swap Cmd+Ctrl+HJKL + edge pulse (PR #646 → alpha)
 
 Swaps `PaneId` values at two `Tile::Pane` leaf nodes in the egui_tiles tree — tree structure and rects stay fixed, only pane content moves. Focus follows the swapped pane to its new tile. Boundary press produces a 120ms accent edge glow on the blocked side. Swap shows a 160ms ease-out cubic rect overlay. Issue #517 (`feat(media): video decode`) was found fully implemented on alpha already — closed without new code.
