@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.64] — 2026-05-03 22:49 ET
+
+### Changes
+- perf(sdk): batch Python frame output and remove frame.clone() hot-path copy (#624) (#630)
+- chore: update triage skill — P0 priority, depends_on front matter, blocked label handling
+
 ## [3.4.63] — 2026-05-03 22:39 ET
 
 ### Changes
