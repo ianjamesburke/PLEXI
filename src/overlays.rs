@@ -281,9 +281,7 @@ impl PlexiApp {
                                                 .on_hover_text("Copy `plexi update` to clipboard")
                                                 .clicked()
                                             {
-                                                ui.output_mut(|o| {
-                                                    o.copied_text = "plexi update".to_string();
-                                                });
+                                                ui.ctx().copy_text("plexi update".to_string());
                                             }
                                         },
                                     );
