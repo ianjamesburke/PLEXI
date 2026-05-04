@@ -30,7 +30,7 @@ jobs:
         run: cargo install cargo-bundle
 
       - name: Build app bundle
-        run: cargo bundle --release
+        run: cargo bundle --release --bin plexi
 
       - name: Ad-hoc sign (required for ARM64)
         run: codesign --force --deep --sign - target/release/bundle/osx/plexi.app
