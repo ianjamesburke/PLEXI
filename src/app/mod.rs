@@ -1932,10 +1932,13 @@ impl eframe::App for PlexiApp {
                     self.adjust_focused_pane_font_size(-1.0);
                 }
                 Action::ScrollUp => {
-                    self.scroll_focused_pane(3);
+                    self.scroll_focused_pane(1);
                 }
                 Action::ScrollDown => {
-                    self.scroll_focused_pane(-3);
+                    self.scroll_focused_pane(-1);
+                }
+                Action::EnterCopyMode => {
+                    self.enter_copy_mode_focused_pane();
                 }
                 Action::CloseApp => {
                     self.close_focused_app();

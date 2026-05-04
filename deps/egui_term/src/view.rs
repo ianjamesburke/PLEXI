@@ -184,6 +184,14 @@ impl<'a> TerminalView<'a> {
                     }
                     state.cursor_visible = true;
                     state.last_cursor_toggle = Instant::now();
+
+                    if self.backend.copy_mode.is_some() {
+                        if let Some(action) = process_copy_mode_key(&event, modifiers) {
+                            input_actions.push(action);
+                        }
+                        continue;
+                    }
+
                     input_actions.push(process_keyboard_event(
                         event,
                         self.backend,
@@ -241,6 +249,13 @@ impl<'a> TerminalView<'a> {
 
             for action in input_actions {
                 match action {
+                    InputAction::BackendCall(BackendCommand::CopyModeYank) => {
+                        let text = self.backend.selectable_content();
+                        if !text.trim().is_empty() {
+                            layout.ctx.copy_text(text);
+                        }
+                        self.backend.process_command(BackendCommand::ExitCopyMode);
+                    },
                     InputAction::BackendCall(cmd) => {
                         self.backend.process_command(cmd);
                     },
@@ -285,6 +300,20 @@ impl<'a> TerminalView<'a> {
                     clamped_y - layout.rect.min.y,
                     layout.ctx.pixels_per_point(),
                 ));
+            }
+        }
+
+        // Sync copy-mode selection into alacritty each frame so the highlight renders.
+        if self.backend.copy_mode.as_ref().map(|c| c.selection_start.is_some()).unwrap_or(false) {
+            let ppp = layout.ctx.pixels_per_point();
+            if let (Some((sx, sy)), Some((cx, cy))) = (
+                self.backend.copy_mode_selection_start_px(),
+                self.backend.copy_mode_cursor_px(),
+            ) {
+                self.backend.process_command(BackendCommand::SelectStart(
+                    SelectionType::Simple, sx, sy, ppp,
+                ));
+                self.backend.process_command(BackendCommand::SelectUpdate(cx, cy, ppp));
             }
         }
 
@@ -511,6 +540,52 @@ impl<'a> TerminalView<'a> {
         }
 
         painter.extend(shapes);
+
+        // Scroll position indicator
+        let display_offset = content.grid.display_offset();
+        if display_offset > 0 {
+            let label = format!("\u{2191} {}", display_offset);
+            let font = egui::FontId::monospace(11.0);
+            let color = Color32::from_rgba_unmultiplied(255, 255, 255, 80);
+            let galley = painter.layout_no_wrap(label, font, color);
+            let pad = 6.0;
+            let pos = Pos2::new(
+                layout_max.x - galley.size().x - pad,
+                layout_max.y - galley.size().y - pad,
+            );
+            painter.galley(pos, galley, color);
+        }
+
+        // Copy-mode block cursor overlay
+        if let Some(cm) = &self.backend.copy_mode {
+            let cw = cell_width;
+            let ch = cell_height;
+            let cursor_x = layout_min.x + cm.col as f32 * cw;
+            let cursor_y = layout_min.y + cm.row as f32 * ch;
+            let cursor_rect = Rect::from_min_size(
+                Pos2::new(cursor_x, cursor_y),
+                Vec2::new(cw, ch),
+            );
+            painter.rect_filled(
+                cursor_rect,
+                CornerRadius::ZERO,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 120),
+            );
+        }
+
+        // [COPY] mode badge
+        if self.backend.copy_mode.is_some() {
+            let label = "[COPY]";
+            let font = egui::FontId::monospace(10.0);
+            let badge_color = Color32::from_rgba_unmultiplied(255, 200, 60, 200);
+            let galley = painter.layout_no_wrap(label.to_string(), font, badge_color);
+            let pad = 4.0;
+            let pos = Pos2::new(
+                layout_max.x - galley.size().x - pad,
+                layout_min.y + pad,
+            );
+            painter.galley(pos, galley, badge_color);
+        }
     }
 }
 
@@ -629,6 +704,15 @@ fn process_keyboard_key(
         BindingAction::Esc(seq) => InputAction::BackendCall(
             BackendCommand::Write(seq.as_bytes().to_vec()),
         ),
+        BindingAction::ScrollPage(sign) => {
+            InputAction::BackendCall(BackendCommand::ScrollPage(sign))
+        },
+        BindingAction::ScrollTop => {
+            InputAction::BackendCall(BackendCommand::ScrollTop)
+        },
+        BindingAction::ScrollBottom => {
+            InputAction::BackendCall(BackendCommand::ScrollBottom)
+        },
         _ => InputAction::Ignore,
     }
 }
@@ -817,4 +901,31 @@ fn process_mouse_move(
     // Link hover is handled per-frame in process_input, not per mouse-move.
 
     actions
+}
+
+fn process_copy_mode_key(
+    event: &egui::Event,
+    modifiers: Modifiers,
+) -> Option<InputAction> {
+    let egui::Event::Key { key, pressed: true, .. } = event else {
+        return None;
+    };
+
+    let cmd = match key {
+        Key::ArrowUp | Key::K => BackendCommand::CopyModeMove { drow: -1, dcol: 0 },
+        Key::ArrowDown | Key::J => BackendCommand::CopyModeMove { drow: 1, dcol: 0 },
+        Key::ArrowLeft | Key::H => BackendCommand::CopyModeMove { drow: 0, dcol: -1 },
+        Key::ArrowRight | Key::L => BackendCommand::CopyModeMove { drow: 0, dcol: 1 },
+        Key::PageUp => BackendCommand::CopyModeScrollPage(1),
+        Key::PageDown => BackendCommand::CopyModeScrollPage(-1),
+        Key::G if modifiers.shift => BackendCommand::CopyModeGotoBottom,
+        Key::G => BackendCommand::CopyModeGotoTop,
+        Key::V if modifiers.shift => BackendCommand::CopyModeSelectLine,
+        Key::V => BackendCommand::CopyModeSelectToggle,
+        Key::Y => BackendCommand::CopyModeYank,
+        Key::Escape | Key::Q => BackendCommand::ExitCopyMode,
+        _ => return None,
+    };
+
+    Some(InputAction::BackendCall(cmd))
 }

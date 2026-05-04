@@ -9,6 +9,9 @@ pub enum BindingAction {
     Esc(String),
     LinkOpen,
     Ignore,
+    ScrollPage(i32),
+    ScrollTop,
+    ScrollBottom,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,6 +247,8 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         Home,       Modifiers::SHIFT, +TerminalMode::ALT_SCREEN; BindingAction::Esc("\x1b[1;2H".into());
         PageUp,     Modifiers::SHIFT, +TerminalMode::ALT_SCREEN; BindingAction::Esc("\x1b[5;2~".into());
         PageDown,   Modifiers::SHIFT, +TerminalMode::ALT_SCREEN; BindingAction::Esc("\x1b[6;2~".into());
+        PageUp,     Modifiers::SHIFT, ~TerminalMode::ALT_SCREEN; BindingAction::ScrollPage(1);
+        PageDown,   Modifiers::SHIFT, ~TerminalMode::ALT_SCREEN; BindingAction::ScrollPage(-1);
         ArrowUp,    Modifiers::SHIFT; BindingAction::Esc("\x1b[1;2A".into());
         ArrowDown,  Modifiers::SHIFT; BindingAction::Esc("\x1b[1;2B".into());
         ArrowLeft,  Modifiers::SHIFT; BindingAction::Esc("\x1b[1;2D".into());
@@ -354,6 +359,8 @@ fn platform_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         KeyboardBinding;
         C, Modifiers::MAC_CMD; BindingAction::Copy;
         V, Modifiers::MAC_CMD; BindingAction::Paste;
+        Home, Modifiers::MAC_CMD; BindingAction::ScrollTop;
+        End,  Modifiers::MAC_CMD; BindingAction::ScrollBottom;
     )
 }
 
@@ -371,4 +378,55 @@ fn mouse_default_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         MouseBinding;
         Primary, Modifiers::COMMAND; BindingAction::LinkOpen;
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::TerminalMode;
+
+    fn normal_mode() -> TerminalMode {
+        TerminalMode::empty()
+    }
+
+    fn alt_screen_mode() -> TerminalMode {
+        TerminalMode::ALT_SCREEN
+    }
+
+    fn shift() -> Modifiers {
+        Modifiers::SHIFT
+    }
+
+    #[test]
+    fn shift_pageup_scrolls_in_normal_mode() {
+        let layout = BindingsLayout::new();
+        let action = layout.get_action(
+            InputKind::KeyCode(Key::PageUp),
+            shift(),
+            normal_mode(),
+        );
+        assert_eq!(action, BindingAction::ScrollPage(1));
+    }
+
+    #[test]
+    fn shift_pageup_sends_escape_in_alt_screen() {
+        let layout = BindingsLayout::new();
+        let action = layout.get_action(
+            InputKind::KeyCode(Key::PageUp),
+            shift(),
+            alt_screen_mode(),
+        );
+        assert_eq!(action, BindingAction::Esc("\x1b[5;2~".into()));
+    }
+
+    #[test]
+    fn shift_pagedown_scrolls_in_normal_mode() {
+        let layout = BindingsLayout::new();
+        let action = layout.get_action(
+            InputKind::KeyCode(Key::PageDown),
+            shift(),
+            normal_mode(),
+        );
+        assert_eq!(action, BindingAction::ScrollPage(-1));
+    }
 }

@@ -108,6 +108,8 @@ pub enum Action {
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
     ReloadConfig,
+    /// Enter copy-mode on the focused terminal pane. Bound to Cmd+Shift+[.
+    EnterCopyMode,
     /// Cmd+[ when a nav-active app pane is focused: pop one nav level and
     /// emit `PlexiEvent::NavBack`. Falls through to cycling tabs backwards
     /// if no nav is active on the focused pane.
@@ -201,7 +203,11 @@ pub fn poll_actions(
                 Action::NextTab
             });
         }
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
+        // Enter copy-mode (Cmd+Shift+[). Check BEFORE Cmd+[ so the shifted
+        // variant is matched first.
+        if input.consume_key(cmd_shift, egui::Key::OpenBracket) {
+            actions.push(Action::EnterCopyMode);
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) {
             actions.push(if notification_modal_open {
                 Action::NotificationCyclePrev
             } else {

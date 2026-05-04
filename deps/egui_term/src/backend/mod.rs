@@ -35,11 +35,31 @@ pub type SelectionType = AlacrittySelectionType;
 pub enum BackendCommand {
     Write(Vec<u8>),
     Scroll(i32),
+    ScrollPage(i32),
+    ScrollTop,
+    ScrollBottom,
     Resize(Size, Size),
     SelectStart(SelectionType, f32, f32, f32),
     SelectUpdate(f32, f32, f32),
     ProcessLink(LinkAction, Point),
     MouseReport(MouseButton, Modifiers, Point, bool),
+    EnterCopyMode,
+    ExitCopyMode,
+    CopyModeMove { drow: i32, dcol: i32 },
+    CopyModeScrollPage(i32),
+    CopyModeGotoTop,
+    CopyModeGotoBottom,
+    CopyModeSelectToggle,
+    CopyModeSelectLine,
+    CopyModeYank,
+}
+
+#[derive(Debug, Clone)]
+pub struct CopyModeState {
+    pub row: usize,
+    pub col: usize,
+    pub selection_start: Option<(usize, usize)>,
+    pub line_select: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +157,7 @@ impl From<TerminalSize> for WindowSize {
 
 pub struct TerminalBackend {
     pub id: u64,
+    pub copy_mode: Option<CopyModeState>,
     pub url_regex: RegexSearch,
     term: Arc<FairMutex<Term<EventProxy>>>,
     size: TerminalSize,
@@ -227,6 +248,7 @@ impl TerminalBackend {
 
         Ok(Self {
             id,
+            copy_mode: None,
             url_regex,
             term: term.clone(),
             size: terminal_size,
@@ -262,6 +284,107 @@ impl TerminalBackend {
             },
             BackendCommand::MouseReport(button, modifiers, point, pressed) => {
                 self.process_mouse_report(button, modifiers, point, pressed);
+            },
+            BackendCommand::ScrollPage(sign) => {
+                if sign > 0 {
+                    term.grid_mut().scroll_display(Scroll::PageUp);
+                } else {
+                    term.grid_mut().scroll_display(Scroll::PageDown);
+                }
+            },
+            BackendCommand::ScrollTop => {
+                term.grid_mut().scroll_display(Scroll::Top);
+            },
+            BackendCommand::ScrollBottom => {
+                term.grid_mut().scroll_display(Scroll::Bottom);
+            },
+            BackendCommand::EnterCopyMode => {
+                let is_alt = term.mode().contains(TermMode::ALT_SCREEN);
+                if !is_alt && self.copy_mode.is_none() {
+                    let lines = self.size.num_lines as usize;
+                    self.copy_mode = Some(CopyModeState {
+                        row: lines.saturating_sub(1),
+                        col: 0,
+                        selection_start: None,
+                        line_select: false,
+                    });
+                    log::info!("egui_term: entered copy-mode");
+                }
+            },
+            BackendCommand::ExitCopyMode => {
+                self.copy_mode = None;
+                term.selection = None;
+                log::info!("egui_term: exited copy-mode");
+            },
+            BackendCommand::CopyModeMove { drow, dcol } => {
+                if let Some(cm) = &mut self.copy_mode {
+                    let lines = self.size.num_lines as usize;
+                    let cols = self.size.num_cols as usize;
+                    let new_row = (cm.row as i32 + drow).clamp(0, lines as i32 - 1) as usize;
+                    let new_col = (cm.col as i32 + dcol).clamp(0, cols as i32 - 1) as usize;
+                    let hit_top = drow < 0 && cm.row == 0 && new_row == 0;
+                    let hit_bottom = drow > 0 && cm.row == lines - 1 && new_row == lines - 1;
+                    cm.row = new_row;
+                    cm.col = new_col;
+                    if hit_top {
+                        term.grid_mut().scroll_display(Scroll::Delta(1));
+                    } else if hit_bottom {
+                        term.grid_mut().scroll_display(Scroll::Delta(-1));
+                    }
+                }
+            },
+            BackendCommand::CopyModeScrollPage(sign) => {
+                if self.copy_mode.is_some() {
+                    if sign > 0 {
+                        term.grid_mut().scroll_display(Scroll::PageUp);
+                    } else {
+                        term.grid_mut().scroll_display(Scroll::PageDown);
+                    }
+                    if let Some(cm) = &mut self.copy_mode {
+                        let lines = self.size.num_lines as usize;
+                        cm.row = cm.row.min(lines.saturating_sub(1));
+                    }
+                }
+            },
+            BackendCommand::CopyModeGotoTop => {
+                if self.copy_mode.is_some() {
+                    term.grid_mut().scroll_display(Scroll::Top);
+                    if let Some(cm) = &mut self.copy_mode {
+                        cm.row = 0;
+                        cm.col = 0;
+                    }
+                }
+            },
+            BackendCommand::CopyModeGotoBottom => {
+                if self.copy_mode.is_some() {
+                    term.grid_mut().scroll_display(Scroll::Bottom);
+                    if let Some(cm) = &mut self.copy_mode {
+                        let lines = self.size.num_lines as usize;
+                        cm.row = lines.saturating_sub(1);
+                    }
+                }
+            },
+            BackendCommand::CopyModeSelectToggle => {
+                if let Some(cm) = &mut self.copy_mode {
+                    if cm.selection_start.is_some() {
+                        cm.selection_start = None;
+                        cm.line_select = false;
+                        term.selection = None;
+                    } else {
+                        cm.selection_start = Some((cm.row, cm.col));
+                        cm.line_select = false;
+                    }
+                }
+            },
+            BackendCommand::CopyModeSelectLine => {
+                if let Some(cm) = &mut self.copy_mode {
+                    cm.selection_start = Some((cm.row, 0));
+                    cm.line_select = true;
+                }
+            },
+            BackendCommand::CopyModeYank => {
+                // Actual yank is handled in view.rs which reads selectable_content()
+                // and writes to clipboard, then dispatches ExitCopyMode.
             },
         };
     }
@@ -608,6 +731,23 @@ impl TerminalBackend {
         }
     }
 
+    pub fn copy_mode_cursor_px(&self) -> Option<(f32, f32)> {
+        let cm = self.copy_mode.as_ref()?;
+        let cw = self.size.cell_width as f32;
+        let ch = self.size.cell_height as f32;
+        Some((cm.col as f32 * cw + cw / 2.0, cm.row as f32 * ch + ch / 2.0))
+    }
+
+    pub fn copy_mode_selection_start_px(&self) -> Option<(f32, f32)> {
+        let cm = self.copy_mode.as_ref()?;
+        let (sr, sc) = cm.selection_start?;
+        let cw = self.size.cell_width as f32;
+        let ch = self.size.cell_height as f32;
+        let x = if cm.line_select { 0.0 } else { sc as f32 * cw + cw / 2.0 };
+        let y = sr as f32 * ch + ch / 2.0;
+        Some((x, y))
+    }
+
     /// Based on alacritty/src/display/hint.rs > regex_match_at
     /// Retrieve the match, if the specified point is inside the content matching the regex.
     ///
@@ -864,6 +1004,36 @@ mod tests {
     /// `[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩\`]`.
     /// If these diverge, the cross-wrap extension will either stop too early
     /// or swallow non-URL text — regression-guard the obvious cases here.
+    #[test]
+    fn copy_mode_state_initialization() {
+        let state = super::CopyModeState {
+            row: 23,
+            col: 0,
+            selection_start: None,
+            line_select: false,
+        };
+        assert_eq!(state.row, 23);
+        assert!(state.selection_start.is_none());
+    }
+
+    #[test]
+    fn copy_mode_move_clamps_to_bounds() {
+        let mut state = super::CopyModeState {
+            row: 0,
+            col: 0,
+            selection_start: None,
+            line_select: false,
+        };
+        let lines: usize = 24;
+        let cols: usize = 80;
+        let drow: i32 = -5;
+        let dcol: i32 = -5;
+        state.row = (state.row as i32 + drow).clamp(0, lines as i32 - 1) as usize;
+        state.col = (state.col as i32 + dcol).clamp(0, cols as i32 - 1) as usize;
+        assert_eq!(state.row, 0);
+        assert_eq!(state.col, 0);
+    }
+
     #[test]
     fn is_url_char_accepts_typical_url_bytes() {
         // `-` is a valid URL char (e.g. `foo-bar.com`); see the note in
