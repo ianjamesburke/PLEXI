@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] triage→triage-issues rename + touches/clarification_needed front matter + sprint-plan batch skill (PR #636 → alpha)
+
+Renamed `.claude/skills/triage/` to `.claude/skills/triage-issues/` and updated the `name` field — `/triage` no longer resolves. Extended the triage skill's Step 3 (LOC estimation) to record a `touches` list (top-level files/dirs) in front matter, and Step 8 (Actionability) to emit a `clarification_needed` list of concrete open questions. Both fields are written to issue front matter and surfaced in the Step 11 triage comment. New `/sprint-plan` skill does a read-only two-pass batch scan: (1) clarification sweep — all issues with open questions or labeling gaps; (2) execution plan — topological sort by `depends_on` + priority, grouped into parallel lanes based on `touches` overlap. Motivation: issue #625 slipped through without a `ready` label because it had no `blocked` label and no one added `ready` after scoping — `touches`/`clarification_needed` + `sprint-plan` make this class of gap visible.
+
+**Breaks if:** `/triage-issues` fails to load (skill name mismatch), or `/sprint-plan` is not found in the skills list.
+
 ## 2026-05-04 — [CHANGED] Rust-owned canonical PGAP schema + generated Python protocol models (PR #634 → alpha)
 
 Added `JsonSchema` derives (via `schemars`, already in Cargo.toml) to all 23 protocol types in `src/app_protocol.rs`. New `src/bin/gen_schema.rs` binary emits a combined JSON Schema for `PlexiEvent`, `RenderCommand`, `HostCommand`, `ControlCommand` to stdout; checked-in as `sdk/protocol/pgap.schema.json`. `sdk/protocol/pgap.version.json` declares `{"protocol": "pgap/3", "version": 3}`. `tools/gen_protocol_py.py` reads the schema and generates `sdk/python/plexi_sdk/_protocol.py` with `PROTOCOL_VERSION`, `AiResponse`, `MidiPortInfo`, `MidiDeviceList` dataclasses, replacing the handwritten mirrors in `__init__.py`. `just gen-schema` regenerates both artifacts; `.github/workflows/check-protocol.yml` CI fails if `src/app_protocol.rs` changes without regenerating the schema.
