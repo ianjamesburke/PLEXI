@@ -4,7 +4,7 @@
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
 use crate::app_permissions::{check, Capability, PermissionCheck};
-use crate::app_protocol::{AudioDeviceWire, DrawCommand, MidiPortWire, PlexiEvent};
+use crate::app_protocol::{AudioDeviceWire, HostCommand, MidiPortWire, PlexiEvent};
 use crate::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
 use crate::event_log::{self, HostEvent};
@@ -14,12 +14,12 @@ use crate::typed_pipes::PipeDirection;
 use super::ProcessApp;
 
 impl ProcessApp {
-    /// Route a v3 out-of-frame draw command to the appropriate subsystem.
-    /// Visual primitives must not reach this method — callers filter them upstream.
-    pub(super) fn route_command(&mut self, cmd: DrawCommand) {
+    /// Route a v3 host command to the appropriate subsystem.
+    /// Exhaustive match — no wildcard arm. The compiler enforces coverage.
+    pub(super) fn route_command(&mut self, cmd: HostCommand) {
         match cmd {
             // ── Capability request ─────────────────────────────────────────
-            DrawCommand::CapabilityRequest {
+            HostCommand::CapabilityRequest {
                 request_id,
                 capability,
             } => {
@@ -54,7 +54,7 @@ impl ProcessApp {
             }
 
             // ── Secret get ─────────────────────────────────────────────────
-            DrawCommand::SecretGet { key } => {
+            HostCommand::SecretGet { key } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::SecretsGet)
                 {
@@ -188,7 +188,7 @@ impl ProcessApp {
             }
 
             // ── Run get ────────────────────────────────────────────────────
-            DrawCommand::RunGet { intent, .. } => {
+            HostCommand::RunGet { intent, .. } => {
                 let run_id = self.run_registry.allocate(&self.type_id);
                 log::info!(
                     "ProcessApp[{}]: RunGet intent='{}' → run_id='{}'",
@@ -209,7 +209,7 @@ impl ProcessApp {
             }
 
             // ── Run complete ───────────────────────────────────────────────
-            DrawCommand::RunComplete { run_id, result } => {
+            HostCommand::RunComplete { run_id, result } => {
                 log::info!(
                     "ProcessApp[{}]: RunComplete run_id='{run_id}' result={result}",
                     self.type_id
@@ -239,7 +239,7 @@ impl ProcessApp {
             }
 
             // ── Notify ─────────────────────────────────────────────────────
-            DrawCommand::Notify {
+            HostCommand::Notify {
                 level,
                 title,
                 body,
@@ -372,7 +372,7 @@ impl ProcessApp {
             }
 
             // ── Pipe open ──────────────────────────────────────────────────
-            DrawCommand::PipeOpen {
+            HostCommand::PipeOpen {
                 pipe_id,
                 mode,
                 direction,
@@ -442,7 +442,7 @@ impl ProcessApp {
             // host. We register the JSON pipe locally so subsequent
             // `PipeSend` calls succeed; `has_reader` returns true for the
             // sender side because the direction is duplex.
-            DrawCommand::PipeOpenDirected {
+            HostCommand::PipeOpenDirected {
                 pipe_id,
                 target_pane_id,
             } => {
@@ -481,7 +481,7 @@ impl ProcessApp {
             }
 
             // ── Pipe send ──────────────────────────────────────────────────
-            DrawCommand::PipeSend { pipe_id, payload } => {
+            HostCommand::PipeSend { pipe_id, payload } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PipeOpen)
                 {
@@ -506,12 +506,12 @@ impl ProcessApp {
             }
 
             // ── Status summary ─────────────────────────────────────────────
-            DrawCommand::StatusSummary { text } => {
+            HostCommand::StatusSummary { text } => {
                 self.status_summary = Some(text);
             }
 
             // ── Navigation stack ───────────────────────────────────────────
-            DrawCommand::PushNav { view_id, title } => {
+            HostCommand::PushNav { view_id, title } => {
                 self.nav_stack.push(crate::process_app::NavEntry { view_id, title });
                 log::debug!(
                     "ProcessApp[{}]: PushNav → depth={} title={:?}",
@@ -520,7 +520,7 @@ impl ProcessApp {
                     self.nav_stack.last().map(|e| &e.title),
                 );
             }
-            DrawCommand::PopNav {} => {
+            HostCommand::PopNav {} => {
                 self.nav_stack.pop();
                 log::debug!(
                     "ProcessApp[{}]: PopNav → depth={}",
@@ -530,7 +530,7 @@ impl ProcessApp {
             }
 
             // ── File picker (#514) ─────────────────────────────────────────
-            DrawCommand::OpenFilePicker { request_id, filter, multiple } => {
+            HostCommand::OpenFilePicker { request_id, filter, multiple } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::FsPick)
                 {
@@ -561,7 +561,7 @@ impl ProcessApp {
             }
 
             // ── Mouse tracking toggle ──────────────────────────────────────
-            DrawCommand::SetMouseTracking { enabled } => {
+            HostCommand::SetMouseTracking { enabled } => {
                 self.mouse_tracking_enabled = enabled;
                 log::debug!(
                     "ProcessApp[{}]: SetMouseTracking → {}",
@@ -571,7 +571,7 @@ impl ProcessApp {
             }
 
             // ── Spawn app ──────────────────────────────────────────────────
-            DrawCommand::SpawnApp {
+            HostCommand::SpawnApp {
                 type_id,
                 layout,
                 args,
@@ -594,7 +594,7 @@ impl ProcessApp {
             }
 
             // ── Spawn pane (#592) ──────────────────────────────────────────────────────
-            DrawCommand::SpawnPane {
+            HostCommand::SpawnPane {
                 type_id,
                 layout,
                 args,
@@ -621,7 +621,7 @@ impl ProcessApp {
             }
 
             // ── HTTP request (broker via HostServices::net) ───────────────
-            DrawCommand::HttpRequest {
+            HostCommand::HttpRequest {
                 request_id,
                 url,
                 method,
@@ -682,7 +682,7 @@ impl ProcessApp {
                 });
             }
             // ── ai.query broker (#284) ─────────────────────────────────────
-            DrawCommand::AiQuery {
+            HostCommand::AiQuery {
                 request_id,
                 model_tier,
                 system,
@@ -748,7 +748,7 @@ impl ProcessApp {
                 });
             }
 
-            DrawCommand::AudioPlay { .. } => {
+            HostCommand::AudioPlay { .. } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::AudioPlayback)
                 {
@@ -763,7 +763,7 @@ impl ProcessApp {
                     self.type_id
                 );
             }
-            DrawCommand::AudioCapture {
+            HostCommand::AudioCapture {
                 pipe_id,
                 device_id,
                 sample_rate,
@@ -784,7 +784,7 @@ impl ProcessApp {
                 }
                 self.start_audio_capture(pipe_id, device_id, sample_rate, buffer_size);
             }
-            DrawCommand::ListAudioDevices { request_id } => {
+            HostCommand::ListAudioDevices { request_id } => {
                 // Enumeration is not gated — device names are already visible
                 // to any macOS app via System Information. The per-device
                 // capture call goes through the `AudioRecord` gate.
@@ -808,7 +808,7 @@ impl ProcessApp {
                         error: None,
                     });
             }
-            DrawCommand::ListMidiDevices { request_id } => {
+            HostCommand::ListMidiDevices { request_id } => {
                 // MIDI enumeration mirrors audio: not gated. Port names are
                 // already visible in Audio MIDI Setup.app, no privacy gate.
                 let inputs = self
@@ -831,7 +831,7 @@ impl ProcessApp {
                         error: None,
                     });
             }
-            DrawCommand::OpenMidiInput { port_id, pipe_id } => {
+            HostCommand::OpenMidiInput { port_id, pipe_id } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::MidiIn)
                 {
@@ -847,7 +847,7 @@ impl ProcessApp {
                 }
                 self.start_midi_input(port_id, pipe_id);
             }
-            DrawCommand::CloseMidiInput { port_id } => {
+            HostCommand::CloseMidiInput { port_id } => {
                 // Drop the session — its Drop impl disconnects from CoreMIDI.
                 // No response event; closing is fire-and-forget.
                 if self.midi_input_sessions.remove(&port_id).is_some() {
@@ -862,7 +862,7 @@ impl ProcessApp {
                     );
                 }
             }
-            DrawCommand::SendMidi { port_id, bytes } => {
+            HostCommand::SendMidi { port_id, bytes } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::MidiOut)
                 {
@@ -878,13 +878,8 @@ impl ProcessApp {
                 }
                 self.send_midi(port_id, bytes);
             }
-            DrawCommand::Image { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: Image not yet implemented (v3.1)",
-                    self.type_id
-                );
-            }
-            DrawCommand::OpenVideo {
+
+            HostCommand::OpenVideo {
                 request_id,
                 source,
                 pipe_id,
@@ -904,7 +899,7 @@ impl ProcessApp {
                 }
                 self.start_video(request_id, source, pipe_id);
             }
-            DrawCommand::SetVideoState { handle_id, state } => {
+            HostCommand::SetVideoState { handle_id, state } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::VideoPlayback)
                 {
@@ -931,7 +926,7 @@ impl ProcessApp {
                     }
                 }
             }
-            DrawCommand::CloseVideo { handle_id } => {
+            HostCommand::CloseVideo { handle_id } => {
                 // Drop the handle (its Drop impl tears down the worker /
                 // decoder) and close the associated binary pipe so the
                 // drain thread exits. Fire-and-forget — no response event.
@@ -954,21 +949,16 @@ impl ProcessApp {
                     );
                 }
             }
-            DrawCommand::AudioMeter { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: AudioMeter not yet implemented (v3.1)",
-                    self.type_id
-                );
-            }
+
 
             // ── Cd request ─────────────────────────────────────────────────
-            DrawCommand::CdRequest { cwd } => {
+            HostCommand::CdRequest { cwd } => {
                 log::info!("ProcessApp[{}]: CdRequest cwd='{cwd}'", self.type_id);
                 self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
             }
 
             // ── Set timer ──────────────────────────────────────────────────
-            DrawCommand::SetTimer { timer_id, after_ms } => {
+            HostCommand::SetTimer { timer_id, after_ms } => {
                 if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer) {
                     log::warn!("ProcessApp[{}]: SetTimer {timer_id} denied — {reason}", self.type_id);
                     return;
@@ -987,7 +977,7 @@ impl ProcessApp {
             }
 
             // ── Cancel timer ───────────────────────────────────────────────
-            DrawCommand::CancelTimer { timer_id } => {
+            HostCommand::CancelTimer { timer_id } => {
                 if let Some(flag) = self.pending_timers.remove(&timer_id) {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     log::debug!("ProcessApp[{}]: timer {timer_id} cancelled", self.type_id);
@@ -1000,7 +990,7 @@ impl ProcessApp {
             // injecting bytes into its PTY) lives at the `PlexiApp`
             // dispatch site — the routing layer just enforces the
             // capability gate, logs, and forwards an `AppCommand`.
-            DrawCommand::RequestLinkedTerminal { request_id, cwd, label } => {
+            HostCommand::RequestLinkedTerminal { request_id, cwd, label } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1029,7 +1019,7 @@ impl ProcessApp {
                     label,
                 });
             }
-            DrawCommand::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
+            HostCommand::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1045,7 +1035,7 @@ impl ProcessApp {
                     echo,
                 });
             }
-            DrawCommand::InsertPathToken { terminal_pane_id, path, mode } => {
+            HostCommand::InsertPathToken { terminal_pane_id, path, mode } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1061,7 +1051,7 @@ impl ProcessApp {
                     mode,
                 });
             }
-            DrawCommand::RequestCommandPreview { request_id, terminal_pane_id, command } => {
+            HostCommand::RequestCommandPreview { request_id, terminal_pane_id, command } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1083,7 +1073,7 @@ impl ProcessApp {
                     command,
                 });
             }
-            DrawCommand::OpenArtifact { path, mode } => {
+            HostCommand::OpenArtifact { path, mode } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1099,7 +1089,7 @@ impl ProcessApp {
             // ── Tool protocol (#398, #399) ─────────────────────────────────
 
             // App declares its callable tools to the host.
-            DrawCommand::ExposeTools { tools } => {
+            HostCommand::ExposeTools { tools } => {
                 log::debug!(
                     "ProcessApp[{}]: ExposeTools {} tool(s)",
                     self.type_id,
@@ -1122,7 +1112,7 @@ impl ProcessApp {
             }
 
             // App returns the result of a ToolCall from the broker.
-            DrawCommand::ToolResult {
+            HostCommand::ToolResult {
                 call_id,
                 output_json,
                 error,
@@ -1141,7 +1131,6 @@ impl ProcessApp {
                 );
             }
 
-            _ => unreachable!("route_command called with non-control command"),
         }
     }
 
