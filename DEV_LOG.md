@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] Split plexi_sdk/__init__.py into focused modules (PR #649 → alpha)
+
+Broke the 2980-line `__init__.py` monolith into `_constants.py`, `_types.py`, `_emitter.py`, `_pipe.py`, `_render_context.py`, `_app.py`. `__init__.py` is now a thin explicit re-export layer. Circular deps resolved via `TYPE_CHECKING` guards — `Emitter` and `Pipe` forward-ref `App` as strings only. `_emit` is the leaf export (imported by `_pipe` and `_app`). No public API changes; all example app imports unchanged.
+**Breaks if:** Any canvas app pane shows a blank screen or `ImportError` on launch.
+
 ## 2026-05-04 — [CHANGED] README overhaul — composability lede, Features + Roadmap (PR #647 → alpha)
 
 Rewrote the lede around the Unix composability angle ("one binary, everything speaks one protocol, pipe output between processes"). Removed: keyboard shortcuts table (in-app `Cmd+/` is the source of truth and won't drift), "What's in v3" heading (temporal, meaningless to a new reader), "agents all install into it" (agents don't install — they run in panes), "Nothing leaks between workspaces" (vacuous). Added: Features section (present-tense, accurate), Roadmap section (6 near-term items, plain bullets, no issue links). Bundled Python demoted from headline feature to impl detail inside the app runtime bullet.
