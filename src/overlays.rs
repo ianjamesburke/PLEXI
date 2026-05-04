@@ -70,6 +70,18 @@ impl PlexiApp {
                     self.show_changelog = !self.show_changelog;
                 }
 
+                if let Some(ref version) = self.update_available.clone() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("\u{2191} v{version}"))
+                                .size(10.0)
+                                .color(self.colors.text_dim),
+                        )
+                    )
+                    .on_hover_cursor(egui::CursorIcon::Default)
+                    .on_hover_text("Update available — run `plexi update` to upgrade");
+                }
+
                 let notif_count = self.visible_notification_count();
                 if notif_count > 0 {
                     let badge_text = if notif_count > 9 {
