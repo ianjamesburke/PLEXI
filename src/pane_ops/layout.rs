@@ -13,12 +13,7 @@ use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
 use std::collections::HashMap;
 
 pub(crate) enum SwapResult {
-    Swapped {
-        tile_a: egui_tiles::TileId,
-        rect_a: egui::Rect,
-        tile_b: egui_tiles::TileId,
-        rect_b: egui::Rect,
-    },
+    Swapped { rect_a: egui::Rect, rect_b: egui::Rect },
     AtBoundary,
     NoFocus,
 }
@@ -627,7 +622,7 @@ impl PlexiApp {
             dir, pane_a, pane_b, focused, neighbor
         );
 
-        SwapResult::Swapped { tile_a: focused, rect_a, tile_b: neighbor, rect_b }
+        SwapResult::Swapped { rect_a, rect_b }
     }
 
     pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
