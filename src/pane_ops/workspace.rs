@@ -10,7 +10,12 @@ use std::path::PathBuf;
 impl PlexiApp {
     pub(crate) fn new_context(&mut self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))
+        let cwd = self.windows[self.active_window]
+            .focused_pane
+            .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
+            .unwrap_or_else(|| home.clone());
+        log::info!("new_context: cwd={}", cwd.display());
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()))
         else {
             log::error!("Failed to create terminal for new context");
             return;
@@ -24,12 +29,12 @@ impl PlexiApp {
         let ctx_name = format!("Context {}", self.router.len() + 1);
         self.router.push(crate::context::Context {
             name: ctx_name,
-            path: home.clone(),
+            path: cwd.clone(),
             context_id: ctx_id,
         });
         self.windows.push(Window {
             name: String::new(),
-            path: home,
+            path: cwd,
             tree,
             panes,
             focused_pane: Some(root_tile),
@@ -70,7 +75,12 @@ impl PlexiApp {
     /// and make it the active context.
     pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))
+        let cwd = self.windows[self.active_window]
+            .focused_pane
+            .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
+            .unwrap_or_else(|| home.clone());
+        log::info!("create_page_at({grid_x},{grid_y}): cwd={}", cwd.display());
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()))
         else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
@@ -81,7 +91,7 @@ impl PlexiApp {
         self.next_window_id += 1;
         self.windows.push(Window {
             name,
-            path: home,
+            path: cwd,
             tree,
             panes,
             focused_pane: Some(root_tile),
