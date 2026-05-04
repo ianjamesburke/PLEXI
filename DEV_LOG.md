@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] plexi update — detached relaunch when run from inside Plexi (PR #606 → alpha)
+
+Added in-Plexi update flow to `self_update_cli()` in `src/cli.rs`. When `PLEXI_RUNNING=1`, the function downloads and stages the new bundle as usual, then writes a `nohup`-launched bash script to temp that polls `pgrep -x plexi`, `mv`s the staging bundle into place, re-symlinks the CLI, and opens the new app. It then triggers `osascript -e 'tell application "Plexi" to quit'` and exits 0. The external-terminal path (PLEXI_RUNNING unset) is unchanged. `nohup` chosen over bare spawn to survive SIGHUP when the Plexi terminal session closes on app quit.
+
+**Breaks if:** `plexi update` from inside a Plexi pane prints "Restart Plexi to apply" instead of "Plexi will restart to apply the update." (indicating `PLEXI_RUNNING` isn't set in PTY env), or the app doesn't relaunch after quitting.
+
 ## 2026-05-03 — [CHANGED] plexi update — binary self-update for stable channel (PR #601 → alpha)
 
 Implemented `self_update_cli()` in `src/cli.rs` (was a stub). Stable channel: fetches `/releases/latest` from GitHub API, compares versions, downloads `Plexi-<tag>.zip`, extracts via `unzip`, stages to `Plexi.app.update-staging`, atomically swaps old bundle, re-symlinks `/usr/local/bin/plexi`. Alpha/PR builds exit 1 with "update from source". Beta exits 1 with link to releases page (bundle rename requires install script). In-Plexi detached-relaunch flow deferred to #604.
