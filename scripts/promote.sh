@@ -90,8 +90,17 @@ git push origin beta:main
 echo "Syncing main worktree..."
 git -C "$REPO_ROOT" pull origin main
 
-git -C "$REPO_ROOT" tag "v$version"
-git -C "$REPO_ROOT" push origin "v$version"
+if git -C "$REPO_ROOT" tag -l "v$version" | grep -q "v$version"; then
+    echo "Tag v$version already exists — skipping tag creation."
+else
+    git -C "$REPO_ROOT" tag "v$version"
+fi
+
+if git ls-remote --tags origin "v$version" | grep -q "v$version"; then
+    echo "Tag v$version already on remote — skipping push."
+else
+    git -C "$REPO_ROOT" push origin "v$version"
+fi
 
 echo ""
-echo "Released v$version — tag pushed, GitHub Actions release workflow will run."
+echo "Released v$version — GitHub Actions release workflow will run."
