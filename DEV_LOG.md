@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] plexi install <id> — registry-aware bare app ID shorthand (PR #633 → alpha)
+
+`install_cli` in `src/cli.rs` now detects bare IDs (no `:`, `/`, or `@`) and resolves them via `https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json` before calling `parse_source_spec`. Registry entries in `ianjamesburke/PLEXI` with a `path` field resolve to `local:<dir>` (uses the bundled copy, no clone). Third-party repos resolve to `github:owner/repo`. Unknown IDs print a helpful error with `plexi app list` and `plexiapp.com/apps`. No changes to `install.rs`, `main.rs`, or `packs.rs`.
+
+**Breaks if:** `plexi install snake` prints a source-scheme error ("unknown source scheme 'snake'") instead of installing the app.
+
 ## 2026-05-03 — [CHANGED] Zoom overlay at 88% opacity — scrim bleed-through (PR #629 → alpha)
 
 `child_ui.set_opacity(0.88)` added immediately before the `egui::Frame` in the zoom overlay path of `src/app/mod.rs`. Prior attempts at 0.99 and 0.95 were visually imperceptible on dark themes; 0.88 is the first value that makes the scrim bleed-through visible. The frame fill alpha approach was also tried (Attempt 1) and failed — the terminal renderer paints fully-opaque cell backgrounds on top, overriding any fill alpha. `set_opacity` is the only path that propagates through the full paint chain.
