@@ -119,7 +119,6 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 struct PaneSwapAnim {
-    tile: egui_tiles::TileId,
     from: egui::Rect,
     to: egui::Rect,
     started_at: std::time::Instant,
@@ -1633,12 +1632,13 @@ impl eframe::App for PlexiApp {
                 Action::SwapPane(dir) => {
                     match self.swap_pane(dir) {
                         crate::pane_ops::SwapResult::Swapped {
-                            tile_a, rect_a, tile_b, rect_b,
+                            rect_a, rect_b, ..
+
                         } => {
                             let now = std::time::Instant::now();
                             self.pane_anims = vec![
-                                PaneSwapAnim { tile: tile_a, from: rect_a, to: rect_b, started_at: now },
-                                PaneSwapAnim { tile: tile_b, from: rect_b, to: rect_a, started_at: now },
+                                PaneSwapAnim { from: rect_a, to: rect_b, started_at: now },
+                                PaneSwapAnim { from: rect_b, to: rect_a, started_at: now },
                             ];
                             self.ctx.request_repaint();
                         }
