@@ -2,6 +2,12 @@
 
 Newest releases appear first.
 
+## [3.4.63] — 2026-05-03 22:39 ET
+
+### Changes
+- chore(apps): remove stale iq.query POC apps, fix capability hint (#623) (#628)
+- improve: add Issue Prior Attempts convention to CLAUDE.md
+
 ## [3.4.62] — 2026-05-03 22:29 ET
 
 ### Changes
