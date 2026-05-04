@@ -27,7 +27,7 @@ jobs:
 
       - name: Check schema is up to date
         run: |
-          cargo run --bin gen_schema > /tmp/fresh.schema.json
+          cargo run -p gen_schema > /tmp/fresh.schema.json
           if ! diff -q sdk/protocol/pgap.schema.json /tmp/fresh.schema.json; then
             echo "sdk/protocol/pgap.schema.json is stale. Run 'just gen-schema' and commit the result."
             diff sdk/protocol/pgap.schema.json /tmp/fresh.schema.json
