@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] Move gen_schema to workspace, restore PR build display name + icon (PR #655 → alpha)
+
+PR #634 added `gen_schema` as a second `[[bin]]`, forcing `install.sh` to use `cargo bundle --release --bin plexi`. The `--bin` flag tells cargo-bundle to use the binary name ("plexi") as the bundle name, ignoring `[package.metadata.bundle] name = "Plexi Alpha"`. Result: all builds (alpha, PR) produced `plexi.app` (lowercase, no icon). Fix: move `gen_schema` to `tools/gen_schema/` as a Cargo workspace member. Main package is single-binary again; `cargo bundle --release` (no `--bin`) picks up the metadata name and `app_src="${display}.app"` resolves correctly.
+**Breaks if:** `just pr-install <N>` creates `plexi.app` instead of `Plexi PR<N>.app`, or Spotlight shows the default macOS icon.
+
 ## 2026-05-04 — [CHANGED] Typed SDK command models, py.typed, and plexi validate (PR #651 → alpha)
 
 Added 6 typed dataclasses to `sdk/python/plexi_sdk/_types.py` (`TextCommand`, `RectCommand`, `BadgeCommand`, `TextInputSpec`, `ShortcutPair`, `NotifyOption`) — each validates at `__post_init__` (bad align values, negative geometry, empty required string fields). Added `py.typed` PEP 561 marker and mypy config in `pyproject.toml`. New `sdk-typecheck.yml` CI workflow runs mypy on SDK changes. Added `plexi validate <path>` CLI: reads `manifest.toml`, checks required fields (`id`, `name`, `version`, `entry`), verifies entry file exists, runs Python AST syntax check on `.py` entries. Capability validation warns on unknown capability strings. The `_render_context.py` method API is unchanged — existing app code requires no updates.
