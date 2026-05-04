@@ -211,6 +211,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
 - **cargo-bundle multi-bin:** When any `[[bin]]` entry exists in `Cargo.toml`, cargo bundle assigns the metadata bundle name to the first binary it encounters; subsequent binaries fall back to their own name. Always pass `--bin plexi` to `cargo bundle` in `install.sh` and use `app_src="target/release/bundle/osx/plexi.app"` — the binary-named bundle, not the display-named one.
 - **SDK import proxy:** `plexi_sdk` is only on PYTHONPATH for Plexi-spawned app processes — a terminal pane's `python3` never sees it. Test SDK import changes by observing whether canvas apps open and render, not by running `python3` directly in a terminal.
+- **Egui clipboard API:** Before writing any egui clipboard/output call, grep the codebase for existing usage — `output_mut` is deprecated; the established pattern is `ui.ctx().copy_text(text)`.
 
 ## PlexiApp State
 
