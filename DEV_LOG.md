@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] New windows/pages inherit cwd from focused pane (PR #652 → alpha)
+
+`new_context` (Cmd-N) and `create_page_at` (new page) both hardcoded `dirs::home_dir()`. Both now call `get_focused_pane_cwd()` on the active window's focused tile and fall back to home only when cwd is unavailable. `split_focused` (Cmd-Shift-J) was already correct — no change needed.
+**Breaks if:** Cmd-N opens a new context in `~` even when the focused pane is in a project subdirectory.
+
 ## 2026-05-04 — [CHANGED] Once-a-day update check with toolbar badge + copy_button widget (PR #648 → alpha)
 
 Background thread spawned at startup hits GitHub releases API, caches result in `~/.plexi-<channel>/update_cache.json` for 24h. When a newer version is found, the version label in the toolbar turns accent-colored with a `↑` prefix. Clicking it opens the changelog as usual; the top of the changelog shows a tinted banner with the new version and a 📋 copy button for `plexi update`. The `📋 → ✓` copy pattern was extracted as `copy_button()` in `src/widgets.rs` and back-applied to the welcome page email copy. Cache uses Unix timestamp; `checked_at: 0` forces a re-fetch, a fresh timestamp skips the network.
