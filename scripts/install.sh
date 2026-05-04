@@ -23,7 +23,7 @@ fi
 
 display="Plexi${cap}"
 bundle_id="com.ianjamesburke.plexi${suffix}"
-app_src="target/release/bundle/osx/plexi.app"
+app_src="target/release/bundle/osx/${display}.app"
 app_dest="/Applications/${display}.app"
 bin_dest="/usr/local/bin/plexi${suffix}"
 profile_dir="$HOME/.plexi${suffix}"
