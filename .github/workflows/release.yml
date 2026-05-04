@@ -33,12 +33,12 @@ jobs:
         run: cargo bundle --release
 
       - name: Ad-hoc sign (required for ARM64)
-        run: codesign --force --deep --sign - target/release/bundle/osx/Plexi.app
+        run: codesign --force --deep --sign - target/release/bundle/osx/plexi.app
 
       - name: Create zip
         run: |
           cd target/release/bundle/osx
-          zip -r Plexi-${{ github.ref_name }}.zip Plexi.app
+          zip -r Plexi-${{ github.ref_name }}.zip plexi.app
 
       - name: Extract release notes since last tag
         id: notes
