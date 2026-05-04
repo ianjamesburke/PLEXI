@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] Typed SDK command models, py.typed, and plexi validate (PR #651 → alpha)
+
+Added 6 typed dataclasses to `sdk/python/plexi_sdk/_types.py` (`TextCommand`, `RectCommand`, `BadgeCommand`, `TextInputSpec`, `ShortcutPair`, `NotifyOption`) — each validates at `__post_init__` (bad align values, negative geometry, empty required string fields). Added `py.typed` PEP 561 marker and mypy config in `pyproject.toml`. New `sdk-typecheck.yml` CI workflow runs mypy on SDK changes. Added `plexi validate <path>` CLI: reads `manifest.toml`, checks required fields (`id`, `name`, `version`, `entry`), verifies entry file exists, runs Python AST syntax check on `.py` entries. Capability validation warns on unknown capability strings. The `_render_context.py` method API is unchanged — existing app code requires no updates.
+**Breaks if:** `plexi validate examples/chat-poc` does not exit 0 with a ✓ message, or `from plexi_sdk import TextCommand; TextCommand(0, 0, "", 14, "#fff", align="bad")` does not raise `ValueError`.
+
 ## 2026-05-04 — [FIX] New windows/pages inherit cwd from focused pane (PR #652 → alpha)
 
 `new_context` (Cmd-N) and `create_page_at` (new page) both hardcoded `dirs::home_dir()`. Both now call `get_focused_pane_cwd()` on the active window's focused tile and fall back to home only when cwd is unavailable. `split_focused` (Cmd-Shift-J) was already correct — no change needed.
