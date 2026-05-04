@@ -432,11 +432,10 @@ pub enum MouseButton {
 
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
 
+/// Render primitives — go to `pending_frame` → drawn to screen.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum DrawCommand {
-    // ── Visual primitives (frame-scoped) ─────────────────────────────────
-
+pub enum RenderCommand {
     /// Push a clip rect onto the host's clip stack.
     ///
     /// The effective clip rect is the intersection of the new rect with the
@@ -510,6 +509,26 @@ pub enum DrawCommand {
         #[serde(default = "default_stroke_width")]
         width: f32,
     },
+    /// Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).
+    Circle {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        fill: String,
+    },
+
+    /// Draw a filled arc / pie slice.
+    /// `start_angle` and `end_angle` are in radians, measured clockwise from the right (east).
+    /// A full circle is 0.0 to std::f32::consts::TAU.
+    Arc {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        start_angle: f32,
+        end_angle: f32,
+        fill: String,
+    },
+
     /// High-level scrollable list — host handles layout and scrolling.
     List {
         #[serde(default)]
@@ -525,19 +544,200 @@ pub enum DrawCommand {
         #[serde(default)]
         item_height: f32,
     },
-    /// End of frame. Host renders everything queued since last FrameDone.
-    FrameDone {
-        /// Must match the frame_id from the triggering Render event.
-        frame_id: u64,
+
+    // ── Host-measured layout primitives ──────────────────────────────────
+    //
+    // These commands delegate text measurement and pill geometry entirely to
+    // the host. The SDK emits intent; the host measures with real egui font
+    // metrics and renders. No Python-side width estimation.
+
+    /// Host-rendered pill badge. The host measures the label with real font
+    /// metrics, sizes the pill (text_w + padding), and centres the text
+    /// both horizontally and vertically. No width math in the SDK.
+    ///
+    /// `x`      — left edge of the badge.
+    /// `y`      — vertical centre (the badge is drawn centred on this y).
+    /// `label`  — text to display inside the pill.
+    /// `fill`   — pill background colour (hex).
+    /// `fg`     — text colour (hex).
+    /// `font_size` — label font size in pt.
+    /// `radius` — pill corner radius. Use a large value (e.g. font_size) for
+    ///            a fully-rounded pill, or RADIUS_SM (4.0) for tag chips.
+    Badge {
+        x: f32,
+        y: f32,
+        label: String,
+        fill: String,
+        fg: String,
+        font_size: f32,
+        radius: f32,
     },
 
-    // ── Out-of-frame commands ─────────────────────────────────────────────
-    /// Forward a log message into Plexi's logger (tagged with app_id).
-    Log {
-        /// One of: "error" | "warn" | "info" | "debug"
-        level: String,
-        message: String,
+    /// Host-rendered keycap chip. The host measures the label with real
+    /// monospace font metrics, sizes the chip, and centres the text inside.
+    ///
+    /// `x`         — left edge of the chip (top-left, matching ctx.text).
+    /// `y`         — top edge of the chip.
+    /// `label`     — key label (e.g. "⌘", "[", "Enter").
+    /// `font_size` — label font size in pt.
+    KeyChip {
+        x: f32,
+        y: f32,
+        label: String,
+        font_size: f32,
     },
+
+    /// A horizontal row of keycap chips. The host flows them left-to-right
+    /// with a fixed 2px gap between chips, sizes each chip from real font
+    /// metrics, and places an optional trailing description label after the
+    /// last chip.
+    ///
+    /// `x`, `y`      — top-left origin of the row.
+    /// `keys`        — ordered list of key labels to render as chips.
+    /// `description` — optional label rendered after the last chip.
+    /// `font_size`   — applies to all chips and the description.
+    KeyChipRow {
+        x: f32,
+        y: f32,
+        keys: Vec<String>,
+        description: Option<String>,
+        font_size: f32,
+    },
+
+    /// A multi-group shortcut row. The host owns all layout — chip widths
+    /// from real font metrics, flow horizontally with configurable inter-
+    /// group gap, wrap to a new line when the next group would exceed
+    /// `max_width`. Returns nothing; correct by construction.
+    ///
+    /// `x`, `y`      — top-left origin.
+    /// `max_width`   — wrap budget. Wrap to a new line when the next group
+    ///                 would exceed it. Caller passes the available pane
+    ///                 width minus its own padding.
+    /// `pairs`       — ordered list of `(chip-labels, description)` groups.
+    ///                 Each pair renders as one or more chips followed by
+    ///                 the description text.
+    /// `font_size`   — applies to all chips and descriptions.
+    Shortcuts {
+        x: f32,
+        y: f32,
+        max_width: f32,
+        pairs: Vec<ShortcutPair>,
+        font_size: f32,
+    },
+
+    /// Multiple text segments rendered horizontally with host-measured layout.
+    /// The host measures each segment with real font metrics and flows them
+    /// left-to-right with configurable gap spacing.
+    ///
+    /// `x`, `y`  — origin of the text row.
+    /// `items`   — list of text segments, each with text, color, size, monospace.
+    /// `gap`     — spacing between items in pixels.
+    /// `align`   — vertical alignment (e.g., "left_center").
+    TextRow {
+        x: f32,
+        y: f32,
+        items: Vec<TextRowItem>,
+        gap: f32,
+        align: String,
+    },
+
+    /// Render markdown text using the host's `egui_commonmark` renderer.
+    ///
+    /// The host creates a child `Ui` at `(x, y)` with width `w` and renders
+    /// the markdown with proper formatting (bold, italic, code blocks, etc.).
+    /// `base_size` controls the body font size; `color` sets the default text
+    /// colour.
+    Markdown {
+        x: f32,
+        y: f32,
+        w: f32,
+        text: String,
+        base_size: f32,
+        color: String,
+    },
+
+    /// Draw an image from a workspace-scoped path or data URL.
+    Image {
+        src: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        /// One of: "contain" | "cover" | "fill". Default: "contain".
+        #[serde(default = "default_image_fit")]
+        fit: String,
+    },
+
+    /// Render an amplitude meter reading from a binary pipe.
+    AudioMeter { rect: Rect, pipe_id: String },
+
+    /// Text input field (host-owned buffer, submit-only).
+    ///
+    /// Emitted by the app each frame at `(x, y)` with width `w`. The host
+    /// owns the underlying buffer keyed on `id` — typed characters never
+    /// reach the app between frames. On Enter the host emits
+    /// `PlexiEvent::TextSubmitted { id, value }` and clears its buffer.
+    ///
+    /// When `multiline` is `false` (the default), the host renders a
+    /// single-line `TextEdit` and Enter submits. When `multiline` is `true`,
+    /// the host renders a multi-line `TextEdit`; Enter still submits but
+    /// Shift+Enter inserts a newline.
+    ///
+    /// Real-time validation (per-keystroke value access) is intentionally
+    /// out of scope — see issue #283 option A. Apps that need it must
+    /// wait for a future protocol revision.
+    TextInput {
+        id: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        /// Height of the input widget in pixels. Defaults to 24.0 for
+        /// backwards compatibility with older SDKs that don't send `h`.
+        #[serde(default = "default_text_input_h")]
+        h: f32,
+        placeholder: String,
+        /// When `true`, render as a multi-line editor. Enter submits;
+        /// Shift+Enter inserts a newline. Defaults to `false` so existing
+        /// draw commands without this field continue to work.
+        #[serde(default)]
+        multiline: bool,
+    },
+
+    // ── Host-managed scroll regions (#446) ───────────────────────────────
+
+    /// Begin a host-managed vertical scroll region.
+    ///
+    /// All draw commands between this and the matching `EndScroll` are clipped
+    /// to the viewport rect `(x, y, w, h)`. The host tracks the scroll offset
+    /// for `id` across frames and emits `PlexiEvent::ScrollOffset { id, offset_y }`
+    /// whenever the user scrolls (mouse wheel / drag). The app translates its
+    /// content coordinates by `offset_y` before emitting draw commands.
+    ///
+    /// `content_height` is the total virtual height of the scrollable content
+    /// in logical pixels. The host uses this to size the scrollbar thumb.
+    ///
+    /// `id` must be stable across frames — use a meaningful string (e.g. the
+    /// region name) rather than a counter that may change.
+    BeginScroll {
+        id: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        content_height: f32,
+    },
+
+    /// Close the most recently opened scroll region.
+    ///
+    /// Must be balanced with a preceding `BeginScroll`. Imbalanced pairs are
+    /// logged at `warn` level and the stack is reset at frame end.
+    EndScroll,
+}
+
+/// Side-effectful commands — go to `route_command`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HostCommand {
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
         request_id: String,
@@ -722,46 +922,6 @@ pub enum DrawCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Draw an image from a workspace-scoped path or data URL.
-    Image {
-        src: String,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        /// One of: "contain" | "cover" | "fill". Default: "contain".
-        #[serde(default = "default_image_fit")]
-        fit: String,
-    },
-    /// Open a video decoder (#345). The host responds with
-    /// `PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,
-    /// fps, duration_ms }` on success or `PlexiEvent::VideoOpenError
-    /// { request_id, error }` on failure (capability denied, source not
-    /// found, decoder error, NotImplemented from the production stub).
-    /// Decoded RGBA8 frames flow over the binary pipe at `pipe_id`; one
-    /// pipe frame = one video frame, packed `[R,G,B,A,...]` of length
-    /// `width * height * 4`.
-    ///
-    /// Requires `video.playback` capability. All fields required —
-    /// no `serde(default)`.
-    OpenVideo {
-        request_id: String,
-        source: String,
-        pipe_id: String,
-    },
-    /// Drive playback state for a previously-opened video handle (#345).
-    /// `handle_id` is the value returned in `VideoOpenAck`. State variants:
-    /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
-    SetVideoState {
-        handle_id: u64,
-        state: crate::video::VideoState,
-    },
-    /// Close a previously-opened video handle (#345). Tears down the
-    /// decoder thread and the associated binary pipe drains. No response
-    /// event — fire-and-forget.
-    CloseVideo { handle_id: u64 },
-    /// Render an amplitude meter reading from a binary pipe.
-    AudioMeter { rect: Rect, pipe_id: String },
     /// Host-owned audio playback via `rodio`.
     AudioPlay {
         #[serde(default)]
@@ -796,7 +956,6 @@ pub enum DrawCommand {
     /// capability gate — enumeration discloses only port names already
     /// visible in Audio MIDI Setup.
     ListMidiDevices { request_id: String },
-
     /// Open a MIDI input port and forward every incoming message as a binary
     /// pipe frame on `pipe_id`. Each frame is a single MIDI 1.0 byte stream
     /// (1–3 bytes for channel-voice / system real-time). Requires `midi.in`.
@@ -820,217 +979,43 @@ pub enum DrawCommand {
     /// app exits.
     SendMidi { port_id: String, bytes: Vec<u8> },
 
-    /// SDK ready handshake. Sent once by the app after receiving Init.
-    /// Host captures sdk and features_used; the message is otherwise a no-op.
-    Ready {
-        #[serde(default)]
-        sdk: String,
-        #[serde(default)]
-        features_used: Vec<String>,
+    /// Open a video decoder (#345). The host responds with
+    /// `PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,
+    /// fps, duration_ms }` on success or `PlexiEvent::VideoOpenError
+    /// { request_id, error }` on failure (capability denied, source not
+    /// found, decoder error, NotImplemented from the production stub).
+    /// Decoded RGBA8 frames flow over the binary pipe at `pipe_id`; one
+    /// pipe frame = one video frame, packed `[R,G,B,A,...]` of length
+    /// `width * height * 4`.
+    ///
+    /// Requires `video.playback` capability. All fields required —
+    /// no `serde(default)`.
+    OpenVideo {
+        request_id: String,
+        source: String,
+        pipe_id: String,
     },
+    /// Drive playback state for a previously-opened video handle (#345).
+    /// `handle_id` is the value returned in `VideoOpenAck`. State variants:
+    /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
+    SetVideoState {
+        handle_id: u64,
+        state: crate::video::VideoState,
+    },
+    /// Close a previously-opened video handle (#345). Tears down the
+    /// decoder thread and the associated binary pipe drains. No response
+    /// event — fire-and-forget.
+    CloseVideo { handle_id: u64 },
+
     /// Request the host to cd all terminals in the same pane group to `cwd`.
     /// Terminals receive `cd <cwd>\n` written to their PTY.
     CdRequest { cwd: String },
-
-    /// Ask the host to trigger a new Render event after `after_ms` milliseconds.
-    /// Intended for game loops and animations — emit once per frame to sustain a
-    /// tick rate without relying on egui's unconditional repaint cadence.
-    /// Apps that do not emit this will still repaint on keyboard/inject events.
-    ScheduleRender { after_ms: u32 },
 
     /// Request a one-shot timer. Requires `timer` capability.
     /// Host fires `PlexiEvent::Timer { timer_id }` after `after_ms` milliseconds.
     SetTimer { timer_id: String, after_ms: u64 },
     /// Cancel a pending timer. No-op if the timer has already fired or doesn't exist.
     CancelTimer { timer_id: String },
-
-    /// Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).
-    Circle {
-        cx: f32,
-        cy: f32,
-        r: f32,
-        fill: String,
-    },
-
-    /// Draw a filled arc / pie slice.
-    /// `start_angle` and `end_angle` are in radians, measured clockwise from the right (east).
-    /// A full circle is 0.0 to std::f32::consts::TAU.
-    Arc {
-        cx: f32,
-        cy: f32,
-        r: f32,
-        start_angle: f32,
-        end_angle: f32,
-        fill: String,
-    },
-
-    // ── Host-measured layout primitives ──────────────────────────────────
-    //
-    // These commands delegate text measurement and pill geometry entirely to
-    // the host. The SDK emits intent; the host measures with real egui font
-    // metrics and renders. No Python-side width estimation.
-
-    /// Host-rendered pill badge. The host measures the label with real font
-    /// metrics, sizes the pill (text_w + padding), and centres the text
-    /// both horizontally and vertically. No width math in the SDK.
-    ///
-    /// `x`      — left edge of the badge.
-    /// `y`      — vertical centre (the badge is drawn centred on this y).
-    /// `label`  — text to display inside the pill.
-    /// `fill`   — pill background colour (hex).
-    /// `fg`     — text colour (hex).
-    /// `font_size` — label font size in pt.
-    /// `radius` — pill corner radius. Use a large value (e.g. font_size) for
-    ///            a fully-rounded pill, or RADIUS_SM (4.0) for tag chips.
-    Badge {
-        x: f32,
-        y: f32,
-        label: String,
-        fill: String,
-        fg: String,
-        font_size: f32,
-        radius: f32,
-    },
-
-    /// Host-rendered keycap chip. The host measures the label with real
-    /// monospace font metrics, sizes the chip, and centres the text inside.
-    ///
-    /// `x`         — left edge of the chip (top-left, matching ctx.text).
-    /// `y`         — top edge of the chip.
-    /// `label`     — key label (e.g. "⌘", "[", "Enter").
-    /// `font_size` — label font size in pt.
-    KeyChip {
-        x: f32,
-        y: f32,
-        label: String,
-        font_size: f32,
-    },
-
-    /// A horizontal row of keycap chips. The host flows them left-to-right
-    /// with a fixed 2px gap between chips, sizes each chip from real font
-    /// metrics, and places an optional trailing description label after the
-    /// last chip.
-    ///
-    /// `x`, `y`      — top-left origin of the row.
-    /// `keys`        — ordered list of key labels to render as chips.
-    /// `description` — optional label rendered after the last chip.
-    /// `font_size`   — applies to all chips and the description.
-    KeyChipRow {
-        x: f32,
-        y: f32,
-        keys: Vec<String>,
-        description: Option<String>,
-        font_size: f32,
-    },
-
-    /// A multi-group shortcut row. The host owns all layout — chip widths
-    /// from real font metrics, flow horizontally with configurable inter-
-    /// group gap, wrap to a new line when the next group would exceed
-    /// `max_width`. Returns nothing; correct by construction.
-    ///
-    /// `x`, `y`      — top-left origin.
-    /// `max_width`   — wrap budget. Wrap to a new line when the next group
-    ///                 would exceed it. Caller passes the available pane
-    ///                 width minus its own padding.
-    /// `pairs`       — ordered list of `(chip-labels, description)` groups.
-    ///                 Each pair renders as one or more chips followed by
-    ///                 the description text.
-    /// `font_size`   — applies to all chips and descriptions.
-    Shortcuts {
-        x: f32,
-        y: f32,
-        max_width: f32,
-        pairs: Vec<ShortcutPair>,
-        font_size: f32,
-    },
-
-    /// Multiple text segments rendered horizontally with host-measured layout.
-    /// The host measures each segment with real font metrics and flows them
-    /// left-to-right with configurable gap spacing.
-    ///
-    /// `x`, `y`  — origin of the text row.
-    /// `items`   — list of text segments, each with text, color, size, monospace.
-    /// `gap`     — spacing between items in pixels.
-    /// `align`   — vertical alignment (e.g., "left_center").
-    TextRow {
-        x: f32,
-        y: f32,
-        items: Vec<TextRowItem>,
-        gap: f32,
-        align: String,
-    },
-
-    /// Request a one-shot text measurement. The host measures `text` at
-    /// `font_size` with the proportional font and replies immediately with
-    /// `PlexiEvent::TextMeasured { request_id, width, height }`.
-    ///
-    /// Use this only when layout genuinely depends on measured text width
-    /// (e.g. flowing multiple badges horizontally). Avoid on hot render paths.
-    MeasureText {
-        request_id: String,
-        text: String,
-        font_size: f32,
-        #[serde(default)]
-        monospace: bool,
-    },
-
-    /// Write `text` to the OS clipboard.
-    ///
-    /// Routed through `egui::Context::copy_text`, which handles platform-
-    /// specific clipboard backends (NSPasteboard / X11 / Wayland / Win32).
-    /// Synchronous from the app's perspective — no acknowledgement event.
-    /// No capability flag required: clipboard write is low-risk and the
-    /// app already controls when it fires (key handler, button, etc.).
-    CopyToClipboard { text: String },
-
-    /// Append a row to the host-owned conversation history of an agent pane.
-    ///
-    /// Only meaningful for panes whose manifest declares `[app] type = "agent"`.
-    /// The host renders the conversation history as the pane's primary surface;
-    /// the agent emits one of these per logical turn boundary (user echo,
-    /// assistant reply, tool result, system note).
-    ///
-    /// `role` is one of `"user"` | `"assistant"` | `"tool"` | `"system"`. Other
-    /// values are accepted at the wire level (forward-compatibility) but the
-    /// host renders unknown roles as plain text. Required field — no
-    /// `serde(default)`.
-    ///
-    /// `content` is the plain-text body of the row. Required field. Empty
-    /// strings are valid (e.g. a placeholder turn while a stream is in flight)
-    /// but discouraged — emit on completion, not on dispatch.
-    AppendConversation { role: String, content: String },
-
-    /// Text input field (host-owned buffer, submit-only).
-    ///
-    /// Emitted by the app each frame at `(x, y)` with width `w`. The host
-    /// owns the underlying buffer keyed on `id` — typed characters never
-    /// reach the app between frames. On Enter the host emits
-    /// `PlexiEvent::TextSubmitted { id, value }` and clears its buffer.
-    ///
-    /// When `multiline` is `false` (the default), the host renders a
-    /// single-line `TextEdit` and Enter submits. When `multiline` is `true`,
-    /// the host renders a multi-line `TextEdit`; Enter still submits but
-    /// Shift+Enter inserts a newline.
-    ///
-    /// Real-time validation (per-keystroke value access) is intentionally
-    /// out of scope — see issue #283 option A. Apps that need it must
-    /// wait for a future protocol revision.
-    TextInput {
-        id: String,
-        x: f32,
-        y: f32,
-        w: f32,
-        /// Height of the input widget in pixels. Defaults to 24.0 for
-        /// backwards compatibility with older SDKs that don't send `h`.
-        #[serde(default = "default_text_input_h")]
-        h: f32,
-        placeholder: String,
-        /// When `true`, render as a multi-line editor. Enter submits;
-        /// Shift+Enter inserts a newline. Defaults to `false` so existing
-        /// draw commands without this field continue to work.
-        #[serde(default)]
-        multiline: bool,
-    },
 
     // ── Canvas Terminal Binding Primitives (#78) ─────────────────────────
     //
@@ -1140,57 +1125,12 @@ pub enum DrawCommand {
     /// entry from the per-pane nav stack (saturating — no-op on empty stack).
     PopNav {},
 
-    // ── Host-managed scroll regions (#446) ───────────────────────────────
-
-    /// Begin a host-managed vertical scroll region.
-    ///
-    /// All draw commands between this and the matching `EndScroll` are clipped
-    /// to the viewport rect `(x, y, w, h)`. The host tracks the scroll offset
-    /// for `id` across frames and emits `PlexiEvent::ScrollOffset { id, offset_y }`
-    /// whenever the user scrolls (mouse wheel / drag). The app translates its
-    /// content coordinates by `offset_y` before emitting draw commands.
-    ///
-    /// `content_height` is the total virtual height of the scrollable content
-    /// in logical pixels. The host uses this to size the scrollbar thumb.
-    ///
-    /// `id` must be stable across frames — use a meaningful string (e.g. the
-    /// region name) rather than a counter that may change.
-    BeginScroll {
-        id: String,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        content_height: f32,
-    },
-
-    /// Close the most recently opened scroll region.
-    ///
-    /// Must be balanced with a preceding `BeginScroll`. Imbalanced pairs are
-    /// logged at `warn` level and the stack is reset at frame end.
-    EndScroll,
-
     /// Enable or disable `PlexiEvent::MouseMove` delivery for this pane.
     ///
     /// Off by default to avoid flooding apps that don't need continuous pointer
     /// tracking. Send `{ enabled: true }` after `Ready` to start receiving
     /// `on_mouse_move` callbacks. Send `{ enabled: false }` to stop.
     SetMouseTracking { enabled: bool },
-
-    /// Render markdown text using the host's `egui_commonmark` renderer.
-    ///
-    /// The host creates a child `Ui` at `(x, y)` with width `w` and renders
-    /// the markdown with proper formatting (bold, italic, code blocks, etc.).
-    /// `base_size` controls the body font size; `color` sets the default text
-    /// colour.
-    Markdown {
-        x: f32,
-        y: f32,
-        w: f32,
-        text: String,
-        base_size: f32,
-        color: String,
-    },
 
     // ── File picker (#514) ────────────────────────────────────────────────────
     /// Show a native macOS file picker dialog. Requires `fs.pick` capability.
@@ -1207,6 +1147,84 @@ pub enum DrawCommand {
         filter: Vec<String>,
         multiple: bool,
     },
+}
+
+/// Inline-handled commands (processed directly in `ui()` or `background_tick()`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ControlCommand {
+    /// SDK ready handshake. Sent once by the app after receiving Init.
+    /// Host captures sdk and features_used; the message is otherwise a no-op.
+    Ready {
+        #[serde(default)]
+        sdk: String,
+        #[serde(default)]
+        features_used: Vec<String>,
+    },
+    /// End of frame. Host renders everything queued since last FrameDone.
+    FrameDone {
+        /// Must match the frame_id from the triggering Render event.
+        frame_id: u64,
+    },
+    /// Forward a log message into Plexi's logger (tagged with app_id).
+    Log {
+        /// One of: "error" | "warn" | "info" | "debug"
+        level: String,
+        message: String,
+    },
+    /// Ask the host to trigger a new Render event after `after_ms` milliseconds.
+    /// Intended for game loops and animations — emit once per frame to sustain a
+    /// tick rate without relying on egui's unconditional repaint cadence.
+    /// Apps that do not emit this will still repaint on keyboard/inject events.
+    ScheduleRender { after_ms: u32 },
+    /// Write `text` to the OS clipboard.
+    ///
+    /// Routed through `egui::Context::copy_text`, which handles platform-
+    /// specific clipboard backends (NSPasteboard / X11 / Wayland / Win32).
+    /// Synchronous from the app's perspective — no acknowledgement event.
+    /// No capability flag required: clipboard write is low-risk and the
+    /// app already controls when it fires (key handler, button, etc.).
+    CopyToClipboard { text: String },
+    /// Request a one-shot text measurement. The host measures `text` at
+    /// `font_size` with the proportional font and replies immediately with
+    /// `PlexiEvent::TextMeasured { request_id, width, height }`.
+    ///
+    /// Use this only when layout genuinely depends on measured text width
+    /// (e.g. flowing multiple badges horizontally). Avoid on hot render paths.
+    MeasureText {
+        request_id: String,
+        text: String,
+        font_size: f32,
+        #[serde(default)]
+        monospace: bool,
+    },
+    /// Append a row to the host-owned conversation history of an agent pane.
+    ///
+    /// Only meaningful for panes whose manifest declares `[app] type = "agent"`.
+    /// The host renders the conversation history as the pane's primary surface;
+    /// the agent emits one of these per logical turn boundary (user echo,
+    /// assistant reply, tool result, system note).
+    ///
+    /// `role` is one of `"user"` | `"assistant"` | `"tool"` | `"system"`. Other
+    /// values are accepted at the wire level (forward-compatibility) but the
+    /// host renders unknown roles as plain text. Required field — no
+    /// `serde(default)`.
+    ///
+    /// `content` is the plain-text body of the row. Required field. Empty
+    /// strings are valid (e.g. a placeholder turn while a stream is in flight)
+    /// but discouraged — emit on completion, not on dispatch.
+    AppendConversation { role: String, content: String },
+}
+
+/// Top-level wire type. The `type` field is globally unique across all three
+/// inner enums, so `#[serde(untagged)]` deserializes unambiguously.
+/// The JSON `{"type":"rect",...}` still works; `{"type":"ai_query",...}` still works.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum DrawCommand {
+    Render(RenderCommand),
+    Host(HostCommand),
+    Control(ControlCommand),
 }
 
 /// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.
@@ -1391,7 +1409,7 @@ mod tests {
         let json = r#"{"type":"copy_to_clipboard","text":"snippet"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::CopyToClipboard { text } => assert_eq!(text, "snippet"),
+            DrawCommand::Control(ControlCommand::CopyToClipboard { text }) => assert_eq!(text, "snippet"),
             other => panic!("expected CopyToClipboard, got {other:?}"),
         }
         let serialised = serde_json::to_string(&cmd).expect("serialise");
@@ -1406,9 +1424,9 @@ mod tests {
         let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":true,"selectable":true}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Text {
+            DrawCommand::Render(RenderCommand::Text {
                 text, selectable, ..
-            } => {
+            }) => {
                 assert_eq!(text, "hi");
                 assert!(*selectable, "selectable should be true");
             }
@@ -1442,13 +1460,13 @@ mod tests {
         let json = r#"{"type":"ai_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::AiQuery {
+            DrawCommand::Host(HostCommand::AiQuery {
                 request_id,
                 model_tier,
                 system,
                 messages,
                 tools,
-            } => {
+            }) => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(*model_tier, ModelTier::Medium);
                 assert_eq!(system, "You are helpful.");
@@ -1562,7 +1580,7 @@ mod tests {
             r#"{"type":"append_conversation","role":"assistant","content":"Hello!"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::AppendConversation { role, content } => {
+            DrawCommand::Control(ControlCommand::AppendConversation { role, content }) => {
                 assert_eq!(role, "assistant");
                 assert_eq!(content, "Hello!");
             }
@@ -1611,7 +1629,7 @@ mod tests {
         let json = r#"{"type":"list_audio_devices","request_id":"req-9"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::ListAudioDevices { request_id } => {
+            DrawCommand::Host(HostCommand::ListAudioDevices { request_id }) => {
                 assert_eq!(request_id, "req-9");
             }
             other => panic!("expected ListAudioDevices, got {other:?}"),
@@ -1655,7 +1673,7 @@ mod tests {
         let json = r#"{"type":"list_midi_devices","request_id":"req-m1"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::ListMidiDevices { request_id } => {
+            DrawCommand::Host(HostCommand::ListMidiDevices { request_id }) => {
                 assert_eq!(request_id, "req-m1");
             }
             other => panic!("expected ListMidiDevices, got {other:?}"),
@@ -1703,7 +1721,7 @@ mod tests {
         let json = r#"{"type":"send_midi","port_id":"123","bytes":[144,60,100]}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::SendMidi { port_id, bytes } => {
+            DrawCommand::Host(HostCommand::SendMidi { port_id, bytes }) => {
                 assert_eq!(port_id, "123");
                 assert_eq!(bytes, &vec![0x90u8, 0x3C, 0x64]);
             }
@@ -1728,7 +1746,7 @@ mod tests {
         let json = r#"{"type":"pipe_open_directed","pipe_id":"coord-to-worker","target_pane_id":42}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::PipeOpenDirected { pipe_id, target_pane_id } => {
+            DrawCommand::Host(HostCommand::PipeOpenDirected { pipe_id, target_pane_id }) => {
                 assert_eq!(pipe_id, "coord-to-worker");
                 assert_eq!(*target_pane_id, 42);
             }
@@ -1768,7 +1786,7 @@ mod tests {
         let good = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null,"sample_rate":48000,"buffer_size":512}"#;
         let cmd: DrawCommand = serde_json::from_str(good).expect("deserialise");
         match &cmd {
-            DrawCommand::AudioCapture { pipe_id, device_id, sample_rate, buffer_size } => {
+            DrawCommand::Host(HostCommand::AudioCapture { pipe_id, device_id, sample_rate, buffer_size }) => {
                 assert_eq!(pipe_id, "mic");
                 assert!(device_id.is_none());
                 assert_eq!(*sample_rate, 48_000);
@@ -1788,7 +1806,7 @@ mod tests {
         let json = r#"{"type":"open_video","request_id":"req-1","source":"mock://gradient","pipe_id":"video-stream"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::OpenVideo { request_id, source, pipe_id } => {
+            DrawCommand::Host(HostCommand::OpenVideo { request_id, source, pipe_id }) => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(source, "mock://gradient");
                 assert_eq!(pipe_id, "video-stream");
@@ -1821,7 +1839,7 @@ mod tests {
         let play_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"play"}}"#;
         let cmd: DrawCommand = serde_json::from_str(play_json).expect("deserialise play");
         match &cmd {
-            DrawCommand::SetVideoState { handle_id, state } => {
+            DrawCommand::Host(HostCommand::SetVideoState { handle_id, state }) => {
                 assert_eq!(*handle_id, 7);
                 assert_eq!(*state, crate::video::VideoState::Play);
             }
@@ -1835,7 +1853,7 @@ mod tests {
 
         let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
         let cmd: DrawCommand = serde_json::from_str(pause_json).expect("deserialise pause");
-        if let DrawCommand::SetVideoState { state, .. } = &cmd {
+        if let DrawCommand::Host(HostCommand::SetVideoState { state, .. }) = &cmd {
             assert_eq!(*state, crate::video::VideoState::Pause);
         } else {
             panic!("expected SetVideoState pause, got {cmd:?}");
@@ -1844,7 +1862,7 @@ mod tests {
         let seek_json =
             r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"seek","position_ms":1500}}"#;
         let cmd: DrawCommand = serde_json::from_str(seek_json).expect("deserialise seek");
-        if let DrawCommand::SetVideoState { state, .. } = &cmd {
+        if let DrawCommand::Host(HostCommand::SetVideoState { state, .. }) = &cmd {
             assert_eq!(
                 *state,
                 crate::video::VideoState::Seek { position_ms: 1500 }
@@ -1859,7 +1877,7 @@ mod tests {
         let json = r#"{"type":"close_video","handle_id":42}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::CloseVideo { handle_id } => assert_eq!(*handle_id, 42),
+            DrawCommand::Host(HostCommand::CloseVideo { handle_id }) => assert_eq!(*handle_id, 42),
             other => panic!("expected CloseVideo, got {other:?}"),
         }
         let bad = r#"{"type":"close_video"}"#;
@@ -1914,7 +1932,7 @@ mod tests {
         let json = r#"{"type":"request_linked_terminal","request_id":"req-1","cwd":"/tmp/foo","label":"bindings demo"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::RequestLinkedTerminal { request_id, cwd, label } => {
+            DrawCommand::Host(HostCommand::RequestLinkedTerminal { request_id, cwd, label }) => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(cwd.as_deref(), Some("/tmp/foo"));
                 assert_eq!(label.as_deref(), Some("bindings demo"));
@@ -1938,7 +1956,7 @@ mod tests {
         let null_json = r#"{"type":"request_linked_terminal","request_id":"r2","cwd":null,"label":null}"#;
         let cmd: DrawCommand = serde_json::from_str(null_json).expect("deserialise null");
         match &cmd {
-            DrawCommand::RequestLinkedTerminal { cwd, label, .. } => {
+            DrawCommand::Host(HostCommand::RequestLinkedTerminal { cwd, label, .. }) => {
                 assert!(cwd.is_none());
                 assert!(label.is_none());
             }
@@ -1974,7 +1992,7 @@ mod tests {
         let json = r#"{"type":"run_in_linked_terminal","terminal_pane_id":42,"command":"ls -la","echo":true}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
+            DrawCommand::Host(HostCommand::RunInLinkedTerminal { terminal_pane_id, command, echo }) => {
                 assert_eq!(*terminal_pane_id, 42);
                 assert_eq!(command, "ls -la");
                 assert!(*echo);
@@ -2000,7 +2018,7 @@ mod tests {
         let replace_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/x","mode":"replace"}"#;
         let cmd: DrawCommand = serde_json::from_str(replace_json).expect("deserialise replace");
         match &cmd {
-            DrawCommand::InsertPathToken { mode, path, terminal_pane_id } => {
+            DrawCommand::Host(HostCommand::InsertPathToken { mode, path, terminal_pane_id }) => {
                 assert_eq!(*mode, PathTokenMode::Replace);
                 assert_eq!(path, "/tmp/x");
                 assert_eq!(*terminal_pane_id, 7);
@@ -2010,7 +2028,7 @@ mod tests {
 
         let append_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/y","mode":"append"}"#;
         let cmd: DrawCommand = serde_json::from_str(append_json).expect("deserialise append");
-        if let DrawCommand::InsertPathToken { mode, .. } = &cmd {
+        if let DrawCommand::Host(HostCommand::InsertPathToken { mode, .. }) = &cmd {
             assert_eq!(*mode, PathTokenMode::Append);
         } else {
             panic!("expected InsertPathToken, got {cmd:?}");
@@ -2036,7 +2054,7 @@ mod tests {
         let json = r#"{"type":"request_command_preview","request_id":"req-9","terminal_pane_id":3,"command":"rm -rf .git"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::RequestCommandPreview { request_id, terminal_pane_id, command } => {
+            DrawCommand::Host(HostCommand::RequestCommandPreview { request_id, terminal_pane_id, command }) => {
                 assert_eq!(request_id, "req-9");
                 assert_eq!(*terminal_pane_id, 3);
                 assert_eq!(command, "rm -rf .git");
@@ -2069,7 +2087,7 @@ mod tests {
             );
             let cmd: DrawCommand = serde_json::from_str(&json).expect("deserialise");
             match &cmd {
-                DrawCommand::OpenArtifact { path, mode } => {
+                DrawCommand::Host(HostCommand::OpenArtifact { path, mode }) => {
                     assert_eq!(path, "/tmp/x");
                     assert_eq!(*mode, expected, "wire {wire} → {expected:?}");
                 }
@@ -2078,10 +2096,10 @@ mod tests {
         }
 
         // Round-trip serialise → snake_case on the wire.
-        let cmd = DrawCommand::OpenArtifact {
+        let cmd = DrawCommand::Host(HostCommand::OpenArtifact {
             path: "/tmp/x".to_string(),
             mode: ArtifactOpenMode::RevealInFinder,
-        };
+        });
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(
             serialised.contains(r#""mode":"reveal_in_finder""#),
@@ -2120,14 +2138,14 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}],"priority":100}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Notify {
+            DrawCommand::Host(HostCommand::Notify {
                 kind,
                 options,
                 priority,
                 image_inline,
                 image_pipe_id,
                 ..
-            } => {
+            }) => {
                 assert_eq!(*kind, NotifyKind::Choice);
                 assert_eq!(options.len(), 2);
                 assert_eq!(options[0].value, "sidebar");
@@ -2152,11 +2170,11 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Pic","body":"see image","kind":"message","priority":50,"image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Notify {
+            DrawCommand::Host(HostCommand::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
-            } => {
+            }) => {
                 let img = image_inline.as_ref().expect("inline image present");
                 assert_eq!(img.mime, "image/png");
                 assert_eq!(img.base64, "AAAA");
@@ -2182,11 +2200,11 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Pic","body":"piped","kind":"message","priority":50,"image_pipe_id":"render-out"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Notify {
+            DrawCommand::Host(HostCommand::Notify {
                 image_pipe_id,
                 image_inline,
                 ..
-            } => {
+            }) => {
                 assert_eq!(image_pipe_id.as_deref(), Some("render-out"));
                 assert!(image_inline.is_none());
             }
@@ -2201,11 +2219,11 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Plain","body":"no image","kind":"message","priority":50}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            DrawCommand::Notify {
+            DrawCommand::Host(HostCommand::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
-            } => {
+            }) => {
                 assert!(image_inline.is_none());
                 assert!(image_pipe_id.is_none());
             }

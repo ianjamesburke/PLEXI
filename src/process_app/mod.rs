@@ -19,7 +19,7 @@ mod routing;
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 
 use crate::app_permissions::{AppPermissions, Capability};
-use crate::app_protocol::{DrawCommand, Modifiers, PlexiEvent};
+use crate::app_protocol::{ControlCommand, DrawCommand, Modifiers, PlexiEvent, RenderCommand};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::audio::{AudioDevice, CaptureSession};
 use crate::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
@@ -110,9 +110,9 @@ pub struct ProcessApp {
     /// Receives draw commands from the subprocess on a background thread.
     draw_rx: Option<Receiver<DrawCommand>>,
     /// The last fully committed frame (commands between two FrameDones).
-    pub(crate) frame: Vec<DrawCommand>,
+    pub(crate) frame: Vec<RenderCommand>,
     /// Accumulates draw commands for the frame currently being received.
-    pending_frame: Vec<DrawCommand>,
+    pending_frame: Vec<RenderCommand>,
     /// Pending host app commands collected from the subprocess.
     pub(crate) pending_commands: Vec<AppCommand>,
     last_size: egui::Vec2,
@@ -829,7 +829,7 @@ impl ProcessApp {
         &mut self,
         ui: &mut egui::Ui,
         pane_rect: egui::Rect,
-        frame: &[DrawCommand],
+        frame: &[RenderCommand],
     ) {
         let origin = pane_rect.min;
         // Collect submit events out-of-band so we don't hold a mutable
@@ -848,7 +848,7 @@ impl ProcessApp {
         let mut any_has_focus = false;
 
         for cmd in frame {
-            let DrawCommand::TextInput {
+            let RenderCommand::TextInput {
                 id,
                 x,
                 y,
@@ -1044,7 +1044,8 @@ impl ProcessApp {
         self.flush_outbound_events();
         for cmd in self.drain_draw_commands() {
             match cmd {
-                DrawCommand::Log { level, message } => {
+                DrawCommand::Host(h) => self.route_command(h),
+                DrawCommand::Control(ControlCommand::Log { level, message }) => {
                     let target = format!("app::{}", self.type_id);
                     match level.as_str() {
                         "error" => log::error!(target: &target, "{message}"),
@@ -1053,55 +1054,88 @@ impl ProcessApp {
                         _       => log::info!(target: &target, "{message}"),
                     }
                 }
-                cmd @ (DrawCommand::CapabilityRequest { .. }
-                | DrawCommand::SecretGet { .. }
-                | DrawCommand::RunGet { .. }
-                | DrawCommand::RunComplete { .. }
-                | DrawCommand::Notify { .. }
-                | DrawCommand::PipeOpen { .. }
-                | DrawCommand::PipeOpenDirected { .. }
-                | DrawCommand::PipeSend { .. }
-                | DrawCommand::StatusSummary { .. }
-                | DrawCommand::SpawnApp { .. }
-                | DrawCommand::SpawnPane { .. }
-                | DrawCommand::HttpRequest { .. }
-                | DrawCommand::AudioPlay { .. }
-                | DrawCommand::AudioCapture { .. }
-                | DrawCommand::ListAudioDevices { .. }
-                | DrawCommand::ListMidiDevices { .. }
-                | DrawCommand::OpenMidiInput { .. }
-                | DrawCommand::CloseMidiInput { .. }
-                | DrawCommand::SendMidi { .. }
-                | DrawCommand::CdRequest { .. }
-                | DrawCommand::SetTimer { .. }
-                | DrawCommand::CancelTimer { .. }
-                // Canvas Terminal Binding Primitives (#78).
-                | DrawCommand::RequestLinkedTerminal { .. }
-                | DrawCommand::RunInLinkedTerminal { .. }
-                | DrawCommand::InsertPathToken { .. }
-                | DrawCommand::RequestCommandPreview { .. }
-                | DrawCommand::OpenArtifact { .. }
-                | DrawCommand::PushNav { .. }
-                | DrawCommand::PopNav { .. }
-                | DrawCommand::SetMouseTracking { .. }
-                // AI
-                | DrawCommand::AiQuery { .. }
-                | DrawCommand::ExposeTools { .. }
-                | DrawCommand::ToolResult { .. }
-                // Video / image / audio meter
-                | DrawCommand::OpenVideo { .. }
-                | DrawCommand::CloseVideo { .. }
-                | DrawCommand::SetVideoState { .. }
-                | DrawCommand::Image { .. }
-                | DrawCommand::AudioMeter { .. }
-                // File picker (#514)
-                | DrawCommand::OpenFilePicker { .. }) => {
-                    self.route_command(cmd);
-                }
-                // Visual commands, FrameDone, Ready, MeasureText, ScheduleRender
-                // are discarded — no pane to render into.
-                _ => {}
+                DrawCommand::Control(_) => {} // Ready/FrameDone/etc. irrelevant without a pane
+                DrawCommand::Render(_) => {} // No pane to render into
             }
+        }
+    }
+
+    /// Dispatch a `ControlCommand` that arrived during `ui()`. Called inline
+    /// from the `ui()` dispatch loop; has access to `egui::Ui` for operations
+    /// that require UI-thread context (font metrics, clipboard, repaint).
+    fn handle_control_command(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame_id: u64,
+        cmd: ControlCommand,
+    ) {
+        match cmd {
+            ControlCommand::Ready { sdk, features_used } => {
+                self.sdk = Some(sdk);
+                self.features_used = features_used;
+            }
+            ControlCommand::FrameDone { frame_id: done_id } => {
+                if done_id != frame_id {
+                    log::debug!(
+                        "ProcessApp[{}]: FrameDone frame_id={done_id} expected={frame_id}",
+                        self.type_id
+                    );
+                }
+                std::mem::swap(&mut self.frame, &mut self.pending_frame);
+                self.pending_frame.clear();
+                // Lifecycle: a frame just landed → Running (unless terminal).
+                self.lifecycle.on_frame_done();
+            }
+            ControlCommand::Log { level, message } => {
+                let target = format!("app::{}", self.type_id);
+                match level.as_str() {
+                    "error" => log::error!(target: &target, "{message}"),
+                    "warn"  => log::warn!(target: &target, "{message}"),
+                    "debug" => log::debug!(target: &target, "{message}"),
+                    _       => log::info!(target: &target, "{message}"),
+                }
+            }
+            ControlCommand::ScheduleRender { after_ms } => {
+                ui.ctx().request_repaint_after(
+                    std::time::Duration::from_millis(after_ms as u64),
+                );
+            }
+            // CopyToClipboard is handled here (not in routing.rs) because
+            // `egui::Context::copy_text` is a UI-context method. The host
+            // owns the clipboard backend selection (pasteboard / X11 /
+            // Wayland / Win32) — we just hand egui the string.
+            ControlCommand::CopyToClipboard { text } => {
+                ui.ctx().copy_text(text);
+            }
+            // MeasureText is handled here (not in routing.rs) because it
+            // needs `ui` to access egui font metrics on the UI thread.
+            ControlCommand::MeasureText {
+                request_id,
+                text,
+                font_size,
+                monospace,
+            } => {
+                let family = if monospace {
+                    egui::FontFamily::Monospace
+                } else {
+                    egui::FontFamily::Proportional
+                };
+                let font_id = egui::FontId::new(font_size, family);
+                let galley = ui.fonts(|f| {
+                    f.layout_no_wrap(text, font_id, egui::Color32::WHITE)
+                });
+                let sz = galley.size();
+                self.outbound_events
+                    .push_back(crate::app_protocol::PlexiEvent::TextMeasured {
+                        request_id,
+                        width: sz.x,
+                        height: sz.y,
+                    });
+            }
+            // AppendConversation is a host-side no-op — it is intended as a
+            // signal to the SDK for conversation-history management. The host
+            // acknowledges receipt silently.
+            ControlCommand::AppendConversation { .. } => {}
         }
     }
 }
@@ -1215,114 +1249,9 @@ impl App for ProcessApp {
 
         for cmd in new_cmds {
             match cmd {
-                DrawCommand::Ready { sdk, features_used } => {
-                    self.sdk = Some(sdk);
-                    self.features_used = features_used;
-                }
-                DrawCommand::FrameDone { frame_id: done_id } => {
-                    if done_id != frame_id {
-                        log::debug!(
-                            "ProcessApp[{}]: FrameDone frame_id={done_id} expected={frame_id}",
-                            self.type_id
-                        );
-                    }
-                    std::mem::swap(&mut self.frame, &mut self.pending_frame);
-                    self.pending_frame.clear();
-                    // Lifecycle: a frame just landed → Running (unless terminal).
-                    self.lifecycle.on_frame_done();
-                }
-                DrawCommand::Log { level, message } => {
-                    let target = format!("app::{}", self.type_id);
-                    match level.as_str() {
-                        "error" => log::error!(target: &target, "{message}"),
-                        "warn" => log::warn!(target: &target, "{message}"),
-                        "debug" => log::debug!(target: &target, "{message}"),
-                        _ => log::info!(target: &target, "{message}"),
-                    }
-                }
-                DrawCommand::ScheduleRender { after_ms } => {
-                    ui.ctx().request_repaint_after(
-                        std::time::Duration::from_millis(after_ms as u64),
-                    );
-                }
-                // CopyToClipboard is handled here (not in routing.rs) because
-                // `egui::Context::copy_text` is a UI-context method. The host
-                // owns the clipboard backend selection (pasteboard / X11 /
-                // Wayland / Win32) — we just hand egui the string.
-                DrawCommand::CopyToClipboard { text } => {
-                    ui.ctx().copy_text(text);
-                }
-                // MeasureText is handled here (not in routing.rs) because it
-                // needs `ui` to access egui font metrics on the UI thread.
-                DrawCommand::MeasureText {
-                    request_id,
-                    text,
-                    font_size,
-                    monospace,
-                } => {
-                    let family = if monospace {
-                        egui::FontFamily::Monospace
-                    } else {
-                        egui::FontFamily::Proportional
-                    };
-                    let font_id = egui::FontId::new(font_size, family);
-                    let galley = ui.fonts(|f| {
-                        f.layout_no_wrap(text, font_id, egui::Color32::WHITE)
-                    });
-                    let sz = galley.size();
-                    self.outbound_events
-                        .push_back(crate::app_protocol::PlexiEvent::TextMeasured {
-                            request_id,
-                            width: sz.x,
-                            height: sz.y,
-                        });
-                }
-                cmd @ (DrawCommand::CapabilityRequest { .. }
-                | DrawCommand::SecretGet { .. }
-                | DrawCommand::RunGet { .. }
-                | DrawCommand::RunComplete { .. }
-                | DrawCommand::Notify { .. }
-                | DrawCommand::PipeOpen { .. }
-                | DrawCommand::PipeOpenDirected { .. }
-                | DrawCommand::PipeSend { .. }
-                | DrawCommand::StatusSummary { .. }
-                | DrawCommand::SpawnApp { .. }
-                | DrawCommand::SpawnPane { .. }
-                | DrawCommand::HttpRequest { .. }
-                | DrawCommand::AudioPlay { .. }
-                | DrawCommand::AudioCapture { .. }
-                | DrawCommand::ListAudioDevices { .. }
-                | DrawCommand::ListMidiDevices { .. }
-                | DrawCommand::OpenMidiInput { .. }
-                | DrawCommand::CloseMidiInput { .. }
-                | DrawCommand::SendMidi { .. }
-                | DrawCommand::CdRequest { .. }
-                | DrawCommand::SetTimer { .. }
-                | DrawCommand::CancelTimer { .. }
-                // Canvas Terminal Binding Primitives (#78).
-                | DrawCommand::RequestLinkedTerminal { .. }
-                | DrawCommand::RunInLinkedTerminal { .. }
-                | DrawCommand::InsertPathToken { .. }
-                | DrawCommand::RequestCommandPreview { .. }
-                | DrawCommand::OpenArtifact { .. }
-                | DrawCommand::PushNav { .. }
-                | DrawCommand::PopNav { .. }
-                | DrawCommand::SetMouseTracking { .. }
-                // AI
-                | DrawCommand::AiQuery { .. }
-                | DrawCommand::ExposeTools { .. }
-                | DrawCommand::ToolResult { .. }
-                // Video / image / audio meter
-                | DrawCommand::OpenVideo { .. }
-                | DrawCommand::CloseVideo { .. }
-                | DrawCommand::SetVideoState { .. }
-                | DrawCommand::Image { .. }
-                | DrawCommand::AudioMeter { .. }
-                // File picker (#514)
-                | DrawCommand::OpenFilePicker { .. }) => {
-                    self.route_command(cmd);
-                }
-                other => self.pending_frame.push(other),
+                DrawCommand::Control(c) => self.handle_control_command(ui, frame_id, c),
+                DrawCommand::Host(h) => self.route_command(h),
+                DrawCommand::Render(r) => self.pending_frame.push(r),
             }
         }
 
@@ -1390,7 +1319,7 @@ impl App for ProcessApp {
             let mut scroll_regions: Vec<(String, egui::Rect, f32)> = Vec::new();
             let origin = pane_rect.min;
             for cmd in &frame_clone {
-                if let DrawCommand::BeginScroll { id, x, y, w, h, content_height } = cmd {
+                if let RenderCommand::BeginScroll { id, x, y, w, h, content_height } = cmd {
                     let viewport = egui::Rect::from_min_size(
                         egui::pos2(origin.x + x, origin.y + y),
                         egui::vec2(*w, *h),
@@ -1856,22 +1785,23 @@ mod clipboard_tests {
 
     #[test]
     fn copy_to_clipboard_drawcommand_calls_egui_copy() {
-        // Verify the wired path: `DrawCommand::CopyToClipboard { text }` →
+        // Verify the wired path: `ControlCommand::CopyToClipboard { text }` →
         // `egui::Context::copy_text(text)` → `OutputCommand::CopyText` on
         // the platform output. We construct a fresh egui Context, mirror
-        // the one-line dispatch from `ProcessApp::ui()`, and inspect the
-        // platform output for the CopyText command. If the dispatch ever
-        // changes shape (e.g. a different egui method), this test forces
-        // the breakage to surface.
+        // the one-line dispatch from `ProcessApp::handle_control_command()`,
+        // and inspect the platform output for the CopyText command. If the
+        // dispatch ever changes shape (e.g. a different egui method), this
+        // test forces the breakage to surface.
+        use crate::app_protocol::ControlCommand;
         let ctx = egui::Context::default();
-        let cmd = DrawCommand::CopyToClipboard {
+        let cmd = ControlCommand::CopyToClipboard {
             text: "selected snippet".to_string(),
         };
 
-        // This mirrors the exact branch in `ProcessApp::ui()`. Keep it
-        // in sync — if you refactor the dispatch, refactor this too.
+        // This mirrors the exact branch in `ProcessApp::handle_control_command()`.
+        // Keep it in sync — if you refactor the dispatch, refactor this too.
         match cmd {
-            DrawCommand::CopyToClipboard { text } => ctx.copy_text(text),
+            ControlCommand::CopyToClipboard { text } => ctx.copy_text(text),
             _ => panic!("test setup error"),
         }
 
@@ -2148,7 +2078,7 @@ mod ai_tests {
     //! path also confirms that the routing layer forwarded the right
     //! `model_tier`, `system`, and `messages` payload to the broker.
     use super::*;
-    use crate::app_protocol::{AiMessage, DrawCommand, ModelTier, PlexiEvent};
+    use crate::app_protocol::{AiMessage, HostCommand, ModelTier, PlexiEvent};
     use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -2206,7 +2136,7 @@ mod ai_tests {
         }
         app.ai_broker = Arc::new(PanicBroker);
 
-        app.route_command(DrawCommand::AiQuery {
+        app.route_command(HostCommand::AiQuery {
             request_id: "req-denied".to_string(),
             model_tier: ModelTier::Low,
             system: "system".to_string(),
@@ -2269,7 +2199,7 @@ mod ai_tests {
             response: AiBrokerResponse::ok("Pong.".to_string(), 12, 4),
         });
 
-        app.route_command(DrawCommand::AiQuery {
+        app.route_command(HostCommand::AiQuery {
             request_id: "req-ok".to_string(),
             model_tier: ModelTier::High,
             system: "be terse".to_string(),
@@ -2326,7 +2256,7 @@ mod midi_tests {
     //!   2. App with the capability — `MockMidiDevice` records the open and
     //!      the routing layer queues `MidiInputOpened` on success.
     use super::*;
-    use crate::app_protocol::{DrawCommand, PlexiEvent};
+    use crate::app_protocol::{HostCommand, PlexiEvent};
     use crate::midi::MockMidiDevice;
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -2364,7 +2294,7 @@ mod midi_tests {
         let mock = Arc::new(MockMidiDevice::new());
         app.midi_device = Arc::clone(&mock) as Arc<dyn crate::midi::MidiDevice>;
 
-        app.route_command(DrawCommand::OpenMidiInput {
+        app.route_command(HostCommand::OpenMidiInput {
             port_id: "mock-input-1".to_owned(),
             pipe_id: "midi-in-pipe".to_owned(),
         });
@@ -2400,7 +2330,7 @@ mod midi_tests {
         );
 
         // SendMidi without `midi.out` is the same shape.
-        app.route_command(DrawCommand::SendMidi {
+        app.route_command(HostCommand::SendMidi {
             port_id: "mock-output-1".to_owned(),
             bytes: vec![0x90, 0x3C, 0x64],
         });
@@ -2442,7 +2372,7 @@ mod midi_tests {
         let mock = Arc::new(MockMidiDevice::new());
         app.midi_device = Arc::clone(&mock) as Arc<dyn crate::midi::MidiDevice>;
 
-        app.route_command(DrawCommand::OpenMidiInput {
+        app.route_command(HostCommand::OpenMidiInput {
             port_id: "mock-input-1".to_owned(),
             pipe_id: "midi-in-pipe".to_owned(),
         });
@@ -2474,7 +2404,7 @@ mod midi_tests {
         );
 
         // SendMidi path: dispatches one note-on to the mock output log.
-        app.route_command(DrawCommand::SendMidi {
+        app.route_command(HostCommand::SendMidi {
             port_id: "mock-output-1".to_owned(),
             bytes: vec![0x90, 0x3C, 0x64],
         });
@@ -2497,7 +2427,7 @@ mod video_tests {
     //!   2. App with the capability — `MockVideoDecoder` opens the source,
     //!      the routing layer queues `VideoOpenAck` and pumps frames.
     use super::*;
-    use crate::app_protocol::{DrawCommand, PlexiEvent};
+    use crate::app_protocol::{HostCommand, PlexiEvent};
     use crate::video::{MockVideoDecoder, MockVideoDecoderConfig};
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -2535,7 +2465,7 @@ mod video_tests {
         let mock = Arc::new(MockVideoDecoder::new(MockVideoDecoderConfig::default()));
         app.video_device = Arc::clone(&mock) as Arc<dyn crate::video::VideoDecoder>;
 
-        app.route_command(DrawCommand::OpenVideo {
+        app.route_command(HostCommand::OpenVideo {
             request_id: "req-denied".to_owned(),
             source: "mock://gradient".to_owned(),
             pipe_id: "video-stream".to_owned(),
@@ -2596,7 +2526,7 @@ mod video_tests {
         }));
         app.video_device = Arc::clone(&mock) as Arc<dyn crate::video::VideoDecoder>;
 
-        app.route_command(DrawCommand::OpenVideo {
+        app.route_command(HostCommand::OpenVideo {
             request_id: "req-1".to_owned(),
             source: "mock://gradient".to_owned(),
             pipe_id: "video-stream".to_owned(),
@@ -2645,15 +2575,15 @@ mod video_tests {
 
         // SetVideoState — pause then play, neither should panic and no error
         // event should arrive.
-        app.route_command(DrawCommand::SetVideoState {
+        app.route_command(HostCommand::SetVideoState {
             handle_id: ack_handle_id,
             state: crate::video::VideoState::Pause,
         });
-        app.route_command(DrawCommand::SetVideoState {
+        app.route_command(HostCommand::SetVideoState {
             handle_id: ack_handle_id,
             state: crate::video::VideoState::Play,
         });
-        app.route_command(DrawCommand::SetVideoState {
+        app.route_command(HostCommand::SetVideoState {
             handle_id: ack_handle_id,
             state: crate::video::VideoState::Seek { position_ms: 1_000 },
         });
@@ -2666,7 +2596,7 @@ mod video_tests {
         assert_eq!(errors, 0, "set_state must not produce VideoOpenError");
 
         // CloseVideo tears down the handle and unregisters the pipe id map.
-        app.route_command(DrawCommand::CloseVideo {
+        app.route_command(HostCommand::CloseVideo {
             handle_id: ack_handle_id,
         });
         assert!(
@@ -2700,7 +2630,7 @@ mod video_tests {
 mod canvas_bindings_tests {
     use super::*;
     use crate::app_protocol::{
-        ArtifactOpenMode, DrawCommand, PathTokenMode, PlexiEvent,
+        ArtifactOpenMode, HostCommand, PathTokenMode, PlexiEvent,
     };
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -2736,7 +2666,7 @@ mod canvas_bindings_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.route_command(DrawCommand::RequestLinkedTerminal {
+        app.route_command(HostCommand::RequestLinkedTerminal {
             request_id: "req-0".to_string(),
             cwd: None,
             label: None,
@@ -2776,7 +2706,7 @@ mod canvas_bindings_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.route_command(DrawCommand::RunInLinkedTerminal {
+        app.route_command(HostCommand::RunInLinkedTerminal {
             terminal_pane_id: 42,
             command: "ls".to_string(),
             echo: true,
@@ -2798,7 +2728,7 @@ mod canvas_bindings_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.route_command(DrawCommand::RequestCommandPreview {
+        app.route_command(HostCommand::RequestCommandPreview {
             request_id: "req-9".to_string(),
             terminal_pane_id: 42,
             command: "rm -rf .git".to_string(),
@@ -2835,7 +2765,7 @@ mod canvas_bindings_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.route_command(DrawCommand::RequestLinkedTerminal {
+        app.route_command(HostCommand::RequestLinkedTerminal {
             request_id: "req-ok".to_string(),
             cwd: Some("/tmp/foo".to_string()),
             label: Some("bindings demo".to_string()),
@@ -2879,7 +2809,7 @@ mod canvas_bindings_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.route_command(DrawCommand::RunInLinkedTerminal {
+        app.route_command(HostCommand::RunInLinkedTerminal {
             terminal_pane_id: 42,
             command: "ls -la".to_string(),
             echo: true,
@@ -2913,7 +2843,7 @@ mod canvas_bindings_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.route_command(DrawCommand::InsertPathToken {
+        app.route_command(HostCommand::InsertPathToken {
             terminal_pane_id: 42,
             path: "/tmp/x".to_string(),
             mode: PathTokenMode::Replace,
@@ -2940,7 +2870,7 @@ mod canvas_bindings_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.route_command(DrawCommand::OpenArtifact {
+        app.route_command(HostCommand::OpenArtifact {
             path: "/tmp/x".to_string(),
             mode: ArtifactOpenMode::RevealInFinder,
         });

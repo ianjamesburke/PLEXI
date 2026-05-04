@@ -1,6 +1,6 @@
 //! Frame rendering — translates committed DrawCommands into egui paint calls.
 
-use crate::app_protocol::DrawCommand;
+use crate::app_protocol::RenderCommand;
 use crate::style;
 use crate::theme::Colors;
 use egui::Color32;
@@ -30,7 +30,7 @@ use egui::Color32;
 pub(super) fn render_draw_commands(
     ui: &mut egui::Ui,
     pane_rect: egui::Rect,
-    commands: &[DrawCommand],
+    commands: &[RenderCommand],
     colors: &Colors,
     commonmark_cache: &mut egui_commonmark::CommonMarkCache,
 ) {
@@ -45,7 +45,7 @@ pub(super) fn render_draw_commands(
 
         match cmd {
             // ── Clip stack ────────────────────────────────────────────────────
-            DrawCommand::PushClip { x, y, w, h } => {
+            RenderCommand::PushClip { x, y, w, h } => {
                 let new_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
@@ -56,14 +56,14 @@ pub(super) fn render_draw_commands(
                 continue;
             }
 
-            DrawCommand::PopClip => {
+            RenderCommand::PopClip => {
                 if clip_stack.pop().is_none() {
                     log::warn!("render: PopClip on empty clip stack (app bug)");
                 }
                 continue;
             }
 
-            DrawCommand::Rect {
+            RenderCommand::Rect {
                 x,
                 y,
                 w,
@@ -79,7 +79,7 @@ pub(super) fn render_draw_commands(
                 ui.painter().with_clip_rect(clip).rect_filled(rect, *radius, color);
             }
 
-            DrawCommand::Text {
+            RenderCommand::Text {
                 x,
                 y,
                 text,
@@ -217,7 +217,7 @@ pub(super) fn render_draw_commands(
                 }
             }
 
-            DrawCommand::Line {
+            RenderCommand::Line {
                 x1,
                 y1,
                 x2,
@@ -235,13 +235,13 @@ pub(super) fn render_draw_commands(
                 );
             }
 
-            DrawCommand::Circle { cx, cy, r, fill } => {
+            RenderCommand::Circle { cx, cy, r, fill } => {
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
                 let color = parse_color(fill).unwrap_or(colors.accent);
                 ui.painter().with_clip_rect(clip).circle_filled(center, *r, color);
             }
 
-            DrawCommand::Arc {
+            RenderCommand::Arc {
                 cx,
                 cy,
                 r,
@@ -268,7 +268,7 @@ pub(super) fn render_draw_commands(
                 ui.painter().with_clip_rect(clip).add(shape);
             }
 
-            DrawCommand::List {
+            RenderCommand::List {
                 x,
                 y,
                 w,
@@ -332,27 +332,27 @@ pub(super) fn render_draw_commands(
 
             // ── Host-measured layout primitives ──────────────────────────
 
-            DrawCommand::Badge { x, y, label, fill, fg, font_size, radius } => {
+            RenderCommand::Badge { x, y, label, fill, fg, font_size, radius } => {
                 render_badge(ui, origin, clip, *x, *y, label, fill, fg, *font_size, *radius);
             }
 
-            DrawCommand::KeyChip { x, y, label, font_size } => {
+            RenderCommand::KeyChip { x, y, label, font_size } => {
                 render_key_chip_at(ui, origin, clip, *x, *y, label, *font_size, colors);
             }
 
-            DrawCommand::KeyChipRow { x, y, keys, description, font_size } => {
+            RenderCommand::KeyChipRow { x, y, keys, description, font_size } => {
                 render_key_chip_row(ui, origin, clip, *x, *y, keys, description.as_deref(), *font_size, colors);
             }
 
-            DrawCommand::Shortcuts { x, y, max_width, pairs, font_size } => {
+            RenderCommand::Shortcuts { x, y, max_width, pairs, font_size } => {
                 render_shortcuts(ui, origin, clip, *x, *y, *max_width, pairs, *font_size, colors);
             }
 
-            DrawCommand::TextRow { x, y, items, gap, align } => {
+            RenderCommand::TextRow { x, y, items, gap, align } => {
                 render_text_row(ui, origin, clip, *x, *y, items, *gap, align, colors);
             }
 
-            DrawCommand::Markdown {
+            RenderCommand::Markdown {
                 x,
                 y,
                 w,
@@ -400,78 +400,19 @@ pub(super) fn render_draw_commands(
                     .show(&mut child, commonmark_cache, text);
             }
 
-            // MeasureText is handled in routing.rs (needs a response channel);
-            // it is never a frame-scoped visual command.
-            DrawCommand::MeasureText { .. } => {}
-
             // TextInput is rendered as an interactive egui widget by
             // `process_app::mod` after this painter pass finishes — it
             // can't share the painter-only path because it needs a
             // mutable buffer + focus tracking. See `render_text_inputs`.
-            DrawCommand::TextInput { .. } => {}
+            RenderCommand::TextInput { .. } => {}
 
-            // These are handled at the App trait level or routed upstream — never rendered.
-            DrawCommand::Log { .. }
-            | DrawCommand::FrameDone { .. }
-            | DrawCommand::CapabilityRequest { .. }
-            | DrawCommand::SecretGet { .. }
-            | DrawCommand::RunGet { .. }
-            | DrawCommand::RunComplete { .. }
-            | DrawCommand::Notify { .. }
-            | DrawCommand::PipeOpen { .. }
-            | DrawCommand::PipeSend { .. }
-            | DrawCommand::StatusSummary { .. }
-            | DrawCommand::SpawnApp { .. }
-            | DrawCommand::SpawnPane { .. }
-            | DrawCommand::HttpRequest { .. }
-            | DrawCommand::AiQuery { .. }
-            | DrawCommand::CdRequest { .. }
-            | DrawCommand::Image { .. }
-            | DrawCommand::OpenVideo { .. }
-            | DrawCommand::SetVideoState { .. }
-            | DrawCommand::CloseVideo { .. }
-            | DrawCommand::AudioMeter { .. }
-            | DrawCommand::AudioPlay { .. }
-            | DrawCommand::AudioCapture { .. }
-            | DrawCommand::ListAudioDevices { .. }
-            | DrawCommand::ListMidiDevices { .. }
-            | DrawCommand::OpenMidiInput { .. }
-            | DrawCommand::CloseMidiInput { .. }
-            | DrawCommand::SendMidi { .. }
-            | DrawCommand::Ready { .. }
-            | DrawCommand::ScheduleRender { .. }
-            | DrawCommand::SetTimer { .. }
-            | DrawCommand::CancelTimer { .. }
-            | DrawCommand::CopyToClipboard { .. }
-            // AppendConversation is consumed by the host's agent-pane conversation
-            // history surface (issue #285); it never paints into the draw canvas.
-            // The host integration (forthcoming follow-up PR) drains it from the
-            // command stream before this painter sees it; this arm is the safety
-            // net for the wire-only landing.
-            | DrawCommand::AppendConversation { .. }
-            // PipeOpenDirected is a control command routed by `route_command`;
-            // it never paints and the painter sees it only as a safety net.
-            | DrawCommand::PipeOpenDirected { .. }
-            // Canvas Terminal Binding Primitives (#78). All five are control
-            // commands routed by `route_command`; the painter never sees them
-            // unless the dispatcher missed a peel-off — silent no-op is the
-            // safe default to keep frames clean.
-            | DrawCommand::RequestLinkedTerminal { .. }
-            | DrawCommand::RunInLinkedTerminal { .. }
-            | DrawCommand::InsertPathToken { .. }
-            | DrawCommand::RequestCommandPreview { .. }
-            | DrawCommand::OpenArtifact { .. }
-            // Navigation stack commands are handled by route_command; the
-            // painter never sees them in the normal path — this arm is the
-            // safety net for any stray commands that leak through.
-            | DrawCommand::PushNav { .. }
-            | DrawCommand::PopNav { .. }
-            | DrawCommand::SetMouseTracking { .. }
-            // Tool protocol commands are control-only; the painter never paints them.
-            | DrawCommand::ExposeTools { .. }
-            | DrawCommand::ToolResult { .. }
-            // File picker is a control command; result arrives via PlexiEvent.
-            | DrawCommand::OpenFilePicker { .. } => {}
+            // Image rendering is not yet implemented; no-op until the
+            // image-loading pipeline lands.
+            RenderCommand::Image { .. } => {}
+
+            // AudioMeter rendering is not yet implemented; no-op until
+            // the audio-meter primitive lands.
+            RenderCommand::AudioMeter { .. } => {}
 
             // ── Host-managed scroll regions (#446) ───────────────────────────
             //
@@ -485,7 +426,7 @@ pub(super) fn render_draw_commands(
             // intersected with the current clip top so nested clips tighten
             // correctly, and the existing balanced-stack warning fires for
             // unmatched EndScroll calls.
-            DrawCommand::BeginScroll { x, y, w, h, .. } => {
+            RenderCommand::BeginScroll { x, y, w, h, .. } => {
                 let new_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
@@ -494,7 +435,7 @@ pub(super) fn render_draw_commands(
                 clip_stack.push(effective);
             }
 
-            DrawCommand::EndScroll => {
+            RenderCommand::EndScroll => {
                 if clip_stack.pop().is_none() {
                     log::warn!("render: EndScroll on empty clip stack (app bug)");
                 }
