@@ -50,10 +50,7 @@ jobs:
           # If there is no previous tag, include everything.
           notes=$(awk -v stop="$prev_ver" '
             /^## \[/ {
-              if (stop != "") {
-                match($0, /\[([^]]+)\]/, arr)
-                if (arr[1] == stop) exit
-              }
+              if (stop != "" && index($0, "[" stop "]") > 0) exit
               found=1
             }
             found { print }
