@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] BSD awk compat in release notes extraction (PR #643 → alpha)
+
+`match($0, /regex/, arr)` three-argument form is GNU awk only — macOS CI runners use BSD awk and fail with `syntax error`. Replaced with `index($0, "[" stop "]") > 0` which is POSIX/BSD compatible.
+**Breaks if:** "Extract release notes" step exits with `awk: syntax error at source line 4`.
+
 ## 2026-05-04 — [FIX] release workflow --bin plexi for cargo bundle (PR #642 → alpha)
 
 `cargo bundle --release` without `--bin` uses the display name from `[package]` metadata ("Plexi Alpha"), producing `Plexi Alpha.app` instead of `plexi.app`. Codesign and zip steps expected `plexi.app` and failed. Added `--bin plexi` to force the binary name as the bundle name.
