@@ -224,13 +224,15 @@ impl PlexiApp {
             if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
                 self.show_command_palette = false;
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::J))
                 && total > 0
                 && self.palette_selected < total - 1
             {
                 self.palette_selected += 1;
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::K))
                 && self.palette_selected > 0
             {
                 self.palette_selected -= 1;
