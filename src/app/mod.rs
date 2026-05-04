@@ -2005,7 +2005,7 @@ impl eframe::App for PlexiApp {
                             .rect_filled(panel_rect, 0.0, Color32::from_black_alpha(75));
 
                         // Inset rect for the zoomed pane
-                        let inset = 5.0;
+                        let inset = 10.0;
                         let zoom_rect = panel_rect.shrink(inset);
 
                         // Thicker accent border (2px)
