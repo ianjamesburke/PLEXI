@@ -10,13 +10,13 @@
   <img src="media/screenshot-3.png" width="96%" alt="Screenshot" />
 </p>
 
-**Mac only** — Linux untested.
-
-One window. Terminals, apps, and agents all install into it — each isolated behind a single protocol (PGAP). Split any pane, run any app, talk to any agent. Nothing leaks between workspaces.
+One binary. A tiling shell that brings Unix composability to the desktop — terminals, apps, and AI agents all speak the same protocol. Pipe output between processes, route notifications across panes, query any model from any context.
 
 ---
 
 ## Install
+
+> **macOS only.** Linux is untested.
 
 ### Download
 
@@ -36,38 +36,33 @@ curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/install.sh
 
 ---
 
-## Keyboard Shortcuts
+## Features
 
-| Action | Shortcut |
-|---|---|
-| Command palette | `Cmd+P` |
-| New terminal | `Cmd+N` |
-| Split right | `Cmd+D` |
-| Split below | `Cmd+Shift+D` |
-| Navigate panes | `Cmd+H/J/K/L` |
-| Move pane | `Cmd+Shift+H/J/K/L` |
-| Close pane | `Cmd+W` |
-| New context | `Cmd+T` |
-| Cycle contexts | `Cmd+]` / `Cmd+[` |
-| Zoom pane | `Cmd+Enter` |
-| Open config | `Cmd+,` |
-| Reload config | `Cmd+Shift+,` |
-| Show shortcuts | `Cmd+/` |
-| Quit | `Cmd+Q` |
+**PGAP** — every pane communicates over a single protocol (newline-delimited JSON on stdin/stdout). No shared memory, no inherited file descriptors. Binary payloads travel on typed pipes alongside the command channel. The protocol is the isolation boundary.
+
+**Notification bus** — any terminal process can emit a notification; any app or pane can receive it. Route events across the workspace to tie independent processes together.
+
+**AI backend** — OpenRouter with configurable model tiers and real cost tracking. `ai.query()` is available in any app; agent panes run a full LLM turn loop backed by Claude or the Anthropic API.
+
+**App runtime** — write apps in Python (bundled 3.12, zero setup) that render native UI, play audio, capture MIDI, and communicate over typed pipes. Apps declare capabilities in a manifest; the host enforces them.
+
+**Workspace-scoped secrets** — credentials stored in macOS Keychain, keyed to a workspace root. An app at `/foo` cannot read a secret granted at `/bar` without a new prompt.
+
+**App package manager** — install, update, uninstall, and list apps from the command palette or CLI.
+
+**Tiling layout** — split panes horizontally or vertically, navigate with `Cmd+H/J/K/L`, zoom any pane full-screen with `Cmd+Enter`. Press `Cmd+/` for the full shortcut list.
+
+**Command palette** (`Cmd+P`) — jump to any context or named pane, launch apps, run commands.
 
 ---
 
-## What's in v3
+## Roadmap
 
-- **PGAP** — clean protocol over stdin/stdout. Every pane is a `Terminal`, `App`, or `Agent`. Binary side channel via typed pipes for audio, MIDI, and video.
-- **Bundled Python 3.12** — self-contained runtime; no system Python dependency. Write apps in Python with zero setup.
-- **Workspace-scoped secrets** — a secret granted in one workspace never leaks to a sibling without a brokered prompt.
-- **App package manager** — install, uninstall, update, list with a bundled core pack.
-- **OpenRouter AI backend** — configurable model tiers, real cost tracking. `ai.query()` available in any app.
-- **Command palette** (`Cmd+P`) — jump to any context or named pane instantly.
-- **Navigation stack** — `PushNav` / `PopNav` / `NavBack` for multi-screen app flows.
-- **CoreAudio + CoreMIDI** — typed pipes for audio capture and MIDI I/O on macOS.
-- **Agent Workspace** — spawn Claude Code agents with repo context from inside Plexi.
+- Background apps — persist across pane close, restart on demand
+- Apps can open terminal and app panes programmatically
+- Brokered HTTP for apps via the `net` capability
+- Secret injection into shell environment
+- Auto-updater with toolbar badge
 
 ---
 
