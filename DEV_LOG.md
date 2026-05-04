@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Remove stale iq.query POC apps, fix capability hint (PR #628 → alpha)
+
+Deleted `examples/agent-tester`, `agent-worker`, `agent-coordinator` — POC apps for closed issues #338 and #286 that still declared `iq.query` (renamed to `ai.query`), generating 3 WARN skip lines on every startup. Added `Capability::all_str_values()` and used it in the `app_registry` error message so the valid-values hint derives from the enum rather than a hardcoded string. Installed copies in `~/.plexi-alpha/apps/` still need manual removal to silence the WARNs on the running build.
+
+**Breaks if:** Startup log still shows `skipping ... unknown capability: 'iq.query'` WARNs after manually deleting the three app dirs from `~/.plexi-alpha/apps/`.
+
 ## 2026-05-03 — [CHANGED] Cmd+J / Cmd+K palette navigation aliases (PR #620 → alpha)
 
 `consume_key` checks for `COMMAND+J` (down) and `COMMAND+K` (up) added alongside the existing `ArrowDown` / `ArrowUp` handlers in `src/command_palette.rs`. Both use an `||` short-circuit so arrow keys are unaffected. Bounds checks are identical to the arrow-key path.
