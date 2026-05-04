@@ -2468,10 +2468,10 @@ impl PlexiApp {
         self.config.confirm_quit.unwrap_or(true)
     }
 
-    /// Read `confirm_close` from the config tunnel. Defaults to `true` so
-    /// users get the confirmation dialog unless they explicitly opt out.
+    /// Read `confirm_close` from the config tunnel. Defaults to `false` so
+    /// pane close is instant unless the user explicitly enables the dialog.
     pub(crate) fn confirm_close(&self) -> bool {
-        self.config.confirm_close.unwrap_or(true)
+        self.config.confirm_close.unwrap_or(false)
     }
 
     /// If the currently focused pane is an app with a non-empty nav stack,
