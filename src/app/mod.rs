@@ -249,6 +249,12 @@ pub struct PlexiApp {
     pane_anims: Vec<PaneSwapAnim>,
     /// Boundary edge pulse — shown when a swap is attempted at the wall.
     edge_pulse: Option<EdgePulse>,
+    /// Channel receiver fed by the background update-check thread. Sends the
+    /// latest version string exactly once if a newer release is available.
+    update_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// Latest available version string, set after the background check resolves.
+    /// `None` means either the check hasn't completed or we're already current.
+    pub(crate) update_available: Option<String>,
 }
 
 #[cfg(test)]
@@ -315,6 +321,10 @@ impl PlexiApp {
             let workspace_path = crate::event_log::find_workspace_events_path(&cwd);
             crate::event_log::init_global(global_path, workspace_path);
         }
+
+        // Spawn background update check. Sends the latest version once if newer.
+        let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
+        crate::updater::spawn_update_check(crate::config::config_dir(), update_tx);
 
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
@@ -543,6 +553,8 @@ impl PlexiApp {
                     pane_snapshot_len: 0,
                     pane_anims: Vec::new(),
                     edge_pulse: None,
+                    update_rx: Some(update_rx),
+                    update_available: None,
                 };
             }
         }
@@ -630,6 +642,8 @@ impl PlexiApp {
             pane_snapshot_len: 0,
             pane_anims: Vec::new(),
             edge_pulse: None,
+            update_rx: Some(update_rx),
+            update_available: None,
         }
     }
 
@@ -728,6 +742,8 @@ impl PlexiApp {
             pane_anims: Vec::new(),
             edge_pulse: None,
             show_cli_setup_prompt: false,
+            update_rx: None,
+            update_available: None,
         }
     }
 
@@ -1028,6 +1044,12 @@ impl eframe::App for PlexiApp {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_notify_queue();
             self.drain_spawn_queue();
+        }
+        if let Some(rx) = &self.update_rx {
+            if let Ok(version) = rx.try_recv() {
+                log::info!("update check: badge set to v{version}");
+                self.update_available = Some(version);
+            }
         }
         self.drain_pty_events();
 

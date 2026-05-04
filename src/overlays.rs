@@ -54,17 +54,24 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
+                let version_label = if self.update_available.is_some() {
+                    RichText::new(format!("\u{2191} v{}", env!("CARGO_PKG_VERSION")))
+                        .size(10.0)
+                        .color(self.colors.accent)
+                } else {
+                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .size(10.0)
+                        .color(self.colors.text_dim)
+                };
+                let hover_text = if self.update_available.is_some() {
+                    "Update available — click to open changelog"
+                } else {
+                    "Changelog"
+                };
                 if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                                .size(10.0)
-                                .color(self.colors.text_dim),
-                        )
-                        .frame(false),
-                    )
+                    .add(egui::Button::new(version_label).frame(false))
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("Changelog")
+                    .on_hover_text(hover_text)
                     .clicked()
                 {
                     self.show_changelog = !self.show_changelog;
@@ -243,6 +250,35 @@ impl PlexiApp {
                             .color(self.colors.text_primary)
                             .strong(),
                     );
+
+                    if let Some(ref latest) = self.update_available.clone() {
+                        ui.add_space(8.0);
+                        egui::Frame::new()
+                            .fill(self.colors.accent.gamma_multiply(0.15))
+                            .stroke(Stroke::new(1.0, self.colors.accent.gamma_multiply(0.4)))
+                            .corner_radius(R6)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("\u{2191} v{latest} available"))
+                                            .size(style::TEXT_HINT)
+                                            .color(self.colors.accent),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            crate::widgets::copy_button(
+                                                ui,
+                                                egui::Id::new("update_banner_copy"),
+                                                "plexi update",
+                                            );
+                                        },
+                                    );
+                                });
+                            });
+                    }
+
                     ui.add_space(8.0);
 
                     egui::ScrollArea::vertical()
@@ -1704,14 +1740,6 @@ impl PlexiApp {
                                 / 2.0)
                                 .max(0.0);
 
-                            let copy_id = egui::Id::new("welcome_email_copy_t");
-                            let now = ui.ctx().input(|i| i.time);
-                            let copied_at: Option<f64> =
-                                ui.ctx().memory(|m| m.data.get_temp(copy_id));
-                            let just_copied =
-                                copied_at.map_or(false, |t| now - t < 2.0);
-                            let icon = if just_copied { "✓" } else { "📋" };
-
                             ui.horizontal(|ui| {
                                 ui.add_space(pad);
                                 ui.hyperlink_to(
@@ -1720,22 +1748,11 @@ impl PlexiApp {
                                         .color(colors.text_dim),
                                     mailto,
                                 );
-                                let btn = ui
-                                    .button(RichText::new(icon).size(style::TEXT_CAPTION))
-                                    .on_hover_text("Copy email");
-                                if btn.clicked() && !just_copied {
-                                    ui.ctx().copy_text(
-                                        "ADHDisntreal@gmail.com".to_string(),
-                                    );
-                                    ui.ctx().memory_mut(|m| {
-                                        m.data.insert_temp(copy_id, now)
-                                    });
-                                }
-                                if just_copied {
-                                    ui.ctx().request_repaint_after(
-                                        std::time::Duration::from_millis(100),
-                                    );
-                                }
+                                crate::widgets::copy_button(
+                                    ui,
+                                    egui::Id::new("welcome_email_copy"),
+                                    "ADHDisntreal@gmail.com",
+                                );
                             });
                         }
                     });

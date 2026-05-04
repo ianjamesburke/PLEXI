@@ -53,6 +53,7 @@ mod style;
 mod theme;
 mod tiling;
 mod typed_pipes;
+mod updater;
 mod video;
 mod widgets;
 mod workspace;
