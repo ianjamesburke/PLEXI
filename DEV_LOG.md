@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] release workflow bundle path (PR #640 → alpha)
+
+`cargo bundle` with multiple `[[bin]]` entries in `Cargo.toml` names the bundle after the binary (`plexi`), not the display name (`Plexi`). Release workflow was referencing `Plexi.app` → `No such file or directory`. Fixed codesign and zip steps to use `plexi.app`.
+**Breaks if:** release workflow fails at codesign or zip step with `No such file or directory`.
+
 ## 2026-05-04 — [FIX] promote beta→main idempotent tag (PR #639 → alpha)
 
 `just promote main` crashed with `fatal: tag already exists` on re-run. Now checks local and remote tag existence before creating/pushing. Safe to run twice.
