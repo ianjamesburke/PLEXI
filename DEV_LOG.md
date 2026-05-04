@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Kill Pane::Agent and Pane::AgentWorkspace — pane ADT is now Terminal | App (PR #612 → alpha)
+
+Removed ~4,000 lines across 30 files. Deleted entirely: `agent_pane.rs`, `agent_workspace/`, `agent_workspace_modal.rs`, `render/agent_pane.rs`, `render/agent_workspace_pane.rs`, `process_app/agent.rs`. Removed from protocol: `AgentInit`, `AgentRoster`, `AgentInfo`, `AgentRosterGet`, `AppCommand::AgentRosterGet`. Removed from persistence: `SavedPaneKind::Agent/AgentWorkspace`, `SavedAgentWorkspace`. Removed from UI: `Action::OpenAgentPane`, `FocusLayer::AgentWorkspaceModal`, command palette agent workspace entries, `PaletteEntry::Action` infrastructure. Also removed: `AppRegistry::manifest_type()` / `system_prompt_for()` (only callers were in the deleted agent launch path), `process_app/mod.rs` roster test module. AI broker preserved — still processes `AiQuery`/`AiResponse` from PGAP apps. Agents are now regular apps that declare `ai.query` and own their turn loop (chat-poc proves the model).
+
+**Breaks if:** terminal or app panes fail to spawn after merge, or `cargo test` drops below 258 passed.
+
 ## 2026-05-03 — [CHANGED] plexi update — detached relaunch when run from inside Plexi (PR #606 → alpha)
 
 Added in-Plexi update flow to `self_update_cli()` in `src/cli.rs`. When `PLEXI_RUNNING=1`, the function downloads and stages the new bundle as usual, then writes a `nohup`-launched bash script to temp that polls `pgrep -x plexi`, `mv`s the staging bundle into place, re-symlinks the CLI, and opens the new app. It then triggers `osascript -e 'tell application "Plexi" to quit'` and exits 0. The external-terminal path (PLEXI_RUNNING unset) is unchanged. `nohup` chosen over bare spawn to survive SIGHUP when the Plexi terminal session closes on app quit.
