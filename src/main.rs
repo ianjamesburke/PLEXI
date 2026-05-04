@@ -359,6 +359,10 @@ fn main() -> eframe::Result {
             "list" => {
                 std::process::exit(cli::list_cli());
             }
+            "validate" => {
+                let path = args.get(2).map(String::as_str).unwrap_or(".");
+                std::process::exit(cli::validate_cli(path));
+            }
             "pack" => {
                 // `plexi pack export <path>` (#308 Phase 3) — write a
                 // pack.toml describing the currently-installed app set.
@@ -614,6 +618,8 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "descriptor",
         // #321 — `plexi registry watch [<cli>]` for the CLI wrapper registry.
         "registry",
+        // #627 — `plexi validate <path>` preflight app checker.
+        "validate",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).

@@ -1,0 +1,20 @@
+name: SDK type check
+
+on:
+  push:
+    paths:
+      - 'sdk/python/**'
+  pull_request:
+    paths:
+      - 'sdk/python/**'
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install SDK with mypy
+        run: uv pip install --system mypy sdk/python/
+      - name: Run mypy
+        run: mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py
