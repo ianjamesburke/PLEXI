@@ -1,4 +1,4 @@
-use egui::{Align2, Color32, CornerRadius, Pos2, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, CornerRadius, Pos2, RichText, Stroke, StrokeKind, Vec2};
 
 use crate::style;
 use crate::theme::Colors;
@@ -168,6 +168,31 @@ pub(crate) fn key_combo_list(
             );
         }
     });
+}
+
+/// 📋 / ✓ copy-to-clipboard button. Shows the clipboard icon normally; switches
+/// to ✓ for 2 seconds after a successful copy. `id` must be unique per call site.
+pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::Response {
+    let now = ui.ctx().input(|i| i.time);
+    let copied_at: Option<f64> = ui.ctx().memory(|m| m.data.get_temp(id));
+    let just_copied = copied_at.map_or(false, |t| now - t < 2.0);
+    let icon = if just_copied { "✓" } else { "📋" };
+    let resp = ui
+        .add(
+            egui::Button::new(RichText::new(icon).size(style::TEXT_CAPTION))
+                .frame(false),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("Copy `{text}`"));
+    if resp.clicked() && !just_copied {
+        ui.ctx().copy_text(text.to_string());
+        ui.ctx().memory_mut(|m| m.data.insert_temp(id, now));
+    }
+    if just_copied {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    resp
 }
 
 /// Renders a dismissable centered modal overlay. Handles Escape and click-outside.

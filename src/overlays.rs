@@ -268,21 +268,11 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui
-                                                .add(
-                                                    egui::Button::new(
-                                                        RichText::new("Copy command")
-                                                            .size(style::TEXT_HINT)
-                                                            .color(self.colors.text_dim),
-                                                    )
-                                                    .frame(false),
-                                                )
-                                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                                .on_hover_text("Copy `plexi update` to clipboard")
-                                                .clicked()
-                                            {
-                                                ui.ctx().copy_text("plexi update".to_string());
-                                            }
+                                            crate::widgets::copy_button(
+                                                ui,
+                                                egui::Id::new("update_banner_copy"),
+                                                "plexi update",
+                                            );
                                         },
                                     );
                                 });
@@ -1750,14 +1740,6 @@ impl PlexiApp {
                                 / 2.0)
                                 .max(0.0);
 
-                            let copy_id = egui::Id::new("welcome_email_copy_t");
-                            let now = ui.ctx().input(|i| i.time);
-                            let copied_at: Option<f64> =
-                                ui.ctx().memory(|m| m.data.get_temp(copy_id));
-                            let just_copied =
-                                copied_at.map_or(false, |t| now - t < 2.0);
-                            let icon = if just_copied { "✓" } else { "📋" };
-
                             ui.horizontal(|ui| {
                                 ui.add_space(pad);
                                 ui.hyperlink_to(
@@ -1766,22 +1748,11 @@ impl PlexiApp {
                                         .color(colors.text_dim),
                                     mailto,
                                 );
-                                let btn = ui
-                                    .button(RichText::new(icon).size(style::TEXT_CAPTION))
-                                    .on_hover_text("Copy email");
-                                if btn.clicked() && !just_copied {
-                                    ui.ctx().copy_text(
-                                        "ADHDisntreal@gmail.com".to_string(),
-                                    );
-                                    ui.ctx().memory_mut(|m| {
-                                        m.data.insert_temp(copy_id, now)
-                                    });
-                                }
-                                if just_copied {
-                                    ui.ctx().request_repaint_after(
-                                        std::time::Duration::from_millis(100),
-                                    );
-                                }
+                                crate::widgets::copy_button(
+                                    ui,
+                                    egui::Id::new("welcome_email_copy"),
+                                    "ADHDisntreal@gmail.com",
+                                );
                             });
                         }
                     });
