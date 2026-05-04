@@ -54,32 +54,27 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
+                let version_label = if self.update_available.is_some() {
+                    RichText::new(format!("\u{2191} v{}", env!("CARGO_PKG_VERSION")))
+                        .size(10.0)
+                        .color(self.colors.accent)
+                } else {
+                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .size(10.0)
+                        .color(self.colors.text_dim)
+                };
+                let hover_text = if self.update_available.is_some() {
+                    "Update available — click to open changelog"
+                } else {
+                    "Changelog"
+                };
                 if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                                .size(10.0)
-                                .color(self.colors.text_dim),
-                        )
-                        .frame(false),
-                    )
+                    .add(egui::Button::new(version_label).frame(false))
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("Changelog")
+                    .on_hover_text(hover_text)
                     .clicked()
                 {
                     self.show_changelog = !self.show_changelog;
-                }
-
-                if let Some(ref version) = self.update_available.clone() {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("\u{2191} v{version}"))
-                                .size(10.0)
-                                .color(self.colors.text_dim),
-                        )
-                    )
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .on_hover_text("Update available — run `plexi update` to upgrade");
                 }
 
                 let notif_count = self.visible_notification_count();
@@ -255,6 +250,35 @@ impl PlexiApp {
                             .color(self.colors.text_primary)
                             .strong(),
                     );
+
+                    if let Some(ref latest) = self.update_available.clone() {
+                        ui.add_space(8.0);
+                        egui::Frame::new()
+                            .fill(self.colors.accent.gamma_multiply(0.15))
+                            .stroke(Stroke::new(1.0, self.colors.accent.gamma_multiply(0.4)))
+                            .corner_radius(R6)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("\u{2191} v{latest} available"))
+                                            .size(style::TEXT_HINT)
+                                            .color(self.colors.accent),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                RichText::new("`plexi update`")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        },
+                                    );
+                                });
+                            });
+                    }
+
                     ui.add_space(8.0);
 
                     egui::ScrollArea::vertical()
