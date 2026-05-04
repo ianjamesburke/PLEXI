@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] promote beta→main idempotent tag (PR #639 → alpha)
+
+`just promote main` crashed with `fatal: tag already exists` on re-run. Now checks local and remote tag existence before creating/pushing. Safe to run twice.
+**Breaks if:** `just promote main` on a fresh release silently skips tag creation.
+
 ## 2026-05-04 — [CHANGED] release pipeline cleanup — single-responsibility commands (PR #638 → alpha)
 
 Removed `bump-and-install`, `bump-alpha`, `release`, `release-version`. `just bump [patch|minor|major]` is now the single bump command (calls `release-version.sh`, git-cliff, commits). `just promote` is now a clean channel push — no bump, no changelog. Post-merge cycle is `just bump && just install`. Deleted `scripts/bump-alpha.sh`, `scripts/bump.sh`, `scripts/release.sh`. Ship skill and CLAUDE.md updated.
