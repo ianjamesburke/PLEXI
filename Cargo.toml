@@ -21,10 +21,17 @@ resources = ["sdk/python/plexi_sdk", "assets/python"]
 [package.metadata.bundle.bin.gen_schema]
 name = "gen_schema_tool"
 
-# install.sh sed-patches both name and identifier lines for non-stable channels.
+# cargo-bundle does not merge per-binary sections with the top-level — when a
+# bin override exists it is used exclusively. All bundle fields must be present.
+# install.sh sed-patches name and identifier for non-stable channels.
 [package.metadata.bundle.bin.plexi]
 name = "Plexi Alpha"
 identifier = "com.ianjamesburke.plexi-alpha"
+icon = ["assets/app-icon.icns"]
+short_description = "Spatial terminal window manager"
+osx_minimum_system_version = "12.0"
+osx_info_plist_exts = ["assets/Info.plist.fragment"]
+resources = ["sdk/python/plexi_sdk", "assets/python"]
 
 [[bin]]
 name = "gen_schema"
