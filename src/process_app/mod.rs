@@ -829,7 +829,6 @@ impl ProcessApp {
         &mut self,
         ui: &mut egui::Ui,
         pane_rect: egui::Rect,
-        frame: &[RenderCommand],
     ) {
         let origin = pane_rect.min;
         // Collect submit events out-of-band so we don't hold a mutable
@@ -847,7 +846,7 @@ impl ProcessApp {
         let mut focus_granted = false;
         let mut any_has_focus = false;
 
-        for cmd in frame {
+        for cmd in &self.frame {
             let RenderCommand::TextInput {
                 id,
                 x,
@@ -1293,12 +1292,11 @@ impl App for ProcessApp {
         // silent disagreement that clipped every draw to an empty rect.
         let pane_rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
-        let frame_clone = self.frame.clone();
-        render::render_draw_commands(ui, pane_rect, &frame_clone, ctx.colors, &mut self.commonmark_cache);
+        render::render_draw_commands(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache);
         // Interactive widgets (TextInput) need real egui widgets and a
         // mutable per-app buffer map — they can't share the painter-only
         // render path. Render them in a second pass on top of the frame.
-        self.render_text_inputs(ui, pane_rect, &frame_clone);
+        self.render_text_inputs(ui, pane_rect);
 
         // ── Host-managed scroll regions (#446) ──────────────────────────────
         // Scan the committed frame for BeginScroll regions. For each region,
@@ -1318,7 +1316,7 @@ impl App for ProcessApp {
             // BeginScroll entries; EndScroll entries are not needed here.
             let mut scroll_regions: Vec<(String, egui::Rect, f32)> = Vec::new();
             let origin = pane_rect.min;
-            for cmd in &frame_clone {
+            for cmd in &self.frame {
                 if let RenderCommand::BeginScroll { id, x, y, w, h, content_height } = cmd {
                     let viewport = egui::Rect::from_min_size(
                         egui::pos2(origin.x + x, origin.y + y),
@@ -1364,7 +1362,7 @@ impl App for ProcessApp {
         //   3. The user clicked the lifecycle pill (show_stderr_overlay).
         let lifecycle_state = self.lifecycle.state();
         let stderr_overlay_active = self.show_stderr_overlay
-            || frame_clone.is_empty()
+            || self.frame.is_empty()
             || matches!(
                 lifecycle_state,
                 LifecycleState::Crashed | LifecycleState::Hung | LifecycleState::ProtocolError
