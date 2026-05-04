@@ -1,5 +1,5 @@
 //! Generates the canonical PGAP JSON Schema artifact.
-//! Usage: cargo run --bin gen_schema > sdk/protocol/pgap.schema.json
+//! Usage: cargo run -p gen_schema > sdk/protocol/pgap.schema.json
 
 use plexi::app_protocol::{ControlCommand, HostCommand, PlexiEvent, RenderCommand};
 
