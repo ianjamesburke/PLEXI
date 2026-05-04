@@ -90,3 +90,11 @@ promote to="":
 
 release:
     bash scripts/release.sh
+
+# Bump version, generate CHANGELOG via git-cliff, and commit.
+# Defaults to patch. Run before: just promote beta
+#   just release-version          — patch bump
+#   just release-version minor    — minor bump
+#   just release-version major    — major bump
+release-version bump="patch":
+    bash scripts/release-version.sh "{{bump}}"
