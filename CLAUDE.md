@@ -233,3 +233,16 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 - Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Always do the work: delete unused code, wire it up, or move it to a feature-flagged module. If fixing a warning takes a long time, that's the job — do not paper over it with an allow attribute.
 - Always run `cargo build` after work to make sure it passes.
 - **Failed PR reset:** If a PR fails its first test pass and the diff is under ~1000 lines: close the PR without merging, revert the worktree to clean, comment on the original issue (what was tried, what failed, why), re-label the issue `ready`, and start a fresh agent with only the updated issue as context. Don't patch a broken attempt — start clean.
+
+## Issue Prior Attempts
+
+When an issue tracks a feature or bug that has been attempted before, document the failure in the issue **body** under a `## Prior Attempts` section — not in comments. Comments are invisible to `gh issue view` without an explicit `--comments` flag and will be missed by agents reading the issue before implementing.
+
+Format:
+```markdown
+## Prior Attempts
+
+**Attempt N:** What was tried.
+**Why it failed:** Root cause or observable symptom.
+**What to try next:** Specific next investigation step.
+```
