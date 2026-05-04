@@ -1597,29 +1597,35 @@ class RenderContext:
         # Seconds elapsed since the previous on_render call. 0.0 on first frame.
         # Use this for time-based game logic instead of calling time.time() yourself.
         self.elapsed: float = elapsed
+        # Buffered JSON lines — flushed as a single write in frame_done().
+        self._buf: list[str] = []
+
+    def _queue(self, obj: dict) -> None:
+        """Buffer a render command for batch flush at frame_done()."""
+        self._buf.append(json.dumps(obj) + "\n")
 
     # ── Visual primitives ──
     def clear(self, fill: str) -> None:
         """Fill the entire pane with a single color. Shorthand for a full-size rect."""
-        _emit({"type": "rect", "x": 0.0, "y": 0.0, "w": self.w, "h": self.h,
-               "fill": fill, "radius": 0.0})
+        self._queue({"type": "rect", "x": 0.0, "y": 0.0, "w": self.w, "h": self.h,
+                     "fill": fill, "radius": 0.0})
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str,
              radius: float = 0.0) -> None:
-        _emit({"type": "rect", "x": x, "y": y, "w": w, "h": h,
-               "fill": fill, "radius": radius})
+        self._queue({"type": "rect", "x": x, "y": y, "w": w, "h": h,
+                     "fill": fill, "radius": radius})
 
     def circle(self, cx: float, cy: float, r: float, fill: str) -> None:
         """Draw a filled circle. Alpha supported via 8-digit hex (#rrggbbaa) or dim()."""
-        _emit({"type": "circle", "cx": cx, "cy": cy, "r": r, "fill": fill})
+        self._queue({"type": "circle", "cx": cx, "cy": cy, "r": r, "fill": fill})
 
     def arc(self, cx: float, cy: float, r: float,
             start_angle: float, end_angle: float, fill: str) -> None:
         """Draw a filled pie slice. Angles in radians, clockwise from east (right).
         Full circle: start_angle=0, end_angle=6.2832 (2*pi).
         Example pie slice: arc(cx, cy, r, 0, math.pi * 0.5, fill="#ff0000")"""
-        _emit({"type": "arc", "cx": cx, "cy": cy, "r": r,
-               "start_angle": start_angle, "end_angle": end_angle, "fill": fill})
+        self._queue({"type": "arc", "cx": cx, "cy": cy, "r": r,
+                     "start_angle": start_angle, "end_angle": end_angle, "fill": fill})
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False,
@@ -1650,10 +1656,10 @@ class RenderContext:
         so the host always has required fields (no serde defaults). The SDK
         fills in None / True / False when the caller omits them.
         """
-        _emit({"type": "text", "x": x, "y": y, "text": text, "size": size,
-               "color": color, "monospace": monospace, "bold": bold,
-               "align": align, "max_width": max_width, "elide": elide,
-               "selectable": selectable})
+        self._queue({"type": "text", "x": x, "y": y, "text": text, "size": size,
+                     "color": color, "monospace": monospace, "bold": bold,
+                     "align": align, "max_width": max_width, "elide": elide,
+                     "selectable": selectable})
 
     def markdown(self, x: float, y: float, w: float, text: str,
                  base_size: float = 14.0, color: str = FG) -> None:
@@ -1665,8 +1671,8 @@ class RenderContext:
         `base_size` — body font size in pt (headers scale relative to this).
         `color`     — default text colour (hex).
         """
-        _emit({"type": "markdown", "x": x, "y": y, "w": w, "text": text,
-               "base_size": base_size, "color": color})
+        self._queue({"type": "markdown", "x": x, "y": y, "w": w, "text": text,
+                     "base_size": base_size, "color": color})
 
     def image(self, src: str, x: float, y: float, w: float, h: float,
               fit: str = "contain") -> None:
@@ -1676,11 +1682,12 @@ class RenderContext:
         (crop to fill), or "fill" (stretch). Host must implement
         DrawCommand::Image for this to render.
         """
-        _emit({"type": "image", "src": src, "x": x, "y": y, "w": w, "h": h,
-               "fit": fit})
+        self._queue({"type": "image", "src": src, "x": x, "y": y, "w": w, "h": h,
+                     "fit": fit})
+
     def copy_to_clipboard(self, text: str) -> None:
         """Convenience shortcut for `emit.copy_to_clipboard(text)` (#146)."""
-        _emit({"type": "copy_to_clipboard", "text": text})
+        self._queue({"type": "copy_to_clipboard", "text": text})
 
     def badge(self, x: float, y_center: float, label: str,
               fill: str = ACCENT, fg: str = BG,
@@ -1698,8 +1705,8 @@ class RenderContext:
         `font_size`— label pt size.
         `radius`   — corner radius (8.0 = fully rounded pill; 4.0 = tag chip).
         """
-        _emit({"type": "badge", "x": x, "y": y_center, "label": label,
-               "fill": fill, "fg": fg, "font_size": font_size, "radius": radius})
+        self._queue({"type": "badge", "x": x, "y": y_center, "label": label,
+                     "fill": fill, "fg": fg, "font_size": font_size, "radius": radius})
 
     def key_chip_row(self, x: float, y: float, keys: "list[str]",
                      description: "str | None" = None,
@@ -1718,8 +1725,8 @@ class RenderContext:
         wrapping, use `ctx.shortcuts(...)` instead — that's the right
         primitive for footer-style "[k] desc · [j] desc · …" layouts.
         """
-        _emit({"type": "key_chip_row", "x": x, "y": y, "keys": keys,
-               "description": description, "font_size": font_size})
+        self._queue({"type": "key_chip_row", "x": x, "y": y, "keys": keys,
+                     "description": description, "font_size": font_size})
 
     def text_row(self, x: float, y: float, items: "list[dict]",
                  gap: float = 8.0, align: str = "left_center") -> None:
@@ -1760,8 +1767,8 @@ class RenderContext:
                 "size": item.get("size", BODY),
                 "monospace": item.get("monospace", False),
             })
-        _emit({"type": "text_row", "x": x, "y": y, "items": wire_items,
-               "gap": gap, "align": align})
+        self._queue({"type": "text_row", "x": x, "y": y, "items": wire_items,
+                     "gap": gap, "align": align})
 
     def shortcuts(self, x: float, y: float, max_width: float,
                   pairs: "list[tuple]", font_size: float = 11.0) -> None:
@@ -1795,9 +1802,9 @@ class RenderContext:
             else:
                 wire_keys = list(keys_or_key)
             wire_pairs.append({"keys": wire_keys, "description": desc or ""})
-        _emit({"type": "shortcuts", "x": x, "y": y,
-               "max_width": max_width, "pairs": wire_pairs,
-               "font_size": font_size})
+        self._queue({"type": "shortcuts", "x": x, "y": y,
+                     "max_width": max_width, "pairs": wire_pairs,
+                     "font_size": font_size})
 
     async def measure_text(self, text: str, font_size: float,
                            monospace: bool = False) -> "tuple[float, float]":
@@ -1815,6 +1822,13 @@ class RenderContext:
         request_id = str(uuid.uuid4())
         q: asyncio.Queue[tuple[float, float]] = _make_async_queue()
         self._app._pending_measure_text[request_id] = q
+        # Flush any buffered draw commands before the request so the host
+        # processes prior frame content before responding to the measure.
+        if self._buf:
+            with _LOCK:
+                sys.stdout.write("".join(self._buf))
+                sys.stdout.flush()
+            self._buf.clear()
         _emit({"type": "measure_text", "request_id": request_id,
                "text": text, "font_size": font_size, "monospace": monospace})
         return await q.get()
@@ -1827,16 +1841,16 @@ class RenderContext:
         Must be balanced with a matching `pop_clip()`. Use `_render_clipped`
         on Component subclasses instead of calling this directly.
         """
-        _emit({"type": "push_clip", "x": x, "y": y, "w": w, "h": h})
+        self._queue({"type": "push_clip", "x": x, "y": y, "w": w, "h": h})
 
     def pop_clip(self) -> None:
         """Pop the most recently pushed clip rect. Must balance a `push_clip()`."""
-        _emit({"type": "pop_clip"})
+        self._queue({"type": "pop_clip"})
 
     def line(self, x1: float, y1: float, x2: float, y2: float,
              color: str, width: float = 1.0) -> None:
-        _emit({"type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-               "color": color, "width": width})
+        self._queue({"type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                     "color": color, "width": width})
 
     # ── SDK v2 declarative UI entry point ──
     def render(self, tree, fill: str = "#1e1e2e") -> None:
@@ -1859,11 +1873,11 @@ class RenderContext:
     def list_view(self, items: list[dict], selected: int = 0,
              item_height: float = 40.0, x: float = 0.0, y: float = 0.0,
              w: float | None = None, h: float | None = None) -> None:
-        _emit({"type": "list", "x": x, "y": y,
-               "w": self.w if w is None else w,
-               "h": self.h - y if h is None else h,
-               "items": items, "selected": selected,
-               "item_height": item_height})
+        self._queue({"type": "list", "x": x, "y": y,
+                     "w": self.w if w is None else w,
+                     "h": self.h - y if h is None else h,
+                     "items": items, "selected": selected,
+                     "item_height": item_height})
 
     def begin_scroll(self, id: str, x: float, y: float, w: float, h: float,
                      content_height: float) -> None:
@@ -1903,12 +1917,12 @@ class RenderContext:
                     ctx.text(8, y, item, size=14, color=FG)
                 ctx.end_scroll()
         """
-        _emit({"type": "begin_scroll", "id": id, "x": x, "y": y,
-               "w": w, "h": h, "content_height": content_height})
+        self._queue({"type": "begin_scroll", "id": id, "x": x, "y": y,
+                     "w": w, "h": h, "content_height": content_height})
 
     def end_scroll(self) -> None:
         """Close the most recently opened scroll region. Must balance begin_scroll."""
-        _emit({"type": "end_scroll"})
+        self._queue({"type": "end_scroll"})
 
     def text_input(self, id: str, x: float, y: float, w: float,
                    placeholder: str = "",
@@ -1940,8 +1954,8 @@ class RenderContext:
         Real-time validation (per-keystroke access) is out of scope —
         see issue #283.
         """
-        _emit({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
-               "h": h, "placeholder": placeholder, "multiline": multiline})
+        self._queue({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
+                     "h": h, "placeholder": placeholder, "multiline": multiline})
         return self._app._take_text_submission(id)
 
     # Logging helpers (in-frame, forwarded to host logger)
@@ -2050,7 +2064,11 @@ class RenderContext:
                                         messages=messages, tools=tools)
 
     def frame_done(self) -> None:
-        _emit({"type": "frame_done", "frame_id": self.frame_id})
+        self._buf.append(json.dumps({"type": "frame_done", "frame_id": self.frame_id}) + "\n")
+        with _LOCK:
+            sys.stdout.write("".join(self._buf))
+            sys.stdout.flush()
+        self._buf.clear()
 
 
 def _log_task_exception(task: "asyncio.Task") -> None:
