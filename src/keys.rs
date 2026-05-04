@@ -8,6 +8,7 @@
 // Cmd+W                       — close pane
 // Cmd+H/J/K/L                 — navigate panes
 // Cmd+Shift+H/J/K/L           — navigate to adjacent window (spatial grid)
+// Cmd+Ctrl+H/J/K/L            — swap focused pane with neighbor in direction
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
 // Cmd+] / Cmd+[               — cycle tabs
@@ -110,6 +111,9 @@ pub enum Action {
     /// emit `PlexiEvent::NavBack`. Falls through to cycling tabs backwards
     /// if no nav is active on the focused pane.
     NavBackApp,
+    /// Swap the focused pane with its neighbor in the given direction.
+    /// Bound to Cmd+Ctrl+H/J/K/L.
+    SwapPane(Direction),
 }
 
 /// Poll global keyboard actions.
@@ -168,6 +172,24 @@ pub fn poll_actions(
         }
         if input.consume_key(cmd_shift, egui::Key::L) {
             actions.push(Action::PageRight);
+        }
+
+        // Pane swap (Cmd+Ctrl+HJKL) — check before plain Cmd+HJKL
+        let cmd_ctrl = egui::Modifiers {
+            ctrl: true,
+            ..egui::Modifiers::COMMAND
+        };
+        if input.consume_key(cmd_ctrl, egui::Key::H) {
+            actions.push(Action::SwapPane(Direction::Left));
+        }
+        if input.consume_key(cmd_ctrl, egui::Key::J) {
+            actions.push(Action::SwapPane(Direction::Down));
+        }
+        if input.consume_key(cmd_ctrl, egui::Key::K) {
+            actions.push(Action::SwapPane(Direction::Up));
+        }
+        if input.consume_key(cmd_ctrl, egui::Key::L) {
+            actions.push(Action::SwapPane(Direction::Right));
         }
 
         // Focus navigation (Cmd+HJKL)

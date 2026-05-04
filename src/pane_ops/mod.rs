@@ -14,3 +14,5 @@
 mod create;
 mod layout;
 mod workspace;
+
+pub(crate) use layout::SwapResult;
