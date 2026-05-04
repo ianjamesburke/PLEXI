@@ -43,31 +43,41 @@ bump_patch() {
 
 prepend_changelog() {
     local tree="$1" ver="$2"
-    local today commits_file tmp
-    today=$(date '+%Y-%m-%d')
-    commits_file=$(mktemp)
-    git -C "$tree" log origin/beta..alpha --oneline --no-merges \
-        | sed 's/^[a-f0-9]* /- /' \
-        | grep -v '^- chore: DEV_LOG' \
-        | grep -v '^- chore: bump' \
-        | grep -v '^- chore: promote' \
-        | grep -v '^- - ' \
-        > "$commits_file"
-    [[ -s "$commits_file" ]] || echo "- (no new commits since last beta)" > "$commits_file"
-    tmp=$(mktemp)
-    awk -v ver="$ver" -v dt="$today" -v cf="$commits_file" '
-        /^## \[/ && !inserted {
-            print "## [" ver "] — " dt
-            print ""
-            print "### Changes"
-            while ((getline line < cf) > 0) print line
-            print ""
-            inserted=1
-        }
-        { print }
-    ' "$tree/CHANGELOG.md" > "$tmp"
-    rm -f "$commits_file"
-    mv "$tmp" "$tree/CHANGELOG.md"
+    if command -v git-cliff >/dev/null 2>&1; then
+        git-cliff \
+            --config "$tree/cliff.toml" \
+            --workdir "$tree" \
+            --unreleased \
+            --tag "v$ver" \
+            --prepend "$tree/CHANGELOG.md"
+    else
+        # fallback: manual log when git-cliff is unavailable
+        local today commits_file tmp
+        today=$(date '+%Y-%m-%d')
+        commits_file=$(mktemp)
+        git -C "$tree" log origin/beta..alpha --oneline --no-merges \
+            | sed 's/^[a-f0-9]* /- /' \
+            | grep -v '^- chore: DEV_LOG' \
+            | grep -v '^- chore: bump' \
+            | grep -v '^- chore: promote' \
+            | grep -v '^- - ' \
+            > "$commits_file"
+        [[ -s "$commits_file" ]] || echo "- (no new commits since last beta)" > "$commits_file"
+        tmp=$(mktemp)
+        awk -v ver="$ver" -v dt="$today" -v cf="$commits_file" '
+            /^## \[/ && !inserted {
+                print "## [" ver "] — " dt
+                print ""
+                print "### Changes"
+                while ((getline line < cf) > 0) print line
+                print ""
+                inserted=1
+            }
+            { print }
+        ' "$tree/CHANGELOG.md" > "$tmp"
+        rm -f "$commits_file"
+        mv "$tmp" "$tree/CHANGELOG.md"
+    fi
 }
 
 # ── resolve target ────────────────────────────────────────────────────────────
