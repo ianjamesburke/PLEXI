@@ -1,0 +1,79 @@
+<h2>The Spatial Model</h2>
+<p class="subtitle">One layout string. Pane = context. Overlays are owned by their pane and zoom with it.</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
+
+  <div>
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:10px;">layout= values — one param, all cases</div>
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:11px;">
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;align-items:start;">
+        <code style="color:#79c0ff;">"split_v"</code><span style="color:#8b949e;">tile below current pane</span>
+        <code style="color:#79c0ff;">"split_h"</code><span style="color:#8b949e;">tile right of current pane</span>
+        <code style="color:#79c0ff;">"split_above"</code><span style="color:#8b949e;">tile above current pane</span>
+        <code style="color:#79c0ff;">"split_left"</code><span style="color:#8b949e;">tile left of current pane</span>
+        <code style="color:#3fb950;">"overlay"</code><span style="color:#8b949e;">full-window centered modal — over everything</span>
+        <code style="color:#3fb950;">"overlay_pane"</code><span style="color:#8b949e;">anchored to triggering pane only</span>
+        <code style="color:#8b949e;">"background"</code><span style="color:#8b949e;">no UI, runs behind the scenes</span>
+      </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d;color:#555;font-size:10px;">
+        Same string on all three callers: plexi CLI, DrawCommand::SpawnPane, AppCommand::SpawnApp
+      </div>
+    </div>
+    <div style="background:#161022;border:1px solid #553a7a;border-radius:6px;padding:10px;margin-top:10px;font-size:11px;color:#c9d1d9;">
+      <strong style="color:#d2a8ff;">Quick note = overlay + TextInput app.</strong> No special infrastructure. <code>plexi open quick-note</code> → layout "overlay". The text input you love is just egui's TextEdit in a minimal app wrapper. Quick note becomes the first proof that the overlay pattern is general.
+    </div>
+  </div>
+
+  <div>
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:10px;">Pane as context — overlays travel with their pane</div>
+
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px;font-family:monospace;font-size:10px;color:#8b949e;line-height:1.8;">
+      <div style="color:#c9d1d9;margin-bottom:4px;">Normal state (50/50 split):</div>
+      ┌─────────────┬─────────────┐<br>
+      │  terminal A │  terminal B │<br>
+      │             │  ╔═══════╗  │<br>
+      │             │  ║overlay║  │← owned by B<br>
+      │             │  ╚═══════╝  │<br>
+      └─────────────┴─────────────┘
+    </div>
+
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px;font-family:monospace;font-size:10px;color:#8b949e;line-height:1.8;">
+      <div style="color:#c9d1d9;margin-bottom:4px;">Cmd+Enter to zoom pane B → overlay comes with it:</div>
+      ┌─────────────────────────────┐<br>
+      │       terminal B (zoomed)   │<br>
+      │                             │<br>
+      │    ╔══════════════════╗     │<br>
+      │    ║ overlay (zoomed) ║     │<br>
+      │    ╚══════════════════╝     │<br>
+      └─────────────────────────────┘
+    </div>
+
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:monospace;font-size:10px;color:#8b949e;line-height:1.8;">
+      <div style="color:#c9d1d9;margin-bottom:4px;">Multiple overlays in one pane (future — 2 videos side by side):</div>
+      ┌─────────────────────────────┐<br>
+      │       terminal B            │<br>
+      │  ╔═════════╗ ╔═════════╗   │<br>
+      │  ║ video 1 ║ ║ video 2 ║   │<br>
+      │  ╚═════════╝ ╚═════════╝   │<br>
+      └─────────────────────────────┘
+    </div>
+  </div>
+</div>
+
+<div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px;">
+  <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:10px;">On AppCommand vs DrawCommand — the honest answer</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:11px;">
+    <div>
+      <div style="color:#e3b341;font-weight:600;margin-bottom:6px;">Why the seam exists</div>
+      <div style="color:#8b949e;line-height:1.7;">Native apps (file browser, quick note) live <em>inside</em> the host binary. They use AppCommand because there's no wire protocol — they're in-process Rust. DrawCommand is the JSON wire format for external SDK processes.</div>
+    </div>
+    <div>
+      <div style="color:#3fb950;font-weight:600;margin-bottom:6px;">What actually matters</div>
+      <div style="color:#8b949e;line-height:1.7;">The seam is invisible to callers. CLI, agents, and SDK apps all use the same socket + same message format. The host routes it internally. Long-term: rebuild native apps in the SDK → AppCommand disappears. Don't chase it now — it's a refactor, not a feature.</div>
+    </div>
+  </div>
+</div>
+
+<div style="background:#1a1a0d;border:1px solid #7a6a20;border-radius:8px;padding:12px;font-size:11px;color:#c9d1d9;">
+  <strong style="color:#e3b341;">The "two videos side by side in one pane" case:</strong> That's multiple overlay_pane apps in the same pane. The host needs to tile them within the pane's overlay layer. This is real and doable, but it's a separate problem from the base overlay primitive. Don't block on it — design the pane-ownership model correctly now, and multi-overlay layout follows naturally.
+</div>

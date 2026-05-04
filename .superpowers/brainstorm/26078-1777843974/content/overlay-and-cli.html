@@ -1,0 +1,73 @@
+<h2>Two Questions, One Screen</h2>
+<p class="subtitle">Overlay scope + the Plexi CLI as universal app launcher</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px;">
+
+  <div>
+    <div style="font-size:12px;font-weight:600;color:#c9d1d9;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px;font-size:10px;">Overlay scope</div>
+    <div class="options" style="margin:0;">
+      <div class="option" data-choice="full" onclick="toggleSelect(this)" style="margin-bottom:8px;">
+        <div class="letter" style="font-size:10px;padding:4px 6px;">A</div>
+        <div class="content">
+          <h3 style="font-size:13px;">Full-window overlay</h3>
+          <p style="font-size:11px;">Floats above the <em>entire</em> Plexi window — all splits, all panes. One z-layer above the tiling grid. Backdrop covers everything. Raycast / Spotlight pattern.</p>
+          <div style="margin-top:8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:10px;font-family:monospace;color:#8b949e;">
+            ┌─────────────────────────┐<br>
+            │  ╔═══ file-explorer ══╗ │<br>
+            │  ║ ~/Documents        ║ │<br>
+            │░░║ clip.mp4           ║░│<br>
+            │░░║ sample.wav    ←    ║░│<br>
+            │░░╚═══════════════════╝░│<br>
+            └─────────────────────────┘<br>
+            <span style="color:#555;">░ = backdrop (dimmed) below</span>
+          </div>
+        </div>
+      </div>
+      <div class="option" data-choice="pane" onclick="toggleSelect(this)">
+        <div class="letter" style="font-size:10px;padding:4px 6px;">B</div>
+        <div class="content">
+          <h3 style="font-size:13px;">Per-pane overlay</h3>
+          <p style="font-size:11px;">Floats above just the triggering pane. Other splits are unaffected. Like a context menu or autocomplete dropdown.</p>
+          <div style="margin-top:8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:10px;font-family:monospace;color:#8b949e;">
+            ┌───────────┬────────────┐<br>
+            │ ╔══════╗  │            │<br>
+            │ ║ file ║  │  terminal  │<br>
+            │ ╚══════╝  │            │<br>
+            │ terminal  │            │<br>
+            └───────────┴────────────┘<br>
+            <span style="color:#555;">↑ overlay scoped to left half only</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="background:#161022;border:1px solid #553a7a;border-radius:6px;padding:10px;margin-top:10px;font-size:11px;color:#c9d1d9;">
+      <strong style="color:#d2a8ff;">Recommendation: A, always.</strong> File explorer, quick note, any launcher — full-window. Per-pane popovers (autocomplete, context menus) are a separate future primitive with different mechanics. Don't conflate them.
+    </div>
+  </div>
+
+  <div>
+    <div style="font-size:10px;font-weight:600;color:#c9d1d9;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px;">Three callers, one action</div>
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:11px;margin-bottom:12px;">
+      <div style="color:#e3b341;font-weight:600;margin-bottom:8px;">plexi CLI (shell / scripts / Claude Code)</div>
+      <div style="background:#161b22;border-radius:4px;padding:8px;font-family:monospace;font-size:10px;color:#8b949e;margin-bottom:6px;">$ plexi open video-player ~/clip.mp4 --seek=2:35<br>$ plexi open file-explorer ~/Desktop<br>$ plexi open audio-player ~/sample.wav</div>
+      <div style="color:#555;font-size:10px;">→ sends SpawnPane JSON over PLEXI_SOCKET (same socket as plexi notify)</div>
+    </div>
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:11px;margin-bottom:12px;">
+      <div style="color:#3fb950;font-weight:600;margin-bottom:8px;">SDK app / AI agent (DrawCommand)</div>
+      <div style="background:#161b22;border-radius:4px;padding:8px;font-family:monospace;font-size:10px;color:#8b949e;margin-bottom:6px;">emit.spawn_pane("video-player",<br>&nbsp;&nbsp;args=["~/clip.mp4", "--seek=2:35"],<br>&nbsp;&nbsp;layout="split_above")</div>
+      <div style="color:#555;font-size:10px;">→ DrawCommand::SpawnPane over PGAP protocol</div>
+    </div>
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:11px;">
+      <div style="color:#79c0ff;font-weight:600;margin-bottom:8px;">Native host app (AppCommand)</div>
+      <div style="background:#161b22;border-radius:4px;padding:8px;font-family:monospace;font-size:10px;color:#8b949e;margin-bottom:6px;">AppCommand::SpawnApp {<br>&nbsp;&nbsp;type_id: "video-player",<br>&nbsp;&nbsp;args: ["~/clip.mp4", "--seek=2:35"]<br>}</div>
+      <div style="color:#555;font-size:10px;">→ already exists, already used by file browser</div>
+    </div>
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:10px;margin-top:10px;font-size:11px;color:#8b949e;">
+      All three routes to the same host-side router. <strong style="color:#c9d1d9;">plexi open</strong> is just a CLI skin over the socket — it's the same protocol as <code>plexi notify</code> (#295, in progress right now). A <code>SpawnPane</code> message type alongside <code>Notify</code>.
+    </div>
+  </div>
+</div>
+
+<div style="background:#1a1a0d;border:1px solid #7a6a20;border-radius:8px;padding:14px;font-size:12px;color:#c9d1d9;">
+  <strong style="color:#e3b341;">The non-developer angle:</strong> If <code>plexi open</code> works from any shell, then bash scripts, Claude Code conversations, cron jobs, and Make targets can all open app experiences in Plexi. You don't need to write an SDK app. You just know the type_id and the args convention. That's "Plexi as an OS" from the outside.
+</div>

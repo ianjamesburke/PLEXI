@@ -1,0 +1,60 @@
+<h2>Four Z-layers + Existing Issues</h2>
+<p class="subtitle">The spatial model completes cleanly. Background = job pile (#528). Ribbon (#563) is orthogonal — it's the horizontal layer within Z1.</p>
+
+<div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:20px;">
+  <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:14px;">The four Z-layers</div>
+  <div style="display:grid;grid-template-columns:auto 1fr auto;gap:8px 16px;align-items:center;font-size:12px;">
+    <div style="color:#e3b341;font-weight:700;text-align:right;">Z3</div>
+    <div style="background:#1a1600;border:1px solid #7a6000;border-radius:4px;padding:8px 12px;">
+      <span style="color:#e3b341;">overlay</span> <span style="color:#555;">—</span> <span style="color:#8b949e;">full-window modal, over everything. File explorer, quick note, command palette.</span>
+    </div>
+    <div style="color:#555;font-size:10px;">new</div>
+
+    <div style="color:#3fb950;font-weight:700;text-align:right;">Z2</div>
+    <div style="background:#0d1a0d;border:1px solid #1a5a1a;border-radius:4px;padding:8px 12px;">
+      <span style="color:#3fb950;">overlay_pane</span> <span style="color:#555;">—</span> <span style="color:#8b949e;">anchored to one pane. Zooms with it. One at a time per pane (safe initial constraint).</span>
+    </div>
+    <div style="color:#555;font-size:10px;">new</div>
+
+    <div style="color:#79c0ff;font-weight:700;text-align:right;">Z1</div>
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px 12px;">
+      <span style="color:#79c0ff;">ribbon</span> <span style="color:#555;">—</span> <span style="color:#8b949e;">the horizontal pane layout. split_v / split_h / split_above / split_left live here. Issue #563.</span>
+    </div>
+    <div style="color:#555;font-size:10px;">#563</div>
+
+    <div style="color:#8b949e;font-weight:700;text-align:right;">Z0</div>
+    <div style="background:#0d0d0d;border:1px dashed #333;border-radius:4px;padding:8px 12px;">
+      <span style="color:#8b949e;">background</span> <span style="color:#555;">—</span> <span style="color:#8b949e;">running, not visible. Auto-closes on success (exit 0). Notifies on failure. Job pile. Issue #528.</span>
+    </div>
+    <div style="color:#555;font-size:10px;">#528</div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;font-size:11px;">
+  <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;">
+    <div style="color:#79c0ff;font-weight:600;margin-bottom:6px;">Ribbon #563 — complementary, not conflicting</div>
+    <div style="color:#8b949e;line-height:1.7;">Ribbon is the navigation model for Z1 (horizontal priority queue). Overlays float above it. They don't interact — the ribbon sorts the background; Z2/Z3 float on top of whatever position you're at. Ribbon left = priority, ribbon right = new arrivals, same as before.</div>
+  </div>
+  <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px;">
+    <div style="color:#3fb950;font-weight:600;margin-bottom:6px;">Job pile #528 — already well-specced</div>
+    <div style="color:#8b949e;line-height:1.7;"><code>DrawCommand::Complete { success, message }</code> is already in the spec. <code>layout: "background"</code> is just the SpawnPane way to say "send to pile immediately." Background processes notify on failure via #291 notification system. No new mechanism needed — wire them together.</div>
+  </div>
+</div>
+
+<div style="background:#1a0d0d;border:1px solid #7a2020;border-radius:8px;padding:14px;margin-bottom:16px;font-size:11px;">
+  <div style="color:#ff6b6b;font-weight:600;margin-bottom:6px;">Multiple overlays footgun — the safe constraint</div>
+  <div style="color:#8b949e;line-height:1.7;"><strong style="color:#c9d1d9;">overlay_pane: one at a time per pane.</strong> If a second overlay_pane is requested while one is active on that pane, either replace it or open it as a tile split. Don't build multi-overlay tiling yet — the use case (two videos side by side) requires knowing the overlay layout algorithm first. Design pane ownership correctly now; multi-overlay follows without rework when needed.</div>
+</div>
+
+<div style="background:#161022;border:1px solid #553a7a;border-radius:8px;padding:14px;font-size:11px;color:#c9d1d9;">
+  <strong style="color:#d2a8ff;">What's in scope for the new issue:</strong>
+  <ul style="color:#8b949e;margin:8px 0 0 0;padding-left:16px;line-height:2;">
+    <li><code>DrawCommand::SpawnPane</code> with layout string + pipe_id</li>
+    <li><code>layout: "overlay"</code> — full-window (replaces quick note special case)</li>
+    <li><code>layout: "overlay_pane"</code> — pane-anchored, one at a time, zooms with pane</li>
+    <li><code>layout: "background"</code> — sends to pile, notify-on-fail wired to #528 + #291</li>
+    <li><code>plexi open &lt;type_id&gt; [args]</code> — socket command extending #295</li>
+    <li>Rich args convention: <code>--seek</code>, <code>--line</code>, <code>--pipe</code></li>
+    <li>Quick note migrated to use overlay (removes hardcoded shortcut handler)</li>
+  </ul>
+</div>
