@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] git-cliff changelog + release-version command (PR #637 → alpha)
+
+Replaced manual awk changelog generation in `promote.sh` with git-cliff. Added `cliff.toml` (flat list, first-line-only to strip squash bodies, skips bump/promote/DEV_LOG/merge noise). Added `scripts/release-version.sh` and `just release-version [patch|minor|major]` for explicit semantic version bumps before promote. `just promote` still auto-bumps patch but now calls git-cliff when available. Added `jc` shell function to dotfiles (runs `just <recipe>`; on failure opens Claude with error context); renamed old `jc='just --choose'` alias to `jj`.
+**Breaks if:** `just promote beta` changelog section is empty or shows raw squash-merge bodies instead of single-line entries.
+
 ## 2026-05-04 — [CHANGED] triage→triage-issues rename + touches/clarification_needed front matter + sprint-plan batch skill (PR #636 → alpha)
 
 Renamed `.claude/skills/triage/` to `.claude/skills/triage-issues/` and updated the `name` field — `/triage` no longer resolves. Extended the triage skill's Step 3 (LOC estimation) to record a `touches` list (top-level files/dirs) in front matter, and Step 8 (Actionability) to emit a `clarification_needed` list of concrete open questions. Both fields are written to issue front matter and surfaced in the Step 11 triage comment. New `/sprint-plan` skill does a read-only two-pass batch scan: (1) clarification sweep — all issues with open questions or labeling gaps; (2) execution plan — topological sort by `depends_on` + priority, grouped into parallel lanes based on `touches` overlap. Motivation: issue #625 slipped through without a `ready` label because it had no `blocked` label and no one added `ready` after scoping — `touches`/`clarification_needed` + `sprint-plan` make this class of gap visible.
