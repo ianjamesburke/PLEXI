@@ -1,0 +1,3397 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ControlCommand": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Inline-handled commands (processed directly in `ui()` or `background_tick()`).",
+      "oneOf": [
+        {
+          "description": "SDK ready handshake. Sent once by the app after receiving Init.\nHost captures sdk and features_used; the message is otherwise a no-op.",
+          "properties": {
+            "features_used": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "sdk": {
+              "default": "",
+              "type": "string"
+            },
+            "type": {
+              "const": "ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "End of frame. Host renders everything queued since last FrameDone.",
+          "properties": {
+            "frame_id": {
+              "description": "Must match the frame_id from the triggering Render event.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "frame_done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "frame_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Forward a log message into Plexi's logger (tagged with app_id).",
+          "properties": {
+            "level": {
+              "description": "One of: \"error\" | \"warn\" | \"info\" | \"debug\"",
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "const": "log",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "level",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ask the host to trigger a new Render event after `after_ms` milliseconds.\nIntended for game loops and animations — emit once per frame to sustain a\ntick rate without relying on egui's unconditional repaint cadence.\nApps that do not emit this will still repaint on keyboard/inject events.",
+          "properties": {
+            "after_ms": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "schedule_render",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "after_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Write `text` to the OS clipboard.\n\nRouted through `egui::Context::copy_text`, which handles platform-\nspecific clipboard backends (NSPasteboard / X11 / Wayland / Win32).\nSynchronous from the app's perspective — no acknowledgement event.\nNo capability flag required: clipboard write is low-risk and the\napp already controls when it fires (key handler, button, etc.).",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "copy_to_clipboard",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request a one-shot text measurement. The host measures `text` at\n`font_size` with the proportional font and replies immediately with\n`PlexiEvent::TextMeasured { request_id, width, height }`.\n\nUse this only when layout genuinely depends on measured text width\n(e.g. flowing multiple badges horizontally). Avoid on hot render paths.",
+          "properties": {
+            "font_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "monospace": {
+              "default": false,
+              "type": "boolean"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "measure_text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "text",
+            "font_size"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Append a row to the host-owned conversation history of an agent pane.\n\nOnly meaningful for panes whose manifest declares `[app] type = \"agent\"`.\nThe host renders the conversation history as the pane's primary surface;\nthe agent emits one of these per logical turn boundary (user echo,\nassistant reply, tool result, system note).\n\n`role` is one of `\"user\"` | `\"assistant\"` | `\"tool\"` | `\"system\"`. Other\nvalues are accepted at the wire level (forward-compatibility) but the\nhost renders unknown roles as plain text. Required field — no\n`serde(default)`.\n\n`content` is the plain-text body of the row. Required field. Empty\nstrings are valid (e.g. a placeholder turn while a stream is in flight)\nbut discouraged — emit on completion, not on dispatch.",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            },
+            "type": {
+              "const": "append_conversation",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "role",
+            "content"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "ControlCommand"
+    },
+    "HostCommand": {
+      "$defs": {
+        "AiMessage": {
+          "description": "One message in an `AiQuery` conversation. Wire shape mirrors Anthropic\nMessages API: `role` ∈ {\"user\", \"assistant\"}, `content` is plain text.\n(Multimodal content blocks are future-scope.)",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        "AiTool": {
+          "description": "Tool definition for the tool-use turn loop (#398).\nApps declare callable tools via `DrawCommand::ExposeTools`.",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            },
+            "timeout_ms": {
+              "description": "Maximum milliseconds to wait for this tool's response. Defaults to 30s\nwhen absent. The broker uses this to bound `ToolCall` round-trips.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "input_schema"
+          ],
+          "type": "object"
+        },
+        "ArtifactOpenMode": {
+          "description": "Routing target for `DrawCommand::OpenArtifact`.",
+          "oneOf": [
+            {
+              "const": "open_in_pane",
+              "description": "Open the path in a new Plexi pane (file browser for directories;\nOS default for files in v3.5).",
+              "type": "string"
+            },
+            {
+              "const": "reveal_in_finder",
+              "description": "`open -R <path>` — reveal in Finder.",
+              "type": "string"
+            },
+            {
+              "const": "open_with_default",
+              "description": "`open <path>` — Launch Services default app.",
+              "type": "string"
+            }
+          ]
+        },
+        "ModelTier": {
+          "description": "Coarse model tier requested by the app. The host maps each tier to a\nconcrete model identifier per backend (spec §ai.query):\n  - `Low`    → Haiku\n  - `Medium` → Sonnet\n  - `High`   → Opus",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "string"
+        },
+        "NotificationAction": {
+          "description": "An action attached to a Notify command.",
+          "properties": {
+            "action_type": {
+              "description": "One of: \"resume_run\" | \"open_intent\" | \"run_command\"",
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "payload": true
+          },
+          "required": [
+            "label",
+            "action_type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        "NotificationImage": {
+          "description": "Inline image attachment on a Notify command. `mime` is the MIME type\n(`image/png` or `image/jpeg`), `base64` is the raw image bytes\nbase64-encoded. Decoded size cap (50 KB) is enforced host-side at render\ntime; oversized images render a placeholder badge instead of decoding.",
+          "properties": {
+            "base64": {
+              "type": "string"
+            },
+            "mime": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mime",
+            "base64"
+          ],
+          "type": "object"
+        },
+        "NotifyKind": {
+          "description": "The shape / interaction model of a notification.\n\n- `Message` — title + body, single Acknowledge button.\n- `Choice`  — title + body + N options; Enter picks the focused one, ↑↓/j-k\n              cycles, 1-9 direct-selects, optional per-option `shortcut` key.\n- `Input`   — title + body + a text field; Enter submits.\n\nFuture kinds (image / audio / video / rich) will land here without breaking\nexisting apps — `#[serde(default)]` on the field means missing `kind`\ndeserializes to `Message`.",
+          "enum": [
+            "message",
+            "choice",
+            "input"
+          ],
+          "type": "string"
+        },
+        "NotifyOption": {
+          "description": "One option in a `kind = \"choice\"` notification.",
+          "properties": {
+            "label": {
+              "description": "Visible label on the button.",
+              "type": "string"
+            },
+            "shortcut": {
+              "default": null,
+              "description": "Optional single-char hotkey (e.g. \"y\", \"n\"). Case-insensitive.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "value": {
+              "default": "",
+              "description": "Value returned to the app in `PlexiEvent::NotifyAction.value`. If empty,\nthe label is used.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "label"
+          ],
+          "type": "object"
+        },
+        "PathTokenMode": {
+          "description": "Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.",
+          "oneOf": [
+            {
+              "const": "replace",
+              "description": "Send Ctrl-W (kill-word) before the path so the shell's readline\nremoves the partial word the user was typing, then write the path.",
+              "type": "string"
+            },
+            {
+              "const": "append",
+              "description": "Write the path verbatim at the cursor position.",
+              "type": "string"
+            }
+          ]
+        },
+        "VideoState": {
+          "description": "Video playback state. Stub for the lib target (full impl in binary target).",
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "play",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "pause",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Absolute position in milliseconds from the start of the video.",
+              "properties": {
+                "kind": {
+                  "const": "seek",
+                  "type": "string"
+                },
+                "position_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "position_ms"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Side-effectful commands — go to `route_command`.",
+      "oneOf": [
+        {
+          "description": "Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.",
+          "properties": {
+            "capability": {
+              "description": "v3 capability string, e.g. \"net.http\"",
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "capability_request",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "capability"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "type": {
+              "const": "secret_get",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request to start a run. Host surfaces in Run palette (Cmd+R).",
+          "properties": {
+            "intent": {
+              "type": "string"
+            },
+            "payload": true,
+            "type": {
+              "const": "run_get",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "intent",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Signal that a run the app owns has finished.",
+          "properties": {
+            "result": true,
+            "run_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "run_complete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "run_id",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Post a notification. All three action_types must dispatch correctly (no TODO).",
+          "properties": {
+            "actions": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/NotificationAction"
+              },
+              "type": "array"
+            },
+            "body": {
+              "type": "string"
+            },
+            "image_inline": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotificationImage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inline image attachment (PNG / JPEG, base64-encoded). Rendered above\nthe action buttons. Decoded size > 50 KB triggers a placeholder.\n`Option` is the natural empty/missing wire shape — no\n`#[serde(default)]` shim. Mutually exclusive with `image_pipe_id`;\nwhen both set, inline wins and the pipe is ignored (logged warn)."
+            },
+            "image_pipe_id": {
+              "description": "Pipe-referenced image. Host drains the binary ring lazily when the\nnotification is visible. Payload format: `width: u32 LE`,\n`height: u32 LE`, then `width * height * 4` bytes of RGBA.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "input_prompt": {
+              "default": null,
+              "description": "Placeholder / hint for the text input (only for `kind = \"input\"`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/$defs/NotifyKind",
+              "default": "message",
+              "description": "The notification shape. Defaults to `message` for back-compat with\nexisting apps. Determines how the modal renders and interacts."
+            },
+            "level": {
+              "description": "One of: \"info\" | \"warn\" | \"error\"",
+              "type": "string"
+            },
+            "notify_id": {
+              "default": null,
+              "description": "If set, host sends PlexiEvent::NotifyAction when the user responds.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "options": {
+              "default": [],
+              "description": "Choice options (only meaningful for `kind = \"choice\"`). The host shows\nthese as keyboard-navigable buttons; Enter selects the focused one.",
+              "items": {
+                "$ref": "#/$defs/NotifyOption"
+              },
+              "type": "array"
+            },
+            "priority": {
+              "description": "Higher = more urgent. REQUIRED — no `#[serde(default)]`. Apps must\nset this explicitly; omitting it fails deserialisation (forces SDK\nupgrade, no silent defaults). Ties broken by arrival order.\nTypical values: 0 (background info), 50 (normal), 100 (important),\n200 (critical/required).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "required": {
+              "default": false,
+              "description": "If true, the user cannot dismiss with Esc — they must pick an option\nor submit input. Intended for decisions the app depends on.",
+              "type": "boolean"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "notify",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "level",
+            "title",
+            "body",
+            "priority"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open a typed pipe.\nmode: \"json\" | \"binary\"\ndirection: \"in\" | \"out\" | \"duplex\"",
+          "properties": {
+            "direction": {
+              "description": "One of: \"in\" | \"out\" | \"duplex\"",
+              "type": "string"
+            },
+            "mode": {
+              "description": "One of: \"json\" | \"binary\"",
+              "type": "string"
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pipe_open",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "mode",
+            "direction"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open a *directed* JSON pipe to a specific target pane (#286).\n\nMirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only\nthe caller pane and the pane identified by `target_pane_id` can\nreceive messages on this pipe — peer apps are NOT subscribed even\nif they call `pipe_open` with the same `pipe_id`.\n\nCreated bidirectionally: both panes receive the other's `PipeSend`\npayloads as `PlexiEvent::PipeMessage`. Either side can close.\n\nCapability gate: caller needs `pipe.open` (the same as `PipeOpen`).\nThe target does NOT need `agents.list` — it just needs to be\naddressable. The target also doesn't need to opt in; the host\nsubscribes it on this pipe id.\n\nDirection is always `duplex` on directed pipes — there's no use case\nfor a one-way agent-to-agent channel today, so the field is omitted.\nMode is always `json`; binary directed pipes are out of scope until\na real use case arrives.",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "target_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "pipe_open_directed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "target_pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Send a JSON-mode pipe message (not for binary pipes).",
+          "properties": {
+            "payload": true,
+            "pipe_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pipe_send",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Update the status text shown in the parent pane chrome.",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "status_summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request the host to spawn a new app pane. Requires `spawn.app` capability.\n`layout`: \"split_v\" (default, new pane below), \"split_h\" (new pane right),\n          or \"overlay\" (full pane, no split).\n`args`: argv passed to the child process (appended after the binary path).\nHost responds with `PlexiEvent::AppSpawned { pane_id }` on success.",
+          "properties": {
+            "args": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "layout": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "spawn_app",
+              "type": "string"
+            },
+            "type_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "type_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_v\", \"split_h\", \"split_above\", \"split_left\", \"overlay\".\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\n`pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch\n  so the spawned app can reply via PipeSend on completion.\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
+          "properties": {
+            "args": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "layout": {
+              "default": "split_v",
+              "type": "string"
+            },
+            "pipe_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "spawn_pane",
+              "type": "string"
+            },
+            "type_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "type_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host-brokered HTTP request. Requires `net.http` capability.\nHost replies with `PlexiEvent::HttpResponse { request_id, ... }`.",
+          "properties": {
+            "body": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "headers": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "method": {
+              "default": "GET",
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "http_request",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "v3.3 brokered AI call. Requires `ai.query` capability.\n\nThe host routes this to the active Plexi AI backend, appends an\n`AgentTurn` row to `ai-ledger.jsonl`, and replies with\n`PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.\n\nAll fields are required — no `serde(default)`. `tools` may be empty;\nnon-empty `tools` causes the broker to dispatch through a tool loop\n(#399) — the AI can call tools on any pane that exposed them via\n`DrawCommand::ExposeTools`.",
+          "properties": {
+            "messages": {
+              "items": {
+                "$ref": "#/$defs/AiMessage"
+              },
+              "type": "array"
+            },
+            "model_tier": {
+              "$ref": "#/$defs/ModelTier"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "system": {
+              "type": "string"
+            },
+            "tools": {
+              "items": {
+                "$ref": "#/$defs/AiTool"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "ai_query",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "model_tier",
+            "system",
+            "messages",
+            "tools"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "v3.7 tool protocol (#398). App declares its callable tools to the host.\nThe host registers these in the global tool registry so the broker can\nroute `PlexiEvent::ToolCall` events to this pane during AI turns that\ninclude tool-use.\n\nMay be sent at any time (including on_init). Replaces any prior\nregistration for this pane — send the full current set each time.",
+          "properties": {
+            "tools": {
+              "items": {
+                "$ref": "#/$defs/AiTool"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "expose_tools",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tools"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "v3.7 tool protocol (#399). App returns the result of a `PlexiEvent::ToolCall`\ninvocation. `call_id` must match the `call_id` from the `ToolCall` event.\n\nEither `output_json` or `error` must be set — not both.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "output_json": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "call_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host-owned audio playback via `rodio`.",
+          "properties": {
+            "pipe_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "description": "One of: \"playing\" | \"paused\" | \"stopped\".",
+              "type": "string"
+            },
+            "type": {
+              "const": "audio_play",
+              "type": "string"
+            },
+            "volume": {
+              "default": 1.0,
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host-owned audio capture: mic PCM delivered on a binary pipe.\n`device_id` selects which input device (from `ListAudioDevices`); when\n`None` the host opens the OS default input. The negotiated parameters\narrive in `PlexiEvent::AudioCaptureStarted`; failures arrive in\n`PlexiEvent::AudioCaptureError`.",
+          "properties": {
+            "buffer_size": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "device_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "sample_rate": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "audio_capture",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "sample_rate",
+            "buffer_size"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request enumeration of audio devices (#277). Host responds with\n`PlexiEvent::AudioDevicesListed { request_id, inputs, outputs }`. No\ncapability gate — enumeration discloses only device names already\nvisible to any macOS app.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_audio_devices",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request enumeration of MIDI ports (#320). Host responds with\n`PlexiEvent::MidiDevicesListed { request_id, inputs, outputs }`. No\ncapability gate — enumeration discloses only port names already\nvisible in Audio MIDI Setup.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_midi_devices",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open a MIDI input port and forward every incoming message as a binary\npipe frame on `pipe_id`. Each frame is a single MIDI 1.0 byte stream\n(1–3 bytes for channel-voice / system real-time). Requires `midi.in`.\nHost emits `PlexiEvent::PipeOpened` then `PlexiEvent::MidiInputOpened`\non success, or `PlexiEvent::MidiInputError` on failure (port not found,\ncapability denied, CoreMIDI error).",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "port_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "open_midi_input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "port_id",
+            "pipe_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Close the MIDI input previously opened on `port_id`. The host\ndisconnects from the port and closes the associated binary pipe.\nNo-op if the port is not currently open. No response event.",
+          "properties": {
+            "port_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "close_midi_input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "port_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Send one MIDI 1.0 byte stream to `port_id`. Fire-and-forget — the host\nonly emits `PlexiEvent::MidiSendError` if the send failed (port not\nopen, CoreMIDI error). Requires `midi.out`. The host opens the output\nport lazily on the first `SendMidi` call and keeps it open until the\napp exits.",
+          "properties": {
+            "bytes": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "port_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "send_midi",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "port_id",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open a video decoder (#345). The host responds with\n`PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,\nfps, duration_ms }` on success or `PlexiEvent::VideoOpenError\n{ request_id, error }` on failure (capability denied, source not\nfound, decoder error, NotImplemented from the production stub).\nDecoded RGBA8 frames flow over the binary pipe at `pipe_id`; one\npipe frame = one video frame, packed `[R,G,B,A,...]` of length\n`width * height * 4`.\n\nRequires `video.playback` capability. All fields required —\nno `serde(default)`.",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "type": {
+              "const": "open_video",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "source",
+            "pipe_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Drive playback state for a previously-opened video handle (#345).\n`handle_id` is the value returned in `VideoOpenAck`. State variants:\n`play`, `pause`, or `seek` to an absolute position in milliseconds.",
+          "properties": {
+            "handle_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "$ref": "#/$defs/VideoState"
+            },
+            "type": {
+              "const": "set_video_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "handle_id",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Close a previously-opened video handle (#345). Tears down the\ndecoder thread and the associated binary pipe drains. No response\nevent — fire-and-forget.",
+          "properties": {
+            "handle_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "close_video",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "handle_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request the host to cd all terminals in the same pane group to `cwd`.\nTerminals receive `cd <cwd>\\n` written to their PTY.",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "type": {
+              "const": "cd_request",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cwd"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request a one-shot timer. Requires `timer` capability.\nHost fires `PlexiEvent::Timer { timer_id }` after `after_ms` milliseconds.",
+          "properties": {
+            "after_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "timer_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "set_timer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "timer_id",
+            "after_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Cancel a pending timer. No-op if the timer has already fired or doesn't exist.",
+          "properties": {
+            "timer_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "cancel_timer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "timer_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ask the host to open a fresh terminal pane next to this Canvas app\nand link it. Host responds with `PlexiEvent::LinkedTerminalReady\n{ request_id, terminal_pane_id }`. `cwd` defaults to the app's\nworkspace root when `None`. `label` is reserved for future pane-\nchrome decoration; currently unused by the host but pinned on the\nwire so apps and the host evolve together.\n\nCapability: `terminal.bindings`. Required fields — no `serde(default)`.",
+          "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "request_linked_terminal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Execute `command` in a linked terminal pane.\n\n`echo: true` — the command is typed into the terminal so the user\nsees it (followed by a newline so the shell executes it). This is\nthe default behaviour for click-driven UIs where the user wants to\nknow what just ran.\n`echo: false` — the command is still written to the PTY, but the\ncaller is signalling intent that the terminal is being driven\nprogrammatically (the terminal still echoes input by default at\nthe PTY level — silent execution is best-effort).\n\nCapability: `terminal.bindings`. All fields required.",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "echo": {
+              "type": "boolean"
+            },
+            "terminal_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "run_in_linked_terminal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "terminal_pane_id",
+            "command",
+            "echo"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Insert `path` into the linked terminal at the cursor position.\n\n`Replace` mode: write a Ctrl-W (kill-word, shell readline default)\nbefore the path — replaces the partial word the user is typing.\n`Append` mode: write the path verbatim — handy for completing\ndrag-and-drop / file-picker style flows where the user is composing\na command.\n\nThe host wraps the path in single quotes (POSIX) when it contains\nshell metacharacters so the shell doesn't expand or split it.\n\nCapability: `terminal.bindings`. All fields required.",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/PathTokenMode"
+            },
+            "path": {
+              "type": "string"
+            },
+            "terminal_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "insert_path_token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "terminal_pane_id",
+            "path",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ask the host to compute the command that *would* run for a given\ncommand string in the linked terminal. Doesn't execute. Used for\nconfirmation modals before destructive operations.\n\nHost responds with `PlexiEvent::CommandPreview { request_id, command,\nwould_run_in_cwd }`. `would_run_in_cwd` is the terminal's current\nworking directory at request time — useful for \"rm -rf .git in\n/tmp/foo\" style confirmations.\n\nCapability: `terminal.bindings`. All fields required.",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "terminal_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "request_command_preview",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "terminal_pane_id",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open a workspace artifact (file or directory) via the host.\n\nModes:\n  - `OpenInPane`        — open the path in a new app pane, e.g. a\n                          file browser at a directory or a text\n                          editor on a file. Implementation: routes\n                          through the file-browser app for\n                          directories; falls through to the OS\n                          default for files in this PR.\n  - `RevealInFinder`    — `open -R <path>` on macOS.\n  - `OpenWithDefault`   — `open <path>` on macOS — uses Launch\n                          Services to pick the registered app for\n                          the file's UTI.\n\nCapability: `terminal.bindings`. All fields required.",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/ArtifactOpenMode"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "open_artifact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "App signals it has pushed a navigation level. The host appends the\nentry to its per-pane nav stack. While the stack has entries, the pane\nchrome shows a back arrow + the current view's title, and Cmd+[\nemits `PlexiEvent::NavBack` to the app instead of cycling tabs.\n\n`view_id` must be a stable identifier for this view (e.g. `\"detail\"`);\n`title` is shown in the pane chrome while this view is active.",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "push_nav",
+              "type": "string"
+            },
+            "view_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "view_id",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "App signals it has popped a navigation level. The host removes the top\nentry from the per-pane nav stack (saturating — no-op on empty stack).",
+          "properties": {
+            "type": {
+              "const": "pop_nav",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Enable or disable `PlexiEvent::MouseMove` delivery for this pane.\n\nOff by default to avoid flooding apps that don't need continuous pointer\ntracking. Send `{ enabled: true }` after `Ready` to start receiving\n`on_mouse_move` callbacks. Send `{ enabled: false }` to stop.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "set_mouse_tracking",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "enabled"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Show a native macOS file picker dialog. Requires `fs.pick` capability.\n\n`filter` is a list of file extensions without leading dots\n(e.g. `[\"mp4\", \"mov\"]`). Empty list = accept all files.\n\n`multiple` allows selecting more than one file.\n\nHost responds with `PlexiEvent::FilePicked` (paths) or\n`PlexiEvent::FilePickCancelled` (user dismissed / capability denied).",
+          "properties": {
+            "filter": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "multiple": {
+              "type": "boolean"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "open_file_picker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "filter",
+            "multiple"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "HostCommand"
+    },
+    "PlexiEvent": {
+      "$defs": {
+        "AudioDeviceWire": {
+          "description": "On-the-wire shape of one audio device. Mirrors `audio::AudioDeviceInfo`\nbut lives on the protocol surface so SDKs in other languages can map it\nwithout depending on the audio module.",
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "default"
+          ],
+          "type": "object"
+        },
+        "MidiPortWire": {
+          "description": "On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives\non the protocol surface so SDKs in other languages can map it without\ndepending on the midi module.",
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "default"
+          ],
+          "type": "object"
+        },
+        "Modifiers": {
+          "properties": {
+            "alt": {
+              "type": "boolean"
+            },
+            "cmd": {
+              "type": "boolean"
+            },
+            "ctrl": {
+              "type": "boolean"
+            },
+            "shift": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "shift",
+            "ctrl",
+            "alt",
+            "cmd"
+          ],
+          "type": "object"
+        },
+        "MouseButton": {
+          "enum": [
+            "primary",
+            "secondary"
+          ],
+          "type": "string"
+        },
+        "Rect": {
+          "description": "A simple rectangle (logical coordinates).",
+          "properties": {
+            "h": {
+              "format": "float",
+              "type": "number"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "w",
+            "h"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "description": "Sent exactly once on startup. App must reply with DrawCommand::Ready.",
+          "properties": {
+            "app_id": {
+              "description": "Stable identifier for this app instance, e.g. \"audio-recorder\".",
+              "type": "string"
+            },
+            "capabilities": {
+              "description": "Capabilities granted to this app (declared in manifest or runtime-prompted).\ne.g. [\"audio.record\", \"fs.read\"]",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "feature_flags": {
+              "description": "Additive feature flags. Unknown flags are ignored.\ne.g. [\"media_v1\", \"pane_groups_v1\"]",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "protocol": {
+              "description": "Protocol version string, e.g. \"pgap/3\". App must refuse unknown versions.",
+              "type": "string"
+            },
+            "type": {
+              "const": "init",
+              "type": "string"
+            },
+            "workspace_root": {
+              "description": "The workspace root this app was launched from.\nHard invariant: all SecretGet calls are scoped to this directory.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "protocol",
+            "app_id",
+            "workspace_root",
+            "capabilities",
+            "feature_flags"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request a new frame. App replies with DrawCommands terminated by FrameDone.",
+          "properties": {
+            "frame_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rect": {
+              "$ref": "#/$defs/Rect",
+              "description": "Current surface rect the app should draw into."
+            },
+            "type": {
+              "const": "render",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "frame_id",
+            "rect"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Surface was resized. App should re-layout and request a new frame.",
+          "properties": {
+            "height": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "resize",
+              "type": "string"
+            },
+            "width": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "User input event.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "modifiers": {
+              "$ref": "#/$defs/Modifiers"
+            },
+            "type": {
+              "const": "key",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "key",
+            "modifiers"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Mouse click at logical coordinates within the app surface.",
+          "properties": {
+            "button": {
+              "$ref": "#/$defs/MouseButton"
+            },
+            "type": {
+              "const": "click",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "button"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Pointer button pressed (fires on the frame the button goes down).",
+          "properties": {
+            "button": {
+              "$ref": "#/$defs/MouseButton"
+            },
+            "type": {
+              "const": "mouse_down",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "button"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Pointer button released (fires on the frame the button goes up).",
+          "properties": {
+            "button": {
+              "$ref": "#/$defs/MouseButton"
+            },
+            "type": {
+              "const": "mouse_up",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "button"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Pointer moved over the app surface. Only fires when the app has opted in\nvia `DrawCommand::SetMouseTracking { enabled: true }`. Pane-local\ncoordinates; `buttons` lists which buttons are currently held.",
+          "properties": {
+            "buttons": {
+              "items": {
+                "$ref": "#/$defs/MouseButton"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "mouse_move",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "buttons"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "User submitted a command via the command bar.",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "command",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to a runtime CapabilityRequest.",
+          "properties": {
+            "granted": {
+              "type": "boolean"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "capability_decision",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "granted"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Secret broker response. value is None when denied.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "type": {
+              "const": "secret_value",
+              "type": "string"
+            },
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Run lifecycle update from the host.",
+          "properties": {
+            "payload": true,
+            "run_id": {
+              "type": "string"
+            },
+            "status": {
+              "description": "One of: \"pending\" | \"running\" | \"blocked_on_user\" | \"completed\" | \"failed\"",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_update",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "run_id",
+            "status",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Typed pipe message (JSON mode only; binary mode travels on the side channel).",
+          "properties": {
+            "payload": true,
+            "pipe_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pipe_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Pane group CWD broadcast. Apps in the same group receive this when any\nmember's CWD changes.",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "type": {
+              "const": "path_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cwd"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "App is being backgrounded (host window losing focus, app no longer visible).",
+          "properties": {
+            "type": {
+              "const": "suspend",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "App is being foregrounded again.",
+          "properties": {
+            "type": {
+              "const": "resume",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "App is being closed. Process must exit within a short timeout.",
+          "properties": {
+            "type": {
+              "const": "shutdown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Confirmation that a SpawnApp request succeeded.",
+          "properties": {
+            "pane_id": {
+              "description": "The pane_id of the newly spawned app pane.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "app_spawned",
+              "type": "string"
+            },
+            "type_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "type_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Confirmation that a SpawnPane request succeeded (#592).",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "pane_spawned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "SpawnPane could not be fulfilled (#592). `reason` is a human-readable error.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pane_spawn_error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Binary pipe opened — app connects to `socket_path` as a unix socket client.",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "socket_path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pipe_opened",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "socket_path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Binary pipe backpressure — host dropped `dropped_frames` frames from the ring.",
+          "properties": {
+            "dropped_frames": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pipe_overrun",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "dropped_frames"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Harness-only: drop a JSON payload into the app's `on_inject` hook.\nUsed by `pgap_test_harness` to seed deterministic state without\nround-tripping through real inputs.",
+          "properties": {
+            "payload": true,
+            "type": {
+              "const": "inject_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host broker response to a `DrawCommand::HttpRequest`. `error` is present\nwhen the request failed; `body` may still carry a partial response.",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "error": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "status": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "http_response",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "status",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when the user responds to a notification that included a notify_id.\n\n- `action_label`: what was clicked — \"acknowledge\" for the default,\n  the option label for a choice, \"submit\" for input, or \"cancel\" if\n  dismissed with Esc (only possible when `required = false`).\n- `value`: option `value` for choice kind, typed text for input kind,\n  absent otherwise.",
+          "properties": {
+            "action_label": {
+              "type": "string"
+            },
+            "notify_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "notify_action",
+              "type": "string"
+            },
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "notify_id",
+            "action_label"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fired when a SetTimer timer expires.",
+          "properties": {
+            "timer_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "timer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "timer_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to a `DrawCommand::MeasureText` request.\n`width` and `height` are in logical pixels at the requested font size.",
+          "properties": {
+            "height": {
+              "format": "float",
+              "type": "number"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_measured",
+              "type": "string"
+            },
+            "width": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "User pressed Enter inside a `DrawCommand::TextInput` field.\n\n`id` matches the `id` the app supplied on the `TextInput` command.\n`value` is the buffered text at submission time. The host clears its\nbuffer for `id` after emitting this event so the field is empty for\nthe next input.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_submitted",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "User submitted text in the focused app pane.",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "user_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Clipboard paste forwarded into the focused app pane.\n\nEmitted whenever the host observes `egui::Event::Paste(text)` while an\napp pane has keyboard focus. The text is the OS clipboard contents at\npaste time, already decoded to UTF-8 by egui. Apps receive this both\nfor Cmd+V chords and for OS-menu / right-click → Paste actions.\n\nPre-#200 apps shelled out to `pbpaste` for this; that workaround is\nmacOS-only and races with focus changes. This event is the portable\npath.",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "paste",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to a `DrawCommand::AiQuery`. Either `content` is `Some` (success)\nor `error` is `Some` (failure) — the two are mutually exclusive. Token\ncounts are zero on error.\n\n`error` is set when:\n  - the app does not declare the `ai.query` capability (\"capability denied\")\n  - the host backend cannot be reached (e.g. missing API key, Ollama not running)\n  - the upstream backend returned an error mid-stream",
+          "properties": {
+            "content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "tokens_in": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tokens_out": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "ai_response",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "tokens_in",
+            "tokens_out"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host-to-app tool invocation (#399). The broker calls a tool exposed via\n`DrawCommand::ExposeTools` by sending this event to the owning pane.\nThe app must reply with `DrawCommand::ToolResult { call_id, … }`.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "input_json": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "call_id",
+            "name",
+            "input_json"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to a `DrawCommand::ListAudioDevices` request (#277).\nBoth vectors are always present — empty when enumeration finds no\ndevices of that direction. `error` is set only when device\nenumeration itself failed (host without an audio host driver, etc).",
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "inputs": {
+              "items": {
+                "$ref": "#/$defs/AudioDeviceWire"
+              },
+              "type": "array"
+            },
+            "outputs": {
+              "items": {
+                "$ref": "#/$defs/AudioDeviceWire"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "audio_devices_listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "inputs",
+            "outputs"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when a `DrawCommand::AudioCapture` successfully opened the device\nand started delivering PCM frames on `pipe_id`. The `sample_rate`,\n`channels`, and `buffer_size` are the actual negotiated values — the\napp must use these (not its requested values) when interpreting frames.",
+          "properties": {
+            "buffer_size": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "channels": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "device_name": {
+              "type": "string"
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "sample_rate": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "audio_capture_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "sample_rate",
+            "channels",
+            "buffer_size",
+            "device_name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when a `DrawCommand::AudioCapture` could not be honoured —\npermission denied, bad device id, no devices, cpal failure.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "audio_capture_error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to a `DrawCommand::ListMidiDevices` request (#320).\nBoth vectors are always present — empty when CoreMIDI finds no\nendpoints of that direction. `error` is set only when MIDI subsystem\nitself failed to enumerate (CoreMIDI unavailable, etc).",
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "inputs": {
+              "items": {
+                "$ref": "#/$defs/MidiPortWire"
+              },
+              "type": "array"
+            },
+            "outputs": {
+              "items": {
+                "$ref": "#/$defs/MidiPortWire"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "midi_devices_listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "inputs",
+            "outputs"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when a `DrawCommand::OpenMidiInput` successfully opened the port\nand started forwarding incoming MIDI byte streams to the binary pipe\nat `pipe_id`. The host emitted `PipeOpened { pipe_id, socket_path }`\njust before this event so the app can connect to the socket.",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "port_id": {
+              "type": "string"
+            },
+            "port_name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "midi_input_opened",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "port_id",
+            "port_name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when `DrawCommand::OpenMidiInput` could not be honoured —\npermission denied, port not found, CoreMIDI failure.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "midi_input_error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when `DrawCommand::SendMidi` could not be honoured. Successful\nsends produce no event (fire-and-forget); only failures surface.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "port_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "midi_send_error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "port_id",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has\nallocated the binary pipe (look for the preceding `PipeOpened`),\nstarted the decoder, and is now pumping RGBA8 frames into the pipe.\n`handle_id` is the opaque handle the app passes to subsequent\n`SetVideoState` / `CloseVideo` commands.",
+          "properties": {
+            "duration_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fps": {
+              "format": "float",
+              "type": "number"
+            },
+            "handle_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "video_open_ack",
+              "type": "string"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "handle_id",
+            "width",
+            "height",
+            "fps",
+            "duration_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent when `DrawCommand::OpenVideo` could not be honoured (#345) —\ncapability denied, source not found, decoder error, or the\nproduction stub's `NotImplemented` (until #346 ships).",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "video_open_error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `DrawCommand::RequestLinkedTerminal` (#78). Carries the\npane id of the freshly-opened terminal so subsequent\n`RunInLinkedTerminal` / `InsertPathToken` / etc. calls can reference\nit. `terminal_pane_id` is the same `PaneId` (`u64`) the host uses\ninternally — pass it back verbatim.\n\nApps without `terminal.bindings` never receive this event; the\nrequest is dropped at the routing layer with a capability-denied\nlog line.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "terminal_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "linked_terminal_ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "terminal_pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `DrawCommand::RequestCommandPreview` (#78). Returns the\ncommand verbatim plus the linked terminal's current cwd so the app\ncan render a confirmation modal that says \"this would run in\n/tmp/foo\". `would_run_in_cwd` is the host's best-effort snapshot of\nthe terminal child's cwd at request time — never an expansion of\nshell history or alias.",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "command_preview",
+              "type": "string"
+            },
+            "would_run_in_cwd": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "command",
+            "would_run_in_cwd"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Emitted by host to app when Escape is pressed and the app's nav stack\ndepth is > 0. The app handles this by popping its own internal view\nand emitting `DrawCommand::PopNav` to decrement the host counter.",
+          "properties": {
+            "type": {
+              "const": "nav_back",
+              "type": "string"
+            },
+            "view_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "view_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `DrawCommand::OpenFilePicker`. At least one file was selected.\n`paths` contains the absolute paths chosen by the user.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "file_picked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "paths"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `DrawCommand::OpenFilePicker` when the user cancelled the\ndialog without selecting a file, or the app lacks `fs.pick` capability.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "file_pick_cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Emitted by the host when the scroll offset for a `BeginScroll` region\nchanges (mouse wheel, drag). The app should re-render using `offset_y`\nas the vertical translation applied to all content within that region.\n\n`id` matches the `id` from the `DrawCommand::BeginScroll` that declared\nthe region. `offset_y` is always >= 0 and clamped to\n`max(0, content_height - viewport_height)`.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "offset_y": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "scroll_offset",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "offset_y"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "PlexiEvent"
+    },
+    "RenderCommand": {
+      "$defs": {
+        "ListItem": {
+          "properties": {
+            "icon": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "is_dir": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": "string"
+            },
+            "secondary": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "label"
+          ],
+          "type": "object"
+        },
+        "Rect": {
+          "description": "A simple rectangle (logical coordinates).",
+          "properties": {
+            "h": {
+              "format": "float",
+              "type": "number"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "w",
+            "h"
+          ],
+          "type": "object"
+        },
+        "ShortcutPair": {
+          "description": "One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips\nfollowed by `description` text.",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "keys",
+            "description"
+          ],
+          "type": "object"
+        },
+        "TextRowItem": {
+          "description": "One text segment inside a `DrawCommand::TextRow`.",
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "monospace": {
+              "type": "boolean"
+            },
+            "size": {
+              "format": "float",
+              "type": "number"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "color",
+            "size",
+            "monospace"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Render primitives — go to `pending_frame` → drawn to screen.",
+      "oneOf": [
+        {
+          "description": "Push a clip rect onto the host's clip stack.\n\nThe effective clip rect is the intersection of the new rect with the\ncurrent top of the stack (or the pane rect if the stack is empty).\nAll subsequent draw commands are clipped to this intersection until\na matching `PopClip` rebalances the stack.\n\nImbalanced push/pop is a hard error logged at `warn` level. The host\nresets to zero depth at frame end so a bug in one app cannot corrupt\nsubsequent frames.",
+          "properties": {
+            "h": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "push_clip",
+              "type": "string"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "w",
+            "h"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Pop the most recently pushed clip rect from the stack.\n\nIf the stack is already empty, logs a `warn` and is a no-op.",
+          "properties": {
+            "type": {
+              "const": "pop_clip",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fill a rectangle.",
+          "properties": {
+            "fill": {
+              "type": "string"
+            },
+            "h": {
+              "format": "float",
+              "type": "number"
+            },
+            "radius": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "rect",
+              "type": "string"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "w",
+            "h",
+            "fill"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Draw text at a position.\n\n`align` controls how the `(x, y)` point maps to the text box:\n  - `\"top_left\"` (default) — `(x, y)` is the top-left corner.\n  - `\"center\"`              — `(x, y)` is the visual center of the text.\n\nCentering uses the host's real font metrics, which matters for small\nbadges / buttons where a 0.1em difference is visible. Prefer `center`\nfor anything inside a fixed-size container.\n\n`max_width` — when `Some(w)`, the text is clipped at `w` pixels.\n`elide` — when `true`, a `…` is appended at the clip point; when\n          `false`, the text is hard-clipped with no marker.\n`selectable` — when `true`, the host renders this text as a\n               selectable egui label so the user can drag-select\n               inside it and Cmd+C copies the selection. When\n               `false` (default for pre-#200 callers), the text\n               paints via the painter and cannot be selected.\n               Required field — no `serde(default)`. Apps must\n               set it explicitly; omitting it fails deserialisation.",
+          "properties": {
+            "align": {
+              "default": "top_left",
+              "type": "string"
+            },
+            "bold": {
+              "default": false,
+              "type": "boolean"
+            },
+            "color": {
+              "type": "string"
+            },
+            "elide": {
+              "type": "boolean"
+            },
+            "max_width": {
+              "format": "float",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "monospace": {
+              "default": false,
+              "type": "boolean"
+            },
+            "selectable": {
+              "type": "boolean"
+            },
+            "size": {
+              "format": "float",
+              "type": "number"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "text",
+            "size",
+            "color",
+            "elide",
+            "selectable"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Draw a line segment.",
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "type": {
+              "const": "line",
+              "type": "string"
+            },
+            "width": {
+              "default": 1.0,
+              "format": "float",
+              "type": "number"
+            },
+            "x1": {
+              "format": "float",
+              "type": "number"
+            },
+            "x2": {
+              "format": "float",
+              "type": "number"
+            },
+            "y1": {
+              "format": "float",
+              "type": "number"
+            },
+            "y2": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "color"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).",
+          "properties": {
+            "cx": {
+              "format": "float",
+              "type": "number"
+            },
+            "cy": {
+              "format": "float",
+              "type": "number"
+            },
+            "fill": {
+              "type": "string"
+            },
+            "r": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "circle",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cx",
+            "cy",
+            "r",
+            "fill"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Draw a filled arc / pie slice.\n`start_angle` and `end_angle` are in radians, measured clockwise from the right (east).\nA full circle is 0.0 to std::f32::consts::TAU.",
+          "properties": {
+            "cx": {
+              "format": "float",
+              "type": "number"
+            },
+            "cy": {
+              "format": "float",
+              "type": "number"
+            },
+            "end_angle": {
+              "format": "float",
+              "type": "number"
+            },
+            "fill": {
+              "type": "string"
+            },
+            "r": {
+              "format": "float",
+              "type": "number"
+            },
+            "start_angle": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "arc",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cx",
+            "cy",
+            "r",
+            "start_angle",
+            "end_angle",
+            "fill"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "High-level scrollable list — host handles layout and scrolling.",
+          "properties": {
+            "h": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "item_height": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/$defs/ListItem"
+              },
+              "type": "array"
+            },
+            "selected": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "list",
+              "type": "string"
+            },
+            "w": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "items",
+            "selected"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host-rendered pill badge. The host measures the label with real font\nmetrics, sizes the pill (text_w + padding), and centres the text\nboth horizontally and vertically. No width math in the SDK.\n\n`x`      — left edge of the badge.\n`y`      — vertical centre (the badge is drawn centred on this y).\n`label`  — text to display inside the pill.\n`fill`   — pill background colour (hex).\n`fg`     — text colour (hex).\n`font_size` — label font size in pt.\n`radius` — pill corner radius. Use a large value (e.g. font_size) for\n           a fully-rounded pill, or RADIUS_SM (4.0) for tag chips.",
+          "properties": {
+            "fg": {
+              "type": "string"
+            },
+            "fill": {
+              "type": "string"
+            },
+            "font_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "label": {
+              "type": "string"
+            },
+            "radius": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "badge",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "label",
+            "fill",
+            "fg",
+            "font_size",
+            "radius"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host-rendered keycap chip. The host measures the label with real\nmonospace font metrics, sizes the chip, and centres the text inside.\n\n`x`         — left edge of the chip (top-left, matching ctx.text).\n`y`         — top edge of the chip.\n`label`     — key label (e.g. \"⌘\", \"[\", \"Enter\").\n`font_size` — label font size in pt.",
+          "properties": {
+            "font_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "label": {
+              "type": "string"
+            },
+            "type": {
+              "const": "key_chip",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "label",
+            "font_size"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A horizontal row of keycap chips. The host flows them left-to-right\nwith a fixed 2px gap between chips, sizes each chip from real font\nmetrics, and places an optional trailing description label after the\nlast chip.\n\n`x`, `y`      — top-left origin of the row.\n`keys`        — ordered list of key labels to render as chips.\n`description` — optional label rendered after the last chip.\n`font_size`   — applies to all chips and the description.",
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "font_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "key_chip_row",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "keys",
+            "font_size"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A multi-group shortcut row. The host owns all layout — chip widths\nfrom real font metrics, flow horizontally with configurable inter-\ngroup gap, wrap to a new line when the next group would exceed\n`max_width`. Returns nothing; correct by construction.\n\n`x`, `y`      — top-left origin.\n`max_width`   — wrap budget. Wrap to a new line when the next group\n                would exceed it. Caller passes the available pane\n                width minus its own padding.\n`pairs`       — ordered list of `(chip-labels, description)` groups.\n                Each pair renders as one or more chips followed by\n                the description text.\n`font_size`   — applies to all chips and descriptions.",
+          "properties": {
+            "font_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "max_width": {
+              "format": "float",
+              "type": "number"
+            },
+            "pairs": {
+              "items": {
+                "$ref": "#/$defs/ShortcutPair"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "shortcuts",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "max_width",
+            "pairs",
+            "font_size"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Multiple text segments rendered horizontally with host-measured layout.\nThe host measures each segment with real font metrics and flows them\nleft-to-right with configurable gap spacing.\n\n`x`, `y`  — origin of the text row.\n`items`   — list of text segments, each with text, color, size, monospace.\n`gap`     — spacing between items in pixels.\n`align`   — vertical alignment (e.g., \"left_center\").",
+          "properties": {
+            "align": {
+              "type": "string"
+            },
+            "gap": {
+              "format": "float",
+              "type": "number"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/$defs/TextRowItem"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "text_row",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "items",
+            "gap",
+            "align"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Render markdown text using the host's `egui_commonmark` renderer.\n\nThe host creates a child `Ui` at `(x, y)` with width `w` and renders\nthe markdown with proper formatting (bold, italic, code blocks, etc.).\n`base_size` controls the body font size; `color` sets the default text\ncolour.",
+          "properties": {
+            "base_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "color": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "markdown",
+              "type": "string"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "w",
+            "text",
+            "base_size",
+            "color"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Draw an image from a workspace-scoped path or data URL.",
+          "properties": {
+            "fit": {
+              "default": "contain",
+              "description": "One of: \"contain\" | \"cover\" | \"fill\". Default: \"contain\".",
+              "type": "string"
+            },
+            "h": {
+              "format": "float",
+              "type": "number"
+            },
+            "src": {
+              "type": "string"
+            },
+            "type": {
+              "const": "image",
+              "type": "string"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "src",
+            "x",
+            "y",
+            "w",
+            "h"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Render an amplitude meter reading from a binary pipe.",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "rect": {
+              "$ref": "#/$defs/Rect"
+            },
+            "type": {
+              "const": "audio_meter",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "rect",
+            "pipe_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Text input field (host-owned buffer, submit-only).\n\nEmitted by the app each frame at `(x, y)` with width `w`. The host\nowns the underlying buffer keyed on `id` — typed characters never\nreach the app between frames. On Enter the host emits\n`PlexiEvent::TextSubmitted { id, value }` and clears its buffer.\n\nWhen `multiline` is `false` (the default), the host renders a\nsingle-line `TextEdit` and Enter submits. When `multiline` is `true`,\nthe host renders a multi-line `TextEdit`; Enter still submits but\nShift+Enter inserts a newline.\n\nReal-time validation (per-keystroke value access) is intentionally\nout of scope — see issue #283 option A. Apps that need it must\nwait for a future protocol revision.",
+          "properties": {
+            "h": {
+              "default": 24.0,
+              "description": "Height of the input widget in pixels. Defaults to 24.0 for\nbackwards compatibility with older SDKs that don't send `h`.",
+              "format": "float",
+              "type": "number"
+            },
+            "id": {
+              "type": "string"
+            },
+            "multiline": {
+              "default": false,
+              "description": "When `true`, render as a multi-line editor. Enter submits;\nShift+Enter inserts a newline. Defaults to `false` so existing\ndraw commands without this field continue to work.",
+              "type": "boolean"
+            },
+            "placeholder": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_input",
+              "type": "string"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "x",
+            "y",
+            "w",
+            "placeholder"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Begin a host-managed vertical scroll region.\n\nAll draw commands between this and the matching `EndScroll` are clipped\nto the viewport rect `(x, y, w, h)`. The host tracks the scroll offset\nfor `id` across frames and emits `PlexiEvent::ScrollOffset { id, offset_y }`\nwhenever the user scrolls (mouse wheel / drag). The app translates its\ncontent coordinates by `offset_y` before emitting draw commands.\n\n`content_height` is the total virtual height of the scrollable content\nin logical pixels. The host uses this to size the scrollbar thumb.\n\n`id` must be stable across frames — use a meaningful string (e.g. the\nregion name) rather than a counter that may change.",
+          "properties": {
+            "content_height": {
+              "format": "float",
+              "type": "number"
+            },
+            "h": {
+              "format": "float",
+              "type": "number"
+            },
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "begin_scroll",
+              "type": "string"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "x",
+            "y",
+            "w",
+            "h",
+            "content_height"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Close the most recently opened scroll region.\n\nMust be balanced with a preceding `BeginScroll`. Imbalanced pairs are\nlogged at `warn` level and the stack is reset at frame end.",
+          "properties": {
+            "type": {
+              "const": "end_scroll",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "RenderCommand"
+    }
+  },
+  "protocol": "pgap/3",
+  "version": 3
+}

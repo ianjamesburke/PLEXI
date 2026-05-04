@@ -1,0 +1,36 @@
+name: check protocol schema
+
+on:
+  push:
+    branches: [alpha]
+    paths:
+      - 'src/app_protocol.rs'
+      - 'sdk/protocol/**'
+      - 'tools/gen_protocol_py.py'
+  pull_request:
+    branches: [alpha]
+    paths:
+      - 'src/app_protocol.rs'
+      - 'sdk/protocol/**'
+      - 'tools/gen_protocol_py.py'
+
+jobs:
+  check-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check schema is up to date
+        run: |
+          cargo run --bin gen_schema > /tmp/fresh.schema.json
+          if ! diff -q sdk/protocol/pgap.schema.json /tmp/fresh.schema.json; then
+            echo "sdk/protocol/pgap.schema.json is stale. Run 'just gen-schema' and commit the result."
+            diff sdk/protocol/pgap.schema.json /tmp/fresh.schema.json
+            exit 1
+          fi
+          echo "Schema is up to date."

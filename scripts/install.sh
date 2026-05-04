@@ -23,7 +23,7 @@ fi
 
 display="Plexi${cap}"
 bundle_id="com.ianjamesburke.plexi${suffix}"
-app_src="target/release/bundle/osx/${display}.app"
+app_src="target/release/bundle/osx/plexi.app"
 app_dest="/Applications/${display}.app"
 bin_dest="/usr/local/bin/plexi${suffix}"
 profile_dir="$HOME/.plexi${suffix}"
@@ -40,7 +40,7 @@ if [[ -n "$suffix" ]]; then
   sed -i '' "s/identifier = \"com.ianjamesburke.plexi[^\"]*\"/identifier = \"${bundle_id}\"/" Cargo.toml
 fi
 
-cargo bundle --release
+cargo bundle --release --bin plexi
 
 if [[ ! -d "$app_src" ]]; then
   echo "Error: bundle not found at $app_src"

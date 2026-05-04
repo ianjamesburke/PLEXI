@@ -35,12 +35,13 @@
 //! }
 //! ```
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // ── Events sent FROM Plexi TO the app ────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlexiEvent {
     /// Sent exactly once on startup. App must reply with DrawCommand::Ready.
@@ -334,7 +335,7 @@ pub enum PlexiEvent {
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
 /// on the protocol surface so SDKs in other languages can map it without
 /// depending on the midi module.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct MidiPortWire {
     pub id: String,
     pub name: String,
@@ -354,7 +355,7 @@ impl From<crate::midi::MidiPortInfo> for MidiPortWire {
 /// On-the-wire shape of one audio device. Mirrors `audio::AudioDeviceInfo`
 /// but lives on the protocol surface so SDKs in other languages can map it
 /// without depending on the audio module.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct AudioDeviceWire {
     pub id: String,
     pub name: String,
@@ -374,7 +375,7 @@ impl From<crate::audio::AudioDeviceInfo> for AudioDeviceWire {
 /// One message in an `AiQuery` conversation. Wire shape mirrors Anthropic
 /// Messages API: `role` ∈ {"user", "assistant"}, `content` is plain text.
 /// (Multimodal content blocks are future-scope.)
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct AiMessage {
     pub role: String,
     pub content: String,
@@ -382,7 +383,7 @@ pub struct AiMessage {
 
 /// Tool definition for the tool-use turn loop (#398).
 /// Apps declare callable tools via `DrawCommand::ExposeTools`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct AiTool {
     pub name: String,
     pub description: String,
@@ -398,7 +399,7 @@ pub struct AiTool {
 ///   - `Low`    → Haiku
 ///   - `Medium` → Sonnet
 ///   - `High`   → Opus
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTier {
     Low,
@@ -407,7 +408,7 @@ pub enum ModelTier {
 }
 
 /// A simple rectangle (logical coordinates).
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -415,7 +416,7 @@ pub struct Rect {
     pub h: f32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Default)]
 pub struct Modifiers {
     pub shift: bool,
     pub ctrl: bool,
@@ -423,7 +424,7 @@ pub struct Modifiers {
     pub cmd: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButton {
     Primary,
@@ -433,7 +434,7 @@ pub enum MouseButton {
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
 
 /// Render primitives — go to `pending_frame` → drawn to screen.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RenderCommand {
     /// Push a clip rect onto the host's clip stack.
@@ -735,7 +736,7 @@ pub enum RenderCommand {
 }
 
 /// Side-effectful commands — go to `route_command`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostCommand {
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
@@ -1150,7 +1151,7 @@ pub enum HostCommand {
 }
 
 /// Inline-handled commands (processed directly in `ui()` or `background_tick()`).
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlCommand {
     /// SDK ready handshake. Sent once by the app after receiving Init.
@@ -1219,7 +1220,7 @@ pub enum ControlCommand {
 /// Top-level wire type. The `type` field is globally unique across all three
 /// inner enums, so `#[serde(untagged)]` deserializes unambiguously.
 /// The JSON `{"type":"rect",...}` still works; `{"type":"ai_query",...}` still works.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(untagged)]
 pub enum DrawCommand {
     Render(RenderCommand),
@@ -1228,7 +1229,7 @@ pub enum DrawCommand {
 }
 
 /// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PathTokenMode {
     /// Send Ctrl-W (kill-word) before the path so the shell's readline
@@ -1239,7 +1240,7 @@ pub enum PathTokenMode {
 }
 
 /// Routing target for `DrawCommand::OpenArtifact`.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactOpenMode {
     /// Open the path in a new Plexi pane (file browser for directories;
@@ -1252,7 +1253,7 @@ pub enum ArtifactOpenMode {
 }
 
 /// One text segment inside a `DrawCommand::TextRow`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct TextRowItem {
     pub text: String,
     pub color: String,
@@ -1262,7 +1263,7 @@ pub struct TextRowItem {
 
 /// One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips
 /// followed by `description` text.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct ShortcutPair {
     pub keys: Vec<String>,
     pub description: String,
@@ -1276,7 +1277,7 @@ pub struct ShortcutPair {
 /// Host-side enum. Apps do NOT emit this on the wire — scope is a per-app
 /// user-facing policy declared in `manifest.toml::default_notification_scope`,
 /// resolved by the host at dispatch time. Apps never think about it.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyScope {
     /// Only visible when the source context is the active context.
@@ -1286,7 +1287,7 @@ pub enum NotifyScope {
 }
 
 /// An action attached to a Notify command.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct NotificationAction {
     pub label: String,
     /// One of: "resume_run" | "open_intent" | "run_command"
@@ -1304,7 +1305,7 @@ pub struct NotificationAction {
 /// Future kinds (image / audio / video / rich) will land here without breaking
 /// existing apps — `#[serde(default)]` on the field means missing `kind`
 /// deserializes to `Message`.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyKind {
     #[default]
@@ -1317,14 +1318,14 @@ pub enum NotifyKind {
 /// (`image/png` or `image/jpeg`), `base64` is the raw image bytes
 /// base64-encoded. Decoded size cap (50 KB) is enforced host-side at render
 /// time; oversized images render a placeholder badge instead of decoding.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct NotificationImage {
     pub mime: String,
     pub base64: String,
 }
 
 /// One option in a `kind = "choice"` notification.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct NotifyOption {
     /// Visible label on the button.
     pub label: String,
@@ -1337,7 +1338,7 @@ pub struct NotifyOption {
     pub shortcut: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct ListItem {
     pub label: String,
     #[serde(default)]

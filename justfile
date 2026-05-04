@@ -60,6 +60,26 @@ test:
 build:
     cargo build --release
 
+# Regenerate the canonical PGAP JSON Schema and Python protocol models.
+# Run after any change to src/app_protocol.rs.
+gen-schema:
+    cargo run --bin gen_schema > sdk/protocol/pgap.schema.json
+    python3 tools/gen_protocol_py.py
+    @echo "Schema and Python protocol models regenerated."
+
+# Verify the committed schema is up to date with the current Rust source.
+# Fails if sdk/protocol/pgap.schema.json is stale.
+check-schema:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --bin gen_schema > /tmp/pgap_check.schema.json
+    if ! diff -q sdk/protocol/pgap.schema.json /tmp/pgap_check.schema.json > /dev/null; then
+        echo "ERROR: sdk/protocol/pgap.schema.json is stale. Run 'just gen-schema'."
+        diff sdk/protocol/pgap.schema.json /tmp/pgap_check.schema.json || true
+        exit 1
+    fi
+    echo "Schema is up to date."
+
 run:
     cargo run --release
 
