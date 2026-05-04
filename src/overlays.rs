@@ -268,11 +268,23 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            ui.label(
-                                                RichText::new("`plexi update`")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
-                                            );
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        RichText::new("Copy command")
+                                                            .size(style::TEXT_HINT)
+                                                            .color(self.colors.text_dim),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                .on_hover_text("Copy `plexi update` to clipboard")
+                                                .clicked()
+                                            {
+                                                ui.output_mut(|o| {
+                                                    o.copied_text = "plexi update".to_string();
+                                                });
+                                            }
                                         },
                                     );
                                 });
