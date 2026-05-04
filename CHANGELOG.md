@@ -2,6 +2,46 @@
 
 Newest releases appear first.
 
+## [3.4.66] — 2026-05-03
+
+### Changes
+- feat: zoom overlay at 88% opacity — scrim bleed-through (#572) (#629)
+- perf(sdk): batch Python frame output and remove frame.clone() hot-path copy (#624) (#630)
+- chore: update triage skill — P0 priority, depends_on front matter, blocked label handling
+- chore(apps): remove stale iq.query POC apps, fix capability hint (#623) (#628)
+- improve: add Issue Prior Attempts convention to CLAUDE.md
+- chore: replace issue template with typed feature/bug/idea templates + depends_on front matter
+- feat(palette): Cmd+J / Cmd+K as ArrowDown / ArrowUp aliases in command palette (#620)
+- feat(ui): increase zoomed pane inset from 5px to 10px (#618)
+- refactor(routing): split DrawCommand into RenderCommand + HostCommand + ControlCommand (#538) (#621)
+- fix(config): confirm_close defaults to false, matching template and UX intent (#614)
+- feat(ui): minimap at 75% opacity (#615)
+- fix(config): confirm_close defaults to false, matching template and UX intent (#614)
+- refactor(pane): kill Pane::Agent and Pane::AgentWorkspace (#523) (#612)
+- refactor(pane): kill Pane::Agent and Pane::AgentWorkspace (#523) (#612)
+- feat(cli): plexi update — detached relaunch when run from inside Plexi (#606)
+- feat(cli): plexi update — detached relaunch when run from inside Plexi (#606)
+- docs: scrollback navigation + copy-mode design spec (#602, #603)
+- feat(cli): implement plexi update — binary self-update for stable channel (#594) (#601)
+- docs: DEV_LOG PR #600 — plexi update namespace rename
+- refactor(cli): reserve 'plexi update' for self-update; move app updates to 'plexi update apps' (#600)
+- docs: DEV_LOG PR #598 — SpawnPane, plexi open CLI, SDK ctx.spawn_pane()
+- docs: DEV_LOG PR #598 — SpawnPane, plexi open CLI, SDK ctx.spawn_pane()
+- docs: DEV_LOG PR #596 — empty-state notification modal
+- feat(spawn): DrawCommand::SpawnPane — plexi open CLI, SDK ctx.spawn_pane(), panes.spawn capability (#598)
+- fix(notifications): Cmd+Shift+A always opens modal, empty state when queue is empty (#596)
+- docs: DEV_LOG PR #586 — notify choice response file fix
+- docs(lessons): command self-containment — handler data belongs in the command, not ambient state
+- feat(cli): plexi notify --choice blocking flow (#586)
+- docs: DEV_LOG PR #589 — defer heartbeat until after shell probes
+- chore: replace mit label with P0 (won't fix) in priority scale
+- fix(startup): defer heartbeat until after shell probes (#588) (#589)
+- docs: require instrumentation for new features; document macOS file drag pointer state gotcha
+- docs: DEV_LOG PR #585 — freeze + drop fix on zoomed pane
+- fix(promote): correct changelog range + clean up corrupt 3.4.48 entry
+- fix(drag): skip TerminalView render during file hover on zoomed pane (#585)
+- chore: remove redundant skill callouts from CLAUDE.md; add triage YAML frontmatter
+
 ## [3.4.65] — 2026-05-03 23:20 ET
 
 ### Changes
