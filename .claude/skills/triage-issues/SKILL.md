@@ -1,6 +1,6 @@
 ---
-name: triage
-description: "PLEXI issue triage — turn a raw GitHub issue into an actionable, prioritized, slotted ticket. Use when the user says 'triage this', 'label this issue', or wants to slot an issue into the right priority/version."
+name: triage-issues
+description: "PLEXI issue triage — turn a raw GitHub issue into an actionable, prioritized, slotted ticket with file-touch tracking and clarification questions. Use when the user says 'triage this', 'label this issue', or wants to slot an issue into the right priority/version."
 risk: low
 source: local
 ---
@@ -42,7 +42,7 @@ Summarize the issue in 1–2 sentences. Then note whether the issue author alrea
 
 ---
 
-## Step 3 — LOC Estimation
+## Step 3 — LOC Estimation + File Touch List
 
 The goal is a *realistic* estimate grounded in the actual codebase, not a hand-wave.
 
@@ -86,6 +86,8 @@ The goal is a *realistic* estimate grounded in the actual codebase, not a hand-w
 5. **Estimate confidence:** High (you found the exact files), Medium (you found the relevant module but not every callsite), Low (the issue is vague or the affected area is unclear).
 
 6. **If the issue already contains a LOC estimate:** state where yours agrees or differs and why. Authors tend to underestimate changes to existing code and overestimate new-code areas.
+
+7. **Record the touch list** — the top-level files and directories identified in step 2. This becomes the `touches` field in front matter and is used by `/sprint-plan` to compute parallelization groups. Use the shortest unambiguous path (e.g. `src/app/mod.rs`, `sdk/python/`, `src/widgets.rs`). Aim for ≤ 5 entries; consolidate to a parent dir when 3+ files in the same module are affected.
 
 Note: `size:*` labels don't exist in the repo yet — include size in the triage comment but don't apply it as a label.
 
@@ -148,7 +150,7 @@ gh issue edit <number> --milestone "<title>"
 
 ---
 
-## Step 8 — Actionability
+## Step 8 — Actionability + Clarification Questions
 
 **`size:L` / `size:XL` issues are almost never individually actionable.** For these, recommend splitting into:
 1. A design ticket (small, becomes `ready` once open questions are answered)
@@ -165,6 +167,15 @@ For `size:XS` through `size:M`, score actionability on three axes:
 Don't treat this as pass/fail. Note which axes are incomplete and what specifically would close the gap — this becomes the comment you post.
 
 Apply `ready` only if all three axes are fully satisfied AND there are no open blocking dependencies.
+
+**Clarification questions** — for any axis that is incomplete, write a concrete question that, when answered, would close that gap. These become the `clarification_needed` list in front matter. If all axes are satisfied, `clarification_needed` is empty.
+
+Example:
+```yaml
+clarification_needed:
+  - "Should the rename modal appear when the sidebar is hidden, or only when visible?"
+  - "Which existing DrawCommand variant does this extend, or is it a new variant?"
+```
 
 **Dependency check:** If the issue depends on other open issues before work can start, populate the `depends_on` front matter and apply `blocked` instead of `ready`. If the issue body doesn't already have the front matter block, prepend it:
 ```
@@ -199,16 +210,30 @@ Example verdicts to include in the triage comment:
 
 ---
 
-## Step 10 — Apply Labels
+## Step 10 — Apply Labels + Write Front Matter
 
-If the issue body is missing the `depends_on` front matter block, prepend it before applying labels:
+Write or update the front matter block. If the issue body is missing the block entirely, prepend it. If it exists, update in place.
+
+The canonical front matter shape:
+```yaml
+---
+depends_on: []
+touches: [src/app/mod.rs, sdk/python/]
+clarification_needed: []
+---
+```
+
 ```bash
 gh issue edit <number> --body "---
 depends_on: []
+touches: [src/app/mod.rs, sdk/python/]
+clarification_needed: []
 ---
 
 $(gh issue view <number> --json body --jq '.body')"
 ```
+
+Then apply labels:
 
 ```bash
 gh issue edit <number> --add-label "<type>,<priority>,<era>"
@@ -233,7 +258,9 @@ gh issue comment <number> --body "$(cat <<'COMMENT'
 - **Era:** v3.5+
 - **Milestone:** unslotted
 - **Size:** M (~400 LOC, high confidence) — [1-sentence reasoning]
+- **Touches:** [src/app/mod.rs, sdk/python/]
 - **Actionable:** partial — [what's missing and what would close the gap]
+- **Clarification needed:** [question 1] / [question 2] (or "none")
 - **Reproduction test:** [failing assertion in plain English, or "not applicable"]
 - **Recommended next step:** [one concrete action — e.g. "write the HostHarness reproduction test, then implement the fix in the same PR"]
 COMMENT
