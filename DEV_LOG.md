@@ -1,5 +1,11 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-03 — [CHANGED] Cmd+J / Cmd+K palette navigation aliases (PR #620 → alpha)
+
+`consume_key` checks for `COMMAND+J` (down) and `COMMAND+K` (up) added alongside the existing `ArrowDown` / `ArrowUp` handlers in `src/command_palette.rs`. Both use an `||` short-circuit so arrow keys are unaffected. Bounds checks are identical to the arrow-key path.
+
+**Breaks if:** Cmd+J / Cmd+K do nothing while the command palette is open, or arrow-key navigation stops working.
+
 ## 2026-05-03 — [CHANGED] Zoom overlay inset 5px → 10px (PR #618 → alpha)
 
 Wider gap makes the zoomed state read as an intentional overlay rather than nearly full-bleed. One-line change: `let inset = 5.0` → `10.0` in the zoom overlay block of `src/app/mod.rs`. `zoom_rect = panel_rect.shrink(inset)` propagates the change uniformly to all four sides.
