@@ -2,6 +2,15 @@
 
 Newest releases appear first.
 
+## [3.4.70] — 2026-05-04
+
+### Changes
+- Add app architecture brainstorm docs and build automation scripts
+- improve: add cargo-bundle multi-bin and SDK import proxy lessons to CLAUDE.md
+- feat(triage): rename triage→triage-issues, add touches/clarification_needed, add sprint-plan batch skill (#636)
+- feat(sdk): Rust-owned canonical PGAP schema + generated Python protocol models (#634)
+- feat: plexi install <id> resolves bare app IDs via plexi-registry (#633)
+
 ## [3.4.69] — 2026-05-04 01:13 ET
 
 ### Changes
