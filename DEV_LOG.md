@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [CHANGED] promote main chains alpha→beta→main (PR #641 → alpha)
+
+`just promote main` from alpha now auto-promotes alpha→beta first, then beta→main. One command from alpha releases all the way to main. From beta it still does beta→main only.
+**Breaks if:** `just promote main` from alpha pushes alpha directly to main without going through beta.
+
 ## 2026-05-04 — [FIX] release workflow bundle path (PR #640 → alpha)
 
 `cargo bundle` with multiple `[[bin]]` entries in `Cargo.toml` names the bundle after the binary (`plexi`), not the display name (`Plexi`). Release workflow was referencing `Plexi.app` → `No such file or directory`. Fixed codesign and zip steps to use `plexi.app`.
