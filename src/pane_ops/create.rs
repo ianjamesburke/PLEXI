@@ -131,11 +131,13 @@ impl PlexiApp {
 
         if matches!(hint, Some("overlay")) {
             let Some(focused_tile) = self.windows[active].focused_pane else {
+                log::warn!("app::{app_id}: overlay launch skipped — no focused pane");
                 return;
             };
             let Some(Tile::Pane(focused_pane_id)) =
                 self.windows[active].tree.tiles.get(focused_tile)
             else {
+                log::warn!("app::{app_id}: overlay launch skipped — focused tile is not a pane");
                 return;
             };
             let pane_id = *focused_pane_id;
@@ -148,6 +150,7 @@ impl PlexiApp {
                 new_app_pane(pane_id, process, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
             self.windows[active].focused_pane = Some(focused_tile);
+            log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
             return;
         }
 
@@ -169,6 +172,17 @@ impl PlexiApp {
             if let Some(app_dir) = self.registry.app_dir_for(app_id) {
                 self.hot_reload.watch(new_id, &app_dir);
             }
+        }
+
+        // Empty context: no focused pane means no existing tile to split.
+        // Install the new pane directly as the tree root.
+        if self.windows[active].focused_pane.is_none() {
+            let ctx = &mut self.windows[active];
+            let root_tile = ctx.tree.tiles.insert_pane(new_id);
+            ctx.tree.root = Some(root_tile);
+            ctx.focused_pane = Some(root_tile);
+            log::info!("app::{app_id}: launched as root pane {new_id} (empty context)");
+            return;
         }
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
@@ -296,11 +310,13 @@ impl PlexiApp {
 
         if matches!(hint, Some("overlay")) {
             let Some(focused_tile) = self.windows[active].focused_pane else {
+                log::warn!("builtin::{app_name}: overlay launch skipped — no focused pane");
                 return;
             };
             let Some(Tile::Pane(focused_pane_id)) =
                 self.windows[active].tree.tiles.get(focused_tile)
             else {
+                log::warn!("builtin::{app_name}: overlay launch skipped — focused tile is not a pane");
                 return;
             };
             let pane_id = *focused_pane_id;
@@ -312,6 +328,7 @@ impl PlexiApp {
                 new_app_pane(pane_id, app, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
             self.windows[active].focused_pane = Some(focused_tile);
+            log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
             return;
         }
 
@@ -327,6 +344,17 @@ impl PlexiApp {
             new_id,
             new_app_pane(new_id, app, workspace_root, group, linked_pane_id, None),
         );
+
+        // Empty context: no focused pane means no existing tile to split.
+        // Install the new pane directly as the tree root.
+        if self.windows[active].focused_pane.is_none() {
+            let ctx = &mut self.windows[active];
+            let root_tile = ctx.tree.tiles.insert_pane(new_id);
+            ctx.tree.root = Some(root_tile);
+            ctx.focused_pane = Some(root_tile);
+            log::info!("builtin::{app_name}: launched as root pane {new_id} (empty context)");
+            return;
+        }
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
     }
@@ -484,5 +512,51 @@ impl PlexiApp {
         let app = Box::new(crate::secrets_app::SecretsApp::new(cwd.clone()));
         let perms = crate::app_permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_permissions::AppPermissions;
+    use crate::process_app::ProcessApp;
+    use crate::testing::HostHarness;
+
+    /// Regression guard for issue #622: launching an app via `open_process_app_pane`
+    /// into an empty context (welcome screen) silently did nothing — the process was
+    /// inserted into `panes` but `split_with_new_pane` returned None because
+    /// `focused_pane` was None. The pane leaked without a tile.
+    #[test]
+    fn app_launch_in_empty_context_creates_root_pane() {
+        let mut h = HostHarness::new();
+        assert!(h.state().open_panes.is_empty(), "harness should start empty");
+        assert!(
+            h.app.windows[0].focused_pane.is_none(),
+            "no focused pane in empty context"
+        );
+
+        let (process, _tx) = ProcessApp::new_for_test(1, AppPermissions::builtin());
+        h.app.open_process_app_pane(
+            "test-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            None,
+        );
+
+        let snap = h.state();
+        assert_eq!(
+            snap.open_panes.len(),
+            1,
+            "app should appear as a pane after launching into empty context"
+        );
+        assert!(
+            h.app.windows[0].focused_pane.is_some(),
+            "new root pane should be focused"
+        );
+        assert!(
+            h.app.windows[0].tree.root.is_some(),
+            "tree root should be set after launch into empty context"
+        );
     }
 }
