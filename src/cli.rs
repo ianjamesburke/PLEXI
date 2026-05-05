@@ -1826,16 +1826,21 @@ pub mod descriptor {
         }
     }
 
-    /// Knobs governing the Tier-2 registry fallback. The default behavior
-    /// (Tier 1 first, Tier 2 on failure) matches the issue #321 substrate;
-    /// `--no-registry` disables Tier 2.
+    /// Knobs governing the Tier-2 registry and Tier-3 crawl fallbacks. The
+    /// default behavior (Tier 1 first, Tier 2, then Tier 3) matches the issue
+    /// #321/#360 substrate; `--no-registry` disables Tier 2 and `--no-crawl`
+    /// disables Tier 3.
     pub struct ProbeOptions {
         pub use_registry: bool,
+        pub use_crawl: bool,
     }
 
     impl Default for ProbeOptions {
         fn default() -> Self {
-            Self { use_registry: true }
+            Self {
+                use_registry: true,
+                use_crawl: true,
+            }
         }
     }
 
@@ -1895,20 +1900,34 @@ pub mod descriptor {
             }
         }
 
-        eprintln!(
-            "error: no descriptor available for `{command}` — neither --plexi nor registry."
-        );
-        eprintln!(
-            "  Tier 3 (--help crawl) is owned by issue #78 and is not yet wired in."
-        );
+        // Tier 3 — --help crawl.
+        if options.use_crawl && args.is_empty() {
+            match crate::cli_crawl::crawl(command) {
+                Ok(result) => {
+                    print_summary(
+                        &result.descriptor,
+                        SummarySource::Crawled {
+                            from_cache: result.from_cache,
+                        },
+                    );
+                    return 0;
+                }
+                Err(e) => {
+                    log::warn!("cli_crawl: Tier 3 failed for `{command}`: {e}");
+                }
+            }
+        }
+
+        eprintln!("error: no descriptor available for `{command}` — --plexi, registry, and --help crawl all failed.");
         1
     }
 
     /// Where the descriptor printed in the summary came from. Used to surface
-    /// a `(via registry)` indicator when Tier-2 won the resolution.
+    /// a `(via registry)` / `(inferred from --help)` indicator.
     pub enum SummarySource {
         Native,
         Registry,
+        Crawled { from_cache: bool },
     }
 
     fn print_summary(d: &PlexiDescriptor, source: SummarySource) {
@@ -1916,6 +1935,10 @@ pub mod descriptor {
         let via = match source {
             SummarySource::Native => "",
             SummarySource::Registry => "  (via registry)",
+            SummarySource::Crawled { from_cache: true } => "  (inferred from --help, cached)",
+            SummarySource::Crawled { from_cache: false } => {
+                "  (inferred from --help, may be incomplete)"
+            }
         };
         println!(
             "{}{}{} v{}  (descriptor {}){}",
@@ -2047,9 +2070,9 @@ mod descriptor_tests {
         // Same setup, but registry disabled. Should fail because Tier 1
         // fell through and Tier 2 is gated off.
         let mock = no_plexi_runner();
-        let opts = ProbeOptions { use_registry: false };
+        let opts = ProbeOptions { use_registry: false, use_crawl: false };
         let code = probe_with_options(&mock, "gh", &[], &opts);
-        assert_eq!(code, 1, "without registry, gh has no descriptor");
+        assert_eq!(code, 1, "without registry or crawl, gh has no descriptor");
     }
 
     #[test]
