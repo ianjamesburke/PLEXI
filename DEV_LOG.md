@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-05 — [FIX] App launch from welcome screen seeds tree root (PR #683 → alpha)
+
+`open_process_app_pane` and `open_builtin_app_pane` both ended the split path by calling `split_with_new_pane`, which early-returns `None` when `focused_pane` is `None`. Result: launching from the welcome screen inserted the pane into the `panes` map but added no tile to the tree — a leaked invisible process with no UI. Fix: after inserting the pane, check `focused_pane.is_none()`. If true, install the new pane's tile as `tree.root` and set `focused_pane` directly, skipping the split entirely. Also added `log::warn!` to the overlay bail-out paths (previously silent returns) and `log::info!` at successful entry points. HostHarness test added in `pane_ops/create.rs`.
+**Breaks if:** Opening the command palette on the welcome screen and launching any app (e.g. snake) leaves the welcome screen unchanged with no pane appearing.
+
 ## 2026-05-05 — [CHANGED] Notification timeout, tombstone, required-pinned (PR #679 → alpha)
 
 Added `timeout_secs` and `on_dismiss` to `HostCommand::Notify` and `PendingNotification`. A 1Hz tick in `update()` auto-dismisses expired notifications and delivers `PlexiEvent::NotifyAction` with `value = on_dismiss` (defaults to `"timeout"`). Added `tombstoned: bool` to `PendingNotification` — set by `tombstone_pane_notifications()` when a pane closes; tombstoned cards stay in the panel with a dim "Source ended" label and Dismiss-only button. `sorted_notification_ids()` now sorts `(required DESC, priority DESC, arrival ASC)` so required/BlockedOnUser notifications always float to top. Python SDK `notify()`, `notify_choice()`, `notify_input()`, `notify_and_wait()` and all `RenderContext` proxies accept the new params. Note: CLI `--timeout` is still a process-level polling timeout only; host-side auto-dismiss via CLI is tracked in #682.
