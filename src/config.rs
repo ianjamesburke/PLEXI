@@ -251,6 +251,23 @@ pub fn ensure_profile_initialized() {
         dir.display(),
         std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0)
     );
+
+    // Embed the SDK so Python apps work on first launch without relying on the
+    // bundle resource path, which can be absent on a cache-hit CI build.
+    let sdk_dest = dir.join("sdk").join("plexi_sdk");
+    if !sdk_dest.exists() {
+        if let Err(e) = std::fs::create_dir_all(&sdk_dest) {
+            eprintln!("profile init: failed to create sdk dir: {e}");
+        } else {
+            let embedded_sdk =
+                include_dir::include_dir!("$CARGO_MANIFEST_DIR/sdk/python/plexi_sdk");
+            if let Err(e) = embedded_sdk.extract(&sdk_dest) {
+                eprintln!("profile init: failed to seed SDK: {e}");
+            } else {
+                log::info!("profile init: seeded SDK to {}", sdk_dest.display());
+            }
+        }
+    }
 }
 
 /// Returns the config directory name.
