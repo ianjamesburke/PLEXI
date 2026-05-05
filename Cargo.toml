@@ -8,7 +8,7 @@ version = "3.4.102"
 edition = "2021"
 
 [package.metadata.bundle]
-name = "Plexi Alpha"
+name = "Plexi"
 identifier = "com.ianjamesburke.plexi-alpha"
 icon = ["assets/app-icon.icns"]
 short_description = "Spatial terminal window manager"
