@@ -41,7 +41,7 @@ SLICE_COLORS = [
     "#eba0ac",  # maroon
     "#74c7ec",  # sapphire
 ]
-OTHER_COLOR = "#45475a"
+OTHER_COLOR = "#7f849c"  # overlay1 — visible against dark bg
 EMPTY_CELL_COLOR = "#252538"
 
 # Consistent app→color mapping so the same app always gets the same color.
