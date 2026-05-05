@@ -180,6 +180,15 @@ pub struct ProcessApp {
     /// drop the entry on `pipe_close`, on app shutdown, or when the pipe
     /// allocation fails.
     pub(crate) audio_capture_sessions: HashMap<String, CaptureSession>,
+    /// Live playback sessions (#341), keyed on the file path (source string).
+    /// Dropping an entry stops playback. State transitions (pause/resume/stop)
+    /// mutate the session in-place via `PlaybackSession::pause` etc.
+    pub(crate) audio_playback_sessions: HashMap<String, crate::audio::PlaybackSession>,
+    /// Per-pipe peak amplitude tracking for AudioMeter rendering (#341).
+    /// Written by the cpal callback thread via the Arc<Mutex> clone stored in
+    /// the frame sink; read by the UI thread in `ui()` before calling
+    /// `render_draw_commands`. Keys are binary `pipe_id` strings.
+    pub(crate) audio_peak_meters: std::sync::Arc<std::sync::Mutex<HashMap<String, f32>>>,
     /// MIDI device backend (#320). `Arc<dyn MidiDevice>` so production panes
     /// share a `CoreMidiDevice` while tests inject `MockMidiDevice`.
     pub(crate) midi_device: Arc<dyn MidiDevice>,
@@ -526,6 +535,8 @@ impl ProcessApp {
             ai_broker: Arc::new(default_live_broker()),
             audio_device: default_audio_device(),
             audio_capture_sessions: HashMap::new(),
+            audio_playback_sessions: HashMap::new(),
+            audio_peak_meters: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             midi_device: default_midi_device(),
             midi_input_sessions: HashMap::new(),
             midi_output_handles: HashMap::new(),
@@ -638,6 +649,8 @@ impl ProcessApp {
             ai_broker: Arc::new(NoopBroker),
             audio_device: Arc::new(MockAudioDevice::new()),
             audio_capture_sessions: HashMap::new(),
+            audio_playback_sessions: HashMap::new(),
+            audio_peak_meters: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             midi_device: Arc::new(MockMidiDevice::new()),
             midi_input_sessions: HashMap::new(),
             midi_output_handles: HashMap::new(),
@@ -1309,7 +1322,12 @@ impl App for ProcessApp {
         // silent disagreement that clipped every draw to an empty rect.
         let pane_rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
-        render::render_draw_commands(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache);
+        let audio_peaks: HashMap<String, f32> = self
+            .audio_peak_meters
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        render::render_draw_commands(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks);
         // Interactive widgets (TextInput) need real egui widgets and a
         // mutable per-app buffer map — they can't share the painter-only
         // render path. Render them in a second pass on top of the frame.

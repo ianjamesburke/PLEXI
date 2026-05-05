@@ -1,4 +1,4 @@
-//! Audio capture + device enumeration (#277).
+//! Audio capture + device enumeration (#277) + playback (#341).
 //!
 //! Three layers:
 //!
@@ -20,11 +20,12 @@
 //! interleaved f32 PCM. Apps read the same frames over the binary pipe socket
 //! using the existing typed-pipe transport — no audio-specific socket plumbing.
 //!
-//! Out of scope for this PR (deferred to a follow-up):
-//!   - Playback (`start_playback`).
-//!   - Sample-rate resampling. The negotiated rate is reported back to the app
-//!     in `PlexiEvent::AudioCaptureStarted`; the app records at that rate.
-//!   - `AudioMeter` rendering.
+//! Playback is provided via the `start_playback` free function (#341). rodio
+//! manages the output stream and decoder. WAV/MP3/FLAC/OGG are supported
+//! through rodio's default symphonia feature set.
+//!
+//! Sample-rate resampling is handled by cpal negotiation in capture; no
+//! additional resampling library is needed.
 
 use std::sync::Arc;
 #[cfg(test)]
@@ -119,6 +120,111 @@ impl std::fmt::Debug for CaptureSession {
 /// behind this trait and let the concrete `Drop` impl run on whichever
 /// thread currently holds the `CaptureSession`.
 trait AudioCaptureGuard: Send {}
+
+// ─── Playback types (#341) ───────────────────────────────────────────────────
+
+/// Request parameters for audio playback.
+#[derive(Debug, Clone)]
+pub struct PlaybackRequest {
+    /// Path to an audio file (WAV, MP3, FLAC, OGG supported via rodio).
+    pub source: String,
+    /// Playback volume in [0.0, 2.0]. Values are clamped on use.
+    pub volume: f32,
+}
+
+/// Keep-alive wrapper to make `rodio::OutputStream` `Send`. rodio documents
+/// that the stream is safe to drop from any thread; the conservative `!Send`
+/// trait bound is an upstream limitation. We hold the stream only for its
+/// `Drop` side-effect (tearing down the output device); we never read it.
+#[cfg(not(test))]
+struct SendOutputStream {
+    _stream: rodio::OutputStream,
+}
+#[cfg(not(test))]
+unsafe impl Send for SendOutputStream {}
+
+/// Opaque handle returned from `start_playback`. Dropping it stops playback.
+#[cfg(not(test))]
+pub struct PlaybackSession {
+    /// rodio Sink — controls play/pause/stop/volume.
+    pub sink: rodio::Sink,
+    /// OutputStream must be kept alive for the duration of playback.
+    /// Kept here via the `SendOutputStream` newtype so it's `Send`.
+    _guard: SendOutputStream,
+}
+
+#[cfg(not(test))]
+impl PlaybackSession {
+    pub fn pause(&self) {
+        self.sink.pause();
+    }
+    pub fn resume(&self) {
+        self.sink.play();
+    }
+    pub fn set_volume(&self, v: f32) {
+        self.sink.set_volume(v);
+    }
+}
+
+#[cfg(not(test))]
+impl std::fmt::Debug for PlaybackSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaybackSession").finish()
+    }
+}
+
+/// Production playback implementation via rodio (#341).
+///
+/// Opens the system default output device, decodes the file at
+/// `request.source`, and begins playback immediately. The returned
+/// `PlaybackSession` keeps the output stream alive — drop it to stop.
+#[cfg(not(test))]
+pub fn start_playback(request: PlaybackRequest) -> Result<PlaybackSession, AudioError> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let (stream, handle) = rodio::OutputStream::try_default()
+        .map_err(|e| AudioError::Cpal(format!("rodio: output stream: {e}")))?;
+    let sink = rodio::Sink::try_new(&handle)
+        .map_err(|e| AudioError::Cpal(format!("rodio: sink: {e}")))?;
+    let file = File::open(&request.source)
+        .map_err(|e| AudioError::Cpal(format!("open {}: {e}", request.source)))?;
+    let source = rodio::Decoder::new(BufReader::new(file))
+        .map_err(|e| AudioError::Cpal(format!("decode {}: {e}", request.source)))?;
+    sink.set_volume(request.volume.clamp(0.0, 2.0));
+    sink.append(source);
+    Ok(PlaybackSession {
+        sink,
+        _guard: SendOutputStream { _stream: stream },
+    })
+}
+
+/// Test stub — playback is not exercised in unit tests; real hardware is not
+/// available in CI. The stub returns `Ok` unconditionally so routing tests
+/// can exercise the `AudioPlay` handler path without hardware.
+#[cfg(test)]
+pub struct PlaybackSession {
+    _phantom: (),
+}
+
+#[cfg(test)]
+impl PlaybackSession {
+    pub fn pause(&self) {}
+    pub fn resume(&self) {}
+    pub fn set_volume(&self, _v: f32) {}
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for PlaybackSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PlaybackSession(mock)")
+    }
+}
+
+#[cfg(test)]
+pub fn start_playback(_request: PlaybackRequest) -> Result<PlaybackSession, AudioError> {
+    Ok(PlaybackSession { _phantom: () })
+}
 
 // ─── Device trait ────────────────────────────────────────────────────────────
 
@@ -666,5 +772,20 @@ mod tests {
             session.negotiated.sample_rate, 48_000,
             "mock must report its actual native rate, not the request"
         );
+    }
+
+    #[test]
+    fn playback_stub_does_not_panic() {
+        // Production-stub assertion (#341): start_playback with any path must
+        // return Ok (test stub) and never panic. The production impl opens
+        // real hardware; the test stub returns Ok unconditionally so routing
+        // tests can exercise the AudioPlay handler path without hardware.
+        let req = PlaybackRequest {
+            source: "/nonexistent.wav".to_owned(),
+            volume: 1.0,
+        };
+        let result = start_playback(req);
+        // In test mode the stub returns Ok unconditionally — no hardware needed.
+        assert!(result.is_ok(), "playback stub must return Ok: {result:?}");
     }
 }

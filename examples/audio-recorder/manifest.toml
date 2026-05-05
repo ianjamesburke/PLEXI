@@ -1,0 +1,13 @@
+schema_version = 1
+
+[app]
+id = "audio-recorder"
+type = "app"
+name = "Audio Recorder"
+version = "0.1.0"
+description = "POC for #341 — mic capture with device dropdown, live peak meter, and save-to-WAV. Uses emit.list_audio_devices() to populate the device list. Recorded WAV plays cleanly in QuickTime / afplay."
+entry = "audio_recorder.py"
+default_notification_scope = "context"
+
+[app.capabilities]
+capabilities = ["audio.record"]

@@ -75,6 +75,9 @@ class App:
         # v3.4 CoreMIDI (#320): awaits PlexiEvent::MidiDevicesListed keyed
         # on request_id. Each entry is consumed by a single list_midi_devices().
         self._pending_midi_devices: "dict[str, asyncio.Queue]" = {}
+        # v3.4 audio device enumeration (#341): awaits PlexiEvent::AudioDevicesListed keyed
+        # on request_id. Each entry is consumed by a single list_audio_devices() call.
+        self._pending_audio_devices: "dict[str, asyncio.Queue]" = {}
         # v3.4 video substrate (#345): awaits PlexiEvent::VideoOpenAck /
         # VideoOpenError keyed on request_id. Each entry is consumed by a
         # single open_video() call.
@@ -397,6 +400,13 @@ class App:
                     # v3.4 CoreMIDI (#320). Forward to Emitter.list_midi_devices.
                     req_id = ev.get("request_id", "")
                     q = self._pending_midi_devices.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
+
+                elif t == "audio_devices_listed":
+                    # v3.4 audio device enumeration (#341). Forward to Emitter.list_audio_devices.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_audio_devices.pop(req_id, None)
                     if q:
                         q.put_nowait(ev)
 
