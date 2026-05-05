@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-05 — [CHANGED] Notification timeout, tombstone, required-pinned (PR #679 → alpha)
+
+Added `timeout_secs` and `on_dismiss` to `HostCommand::Notify` and `PendingNotification`. A 1Hz tick in `update()` auto-dismisses expired notifications and delivers `PlexiEvent::NotifyAction` with `value = on_dismiss` (defaults to `"timeout"`). Added `tombstoned: bool` to `PendingNotification` — set by `tombstone_pane_notifications()` when a pane closes; tombstoned cards stay in the panel with a dim "Source ended" label and Dismiss-only button. `sorted_notification_ids()` now sorts `(required DESC, priority DESC, arrival ASC)` so required/BlockedOnUser notifications always float to top. Python SDK `notify()`, `notify_choice()`, `notify_input()`, `notify_and_wait()` and all `RenderContext` proxies accept the new params. Note: CLI `--timeout` is still a process-level polling timeout only; host-side auto-dismiss via CLI is tracked in #682.
+**Breaks if:** A `timeout_secs=5` notification from the notification-tester (`x` key) does not auto-vanish after ~5 seconds, OR closing an app pane removes its notification entirely instead of showing "Source ended".
+
 ## 2026-05-05 — [CHANGED] Secrets inject toggle in add form + build_env logging (PR #670 → alpha)
 
 `commit_add()` hardcoded `inject: false` — `store_secret()` calls `index_add()` internally which always writes `inject: false` for new entries, so the optimistic in-memory `→env` badge appeared but `build_env()` saw nothing to inject. Fix: call `toggle_inject_secret` immediately after `store_secret` succeeds when `new_inject` is true. Also added `new_inject: bool` field to the add form with checkbox + help text. Added `log::info!` in `build_env()` when a secret is injected so the event is visible in the log drain.
