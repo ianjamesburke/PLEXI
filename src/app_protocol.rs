@@ -801,6 +801,15 @@ pub enum HostCommand {
         /// `height: u32 LE`, then `width * height * 4` bytes of RGBA.
         #[serde(skip_serializing_if = "Option::is_none")]
         image_pipe_id: Option<String>,
+        /// Optional auto-dismiss after this many seconds. When elapsed, the host
+        /// removes the notification and delivers `on_dismiss` as the response
+        /// if a `notify_id` was set.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout_secs: Option<u32>,
+        /// Payload delivered as the response value when the notification is
+        /// dismissed by timeout. Ignored if `timeout_secs` is None.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_dismiss: Option<String>,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"

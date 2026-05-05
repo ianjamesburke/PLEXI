@@ -1009,6 +1009,18 @@ impl PlexiApp {
 
                         ui.add_space(style::SPACE_XL);
 
+                        // Tombstone banner — shown when the originating app pane has closed.
+                        if notif.tombstoned {
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new("source ended")
+                                        .size(style::TEXT_HINT)
+                                        .color(self.colors.text_dim),
+                                );
+                            });
+                            ui.add_space(style::SPACE_SM);
+                        }
+
                         // Title — centered, large.
                         ui.vertical_centered(|ui| {
                             ui.label(

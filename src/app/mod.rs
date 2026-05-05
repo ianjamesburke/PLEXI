@@ -86,6 +86,13 @@ pub(crate) struct PendingNotification {
     /// the chosen value here when the user picks an option so the blocking CLI
     /// process can read it and exit.
     pub response_file: Option<String>,
+    /// Auto-dismiss deadline. Set at enqueue time when `timeout_secs` is Some.
+    pub expires_at: Option<std::time::Instant>,
+    /// Payload delivered as response when the notification times out.
+    pub on_dismiss: Option<String>,
+    /// True when the originating app pane has closed. The modal still shows
+    /// the card (user can still dismiss) but renders a "source ended" label.
+    pub tombstoned: bool,
 }
 
 /// Render state for a notification's image attachment. Computed once and
@@ -846,6 +853,9 @@ impl PlexiApp {
                 image_inline: None,
                 image_pipe_id: None,
                 response_file,
+                expires_at: None,
+                on_dismiss: None,
+                tombstoned: false,
             });
             // Host-originated notifications are always LOW (priority 0) —
             // below any reasonable interrupt threshold — so they queue
@@ -860,6 +870,41 @@ impl PlexiApp {
                 }
             }
         }
+    }
+
+    fn tick_notification_timeouts(&mut self) -> Vec<crate::app_trait::AppCommand> {
+        let now = std::time::Instant::now();
+        let mut cmds = Vec::new();
+        let mut expired_ids: Vec<String> = Vec::new();
+        for notif in &self.pending_notifications {
+            if notif.expires_at.map(|t| now >= t).unwrap_or(false) {
+                log::info!(
+                    "notify: timeout '{}' expired — delivering on_dismiss={:?}",
+                    notif.title, notif.on_dismiss
+                );
+                if !notif.notify_id.is_empty() && notif.sender_pane_id > 0 {
+                    cmds.push(crate::app_trait::AppCommand::DeliverNotifyAction {
+                        pane_id: notif.sender_pane_id,
+                        notify_id: notif.notify_id.clone(),
+                        action_label: "__timeout__".to_string(),
+                        value: notif.on_dismiss.clone(),
+                        response_file: notif.response_file.clone(),
+                    });
+                }
+                expired_ids.push(notif.notify_id.clone());
+            }
+        }
+        if !expired_ids.is_empty() {
+            self.pending_notifications
+                .retain(|n| !expired_ids.contains(&n.notify_id));
+            // If the current notification timed out, clear the pin.
+            if let Some(cur) = &self.current_notify_id {
+                if expired_ids.contains(cur) {
+                    self.current_notify_id = None;
+                }
+            }
+        }
+        cmds
     }
 
     fn drain_spawn_queue(&mut self) {
@@ -926,6 +971,16 @@ impl PlexiApp {
         }
 
         for pane_id in panes_to_close {
+            // Tombstone any pending notifications from this closed pane.
+            let tombstone_count = self.pending_notifications.iter()
+                .filter(|n| n.sender_pane_id == pane_id)
+                .count();
+            if tombstone_count > 0 {
+                log::info!("notify: tombstoning {tombstone_count} notifications from pane {pane_id}");
+                self.pending_notifications.iter_mut()
+                    .filter(|n| n.sender_pane_id == pane_id)
+                    .for_each(|n| n.tombstoned = true);
+            }
             self.close_pane_by_id(pane_id);
         }
     }
@@ -1044,6 +1099,10 @@ impl eframe::App for PlexiApp {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_notify_queue();
             self.drain_spawn_queue();
+        }
+        let timeout_cmds = self.tick_notification_timeouts();
+        for cmd in timeout_cmds {
+            self.dispatch_notify_action_cmds(vec![cmd]);
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
@@ -1273,6 +1332,9 @@ impl eframe::App for PlexiApp {
                     scope,
                     image_inline,
                     image_pipe_id,
+                    timeout_secs,
+                    on_dismiss,
+                    tombstoned,
                 } => {
                     if !self.notifications_enabled {
                         // Silently drop — master switch off.
@@ -1282,6 +1344,10 @@ impl eframe::App for PlexiApp {
                     // Capture scope/source_context before they move into the struct.
                     let is_global = matches!(scope, crate::app_protocol::NotifyScope::Global);
                     let notif_source_ctx = source_context;
+                    let expires_at = timeout_secs.map(|s| {
+                        std::time::Instant::now()
+                            + std::time::Duration::from_secs(s as u64)
+                    });
                     self.pending_notifications.push(PendingNotification {
                         notify_id,
                         sender_pane_id,
@@ -1298,6 +1364,9 @@ impl eframe::App for PlexiApp {
                         image_inline,
                         image_pipe_id,
                         response_file: None,
+                        expires_at,
+                        on_dismiss,
+                        tombstoned,
                     });
                     // Auto-open rules:
                     //   1. Visibility (Global or in active context) — else

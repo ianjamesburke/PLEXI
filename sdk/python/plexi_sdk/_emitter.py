@@ -7,7 +7,7 @@ import threading
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, PROTOCOL_VERSION
+from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList
 from ._types import CapabilityDeniedError, VideoHandle, AgentInfo
 
 if TYPE_CHECKING:
@@ -63,7 +63,9 @@ class Emitter:
                priority: "int | None" = None,
                actions: "list | None" = None,
                image_inline: "dict | None" = None,
-               image_pipe_id: "str | None" = None) -> None:
+               image_pipe_id: "str | None" = None,
+               timeout_secs: "int | None" = None,
+               on_dismiss: "str | None" = None) -> None:
         """Post a message notification. The modal shows title + body and a
         single Acknowledge button; Enter / Space acknowledge, Esc dismisses
         (unless required=True — use `notify_and_wait` for that flow).
@@ -87,6 +89,10 @@ class Emitter:
             payload["image_inline"] = image_inline
         if image_pipe_id is not None:
             payload["image_pipe_id"] = image_pipe_id
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
         _emit(payload)
 
     def run_sync(self, coro: "Any") -> Any:
@@ -117,7 +123,9 @@ class Emitter:
                             level: str = "info", required: bool = False,
                             priority: "int | None" = None,
                             image_inline: "dict | None" = None,
-                            image_pipe_id: "str | None" = None) -> str:
+                            image_pipe_id: "str | None" = None,
+                            timeout_secs: "int | None" = None,
+                            on_dismiss: "str | None" = None) -> str:
         """Post a choice notification and await until the user picks one.
 
         `options` is a list of dicts: {"label": str, "value": str (optional),
@@ -148,6 +156,10 @@ class Emitter:
             payload["image_inline"] = image_inline
         if image_pipe_id is not None:
             payload["image_pipe_id"] = image_pipe_id
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
         _emit(payload)
         return await q.get()
 
@@ -202,7 +214,9 @@ class Emitter:
     # kind = "input"
     async def notify_input(self, title: str, prompt: str = "", body: str = "",
                            level: str = "info", required: bool = False,
-                           priority: "int | None" = None) -> str:
+                           priority: "int | None" = None,
+                           timeout_secs: "int | None" = None,
+                           on_dismiss: "str | None" = None) -> str:
         """Post an input notification and await until the user submits or
         cancels. Returns the typed text (possibly empty), or "__cancel__" if
         the user dismissed with Esc (only possible when required=False).
@@ -217,15 +231,22 @@ class Emitter:
         notify_id = str(uuid.uuid4())
         q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
-        _emit({"type": "notify", "level": level, "title": title, "body": body,
-               "kind": "input", "input_prompt": prompt, "required": required,
-               "priority": int(priority),
-               "notify_id": notify_id})
+        payload = {"type": "notify", "level": level, "title": title, "body": body,
+                   "kind": "input", "input_prompt": prompt, "required": required,
+                   "priority": int(priority),
+                   "notify_id": notify_id}
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
+        _emit(payload)
         return await q.get()
 
     async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
                               actions: "list | None" = None,
-                              priority: "int | None" = None) -> str:
+                              priority: "int | None" = None,
+                              timeout_secs: "int | None" = None,
+                              on_dismiss: "str | None" = None) -> str:
         """Post a message notification and await until the user acknowledges
         or cancels. Returns "acknowledge" on Enter/Space/button, "cancel" on Esc.
 
@@ -241,10 +262,15 @@ class Emitter:
         notify_id = str(uuid.uuid4())
         q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
-        _emit({"type": "notify", "level": level, "title": title, "body": body,
-               "kind": "message", "actions": actions or [],
-               "priority": int(priority),
-               "notify_id": notify_id})
+        payload = {"type": "notify", "level": level, "title": title, "body": body,
+                   "kind": "message", "actions": actions or [],
+                   "priority": int(priority),
+                   "notify_id": notify_id}
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
+        _emit(payload)
         return await q.get()
 
     # Terminal commands (legacy back-compat)
