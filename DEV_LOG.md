@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-05 — [CHANGED] chat-poc: copy buttons, in-flight overlay, tool docstring (PR #684 → alpha)
+
+Per-bubble `copy` buttons rendered as a post-render overlay pass clipped to the scroll region — positions computed by measuring each ChatBubble height and tracing the Column layout constants (`SPACE_SM/XL/MD`, `BAND_H`, `DIVIDER` margins). `on_click` hit-tests stored rects; `emit.copy_to_clipboard` writes to clipboard; 1.5s `✓` flash confirms. In-flight dim overlay over the TextInput (8-digit hex alpha `#1e1e2e99`). Cross-pane tools from `tool-poc` already auto-injected by the broker at dispatch time — no app-side change needed; updated `ai_query` docstring to remove the stale "reserved for v3.4" note. Streaming deferred (stretch goal, needs host protocol).
+**Breaks if:** Clicking the `copy` label on an assistant bubble does nothing, or opening chat-poc alongside tool-poc and asking the model to "increment the counter" fails to update the counter app.
+
 ## 2026-05-05 — [FIX] App launch from welcome screen seeds tree root (PR #683 → alpha)
 
 `open_process_app_pane` and `open_builtin_app_pane` both ended the split path by calling `split_with_new_pane`, which early-returns `None` when `focused_pane` is `None`. Result: launching from the welcome screen inserted the pane into the `panes` map but added no tile to the tree — a leaked invisible process with no UI. Fix: after inserting the pane, check `focused_pane.is_none()`. If true, install the new pane's tile as `tree.root` and set `focused_pane` directly, skipping the split entirely. Also added `log::warn!` to the overlay bail-out paths (previously silent returns) and `log::info!` at successful entry points. HostHarness test added in `pane_ops/create.rs`.
