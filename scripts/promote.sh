@@ -76,7 +76,7 @@ if [[ "$to" == "beta" ]]; then
     echo ""
     echo "v$version is on beta — worktrees/beta/ is synced and ready."
 
-    read -r -p "Install beta now? [y/N] " install_confirm
+    read -r -p "Install beta now? [y/N] " install_confirm || true
     if [[ "$install_confirm" == "y" || "$install_confirm" == "Y" ]]; then
         echo "Installing beta..."
         (cd "$BETA_TREE" && just install)
