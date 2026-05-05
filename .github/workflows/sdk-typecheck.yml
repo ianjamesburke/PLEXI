@@ -2,8 +2,10 @@ name: SDK type check
 
 on:
   push:
-    paths:
-      - 'sdk/python/**'
+    branches:
+      - main
+      - beta
+      - alpha
   pull_request:
     paths:
       - 'sdk/python/**'
