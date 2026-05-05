@@ -462,6 +462,47 @@ fn main() -> eframe::Result {
                     }
                 }
             }
+            "context" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi context <new|open|set-root> [path]");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "new" => {
+                        let path = args.get(3).map(|s| s.as_str());
+                        std::process::exit(cli::context_new_cli(path));
+                    }
+                    "open" => {
+                        let path = args.get(3).map(|s| s.as_str());
+                        std::process::exit(cli::context_open_cli(path));
+                    }
+                    "set-root" => {
+                        let path = args.get(3).map(|s| s.as_str());
+                        std::process::exit(cli::context_set_root_cli(path));
+                    }
+                    other => {
+                        eprintln!("Unknown context subcommand: {other}");
+                        eprintln!("Usage: plexi context <new|open|set-root> [path]");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "shell-init" => {
+                let mut shell: Option<&str> = None;
+                let mut i = 2;
+                while i < args.len() {
+                    if args[i] == "--shell" && i + 1 < args.len() {
+                        shell = Some(args[i + 1].as_str());
+                        i += 2;
+                    } else if !args[i].starts_with("--") {
+                        shell = Some(args[i].as_str());
+                        i += 1;
+                    } else {
+                        i += 1;
+                    }
+                }
+                std::process::exit(cli::shell_init_cli(shell));
+            }
             "open" => {
                 // plexi open <type_id> [args...] [--layout=split_v|split_h|split_above|split_left|overlay]
                 if args.len() < 3 {
@@ -647,6 +688,9 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "registry",
         // #627 — `plexi validate <path>` preflight app checker.
         "validate",
+        // #680 — context root and shell integration.
+        "context",
+        "shell-init",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).

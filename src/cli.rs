@@ -2256,6 +2256,146 @@ pub fn validate_cli(path: &str) -> i32 {
     if errors.is_empty() { 0 } else { 1 }
 }
 
+/// Resolve `path` argument (canonicalize if given, else use CWD).
+fn resolve_path(path: Option<&str>) -> Result<std::path::PathBuf, String> {
+    match path {
+        Some(p) => std::fs::canonicalize(p)
+            .map_err(|e| format!("error: could not resolve path {p:?}: {e}")),
+        None => std::env::current_dir()
+            .map_err(|e| format!("error: could not get current directory: {e}")),
+    }
+}
+
+/// Send a JSON payload to PLEXI_SOCKET. Returns 0 on success, 1 on error.
+fn send_to_socket(payload: serde_json::Value) -> i32 {
+    let socket_path = match std::env::var("PLEXI_SOCKET") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+            return 1;
+        }
+    };
+    let line = format!("{}\n", payload);
+    if let Err(e) = stream.write_all(line.as_bytes()) {
+        eprintln!("error: could not write to socket: {e}");
+        return 1;
+    }
+    0
+}
+
+/// `plexi context new [path]`
+///
+/// Creates a new context. Uses `path` as the root (or CWD if omitted).
+pub fn context_new_cli(path: Option<&str>) -> i32 {
+    let root = match resolve_path(path) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{e}"); return 1; }
+    };
+    send_to_socket(serde_json::json!({
+        "type": "create_context",
+        "root": root,
+    }))
+}
+
+/// `plexi context open [path]`
+///
+/// Focuses the context with matching root, or creates one. Uses CWD if path omitted.
+pub fn context_open_cli(path: Option<&str>) -> i32 {
+    let root = match resolve_path(path) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{e}"); return 1; }
+    };
+    send_to_socket(serde_json::json!({
+        "type": "focus_context",
+        "root": root,
+    }))
+}
+
+/// `plexi context set-root [path]`
+///
+/// Sets the root of the active context. Uses CWD if path omitted.
+pub fn context_set_root_cli(path: Option<&str>) -> i32 {
+    let root = match resolve_path(path) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{e}"); return 1; }
+    };
+    send_to_socket(serde_json::json!({
+        "type": "set_context_root",
+        "root": root,
+    }))
+}
+
+/// `plexi shell-init <shell>`
+///
+/// Prints a shell hook snippet that calls `plexi context open` whenever the
+/// working directory changes and a `.plexi/` directory is found above it.
+pub fn shell_init_cli(shell: Option<&str>) -> i32 {
+    match shell.unwrap_or("zsh") {
+        "zsh" => {
+            println!(
+                r#"
+# Plexi shell integration — add to ~/.zshrc: eval "$(plexi shell-init)"
+_plexi_chpwd() {{
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -d "$dir/.plexi" ]]; then
+            if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
+                export PLEXI_ACTIVE_WORKSPACE="$dir"
+                plexi context open "$dir" &>/dev/null &
+            fi
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
+    unset PLEXI_ACTIVE_WORKSPACE
+}}
+autoload -Uz add-zsh-hook
+add-zsh-hook chpwd _plexi_chpwd
+_plexi_chpwd
+"#
+            );
+            0
+        }
+        "bash" => {
+            println!(
+                r#"
+# Plexi shell integration — add to ~/.bashrc: eval "$(plexi shell-init --shell bash)"
+_plexi_chpwd() {{
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -d "$dir/.plexi" ]]; then
+            if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
+                export PLEXI_ACTIVE_WORKSPACE="$dir"
+                plexi context open "$dir" &>/dev/null &
+            fi
+            return
+        fi
+        dir="${{dir%/*}}"
+    done
+    unset PLEXI_ACTIVE_WORKSPACE
+}}
+PROMPT_COMMAND="_plexi_chpwd${{PROMPT_COMMAND:+;$PROMPT_COMMAND}}"
+_plexi_chpwd
+"#
+            );
+            0
+        }
+        other => {
+            eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod notify_tests {
     use super::notify_cli;

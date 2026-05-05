@@ -30,6 +30,7 @@ impl PlexiApp {
         self.router.push(crate::context::Context {
             name: ctx_name,
             path: cwd.clone(),
+            root: Some(cwd.clone()),
             context_id: ctx_id,
         });
         self.windows.push(Window {
@@ -75,10 +76,11 @@ impl PlexiApp {
     /// and make it the active context.
     pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = self.windows[self.active_window]
+        let pane_cwd = self.windows[self.active_window]
             .focused_pane
             .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
             .unwrap_or_else(|| home.clone());
+        let cwd = self.router.active().root.clone().unwrap_or(pane_cwd);
         log::info!("create_page_at({grid_x},{grid_y}): cwd={}", cwd.display());
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()))
         else {
@@ -315,6 +317,65 @@ impl PlexiApp {
         }
     }
 
+    /// Focus an existing context whose `root == Some(&root)`, or create a new one.
+    /// Uses the directory name as the context name.
+    pub(crate) fn focus_or_create_context_by_root(&mut self, root: PathBuf) {
+        if let Some(idx) = self.router.position(|ctx| ctx.root.as_deref() == Some(&root)) {
+            log::info!("focus_or_create_context_by_root: found existing ctx at idx={idx} root={}", root.display());
+            self.switch_workspace(idx);
+            return;
+        }
+        log::info!("focus_or_create_context_by_root: creating new ctx root={}", root.display());
+        let cwd = root.clone();
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()))
+        else {
+            log::error!("focus_or_create_context_by_root: failed to create terminal");
+            return;
+        };
+        let ctx_name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Context")
+            .to_string();
+        let ctx_id = self.next_window_id;
+        self.next_window_id += 1;
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
+        self.router.push(crate::context::Context {
+            name: ctx_name,
+            path: cwd.clone(),
+            root: Some(root),
+            context_id: ctx_id,
+        });
+        self.windows.push(crate::context::Window {
+            name: String::new(),
+            path: cwd,
+            tree,
+            panes,
+            focused_pane: Some(root_tile),
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        self.router.activate_last();
+        self.active_window = self.windows.len() - 1;
+        self.context_active_window.insert(ctx_id, win_id);
+        self.minimap.visible = false;
+    }
+
+    /// Set the `root` of the active context.
+    pub(crate) fn set_active_context_root(&mut self, root: PathBuf) {
+        let idx = self.router.active_idx();
+        log::info!(
+            "set_active_context_root: ctx_id={} root={}",
+            self.router.active().context_id,
+            root.display()
+        );
+        self.router.get_mut(idx).root = Some(root);
+    }
+
     pub(crate) fn save_workspace(&self) {
         let mut saved_contexts = Vec::new();
         let mut saved_windows = Vec::new();
@@ -323,6 +384,7 @@ impl PlexiApp {
             saved_contexts.push(crate::workspace::SavedContext {
                 name: ctx.name.clone(),
                 path: ctx.path.clone(),
+                root: ctx.root.clone(),
                 context_id: ctx.context_id,
             });
         }

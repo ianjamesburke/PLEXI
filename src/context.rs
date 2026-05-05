@@ -21,6 +21,9 @@ pub(crate) enum WindowMenuAction {
 pub struct Context {
     pub name: String,
     pub path: PathBuf,
+    /// Optional project root. When set, new panes in this context open at
+    /// this directory rather than inheriting the focused pane's CWD.
+    pub root: Option<PathBuf>,
     /// Stable unique ID, assigned at creation and never reused.
     pub context_id: u64,
 }

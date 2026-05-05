@@ -1,0 +1,3 @@
+# Example workspace config for a Plexi project root.
+# Place a .plexi/ directory at the root of your project; Plexi detects it
+# automatically and uses that directory as the context root when navigating here.

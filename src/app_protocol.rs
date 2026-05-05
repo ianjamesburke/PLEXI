@@ -909,6 +909,22 @@ pub enum HostCommand {
         name: String,
     },
 
+    /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
+    CreateContext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<std::path::PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// Focus existing context by root, or create one. Sent by `plexi context open`.
+    FocusContext {
+        root: std::path::PathBuf,
+    },
+    /// Set/update the root of the active context. Sent by `plexi context set-root`.
+    SetContextRoot {
+        root: std::path::PathBuf,
+    },
+
     // ── Media + HTTP primitives ──────────────────────────────────────────
     /// Host-brokered HTTP request. Requires `net.http` capability.
     /// Host replies with `PlexiEvent::HttpResponse { request_id, ... }`.
