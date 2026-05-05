@@ -2223,6 +2223,24 @@ impl eframe::App for PlexiApp {
                 ctx.tree.ui(&mut behavior, ui);
                 log::debug!("[DRAG] tiling: done");
 
+                // Paint the active pane focus outline using the parent painter which
+                // has the full window clip rect. paint_on_top_of_tile cannot do this —
+                // its painter is clipped to the tile rect, making Outside strokes invisible.
+                if zoomed_pane.is_none() && !suppress_focus {
+                    if let Some(tile_id) = ctx.focused_pane {
+                        if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
+                            let gap = 4.0;
+                            let stroke = egui::Stroke::new(gap, self.colors.accent);
+                            ui.painter().rect_stroke(
+                                rect,
+                                0.0,
+                                stroke,
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                    }
+                }
+
                 if let Some(new) = behavior.new_focused {
                     ctx.focused_pane = Some(new);
                 }

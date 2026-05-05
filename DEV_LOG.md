@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [CHANGED] Active pane focus outline fills inter-pane gap (PR #722 → alpha)
+
+Moved focus outline rendering from `paint_on_top_of_tile` to after `ctx.tree.ui()` in `app/mod.rs`. Root cause of three failed attempts: `paint_on_top_of_tile`'s painter is clipped to the tile rect, and `painter.with_clip_rect(rect.expand(N))` only intersects clip rects — it cannot expand them. So `StrokeKind::Outside` was entirely clipped to nothing. Fix: paint from `ui.painter()` (the parent CentralPanel painter, full window clip) using `ctx.tree.tiles.rect(focused_tile)` to get the tile rect post-layout. A 4px `Outside` stroke fills exactly the 4px `gap_width` gap. `paint_on_top_of_tile` is now a no-op stub.
+**Breaks if:** Switching focus between two or more terminal panes shows no blue border in the gap between them, OR the gap between panes remains dark/black when a pane is focused.
+
 ## 2026-05-05 — [CHANGED] Delete RunPalette, bind Cmd+R → rename pane, Cmd+Shift+R → rename context (PR #720 → alpha)
 
 `Cmd+R` was bound to a "Run palette" modal that always showed "No active runs." — dead code since the run concept was never wired. Deleted `FocusLayer::RunPalette`, `Action::ToggleRunPalette`, `PlexiApp::show_run_palette`, `sync_run_palette_focus()`, and `draw_run_palette()` (58 lines). Rebinds: `RenamePane` moved from Cmd+Shift+R → Cmd+R; new `Action::RenameContext` added on Cmd+Shift+R (sets `renaming_window = Some(active_window)`, which hands off to the existing `ContextRename` focus layer and `draw_rename_context_overlay`).

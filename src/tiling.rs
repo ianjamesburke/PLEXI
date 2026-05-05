@@ -176,11 +176,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         tile_id: TileId,
         rect: egui::Rect,
     ) {
-        if self.focused_tile == Some(tile_id) {
-            let stroke = egui::Stroke::new(1.5, self.colors.accent);
-            let rect = rect.shrink(0.75);
-            painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
-        }
+        // Focus outline is painted after tree.ui() in app/mod.rs using the parent
+        // painter (full window clip rect), so StrokeKind::Outside fills the inter-pane gap.
+        let _ = (painter, tile_id, rect);
     }
 }
 
