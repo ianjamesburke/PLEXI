@@ -120,17 +120,47 @@ def aggregate_day(records: list[dict]) -> dict[str, float]:
 
 
 def aggregate_buckets(records: list[dict]) -> list[dict[str, float]]:
-    """Group usage into 15-minute buckets → list[96] of {app: secs}."""
+    """Group usage into 15-minute buckets → list[96] of {app: secs}.
+
+    Each record's secs is spread backward from its end timestamp across all
+    15-minute buckets the session spans. Sessions starting before midnight are
+    clamped to bucket 0, so cross-midnight sessions only count today's portion.
+    """
     buckets: list[dict[str, float]] = [dict() for _ in range(BUCKETS_PER_DAY)]
     for rec in records:
         ts: datetime.datetime | None = rec.get("_ts")
         if ts is None:
             continue
-        idx = (ts.hour * 60 + ts.minute) // BUCKET_MIN
-        if 0 <= idx < BUCKETS_PER_DAY:
-            app = rec["app"]
-            secs = float(rec.get("secs", 0))
-            buckets[idx][app] = buckets[idx].get(app, 0) + secs
+        app = rec["app"]
+        secs = float(rec.get("secs", 0))
+        if secs <= 0:
+            continue
+
+        end_min = ts.hour * 60 + ts.minute + ts.second / 60.0
+        start_dt = ts - datetime.timedelta(seconds=secs)
+
+        # Sessions that started before midnight: only count today's portion.
+        if start_dt.date() < ts.date():
+            start_min = 0.0
+        else:
+            start_min = start_dt.hour * 60 + start_dt.minute + start_dt.second / 60.0
+
+        start_bucket = int(start_min / BUCKET_MIN)
+        end_bucket = int(end_min / BUCKET_MIN)
+
+        if start_bucket == end_bucket:
+            if 0 <= start_bucket < BUCKETS_PER_DAY:
+                buckets[start_bucket][app] = buckets[start_bucket].get(app, 0) + secs
+        else:
+            span_min = end_min - start_min
+            for b in range(start_bucket, min(end_bucket + 1, BUCKETS_PER_DAY)):
+                b_start = b * BUCKET_MIN
+                b_end = (b + 1) * BUCKET_MIN
+                overlap = max(0.0, min(end_min, b_end) - max(start_min, b_start))
+                portion = secs * (overlap / span_min) if span_min > 0 else 0.0
+                if portion > 0:
+                    buckets[b][app] = buckets[b].get(app, 0) + portion
+
     return buckets
 
 
@@ -150,9 +180,8 @@ def slices_from_totals(totals: dict[str, float], max_named: int = 8
 # ── Sanity test (runs at import time in debug; cheap, deterministic) ─────────
 
 def _selftest_day_boundary() -> None:
-    """An 11:55pm local entry must land in the final bucket of that day, and
-    a 12:05am entry the next day must land in the first bucket of the next
-    day — never the other way around."""
+    """Sanity checks for aggregate_buckets session spreading."""
+    # Short sessions (< 15 min) land in a single bucket at their end timestamp.
     late = {"t": "2026-04-22T23:55:00", "app": "X", "secs": 60}
     early = {"t": "2026-04-23T00:05:00", "app": "X", "secs": 60}
 
@@ -168,6 +197,28 @@ def _selftest_day_boundary() -> None:
     early_buckets = aggregate_buckets([early])
     assert late_buckets[BUCKETS_PER_DAY - 1].get("X") == 60
     assert early_buckets[0].get("X") == 60
+
+    # Long session (1h, ends at 02:00) must spread across buckets 4-7 (01:00-02:00)
+    # with 900s each; bucket 8 (02:00-02:15) must be empty.
+    long_rec = {"t": "2026-04-23T02:00:00", "app": "Y", "secs": 3600}
+    parsed_long = _parse_ts(long_rec["t"]) ; assert parsed_long is not None
+    long_rec["_ts"] = parsed_long
+    long_buckets = aggregate_buckets([long_rec])
+    for b in range(4, 8):  # buckets 4,5,6,7 → 01:00-02:00
+        assert abs(long_buckets[b].get("Y", 0) - 900) < 1, \
+            f"bucket {b} expected ~900s, got {long_buckets[b].get('Y', 0)}"
+    assert long_buckets[8].get("Y", 0) == 0  # 02:00-02:15 must be empty
+    total = sum(long_buckets[b].get("Y", 0) for b in range(BUCKETS_PER_DAY))
+    assert abs(total - 3600) < 1
+
+    # Cross-midnight session (ends at 00:10, secs=3600) must clamp to day start.
+    cross = {"t": "2026-04-23T00:10:00", "app": "Z", "secs": 3600}
+    parsed_cross = _parse_ts(cross["t"]) ; assert parsed_cross is not None
+    cross["_ts"] = parsed_cross
+    cross_buckets = aggregate_buckets([cross])
+    # Only bucket 0 (00:00-00:15) should have data; earlier buckets clamped away.
+    assert cross_buckets[0].get("Z", 0) > 0
+    assert all(cross_buckets[b].get("Z", 0) == 0 for b in range(1, BUCKETS_PER_DAY))
 
 
 _selftest_day_boundary()
