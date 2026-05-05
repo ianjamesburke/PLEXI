@@ -824,9 +824,13 @@ impl PlexiApp {
                 crate::app_protocol::NotifyKind::Choice
             };
             let response_file = val["response_file"].as_str().map(|s| s.to_string());
+            let timeout_secs = val["timeout_secs"].as_u64().map(|s| s as u32);
+            let on_dismiss = val["on_dismiss"].as_str().map(|s| s.to_string());
+            let expires_at = timeout_secs
+                .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s as u64));
             log::info!(
-                "notify:drain: title={:?} choices={} response_file={:?}",
-                title, options.len(), response_file
+                "notify:drain: title={:?} choices={} response_file={:?} timeout={:?}",
+                title, options.len(), response_file, timeout_secs
             );
             let internal_id = format!(
                 "__host__:{}",
@@ -853,8 +857,8 @@ impl PlexiApp {
                 image_inline: None,
                 image_pipe_id: None,
                 response_file,
-                expires_at: None,
-                on_dismiss: None,
+                expires_at,
+                on_dismiss,
                 tombstoned: false,
             });
             // Host-originated notifications are always LOW (priority 0) —
@@ -902,6 +906,10 @@ impl PlexiApp {
                 if expired_ids.contains(cur) {
                     self.current_notify_id = None;
                 }
+            }
+            // Close the modal if the queue is now empty.
+            if self.pending_notifications.is_empty() {
+                self.show_notification_modal = false;
             }
         }
         cmds
