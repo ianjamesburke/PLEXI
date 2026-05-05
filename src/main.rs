@@ -12,6 +12,7 @@ mod app_registry;
 mod app_trait;
 mod audio;
 mod cli;
+mod cli_args;
 mod cli_crawl;
 mod cli_registry;
 mod cli_setup;
@@ -188,417 +189,99 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    if args.len() >= 2 {
-        match args[1].as_str() {
-            "run" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi run <command>");
-                    std::process::exit(1);
-                }
-                std::process::exit(cli::run_command(&args[2]));
-            }
-            "workspace" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi workspace <init>");
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "init" => {
-                        std::process::exit(cli::workspace_init());
+    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd};
+    use clap::Parser;
+
+    match Cli::try_parse_from(&args) {
+        Ok(cli) => {
+            if let Some(cmd) = cli.command {
+                match cmd {
+                    Commands::Run { command } => {
+                        std::process::exit(cli::run_command(&command));
                     }
-                    other => {
-                        eprintln!("Unknown workspace subcommand: {other}");
-                        eprintln!("Usage: plexi workspace <init>");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "secret" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi secret <set|list|delete> [friendly-name]");
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "set" => {
-                        if args.len() < 4 {
-                            eprintln!("Usage: plexi secret set <friendly-name>");
-                            std::process::exit(1);
+                    Commands::Workspace { cmd } => match cmd {
+                        WorkspaceCmd::Init => std::process::exit(cli::workspace_init()),
+                    },
+                    Commands::Secret { cmd } => match cmd {
+                        SecretCmd::Set { friendly_name } => std::process::exit(cli::workspace_secret_set(&friendly_name)),
+                        SecretCmd::List => std::process::exit(cli::workspace_secret_list()),
+                        SecretCmd::Delete { friendly_name } => std::process::exit(cli::workspace_secret_delete(&friendly_name)),
+                    },
+                    Commands::App { cmd } => match cmd {
+                        AppCmd::Init { name, lang } => std::process::exit(cli::app_init(&name, &lang)),
+                        AppCmd::Install { source } => std::process::exit(cli::app_install(&source)),
+                        AppCmd::Uninstall { id } => std::process::exit(cli::app_uninstall(&id)),
+                        AppCmd::List => std::process::exit(cli::app_list()),
+                    },
+                    Commands::Install { spec, pack } => {
+                        if let Some(p) = pack {
+                            std::process::exit(cli::install_pack_cli(&p));
                         }
-                        std::process::exit(cli::workspace_secret_set(&args[3]));
-                    }
-                    "list" => {
-                        std::process::exit(cli::workspace_secret_list());
-                    }
-                    "delete" => {
-                        if args.len() < 4 {
-                            eprintln!("Usage: plexi secret delete <friendly-name>");
-                            std::process::exit(1);
-                        }
-                        std::process::exit(cli::workspace_secret_delete(&args[3]));
-                    }
-                    other => {
-                        eprintln!("Unknown secret subcommand: {other}");
-                        eprintln!("Usage: plexi secret <set|list|delete>");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "app" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi app <init|install|uninstall|list> [options]");
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "init" => {
-                        // plexi app init [--lang python|rust] <name>
-                        let mut lang = "python";
-                        let mut name = "";
-                        let mut i = 3;
-                        while i < args.len() {
-                            if args[i] == "--lang" && i + 1 < args.len() {
-                                lang = args[i + 1].as_str();
-                                i += 2;
-                            } else {
-                                name = args[i].as_str();
-                                i += 1;
+                        match spec {
+                            Some(s) => std::process::exit(cli::install_cli(&s)),
+                            None => {
+                                eprintln!("Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
+                                std::process::exit(1);
                             }
                         }
-                        std::process::exit(cli::app_init(name, lang));
                     }
-                    "install" => {
-                        if args.len() < 4 {
-                            eprintln!("Usage: plexi app install <github-user/repo>");
-                            std::process::exit(1);
-                        }
-                        std::process::exit(cli::app_install(&args[3]));
-                    }
-                    "uninstall" => {
-                        if args.len() < 4 {
-                            eprintln!("Usage: plexi app uninstall <id>");
-                            std::process::exit(1);
-                        }
-                        std::process::exit(cli::app_uninstall(&args[3]));
-                    }
-                    "list" => {
-                        std::process::exit(cli::app_list());
-                    }
-                    other => {
-                        eprintln!("Unknown app subcommand: {other}");
-                        eprintln!("Usage: plexi app <init|install|uninstall|list>");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "install" => {
-                // `plexi install <source-spec>[@ref]`
-                // `plexi install --pack <path|core>`
-                let mut pack: Option<String> = None;
-                let mut positional: Option<String> = None;
-                let mut i = 2;
-                while i < args.len() {
-                    match args[i].as_str() {
-                        "--pack" if i + 1 < args.len() => {
-                            pack = Some(args[i + 1].clone());
-                            i += 2;
-                        }
-                        other if !other.starts_with("--") && positional.is_none() => {
-                            positional = Some(other.to_string());
-                            i += 1;
-                        }
-                        _ => {
-                            i += 1;
-                        }
-                    }
-                }
-                if let Some(p) = pack {
-                    std::process::exit(cli::install_pack_cli(&p));
-                }
-                match positional {
-                    Some(spec) => std::process::exit(cli::install_cli(&spec)),
-                    None => {
-                        eprintln!(
-                            "Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>"
-                        );
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "uninstall" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi uninstall <id> [--yes]");
-                    std::process::exit(1);
-                }
-                let mut id: Option<String> = None;
-                let mut assume_yes = false;
-                for a in &args[2..] {
-                    if a == "--yes" || a == "-y" {
-                        assume_yes = true;
-                    } else if !a.starts_with("--") && id.is_none() {
-                        id = Some(a.clone());
-                    }
-                }
-                match id {
-                    Some(id) => std::process::exit(cli::uninstall_cli(&id, assume_yes)),
-                    None => {
-                        eprintln!("Usage: plexi uninstall <id> [--yes]");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "update" => {
-                if args.get(2).map(String::as_str) == Some("apps") {
-                    let id = args
-                        .iter()
-                        .skip(3)
-                        .find(|a| !a.starts_with("--"))
-                        .cloned();
-                    std::process::exit(cli::update_cli(id.as_deref()));
-                } else {
-                    std::process::exit(cli::self_update_cli());
-                }
-            }
-            "list" => {
-                std::process::exit(cli::list_cli());
-            }
-            "validate" => {
-                let path = args.get(2).map(String::as_str).unwrap_or(".");
-                std::process::exit(cli::validate_cli(path));
-            }
-            "pack" => {
-                // `plexi pack export <path>` (#308 Phase 3) — write a
-                // pack.toml describing the currently-installed app set.
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi pack export <path>");
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "export" => {
-                        if args.len() < 4 {
-                            eprintln!("Usage: plexi pack export <path>");
-                            std::process::exit(1);
-                        }
-                        std::process::exit(cli::pack_export_cli(&args[3]));
-                    }
-                    other => {
-                        eprintln!("Unknown pack subcommand: {other}");
-                        eprintln!("Usage: plexi pack export <path>");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "notify" => {
-                let mut title = String::new();
-                let mut body = String::new();
-                let mut level = "info";
-                let mut choices: Vec<(String, String)> = Vec::new();
-                let mut timeout_secs: u64 = 0;
-                let mut i = 2;
-                while i < args.len() {
-                    match args[i].as_str() {
-                        "--title" if i + 1 < args.len() => {
-                            title = args[i + 1].clone();
-                            i += 2;
-                        }
-                        "--body" if i + 1 < args.len() => {
-                            body = args[i + 1].clone();
-                            i += 2;
-                        }
-                        "--level" if i + 1 < args.len() => {
-                            level = args[i + 1].as_str();
-                            i += 2;
-                        }
-                        "--choice" if i + 1 < args.len() => {
-                            let raw = &args[i + 1];
+                    Commands::Uninstall { id, yes } => std::process::exit(cli::uninstall_cli(&id, yes)),
+                    Commands::Update { subcommand } => match subcommand {
+                        Some(UpdateCmd::Apps { id }) => std::process::exit(cli::update_cli(id.as_deref())),
+                        None => std::process::exit(cli::self_update_cli()),
+                    },
+                    Commands::List => std::process::exit(cli::list_cli()),
+                    Commands::Validate { path } => std::process::exit(cli::validate_cli(&path)),
+                    Commands::Pack { cmd } => match cmd {
+                        PackCmd::Export { path } => std::process::exit(cli::pack_export_cli(&path)),
+                    },
+                    Commands::Notify { title, body, level, choices, timeout } => {
+                        let mut parsed_choices: Vec<(String, String)> = Vec::new();
+                        for raw in &choices {
                             if let Some(colon) = raw.find(':') {
-                                let key = raw[..colon].to_string();
-                                let label = raw[colon + 1..].to_string();
-                                choices.push((key, label));
+                                parsed_choices.push((raw[..colon].to_string(), raw[colon+1..].to_string()));
                             } else {
                                 eprintln!("error: --choice value must be key:Label");
                                 std::process::exit(1);
                             }
-                            i += 2;
                         }
-                        "--timeout" if i + 1 < args.len() => {
-                            match args[i + 1].parse::<u64>() {
-                                Ok(n) => timeout_secs = n,
-                                Err(_) => {
-                                    eprintln!("error: --timeout must be a non-negative integer");
-                                    std::process::exit(1);
-                                }
-                            }
-                            i += 2;
+                        std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout));
+                    }
+                    Commands::Pane { cmd } => match cmd {
+                        PaneCmd::SetTitle { name } => std::process::exit(cli::pane_set_title_cli(&name)),
+                    },
+                    Commands::Open { type_id, layout, extra_args } => {
+                        std::process::exit(cli::open_cli(&type_id, &extra_args, layout.as_deref()));
+                    }
+                    Commands::Descriptor { cmd } => match cmd {
+                        DescriptorCmd::Probe { command, no_registry, no_crawl, extra_args } => {
+                            let runner = cli::descriptor::RealRunner;
+                            let opts = cli::descriptor::ProbeOptions { use_registry: !no_registry, use_crawl: !no_crawl };
+                            let extra: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
+                            std::process::exit(cli::descriptor::probe_with_options(&runner, &command, &extra, &opts));
                         }
-                        _ => {
-                            i += 1;
+                    },
+                    Commands::Registry { cmd } => match cmd {
+                        RegistryCmd::Watch { cli: only } => {
+                            std::process::exit(cli::registry::watch_cli(only.as_deref()));
                         }
-                    }
-                }
-                if title.is_empty() {
-                    eprintln!(
-                        "Usage: plexi notify --title <text> --body <text> [--level info|warn|error] [--choice key:Label]... [--timeout N]"
-                    );
-                    std::process::exit(1);
-                }
-                std::process::exit(cli::notify_cli(&title, &body, level, &choices, timeout_secs));
-            }
-            "pane" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi pane <set-title> [args]");
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "set-title" => {
-                        if args.len() < 4 {
-                            eprintln!("Usage: plexi pane set-title <name>");
-                            std::process::exit(1);
-                        }
-                        std::process::exit(cli::pane_set_title_cli(&args[3]));
-                    }
-                    other => {
-                        eprintln!("Unknown pane subcommand: {other}");
-                        eprintln!("Usage: plexi pane <set-title>");
-                        std::process::exit(1);
+                    },
+                    Commands::Context { cmd } => match cmd {
+                        ContextCmd::New { path } => std::process::exit(cli::context_new_cli(path.as_deref())),
+                        ContextCmd::Open { path } => std::process::exit(cli::context_open_cli(path.as_deref())),
+                        ContextCmd::SetRoot { path } => std::process::exit(cli::context_set_root_cli(path.as_deref())),
+                    },
+                    Commands::ShellInit { shell, shell_pos } => {
+                        let resolved = shell.as_deref().or(shell_pos.as_deref());
+                        std::process::exit(cli::shell_init_cli(resolved));
                     }
                 }
             }
-            "context" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi context <new|open|set-root> [path]");
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "new" => {
-                        let path = args.get(3).map(|s| s.as_str());
-                        std::process::exit(cli::context_new_cli(path));
-                    }
-                    "open" => {
-                        let path = args.get(3).map(|s| s.as_str());
-                        std::process::exit(cli::context_open_cli(path));
-                    }
-                    "set-root" => {
-                        let path = args.get(3).map(|s| s.as_str());
-                        std::process::exit(cli::context_set_root_cli(path));
-                    }
-                    other => {
-                        eprintln!("Unknown context subcommand: {other}");
-                        eprintln!("Usage: plexi context <new|open|set-root> [path]");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "shell-init" => {
-                let mut shell: Option<&str> = None;
-                let mut i = 2;
-                while i < args.len() {
-                    if args[i] == "--shell" && i + 1 < args.len() {
-                        shell = Some(args[i + 1].as_str());
-                        i += 2;
-                    } else if !args[i].starts_with("--") {
-                        shell = Some(args[i].as_str());
-                        i += 1;
-                    } else {
-                        i += 1;
-                    }
-                }
-                std::process::exit(cli::shell_init_cli(shell));
-            }
-            "open" => {
-                // plexi open <type_id> [args...] [--layout=split_v|split_h|split_above|split_left|overlay]
-                if args.len() < 3 {
-                    eprintln!(
-                        "Usage: plexi open <type_id> [args...] [--layout=split_v|split_h|split_above|split_left|overlay]"
-                    );
-                    std::process::exit(1);
-                }
-                let type_id = &args[2];
-                let mut layout: Option<String> = None;
-                let mut extra_args: Vec<String> = Vec::new();
-                let mut i = 3;
-                while i < args.len() {
-                    let a = &args[i];
-                    if let Some(rest) = a.strip_prefix("--layout=") {
-                        layout = Some(rest.to_string());
-                    } else {
-                        extra_args.push(a.clone());
-                    }
-                    i += 1;
-                }
-                std::process::exit(cli::open_cli(type_id, &extra_args, layout.as_deref()));
-            }
-            "descriptor" => {
-                // `plexi descriptor probe <cmd> [args...] [--no-registry] [--no-crawl]` —
-                // runs `<cmd> [args...] --plexi`, parses the result against
-                // the descriptor schema, and prints a human-readable
-                // summary. On Tier-1 failure, falls back to the Tier-2
-                // registry (issue #321) unless `--no-registry` is set; on
-                // Tier-2 failure, falls back to `--help` crawl (Tier 3)
-                // unless `--no-crawl` is set.
-                if args.len() < 3 {
-                    eprintln!(
-                        "Usage: plexi descriptor probe <command> [args...] [--no-registry] [--no-crawl]"
-                    );
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "probe" => {
-                        if args.len() < 4 {
-                            eprintln!(
-                                "Usage: plexi descriptor probe <command> [args...] [--no-registry] [--no-crawl]"
-                            );
-                            std::process::exit(1);
-                        }
-                        let cmd = &args[3];
-                        // Split the tail into positional args + flags. `--no-registry`
-                        // and `--no-crawl` are consumed here; anything else is forwarded
-                        // verbatim to the target command.
-                        let mut use_registry = true;
-                        let mut use_crawl = true;
-                        let mut extra: Vec<&str> = Vec::new();
-                        for a in &args[4..] {
-                            if a == "--no-registry" {
-                                use_registry = false;
-                            } else if a == "--no-crawl" {
-                                use_crawl = false;
-                            } else {
-                                extra.push(a.as_str());
-                            }
-                        }
-                        let runner = cli::descriptor::RealRunner;
-                        let opts = cli::descriptor::ProbeOptions { use_registry, use_crawl };
-                        std::process::exit(cli::descriptor::probe_with_options(
-                            &runner, cmd, &extra, &opts,
-                        ));
-                    }
-                    other => {
-                        eprintln!("Unknown descriptor subcommand: {other}");
-                        eprintln!(
-                            "Usage: plexi descriptor probe <command> [args...] [--no-registry] [--no-crawl]"
-                        );
-                        std::process::exit(1);
-                    }
-                }
-            }
-            "registry" => {
-                // `plexi registry watch [<cli>]` — diff installed CLIs
-                // against their registered descriptors. Issue #321 substrate.
-                if args.len() < 3 {
-                    eprintln!("Usage: plexi registry watch [<cli>]");
-                    std::process::exit(1);
-                }
-                match args[2].as_str() {
-                    "watch" => {
-                        let only = args.get(3).map(|s| s.as_str());
-                        std::process::exit(cli::registry::watch_cli(only));
-                    }
-                    other => {
-                        eprintln!("Unknown registry subcommand: {other}");
-                        eprintln!("Usage: plexi registry watch [<cli>]");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            _ => {} // Not a CLI subcommand — fall through to GUI
+            // No subcommand — fall through to workspace path check, then GUI
+        }
+        Err(e) => {
+            // --help and --version print and exit 0/2 through this path
+            e.exit();
         }
     }
 
