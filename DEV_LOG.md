@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-05 — [FIX] Offload audio/MIDI device enumeration to background thread (PR #688 → alpha)
+
+`ListAudioDevices` and `ListMidiDevices` were dispatched synchronously on the UI thread. cpal's CoreAudio enumeration blocks while scanning for Bluetooth devices — logs showed 10+ second UI freezes immediately after `audio-recorder` launched. Fix: clone `Arc<dyn AudioDevice/MidiDevice>`, spawn a background thread, send the result back via `http_tx` (same async channel used by `HttpRequest`). `log::info!` traces confirm thread completion. A prior attempt on `temp-fix-audio-enum-blocking` had the identical approach — ported forward cleanly.
+**Breaks if:** audio-recorder shows "Loading devices..." indefinitely, or `grep "ListAudioDevices complete" ~/.plexi-alpha/plexi.log` returns nothing after launch.
+
 ## 2026-05-05 — [CHANGED] PLEXI_SOCKET listener + plexi pane set-title (PR #686 → alpha)
 
 Binds a `UnixListener` on `config_dir/notify.sock` at startup (removing any stale socket first). An accept thread deserializes newline-delimited `HostCommand` JSON and feeds an `mpsc` channel drained every egui frame. Adds `SetPaneTitle { pane_id, name }` to `HostCommand` (serde tag `"type": "set_pane_title"`); dispatch mutates `TerminalPane.name` directly — the per-frame `pane_names` snapshot in `PlexiBehavior` is built from this field, so the tab label updates on the next frame. `SpawnPane` over socket routes to `launch_app_by_id_with_layout`; unsupported kinds warn-and-drop. `plexi pane set-title <name>` reads `PLEXI_PANE_ID` + `PLEXI_SOCKET` from env, connects, writes one JSON line, closes. Fails fast with a clear error when run outside a Plexi pane. `SetPaneTitle` over PGAP logs warn and drops (protocol error). `new_for_test()` now returns `(Self, Sender<HostCommand>)` so tests can inject IPC commands.
