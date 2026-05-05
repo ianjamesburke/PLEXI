@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.115] — 2026-05-05
+
+### Changes
+- fix(install): embed plexi_sdk, seed to profile dir on first launch (#734)
+- fix(promote): read EOF under set -e exits 1 — add || true
 ## [3.4.114] — 2026-05-05
 
 ### Changes
