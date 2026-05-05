@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.109] — 2026-05-05
+
+### Changes
+- feat(context): configurable context root — project container foundation (#709)
+- fix(tiling): remove idle divider stroke to fix white lines in light mode (#707)
 ## [3.4.108] — 2026-05-05
 
 ### Changes
