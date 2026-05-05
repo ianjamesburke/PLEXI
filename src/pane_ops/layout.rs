@@ -696,10 +696,15 @@ impl PlexiApp {
         if !self.windows[self.active_window].panes.is_empty() {
             self.close_focused();
         }
-        // If the window is now empty and there are others in the same context,
-        // delete it and switch — don't strand the user on a blank welcome screen.
+        // If the window is now empty, only delete it when there are other pages
+        // in the same context (i.e. it's one of several pages). When it's the
+        // sole page, keep it alive so the welcome screen renders.
         if self.windows[self.active_window].panes.is_empty() {
-            self.delete_window(self.active_window);
+            let ctx_id = self.windows[self.active_window].context_id;
+            let pages_in_context = self.windows.iter().filter(|w| w.context_id == ctx_id).count();
+            if pages_in_context > 1 {
+                self.delete_window(self.active_window);
+            }
         }
         false
     }
