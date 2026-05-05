@@ -1372,8 +1372,21 @@ impl eframe::App for PlexiApp {
                             }
                         });
                     let new_pane_id = self.host.next_pane_id();
-                    self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
-                    log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
+                    if type_id == "terminal" {
+                        // "terminal" is a builtin pane type, not in the app registry.
+                        // split_focused uses inverted LinearDir vs split_with_new_pane:
+                        //   split_focused(false) → insert_horizontal_tile → side-by-side (RIGHT)
+                        //   split_focused(true)  → insert_vertical_tile   → stacked (BELOW)
+                        // So: split_v (right) → false, split_h/split_above (below) → true.
+                        let vertical = matches!(layout.as_str(), "split_h" | "split_above");
+                        log::info!(
+                            "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id}"
+                        );
+                        self.split_focused(vertical);
+                    } else {
+                        self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
+                        log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
+                    }
 
                     // Send PaneSpawned back to the requesting pane.
                     if let Some(req_pane_id) = requesting_pane_id {
