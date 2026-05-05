@@ -12,6 +12,7 @@ mod app_registry;
 mod app_trait;
 mod audio;
 mod cli;
+mod cli_crawl;
 mod cli_registry;
 mod cli_setup;
 mod command_palette;
@@ -465,14 +466,16 @@ fn main() -> eframe::Result {
                 std::process::exit(cli::open_cli(type_id, &extra_args, layout.as_deref()));
             }
             "descriptor" => {
-                // `plexi descriptor probe <cmd> [args...] [--no-registry]` —
+                // `plexi descriptor probe <cmd> [args...] [--no-registry] [--no-crawl]` —
                 // runs `<cmd> [args...] --plexi`, parses the result against
                 // the descriptor schema, and prints a human-readable
                 // summary. On Tier-1 failure, falls back to the Tier-2
-                // registry (issue #321) unless `--no-registry` is set.
+                // registry (issue #321) unless `--no-registry` is set; on
+                // Tier-2 failure, falls back to `--help` crawl (Tier 3)
+                // unless `--no-crawl` is set.
                 if args.len() < 3 {
                     eprintln!(
-                        "Usage: plexi descriptor probe <command> [args...] [--no-registry]"
+                        "Usage: plexi descriptor probe <command> [args...] [--no-registry] [--no-crawl]"
                     );
                     std::process::exit(1);
                 }
@@ -480,25 +483,28 @@ fn main() -> eframe::Result {
                     "probe" => {
                         if args.len() < 4 {
                             eprintln!(
-                                "Usage: plexi descriptor probe <command> [args...] [--no-registry]"
+                                "Usage: plexi descriptor probe <command> [args...] [--no-registry] [--no-crawl]"
                             );
                             std::process::exit(1);
                         }
                         let cmd = &args[3];
                         // Split the tail into positional args + flags. `--no-registry`
-                        // is the only flag we consume; anything else is forwarded
+                        // and `--no-crawl` are consumed here; anything else is forwarded
                         // verbatim to the target command.
                         let mut use_registry = true;
+                        let mut use_crawl = true;
                         let mut extra: Vec<&str> = Vec::new();
                         for a in &args[4..] {
                             if a == "--no-registry" {
                                 use_registry = false;
+                            } else if a == "--no-crawl" {
+                                use_crawl = false;
                             } else {
                                 extra.push(a.as_str());
                             }
                         }
                         let runner = cli::descriptor::RealRunner;
-                        let opts = cli::descriptor::ProbeOptions { use_registry };
+                        let opts = cli::descriptor::ProbeOptions { use_registry, use_crawl };
                         std::process::exit(cli::descriptor::probe_with_options(
                             &runner, cmd, &extra, &opts,
                         ));
@@ -506,7 +512,7 @@ fn main() -> eframe::Result {
                     other => {
                         eprintln!("Unknown descriptor subcommand: {other}");
                         eprintln!(
-                            "Usage: plexi descriptor probe <command> [args...] [--no-registry]"
+                            "Usage: plexi descriptor probe <command> [args...] [--no-registry] [--no-crawl]"
                         );
                         std::process::exit(1);
                     }

@@ -17,14 +17,14 @@
 //!   parse fine; the consumer is expected to ignore unknown optional fields
 //!   in the rendering layer (not the parser layer — schema is strict).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The descriptor-format major version this parser understands. A descriptor
 /// declaring `"plexi_version": "1.0"` would be rejected against a parser at
 /// major 0, on the assumption that v1 is a breaking format change.
 pub const PLEXI_DESCRIPTOR_MAJOR: u32 = 0;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlexiDescriptor {
     /// Semver of the descriptor format itself (NOT the CLI version).
@@ -43,7 +43,7 @@ pub struct PlexiDescriptor {
     pub live_state: Option<LiveState>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum UiHint {
     Form,
@@ -53,7 +53,7 @@ pub enum UiHint {
     List,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
     pub name: String,
@@ -81,7 +81,7 @@ pub struct Command {
     pub commands: Vec<Command>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum ArgType {
     String,
@@ -92,7 +92,7 @@ pub enum ArgType {
     Enum,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ArgSpec {
     pub name: String,
@@ -117,7 +117,7 @@ pub struct ArgSpec {
     pub max: Option<f64>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveState {
     pub source: LiveStateSource,
@@ -126,7 +126,7 @@ pub struct LiveState {
     pub format: LiveStateFormat,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveStateSource {
     File,
@@ -134,7 +134,7 @@ pub enum LiveStateSource {
     Http,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveStateFormat {
     Json,
