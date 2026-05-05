@@ -46,7 +46,8 @@ pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
 // ── Modal widths ───────────────────────────────────────────────────────────
 // Pick the smallest width that fits the content without crowding. Bigger is
 // NOT better — oversized modals feel empty and force eye travel.
-pub const MODAL_WIDTH_MD: f32 = 640.0;   // Default — notifications, palettes.
+pub const MODAL_WIDTH_MD: f32 = 640.0;     // Palettes, compact modals.
+pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.
 
 // ── Button heights ─────────────────────────────────────────────────────────
 pub const BUTTON_H_MD: f32 = 40.0;       // Standard form buttons.

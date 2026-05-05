@@ -172,7 +172,7 @@ impl PlexiApp {
                 .corner_radius(R6)
                 .inner_margin(egui::Margin::symmetric(24, 20))
                 .show(ui, |ui| {
-                    ui.set_width(640.0);
+                    ui.set_width(style::MODAL_WIDTH_MD);
 
                     ui.vertical_centered(|ui| {
                         ui.label(
@@ -935,7 +935,7 @@ impl PlexiApp {
                             style::MODAL_PADDING_V,
                         ))
                         .show(ui, |ui| {
-                            ui.set_width(style::MODAL_WIDTH_MD);
+                            ui.set_width(style::MODAL_WIDTH_NOTIFY);
                             ui.vertical_centered(|ui| {
                                 ui.add_space(style::SPACE_MD);
                                 ui.label(
@@ -1121,7 +1121,7 @@ impl PlexiApp {
                         style::MODAL_PADDING_V,
                     ))
                     .show(ui, |ui| {
-                        ui.set_width(style::MODAL_WIDTH_MD);
+                        ui.set_width(style::MODAL_WIDTH_NOTIFY);
 
                         // Header: level dot + kind label · queue indicator.
                         ui.horizontal(|ui| {
@@ -1194,7 +1194,7 @@ impl PlexiApp {
                         if !notif.body.is_empty() {
                             ui.add_space(style::SPACE_MD);
                             ui.vertical_centered(|ui| {
-                                ui.set_max_width(style::MODAL_WIDTH_MD - 80.0);
+                                ui.set_max_width(style::MODAL_WIDTH_NOTIFY - 120.0);
                                 ui.label(
                                     RichText::new(&notif.body)
                                         .size(style::TEXT_BODY)
@@ -1351,99 +1351,100 @@ impl PlexiApp {
                         }
                         } // end !tombstoned
 
-                        // Footer keyboard hint — chips + inline labels per action.
+                        // Footer keyboard hints — separator + centered hint row per kind.
                         // Not shown for tombstoned notifications (only a Dismiss button).
-                        if !notif.tombstoned { ui.vertical_centered(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                match notif.kind {
-                                    NotifyKind::Message => {
-                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
-                                        crate::widgets::key_chip(ui, "Space", &self.colors);
-                                        ui.label(
-                                            RichText::new("acknowledge")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        );
-                                        if !notif.required {
-                                            ui.label(
-                                                RichText::new("·")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
+                        if !notif.tombstoned {
+                            ui.add_space(style::SPACE_SM);
+                            ui.separator();
+                            ui.add_space(style::SPACE_SM);
+                            ui.vertical_centered(|ui| {
+                                ui.horizontal(|ui| {
+                                    let dim = |s: &str| {
+                                        RichText::new(s)
+                                            .size(style::TEXT_HINT)
+                                            .color(self.colors.text_dim)
+                                    };
+                                    let sep = || dim("·");
+                                    match notif.kind {
+                                        NotifyKind::Message => {
+                                            crate::widgets::key_combo_list(
+                                                ui,
+                                                &[&["Enter"], &["Space"]],
+                                                Some("acknowledge"),
+                                                &self.colors,
                                             );
-                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
-                                            ui.label(
-                                                RichText::new("dismiss")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
+                                            if !notif.required {
+                                                ui.add_space(style::SPACE_SM);
+                                                ui.label(sep());
+                                                ui.add_space(style::SPACE_SM);
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["Esc"]],
+                                                    Some("dismiss"),
+                                                    &self.colors,
+                                                );
+                                            }
+                                        }
+                                        NotifyKind::Choice => {
+                                            crate::widgets::key_combo_list(
+                                                ui,
+                                                &[&["↑↓"], &["j/k"]],
+                                                Some("navigate"),
+                                                &self.colors,
                                             );
+                                            ui.add_space(style::SPACE_SM);
+                                            ui.label(sep());
+                                            ui.add_space(style::SPACE_SM);
+                                            crate::widgets::key_combo_list(
+                                                ui,
+                                                &[&["Enter"], &["1-9"]],
+                                                Some("select"),
+                                                &self.colors,
+                                            );
+                                            if !notif.required {
+                                                ui.add_space(style::SPACE_SM);
+                                                ui.label(sep());
+                                                ui.add_space(style::SPACE_SM);
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["Esc"]],
+                                                    Some("dismiss"),
+                                                    &self.colors,
+                                                );
+                                            }
+                                        }
+                                        NotifyKind::Input => {
+                                            crate::widgets::key_combo_list(
+                                                ui,
+                                                &[&["Enter"]],
+                                                Some("newline"),
+                                                &self.colors,
+                                            );
+                                            ui.add_space(style::SPACE_SM);
+                                            ui.label(sep());
+                                            ui.add_space(style::SPACE_SM);
+                                            crate::widgets::key_combo_list(
+                                                ui,
+                                                &[&["\u{2318}", "\u{21B5}"]],
+                                                Some("submit"),
+                                                &self.colors,
+                                            );
+                                            if !notif.required {
+                                                ui.add_space(style::SPACE_SM);
+                                                ui.label(sep());
+                                                ui.add_space(style::SPACE_SM);
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["Esc"]],
+                                                    Some("dismiss"),
+                                                    &self.colors,
+                                                );
+                                            }
                                         }
                                     }
-                                    NotifyKind::Choice => {
-                                        crate::widgets::key_chip(ui, "↑↓", &self.colors);
-                                        crate::widgets::key_chip(ui, "j/k", &self.colors);
-                                        ui.label(
-                                            RichText::new("·")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        );
-                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
-                                        ui.label(
-                                            RichText::new("·")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        );
-                                        crate::widgets::key_chip(ui, "1-9", &self.colors);
-                                        if !notif.required {
-                                            ui.label(
-                                                RichText::new("·")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
-                                            );
-                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
-                                            ui.label(
-                                                RichText::new("dismiss")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
-                                            );
-                                        }
-                                    }
-                                    NotifyKind::Input => {
-                                        crate::widgets::key_chip(ui, "Enter", &self.colors);
-                                        ui.label(
-                                            RichText::new("newline")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        );
-                                        ui.label(
-                                            RichText::new("·")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        );
-                                        crate::widgets::key_chip(ui, "\u{2318}", &self.colors);
-                                        crate::widgets::key_chip(ui, "\u{21B5}", &self.colors);
-                                        ui.label(
-                                            RichText::new("submit")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        );
-                                        if !notif.required {
-                                            ui.label(
-                                                RichText::new("·")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
-                                            );
-                                            crate::widgets::key_chip(ui, "Esc", &self.colors);
-                                            ui.label(
-                                                RichText::new("dismiss")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
-                                            );
-                                        }
-                                    }
-                                }
+                                });
                             });
-                        }); } // end !tombstoned keyboard hint
+                        } // end !tombstoned keyboard hint
                     });
             });
 
