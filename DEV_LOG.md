@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [CHANGED] Delete RunPalette, bind Cmd+R → rename pane, Cmd+Shift+R → rename context (PR #720 → alpha)
+
+`Cmd+R` was bound to a "Run palette" modal that always showed "No active runs." — dead code since the run concept was never wired. Deleted `FocusLayer::RunPalette`, `Action::ToggleRunPalette`, `PlexiApp::show_run_palette`, `sync_run_palette_focus()`, and `draw_run_palette()` (58 lines). Rebinds: `RenamePane` moved from Cmd+Shift+R → Cmd+R; new `Action::RenameContext` added on Cmd+Shift+R (sets `renaming_window = Some(active_window)`, which hands off to the existing `ContextRename` focus layer and `draw_rename_context_overlay`).
+**Breaks if:** Cmd+R opens any "Active Runs" modal instead of the pane-rename overlay, OR Cmd+Shift+R does not open the context-rename overlay on the active context.
+
 ## 2026-05-05 — [FIX] Bundle Python runtime in release zip (PR #718 → alpha)
 
 `release.yml` never ran `fetch-python-runtime.sh` — `assets/python/` was never populated on the CI runner, so the zip shipped without a Python interpreter. Python apps (e.g. Balls) failed to launch on any clean install that lacked a system Python. Fix: add a `Fetch Python runtime` step before `cargo bundle`, using the same versions pinned in the Justfile (3.12.13 / 20260414). The script already skips the download if the correct version is cached locally, so local builds are unaffected.

@@ -17,7 +17,8 @@
 // Cmd+Enter                   — toggle zoom
 // Cmd+/                       — toggle shortcuts overlay
 // Cmd+P                       — command palette
-// Cmd+Shift+R                 — rename pane
+// Cmd+R                       — rename pane
+// Cmd+Shift+R                 — rename context
 // Cmd+Up / Cmd+Down           — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
@@ -80,14 +81,14 @@ pub enum Action {
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
-    /// Toggle the Run palette (shows active runs, BlockedOnUser prompts).
-    ToggleRunPalette,
+    /// Rename the active context. Bound to Cmd+Shift+R.
+    RenameContext,
     /// Toggle the notification panel overlay (Cmd+Shift+A).
     ToggleNotificationModal,
     NotificationCycleNext,
     NotificationCyclePrev,
     /// Force-reload the focused app pane (#83). Bound to Cmd+Option+R.
-    /// Cmd+R is the Run palette and Cmd+Shift+R is RenamePane, so the
+    /// Cmd+R is RenamePane and Cmd+Shift+R is RenameContext, so the
     /// Option (Alt) modifier is the next free chord. No-op when the
     /// focused pane isn't a process-backed app.
     ForceReloadApp,
@@ -249,8 +250,13 @@ pub fn poll_actions(
             actions.push(Action::ToggleCommandPalette);
         }
 
-        // Rename pane (Cmd+Shift+R)
+        // Rename context (Cmd+Shift+R) vs rename pane (Cmd+R). Check shifted
+        // first so Cmd+Shift+R doesn't fall through to the Cmd+R branch.
         if input.consume_key(cmd_shift, egui::Key::R) {
+            actions.push(Action::RenameContext);
+        } else if !input.modifiers.alt
+            && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R)
+        {
             actions.push(Action::RenamePane);
         }
 
@@ -332,23 +338,14 @@ pub fn poll_actions(
             actions.push(Action::OpenSecretsManager);
         }
 
-        // Force-reload focused app (Cmd+Option+R, #83). Check before plain
-        // Cmd+R so the modifier-rich variant matches first. Plain Cmd+R is
-        // the Run palette; Cmd+Shift+R is RenamePane. Option (alt) is the
-        // next free chord.
+        // Force-reload focused app (Cmd+Option+R, #83). The Cmd+R branch above
+        // guards with `!input.modifiers.alt` so this variant is still reached.
         let cmd_alt = egui::Modifiers {
             alt: true,
             ..egui::Modifiers::COMMAND
         };
         if input.consume_key(cmd_alt, egui::Key::R) {
             actions.push(Action::ForceReloadApp);
-        }
-
-        // Run palette (Cmd+R — plain, not Cmd+Shift+R which is RenamePane)
-        if !input.modifiers.shift && !input.modifiers.alt
-            && input.consume_key(egui::Modifiers::COMMAND, egui::Key::R)
-        {
-            actions.push(Action::ToggleRunPalette);
         }
 
         // Notification modal (Cmd+Shift+A) — opens the queue on the front item,

@@ -807,68 +807,6 @@ impl PlexiApp {
         }
     }
 
-    /// Run palette overlay (Cmd+R). Shows active runs across all panes; BlockedOnUser
-    /// runs get a [!] badge and an inline text input for unblocking.
-    pub(crate) fn draw_run_palette(&mut self, ctx: &egui::Context) {
-        // Consume Escape / Cmd+R at the context level so the key can't bleed
-        // through to the focused pane or trigger `poll_actions` a second
-        // time. Pairs with `FocusLayer::RunPalette` — the overlay owns its
-        // own dismissal keys.
-        let mut close = ctx.input_mut(|i| {
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            let toggle = i.consume_key(egui::Modifiers::COMMAND, egui::Key::R);
-            esc || toggle
-        });
-
-        // Collect all active runs from every app pane in every context.
-        // Clone needed because we hold &self across the window render.
-        let all_runs: Vec<(String, String, String, Option<String>)> = Vec::new(); // (run_id, app_id, status, blocked_prompt)
-        for _win in &self.windows {}
-
-        egui::Window::new("Active Runs")
-            .collapsible(false)
-            .resizable(true)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_size(egui::Vec2::new(500.0, 300.0))
-            .show(ctx, |ui| {
-                if all_runs.is_empty() {
-                    ui.label(egui::RichText::new("No active runs.").italics());
-                    ui.add_space(8.0);
-                    ui.label("Apps create runs via DrawCommand::RunGet.");
-                } else {
-                    for (run_id, app_id, status, blocked_prompt) in &all_runs {
-                        let badge = if status == "blocked_on_user" {
-                            "[!] "
-                        } else {
-                            "    "
-                        };
-                        ui.label(egui::RichText::new(format!("{badge}{run_id}")).monospace());
-                        ui.label(
-                            egui::RichText::new(format!("    app={app_id} status={status}"))
-                                .small(),
-                        );
-                        if let Some(prompt) = blocked_prompt {
-                            ui.label(prompt);
-                        }
-                        ui.separator();
-                    }
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                    crate::widgets::key_combo_list(
-                        ui, &[&["\u{2318}", "R"]], None, &self.colors,
-                    );
-                });
-            });
-
-        if close {
-            self.show_run_palette = false;
-        }
-    }
-
     /// Primary notification surface: a keyboard-first centered modal over the
     /// work area. Renders the front of the queue.
     ///
