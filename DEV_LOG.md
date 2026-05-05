@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [FIX] Release CI: include Cargo.toml in cache key + always clean bundle output (PR #732 → alpha)
+
+CI cache was keyed only on `Cargo.lock`. Metadata-only changes to `Cargo.toml` (e.g. adding a `resources =` entry) left the key unchanged, so CI restored a stale `target/release/bundle/` from a prior run — new resources were absent from the shipped zip. Fix: add `Cargo.toml` to `hashFiles` (Option A from issue) + `rm -rf target/release/bundle` before `cargo bundle` (Option C belt-and-suspenders). Two-pronged because a cache bust only prevents the stale restore; the clean step guarantees a fresh bundle even on future cache hits where only the binary changed.
+**Breaks if:** A release build where only `Cargo.toml` metadata changed ships a zip missing the newly-added resource file.
+
 ## 2026-05-05 — [CHANGED] Active pane focus outline fills inter-pane gap (PR #722 → alpha)
 
 Moved focus outline rendering from `paint_on_top_of_tile` to after `ctx.tree.ui()` in `app/mod.rs`. Root cause of three failed attempts: `paint_on_top_of_tile`'s painter is clipped to the tile rect, and `painter.with_clip_rect(rect.expand(N))` only intersects clip rects — it cannot expand them. So `StrokeKind::Outside` was entirely clipped to nothing. Fix: paint from `ui.painter()` (the parent CentralPanel painter, full window clip) using `ctx.tree.tiles.rect(focused_tile)` to get the tile rect post-layout. A 4px `Outside` stroke fills exactly the 4px `gap_width` gap. `paint_on_top_of_tile` is now a no-op stub.
