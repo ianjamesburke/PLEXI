@@ -177,9 +177,12 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         rect: egui::Rect,
     ) {
         if self.focused_tile == Some(tile_id) {
-            let stroke = egui::Stroke::new(4.0, self.colors.accent);
-            let rect = rect.shrink(2.0);
-            painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
+            let gap = 4.0;
+            let stroke = egui::Stroke::new(gap, self.colors.accent);
+            // paint_on_top_of_tile clips to the tile rect — expand it to allow
+            // the stroke to bleed outward into the inter-pane gap.
+            let expanded = painter.with_clip_rect(rect.expand(gap));
+            expanded.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
         }
     }
 }
