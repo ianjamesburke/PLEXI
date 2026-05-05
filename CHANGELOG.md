@@ -1,6 +1,16 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.119] — 2026-05-05
+
+### Changes
+- chore: log PR #737 channel-agnostic CLI fix
+- fix(cli): socket-first open_cli; install.sh keeps bare plexi in sync (#737)
+- docs(cli_setup): note that just pr-install pre-creates the symlink (#736)
+- fix(onboarding): CLI setup modal shows error and stays open on symlink failure (#735)
+- fix(updater): only notify when latest > current semver (#733)
+- fix(install): embed plexi_sdk, seed to profile dir on first launch (#734)
+- fix(promote): read EOF under set -e exits 1 — add || true
 ## [3.4.118] — 2026-05-05
 
 ### Changes
