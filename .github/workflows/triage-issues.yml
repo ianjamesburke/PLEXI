@@ -1,0 +1,50 @@
+name: Auto-triage issues
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    # Public repo — only triage issues from the owner to prevent spam-triggered API costs
+    if: github.event.issue.author_association == 'OWNER'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Triage issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--allowedTools "Bash(gh *)"'
+          prompt: |
+            Triage GitHub issue #${{ github.event.issue.number }} for the Plexi project.
+
+            Plexi north star: all-in-one productive terminal environment for macOS — keyboard-driven, terminal-native, with a plugin app infrastructure (PGAP protocol) so you can build anything inside it. Apps are sandboxed processes that draw via JSON draw commands. The host brokers capabilities: AI, audio, secrets, net, MIDI.
+
+            Step 1 — Read the issue:
+            gh issue view ${{ github.event.issue.number }} --json number,title,body,labels
+
+            Step 2 — Pick exactly one label from each group:
+            - type:     bug | enhancement | idea | documentation
+            - priority: P0 (critical/on-fire) | P1 (shipping blocker) | P2 (important, near-term) | P3 (nice-to-have) | P4 (backlog)
+            - era:      v3.1+ (near-term v3.x work) | v4.0+ (next major, protocol-breaking) | v5.0+ (far future) | future (speculative, no clear scope)
+            - status:   ready (can start now, no blockers) | blocked (depends on another open issue — only if explicitly clear)
+
+            Do NOT apply a label that is already on the issue.
+
+            North Star alignment: if the issue is clearly off-brand (unrelated to terminal UX, pane composition, or app plugin infrastructure), note it in the comment and apply idea + P4 + future.
+
+            Step 3 — Apply the labels:
+            gh issue edit ${{ github.event.issue.number }} --add-label "<type>,<priority>,<era>,<status>"
+
+            Step 4 — Post exactly one comment in this format (no markdown, no preamble):
+            gh issue comment ${{ github.event.issue.number }} --body "<priority> / <era> / <status> — <one sentence: what it is and why this priority>"
+
+            Do nothing else. No PRs, no code changes, no additional comments.
