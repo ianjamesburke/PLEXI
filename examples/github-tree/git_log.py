@@ -218,6 +218,8 @@ def _parse_commits(raw: str) -> list[dict]:
             "added": 0,
             "removed": 0,
             "pr_number": pr_number,
+            "pr_state": None,   # "OPEN" | "MERGED" | "CLOSED" — set by annotate_commits_with_prs
+            "merge_source_hash": None,
             "lane": -1,
             "color": "#6c7086",
             "y": 0.0,
@@ -501,6 +503,18 @@ def assign_lanes(commits: list[dict], refs: list[dict]) -> list[dict]:
                         active_lanes.append(None)
                     active_lanes[new_lane] = extra_parent
 
+    # Post-pass: link squash commits to their source branch tip via PR number.
+    # Squash merges don't produce real merge commits, so we detect them by
+    # (1) having a pr_number in the subject AND (2) not being a real merge
+    # commit (single parent). If a matching feature branch ref still exists,
+    # record the tip hash so the renderer can draw a visual merge arc.
+    for commit in commits:
+        pr_num = commit.get("pr_number")
+        if pr_num and not commit["is_merge"]:
+            source = find_pr_ref_tip(pr_num, refs)
+            if source and source != commit["hash"]:
+                commit["merge_source_hash"] = source
+
     return commits
 
 
@@ -511,3 +525,82 @@ def build_edges(commits: list[dict]) -> list[tuple[str, str]]:
         for p in c["parents"]:
             edges.append((c["hash"], p))
     return edges
+
+
+def find_pr_ref_tip(pr_number: int, refs: list[dict]) -> Optional[str]:
+    """Return the tip hash of a feature branch for pr_number, or None.
+
+    Matches any ref whose last path component starts with '<pr_number>-'
+    or equals '<pr_number>', e.g. feature/499-foo or origin/fix/499-bar.
+    """
+    pr_str = str(pr_number)
+    for ref in refs:
+        for part in ref["name"].split("/"):
+            if part == pr_str or part.startswith(pr_str + "-"):
+                return ref["tip_hash"]
+    return None
+
+
+def fetch_pr_data(repo_root: str) -> list[dict]:
+    """Fetch open and recently merged PR metadata via gh CLI.
+
+    Returns [] if gh is unavailable, not authenticated, or the repo has no
+    GitHub remote. All callers must handle the empty case gracefully.
+    """
+    rc, out, _ = _run(
+        [
+            "gh", "pr", "list",
+            "--state", "all",
+            "--limit", "100",
+            "--json", "number,headRefOid,state,mergeCommit,title,headRefName",
+        ],
+        cwd=repo_root,
+        timeout=15.0,
+    )
+    if rc != 0 or not out.strip():
+        return []
+    try:
+        import json
+        return json.loads(out)
+    except Exception:
+        return []
+
+
+def annotate_commits_with_prs(commits: list[dict], pr_data: list[dict]) -> None:
+    """Augment commit dicts with GitHub PR metadata (mutates in-place).
+
+    For MERGED PRs: matches the squash commit via mergeCommit.oid (exact,
+    no subject-parsing required) and sets merge_source_hash = headRefOid.
+    The arc renderer draws from the squash commit to the feature tip when
+    that tip hash is still reachable in the local git graph.
+
+    For OPEN PRs: marks the feature branch tip with pr_state = "OPEN" and
+    ensures pr_number is populated even if the subject didn't contain (#NNN).
+
+    gh data takes precedence over the local-ref fallback set by assign_lanes.
+    """
+    if not pr_data:
+        return
+
+    hash_to_commit: dict[str, dict] = {c["hash"]: c for c in commits}
+
+    for pr in pr_data:
+        number = pr.get("number")
+        head_sha = (pr.get("headRefOid") or "").strip()
+        state = pr.get("state", "")
+        merge_obj = pr.get("mergeCommit") or {}
+        merge_sha = (merge_obj.get("oid") or "").strip()
+
+        if state == "MERGED" and merge_sha:
+            squash = hash_to_commit.get(merge_sha)
+            if squash:
+                squash["pr_number"] = number
+                squash["pr_state"] = "MERGED"
+                squash["merge_source_hash"] = head_sha  # arc drawn if tip in graph
+
+        if state == "OPEN" and head_sha:
+            tip = hash_to_commit.get(head_sha)
+            if tip:
+                tip["pr_state"] = "OPEN"
+                if not tip.get("pr_number"):
+                    tip["pr_number"] = number

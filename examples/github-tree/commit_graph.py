@@ -175,6 +175,12 @@ class CommitGraphApp(App):
             # Assign lanes and colours
             gl.assign_lanes(commits, refs)
 
+            # Augment with GitHub PR metadata (requires gh CLI).
+            # fetch_pr_data returns [] gracefully when gh is unavailable.
+            pr_data = gl.fetch_pr_data(self._repo_root)
+            gl.annotate_commits_with_prs(commits, pr_data)
+            self.emit.debug(f"fetch_graph: annotated with {len(pr_data)} PRs from gh")
+
             # Fetch numstats (capped at 2000 commits)
             stats = gl.fetch_numstats(
                 self._repo_root, max_count=MAX_COMMITS, commit_count=len(commits)
@@ -686,6 +692,32 @@ class CommitGraphApp(App):
                     ctx, child_x, child_y + NODE_R, parent_x, parent_y - NODE_R, color
                 )
 
+        # ── Draw merge arcs (squash-merged PR connections) ────────────────────
+        # Squash merges don't produce real merge commits, so we draw a synthetic
+        # arc from the squash commit on alpha to the feature branch tip when the
+        # feature ref is still present in the repo.
+        for c in self._commits:
+            source_hash = c.get("merge_source_hash")
+            if not source_hash:
+                continue
+            si = hash_to_idx.get(source_hash)
+            if si is None:
+                continue
+            source = self._commits[si]
+            c_lane = c["lane"]
+            s_lane = source["lane"]
+            if overflow_start_lane and (
+                c_lane >= overflow_start_lane or s_lane >= overflow_start_lane
+            ):
+                continue
+            arc_color = dim(source["color"], 0x99)
+            self._draw_orthogonal_edge(
+                ctx,
+                self._lane_x(c_lane), c["y"] + NODE_R,
+                self._lane_x(s_lane), source["y"] - NODE_R,
+                arc_color,
+            )
+
         # ── Draw nodes ────────────────────────────────────────────────────────
         self._hit_nodes = []
         for i, c in enumerate(self._commits):
@@ -720,8 +752,8 @@ class CommitGraphApp(App):
             if c["hash"] == self._head_sha:
                 ctx.circle(cx_node, cy_node, HEAD_RING, ACCENT)
 
-            if c["is_merge"]:
-                # Merge: draw disc then inner BG disc to form a ring
+            if c["is_merge"] or c.get("merge_source_hash"):
+                # Merge node (real or squash): disc with inner BG hole = ring
                 ctx.circle(cx_node, cy_node, NODE_R, color)
                 ctx.circle(cx_node, cy_node, NODE_R - 2, BG)
             else:
@@ -745,7 +777,9 @@ class CommitGraphApp(App):
             # ── PR badge ─────────────────────────────────────────────────────
             if c.get("pr_number"):
                 pr_label = f"#{c['pr_number']}"
-                self._draw_badge(ctx, badge_x, cy_node, pr_label, MUTED)
+                # Open PR tips render green; merged squash commits render muted.
+                pr_badge_color = GREEN if c.get("pr_state") == "OPEN" else MUTED
+                self._draw_badge(ctx, badge_x, cy_node, pr_label, pr_badge_color)
                 bw = self._approx_badge_w(pr_label)
                 badge_x += bw + 4.0
                 ref_badge_w += bw + 4.0
@@ -777,30 +811,41 @@ class CommitGraphApp(App):
                               x1: float, y1: float,
                               x2: float, y2: float,
                               color: str) -> None:
-        """Orthogonal polyline with 8px diagonal cuts for lane-change edges."""
-        CUT = 8.0
-        y_mid = y1 + (y2 - y1) / 2.0
+        """Orthogonal polyline with 8px diagonal cuts for lane-change edges.
 
-        if abs(x1 - x2) < 1.0:
+        Routes the horizontal elbow through the gutter just after the source
+        node (ROW_H/2 past the node edge) rather than at the midpoint. This
+        keeps the horizontal segment between adjacent rows and prevents it from
+        passing through intermediate node y-positions (which happen when the
+        edge spans an odd number of rows under midpoint routing).
+        """
+        CUT = 8.0
+
+        if abs(x1 - x2) < 1.0 or abs(y1 - y2) < 1.0:
             ctx.line(x1, y1, x2, y2, color=color, width=2.0)
             return
 
-        # 4-segment polyline:
-        # vertical from (x1,y1) down to cut start → diagonal → horizontal → diagonal → vertical to (x2,y2)
-        if x2 > x1:
-            # Fork right
-            ctx.line(x1, y1, x1, y_mid - CUT, color=color, width=2.0)
-            ctx.line(x1, y_mid - CUT, x1 + CUT, y_mid, color=color, width=2.0)
-            ctx.line(x1 + CUT, y_mid, x2 - CUT, y_mid, color=color, width=2.0)
-            ctx.line(x2 - CUT, y_mid, x2, y_mid + CUT, color=color, width=2.0)
-            ctx.line(x2, y_mid + CUT, x2, y2, color=color, width=2.0)
+        # Near-child elbow routing: place the horizontal segment in the gutter
+        # immediately after the source node rather than at the midspan midpoint.
+        if y2 > y1:
+            y_route = y1 + ROW_H / 2.0
+            y_route = max(y1 + CUT + 1.0, min(y2 - CUT - 1.0, y_route))
         else:
-            # Merge left
-            ctx.line(x1, y1, x1, y_mid - CUT, color=color, width=2.0)
-            ctx.line(x1, y_mid - CUT, x1 - CUT, y_mid, color=color, width=2.0)
-            ctx.line(x1 - CUT, y_mid, x2 + CUT, y_mid, color=color, width=2.0)
-            ctx.line(x2 + CUT, y_mid, x2, y_mid + CUT, color=color, width=2.0)
-            ctx.line(x2, y_mid + CUT, x2, y2, color=color, width=2.0)
+            # Upward edge (rare): fall back to midpoint routing
+            y_route = y1 + (y2 - y1) / 2.0
+
+        if x2 > x1:
+            ctx.line(x1, y1, x1, y_route - CUT, color=color, width=2.0)
+            ctx.line(x1, y_route - CUT, x1 + CUT, y_route, color=color, width=2.0)
+            ctx.line(x1 + CUT, y_route, x2 - CUT, y_route, color=color, width=2.0)
+            ctx.line(x2 - CUT, y_route, x2, y_route + CUT, color=color, width=2.0)
+            ctx.line(x2, y_route + CUT, x2, y2, color=color, width=2.0)
+        else:
+            ctx.line(x1, y1, x1, y_route - CUT, color=color, width=2.0)
+            ctx.line(x1, y_route - CUT, x1 - CUT, y_route, color=color, width=2.0)
+            ctx.line(x1 - CUT, y_route, x2 + CUT, y_route, color=color, width=2.0)
+            ctx.line(x2 + CUT, y_route, x2, y_route + CUT, color=color, width=2.0)
+            ctx.line(x2, y_route + CUT, x2, y2, color=color, width=2.0)
 
     def _draw_badge(self, ctx: RenderContext, x: float, cy: float,
                     name: str, color: str) -> None:
