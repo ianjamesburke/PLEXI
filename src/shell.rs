@@ -201,6 +201,7 @@ pub fn build_env() -> HashMap<String, String> {
     for entry in crate::secrets::list_inject_secrets() {
         #[cfg(target_os = "macos")]
         if let Some(value) = crate::secrets::retrieve_secret(&entry.key, &entry.app_id, &entry.directory) {
+            log::info!("shell::build_env: injecting secret '{}' into pane env", entry.key);
             env.insert(entry.key.clone(), value.to_string());
         }
     }

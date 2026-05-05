@@ -27,6 +27,7 @@ pub struct SecretsApp {
     new_key: String,
     new_value: String,
     new_dir: String,
+    new_inject: bool,
     form_focus: FormField,
     focus_requested: bool,
 
@@ -46,6 +47,7 @@ impl SecretsApp {
             new_key: String::new(),
             new_value: String::new(),
             new_dir: dir,
+            new_inject: false,
             form_focus: FormField::Key,
             focus_requested: false,
             pending_cmds: Vec::new(),
@@ -62,6 +64,7 @@ impl SecretsApp {
         self.new_key.clear();
         self.new_value.clear();
         self.new_dir = self.cwd.to_string_lossy().to_string();
+        self.new_inject = false;
         self.form_focus = FormField::Key;
         self.focus_requested = false;
         self.mode = Mode::Adding;
@@ -82,6 +85,11 @@ impl SecretsApp {
         }
 
         if crate::secrets::store_secret(&key, &value, APP_ID_USER, &dir) {
+            // index_add always writes inject: false for new entries; persist the
+            // chosen value immediately so build_env() sees it on next pane spawn.
+            if self.new_inject {
+                crate::secrets::toggle_inject_secret(&key, APP_ID_USER, &dir);
+            }
             // Optimistic update: push directly instead of re-dumping the keychain
             // (dump-keychain triggers a macOS permission prompt every call).
             // Remove any existing entry with the same key+dir to avoid duplicates.
@@ -92,7 +100,7 @@ impl SecretsApp {
                 directory: dir,
                 key: key.clone(),
                 workspace_root: None, // v1/v2 legacy path — no workspace scoping
-                inject: false,
+                inject: self.new_inject,
             });
             self.selected = self.entries.len().saturating_sub(1);
             self.mode = Mode::List;
@@ -206,7 +214,7 @@ impl App for SecretsApp {
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
 
         const HEADER_H: f32 = 44.0;
-        const FORM_H: f32 = 164.0;
+        const FORM_H: f32 = 188.0;
         const ROW_H: f32 = 52.0;
 
         // ── Header ──────────────────────────────────────────────────────────
@@ -378,6 +386,28 @@ impl App for SecretsApp {
                     {
                         self.commit_add();
                     }
+                });
+
+                ui.add_space(6.0);
+
+                // Inject toggle
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Inject")
+                            .color(colors.text_dim)
+                            .size(11.0)
+                            .family(egui::FontFamily::Monospace),
+                    );
+                    ui.add_space(4.0);
+                    ui.checkbox(
+                        &mut self.new_inject,
+                        egui::RichText::new(
+                            "inject as env var into new terminal panes (e.g. for API keys)",
+                        )
+                        .color(colors.text_dim.linear_multiply(0.65))
+                        .size(10.0)
+                        .family(egui::FontFamily::Monospace),
+                    );
                 });
 
                 ui.add_space(10.0);
