@@ -16,19 +16,47 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
             match cached_or_fetch(&cache_path) {
                 Some(latest) => {
                     let current = env!("CARGO_PKG_VERSION");
-                    if latest != current {
+                    if semver_gt(&latest, current) {
                         log::info!(
                             "update check: newer release available: v{latest} (current v{current})"
                         );
                         let _ = tx.send(latest);
                     } else {
-                        log::info!("update check: already on latest (v{current})");
+                        log::info!("update check: already on latest or ahead (v{current})");
                     }
                 }
                 None => log::warn!("update check: could not determine latest version"),
             }
         })
         .ok();
+}
+
+/// Returns true only when `a` is strictly newer than `b` by semver (M.m.p).
+/// Unparseable components are treated as 0.
+fn semver_gt(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> (u64, u64, u64) {
+        let mut parts = s.splitn(4, '.');
+        let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        (major, minor, patch)
+    };
+    parse(a) > parse(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::semver_gt;
+
+    #[test]
+    fn test_semver_gt() {
+        assert!(semver_gt("3.4.114", "3.4.113"));
+        assert!(semver_gt("3.5.0", "3.4.113"));
+        assert!(semver_gt("4.0.0", "3.9.9"));
+        assert!(!semver_gt("3.4.113", "3.4.113")); // equal
+        assert!(!semver_gt("3.4.111", "3.4.113")); // behind
+        assert!(!semver_gt("3.4.112", "3.4.113")); // one behind
+    }
 }
 
 fn cached_or_fetch(cache_path: &Path) -> Option<String> {
