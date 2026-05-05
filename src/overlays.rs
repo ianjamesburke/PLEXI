@@ -1353,96 +1353,175 @@ impl PlexiApp {
 
                         // Footer keyboard hints — separator + centered hint row per kind.
                         // Not shown for tombstoned notifications (only a Dismiss button).
+                        //
+                        // Centering strategy: egui's vertical_centered expands all child
+                        // rects to full available width (Layout::top_down(Center) sets
+                        // frame_size.x = max(desired, available)), so placing a ui.horizontal
+                        // inside vertical_centered does NOT center it — content paints at x=0.
+                        // Fix: pre-measure the row width with ui.fonts, then use
+                        // allocate_ui_with_layout(exact_size) — justify_and_align then places
+                        // the child rect at center_x − hint_w/2, which IS centered.
                         if !notif.tombstoned {
                             ui.add_space(style::SPACE_SM);
                             ui.separator();
                             ui.add_space(style::SPACE_SM);
-                            ui.vertical_centered(|ui| {
-                                ui.horizontal(|ui| {
-                                    let dim = |s: &str| {
-                                        RichText::new(s)
-                                            .size(style::TEXT_HINT)
-                                            .color(self.colors.text_dim)
-                                    };
-                                    let sep = || dim("·");
-                                    match notif.kind {
-                                        NotifyKind::Message => {
-                                            crate::widgets::key_combo_list(
-                                                ui,
-                                                &[&["Enter"], &["Space"]],
-                                                Some("acknowledge"),
-                                                &self.colors,
-                                            );
-                                            if !notif.required {
-                                                ui.add_space(style::SPACE_SM);
-                                                ui.label(sep());
-                                                ui.add_space(style::SPACE_SM);
-                                                crate::widgets::key_combo_list(
-                                                    ui,
-                                                    &[&["Esc"]],
-                                                    Some("dismiss"),
-                                                    &self.colors,
-                                                );
-                                            }
-                                        }
-                                        NotifyKind::Choice => {
-                                            crate::widgets::key_combo_list(
-                                                ui,
-                                                &[&["↑↓"], &["j/k"]],
-                                                Some("navigate"),
-                                                &self.colors,
-                                            );
-                                            ui.add_space(style::SPACE_SM);
-                                            ui.label(sep());
-                                            ui.add_space(style::SPACE_SM);
-                                            crate::widgets::key_combo_list(
-                                                ui,
-                                                &[&["Enter"], &["1-9"]],
-                                                Some("select"),
-                                                &self.colors,
-                                            );
-                                            if !notif.required {
-                                                ui.add_space(style::SPACE_SM);
-                                                ui.label(sep());
-                                                ui.add_space(style::SPACE_SM);
-                                                crate::widgets::key_combo_list(
-                                                    ui,
-                                                    &[&["Esc"]],
-                                                    Some("dismiss"),
-                                                    &self.colors,
-                                                );
-                                            }
-                                        }
-                                        NotifyKind::Input => {
-                                            crate::widgets::key_combo_list(
-                                                ui,
-                                                &[&["Enter"]],
-                                                Some("newline"),
-                                                &self.colors,
-                                            );
-                                            ui.add_space(style::SPACE_SM);
-                                            ui.label(sep());
-                                            ui.add_space(style::SPACE_SM);
-                                            crate::widgets::key_combo_list(
-                                                ui,
-                                                &[&["\u{2318}", "\u{21B5}"]],
-                                                Some("submit"),
-                                                &self.colors,
-                                            );
-                                            if !notif.required {
-                                                ui.add_space(style::SPACE_SM);
-                                                ui.label(sep());
-                                                ui.add_space(style::SPACE_SM);
-                                                crate::widgets::key_combo_list(
-                                                    ui,
-                                                    &[&["Esc"]],
-                                                    Some("dismiss"),
-                                                    &self.colors,
-                                                );
-                                            }
+
+                            // Measure hint row width to match what key_combo_list renders.
+                            // key_combo_list: item_spacing=0, INTER_COMBO_GAP=10 between
+                            // combos, TRAILING_GAP=10 before label. INTRA_COMBO_GAP=2
+                            // between chips within a combo (e.g. ⌘+↵).
+                            let mono12 = egui::FontId::monospace(style::TEXT_CAPTION);
+                            let prop11 = egui::FontId::proportional(style::TEXT_HINT);
+                            let (hint_w, hint_h) = ui.fonts(|f| {
+                                let chip_w = |s: &str| -> f32 {
+                                    let g = f.layout_no_wrap(
+                                        s.to_string(), mono12.clone(), egui::Color32::WHITE,
+                                    );
+                                    let h = g.size().y + 6.0; // KEYCAP_PAD_V*2
+                                    (g.size().x + 12.0_f32).max(h) // KEYCAP_PAD_H*2
+                                };
+                                let lbl_w = |s: &str| -> f32 {
+                                    f.layout_no_wrap(
+                                        s.to_string(), prop11.clone(), egui::Color32::WHITE,
+                                    ).size().x
+                                };
+                                let kcl = |combos: &[&[&str]], trailing: Option<&str>| -> f32 {
+                                    let mut w = 0.0_f32;
+                                    for (i, keys) in combos.iter().enumerate() {
+                                        if i > 0 { w += 10.0; } // INTER_COMBO_GAP
+                                        for (j, key) in keys.iter().enumerate() {
+                                            if j > 0 { w += 2.0; } // INTRA_COMBO_GAP
+                                            w += chip_w(key);
                                         }
                                     }
-                                });
+                                    if let Some(t) = trailing { w += 10.0 + lbl_w(t); }
+                                    w
+                                };
+                                // Between groups: add_space(8) + "·" label + add_space(8)
+                                let dot = || 8.0 + lbl_w("·") + 8.0;
+                                let w = match notif.kind {
+                                    NotifyKind::Message => {
+                                        kcl(&[&["Enter"], &["Space"]], Some("acknowledge"))
+                                        + if !notif.required {
+                                            dot() + kcl(&[&["Esc"]], Some("dismiss"))
+                                        } else { 0.0 }
+                                    }
+                                    NotifyKind::Choice => {
+                                        kcl(&[&["↑↓"], &["j/k"]], Some("navigate"))
+                                        + dot() + kcl(&[&["Enter"], &["1-9"]], Some("select"))
+                                        + if !notif.required {
+                                            dot() + kcl(&[&["Esc"]], Some("dismiss"))
+                                        } else { 0.0 }
+                                    }
+                                    NotifyKind::Input => {
+                                        kcl(&[&["Enter"]], Some("newline"))
+                                        + dot() + kcl(&[&["\u{2318}", "\u{21B5}"]], Some("submit"))
+                                        + if !notif.required {
+                                            dot() + kcl(&[&["Esc"]], Some("dismiss"))
+                                        } else { 0.0 }
+                                    }
+                                };
+                                let h = {
+                                    let g = f.layout_no_wrap(
+                                        "A".to_string(), mono12.clone(), egui::Color32::WHITE,
+                                    );
+                                    g.size().y + 6.0 // chip_h
+                                };
+                                (w, h)
+                            });
+
+                            // Allocate the exact width centered in the parent top_down(Center).
+                            // justify_and_align places child_rect at center_x − hint_w/2.
+                            ui.vertical_centered(|ui| {
+                                ui.allocate_ui_with_layout(
+                                    egui::Vec2::new(hint_w, hint_h),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        let dim = |s: &str| {
+                                            RichText::new(s)
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim)
+                                        };
+                                        match notif.kind {
+                                            NotifyKind::Message => {
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["Enter"], &["Space"]],
+                                                    Some("acknowledge"),
+                                                    &self.colors,
+                                                );
+                                                if !notif.required {
+                                                    ui.add_space(style::SPACE_SM);
+                                                    ui.label(dim("·"));
+                                                    ui.add_space(style::SPACE_SM);
+                                                    crate::widgets::key_combo_list(
+                                                        ui,
+                                                        &[&["Esc"]],
+                                                        Some("dismiss"),
+                                                        &self.colors,
+                                                    );
+                                                }
+                                            }
+                                            NotifyKind::Choice => {
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["↑↓"], &["j/k"]],
+                                                    Some("navigate"),
+                                                    &self.colors,
+                                                );
+                                                ui.add_space(style::SPACE_SM);
+                                                ui.label(dim("·"));
+                                                ui.add_space(style::SPACE_SM);
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["Enter"], &["1-9"]],
+                                                    Some("select"),
+                                                    &self.colors,
+                                                );
+                                                if !notif.required {
+                                                    ui.add_space(style::SPACE_SM);
+                                                    ui.label(dim("·"));
+                                                    ui.add_space(style::SPACE_SM);
+                                                    crate::widgets::key_combo_list(
+                                                        ui,
+                                                        &[&["Esc"]],
+                                                        Some("dismiss"),
+                                                        &self.colors,
+                                                    );
+                                                }
+                                            }
+                                            NotifyKind::Input => {
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["Enter"]],
+                                                    Some("newline"),
+                                                    &self.colors,
+                                                );
+                                                ui.add_space(style::SPACE_SM);
+                                                ui.label(dim("·"));
+                                                ui.add_space(style::SPACE_SM);
+                                                crate::widgets::key_combo_list(
+                                                    ui,
+                                                    &[&["\u{2318}", "\u{21B5}"]],
+                                                    Some("submit"),
+                                                    &self.colors,
+                                                );
+                                                if !notif.required {
+                                                    ui.add_space(style::SPACE_SM);
+                                                    ui.label(dim("·"));
+                                                    ui.add_space(style::SPACE_SM);
+                                                    crate::widgets::key_combo_list(
+                                                        ui,
+                                                        &[&["Esc"]],
+                                                        Some("dismiss"),
+                                                        &self.colors,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    },
+                                );
                             });
                         } // end !tombstoned keyboard hint
                     });
