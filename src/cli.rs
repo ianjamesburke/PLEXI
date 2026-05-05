@@ -1205,10 +1205,11 @@ pub fn pack_export_cli(dest_path: &str) -> i32 {
 /// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]
 ///   [--choice key:Label]... [--timeout N]`.
 ///
-/// With no choices: fire-and-forget (writes queue file, prints "notification queued", exits 0).
-/// With choices: writes queue file with `choices` + `response_file`, polls the response file
-/// until the user selects an option, prints the chosen key to stdout, exits 0.
-/// On timeout: exits 2. On queue write error: exits 1.
+/// Connects to PLEXI_SOCKET and sends a `notify` HostCommand JSON line.
+/// With no choices: fire-and-forget (exits 0 on send).
+/// With choices: sends the command with a `response_file` path and polls that
+/// file until the user selects an option, then prints the chosen key to stdout.
+/// On timeout: exits 2. On socket error: exits 1.
 pub fn notify_cli(
     title: &str,
     body: &str,
@@ -1216,60 +1217,79 @@ pub fn notify_cli(
     choices: &[(String, String)],
     timeout_secs: u64,
 ) -> i32 {
-    let queue_dir = crate::config::config_dir().join("notify-queue");
-    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
-        eprintln!("error: could not create notify queue: {e}");
-        return 1;
-    }
+    let socket_path = match std::env::var("PLEXI_SOCKET") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+
     let id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
 
-    if choices.is_empty() {
-        let file = queue_dir.join(format!("{id}.json"));
-        let payload = serde_json::json!({
-            "level": level,
-            "title": title,
-            "body": body,
-        });
-        if let Err(e) = std::fs::write(&file, payload.to_string()) {
-            eprintln!("error: could not write notification: {e}");
-            return 1;
-        }
-        println!("notification queued");
-        return 0;
-    }
-
-    // Blocking path: create a response file path and poll for it.
-    let response_file = crate::config::config_dir().join(format!("notify-response-{id}.txt"));
-    let choices_json: Vec<serde_json::Value> = choices
+    let options_json: Vec<serde_json::Value> = choices
         .iter()
-        .map(|(key, label)| serde_json::json!({"key": key, "label": label}))
+        .map(|(key, label)| {
+            serde_json::json!({"label": label, "value": key, "shortcut": key})
+        })
         .collect();
-    let payload = serde_json::json!({
+
+    let (kind, response_file_str) = if choices.is_empty() {
+        ("message".to_string(), None)
+    } else {
+        let rf = crate::config::config_dir()
+            .join(format!("notify-response-{id}.txt"))
+            .to_string_lossy()
+            .into_owned();
+        ("choice".to_string(), Some(rf))
+    };
+
+    let mut payload = serde_json::json!({
+        "type": "notify",
         "level": level,
         "title": title,
         "body": body,
-        "choices": choices_json,
-        "response_file": response_file.to_string_lossy(),
+        "kind": kind,
+        "options": options_json,
+        "priority": 50,
     });
-    let queue_file = queue_dir.join(format!("{id}.json"));
+    if let Some(ref rf) = response_file_str {
+        payload["response_file"] = serde_json::Value::String(rf.clone());
+    }
+
     log::info!(
-        "notify:cli: writing queue file {:?} choices={} response_file={:?}",
-        queue_file, choices.len(), response_file
+        "notify:cli: sending via socket choices={} response_file={:?}",
+        choices.len(), response_file_str
     );
-    if let Err(e) = std::fs::write(&queue_file, payload.to_string()) {
-        eprintln!("error: could not write notification: {e}");
+
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+            return 1;
+        }
+    };
+    let line = format!("{payload}\n");
+    if let Err(e) = stream.write_all(line.as_bytes()) {
+        eprintln!("error: could not write to socket: {e}");
         return 1;
     }
-    log::info!("notify:cli: queue file written, polling for response");
+
+    // Fire-and-forget path — command is delivered, nothing to wait for.
+    let Some(response_file) = response_file_str else {
+        println!("notification queued");
+        return 0;
+    };
+    let response_file = std::path::PathBuf::from(response_file);
+    log::info!("notify:cli: polling for response at {:?}", response_file);
 
     let deadline = if timeout_secs > 0 {
-        Some(
-            std::time::Instant::now()
-                + std::time::Duration::from_secs(timeout_secs),
-        )
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs))
     } else {
         None
     };
@@ -2240,13 +2260,12 @@ pub fn validate_cli(path: &str) -> i32 {
 mod notify_tests {
     use super::notify_cli;
 
-    /// Fire-and-forget path: no choices → exit 0, queue file written.
+    /// Without PLEXI_SOCKET set, notify_cli must fail fast (exit 1) rather than panic.
     #[test]
-    fn notify_cli_fire_and_forget_returns_zero() {
-        // Uses the real config_dir() path; just verifies the function exits 0
-        // without blocking. The queue file creation may fail in sandboxed
-        // environments, but the function must not panic.
+    fn notify_cli_no_socket_returns_one() {
+        // Ensure env var is unset for this test.
+        std::env::remove_var("PLEXI_SOCKET");
         let code = notify_cli("Test title", "Test body", "info", &[], 0);
-        assert_eq!(code, 0);
+        assert_eq!(code, 1);
     }
 }

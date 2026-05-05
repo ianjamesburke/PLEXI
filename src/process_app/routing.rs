@@ -258,6 +258,7 @@ impl ProcessApp {
                 image_pipe_id,
                 timeout_secs,
                 on_dismiss,
+                response_file: _,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
