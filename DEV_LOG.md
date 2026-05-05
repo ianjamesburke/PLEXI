@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [FIX] Embed plexi_sdk in binary, seed to profile dir on first launch (PR #734 → alpha)
+
+`ensure_profile_initialized()` seeded `apps/` from embedded examples but never seeded `sdk/`. The bundle resource path (`Contents/Resources/sdk/python/`) was the only PYTHONPATH entry on fresh installs, but CI cache hits (Cargo.lock-only key) meant `cargo bundle` could skip re-embedding resources — shipping a zip with no SDK. Dev builds worked because `install.sh` explicitly ran `cp -R sdk/python/plexi_sdk ~/.plexi-<channel>/sdk/plexi_sdk`. Fix: inline `include_dir!("sdk/python/plexi_sdk")` in `ensure_profile_initialized()`, extracted to `config_dir()/sdk/plexi_sdk/` on first launch. Also updated CI cache key to hash `Cargo.toml` (belt-and-suspenders alongside the `rm -rf target/release/bundle` from PR #732).
+**Breaks if:** A fresh install (new `~/.plexi/` profile) opens any Python app and gets "ModuleNotFoundError: No module named 'plexi_sdk'", OR `~/.plexi/sdk/plexi_sdk/` is empty after first launch.
+
 ## 2026-05-05 — [FIX] Release CI: include Cargo.toml in cache key + always clean bundle output (PR #732 → alpha)
 
 CI cache was keyed only on `Cargo.lock`. Metadata-only changes to `Cargo.toml` (e.g. adding a `resources =` entry) left the key unchanged, so CI restored a stale `target/release/bundle/` from a prior run — new resources were absent from the shipped zip. Fix: add `Cargo.toml` to `hashFiles` (Option A from issue) + `rm -rf target/release/bundle` before `cargo bundle` (Option C belt-and-suspenders). Two-pronged because a cache bust only prevents the stale restore; the clean step guarantees a fresh bundle even on future cache hits where only the binary changed.
