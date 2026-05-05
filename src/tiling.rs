@@ -160,11 +160,12 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         4.0
     }
 
-    fn resize_stroke(&self, style: &egui::Style, resize_state: ResizeState) -> egui::Stroke {
+    fn resize_stroke(&self, _style: &egui::Style, resize_state: ResizeState) -> egui::Stroke {
         match resize_state {
             ResizeState::Idle => egui::Stroke::NONE,
-            ResizeState::Hovering => style.visuals.widgets.hovered.fg_stroke,
-            ResizeState::Dragging => style.visuals.widgets.active.fg_stroke,
+            ResizeState::Hovering | ResizeState::Dragging => {
+                egui::Stroke::new(2.0, self.colors.text_primary)
+            }
         }
     }
 
