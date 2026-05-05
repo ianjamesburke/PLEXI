@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [CHANGED] Shortcuts modal redesign — sections, divider, full coverage, contact footer (PR #693 → alpha)
+
+Replaced the flat two-column grid with five labeled sections (LAYOUT, NAVIGATION left; APPS & TOOLS, TERMINAL, SETTINGS right). Added `ui.separator()` between columns for a vertical divider. Centered title via `ui.vertical_centered`. Added 10 missing shortcuts confirmed in `keys.rs`. Fixed stale labels (⌘N → "New window right", ⌘⇧HJKL → "Navigate windows"). Extracted `draw_contact_footer` free function shared by both the shortcuts modal and the welcome screen. The coffee emoji was updated from ☕ to ❤️ in the process. Column divider uses egui's `ui.separator()` inside a `ui.horizontal` — draws perpendicular to layout direction, no custom painting needed.
+**Breaks if:** ⌘/ opens a blank or broken overlay, OR the welcome screen contact footer disappears, OR any pre-existing shortcut (⌘P, ⌘HJKL, ⌘]/[) no longer appears in the modal.
+
 ## 2026-05-05 — [CHANGED] Cmd+P palette ranks active context first (PR #691 → alpha)
 
 Cmd+P entries previously sorted by a single recency key, so a pane visited 10 minutes ago in another context could outrank a pane opened seconds ago in the active context. Changed `rank_of` in `src/command_palette.rs` to return a two-tier `(tier, recency)` key: tier 0 if the entry's window belongs to the active context (matches `windows[active_window].context_id`), tier 1 otherwise. Recency calculation unchanged. Mirrors macOS Cmd+Tab behavior — current app's windows first.
