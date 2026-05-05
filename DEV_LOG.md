@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] Revert broken sidebar double-click, restore single-click (PR #659 → alpha)
+
+PR #657 added `ui.interact(full_row, Sense::click())` after `ui.interact(content_zone, Sense::click_and_drag())`. In egui, overlapping widgets with click sense compete — the last-registered one steals the event. The full-row widget won, so `drag_response.clicked()` always returned false and single-click context switching broke. Reverted to pre-#657 state. Proper fix is the `SidebarAction` enum refactor (issue #660), which uses one `interact()` on the full row and classifies actions by pointer position — no competing widgets possible.
+**Breaks if:** Single-clicking a context row in the sidebar fails to switch context.
+
 ## 2026-05-04 — [FIX] Remove deleted agent apps from core pack list (PR #656 → alpha)
 
 `agent-tester`, `agent-coordinator`, and `agent-worker` were removed from `examples/` in PR #628 but `packs/core.toml` still listed them as `local:` sources. `core_pack_applies_only_when_apps_dir_empty` panicked because the local source no longer exists. Fix: delete the three stale `[[app]]` blocks from `core.toml`.
