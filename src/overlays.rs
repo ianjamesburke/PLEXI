@@ -9,6 +9,61 @@ use crate::app::PlexiApp;
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
 const R6: CornerRadius = CornerRadius::same(6);
 
+fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
+    ui.vertical_centered(|ui| {
+        ui.hyperlink_to(
+            RichText::new("❤️  Buy Me a Coffee").size(style::TEXT_BODY),
+            "https://buymeacoffee.com/ianjamesbu8",
+        );
+        ui.add_space(style::SPACE_SM);
+        ui.label(
+            RichText::new(
+                "If you have any ideas, want to help, or just want to say what's up...",
+            )
+            .size(style::TEXT_CAPTION)
+            .color(colors.text_dim),
+        );
+        ui.add_space(style::SPACE_SM / 2.0);
+        {
+            let email = "ADHDISNTREAL@GMAIL.COM";
+            let mailto = "mailto:ADHDisntreal@gmail.com";
+            let font_id = egui::FontId::proportional(style::TEXT_CAPTION);
+            let email_w = ui.fonts(|f| {
+                f.layout_no_wrap(email.to_string(), font_id, colors.text_dim)
+                    .size()
+                    .x
+            });
+            let btn_w = 24.0;
+            let gap = ui.spacing().item_spacing.x;
+            let pad = ((ui.available_width() - email_w - gap - btn_w) / 2.0).max(0.0);
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.hyperlink_to(
+                    RichText::new(email)
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_dim),
+                    mailto,
+                );
+                crate::widgets::copy_button(
+                    ui,
+                    egui::Id::new("shortcuts_email_copy"),
+                    "ADHDisntreal@gmail.com",
+                );
+            });
+        }
+    });
+}
+
+fn section_label(ui: &mut egui::Ui, title: &str, colors: &Colors) {
+    ui.label(
+        RichText::new(title)
+            .size(style::TEXT_HINT)
+            .color(colors.text_dim)
+            .strong(),
+    );
+    ui.add_space(2.0);
+}
+
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -117,39 +172,40 @@ impl PlexiApp {
                 .corner_radius(R6)
                 .inner_margin(egui::Margin::symmetric(24, 20))
                 .show(ui, |ui| {
-                        ui.set_width(620.0);
+                    ui.set_width(640.0);
+
+                    ui.vertical_centered(|ui| {
                         ui.label(
                             RichText::new("Keyboard Shortcuts")
                                 .size(13.0)
                                 .color(self.colors.text_primary)
                                 .strong(),
                         );
-                        ui.add_space(8.0);
+                    });
+                    ui.add_space(style::SPACE_MD);
 
-                        let colors = &self.colors;
+                    let colors = &self.colors;
 
-                        ui.columns(2, |cols| {
-                            // Left column — window / pane management
-                            egui::Grid::new("shortcuts_grid_left")
+                    ui.horizontal(|ui| {
+                        // ── Left column ──────────────────────────────
+                        ui.vertical(|ui| {
+                            ui.set_width(288.0);
+
+                            section_label(ui, "LAYOUT", colors);
+                            egui::Grid::new("shortcuts_layout")
                                 .num_columns(2)
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
-                                .show(&mut cols[0], |ui| {
+                                .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
-                                        (&["\u{2318}", "P"], "Command palette"),
-                                        (&["\u{2318}", "T"], "New tab"),
-                                        (&["\u{2318}", "N"], "New terminal"),
+                                        (&["\u{2318}", "N"], "New window right"),
                                         (&["\u{2318}", "\u{21E7}", "N"], "New context"),
                                         (&["\u{2318}", "D"], "Split right"),
                                         (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
+                                        (&["\u{2318}", "\\"], "Split right (mirror)"),
+                                        (&["\u{2318}", "\u{21E7}", "\\"], "Split below (mirror)"),
                                         (&["\u{2318}", "W"], "Close pane"),
-                                        (&["\u{2318}", "B"], "Toggle sidebar"),
-                                        (&["\u{2318}", "\u{21A9}"], "Zoom pane"),
-                                        (&["\u{2318}", "\u{21E7}", "R"], "Rename pane"),
-                                        (&["\u{2318}", ","], "Open config"),
-                                        (&["\u{2318}", "\u{21E7}", ","], "Reload config"),
-                                        (&["\u{2318}", "/"], "This help"),
-                                        (&["\u{2318}", "Q"], "Quit"),
+                                        (&["\u{2318}", "T"], "New tab"),
                                     ];
                                     for (keys, desc) in rows {
                                         crate::widgets::key_combo(ui, keys, colors);
@@ -162,12 +218,14 @@ impl PlexiApp {
                                     }
                                 });
 
-                            // Right column — navigation
-                            egui::Grid::new("shortcuts_grid_right")
+                            ui.add_space(style::SPACE_SM);
+
+                            section_label(ui, "NAVIGATION", colors);
+                            egui::Grid::new("shortcuts_nav")
                                 .num_columns(2)
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
-                                .show(&mut cols[1], |ui| {
+                                .show(ui, |ui| {
                                     crate::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}"], &["H", "J", "K", "L"]],
@@ -188,7 +246,7 @@ impl PlexiApp {
                                         colors,
                                     );
                                     ui.label(
-                                        RichText::new("Move/create windows")
+                                        RichText::new("Navigate windows")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );
@@ -219,9 +277,122 @@ impl PlexiApp {
                                             .color(colors.text_dim),
                                     );
                                     ui.end_row();
+
+                                    crate::widgets::key_combo(
+                                        ui,
+                                        &["\u{2318}", "\u{21A9}"],
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("Zoom pane")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+                                });
+                        });
+
+                        // ── Vertical divider ──────────────────────────
+                        ui.add_space(style::SPACE_MD);
+                        ui.separator();
+                        ui.add_space(style::SPACE_MD);
+
+                        // ── Right column ─────────────────────────────
+                        ui.vertical(|ui| {
+                            section_label(ui, "APPS & TOOLS", colors);
+                            egui::Grid::new("shortcuts_apps")
+                                .num_columns(2)
+                                .min_col_width(80.0)
+                                .spacing([style::SPACE_SM, 4.0])
+                                .show(ui, |ui| {
+                                    let rows: &[(&[&str], &str)] = &[
+                                        (&["\u{2318}", "P"], "Command palette"),
+                                        (&["\u{2318}", "E"], "File browser"),
+                                        (&["\u{2318}", "0"], "Quick note"),
+                                        (&["\u{2318}", "B"], "Toggle sidebar"),
+                                        (&["\u{2318}", "\u{21E7}", "A"], "Notifications"),
+                                        (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
+                                    ];
+                                    for (keys, desc) in rows {
+                                        crate::widgets::key_combo(ui, keys, colors);
+                                        ui.label(
+                                            RichText::new(*desc)
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+
+                            ui.add_space(style::SPACE_SM);
+
+                            section_label(ui, "TERMINAL", colors);
+                            egui::Grid::new("shortcuts_terminal")
+                                .num_columns(2)
+                                .min_col_width(80.0)
+                                .spacing([style::SPACE_SM, 4.0])
+                                .show(ui, |ui| {
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}", "\u{2191}"], &["\u{2318}", "\u{2193}"]],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("Scroll terminal")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}", "="], &["\u{2318}", "-"]],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("Font size +/−")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+                                });
+
+                            ui.add_space(style::SPACE_SM);
+
+                            section_label(ui, "SETTINGS", colors);
+                            egui::Grid::new("shortcuts_settings")
+                                .num_columns(2)
+                                .min_col_width(80.0)
+                                .spacing([style::SPACE_SM, 4.0])
+                                .show(ui, |ui| {
+                                    let rows: &[(&[&str], &str)] = &[
+                                        (&["\u{2318}", ","], "Open config"),
+                                        (&["\u{2318}", "\u{21E7}", ","], "Reload config"),
+                                        (&["\u{2318}", "\u{21E7}", "S"], "Secrets manager"),
+                                        (&["\u{2318}", "\u{21E7}", "R"], "Rename pane"),
+                                        (&["\u{2318}", "/"], "This help"),
+                                        (&["\u{2318}", "Q"], "Quit"),
+                                    ];
+                                    for (keys, desc) in rows {
+                                        crate::widgets::key_combo(ui, keys, colors);
+                                        ui.label(
+                                            RichText::new(*desc)
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.end_row();
+                                    }
                                 });
                         });
                     });
+
+                    ui.add_space(style::SPACE_MD);
+                    ui.separator();
+                    ui.add_space(style::SPACE_SM);
+                    draw_contact_footer(ui, colors);
+                });
         });
         if dismissed {
             self.show_shortcuts = false;
@@ -1738,72 +1909,7 @@ impl PlexiApp {
                     ui.add_space(style::SPACE_XL);
                     ui.separator();
                     ui.add_space(style::SPACE_MD);
-
-                    ui.vertical_centered(|ui| {
-                        // ui.label(
-                        //     RichText::new("My dream is to work on Plexi full-time.")
-                        //         .size(style::TEXT_CAPTION)
-                        //         .color(colors.text_dim),
-                        // );
-                        // ui.add_space(style::SPACE_SM / 2.0);
-                        // ui.label(
-                        //     RichText::new("If you'd like to support the project:")
-                        //         .size(style::TEXT_CAPTION)
-                        //         .color(colors.text_dim),
-                        // );
-                        // ui.add_space(style::SPACE_SM);
-                        ui.hyperlink_to(
-                            RichText::new("☕  Buy Me a Coffee").size(style::TEXT_BODY),
-                            "https://buymeacoffee.com/ianjamesbu8",
-                        );
-                        ui.add_space(style::SPACE_SM);
-                        ui.label(
-                            RichText::new(
-                                "If you have any ideas, want to help, or just want to say what's up...",
-                            )
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_dim),
-                        );
-                        ui.add_space(style::SPACE_SM / 2.0);
-                        {
-                            // Measure email text so we can manually center the inline row.
-                            // ui.horizontal() fills full width, so vertical_centered won't
-                            // center it — we add explicit leading padding instead.
-                            let email = "ADHDISNTREAL@GMAIL.COM";
-                            let mailto = "mailto:ADHDisntreal@gmail.com";
-                            let font_id =
-                                egui::FontId::proportional(style::TEXT_CAPTION);
-                            let email_w = ui.fonts(|f| {
-                                f.layout_no_wrap(
-                                    email.to_string(),
-                                    font_id,
-                                    colors.text_dim,
-                                )
-                                .size()
-                                .x
-                            });
-                            let btn_w = 24.0;
-                            let gap = ui.spacing().item_spacing.x;
-                            let pad = ((ui.available_width() - email_w - gap - btn_w)
-                                / 2.0)
-                                .max(0.0);
-
-                            ui.horizontal(|ui| {
-                                ui.add_space(pad);
-                                ui.hyperlink_to(
-                                    RichText::new(email)
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
-                                    mailto,
-                                );
-                                crate::widgets::copy_button(
-                                    ui,
-                                    egui::Id::new("welcome_email_copy"),
-                                    "ADHDisntreal@gmail.com",
-                                );
-                            });
-                        }
-                    });
+                    draw_contact_footer(ui, &colors);
                 });
         });
     }
