@@ -11,6 +11,26 @@ Turn a raw, unlabeled GitHub issue into an actionable, prioritized, slotted tick
 
 ---
 
+## North Star
+
+**Plexi is an all-in-one Linux-style productive environment for macOS — terminal-native, keyboard-driven, with a plugin infrastructure that lets you build anything inside it.**
+
+The core value proposition: one compositor that makes your terminal tools, agents, and custom apps feel like a single coherent system. Panes compose freely. Apps speak one protocol (PGAP). The host brokers capabilities (AI, audio, secrets, net) so apps stay sandboxed. Everything is keyboard-accessible.
+
+**Use this to audit every issue for North Star alignment:**
+
+| Aligns | Diverges |
+|--------|----------|
+| Terminal ergonomics, pane management | Anything requiring a browser/Electron runtime |
+| App/agent plugin infrastructure | Standalone GUI features unrelated to pane composition |
+| Capability brokering (AI, audio, secrets, net, MIDI) | Features that only make sense outside a terminal context |
+| SDK primitives that unlock whole categories of apps | One-off integrations with no generalization |
+| Composability: pipes, linked terminals, context nesting | Features that centralize control away from the user |
+
+If an issue is off-brand, note it in the triage comment and suggest closing or converting to an idea-only label with `future` era.
+
+---
+
 ## Step 1 — Load Live Project State
 
 Before touching the issue, fetch current labels and milestones. Never use static version lists — they go stale.
