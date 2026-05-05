@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] Widen context rename double-click hit box to full row (PR #657 → alpha)
+
+`drag_response` in `sidebar_row.rs` is registered on `self.layout.content` — the row minus the 30px action zone. Double-clicking the rightmost 30px didn't trigger rename. Fix: add a separate `Sense::click()` interaction on `self.layout.full` and OR its `double_clicked()` into `primary_double_clicked`. Single-click and drag behavior unchanged.
+**Breaks if:** Double-clicking the right edge of a context row (near where the × appears on hover) fails to open the rename input.
+
 ## 2026-05-04 — [FIX] Move gen_schema to workspace, restore PR build display name + icon (PR #655 → alpha)
 
 PR #634 added `gen_schema` as a second `[[bin]]`, forcing `install.sh` to use `cargo bundle --release --bin plexi`. The `--bin` flag tells cargo-bundle to use the binary name ("plexi") as the bundle name, ignoring `[package.metadata.bundle] name = "Plexi Alpha"`. Result: all builds (alpha, PR) produced `plexi.app` (lowercase, no icon). Fix: move `gen_schema` to `tools/gen_schema/` as a Cargo workspace member. Main package is single-binary again; `cargo bundle --release` (no `--bin`) picks up the metadata name and `app_src="${display}.app"` resolves correctly.
