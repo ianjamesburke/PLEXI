@@ -392,11 +392,11 @@ class DescriptorRendererApp(App):
             total = len(commands)
             visible_rows = max(1, int((ctx.h - self._list_y0) / ROW_H))
 
-            if key in ("ArrowDown", "j"):
+            if key in ("down", "j"):
                 self._selected_idx = min(self._selected_idx + 1, total - 1)
                 self._clamp_scroll(visible_rows)
                 self.emit.schedule_render(after_ms=16)
-            elif key in ("ArrowUp", "k"):
+            elif key in ("up", "k"):
                 self._selected_idx = max(self._selected_idx - 1, 0)
                 self._clamp_scroll(visible_rows)
                 self.emit.schedule_render(after_ms=16)

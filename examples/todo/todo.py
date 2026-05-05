@@ -73,9 +73,9 @@ class TodoApp(App):
             elif len(key) == 1:
                 self._input += key
             return
-        if key in ("ArrowUp", "k"):
+        if key in ("up", "k"):
             self._selected = max(0, self._selected - 1)
-        elif key in ("ArrowDown", "j"):
+        elif key in ("down", "j"):
             self._selected = min(len(self._items) - 1, self._selected + 1)
         elif key == " " and self._items:
             self._items[self._selected]["done"] ^= True

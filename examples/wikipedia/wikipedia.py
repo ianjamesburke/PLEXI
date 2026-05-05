@@ -49,9 +49,9 @@ class WikiApp(App):
             elif len(key) == 1:
                 self._query += key
         elif self._mode == "results":
-            if key == "ArrowUp" or key == "k":
+            if key == "up" or key == "k":
                 self._selected = max(0, self._selected - 1)
-            elif key == "ArrowDown" or key == "j":
+            elif key == "down" or key == "j":
                 self._selected = min(len(self._results) - 1, self._selected + 1)
             elif key == "Enter":
                 if self._results:

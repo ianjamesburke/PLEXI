@@ -361,9 +361,9 @@ class ParallaxEditor(App):
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if key == " ":
             self._toggle_play()
-        elif key in ("ArrowLeft", "j"):
+        elif key in ("left", "j"):
             self._seek(-1.0)
-        elif key in ("ArrowRight", "l"):
+        elif key in ("right", "l"):
             self._seek(1.0)
         elif key == "Home":
             self._stop(); self._ph = 0.0

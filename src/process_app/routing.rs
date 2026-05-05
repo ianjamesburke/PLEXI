@@ -1360,16 +1360,21 @@ impl ProcessApp {
         sample_rate: u32,
         buffer_size: u32,
     ) {
-        if self.audio_capture_sessions.contains_key(&pipe_id) {
+        if self.audio_capture_sessions.remove(&pipe_id).is_some() {
+            // Stale session — pipe broke without a clean stop (e.g. EBADF on
+            // the app side). Drop the old CaptureSession (stops the cpal
+            // stream) and close the pipe before re-opening.
             log::warn!(
-                "ProcessApp[{}]: AudioCapture pipe_id={pipe_id} already capturing",
+                "ProcessApp[{}]: AudioCapture pipe_id={pipe_id} stale session — cleaning up and restarting",
                 self.type_id
             );
-            self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
-                pipe_id,
-                error: "already capturing on this pipe_id".to_owned(),
-            });
-            return;
+            self.pipe_registry
+                .lock()
+                .expect("pipe_registry poisoned")
+                .close(&pipe_id);
+            if let Ok(mut m) = self.audio_peak_meters.lock() {
+                m.remove(&pipe_id);
+            }
         }
 
         // Allocate the binary pipe first — without a destination the cpal

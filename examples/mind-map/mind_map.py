@@ -150,12 +150,12 @@ class MindMapApp(App):
         node = self._nodes[self._selected]
 
         # Navigation
-        if key in ("h", "ArrowLeft"):
+        if key in ("h", "left"):
             if node.parent is not None:
                 self._selected = node.parent
                 self._center_on(self._selected, ctx.w, ctx.h)
 
-        elif key in ("j", "ArrowDown"):
+        elif key in ("j", "down"):
             if node.parent is not None:
                 siblings = self._nodes[node.parent].children
                 idx = siblings.index(self._selected)
@@ -163,7 +163,7 @@ class MindMapApp(App):
                     self._selected = siblings[idx + 1]
                     self._center_on(self._selected, ctx.w, ctx.h)
 
-        elif key in ("k", "ArrowUp"):
+        elif key in ("k", "up"):
             if node.parent is not None:
                 siblings = self._nodes[node.parent].children
                 idx = siblings.index(self._selected)
@@ -171,7 +171,7 @@ class MindMapApp(App):
                     self._selected = siblings[idx - 1]
                     self._center_on(self._selected, ctx.w, ctx.h)
 
-        elif key in ("l", "ArrowRight"):
+        elif key in ("l", "right"):
             if node.children:
                 self._selected = node.children[0]
                 self._center_on(self._selected, ctx.w, ctx.h)

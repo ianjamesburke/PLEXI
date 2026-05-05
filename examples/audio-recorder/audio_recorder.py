@@ -139,9 +139,9 @@ class AudioRecorderApp(App):
         self.emit.info(f"audio-recorder: saved {path}")
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        if key in ("ArrowLeft", "[") and not self._capturing:
+        if key in ("left", "[") and not self._capturing:
             self._device_idx = (self._device_idx - 1) % max(1, len(self._devices))
-        elif key in ("ArrowRight", "]") and not self._capturing:
+        elif key in ("right", "]") and not self._capturing:
             self._device_idx = (self._device_idx + 1) % max(1, len(self._devices))
         elif key == "r":
             if self._capturing:

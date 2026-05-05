@@ -104,10 +104,10 @@ class LogsApp(App):
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         step = ROW_H * 4
-        if key in ("j", "ArrowDown", "down"):
+        if key in ("j", "down", "down"):
             self._scroll += step
             self._clamp()
-        elif key in ("k", "ArrowUp", "up"):
+        elif key in ("k", "up", "up"):
             self._scroll = max(0.0, self._scroll - step)
         elif key == "g":
             self._scroll = 0.0

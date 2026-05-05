@@ -297,10 +297,10 @@ class BacklogApp(App):
         # ── Normal mode ──────────────────────────────────────────────────────────
         n = len(self.filtered)
 
-        if key in ("j", "ArrowDown"):
+        if key in ("j", "down"):
             self.selected = min(self.selected + 1, max(0, n - 1))
             self._cache_preview()
-        elif key in ("k", "ArrowUp"):
+        elif key in ("k", "up"):
             self.selected = max(0, self.selected - 1)
             self._cache_preview()
         elif key in ("e", "Enter"):

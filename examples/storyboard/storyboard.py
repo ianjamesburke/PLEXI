@@ -314,10 +314,10 @@ class StoryboardApp(App):
                 self._confirm_delete = False
             return
 
-        if key == "ArrowLeft":
+        if key == "left":
             self._sel = max(0, self._sel - 1)
             self._scroll_to_selected()
-        elif key == "ArrowRight":
+        elif key == "right":
             self._sel = min(len(self._scenes) - 1, self._sel + 1)
             self._scroll_to_selected()
         elif key == "n":

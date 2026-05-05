@@ -19,10 +19,10 @@ COLS = 20
 ROWS = 16
 
 DIR_MAP = {
-    "ArrowUp":    (0, -1),
-    "ArrowDown":  (0, 1),
-    "ArrowLeft":  (-1, 0),
-    "ArrowRight": (1, 0),
+    "up":    (0, -1),
+    "down":  (0, 1),
+    "left":  (-1, 0),
+    "right": (1, 0),
     "k": (0, -1),
     "j": (0, 1),
     "h": (-1, 0),
