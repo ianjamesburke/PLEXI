@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.108] — 2026-05-05
+
+### Changes
+- fix(tiling): remove idle divider stroke to fix white lines in light mode (#707)
 ## [3.4.107] — 2026-05-05
 
 ### Changes
