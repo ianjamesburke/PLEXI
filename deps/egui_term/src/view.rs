@@ -518,7 +518,7 @@ impl<'a> TerminalView<'a> {
             painter.text(
                 Pos2::new(layout_max.x - 6.0, layout_max.y - 4.0),
                 Align2::RIGHT_BOTTOM,
-                format!("↑ {} lines", offset),
+                format!("↑ {}", offset),
                 egui::FontId::monospace(11.0),
                 Color32::from_rgba_unmultiplied(200, 200, 200, 110),
             );
