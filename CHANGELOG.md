@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.107] — 2026-05-05
+
+### Changes
+- fix(release): use git-cliff --latest for release notes (#708)
 ## [3.4.106] — 2026-05-05
 
 ### Changes
