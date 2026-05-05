@@ -33,6 +33,17 @@ enum InputAction {
     Ignore,
 }
 
+#[derive(Debug, Clone)]
+struct CopyModeState {
+    /// Row index from the top of the visible viewport (0 = top row).
+    line_in_viewport: usize,
+    col: usize,
+    /// Set when visual selection is active; holds the anchor (row, col).
+    selection_start: Option<(usize, usize)>,
+    /// True when line-wise selection (V) is active.
+    line_select: bool,
+}
+
 #[derive(Clone)]
 pub struct TerminalViewState {
     is_dragged: bool,
@@ -40,6 +51,7 @@ pub struct TerminalViewState {
     current_mouse_position_on_grid: TerminalGridPoint,
     last_cursor_toggle: Instant,
     cursor_visible: bool,
+    copy_mode: Option<CopyModeState>,
 }
 
 impl Default for TerminalViewState {
@@ -50,6 +62,7 @@ impl Default for TerminalViewState {
             current_mouse_position_on_grid: TerminalGridPoint::default(),
             last_cursor_toggle: Instant::now(),
             cursor_visible: true,
+            copy_mode: None,
         }
     }
 }
@@ -185,12 +198,57 @@ impl<'a> TerminalView<'a> {
                     }
                     state.cursor_visible = true;
                     state.last_cursor_toggle = Instant::now();
-                    input_actions.push(process_keyboard_event(
-                        event,
-                        self.backend,
-                        &self.bindings_layout,
-                        modifiers,
-                    ))
+
+                    if state.copy_mode.is_some() {
+                        input_actions.extend(process_copy_mode_event(
+                            &event,
+                            state,
+                            self.backend,
+                            &layout,
+                        ));
+                    } else if let egui::Event::Key {
+                        key: Key::OpenBracket,
+                        pressed: true,
+                        modifiers: key_mods,
+                        ..
+                    } = &event
+                    {
+                        if key_mods.command && key_mods.shift {
+                            let content = self.backend.last_content();
+                            if !content.terminal_mode.contains(TermMode::ALT_SCREEN) {
+                                let display_offset = content.grid.display_offset();
+                                let cursor_line = content.grid.cursor.point.line.0;
+                                let col = content.grid.cursor.point.column.0;
+                                let screen_lines = content.terminal_size.screen_lines();
+                                let line_in_viewport =
+                                    ((cursor_line + display_offset as i32).max(0) as usize)
+                                        .min(screen_lines.saturating_sub(1));
+                                let num_cols = content.terminal_size.columns();
+                                state.copy_mode = Some(CopyModeState {
+                                    line_in_viewport,
+                                    col: col.min(num_cols.saturating_sub(1)),
+                                    selection_start: None,
+                                    line_select: false,
+                                });
+                                log::info!("[copy-mode] entered at viewport row {line_in_viewport}, col {col}");
+                            }
+                            input_actions.push(InputAction::Ignore);
+                        } else {
+                            input_actions.push(process_keyboard_event(
+                                event,
+                                self.backend,
+                                &self.bindings_layout,
+                                modifiers,
+                            ));
+                        }
+                    } else {
+                        input_actions.push(process_keyboard_event(
+                            event,
+                            self.backend,
+                            &self.bindings_layout,
+                            modifiers,
+                        ));
+                    }
                 },
                 egui::Event::MouseWheel { unit, delta, .. } if has_pointer => {
                     input_actions.push(process_mouse_wheel(
@@ -513,6 +571,50 @@ impl<'a> TerminalView<'a> {
 
         painter.extend(shapes);
 
+        // Copy-mode: block cursor highlight
+        if let Some(ref cm) = state.copy_mode {
+            let cx = layout_min.x + cm.col as f32 * cell_width;
+            let cy = layout_min.y + cm.line_in_viewport as f32 * cell_height;
+            let cursor_rect = Rect::from_min_size(
+                Pos2::new(cx, cy),
+                Vec2::new(cell_width, cell_height),
+            );
+            painter.rect_filled(
+                cursor_rect,
+                CornerRadius::ZERO,
+                Color32::from_rgba_unmultiplied(220, 220, 220, 140),
+            );
+
+            // [COPY] badge — top-right corner
+            let badge_label = "[COPY]";
+            let badge_font = egui::FontId::monospace(11.0);
+            let badge_color = Color32::from_rgba_unmultiplied(230, 230, 160, 200);
+            let galley = painter.layout_no_wrap(
+                badge_label.to_string(),
+                badge_font.clone(),
+                badge_color,
+            );
+            let pad = 4.0;
+            let bw = galley.size().x + pad * 2.0;
+            let bh = galley.size().y + pad;
+            let badge_rect = Rect::from_min_size(
+                Pos2::new(layout_max.x - bw - 4.0, layout_min.y + 2.0),
+                Vec2::new(bw, bh),
+            );
+            painter.rect_filled(
+                badge_rect,
+                egui::CornerRadius::same(3),
+                Color32::from_rgba_unmultiplied(40, 40, 20, 200),
+            );
+            painter.text(
+                badge_rect.center(),
+                Align2::CENTER_CENTER,
+                badge_label,
+                badge_font,
+                badge_color,
+            );
+        }
+
         let offset = content.grid.display_offset();
         if offset > 0 {
             painter.text(
@@ -591,6 +693,11 @@ fn process_text_event(
     if modifiers.alt {
         return InputAction::Ignore;
     }
+    // Suppress Text events when Cmd is held — these are shortcut chars (e.g. '{' for Cmd+Shift+[)
+    // and should never be written to the PTY. The corresponding Key event handles the binding.
+    if modifiers.command {
+        return InputAction::Ignore;
+    }
 
     if let Some(key) = Key::from_name(text) {
         if bindings_layout.get_action(
@@ -656,6 +763,182 @@ fn process_keyboard_key(
         },
         _ => InputAction::Ignore,
     }
+}
+
+fn process_copy_mode_event(
+    event: &egui::Event,
+    state: &mut TerminalViewState,
+    backend: &TerminalBackend,
+    layout: &Response,
+) -> Vec<InputAction> {
+    let content = backend.last_content();
+    let screen_lines = content.terminal_size.screen_lines();
+    let num_cols = content.terminal_size.columns();
+    let cell_width = content.terminal_size.cell_width as f32;
+    let cell_height = content.terminal_size.cell_height as f32;
+    let ppp = layout.ctx.pixels_per_point();
+    let page = (screen_lines as i32 - 1).max(1);
+
+    let cursor_px = |cm: &CopyModeState| -> (f32, f32) {
+        (cm.col as f32 * cell_width, cm.line_in_viewport as f32 * cell_height)
+    };
+
+    let mut actions: Vec<InputAction> = vec![];
+
+    let advance_selection = |cm: &CopyModeState, actions: &mut Vec<InputAction>, ppp: f32, cell_width: f32, cell_height: f32| {
+        if cm.selection_start.is_some() {
+            let (x, y) = (cm.col as f32 * cell_width, cm.line_in_viewport as f32 * cell_height);
+            actions.push(InputAction::BackendCall(BackendCommand::SelectUpdate(x, y, ppp)));
+        }
+    };
+
+    match event {
+        // ---- Exit ----
+        egui::Event::Text(t) if t == "q" => {
+            log::info!("[copy-mode] exit via q");
+            state.copy_mode = None;
+            actions.push(InputAction::BackendCall(BackendCommand::ClearSelection));
+        }
+        egui::Event::Key { key: Key::Escape, pressed: true, .. } => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.selection_start.is_some() {
+                cm.selection_start = None;
+                cm.line_select = false;
+                actions.push(InputAction::BackendCall(BackendCommand::ClearSelection));
+                log::info!("[copy-mode] selection cancelled");
+            } else {
+                log::info!("[copy-mode] exit via Esc");
+                state.copy_mode = None;
+                actions.push(InputAction::BackendCall(BackendCommand::ClearSelection));
+            }
+        }
+        // ---- Yank ----
+        egui::Event::Text(t) if t == "y" => {
+            let text = backend.selectable_content();
+            if !text.trim().is_empty() {
+                actions.push(InputAction::WriteToClipboard(text));
+                log::info!("[copy-mode] yanked selection to clipboard");
+            }
+            state.copy_mode = None;
+            actions.push(InputAction::BackendCall(BackendCommand::ClearSelection));
+        }
+        // ---- Movement: left ----
+        egui::Event::Text(t) if t == "h" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.col > 0 { cm.col -= 1; }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        egui::Event::Key { key: Key::ArrowLeft, pressed: true, .. } => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.col > 0 { cm.col -= 1; }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        // ---- Movement: right ----
+        egui::Event::Text(t) if t == "l" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.col + 1 < num_cols { cm.col += 1; }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        egui::Event::Key { key: Key::ArrowRight, pressed: true, .. } => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.col + 1 < num_cols { cm.col += 1; }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        // ---- Movement: up ----
+        egui::Event::Text(t) if t == "k" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.line_in_viewport > 0 {
+                cm.line_in_viewport -= 1;
+            } else {
+                actions.push(InputAction::BackendCall(BackendCommand::Scroll(1)));
+            }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        egui::Event::Key { key: Key::ArrowUp, pressed: true, modifiers: Modifiers { command: false, shift: false, .. }, .. } => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.line_in_viewport > 0 {
+                cm.line_in_viewport -= 1;
+            } else {
+                actions.push(InputAction::BackendCall(BackendCommand::Scroll(1)));
+            }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        // ---- Movement: down ----
+        egui::Event::Text(t) if t == "j" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.line_in_viewport + 1 < screen_lines {
+                cm.line_in_viewport += 1;
+            } else {
+                actions.push(InputAction::BackendCall(BackendCommand::Scroll(-1)));
+            }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        egui::Event::Key { key: Key::ArrowDown, pressed: true, modifiers: Modifiers { command: false, shift: false, .. }, .. } => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            if cm.line_in_viewport + 1 < screen_lines {
+                cm.line_in_viewport += 1;
+            } else {
+                actions.push(InputAction::BackendCall(BackendCommand::Scroll(-1)));
+            }
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        // ---- Page up ----
+        egui::Event::Key { key: Key::PageUp, pressed: true, .. } => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            actions.push(InputAction::BackendCall(BackendCommand::Scroll(page)));
+            cm.line_in_viewport = cm.line_in_viewport.saturating_sub(page as usize);
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        // ---- Page down ----
+        egui::Event::Key { key: Key::PageDown, pressed: true, .. } => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            actions.push(InputAction::BackendCall(BackendCommand::Scroll(-page)));
+            cm.line_in_viewport = (cm.line_in_viewport + page as usize).min(screen_lines.saturating_sub(1));
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+        }
+        // ---- Jump to top (g) ----
+        egui::Event::Text(t) if t == "g" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            actions.push(InputAction::BackendCall(BackendCommand::ScrollToTop));
+            cm.line_in_viewport = 0;
+            cm.col = 0;
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            log::info!("[copy-mode] jumped to top");
+        }
+        // ---- Jump to bottom (G) ----
+        egui::Event::Text(t) if t == "G" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            actions.push(InputAction::BackendCall(BackendCommand::ScrollToBottom));
+            cm.line_in_viewport = screen_lines.saturating_sub(1);
+            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            log::info!("[copy-mode] jumped to bottom");
+        }
+        // ---- Start visual selection (v) ----
+        egui::Event::Text(t) if t == "v" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            cm.selection_start = Some((cm.line_in_viewport, cm.col));
+            cm.line_select = false;
+            let (x, y) = cursor_px(cm);
+            actions.push(InputAction::BackendCall(BackendCommand::SelectStart(
+                SelectionType::Simple, x, y, ppp,
+            )));
+            log::info!("[copy-mode] visual selection started at ({}, {})", cm.line_in_viewport, cm.col);
+        }
+        // ---- Start line selection (V) ----
+        egui::Event::Text(t) if t == "V" => {
+            let cm = state.copy_mode.as_mut().unwrap();
+            cm.selection_start = Some((cm.line_in_viewport, 0));
+            cm.line_select = true;
+            let (x, y) = cursor_px(cm);
+            actions.push(InputAction::BackendCall(BackendCommand::SelectStart(
+                SelectionType::Lines, x, y, ppp,
+            )));
+            log::info!("[copy-mode] line selection started at row {}", cm.line_in_viewport);
+        }
+        _ => {}
+    }
+
+    actions
 }
 
 fn process_mouse_wheel(
