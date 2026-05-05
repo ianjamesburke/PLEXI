@@ -1,6 +1,16 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.106] — 2026-05-05
+
+### Changes
+- polish(notify): wider modal, centered key hint row, separator footer (#704)
+- improve: add issue-referenced code validation lesson to CLAUDE.md
+- feat(notifications): strip reserved nav shortcuts from NotifyOption at host ingestion (#702)
+- refactor(notify): migrate plexi notify CLI off file queue onto PLEXI_SOCKET (#701)
+- feat(background-apps): tick parked apps + command palette bg indicator (#700)
+- fix: set bundle name to Plexi for correct Dock/Spotlight display
+- fix(install): find bundle dynamically, don't hardcode app name
 ## [3.4.105] — 2026-05-05
 
 ### Changes
