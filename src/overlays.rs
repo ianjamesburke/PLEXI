@@ -1982,6 +1982,30 @@ impl PlexiApp {
                             );
                             ui.add_space(style::SPACE_MD);
 
+                            if let Some(err) = &self.cli_setup_error.clone() {
+                                ui.label(
+                                    RichText::new(format!("Install failed: {err}"))
+                                        .size(style::TEXT_CAPTION)
+                                        .color(egui::Color32::from_rgb(220, 80, 80)),
+                                );
+                                ui.add_space(style::SPACE_SM);
+                                ui.label(
+                                    RichText::new("Run manually:")
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.text_dim),
+                                );
+                                ui.add_space(2.0);
+                                ui.label(
+                                    RichText::new(format!(
+                                        "sudo ln -sf /Applications/Plexi.app/Contents/MacOS/plexi /usr/local/bin/{cli_name}"
+                                    ))
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_primary)
+                                    .monospace(),
+                                );
+                                ui.add_space(style::SPACE_SM);
+                            }
+
                             ui.horizontal(|ui| {
                                 // Centre the two buttons manually.
                                 let btn_w = 100.0;
@@ -2009,15 +2033,22 @@ impl PlexiApp {
 
                                 if install_btn.clicked() {
                                     match crate::cli_setup::install_symlink() {
-                                        Ok(msg) => log::info!("cli_setup: {msg}"),
-                                        Err(e) => log::warn!("cli_setup: install failed: {e}"),
+                                        Ok(msg) => {
+                                            log::info!("cli_setup: {msg}");
+                                            crate::cli_setup::mark_prompted();
+                                            self.show_cli_setup_prompt = false;
+                                            self.cli_setup_error = None;
+                                        }
+                                        Err(e) => {
+                                            log::warn!("cli_setup: install failed: {e}");
+                                            self.cli_setup_error = Some(e);
+                                        }
                                     }
-                                    crate::cli_setup::mark_prompted();
-                                    self.show_cli_setup_prompt = false;
                                 }
                                 if skip_btn.clicked() {
                                     log::info!("cli_setup: user chose Not now — will ask again next launch");
                                     self.show_cli_setup_prompt = false;
+                                    self.cli_setup_error = None;
                                 }
                             });
                         });
