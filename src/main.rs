@@ -488,7 +488,19 @@ fn main() -> eframe::Result {
                 }
             }
             "shell-init" => {
-                let shell = args.get(2).map(|s| s.as_str());
+                let mut shell: Option<&str> = None;
+                let mut i = 2;
+                while i < args.len() {
+                    if args[i] == "--shell" && i + 1 < args.len() {
+                        shell = Some(args[i + 1].as_str());
+                        i += 2;
+                    } else if !args[i].starts_with("--") {
+                        shell = Some(args[i].as_str());
+                        i += 1;
+                    } else {
+                        i += 1;
+                    }
+                }
                 std::process::exit(cli::shell_init_cli(shell));
             }
             "open" => {

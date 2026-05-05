@@ -2339,58 +2339,58 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
 /// Prints a shell hook snippet that calls `plexi context open` whenever the
 /// working directory changes and a `.plexi/` directory is found above it.
 pub fn shell_init_cli(shell: Option<&str>) -> i32 {
-    match shell {
-        Some("zsh") => {
+    match shell.unwrap_or("zsh") {
+        "zsh" => {
             println!(
                 r#"
-# Plexi shell integration — added by `plexi shell-init zsh`
+# Plexi shell integration — add to ~/.zshrc: eval "$(plexi shell-init)"
 _plexi_chpwd() {{
     local dir="$PWD"
     while [[ "$dir" != "/" ]]; do
         if [[ -d "$dir/.plexi" ]]; then
-            export PLEXI_ACTIVE_WORKSPACE="$dir"
-            plexi context open "$dir" &>/dev/null &
+            if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
+                export PLEXI_ACTIVE_WORKSPACE="$dir"
+                plexi context open "$dir" &>/dev/null &
+            fi
             return
         fi
         dir="$(dirname "$dir")"
     done
+    unset PLEXI_ACTIVE_WORKSPACE
 }}
 autoload -Uz add-zsh-hook
 add-zsh-hook chpwd _plexi_chpwd
-# Run once on shell startup
 _plexi_chpwd
 "#
             );
             0
         }
-        Some("bash") => {
+        "bash" => {
             println!(
                 r#"
-# Plexi shell integration — added by `plexi shell-init bash`
+# Plexi shell integration — add to ~/.bashrc: eval "$(plexi shell-init --shell bash)"
 _plexi_chpwd() {{
     local dir="$PWD"
     while [[ "$dir" != "/" ]]; do
         if [[ -d "$dir/.plexi" ]]; then
-            export PLEXI_ACTIVE_WORKSPACE="$dir"
-            plexi context open "$dir" &>/dev/null &
+            if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
+                export PLEXI_ACTIVE_WORKSPACE="$dir"
+                plexi context open "$dir" &>/dev/null &
+            fi
             return
         fi
-        dir="$(dirname "$dir")"
+        dir="${{dir%/*}}"
     done
+    unset PLEXI_ACTIVE_WORKSPACE
 }}
 PROMPT_COMMAND="_plexi_chpwd${{PROMPT_COMMAND:+;$PROMPT_COMMAND}}"
-# Run once on shell startup
 _plexi_chpwd
 "#
             );
             0
         }
-        Some(other) => {
+        other => {
             eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash");
-            1
-        }
-        None => {
-            eprintln!("error: shell name required — usage: plexi shell-init <zsh|bash>");
             1
         }
     }
