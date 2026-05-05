@@ -86,6 +86,13 @@ pub(crate) struct PendingNotification {
     /// the chosen value here when the user picks an option so the blocking CLI
     /// process can read it and exit.
     pub response_file: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub on_dismiss: Option<String>,
+    /// When the notification was pushed to the queue. Used for timeout tracking.
+    pub enqueued_at: std::time::Instant,
+    /// True when the originating app pane has exited. The notification stays
+    /// in the queue so the user can read it, but action buttons are hidden.
+    pub tombstoned: bool,
 }
 
 /// Render state for a notification's image attachment. Computed once and
@@ -846,6 +853,10 @@ impl PlexiApp {
                 image_inline: None,
                 image_pipe_id: None,
                 response_file,
+                timeout_secs: None,
+                on_dismiss: None,
+                enqueued_at: std::time::Instant::now(),
+                tombstoned: false,
             });
             // Host-originated notifications are always LOW (priority 0) —
             // below any reasonable interrupt threshold — so they queue
@@ -953,18 +964,22 @@ impl PlexiApp {
     }
 
     /// Return ids of all *visible* notifications (for the current context),
-    /// ordered by (priority desc, arrival asc). Empty Vec when none visible.
+    /// ordered by (required desc, priority desc, arrival asc). Empty Vec when none visible.
     pub(crate) fn sorted_notification_ids(&self) -> Vec<String> {
-        let mut indexed: Vec<(usize, u32, &str)> = self
+        let mut indexed: Vec<(usize, u32, bool, &str)> = self
             .pending_notifications
             .iter()
             .enumerate()
             .filter(|(_, n)| self.notification_is_visible(n))
-            .map(|(i, n)| (i, n.priority, n.notify_id.as_str()))
+            .map(|(i, n)| (i, n.priority, n.required, n.notify_id.as_str()))
             .collect();
-        // Reverse-sort by priority; stable sort preserves arrival order for ties.
-        indexed.sort_by(|a, b| b.1.cmp(&a.1));
-        indexed.into_iter().map(|(_, _, id)| id.to_string()).collect()
+        // required pins to top, then priority DESC, ties broken by arrival ASC.
+        indexed.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then(b.1.cmp(&a.1))
+                .then(a.0.cmp(&b.0))
+        });
+        indexed.into_iter().map(|(_, _, _, id)| id.to_string()).collect()
     }
 
     /// Return the id of the highest-priority *visible* notification,
@@ -1013,6 +1028,60 @@ impl PlexiApp {
         self.current_notify_id = Some(sorted[next_pos].clone());
     }
 
+    /// Check every pending notification for expiry. For each that has exceeded
+    /// its `timeout_secs`, deliver a `NotifyAction` dismiss event and remove it.
+    /// Called once per second from `update()`.
+    pub(crate) fn tick_notification_timeouts(&mut self) {
+        let mut expired_ids: Vec<String> = Vec::new();
+        for n in &self.pending_notifications {
+            if let Some(timeout) = n.timeout_secs {
+                if n.enqueued_at.elapsed() >= std::time::Duration::from_secs(timeout) {
+                    expired_ids.push(n.notify_id.clone());
+                }
+            }
+        }
+        for id in expired_ids {
+            let Some(pos) = self.pending_notifications.iter().position(|n| n.notify_id == id) else {
+                continue;
+            };
+            let n = self.pending_notifications.remove(pos);
+            let dismiss_value = n.on_dismiss.clone().unwrap_or_else(|| "timeout".to_string());
+            log::info!(
+                "notification '{}' timed out after {}s — delivering on_dismiss='{}'",
+                n.title,
+                n.timeout_secs.unwrap_or(0),
+                dismiss_value
+            );
+            if !n.notify_id.is_empty() && !n.notify_id.starts_with("__host__:") {
+                let cmds = vec![crate::app_trait::AppCommand::DeliverNotifyAction {
+                    pane_id: n.sender_pane_id,
+                    notify_id: n.notify_id.clone(),
+                    action_label: "timeout".to_string(),
+                    value: Some(dismiss_value),
+                    response_file: n.response_file.clone(),
+                }];
+                self.dispatch_notify_action_cmds(cmds);
+            }
+            // If this was the pinned notification, clear it so the next highest
+            // becomes current on the next frame.
+            if self.current_notify_id.as_deref() == Some(&n.notify_id) {
+                self.current_notify_id = None;
+            }
+        }
+    }
+
+    /// Mark all pending notifications from `pane_id` as tombstoned. Called
+    /// when an app pane is closed. Tombstoned notifications remain in the queue
+    /// so the user can read them, but their action buttons are hidden.
+    pub(crate) fn tombstone_pane_notifications(&mut self, pane_id: crate::tiling::PaneId) {
+        for n in &mut self.pending_notifications {
+            if n.sender_pane_id == pane_id {
+                n.tombstoned = true;
+                log::info!("notification '{}' tombstoned (pane {pane_id} closed)", n.title);
+            }
+        }
+    }
+
     /// Count of context-scoped notifications whose source_context == ctx_idx.
     /// Used for per-context sidebar badges on inactive contexts.
     pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
@@ -1044,6 +1113,7 @@ impl eframe::App for PlexiApp {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_notify_queue();
             self.drain_spawn_queue();
+            self.tick_notification_timeouts();
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
@@ -1273,6 +1343,8 @@ impl eframe::App for PlexiApp {
                     scope,
                     image_inline,
                     image_pipe_id,
+                    timeout_secs,
+                    on_dismiss,
                 } => {
                     if !self.notifications_enabled {
                         // Silently drop — master switch off.
@@ -1298,6 +1370,10 @@ impl eframe::App for PlexiApp {
                         image_inline,
                         image_pipe_id,
                         response_file: None,
+                        timeout_secs,
+                        on_dismiss,
+                        enqueued_at: std::time::Instant::now(),
+                        tombstoned: false,
                     });
                     // Auto-open rules:
                     //   1. Visibility (Global or in active context) — else

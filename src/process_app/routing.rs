@@ -256,6 +256,8 @@ impl ProcessApp {
                 priority,
                 image_inline,
                 image_pipe_id,
+                timeout_secs,
+                on_dismiss,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(
@@ -368,6 +370,8 @@ impl ProcessApp {
                     scope: crate::app_protocol::NotifyScope::Context,
                     image_inline,
                     image_pipe_id,
+                    timeout_secs,
+                    on_dismiss,
                 });
                 // `actions` intentionally dropped: they were already processed
                 // as server-side side effects above (resume_run / open_intent /

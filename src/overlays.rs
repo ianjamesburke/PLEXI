@@ -1046,6 +1046,51 @@ impl PlexiApp {
 
                         ui.add_space(style::SPACE_XL);
 
+                        if notif.tombstoned {
+                            // Source ended — show a dim label and a plain Dismiss button.
+                            // Action buttons are hidden since the app can no longer respond.
+                            ui.add_space(style::SPACE_SM);
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new("Source ended")
+                                        .size(style::TEXT_BODY)
+                                        .color(self.colors.text_dim)
+                                        .italics(),
+                                );
+                            });
+                            ui.add_space(style::SPACE_SM);
+                            ui.add_space(style::SPACE_MD);
+                            ui.vertical_centered(|ui| {
+                                let resp = primary_button(ui, "Dismiss", &self.colors, 180.0);
+                                if resp.clicked() {
+                                    if let Some(n) = self.pending_notifications
+                                        .iter()
+                                        .find(|n| n.notify_id == current_id)
+                                        .cloned()
+                                    {
+                                        self.pending_notifications
+                                            .retain(|x| x.notify_id != current_id);
+                                        self.current_notify_id = None;
+                                        if !n.notify_id.is_empty()
+                                            && !n.notify_id.starts_with("__host__:")
+                                        {
+                                            action_cmd =
+                                                Some(AppCommand::DeliverNotifyAction {
+                                                    pane_id: n.sender_pane_id,
+                                                    notify_id: n.notify_id.clone(),
+                                                    action_label: "tombstone_dismiss"
+                                                        .to_string(),
+                                                    value: Some(
+                                                        "tombstone_dismiss".to_string(),
+                                                    ),
+                                                    response_file: n.response_file.clone(),
+                                                });
+                                        }
+                                    }
+                                }
+                            });
+                            ui.add_space(style::SPACE_MD);
+                        } else {
                         // Kind-specific body.
                         match notif.kind {
                             NotifyKind::Message => {}
@@ -1133,9 +1178,11 @@ impl PlexiApp {
                             });
                             ui.add_space(style::SPACE_MD);
                         }
+                        } // end !tombstoned
 
                         // Footer keyboard hint — chips + inline labels per action.
-                        ui.vertical_centered(|ui| {
+                        // Not shown for tombstoned notifications (only a Dismiss button).
+                        if !notif.tombstoned { ui.vertical_centered(|ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 match notif.kind {
@@ -1225,13 +1272,14 @@ impl PlexiApp {
                                     }
                                 }
                             });
-                        });
+                        }); } // end !tombstoned keyboard hint
                     });
             });
 
         // ── Resolve keyboard input into an action_cmd (only if not already
         //    produced by a mouse click). Mouse wins; keyboard is a fallback.
-        if action_cmd.is_none() {
+        // Tombstoned notifications have no keyboard actions — only the mouse Dismiss.
+        if action_cmd.is_none() && !notif.tombstoned {
             match notif.kind {
                 NotifyKind::Message => {
                     if enter_pressed || space_pressed {
