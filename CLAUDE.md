@@ -213,6 +213,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **SDK import proxy:** `plexi_sdk` is only on PYTHONPATH for Plexi-spawned app processes — a terminal pane's `python3` never sees it. Test SDK import changes by observing whether canvas apps open and render, not by running `python3` directly in a terminal.
 - **`cargo bundle --bin` ignores metadata name:** `cargo bundle --release --bin <name>` uses the binary name, not `[package.metadata.bundle] name`, as the app bundle name. Multi-binary packages must use a workspace to isolate binaries — the workspace approach eliminates the conflict entirely and restores the metadata name for the main bundle.
 - **SDK proxy wrappers:** `_render_context.py` contains proxy wrappers for every `Emitter` method (`notify`, `notify_choice`, `notify_input`, `notify_and_wait`, etc.). When adding parameters to `_emitter.py` methods, always update the matching proxies in `_render_context.py` in the same edit.
+- **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed. Rebase conflict is the symptom; a 30-second grep is the cure.
 
 ## PlexiApp State
 
