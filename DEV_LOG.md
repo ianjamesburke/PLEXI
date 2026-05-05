@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-05 — [CHANGED] Audio playback, AudioMeter, emit.list_audio_devices, audio-recorder POC (PR #673 → alpha)
+
+`AudioPlay` routing fully wired via `rodio` — sessions keyed on source path, state machine for playing/paused/stopped. `AudioMeter` `RenderCommand` now renders a green→yellow→red amplitude bar; peaks tracked in the capture `FrameSink` via `Arc<Mutex<HashMap<String, f32>>>` and passed to `render_draw_commands` as a snapshot. Python SDK gains `emit.list_audio_devices()` (mirrors `list_midi_devices`) with `AudioDeviceInfo`/`AudioDeviceList` protocol types. New `examples/audio-recorder/` POC: device dropdown, record/stop, live peak meter, save-to-WAV via stdlib `wave`. Arrow key handling: canvas apps receive `"ArrowLeft"`/`"ArrowRight"` (egui Debug format), not `"left"`/`"right"` as the SDK docstring misleadingly states — snake.py and tetris.py already used the correct form.
+**Breaks if:** Opening the audio-recorder app shows "Device list failed" in status, OR the peak meter stays at 0.0 during mic capture, OR `recording.wav` after saving is 44 bytes (empty header).
+
+## 2026-05-05 — [CHANGED] StreamProcess / CancelProcess / StreamChunk / StreamEnd (PR #671 → alpha)
+
+Added four PGAP v3 streaming variants deferred from #78 (Canvas Terminal Binding Primitives). Host spawns `sh -c <command>` with stdout/stderr piped; a cancel-flag-guarded reader thread delivers `StreamChunk` events via the existing `http_tx` async channel. `CancelProcess` sets the cancel flag, sends SIGTERM, then escalates to SIGKILL after 1s on a background thread. `StreamEnd` is always delivered (on natural exit, cancel, or capability denial) so SDK iterators always unblock. `StreamChannel::Structured` is reserved on the wire but emits stdout bytes in v1. Capability gate: `terminal.bindings` on both new commands.
+**Breaks if:** A Canvas app with `terminal.bindings` emits `stream_process` and receives no `stream_chunk` events, or `cancel_process` does not deliver `stream_end` within 1s.
+
 ## 2026-05-04 — [FIX] Revert broken sidebar double-click, restore single-click (PR #659 → alpha)
 
 PR #657 added `ui.interact(full_row, Sense::click())` after `ui.interact(content_zone, Sense::click_and_drag())`. In egui, overlapping widgets with click sense compete — the last-registered one steals the event. The full-row widget won, so `drag_response.clicked()` always returned false and single-click context switching broke. Reverted to pre-#657 state. Proper fix is the `SidebarAction` enum refactor (issue #660), which uses one `interact()` on the full row and classifies actions by pointer position — no competing widgets possible.
