@@ -1,4 +1,9 @@
-<!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
+<!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
+
+## 2026-05-05 — [CHANGED] Tier 3 --help crawl fallback descriptor renderer (PR #685 → alpha)
+
+Added `src/cli_crawl.rs` — the third tier of CLI descriptor resolution. When a CLI has no `--plexi` native support (Tier 1) and no embedded registry entry (Tier 2), `plexi descriptor probe` now runs `<cli> --help`, parses the command list, and synthesises a `PlexiDescriptor`. Results cached under `~/.plexi-<channel>/cache/descriptors/<cli>.json`. Added `Serialize` to all `PlexiDescriptor` types for cache write. Added `--no-crawl` flag and `SummarySource::Crawled { from_cache }` badge in probe output. Two parsing strategies: (1) recognized section headers (COMMANDS, SUBCOMMANDS, CORE COMMANDS) for tools like `gh`/`cargo`; (2) broad 3-space-indent scan fallback for prose-header CLIs like `git`. The fallback was discovered necessary during testing — `git --help` uses section labels like "start a working area" rather than any standard COMMANDS keyword.
+**Breaks if:** `plexi descriptor probe git` errors "could not extract any commands" instead of listing ≥8 git subcommands with "(inferred from --help)" badge.
 
 ## 2026-05-05 — [FIX] Offload audio/MIDI device enumeration to background thread (PR #688 → alpha)
 
