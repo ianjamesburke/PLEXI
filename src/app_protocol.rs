@@ -322,6 +322,19 @@ pub enum PlexiEvent {
     /// dialog without selecting a file, or the app lacks `fs.pick` capability.
     FilePickCancelled { request_id: String },
 
+    /// Chunk of stdout/stderr bytes from an active `DrawCommand::StreamProcess`
+    /// child. `bytes` is a raw byte array (values 0–255); decode with
+    /// `bytes(event['bytes'])` in Python. Delivered at up to ~30 Hz.
+    StreamChunk {
+        correlation_id: String,
+        channel: StreamChannel,
+        bytes: Vec<u8>,
+    },
+    /// Terminal event for a `DrawCommand::StreamProcess` child. Sent when the
+    /// child exits, on `CancelProcess`, or on capability denial. The SDK
+    /// iterator unblocks after this event.
+    StreamEnd { correlation_id: String, exit_code: i32 },
+
     /// Emitted by the host when the scroll offset for a `BeginScroll` region
     /// changes (mouse wheel, drag). The app should re-render using `offset_y`
     /// as the vertical translation applied to all content within that region.
@@ -1133,6 +1146,36 @@ pub enum HostCommand {
     /// `on_mouse_move` callbacks. Send `{ enabled: false }` to stop.
     SetMouseTracking { enabled: bool },
 
+    // ── Process streaming (#358) ──────────────────────────────────────────────
+
+    /// Spawn `command` via `sh -c` and stream its output back to the app.
+    ///
+    /// The host pipes stdout and stderr, batches available bytes at ~30 Hz,
+    /// and delivers each batch as `PlexiEvent::StreamChunk`. When the child
+    /// exits (or the app calls `CancelProcess`) the host sends
+    /// `PlexiEvent::StreamEnd`. `channel` selects which output stream to
+    /// forward; v1 treats `structured` identically to `stdout`.
+    ///
+    /// `terminal_pane_id` links the stream to an existing linked terminal
+    /// for capability gating and future display contexts.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    StreamProcess {
+        correlation_id: String,
+        terminal_pane_id: u64,
+        command: String,
+        channel: StreamChannel,
+    },
+
+    /// Cancel an in-flight `StreamProcess`. The host sends SIGTERM to the
+    /// child, waits up to 1s, then SIGKILL. A `PlexiEvent::StreamEnd` is
+    /// always delivered after cancellation.
+    ///
+    /// Cancelling an already-exited stream is a no-op.
+    ///
+    /// Capability: `terminal.bindings`. All fields required.
+    CancelProcess { correlation_id: String },
+
     // ── File picker (#514) ────────────────────────────────────────────────────
     /// Show a native macOS file picker dialog. Requires `fs.pick` capability.
     ///
@@ -1250,6 +1293,17 @@ pub enum ArtifactOpenMode {
     RevealInFinder,
     /// `open <path>` — Launch Services default app.
     OpenWithDefault,
+}
+
+/// Output channel selector for `DrawCommand::StreamProcess`.
+/// v1: `structured` emits the same bytes as `stdout`.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamChannel {
+    Stdout,
+    Stderr,
+    /// Reserved for future structured-progress framing. v1: identical to `stdout`.
+    Structured,
 }
 
 /// One text segment inside a `DrawCommand::TextRow`.
@@ -2230,5 +2284,114 @@ mod tests {
             }
             other => panic!("expected Notify, got {other:?}"),
         }
+    }
+
+    // ── v3.5 StreamProcess / CancelProcess / StreamChunk / StreamEnd (#358) ──
+
+    #[test]
+    fn stream_channel_serializes_as_snake_case() {
+        assert_eq!(serde_json::to_string(&StreamChannel::Stdout).unwrap(), r#""stdout""#);
+        assert_eq!(serde_json::to_string(&StreamChannel::Stderr).unwrap(), r#""stderr""#);
+        assert_eq!(serde_json::to_string(&StreamChannel::Structured).unwrap(), r#""structured""#);
+        let parsed: StreamChannel = serde_json::from_str(r#""stdout""#).unwrap();
+        assert_eq!(parsed, StreamChannel::Stdout);
+    }
+
+    #[test]
+    fn stream_process_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"stream_process","correlation_id":"cid-1","terminal_pane_id":42,"command":"ls -la","channel":"stdout"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::StreamProcess {
+                correlation_id,
+                terminal_pane_id,
+                command,
+                channel,
+            }) => {
+                assert_eq!(correlation_id, "cid-1");
+                assert_eq!(*terminal_pane_id, 42);
+                assert_eq!(command, "ls -la");
+                assert_eq!(*channel, StreamChannel::Stdout);
+            }
+            other => panic!("expected StreamProcess, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"stream_process""#), "wire tag missing: {serialised}");
+
+        let bad = r#"{"type":"stream_process","terminal_pane_id":42,"command":"ls","channel":"stdout"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `correlation_id`"
+        );
+    }
+
+    #[test]
+    fn cancel_process_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"cancel_process","correlation_id":"cid-2"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::CancelProcess { correlation_id }) => {
+                assert_eq!(correlation_id, "cid-2");
+            }
+            other => panic!("expected CancelProcess, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"cancel_process""#), "wire tag missing: {serialised}");
+
+        let bad = r#"{"type":"cancel_process"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required `correlation_id`"
+        );
+    }
+
+    #[test]
+    fn stream_chunk_event_round_trips_serde() {
+        let json = r#"{"type":"stream_chunk","correlation_id":"cid-1","channel":"stderr","bytes":[72,101,108,108,111]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::StreamChunk { correlation_id, channel, bytes } => {
+                assert_eq!(correlation_id, "cid-1");
+                assert_eq!(*channel, StreamChannel::Stderr);
+                assert_eq!(bytes, &[72u8, 101, 108, 108, 111]);
+            }
+            other => panic!("expected StreamChunk, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(serialised.contains(r#""type":"stream_chunk""#), "wire tag missing: {serialised}");
+
+        let bad = r#"{"type":"stream_chunk","channel":"stdout","bytes":[1]}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `correlation_id`"
+        );
+    }
+
+    #[test]
+    fn stream_end_event_round_trips_serde() {
+        let json = r#"{"type":"stream_end","correlation_id":"cid-1","exit_code":0}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::StreamEnd { correlation_id, exit_code } => {
+                assert_eq!(correlation_id, "cid-1");
+                assert_eq!(*exit_code, 0);
+            }
+            other => panic!("expected StreamEnd, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(serialised.contains(r#""type":"stream_end""#), "wire tag missing: {serialised}");
+
+        let json_nonzero = r#"{"type":"stream_end","correlation_id":"cid-2","exit_code":127}"#;
+        let event: PlexiEvent = serde_json::from_str(json_nonzero).expect("deserialise nonzero");
+        match &event {
+            PlexiEvent::StreamEnd { exit_code, .. } => assert_eq!(*exit_code, 127),
+            other => panic!("expected StreamEnd, got {other:?}"),
+        }
+
+        let bad = r#"{"type":"stream_end","exit_code":0}"#;
+        assert!(
+            serde_json::from_str::<PlexiEvent>(bad).is_err(),
+            "must fail without required `correlation_id`"
+        );
     }
 }
