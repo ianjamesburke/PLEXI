@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.114] — 2026-05-05
+
+### Changes
+- fix(release-ci): include Cargo.toml in cache key + always clean bundle output (#732)
+- feat(tiling): widen active pane focus outline to fill inter-pane gap (#722)
+- feat(keys): delete RunPalette, bind Cmd+R → rename pane, Cmd+Shift+R → rename context (#720)
 ## [3.4.113] — 2026-05-05
 
 ### Changes
