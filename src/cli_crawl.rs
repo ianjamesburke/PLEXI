@@ -237,13 +237,23 @@ fn extract_description(text: &str) -> Option<String> {
 }
 
 /// Extract subcommands from the `--help` output.
+///
+/// Primary strategy: scan for recognized section headers (COMMANDS, SUBCOMMANDS,
+/// CORE COMMANDS, etc.) and collect indented lines within those sections.
+///
+/// Fallback strategy (e.g. `git --help`): when no recognized header is found,
+/// do a broad scan — any line with 3+ leading spaces matching the `word   desc`
+/// pattern is a candidate command. This handles prose-header CLIs where
+/// sections are labelled "start a working area" rather than "SUBCOMMANDS".
 fn extract_commands(text: &str) -> Vec<Command> {
     let mut commands: Vec<Command> = Vec::new();
     let mut in_command_section = false;
+    let mut found_section_header = false;
 
     for line in text.lines() {
         if is_command_section_header(line) {
             in_command_section = true;
+            found_section_header = true;
             continue;
         }
 
@@ -256,6 +266,24 @@ fn extract_commands(text: &str) -> Vec<Command> {
 
             if let Some(cmd) = parse_command_line(line) {
                 commands.push(cmd);
+            }
+        }
+    }
+
+    // Fallback: broad scan for consistently-indented command lines when no
+    // recognized section header was present (e.g. `git --help`).
+    if !found_section_header && commands.is_empty() {
+        for line in text.lines() {
+            let leading = line.len() - line.trim_start().len();
+            // Require exactly 3 leading spaces to avoid picking up usage
+            // continuation lines (which are typically 11+ spaces in git).
+            if leading == 3 {
+                if let Some(cmd) = parse_command_line(line) {
+                    // Extra guard: name must be all-lowercase alpha (git-style).
+                    if cmd.name.chars().all(|c| c.is_ascii_lowercase()) {
+                        commands.push(cmd);
+                    }
+                }
             }
         }
     }
@@ -471,6 +499,47 @@ SUBCOMMANDS:
         assert_eq!(loaded.name, "test-cli");
         assert_eq!(loaded.commands.len(), 1);
         assert_eq!(loaded.commands[0].name, "run");
+    }
+
+    #[test]
+    fn parse_git_style_help() {
+        let help = r#"usage: git [-v | --version] [-h | --help] [-C <path>]
+           <command> [<args>]
+
+These are common Git commands used in various situations:
+
+start a working area (see also: git help tutorial)
+   clone      Clone a repository into a new directory
+   init       Create an empty Git repository or reinitialize an existing one
+
+work on the current change (see also: git help everyday)
+   add        Add file contents to the index
+   mv         Move or rename a file, a directory, or a symlink
+   restore    Restore working tree files
+   rm         Remove files from the working tree and from the index
+
+examine the history and state (see also: git help revisions)
+   bisect     Use binary search to find the commit that introduced a bug
+   diff       Show changes between commits, commit and working tree, etc
+   log        Show commit logs
+   show       Show various types of objects
+   status     Show the working tree status
+
+collaborate (see also: git help workflows)
+   fetch      Download objects and refs from another repository
+   pull       Fetch from and integrate with another repository or a local branch
+   push       Update remote refs along with associated objects
+"#;
+        let d = parse_help("git", help, None);
+        assert!(
+            d.commands.len() >= 8,
+            "expected ≥8 commands, got {}",
+            d.commands.len()
+        );
+        assert!(d.commands.iter().any(|c| c.name == "clone"));
+        assert!(d.commands.iter().any(|c| c.name == "push"));
+        assert!(d.commands.iter().any(|c| c.name == "log"));
+        assert!(!d.commands.iter().any(|c| c.name.starts_with('-')));
     }
 
     #[test]
