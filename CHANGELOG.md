@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.111] — 2026-05-05
+
+### Changes
+- fix(release): bundle Python runtime in release zip (#718)
+- refactor(cli): migrate CLI dispatch to clap — structured subcommands, --help (#714)
+- feat(context): configurable context root — project container foundation (#709)
+- fix(tiling): remove idle divider stroke to fix white lines in light mode (#707)
 ## [3.4.110] — 2026-05-05
 
 ### Changes
