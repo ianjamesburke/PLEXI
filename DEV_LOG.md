@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [FIX] Release workflow: use git-cliff --latest instead of custom awk (PR #708 → alpha)
+
+`actions/checkout` defaults to shallow clone (depth=1), so `git tag --sort=-version:refname` only returned the current tag — `prev_tag` was always empty, the awk stop condition never fired, and every GitHub release body contained the full CHANGELOG. Fix: `fetch-depth: 0` on checkout + `git-cliff --latest --strip header` via `taiki-e/install-action`. Deleted the awk/grep tag-hunting block entirely — git-cliff already does this natively.
+**Breaks if:** A new GitHub release body contains changelog entries from versions older than the released tag.
+
 ## 2026-05-05 — [CHANGED] Notification modal polish — wider, centered footer chips (PR #704 → alpha)
 
 Widened notification modal from 640→760px (`MODAL_WIDTH_NOTIFY` constant; `MODAL_WIDTH_MD` now used by shortcuts modal which was hardcoded at 640). Added `ui.separator()` above the keyboard hint footer. Switched footer chips from raw `key_chip` calls to `key_combo_list` groups. Fixed chip row centering: `vertical_centered` + `horizontal` does NOT center in egui 0.31 — `Layout::top_down(Align::Center)` expands child rects to full available width at the `next_frame` level, so content paints at x=0 regardless. Fix: pre-measure the row width via `ui.fonts` matching `key_combo_list` spacing constants (INTER_COMBO_GAP=10, TRAILING_GAP=10, KEYCAP_PAD_H=6), then `allocate_ui_with_layout(exact_hint_w, hint_h)` inside `vertical_centered` — `justify_and_align` places the child rect at `center_x − hint_w/2`.
