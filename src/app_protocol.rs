@@ -1410,8 +1410,20 @@ pub struct NotifyOption {
     #[serde(default)]
     pub value: String,
     /// Optional single-char hotkey (e.g. "y", "n"). Case-insensitive.
+    /// Reserved keys that conflict with navigation are stripped at ingestion:
+    /// `j`, `k`, `h`, `l` (navigation), `1`–`9` (digit-select).
+    /// Recommended safe set: letters excluding navigation keys; `y`/`n` for yes/no.
     #[serde(default)]
     pub shortcut: Option<String>,
+}
+
+/// Returns `true` if `key` is reserved by the notification overlay for navigation.
+/// Reserved: `j`, `k`, `h`, `l` (navigation) and `1`–`9` (digit-select).
+pub fn is_reserved_shortcut(key: &str) -> bool {
+    let Some(c) = key.chars().next() else { return false };
+    if key.chars().count() != 1 { return false }
+    matches!(c.to_ascii_lowercase(), 'j' | 'k' | 'h' | 'l')
+        || c.is_ascii_digit() && c != '0'
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
@@ -2504,5 +2516,28 @@ mod tests {
         }
         let serialised = serde_json::to_string(&event).expect("serialise");
         assert!(serialised.contains(r#""type":"pane_spawn_error""#), "wire tag missing: {serialised}");
+    }
+
+    #[test]
+    fn is_reserved_shortcut_covers_expected_set() {
+        // Navigation keys — reserved
+        assert!(is_reserved_shortcut("j"));
+        assert!(is_reserved_shortcut("k"));
+        assert!(is_reserved_shortcut("h"));
+        assert!(is_reserved_shortcut("l"));
+        assert!(is_reserved_shortcut("J")); // case-insensitive
+        // Digit-select keys — reserved
+        assert!(is_reserved_shortcut("1"));
+        assert!(is_reserved_shortcut("9"));
+        // 0 is NOT reserved (1-9 only)
+        assert!(!is_reserved_shortcut("0"));
+        // Safe keys — not reserved
+        assert!(!is_reserved_shortcut("y"));
+        assert!(!is_reserved_shortcut("n"));
+        assert!(!is_reserved_shortcut("a"));
+        // Multi-char is not a valid shortcut — treated as not reserved
+        assert!(!is_reserved_shortcut("jk"));
+        // Empty is not reserved
+        assert!(!is_reserved_shortcut(""));
     }
 }
