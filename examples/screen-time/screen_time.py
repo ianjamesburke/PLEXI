@@ -112,10 +112,24 @@ def load_day(log_dir: str, date: datetime.date) -> list[dict]:
 
 
 def aggregate_day(records: list[dict]) -> dict[str, float]:
-    """Sum seconds per app."""
+    """Sum seconds per app, counting only the portion of each session that
+    falls on the target date.
+
+    Long sessions logged at e.g. 01:31 on May 1 with secs=39126 started on
+    April 30 — only the midnight-to-01:31 slice (5483s) belongs to May 1.
+    Counting the full secs inflates the total by the cross-midnight overflow.
+    """
     totals: dict[str, float] = {}
     for rec in records:
-        totals[rec["app"]] = totals.get(rec["app"], 0) + float(rec.get("secs", 0))
+        ts: datetime.datetime | None = rec.get("_ts")
+        secs = float(rec.get("secs", 0))
+        if ts is not None and secs > 0:
+            start_dt = ts - datetime.timedelta(seconds=secs)
+            if start_dt.date() < ts.date():
+                # Clamp: only count from midnight to the log timestamp.
+                end_sec = ts.hour * 3600 + ts.minute * 60 + ts.second
+                secs = float(end_sec)
+        totals[rec["app"]] = totals.get(rec["app"], 0) + secs
     return totals
 
 
