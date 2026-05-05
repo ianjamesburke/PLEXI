@@ -1,6 +1,23 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.96] — 2026-05-05
+
+### Changes
+- feat(cli-crawl): Tier 3 --help fallback descriptor renderer (#360) (#685)
+- fix: offload audio/MIDI device enumeration to background thread (#688)
+- feat(ipc): implement PLEXI_SOCKET listener and plexi pane set-title (#686)
+- feat(chat-poc): copy buttons, in-flight input overlay, tool docstring (#684)
+- fix(palette): launch app from welcome screen seeds tree root (#683)
+- improve: add SDK proxy wrappers lesson to CLAUDE.md
+- feat(notifications): timeout_secs/on_dismiss, tombstone, required-pinned (#291) (#679)
+- feat(secrets): add inject toggle to new-secret form (#670)
+- feat(sdk): normalize arrow key names before on_key dispatch (#677)
+- feat(ux): show welcome screen instead of deleting context when last pane is closed (#678)
+- feat(audio): playback, AudioMeter, emit.list_audio_devices, audio-recorder POC (#341) (#673)
+- feat(protocol): add StreamProcess / CancelProcess / StreamChunk / StreamEnd (#358) (#671)
+- fix(screen-time): spread session secs across 15-min buckets (#668)
+- feat(ci): auto-triage new issues via Claude Code Action
 ## [3.4.95] — 2026-05-05
 
 ### Changes
