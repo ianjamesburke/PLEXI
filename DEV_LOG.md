@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [FIX] NotifyOption.shortcut: strip reserved nav keys at host ingestion (PR #702 → alpha)
+
+`NotifyOption.shortcut` accepted any string, but the notification overlay reserves `j`/`k` (up/down nav), `h`/`l` (future nav), and `1`–`9` (digit-select). An app sending `shortcut: "j"` produced a silent conflict — the overlay nav fired instead of the option select. Fix: `pub fn is_reserved_shortcut(key: &str) -> bool` in `app_protocol.rs`; the `ShowNotification` dispatch site in `app/mod.rs` now strips reserved shortcuts with a `log::warn!` naming the pane, key, and option label. Python SDK warns at `notify_choice()` call time via `warnings.warn`. Note: `drain_notify_queue` was removed in PR #701 (CLI moved to PLEXI_SOCKET); the only ingestion point remaining is `AppCommand::ShowNotification`.
+**Breaks if:** An app calling `emit.notify_choice` with `shortcut: "j"` shows no `[WARN] notify:shortcut` in the log, OR pressing `j` in the notification panel selects the option instead of navigating down.
+
 ## 2026-05-05 — [CHANGED] refactor(notify): migrate plexi notify CLI off file queue onto PLEXI_SOCKET (PR #701 → alpha)
 
 `notify_cli` now connects to `PLEXI_SOCKET` and writes a `HostCommand::Notify` JSON line instead of writing to `notify-queue/`. `drain_notify_queue` deleted; notify dispatch moved into `drain_pane_cmd_channel` alongside `set_pane_title` and `spawn_pane`. `HostCommand::Notify` gains a `response_file: Option<String>` field (CLI-only, `skip_serializing_if = "Option::is_none"`) to carry the response path for the blocking `--choice` path. One-time cleanup of `config_dir/notify-queue/` at startup. Trade-off: `plexi notify` now fails immediately if Plexi is not running — the old file queue silently buffered offline sends for pickup on next launch; the socket does not.
