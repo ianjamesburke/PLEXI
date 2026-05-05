@@ -616,7 +616,10 @@ class Emitter:
             system: system prompt (may be empty string).
             messages: list of `{"role": "user"|"assistant", "content": str}`
                 dicts. At least one message is required.
-            tools: reserved for v3.4 tool-use; pass `None` or `[]` today.
+            tools: optional extra tool defs to include in this query. Tools
+                exposed by other panes in the same context via ``@self.tool()``
+                or ``expose_tools()`` are automatically injected by the host —
+                you do not need to pass them here.
 
         Returns:
             AiResponse with `content`, `tokens_in`, `tokens_out`.
