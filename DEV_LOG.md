@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [FIX] Update check: only notify when latest > current semver (PR #733 → alpha)
+
+`updater.rs` used `latest != current` — firing the update banner whenever the running version differed from the latest GitHub release, including when running a *newer* build (e.g. alpha at 3.4.113 flagged stable 3.4.111 as an update). Fixed with a local `semver_gt(a, b)` that parses M.m.p into integer tuples and returns `a > b`. No crate needed. The `config_dir()` cache path was already channel-aware; only the comparison logic was wrong.
+**Breaks if:** Running alpha at a version ahead of the latest stable release still shows the update banner in the status bar.
+
 ## 2026-05-05 — [FIX] Embed plexi_sdk in binary, seed to profile dir on first launch (PR #734 → alpha)
 
 `ensure_profile_initialized()` seeded `apps/` from embedded examples but never seeded `sdk/`. The bundle resource path (`Contents/Resources/sdk/python/`) was the only PYTHONPATH entry on fresh installs, but CI cache hits (Cargo.lock-only key) meant `cargo bundle` could skip re-embedding resources — shipping a zip with no SDK. Dev builds worked because `install.sh` explicitly ran `cp -R sdk/python/plexi_sdk ~/.plexi-<channel>/sdk/plexi_sdk`. Fix: inline `include_dir!("sdk/python/plexi_sdk")` in `ensure_profile_initialized()`, extracted to `config_dir()/sdk/plexi_sdk/` on first launch. Also updated CI cache key to hash `Cargo.toml` (belt-and-suspenders alongside the `rm -rf target/release/bundle` from PR #732).
