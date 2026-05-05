@@ -1,5 +1,15 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-05 — [CHANGED] Show welcome screen instead of deleting context when last pane is closed (PR #678 → alpha)
+
+Closing the last pane in a context no longer removes the context. `execute_close_pane` now checks the page count for the context before calling `delete_window` — it only deletes the page if there are sibling pages. When a context is down to its sole page, the empty window is kept and the existing `panes.is_empty()` render branch shows the welcome screen. Multi-page close behavior and explicit sidebar × deletion are unchanged.
+**Breaks if:** Closing the last pane in a context causes the context to disappear from the sidebar instead of showing the welcome screen.
+
+## 2026-05-05 — [FIX] Normalize egui arrow key names in SDK; fix stale audio capture session (PR #677 → alpha)
+
+Two fixes bundled. (1) `_normalize_key()` in `_app.py` maps egui Debug-format key names (`"ArrowLeft"` etc.) to documented SDK names (`"left"` etc.) before dispatching `on_key` — both forms now work, so agents using either don't silently break. All 14 example apps updated to canonical names. (2) `start_audio_capture` in `routing.rs` now cleans up stale sessions: when a pipe breaks mid-recording (EBADF on Python side / Broken Pipe on Rust side), the host's `audio_capture_sessions` entry was never removed, permanently blocking re-use of the same `pipe_id`. Fix: on a new `AudioCapture` command for an already-registered `pipe_id`, drop the old `CaptureSession`, close the pipe, clear the peak meter entry, then proceed with the new capture.
+**Breaks if:** After stopping and restarting recording in audio-recorder, the VU meter stays at 0 and the log shows "pipe connect timed out" on the second attempt.
+
 ## 2026-05-05 — [CHANGED] Audio playback, AudioMeter, emit.list_audio_devices, audio-recorder POC (PR #673 → alpha)
 
 `AudioPlay` routing fully wired via `rodio` — sessions keyed on source path, state machine for playing/paused/stopped. `AudioMeter` `RenderCommand` now renders a green→yellow→red amplitude bar; peaks tracked in the capture `FrameSink` via `Arc<Mutex<HashMap<String, f32>>>` and passed to `render_draw_commands` as a snapshot. Python SDK gains `emit.list_audio_devices()` (mirrors `list_midi_devices`) with `AudioDeviceInfo`/`AudioDeviceList` protocol types. New `examples/audio-recorder/` POC: device dropdown, record/stop, live peak meter, save-to-WAV via stdlib `wave`. Arrow key handling: canvas apps receive `"ArrowLeft"`/`"ArrowRight"` (egui Debug format), not `"left"`/`"right"` as the SDK docstring misleadingly states — snake.py and tetris.py already used the correct form.
