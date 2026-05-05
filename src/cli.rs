@@ -1395,10 +1395,34 @@ pub fn pane_set_title_cli(name: &str) -> i32 {
 
 /// `plexi open <type_id> [args...] [--layout=X]`
 ///
-/// Writes a spawn request to the spawn-queue directory. The running Plexi host
-/// drains this queue each second and launches the app.
+/// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a
+/// spawn_pane command directly via the socket — channel-agnostic, works on
+/// alpha, beta, stable, and PR builds without caring which binary is on PATH.
+///
+/// When called from outside Plexi, falls back to the spawn-queue directory
+/// which the running host drains each second.
+///
 /// Returns 0 on success, 1 on error.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
+    let layout_str = layout.unwrap_or("split_v");
+    let payload = serde_json::json!({
+        "type": "spawn_pane",
+        "type_id": type_id,
+        "args": args,
+        "layout": layout_str,
+    });
+
+    // Socket path is set when running inside a Plexi pane — use it directly so
+    // the command reaches the correct running instance regardless of channel.
+    if std::env::var("PLEXI_SOCKET").is_ok() {
+        let code = send_to_socket(payload);
+        if code == 0 {
+            println!("opened: {type_id}");
+        }
+        return code;
+    }
+
+    // Fallback: write to the spawn-queue for the channel this binary belongs to.
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         eprintln!("error: could not create spawn queue: {e}");
@@ -1408,13 +1432,13 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let payload = serde_json::json!({
+    let queue_payload = serde_json::json!({
         "type_id": type_id,
         "args": args,
-        "layout": layout.unwrap_or("split_v"),
+        "layout": layout_str,
     });
     let file = queue_dir.join(format!("{id}.json"));
-    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }

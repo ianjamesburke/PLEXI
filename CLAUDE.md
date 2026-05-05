@@ -232,6 +232,17 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 
 **Use `key_combo_list` for any shortcut hint row.** Do not render key shortcuts as plain `Label` text — it produces a visually inconsistent result that requires a separate pass to fix.
 
+## Channel-Agnostic CLI Rule
+
+Every CLI command and feature must work identically on alpha, beta, stable, and PR builds. This is non-negotiable — the release channel is an implementation detail, not something callers should need to know.
+
+**How it works:**
+- When called from inside a Plexi pane, `PLEXI_SOCKET` is set and routes directly to the correct running instance. All CLI commands that communicate with the host must check `PLEXI_SOCKET` first and use it when available.
+- When called from outside a pane, commands fall back to channel-specific mechanisms (spawn-queue, config_dir) derived from the running binary name.
+- `/usr/local/bin/plexi` (the bare `plexi` command) is kept as a symlink to the most recently installed non-PR channel binary by `scripts/install.sh`. PR builds never capture the bare name.
+
+**Enforcement:** Never hardcode a profile directory path (e.g. `~/.plexi-alpha/`) in CLI code — always use `config_dir()`. Never route around `PLEXI_SOCKET` when it is set. Any new CLI command that communicates with a running instance must follow the socket-first pattern in `open_cli()`.
+
 ## General Rules
 
 - Before SSH/networking setup, ask if machines are on the same LAN or remote. Before any multi-step infra task, clarify topology first.

@@ -62,6 +62,14 @@ fi
 
 ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
 
+# For non-PR channels (alpha, beta, stable), also update the bare `plexi`
+# symlink so that `plexi open`, `plexi notify`, etc. always reach the correct
+# running instance regardless of which channel was most recently installed.
+# PR builds are excluded — they are ephemeral and should not capture the bare name.
+if [[ ! "$channel" =~ ^pr- ]]; then
+  ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" /usr/local/bin/plexi
+fi
+
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
 rm -rf "$profile_dir/sdk/plexi_sdk.py" "$profile_dir/sdk/plexi_sdk"
 cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk"
