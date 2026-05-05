@@ -1,3 +1,7 @@
+<h1 align="center"> under construction </h1>
+
+
+
 <p align="center">
   <img src="assets/icon.svg" width="80" alt="Plexi" />
 </p>
@@ -11,6 +15,8 @@
 </p>
 
 One binary. A tiling shell that brings Unix composability to the desktop — terminals, apps, and AI agents all speak the same protocol. Pipe output between processes, route notifications across panes, query any model from any context.
+
+
 
 ---
 

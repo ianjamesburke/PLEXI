@@ -303,7 +303,7 @@ class App:
 
     def run(self) -> None:
         """Start the PGAP v3 asyncio event loop. Blocks until Shutdown."""
-        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
         asyncio.run(self._async_main())
 
     async def _async_main(self) -> None:
