@@ -39,6 +39,9 @@ pub fn should_prompt() -> bool {
     true
 }
 
+/// Note: `just pr-install` always creates `/usr/local/bin/plexi-pr-<N>` as part of its
+/// setup, so this returns `true` in every PR build. To test the CLI setup modal in a PR
+/// build, first remove that symlink manually before opening the app.
 pub fn is_installed() -> bool {
     install_path().exists()
 }
