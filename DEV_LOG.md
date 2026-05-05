@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-04 — [FIX] Remove deleted agent apps from core pack list (PR #656 → alpha)
+
+`agent-tester`, `agent-coordinator`, and `agent-worker` were removed from `examples/` in PR #628 but `packs/core.toml` still listed them as `local:` sources. `core_pack_applies_only_when_apps_dir_empty` panicked because the local source no longer exists. Fix: delete the three stale `[[app]]` blocks from `core.toml`.
+**Breaks if:** `cargo test core_pack` still fails with `core pack entry 'agent-tester' did not install`.
+
 ## 2026-05-04 — [FIX] Widen context rename double-click hit box to full row (PR #657 → alpha)
 
 `drag_response` in `sidebar_row.rs` is registered on `self.layout.content` — the row minus the 30px action zone. Double-clicking the rightmost 30px didn't trigger rename. Fix: add a separate `Sense::click()` interaction on `self.layout.full` and OR its `double_clicked()` into `primary_double_clicked`. Single-click and drag behavior unchanged.
