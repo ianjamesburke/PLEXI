@@ -111,6 +111,8 @@ impl PlexiApp {
                         priority,
                         image_inline,
                         image_pipe_id,
+                        timeout_secs,
+                        on_dismiss,
                         ..
                     } => {
                         let ws_idx = self.windows.get(ctx_idx)
@@ -131,6 +133,8 @@ impl PlexiApp {
                             scope: resolved_scope,
                             image_inline,
                             image_pipe_id,
+                            timeout_secs,
+                            on_dismiss,
                         });
                     }
                     AppCommand::DeliverNotifyAction { .. } => deferred.push(cmd),

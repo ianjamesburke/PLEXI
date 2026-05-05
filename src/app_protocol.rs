@@ -814,6 +814,16 @@ pub enum HostCommand {
         /// `height: u32 LE`, then `width * height * 4` bytes of RGBA.
         #[serde(skip_serializing_if = "Option::is_none")]
         image_pipe_id: Option<String>,
+        /// Auto-dismiss after this many seconds. On expiry, host delivers
+        /// `PlexiEvent::NotifyAction` with `value = on_dismiss` (or "timeout" if
+        /// `on_dismiss` is None). Omit for notifications that should persist.
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+        /// Payload delivered to the app when the notification is dismissed without
+        /// an explicit choice (timeout, Esc, or tombstone dismiss). Defaults to
+        /// "timeout" when omitted.
+        #[serde(default)]
+        on_dismiss: Option<String>,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
@@ -2393,5 +2403,31 @@ mod tests {
             serde_json::from_str::<PlexiEvent>(bad).is_err(),
             "must fail without required `correlation_id`"
         );
+    }
+
+    #[test]
+    fn test_notify_timeout_fields() {
+        let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50,"timeout_secs":30,"on_dismiss":"user_ignored"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match cmd {
+            DrawCommand::Host(HostCommand::Notify { timeout_secs, on_dismiss, .. }) => {
+                assert_eq!(timeout_secs, Some(30));
+                assert_eq!(on_dismiss.as_deref(), Some("user_ignored"));
+            }
+            other => panic!("expected HostCommand::Notify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_notify_timeout_fields_default() {
+        let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match cmd {
+            DrawCommand::Host(HostCommand::Notify { timeout_secs, on_dismiss, .. }) => {
+                assert!(timeout_secs.is_none());
+                assert!(on_dismiss.is_none());
+            }
+            other => panic!("expected HostCommand::Notify, got {other:?}"),
+        }
     }
 }

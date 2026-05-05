@@ -18,6 +18,10 @@ Priority tiers (how urgently it sorts in the queue):
   3 — HIGH       (100)  needs attention soon
   4 — CRITICAL   (200)  interrupt-level
 
+Timeout / auto-dismiss:
+  x — Auto-dismiss: fires a notification that disappears after 10 s with
+      on_dismiss="auto_dismissed". Verify via the event log.
+
 Queue demos:
   b — Burst: three messages at mixed priorities (CRITICAL / LOW / NORMAL).
       Good for verifying the live queue grows without displacing the pinned
@@ -220,6 +224,18 @@ class NotificationTesterApp(App):
         )
         self._append(f"sent: oversized image ({len(big)} bytes)")
 
+    # ── Timeout / auto-dismiss ────────────────────────────────────────────
+    def _fire_timeout(self) -> None:
+        """Auto-dismiss notification — disappears after 10 seconds."""
+        self.emit.notify(
+            title="Auto-dismiss test",
+            body="This notification disappears in 10 seconds.",
+            priority=PRIORITY_NORMAL,
+            timeout_secs=10,
+            on_dismiss="auto_dismissed",
+        )
+        self._append("sent: auto-dismiss @ 10s")
+
     # ── Queue demos ───────────────────────────────────────────────────────
     def _fire_burst(self) -> None:
         """3 notifications at mixed priorities in one sync pass.
@@ -273,6 +289,8 @@ class NotificationTesterApp(App):
         elif k == "p": self._fire_inline_image()
         elif k == "q": self._fire_inline_image_choice()
         elif k == "t": self._fire_oversized_image()
+        # Timeout
+        elif k == "x": self._fire_timeout()
         # Queue demos
         elif k == "b": self._fire_burst()
         elif k == "s": self._fire_stack()
@@ -299,6 +317,10 @@ class NotificationTesterApp(App):
                 KeyRow("p", "Inline PNG message — 64x64 gradient"),
                 KeyRow("q", "Inline PNG choice — 3 structured choices"),
                 KeyRow("t", "Oversized inline image — placeholder fires at 50 KB"),
+            ]),
+            Section("Timeout / auto-dismiss"),
+            Card([
+                KeyRow("x", "Auto-dismiss — disappears after 10 s"),
             ]),
             Section("Queue demos"),
             Card([

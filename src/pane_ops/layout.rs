@@ -549,6 +549,9 @@ impl PlexiApp {
                     }
                     // else: process_app drops here — Drop impl sends Shutdown + kills process
                 }
+                // Tombstone any notifications this pane posted — they stay visible but
+                // their action buttons are hidden since the app can no longer respond.
+                self.tombstone_pane_notifications(pane_id);
                 // else: builtin app pane drops here
             }
             _ => {}

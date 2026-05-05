@@ -82,6 +82,8 @@ pub enum AppCommand {
         /// `height: u32 LE`, then RGBA bytes. Mutually exclusive with
         /// `image_inline` — if both set, inline wins.
         image_pipe_id: Option<String>,
+        timeout_secs: Option<u64>,
+        on_dismiss: Option<String>,
     },
     /// Route a NotifyAction event back to the app pane that sent the Notify.
     DeliverNotifyAction {
