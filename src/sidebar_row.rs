@@ -177,12 +177,6 @@ impl SidebarRow {
             Sense::click_and_drag(),
         );
 
-        // Full-row double-click — widens the rename hit target to the entire row
-        // (content zone excludes the action zone, leaving a 30px gap on the right)
-        let full_dblclick = ui
-            .interact(self.layout.full, id.with("full_dblclick"), Sense::click())
-            .double_clicked();
-
         // Cursor — single authority, derived from zones only
         if let Some(icon) = self.layout.resolve_cursor(ui, self.is_this_dragging, self.is_any_dragging) {
             ui.ctx().set_cursor_icon(icon);
@@ -190,7 +184,7 @@ impl SidebarRow {
 
         RowResult {
             primary_clicked: drag_response.clicked(),
-            primary_double_clicked: drag_response.double_clicked() || full_dblclick,
+            primary_double_clicked: drag_response.double_clicked(),
             drag_started: drag_response.drag_started(),
             drag_stopped: drag_response.drag_stopped(),
             action_clicked,
