@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.86] — 2026-05-05
+
+### Changes
+- fix(install): remove deleted agent apps from core pack list (#656)
+- feat(terminal): scrollback keyboard navigation (#658)
+- fix(changelog): cd into worktree before git-cliff, skip chore:release commits, rebuild empty entries
+- fix(sidebar): widen double-click rename hit box to full context row (#657)
 ## [3.4.85] — 2026-05-05
 
 ### Changes
