@@ -24,18 +24,31 @@ impl PlexiApp {
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
         let query = self.palette_query.to_lowercase();
 
-        // ── Window entries (active window first, then by visit recency) ──
+        // ── Window entries (active context first, then by visit recency) ──
+        // Two-tier sort: panes whose window belongs to the active context float
+        // above panes in other contexts. Within each tier, recency wins.
+        // Mirrors macOS Cmd+Tab — current app's windows first.
         let active_win_id = self.windows[self.active_window].window_id;
+        let active_ctx_id = self.windows[self.active_window].context_id;
 
-        let rank_of = |win_id: u64| -> usize {
-            if win_id == active_win_id {
-                return 0;
-            }
-            self.context_visit_history
+        let rank_of = |win_id: u64| -> (usize, usize) {
+            let in_active_ctx = self
+                .windows
                 .iter()
-                .position(|&id| id == win_id)
-                .map(|p| p + 1)
-                .unwrap_or(usize::MAX)
+                .find(|w| w.window_id == win_id)
+                .map(|w| w.context_id == active_ctx_id)
+                .unwrap_or(false);
+            let tier = if in_active_ctx { 0 } else { 1 };
+            let recency = if win_id == active_win_id {
+                0
+            } else {
+                self.context_visit_history
+                    .iter()
+                    .position(|&id| id == win_id)
+                    .map(|p| p + 1)
+                    .unwrap_or(usize::MAX)
+            };
+            (tier, recency)
         };
 
         let mut entries: Vec<PaletteEntry> = {
@@ -168,7 +181,7 @@ impl PlexiApp {
 
             ctx_entries.sort_by_key(|e| match e {
                 PaletteEntry::Context { context_id, .. } => rank_of(*context_id),
-                _ => usize::MAX,
+                _ => (usize::MAX, usize::MAX),
             });
 
             ctx_entries
