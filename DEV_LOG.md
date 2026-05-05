@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [FIX] CLI setup modal stays open and shows manual fallback on symlink failure (PR #735 → alpha)
+
+Root cause: `mark_prompted()` and `show_cli_setup_prompt = false` were called unconditionally after `install_symlink()`, so a failed install (e.g. `/usr/local/bin` read-only on a fresh macOS without Homebrew) silently dismissed the modal and wrote the sentinel — permanently suppressing the prompt with no PATH setup. Fix: move `mark_prompted()` + `show_cli_setup_prompt = false` inside the `Ok` arm only. On `Err`: store the error string in `cli_setup_error: Option<String>` on `PlexiApp`, render it inline in the modal with the manual `sudo ln` command. "Not now" and Escape clear `cli_setup_error` and session-dismiss as before.
+**Breaks if:** Clicking Install when `/usr/local/bin` is read-only closes the modal instead of showing an error message, OR `~/.plexi/cli_setup_done` is written after a failed install.
+
 ## 2026-05-05 — [FIX] Update check: only notify when latest > current semver (PR #733 → alpha)
 
 `updater.rs` used `latest != current` — firing the update banner whenever the running version differed from the latest GitHub release, including when running a *newer* build (e.g. alpha at 3.4.113 flagged stable 3.4.111 as an update). Fixed with a local `semver_gt(a, b)` that parses M.m.p into integer tuples and returns `a > b`. No crate needed. The `config_dir()` cache path was already channel-aware; only the comparison logic was wrong.
