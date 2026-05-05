@@ -246,6 +246,10 @@ impl PlexiApp {
         let parent = ctx.tree.tiles.parent_of(split_target);
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
 
+        // NOTE: split_focused uses INVERTED LinearDir vs split_with_new_pane.
+        // Here vertical=true → LinearDir::Vertical → stacked (BELOW);
+        //      vertical=false → LinearDir::Horizontal → side-by-side (RIGHT).
+        // Any code routing here (e.g. SpawnPane terminal) must account for this.
         let split_dir = if vertical {
             egui_tiles::LinearDir::Vertical
         } else {
