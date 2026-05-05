@@ -14,6 +14,11 @@ if TYPE_CHECKING:
     from ._app import App
     from ._pipe import Pipe
 
+# ── Reserved notification shortcuts ──────────────────────────────────────────
+# Keys reserved by the notification overlay for navigation. The host strips
+# these if an app sends them, and the SDK warns at call time.
+_RESERVED_SHORTCUTS = frozenset("jkhl") | frozenset("123456789")
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _LOCK = threading.Lock()
 
@@ -145,6 +150,17 @@ class Emitter:
         """
         if priority is None:
             raise TypeError("notify_choice() requires 'priority' (int, higher = more urgent)")
+        # Warn if any option uses a reserved shortcut key.
+        import warnings
+        for opt in options:
+            sc = opt.get("shortcut", "")
+            if sc and sc.lower() in _RESERVED_SHORTCUTS:
+                warnings.warn(
+                    f"notify_choice: shortcut {sc!r} on option {opt.get('label', '')!r} "
+                    f"conflicts with notification navigation keys (j/k/h/l, 1-9). "
+                    f"Use y/n or another letter. The host will strip it.",
+                    stacklevel=2,
+                )
         notify_id = str(uuid.uuid4())
         q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q

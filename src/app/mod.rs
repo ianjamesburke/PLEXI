@@ -1419,6 +1419,19 @@ impl eframe::App for PlexiApp {
                     // Capture scope/source_context before they move into the struct.
                     let is_global = matches!(scope, crate::app_protocol::NotifyScope::Global);
                     let notif_source_ctx = source_context;
+                    // Strip any per-option shortcut that conflicts with navigation keys.
+                    let options: Vec<crate::app_protocol::NotifyOption> = options.into_iter().map(|mut opt| {
+                        if let Some(ref sc) = opt.shortcut.clone() {
+                            if crate::app_protocol::is_reserved_shortcut(sc) {
+                                log::warn!(
+                                    "notify:shortcut: app pane {} sent reserved shortcut {:?} on option {:?} — stripped",
+                                    sender_pane_id, sc, opt.label
+                                );
+                                opt.shortcut = None;
+                            }
+                        }
+                        opt
+                    }).collect();
                     self.pending_notifications.push(PendingNotification {
                         notify_id,
                         sender_pane_id,
