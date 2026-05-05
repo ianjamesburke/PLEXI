@@ -178,7 +178,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     ) {
         if self.focused_tile == Some(tile_id) {
             let stroke = egui::Stroke::new(4.0, self.colors.accent);
-            painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+            let rect = rect.shrink(2.0);
+            painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
         }
     }
 }
