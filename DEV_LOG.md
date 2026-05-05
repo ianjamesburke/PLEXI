@@ -5,6 +5,10 @@
 One-line change in `src/cli_args.rs`: `about` string on the `Cli` struct. Replaced "the spatial terminal" (descriptive) with "the last app you'll ever need" (conviction statement).
 **Breaks if:** `plexi --help` still shows "the spatial terminal".
 
+## 2026-05-05 — [FIX] channel-agnostic CLI: socket-first open_cli, install.sh keeps bare plexi in sync (PR #737 → alpha)
+
+`/usr/local/bin/plexi` was a stale static binary (May 2) routing to `~/.plexi/` (stable profile). The running alpha app reads `~/.plexi-alpha/spawn-queue/` — they never communicated. Two fixes: (1) `open_cli()` now checks `PLEXI_SOCKET` first; when set (i.e. called from inside a pane), sends `spawn_pane` directly via socket to the correct running instance — no dependency on which binary is on PATH. (2) `scripts/install.sh` now updates `/usr/local/bin/plexi` on every non-PR install (alpha/beta/stable) so the bare symlink stays current. PR builds are excluded.
+**Breaks if:** `plexi open terminal` run from inside a Plexi pane opens in the wrong channel's window, or `/usr/local/bin/plexi` still points to a stale binary after `just bump && just install`.
 ## 2026-05-05 — [FIX] CLI setup modal stays open and shows manual fallback on symlink failure (PR #735 → alpha)
 
 Root cause: `mark_prompted()` and `show_cli_setup_prompt = false` were called unconditionally after `install_symlink()`, so a failed install (e.g. `/usr/local/bin` read-only on a fresh macOS without Homebrew) silently dismissed the modal and wrote the sentinel — permanently suppressing the prompt with no PATH setup. Fix: move `mark_prompted()` + `show_cli_setup_prompt = false` inside the `Ok` arm only. On `Err`: store the error string in `cli_setup_error: Option<String>` on `PlexiApp`, render it inline in the modal with the manual `sudo ln` command. "Not now" and Escape clear `cli_setup_error` and session-dismiss as before.
