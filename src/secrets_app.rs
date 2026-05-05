@@ -394,11 +394,10 @@ impl App for SecretsApp {
                             .family(egui::FontFamily::Monospace),
                     );
                     ui.add_space(4.0);
-                    ui.checkbox(&mut self.new_inject, "");
-                    ui.add_space(4.0);
-                    ui.label(
+                    ui.checkbox(
+                        &mut self.new_inject,
                         egui::RichText::new(
-                            "Inject as env var into new terminal panes (e.g. for API keys)",
+                            "inject as env var into new terminal panes (e.g. for API keys)",
                         )
                         .color(colors.text_dim.linear_multiply(0.65))
                         .size(10.0)
