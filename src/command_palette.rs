@@ -17,6 +17,7 @@ enum PaletteEntry {
         id: String,
         name: String,
         description: String,
+        running_in_background: bool,
     },
 }
 
@@ -208,10 +209,12 @@ impl PlexiApp {
             .collect();
 
         for (id, name, description) in app_entries {
+            let running_in_background = self.background_apps.contains_key(&id);
             entries.push(PaletteEntry::App {
                 id,
                 name,
                 description,
+                running_in_background,
             });
         }
 
@@ -419,6 +422,7 @@ impl PlexiApp {
                                             id,
                                             name,
                                             description,
+                                            running_in_background,
                                         } => {
                                             if !shown_apps_header {
                                                 shown_apps_header = true;
@@ -448,6 +452,14 @@ impl PlexiApp {
                                                                 .size(12.0)
                                                                 .color(colors.text_primary),
                                                         );
+                                                        if *running_in_background {
+                                                            ui.add_space(6.0);
+                                                            ui.label(
+                                                                RichText::new("bg")
+                                                                    .size(9.0)
+                                                                    .color(colors.text_dim),
+                                                            );
+                                                        }
                                                     });
                                                     if !description.is_empty() {
                                                         ui.label(
