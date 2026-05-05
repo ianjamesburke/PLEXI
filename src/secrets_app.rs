@@ -85,6 +85,11 @@ impl SecretsApp {
         }
 
         if crate::secrets::store_secret(&key, &value, APP_ID_USER, &dir) {
+            // index_add always writes inject: false for new entries; persist the
+            // chosen value immediately so build_env() sees it on next pane spawn.
+            if self.new_inject {
+                crate::secrets::toggle_inject_secret(&key, APP_ID_USER, &dir);
+            }
             // Optimistic update: push directly instead of re-dumping the keychain
             // (dump-keychain triggers a macOS permission prompt every call).
             // Remove any existing entry with the same key+dir to avoid duplicates.
