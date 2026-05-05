@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "plexi", about = "Plexi — the spatial terminal")]
+#[command(name = "plexi", about = "Plexi — the last app you'll ever need")]
 pub struct Cli {
     /// Profile name (e.g. alpha, beta)
     #[arg(long, global = true, hide = true)]
