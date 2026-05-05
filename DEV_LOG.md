@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't represent mistakes. -->
 
+## 2026-05-05 — [CHANGED] Secrets inject toggle in add form + build_env logging (PR #670 → alpha)
+
+`commit_add()` hardcoded `inject: false` — `store_secret()` calls `index_add()` internally which always writes `inject: false` for new entries, so the optimistic in-memory `→env` badge appeared but `build_env()` saw nothing to inject. Fix: call `toggle_inject_secret` immediately after `store_secret` succeeds when `new_inject` is true. Also added `new_inject: bool` field to the add form with checkbox + help text. Added `log::info!` in `build_env()` when a secret is injected so the event is visible in the log drain.
+**Breaks if:** Adding a secret with Inject checked and opening a new terminal pane shows empty for `echo $KEY`, or the `→env` badge doesn't appear on the saved entry.
+
 ## 2026-05-05 — [CHANGED] Show welcome screen instead of deleting context when last pane is closed (PR #678 → alpha)
 
 Closing the last pane in a context no longer removes the context. `execute_close_pane` now checks the page count for the context before calling `delete_window` — it only deletes the page if there are sibling pages. When a context is down to its sole page, the empty window is kept and the existing `panes.is_empty()` render branch shows the welcome screen. Multi-page close behavior and explicit sidebar × deletion are unchanged.
