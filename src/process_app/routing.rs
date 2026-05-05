@@ -1350,6 +1350,14 @@ impl ProcessApp {
                 );
             }
 
+            // SetPaneTitle is only valid over PLEXI_SOCKET; an app sending it
+            // via PGAP is a protocol error — log and drop.
+            HostCommand::SetPaneTitle { pane_id, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received SetPaneTitle for pane_id={pane_id} over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
         }
     }
 

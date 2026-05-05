@@ -262,6 +262,9 @@ pub struct PlexiApp {
     /// Latest available version string, set after the background check resolves.
     /// `None` means either the check hasn't completed or we're already current.
     pub(crate) update_available: Option<String>,
+    /// Receiver for HostCommands sent over the PLEXI_SOCKET Unix socket listener.
+    /// Drained each frame in `drain_pane_cmd_channel`.
+    pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::HostCommand>,
 }
 
 #[cfg(test)]
@@ -270,6 +273,48 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     ctx.set_visuals(egui::Visuals::dark());
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     theme::setup_style(ctx, colors);
+}
+
+fn spawn_socket_listener(
+    tx: std::sync::mpsc::Sender<crate::app_protocol::HostCommand>,
+) {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    let path = crate::config::config_dir().join("notify.sock");
+    let _ = std::fs::remove_file(&path);
+    let listener = match UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!("pane_ipc: failed to bind {:?}: {e}", path);
+            return;
+        }
+    };
+    log::info!("pane_ipc: listening on {:?}", path);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stream);
+                for line in reader.lines() {
+                    let Ok(line) = line else { break };
+                    let line = line.trim().to_owned();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<crate::app_protocol::HostCommand>(&line) {
+                        Ok(cmd) => {
+                            let _ = tx.send(cmd);
+                        }
+                        Err(e) => {
+                            log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+                        }
+                    }
+                }
+            });
+        }
+    });
 }
 
 impl PlexiApp {
@@ -332,6 +377,9 @@ impl PlexiApp {
         // Spawn background update check. Sends the latest version once if newer.
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
         crate::updater::spawn_update_check(crate::config::config_dir(), update_tx);
+
+        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::HostCommand>();
+        spawn_socket_listener(pane_ipc_tx);
 
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
@@ -562,6 +610,7 @@ impl PlexiApp {
                     edge_pulse: None,
                     update_rx: Some(update_rx),
                     update_available: None,
+                    pane_ipc_rx,
                 };
             }
         }
@@ -651,6 +700,7 @@ impl PlexiApp {
             edge_pulse: None,
             update_rx: Some(update_rx),
             update_available: None,
+            pane_ipc_rx,
         }
     }
 
@@ -662,7 +712,7 @@ impl PlexiApp {
     pub fn new_for_test(
         ctx: egui::Context,
         frame_tick: crate::logging::FrameTick,
-    ) -> Self {
+    ) -> (Self, std::sync::mpsc::Sender<crate::app_protocol::HostCommand>) {
         let config = config::PlexiConfig::default();
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -671,7 +721,8 @@ impl PlexiApp {
         let (hr_watcher, hr_rx) = crate::hot_reload::HotReloadWatcher::new();
         let path = std::env::temp_dir();
         let features = crate::features::FeatureFlags::from_config(&config);
-        Self {
+        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::HostCommand>();
+        (Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
             last_notify_poll: std::time::Instant::now(),
@@ -751,7 +802,8 @@ impl PlexiApp {
             show_cli_setup_prompt: false,
             update_rx: None,
             update_available: None,
-        }
+            pane_ipc_rx,
+        }, pane_ipc_tx)
     }
 
     fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
@@ -868,6 +920,36 @@ impl PlexiApp {
                 self.show_notification_modal = true;
                 if self.current_notify_id.is_none() {
                     self.current_notify_id = Some(internal_id);
+                }
+            }
+        }
+    }
+
+    fn drain_pane_cmd_channel(&mut self) {
+        while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
+            match &cmd {
+                crate::app_protocol::HostCommand::SetPaneTitle { pane_id, name } => {
+                    log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
+                    let mut found = false;
+                    for win in &mut self.windows {
+                        if let Some(pane) = win.panes.get_mut(pane_id) {
+                            if let Some(t) = pane.as_terminal_mut() {
+                                t.name = Some(name.clone());
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !found {
+                        log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
+                    }
+                }
+                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id}");
+                    self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                }
+                _ => {
+                    log::warn!("pane_ipc: unsupported command kind, dropping");
                 }
             }
         }
@@ -1115,6 +1197,7 @@ impl eframe::App for PlexiApp {
             self.drain_spawn_queue();
             self.tick_notification_timeouts();
         }
+        self.drain_pane_cmd_channel();
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
                 log::info!("update check: badge set to v{version}");

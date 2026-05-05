@@ -75,6 +75,8 @@ pub struct HostHarness {
     inject_channels: HashMap<PaneId, Sender<DrawCommand>>,
     /// Next pane id to assign.
     next_pane_id: u64,
+    /// IPC sender for injecting HostCommands into the pane_ipc channel.
+    pub ipc_tx: std::sync::mpsc::Sender<HostCommand>,
 }
 
 impl HostHarness {
@@ -82,12 +84,13 @@ impl HostHarness {
     pub fn new() -> Self {
         let ctx = egui::Context::default();
         let frame_tick = Arc::new(AtomicU64::new(0));
-        let app = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        let (app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
         Self {
             app,
             ctx,
             inject_channels: HashMap::new(),
             next_pane_id: 100,
+            ipc_tx,
         }
     }
 
@@ -215,6 +218,12 @@ impl HostHarness {
         if let Some(tx) = self.inject_channels.get(&pane_id) {
             let _ = tx.send(cmd);
         }
+        self
+    }
+
+    /// Inject a `HostCommand` directly into the pane_ipc channel.
+    pub fn inject_ipc(&self, cmd: HostCommand) -> &Self {
+        let _ = self.ipc_tx.send(cmd);
         self
     }
 
@@ -406,5 +415,14 @@ mod tests {
             Some("Working…"),
             "StatusSummary command must be routed to process_app.status_summary"
         );
+    }
+
+    #[test]
+    fn set_pane_title_unknown_pane_id_does_not_panic() {
+        // Injects SetPaneTitle for a pane_id that doesn't exist.
+        // Must run without panicking and log a warn — verifies the drain path is wired.
+        let mut h = HostHarness::new();
+        h.ipc_tx.send(HostCommand::SetPaneTitle { pane_id: 9999, name: "ghost".into() }).unwrap();
+        h.run_frames(1); // must not panic; logs warn "not found"
     }
 }

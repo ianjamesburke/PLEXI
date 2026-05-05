@@ -720,7 +720,7 @@ mod swap_tests {
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
         let ft = crate::logging::new_frame_tick();
-        PlexiApp::new_for_test(ctx, ft)
+        PlexiApp::new_for_test(ctx, ft).0
     }
 
     #[test]

@@ -897,6 +897,13 @@ pub enum HostCommand {
         pipe_id: Option<String>,
     },
 
+    /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
+    /// over PLEXI_SOCKET.
+    SetPaneTitle {
+        pane_id: u64,
+        name: String,
+    },
+
     // ── Media + HTTP primitives ──────────────────────────────────────────
     /// Host-brokered HTTP request. Requires `net.http` capability.
     /// Host replies with `PlexiEvent::HttpResponse { request_id, ... }`.
@@ -2429,5 +2436,12 @@ mod tests {
             }
             other => panic!("expected HostCommand::Notify, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn set_pane_title_deserializes() {
+        let json = r#"{"type":"set_pane_title","pane_id":42,"name":"my label"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, DrawCommand::Host(HostCommand::SetPaneTitle { pane_id: 42, .. })));
     }
 }
