@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.112] — 2026-05-05
+
+### Changes
+- feat(keys): delete RunPalette, bind Cmd+R → rename pane, Cmd+Shift+R → rename context (#720)
 ## [3.4.111] — 2026-05-05
 
 ### Changes
