@@ -462,6 +462,35 @@ fn main() -> eframe::Result {
                     }
                 }
             }
+            "context" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi context <new|open|set-root> [path]");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "new" => {
+                        let path = args.get(3).map(|s| s.as_str());
+                        std::process::exit(cli::context_new_cli(path));
+                    }
+                    "open" => {
+                        let path = args.get(3).map(|s| s.as_str());
+                        std::process::exit(cli::context_open_cli(path));
+                    }
+                    "set-root" => {
+                        let path = args.get(3).map(|s| s.as_str());
+                        std::process::exit(cli::context_set_root_cli(path));
+                    }
+                    other => {
+                        eprintln!("Unknown context subcommand: {other}");
+                        eprintln!("Usage: plexi context <new|open|set-root> [path]");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "shell-init" => {
+                let shell = args.get(2).map(|s| s.as_str());
+                std::process::exit(cli::shell_init_cli(shell));
+            }
             "open" => {
                 // plexi open <type_id> [args...] [--layout=split_v|split_h|split_above|split_left|overlay]
                 if args.len() < 3 {

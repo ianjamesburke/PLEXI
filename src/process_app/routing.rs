@@ -1368,6 +1368,27 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+
+            // Context commands are only valid over PLEXI_SOCKET; log and drop
+            // when sent via PGAP.
+            HostCommand::CreateContext { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received CreateContext over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
+            HostCommand::FocusContext { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received FocusContext over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
+            HostCommand::SetContextRoot { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received SetContextRoot over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
         }
     }
 

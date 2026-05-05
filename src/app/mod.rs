@@ -545,6 +545,7 @@ impl PlexiApp {
                     contexts.push(crate::context::Context {
                         name: saved_ctx.name,
                         path: saved_ctx.path,
+                        root: saved_ctx.root,
                         context_id: saved_ctx.context_id,
                     });
                 }
@@ -638,6 +639,7 @@ impl PlexiApp {
                 vec![crate::context::Context {
                     name: "Default".into(),
                     path: path.clone(),
+                    root: None,
                     context_id: 1,
                 }],
                 0,
@@ -739,6 +741,7 @@ impl PlexiApp {
                 vec![crate::context::Context {
                     name: "Test".into(),
                     path: path.clone(),
+                    root: None,
                     context_id: 1,
                 }],
                 0,
@@ -917,6 +920,29 @@ impl PlexiApp {
                             self.current_notify_id = Some(internal_id);
                         }
                     }
+                }
+                crate::app_protocol::HostCommand::CreateContext { root, name } => {
+                    log::info!("pane_ipc: kind=create_context root={:?} name={:?}", root, name);
+                    self.new_context();
+                    if let Some(r) = root {
+                        let idx = self.router.len() - 1;
+                        self.router.get_mut(idx).root = Some(r.clone());
+                    }
+                    if let Some(n) = name {
+                        let idx = self.router.len() - 1;
+                        self.router.get_mut(idx).name = n.clone();
+                    }
+                    self.save_workspace();
+                }
+                crate::app_protocol::HostCommand::FocusContext { root } => {
+                    log::info!("pane_ipc: kind=focus_context root={}", root.display());
+                    self.focus_or_create_context_by_root(root.clone());
+                    self.save_workspace();
+                }
+                crate::app_protocol::HostCommand::SetContextRoot { root } => {
+                    log::info!("pane_ipc: kind=set_context_root root={}", root.display());
+                    self.set_active_context_root(root.clone());
+                    self.save_workspace();
                 }
                 _ => {
                     log::warn!("pane_ipc: unsupported command kind, dropping");
@@ -2202,7 +2228,7 @@ impl eframe::App for PlexiApp {
                     pane_names,
                     drag_cursor_pos,
                     hovered_files,
-                    workspace_root: crate::config::active_workspace_root(),
+                    workspace_root: self.router.active().root.clone().or_else(crate::config::active_workspace_root),
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ctx.tree.ui(&mut behavior, ui);

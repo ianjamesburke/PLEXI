@@ -23,6 +23,9 @@ pub struct WorkspaceFile {
 pub struct SavedContext {
     pub name: String,
     pub path: PathBuf,
+    /// Optional project root — persisted so contexts restore their root on relaunch.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
     pub context_id: u64,
 }
 
