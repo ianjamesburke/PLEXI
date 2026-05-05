@@ -13,6 +13,7 @@ use egui::{Align2, Color32, Painter, Pos2, Rect, Response, Stroke, Vec2};
 use egui::{Id, PointerButton};
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::grid::Dimensions;
 use crate::backend::BackendCommand;
 use crate::backend::TerminalBackend;
 use crate::backend::{LinkAction, MouseButton, SelectionType};
@@ -511,6 +512,17 @@ impl<'a> TerminalView<'a> {
         }
 
         painter.extend(shapes);
+
+        let offset = content.grid.display_offset();
+        if offset > 0 {
+            painter.text(
+                Pos2::new(layout_max.x - 6.0, layout_max.y - 4.0),
+                Align2::RIGHT_BOTTOM,
+                format!("↑ {}", offset),
+                egui::FontId::monospace(11.0),
+                Color32::from_rgba_unmultiplied(200, 200, 200, 110),
+            );
+        }
     }
 }
 
@@ -629,6 +641,19 @@ fn process_keyboard_key(
         BindingAction::Esc(seq) => InputAction::BackendCall(
             BackendCommand::Write(seq.as_bytes().to_vec()),
         ),
+        BindingAction::ScrollLines(delta) => {
+            InputAction::BackendCall(BackendCommand::Scroll(delta))
+        },
+        BindingAction::ScrollPage(dir) => {
+            let page = backend.last_content().terminal_size.screen_lines() as i32 - 1;
+            InputAction::BackendCall(BackendCommand::Scroll(page * dir))
+        },
+        BindingAction::ScrollToTop => {
+            InputAction::BackendCall(BackendCommand::ScrollToTop)
+        },
+        BindingAction::ScrollToBottom => {
+            InputAction::BackendCall(BackendCommand::ScrollToBottom)
+        },
         _ => InputAction::Ignore,
     }
 }

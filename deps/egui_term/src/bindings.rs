@@ -8,6 +8,10 @@ pub enum BindingAction {
     Char(char),
     Esc(String),
     LinkOpen,
+    ScrollLines(i32),
+    ScrollPage(i32),
+    ScrollToTop,
+    ScrollToBottom,
     Ignore,
 }
 
@@ -244,6 +248,8 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         Home,       Modifiers::SHIFT, +TerminalMode::ALT_SCREEN; BindingAction::Esc("\x1b[1;2H".into());
         PageUp,     Modifiers::SHIFT, +TerminalMode::ALT_SCREEN; BindingAction::Esc("\x1b[5;2~".into());
         PageDown,   Modifiers::SHIFT, +TerminalMode::ALT_SCREEN; BindingAction::Esc("\x1b[6;2~".into());
+        PageUp,     Modifiers::SHIFT, ~TerminalMode::ALT_SCREEN; BindingAction::ScrollPage(1);
+        PageDown,   Modifiers::SHIFT, ~TerminalMode::ALT_SCREEN; BindingAction::ScrollPage(-1);
         ArrowUp,    Modifiers::SHIFT; BindingAction::Esc("\x1b[1;2A".into());
         ArrowDown,  Modifiers::SHIFT; BindingAction::Esc("\x1b[1;2B".into());
         ArrowLeft,  Modifiers::SHIFT; BindingAction::Esc("\x1b[1;2D".into());
@@ -354,6 +360,10 @@ fn platform_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         KeyboardBinding;
         C, Modifiers::MAC_CMD; BindingAction::Copy;
         V, Modifiers::MAC_CMD; BindingAction::Paste;
+        ArrowUp,   Modifiers::COMMAND; BindingAction::ScrollLines(1);
+        ArrowDown, Modifiers::COMMAND; BindingAction::ScrollLines(-1);
+        Home,      Modifiers::COMMAND; BindingAction::ScrollToTop;
+        End,       Modifiers::COMMAND; BindingAction::ScrollToBottom;
     )
 }
 

@@ -35,6 +35,8 @@ pub type SelectionType = AlacrittySelectionType;
 pub enum BackendCommand {
     Write(Vec<u8>),
     Scroll(i32),
+    ScrollToTop,
+    ScrollToBottom,
     Resize(Size, Size),
     SelectStart(SelectionType, f32, f32, f32),
     SelectUpdate(f32, f32, f32),
@@ -247,6 +249,14 @@ impl TerminalBackend {
             },
             BackendCommand::Scroll(delta) => {
                 self.scroll(&mut term, delta);
+            },
+            BackendCommand::ScrollToTop => {
+                log::info!("terminal scroll: jump to top");
+                term.grid_mut().scroll_display(Scroll::Top);
+            },
+            BackendCommand::ScrollToBottom => {
+                log::info!("terminal scroll: jump to bottom");
+                term.grid_mut().scroll_display(Scroll::Bottom);
             },
             BackendCommand::Resize(layout_size, font_size) => {
                 self.resize(&mut term, layout_size, font_size);
