@@ -19,13 +19,13 @@ if ! command -v cargo-bundle &>/dev/null; then
 fi
 
 echo "Building Plexi.app..."
-cargo bundle --release --bin plexi
+cargo bundle --release
 
-APP_SRC="target/release/bundle/osx/plexi.app"
+APP_SRC=$(find target/release/bundle/osx -maxdepth 1 -name "*.app" | head -1)
 APP_DEST="/Applications/Plexi.app"
 
 if [ ! -d "$APP_SRC" ]; then
-  echo "Error: bundle not found at $APP_SRC"
+  echo "Error: bundle not found in target/release/bundle/osx/"
   exit 1
 fi
 
