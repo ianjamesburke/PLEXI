@@ -218,6 +218,7 @@ def _parse_commits(raw: str) -> list[dict]:
             "added": 0,
             "removed": 0,
             "pr_number": pr_number,
+            "merge_source_hash": None,
             "lane": -1,
             "color": "#6c7086",
             "y": 0.0,
@@ -501,6 +502,18 @@ def assign_lanes(commits: list[dict], refs: list[dict]) -> list[dict]:
                         active_lanes.append(None)
                     active_lanes[new_lane] = extra_parent
 
+    # Post-pass: link squash commits to their source branch tip via PR number.
+    # Squash merges don't produce real merge commits, so we detect them by
+    # (1) having a pr_number in the subject AND (2) not being a real merge
+    # commit (single parent). If a matching feature branch ref still exists,
+    # record the tip hash so the renderer can draw a visual merge arc.
+    for commit in commits:
+        pr_num = commit.get("pr_number")
+        if pr_num and not commit["is_merge"]:
+            source = find_pr_ref_tip(pr_num, refs)
+            if source and source != commit["hash"]:
+                commit["merge_source_hash"] = source
+
     return commits
 
 
@@ -511,3 +524,17 @@ def build_edges(commits: list[dict]) -> list[tuple[str, str]]:
         for p in c["parents"]:
             edges.append((c["hash"], p))
     return edges
+
+
+def find_pr_ref_tip(pr_number: int, refs: list[dict]) -> Optional[str]:
+    """Return the tip hash of a feature branch for pr_number, or None.
+
+    Matches any ref whose last path component starts with '<pr_number>-'
+    or equals '<pr_number>', e.g. feature/499-foo or origin/fix/499-bar.
+    """
+    pr_str = str(pr_number)
+    for ref in refs:
+        for part in ref["name"].split("/"):
+            if part == pr_str or part.startswith(pr_str + "-"):
+                return ref["tip_hash"]
+    return None
