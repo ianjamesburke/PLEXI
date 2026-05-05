@@ -44,7 +44,6 @@ pub(crate) enum FocusLayer {
     NotificationModal,
     ConfirmClose,
     CommandPalette,
-    RunPalette,
     RenamePane,
     /// Context naming modal shown when a new context is created while the
     /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
@@ -170,8 +169,6 @@ pub struct PlexiApp {
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     pub(crate) features: crate::features::FeatureFlags,
-    /// Whether the Run palette overlay is visible (Cmd+R).
-    pub(crate) show_run_palette: bool,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
     /// Whether the centered notification modal is visible. Primary (and only)
@@ -587,7 +584,6 @@ impl PlexiApp {
                     renaming_pane: None,
                     registry,
                     features: features.clone(),
-                    show_run_palette: false,
                     pending_notifications: Vec::new(),
                     show_notification_modal: false,
                     current_notify_id: None,
@@ -678,7 +674,6 @@ impl PlexiApp {
             renaming_pane: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
-            show_run_palette: false,
             pending_notifications: Vec::new(),
             show_notification_modal: false,
             current_notify_id: None,
@@ -781,7 +776,6 @@ impl PlexiApp {
                 &path.join("nonexistent-apps-dir"),
             ),
             features,
-            show_run_palette: false,
             pending_notifications: Vec::new(),
             show_notification_modal: false,
             current_notify_id: None,
@@ -1210,7 +1204,6 @@ impl eframe::App for PlexiApp {
         self.sync_notification_modal_focus();
         self.sync_confirm_close_focus();
         self.sync_command_palette_focus();
-        self.sync_run_palette_focus();
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
 
@@ -1233,9 +1226,6 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::CommandPalette) => {
                     self.draw_command_palette(ctx);
                 }
-                Some(FocusLayer::RunPalette) => {
-                    self.draw_run_palette(ctx);
-                }
                 Some(FocusLayer::RenamePane) => {
                     self.draw_rename_pane_overlay(ctx);
                 }
@@ -1252,7 +1242,6 @@ impl eframe::App for PlexiApp {
             self.sync_notification_modal_focus();
             self.sync_confirm_close_focus();
             self.sync_command_palette_focus();
-            self.sync_run_palette_focus();
             self.sync_rename_pane_focus();
             self.sync_context_rename_focus();
         }
@@ -1984,8 +1973,8 @@ impl eframe::App for PlexiApp {
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
                 }
-                Action::ToggleRunPalette => {
-                    self.show_run_palette = !self.show_run_palette;
+                Action::RenameContext => {
+                    self.renaming_window = Some(self.active_window);
                 }
                 Action::ToggleNotificationModal => {
                     if self.show_notification_modal {
@@ -2511,7 +2500,6 @@ impl PlexiApp {
             Some(FocusLayer::NotificationModal)
                 | Some(FocusLayer::ConfirmClose)
                 | Some(FocusLayer::CommandPalette)
-                | Some(FocusLayer::RunPalette)
                 | Some(FocusLayer::RenamePane)
                 | Some(FocusLayer::ContextRename)
         )
@@ -2682,20 +2670,6 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::CommandPalette);
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::CommandPalette);
-        }
-    }
-
-    /// Reconcile the run-palette focus layer with `show_run_palette`.
-    pub(crate) fn sync_run_palette_focus(&mut self) {
-        let should_own = self.show_run_palette;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::RunPalette);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::RunPalette);
-        } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::RunPalette);
         }
     }
 
