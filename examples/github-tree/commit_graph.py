@@ -175,6 +175,12 @@ class CommitGraphApp(App):
             # Assign lanes and colours
             gl.assign_lanes(commits, refs)
 
+            # Augment with GitHub PR metadata (requires gh CLI).
+            # fetch_pr_data returns [] gracefully when gh is unavailable.
+            pr_data = gl.fetch_pr_data(self._repo_root)
+            gl.annotate_commits_with_prs(commits, pr_data)
+            self.emit.debug(f"fetch_graph: annotated with {len(pr_data)} PRs from gh")
+
             # Fetch numstats (capped at 2000 commits)
             stats = gl.fetch_numstats(
                 self._repo_root, max_count=MAX_COMMITS, commit_count=len(commits)
@@ -771,7 +777,9 @@ class CommitGraphApp(App):
             # ── PR badge ─────────────────────────────────────────────────────
             if c.get("pr_number"):
                 pr_label = f"#{c['pr_number']}"
-                self._draw_badge(ctx, badge_x, cy_node, pr_label, MUTED)
+                # Open PR tips render green; merged squash commits render muted.
+                pr_badge_color = GREEN if c.get("pr_state") == "OPEN" else MUTED
+                self._draw_badge(ctx, badge_x, cy_node, pr_label, pr_badge_color)
                 bw = self._approx_badge_w(pr_label)
                 badge_x += bw + 4.0
                 ref_badge_w += bw + 4.0
