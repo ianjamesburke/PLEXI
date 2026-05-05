@@ -441,6 +441,26 @@ fn main() -> eframe::Result {
                 }
                 std::process::exit(cli::notify_cli(&title, &body, level, &choices, timeout_secs));
             }
+            "pane" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: plexi pane <set-title> [args]");
+                    std::process::exit(1);
+                }
+                match args[2].as_str() {
+                    "set-title" => {
+                        if args.len() < 4 {
+                            eprintln!("Usage: plexi pane set-title <name>");
+                            std::process::exit(1);
+                        }
+                        std::process::exit(cli::pane_set_title_cli(&args[3]));
+                    }
+                    other => {
+                        eprintln!("Unknown pane subcommand: {other}");
+                        eprintln!("Usage: plexi pane <set-title>");
+                        std::process::exit(1);
+                    }
+                }
+            }
             "open" => {
                 // plexi open <type_id> [args...] [--layout=split_v|split_h|split_above|split_left|overlay]
                 if args.len() < 3 {
@@ -606,6 +626,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "app",
         "workspace",
         "notify",
+        "pane",
         "open",
         "--render",
         // #308 Phase 2 — top-level package manager subcommands

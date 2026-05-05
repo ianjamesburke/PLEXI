@@ -1325,6 +1325,54 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
+/// `plexi pane set-title <name>`
+///
+/// Connects to PLEXI_SOCKET and sends a `set_pane_title` command for the
+/// current pane (identified by PLEXI_PANE_ID). Returns 0 on success, 1 on error.
+pub fn pane_set_title_cli(name: &str) -> i32 {
+    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+    let socket_path = match std::env::var("PLEXI_SOCKET") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+    let pane_id: u64 = match pane_id_str.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+            return 1;
+        }
+    };
+    let payload = serde_json::json!({
+        "type": "set_pane_title",
+        "pane_id": pane_id,
+        "name": name,
+    });
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+            return 1;
+        }
+    };
+    let line = format!("{}\n", payload);
+    if let Err(e) = stream.write_all(line.as_bytes()) {
+        eprintln!("error: could not write to socket: {e}");
+        return 1;
+    }
+    0
+}
+
 /// `plexi open <type_id> [args...] [--layout=X]`
 ///
 /// Writes a spawn request to the spawn-queue directory. The running Plexi host
