@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [3.4.89] — 2026-05-05
+
+### Changes
+- feat(sdk): normalize arrow key names before on_key dispatch (#677)
+- feat(ux): show welcome screen instead of deleting context when last pane is closed (#678)
+- feat(audio): playback, AudioMeter, emit.list_audio_devices, audio-recorder POC (#341) (#673)
+- feat(protocol): add StreamProcess / CancelProcess / StreamChunk / StreamEnd (#358) (#671)
+- fix(screen-time): spread session secs across 15-min buckets (#668)
+- feat(ci): auto-triage new issues via Claude Code Action
 ## [3.4.88] — 2026-05-05
 
 ### Changes
