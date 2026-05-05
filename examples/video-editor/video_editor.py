@@ -107,9 +107,9 @@ class VideoEditor(App):
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if key == " ":
             self._toggle_play()
-        elif key in ("ArrowLeft", "j"):
+        elif key in ("left", "j"):
             self._stop(); self._ph = max(0.0, self._ph - 1.0)
-        elif key in ("ArrowRight", "l"):
+        elif key in ("right", "l"):
             self._stop(); self._ph = min(TOTAL_DUR, self._ph + 1.0)
         elif key == "Home":
             self._stop(); self._ph = 0.0

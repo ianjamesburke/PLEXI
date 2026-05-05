@@ -25,6 +25,23 @@ def _log_task_exception(task: asyncio.Task) -> None:
         sys.stderr.write(f"plexi_sdk: unhandled exception in background task: {exc}\n")
 
 
+# Map egui's Debug-format key names to the documented canonical SDK names.
+# The host sends "ArrowLeft" etc. (egui Key::ArrowLeft Debug repr); apps
+# should use "left"/"right"/"up"/"down" as documented. Normalizing here
+# means both forms work correctly — agents and humans can use the documented
+# names without knowing egui's internal representation.
+_KEY_ALIASES: "dict[str, str]" = {
+    "ArrowLeft": "left",
+    "ArrowRight": "right",
+    "ArrowUp": "up",
+    "ArrowDown": "down",
+}
+
+
+def _normalize_key(key: str) -> str:
+    return _KEY_ALIASES.get(key, key)
+
+
 # ── App base class ────────────────────────────────────────────────────────────
 
 class App:
@@ -582,7 +599,7 @@ class App:
 
                 elif t == "key":
                     ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_key, ctx, ev.get("key", ""), ev.get("modifiers", {}))
+                    self._dispatch_hook_task(self.on_key, ctx, _normalize_key(ev.get("key", "")), ev.get("modifiers", {}))
 
                 elif t == "click":
                     ctx = self._make_ctx()

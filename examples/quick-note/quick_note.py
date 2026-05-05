@@ -82,9 +82,9 @@ class QuickNoteApp(App):
                 elif self._cursor_line > 0:
                     self._lines.pop(self._cursor_line)
                     self._cursor_line -= 1
-            elif key == "ArrowUp":
+            elif key == "up":
                 self._cursor_line = max(0, self._cursor_line - 1)
-            elif key == "ArrowDown":
+            elif key == "down":
                 self._cursor_line = min(len(self._lines) - 1,
                                         self._cursor_line + 1)
             elif len(key) == 1:
@@ -92,10 +92,10 @@ class QuickNoteApp(App):
         elif self._mode == "browse":
             if key == "Escape":
                 self._mode = "compose"
-            elif key in ("ArrowUp", "k"):
+            elif key in ("up", "k"):
                 self._selected = max(0, self._selected - 1)
                 self._load_preview()
-            elif key in ("ArrowDown", "j"):
+            elif key in ("down", "j"):
                 self._selected = min(len(self._notes) - 1, self._selected + 1)
                 self._load_preview()
             elif key == "Enter" and self._notes:

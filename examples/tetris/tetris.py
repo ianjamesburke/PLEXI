@@ -385,22 +385,22 @@ class TetrisApp(App):
         if self.paused or self.clear_anim is not None:
             return
 
-        if key in ("ArrowLeft", "h"):
+        if key in ("left", "h"):
             moved = self.current.copy()
             moved.col -= 1
             if self._valid(moved):
                 self.current = moved
 
-        elif key in ("ArrowRight", "l"):
+        elif key in ("right", "l"):
             moved = self.current.copy()
             moved.col += 1
             if self._valid(moved):
                 self.current = moved
 
-        elif key in ("ArrowDown", "j"):
+        elif key in ("down", "j"):
             self._soft_drop()
 
-        elif key in ("ArrowUp", "k", "x"):
+        elif key in ("up", "k", "x"):
             self._try_rotate()
 
         elif key in (" ", "Enter"):
