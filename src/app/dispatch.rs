@@ -1,6 +1,6 @@
 //! App command dispatch — keyboard routing + command drain from app panes.
 
-use crate::app_trait::AppCommand;
+use crate::app_trait::{App, AppCommand};
 
 use super::PlexiApp;
 
@@ -40,6 +40,8 @@ impl PlexiApp {
     /// overlay. Draining all contexts (not just the active one) ensures
     /// that background apps — e.g. stand-up-reminder in a non-active context
     /// — can surface Global-scope notifications while the user is elsewhere.
+    /// Parked background apps (pane closed, process alive) are also ticked so
+    /// their timers and notifications keep firing while detached.
     pub(super) fn drain_all_app_commands(&mut self) -> Vec<AppCommand> {
         // Collect (ctx_idx, pane_id, type_id, commands) per pane. We capture
         // type_id here because the manifest-declared notification scope is
@@ -68,7 +70,76 @@ impl PlexiApp {
             }
         }
 
+        // Tick parked background apps (process alive, no visible pane).
+        // Mirrors the headless tick above but operates on self.background_apps
+        // instead of context panes. Without this, timers stop and notifications
+        // never fire the moment the pane is closed.
+        let parked: Vec<(String, Vec<AppCommand>)> = self
+            .background_apps
+            .iter_mut()
+            .map(|(type_id, app)| {
+                app.background_tick();
+                let cmds = app.take_pending_commands();
+                (type_id.to_owned(), cmds)
+            })
+            .collect();
+
         let mut deferred = Vec::new();
+
+        for (type_id, cmds) in &parked {
+            let resolved_scope = self.registry.default_notification_scope_for(type_id);
+            for cmd in cmds.iter() {
+                match cmd {
+                    AppCommand::ShowNotification {
+                        notify_id,
+                        level,
+                        title,
+                        body,
+                        kind,
+                        options,
+                        input_prompt,
+                        required,
+                        priority,
+                        image_inline,
+                        image_pipe_id,
+                        timeout_secs,
+                        on_dismiss,
+                        ..
+                    } => {
+                        log::info!(
+                            "parked background app '{}' notification: {}",
+                            type_id, title
+                        );
+                        deferred.push(AppCommand::ShowNotification {
+                            notify_id: notify_id.clone(),
+                            sender_pane_id: 0, // no live pane — tombstone won't fire
+                            source_context: 0,
+                            level: level.clone(),
+                            title: title.clone(),
+                            body: body.clone(),
+                            kind: kind.clone(),
+                            options: options.clone(),
+                            input_prompt: input_prompt.clone(),
+                            required: *required,
+                            priority: priority.clone(),
+                            scope: resolved_scope,
+                            image_inline: image_inline.clone(),
+                            image_pipe_id: image_pipe_id.clone(),
+                            timeout_secs: *timeout_secs,
+                            on_dismiss: on_dismiss.clone(),
+                        });
+                    }
+                    AppCommand::Notify(msg) => {
+                        log::info!("parked bg app '{}': {}", type_id, msg);
+                    }
+                    // Commands that require a live pane context are silently
+                    // dropped when the app is parked — the app has no tile to
+                    // target and no context to route through.
+                    _ => {}
+                }
+            }
+        }
+
         for (ctx_idx, pane_id, type_id, cmds) in per_pane {
             // Scope is a per-app user-facing policy declared in the app's
             // manifest.toml. Apps never set it — the host resolves it once
