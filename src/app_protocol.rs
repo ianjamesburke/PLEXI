@@ -824,6 +824,11 @@ pub enum HostCommand {
         /// "timeout" when omitted.
         #[serde(default)]
         on_dismiss: Option<String>,
+        /// CLI-only: path to a file the host writes the chosen key into when
+        /// the user responds. Used by `plexi notify --choice` to return the
+        /// result to the blocking CLI process. Never set by app SDK.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"

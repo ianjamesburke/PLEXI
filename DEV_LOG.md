@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [CHANGED] refactor(notify): migrate plexi notify CLI off file queue onto PLEXI_SOCKET (PR #701 → alpha)
+
+`notify_cli` now connects to `PLEXI_SOCKET` and writes a `HostCommand::Notify` JSON line instead of writing to `notify-queue/`. `drain_notify_queue` deleted; notify dispatch moved into `drain_pane_cmd_channel` alongside `set_pane_title` and `spawn_pane`. `HostCommand::Notify` gains a `response_file: Option<String>` field (CLI-only, `skip_serializing_if = "Option::is_none"`) to carry the response path for the blocking `--choice` path. One-time cleanup of `config_dir/notify-queue/` at startup. Trade-off: `plexi notify` now fails immediately if Plexi is not running — the old file queue silently buffered offline sends for pickup on next launch; the socket does not.
+**Breaks if:** `plexi notify --title Foo --body Bar` inside a terminal pane fails with "PLEXI_SOCKET is not set", OR `plexi notify --title Q --choice yes:Yes --choice no:No` does not block and return the chosen key.
+
 ## 2026-05-05 — [CHANGED] Background apps: tick parked processes + command palette indicator (PR #700 → alpha)
 
 Manifest `background = true`, `is_background()`, `background_tick()`, park-on-close (sends `Suspend`), and unpark-on-open (sends `Resume`) were all already wired. The missing piece: `drain_all_app_commands` only iterated `context.panes` — parked apps in `self.background_apps` were never ticked, so timers stalled and notifications never fired after the pane was closed. Fix: after the context-pane loop, iterate `self.background_apps`, call `background_tick()` + `take_pending_commands()`, and route `ShowNotification` to `deferred` with `sender_pane_id = 0` (no live pane sentinel). Added `running_in_background: bool` to `PaletteEntry::App` in `command_palette.rs` — populated from `self.background_apps.contains_key(&id)`, renders a dim `bg` badge. `stand-up-reminder` in `examples/` is the POC (already had `[launch] background = true`).

@@ -381,6 +381,11 @@ impl PlexiApp {
         let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::HostCommand>();
         spawn_socket_listener(pane_ipc_tx);
 
+        // One-time migration: remove the legacy file-queue directory if it
+        // still exists from a previous install. Notify commands now travel
+        // over the PLEXI_SOCKET, so the directory is dead weight.
+        let _ = std::fs::remove_dir_all(crate::config::config_dir().join("notify-queue"));
+
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut windows = Vec::new();
@@ -839,91 +844,6 @@ impl PlexiApp {
         }
     }
 
-    fn drain_notify_queue(&mut self) {
-        let queue_dir = crate::config::config_dir().join("notify-queue");
-        let Ok(entries) = std::fs::read_dir(&queue_dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&path) else { continue };
-            let _ = std::fs::remove_file(&path);
-            let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
-            if !self.notifications_enabled {
-                continue;
-            }
-            let level = val["level"].as_str().unwrap_or("info").to_string();
-            let title = val["title"].as_str().unwrap_or("").to_string();
-            let body = val["body"].as_str().unwrap_or("").to_string();
-            let choices_json = val["choices"].as_array();
-            let options: Vec<crate::app_protocol::NotifyOption> = choices_json
-                .map(|arr| {
-                    arr.iter()
-                        .map(|item| crate::app_protocol::NotifyOption {
-                            label: item["label"].as_str().unwrap_or("").to_string(),
-                            value: item["key"].as_str().unwrap_or("").to_string(),
-                            shortcut: Some(
-                                item["key"].as_str().unwrap_or("").to_string(),
-                            ),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let kind = if options.is_empty() {
-                crate::app_protocol::NotifyKind::Message
-            } else {
-                crate::app_protocol::NotifyKind::Choice
-            };
-            let response_file = val["response_file"].as_str().map(|s| s.to_string());
-            log::info!(
-                "notify:drain: title={:?} choices={} response_file={:?}",
-                title, options.len(), response_file
-            );
-            let internal_id = format!(
-                "__host__:{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            );
-            self.pending_notifications.push(PendingNotification {
-                notify_id: internal_id.clone(),
-                sender_pane_id: 0,
-                // Host-originated notifications are global (they originate
-                // outside any context) and always visible.
-                source_context: self.router.active_idx(),
-                scope: crate::app_protocol::NotifyScope::Global,
-                level,
-                title,
-                body,
-                kind,
-                options,
-                input_prompt: None,
-                required: false,
-                priority: 0,
-                image_inline: None,
-                image_pipe_id: None,
-                response_file,
-                timeout_secs: None,
-                on_dismiss: None,
-                enqueued_at: std::time::Instant::now(),
-                tombstoned: false,
-            });
-            // Host-originated notifications are always LOW (priority 0) —
-            // below any reasonable interrupt threshold — so they queue
-            // silently by default. They still ride focus_mode as a hard
-            // gate for consistency.
-            let should_auto_open = !self.notifications_focus_mode
-                && 0 >= self.notifications_interrupt_threshold;
-            if should_auto_open {
-                self.show_notification_modal = true;
-                if self.current_notify_id.is_none() {
-                    self.current_notify_id = Some(internal_id);
-                }
-            }
-        }
-    }
 
     fn drain_pane_cmd_channel(&mut self) {
         while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
@@ -947,6 +867,56 @@ impl PlexiApp {
                 crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, .. } => {
                     log::info!("pane_ipc: kind=spawn_pane type_id={type_id}");
                     self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                }
+                crate::app_protocol::HostCommand::Notify {
+                    level, title, body, kind, options, input_prompt,
+                    required, priority, image_inline, image_pipe_id,
+                    timeout_secs, on_dismiss, response_file, ..
+                } => {
+                    if !self.notifications_enabled {
+                        log::info!("pane_ipc: notify dropped — notifications disabled");
+                        continue;
+                    }
+                    let internal_id = format!(
+                        "__host__:{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0)
+                    );
+                    log::info!(
+                        "pane_ipc: kind=notify title={:?} choices={} response_file={:?}",
+                        title, options.len(), response_file
+                    );
+                    self.pending_notifications.push(PendingNotification {
+                        notify_id: internal_id.clone(),
+                        sender_pane_id: 0,
+                        source_context: self.router.active_idx(),
+                        scope: crate::app_protocol::NotifyScope::Global,
+                        level: level.clone(),
+                        title: title.clone(),
+                        body: body.clone(),
+                        kind: kind.clone(),
+                        options: options.clone(),
+                        input_prompt: input_prompt.clone(),
+                        required: *required,
+                        priority: *priority,
+                        image_inline: image_inline.clone(),
+                        image_pipe_id: image_pipe_id.clone(),
+                        response_file: response_file.clone(),
+                        timeout_secs: *timeout_secs,
+                        on_dismiss: on_dismiss.clone(),
+                        enqueued_at: std::time::Instant::now(),
+                        tombstoned: false,
+                    });
+                    let should_auto_open = !self.notifications_focus_mode
+                        && *priority >= self.notifications_interrupt_threshold;
+                    if should_auto_open {
+                        self.show_notification_modal = true;
+                        if self.current_notify_id.is_none() {
+                            self.current_notify_id = Some(internal_id);
+                        }
+                    }
                 }
                 _ => {
                     log::warn!("pane_ipc: unsupported command kind, dropping");
@@ -1193,7 +1163,6 @@ impl eframe::App for PlexiApp {
         let _frame_start = std::time::Instant::now();
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
-            self.drain_notify_queue();
             self.drain_spawn_queue();
             self.tick_notification_timeouts();
         }
