@@ -517,6 +517,12 @@ class RenderContext:
         return await self.emit.ai_query(model_tier=model_tier, system=system,
                                         messages=messages, tools=tools)
 
+    def spawn_pane(self, type_id: str, layout: str = "split_v",
+                   args: "list[str] | None" = None,
+                   pipe_id: "str | None" = None) -> None:
+        """Request the host to open a new pane. Requires panes.spawn capability."""
+        self.emit.spawn_pane(type_id, layout=layout, args=args, pipe_id=pipe_id)
+
     def frame_done(self) -> None:
         self._buf.append(json.dumps({"type": "frame_done", "frame_id": self.frame_id}) + "\n")
         with _LOCK:
