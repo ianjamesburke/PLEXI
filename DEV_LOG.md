@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [CHANGED] Context root — project container foundation (PR #709 → alpha)
+
+`Context` gains `root: Option<PathBuf>`, persisted in workspace JSON. `new_context()` sets root from CWD; `create_page_at()` prefers root over focused-pane CWD for new terminal pane placement. Three new `HostCommand` variants: `CreateContext`, `FocusContext`, `SetContextRoot` — all dispatched over PLEXI_SOCKET. CLI: `plexi context new/open/set-root [path]` and `plexi shell-init [--shell zsh|bash]`. Shell hook written to `~/dotfiles/zshrc` using `plexi-alpha` for dev testing (will switch to `plexi` on stable promotion). Two bugs fixed post-initial-review: `"context"` and `"shell-init"` were missing from `parse_workspace_path_arg`'s SUBCOMMANDS allowlist (caused "workspace path does not exist" error), and `shell_init_cli` had a duplicate arm collision and no `None` default. Follow-on: #713 (rename placeholder uses directory name), and host-side CWD-watch auto-activation (eliminates shell hook requirement entirely — Plexi already reads pane CWD via `get_pid_cwd`, so it can auto-switch contexts without shell integration).
+**Breaks if:** `plexi-alpha context new /tmp` errors instead of creating a "tmp" context, OR `plexi-alpha shell-init` prints an error instead of a zsh hook snippet.
+
 ## 2026-05-05 — [FIX] Release workflow: use git-cliff --latest instead of custom awk (PR #708 → alpha)
 
 `actions/checkout` defaults to shallow clone (depth=1), so `git tag --sort=-version:refname` only returned the current tag — `prev_tag` was always empty, the awk stop condition never fired, and every GitHub release body contained the full CHANGELOG. Fix: `fetch-depth: 0` on checkout + `git-cliff --latest --strip header` via `taiki-e/install-action`. Deleted the awk/grep tag-hunting block entirely — git-cliff already does this natively.
