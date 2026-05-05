@@ -875,7 +875,12 @@ impl ProcessApp {
                 });
             }
 
-            HostCommand::AudioPlay { .. } => {
+            HostCommand::AudioPlay {
+                source,
+                pipe_id,
+                volume,
+                state,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::AudioPlayback)
                 {
@@ -885,10 +890,93 @@ impl ProcessApp {
                     );
                     return;
                 }
-                log::warn!(
-                    "ProcessApp[{}]: AudioPlay not yet implemented (v3.1)",
+
+                log::info!(
+                    "ProcessApp[{}]: AudioPlay state={state} source={source:?} pipe_id={pipe_id:?} volume={volume}",
                     self.type_id
                 );
+
+                match state.as_str() {
+                    "playing" => {
+                        if let Some(src) = source.as_deref().filter(|s| !s.is_empty()) {
+                            // If a session already exists for this source (paused), resume it.
+                            if let Some(session) = self.audio_playback_sessions.get(src) {
+                                session.set_volume(volume);
+                                session.resume();
+                                log::info!(
+                                    "ProcessApp[{}]: AudioPlay resumed: source={src}",
+                                    self.type_id
+                                );
+                            } else {
+                            let req = crate::audio::PlaybackRequest {
+                                source: src.to_owned(),
+                                volume,
+                            };
+                            match crate::audio::start_playback(req) {
+                                Ok(session) => {
+                                    log::info!(
+                                        "ProcessApp[{}]: AudioPlay started: source={src}",
+                                        self.type_id
+                                    );
+                                    self.audio_playback_sessions.insert(src.to_owned(), session);
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "ProcessApp[{}]: AudioPlay start failed for {src:?}: {e}",
+                                        self.type_id
+                                    );
+                                }
+                            }
+                            }
+                        } else if pipe_id.is_some() {
+                            log::warn!(
+                                "ProcessApp[{}]: AudioPlay pipe_id playback not yet implemented",
+                                self.type_id
+                            );
+                        } else {
+                            log::warn!(
+                                "ProcessApp[{}]: AudioPlay: neither source nor pipe_id provided",
+                                self.type_id
+                            );
+                        }
+                    }
+                    "paused" => {
+                        if let Some(src) = source.as_deref().filter(|s| !s.is_empty()) {
+                            if let Some(session) = self.audio_playback_sessions.get(src) {
+                                session.pause();
+                                log::info!(
+                                    "ProcessApp[{}]: AudioPlay paused: source={src}",
+                                    self.type_id
+                                );
+                            } else {
+                                log::warn!(
+                                    "ProcessApp[{}]: AudioPlay pause: no session for source={src:?}",
+                                    self.type_id
+                                );
+                            }
+                        }
+                    }
+                    "stopped" => {
+                        let key = source.as_deref().unwrap_or("").to_owned();
+                        if self.audio_playback_sessions.remove(&key).is_some() {
+                            log::info!(
+                                "ProcessApp[{}]: AudioPlay stopped: source={key:?}",
+                                self.type_id
+                            );
+                        } else {
+                            log::warn!(
+                                "ProcessApp[{}]: AudioPlay stop: no session for source={key:?}",
+                                self.type_id
+                            );
+                        }
+                    }
+                    other => {
+                        log::warn!(
+                            "ProcessApp[{}]: AudioPlay: unknown state {other:?} (expected playing|paused|stopped)",
+                            self.type_id
+                        );
+                    }
+                }
             }
             HostCommand::AudioCapture {
                 pipe_id,
@@ -1345,6 +1433,10 @@ impl ProcessApp {
         // event from the audio thread to avoid contending on the outbound
         // queue mutex from a real-time context.
         let ring_for_cb = std::sync::Arc::clone(&ring);
+        // Clone the Arc for peak tracking so the cpal thread can update
+        // without touching the ProcessApp mutex.
+        let peaks_for_meter = std::sync::Arc::clone(&self.audio_peak_meters);
+        let pipe_id_for_meter = pipe_id.clone();
         let sink: crate::audio::FrameSink = std::sync::Arc::new(move |frames: &[f32]| {
             let mut buf = Vec::with_capacity(frames.len() * 4);
             for &s in frames {
@@ -1355,6 +1447,11 @@ impl ProcessApp {
             // by stopping the stream; we want to keep streaming through a
             // brief congestion, so always return Ok.
             let _ = ring_for_cb.push(buf);
+            // Compute and store peak amplitude for AudioMeter rendering (#341).
+            let peak = frames.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+            if let Ok(mut map) = peaks_for_meter.lock() {
+                map.insert(pipe_id_for_meter.clone(), peak);
+            }
             Ok(())
         });
 

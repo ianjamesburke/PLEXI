@@ -1,5 +1,7 @@
 //! Frame rendering — translates committed DrawCommands into egui paint calls.
 
+use std::collections::HashMap;
+
 use crate::app_protocol::RenderCommand;
 use crate::style;
 use crate::theme::Colors;
@@ -33,6 +35,7 @@ pub(super) fn render_draw_commands(
     commands: &[RenderCommand],
     colors: &Colors,
     commonmark_cache: &mut egui_commonmark::CommonMarkCache,
+    audio_peaks: &HashMap<String, f32>,
 ) {
     let origin = pane_rect.min;
 
@@ -410,9 +413,42 @@ pub(super) fn render_draw_commands(
             // image-loading pipeline lands.
             RenderCommand::Image { .. } => {}
 
-            // AudioMeter rendering is not yet implemented; no-op until
-            // the audio-meter primitive lands.
-            RenderCommand::AudioMeter { .. } => {}
+            // AudioMeter (#341): renders a live peak-amplitude bar driven by
+            // the cpal capture callback writing into `audio_peak_meters`.
+            RenderCommand::AudioMeter { rect, pipe_id } => {
+                let peak = *audio_peaks.get(pipe_id).unwrap_or(&0.0);
+                let meter_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x + rect.x, origin.y + rect.y),
+                    egui::vec2(rect.w, rect.h),
+                );
+                // Background track
+                ui.painter().with_clip_rect(clip).rect_filled(
+                    meter_rect,
+                    egui::CornerRadius::same(3),
+                    egui::Color32::from_rgb(30, 30, 35),
+                );
+                // Filled bar proportional to peak amplitude [0, 1]
+                let fill_w = (meter_rect.width() * peak.clamp(0.0, 1.0)).max(0.0);
+                if fill_w > 0.0 {
+                    let fill_rect = egui::Rect::from_min_size(
+                        meter_rect.min,
+                        egui::vec2(fill_w, meter_rect.height()),
+                    );
+                    // Color: green → yellow → red based on level
+                    let color = if peak < 0.6 {
+                        egui::Color32::from_rgb(80, 200, 80)
+                    } else if peak < 0.85 {
+                        egui::Color32::from_rgb(220, 180, 40)
+                    } else {
+                        egui::Color32::from_rgb(220, 60, 60)
+                    };
+                    ui.painter().with_clip_rect(clip).rect_filled(
+                        fill_rect,
+                        egui::CornerRadius::same(3),
+                        color,
+                    );
+                }
+            }
 
             // ── Host-managed scroll regions (#446) ───────────────────────────
             //

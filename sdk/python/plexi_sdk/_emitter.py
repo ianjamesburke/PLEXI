@@ -7,7 +7,7 @@ import threading
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, PROTOCOL_VERSION
+from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList, PROTOCOL_VERSION
 from ._types import CapabilityDeniedError, VideoHandle, AgentInfo
 
 if TYPE_CHECKING:
@@ -690,6 +690,51 @@ class Emitter:
             ],
             outputs=[
                 MidiPortInfo(
+                    id=str(p.get("id", "")),
+                    name=str(p.get("name", "")),
+                    default=bool(p.get("default", False)),
+                )
+                for p in ev.get("outputs", [])
+            ],
+        )
+
+    async def list_audio_devices(self, timeout: float = 5.0) -> "AudioDeviceList":
+        """Enumerate CoreAudio input + output devices (#341).
+        No capability gate — device names are publicly visible.
+        Requires ``audio.record`` / ``audio.playback`` only on subsequent capture/play.
+
+        Returns an AudioDeviceList with ``inputs`` and ``outputs`` lists of
+        AudioDeviceInfo (id, name, default).
+
+        Raises RuntimeError on host enumeration failure or timeout.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.list_audio_devices())``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[dict] = _make_async_queue()
+        self._app._pending_audio_devices[req_id] = q
+        _emit({"type": "list_audio_devices", "request_id": req_id})
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._app._pending_audio_devices.pop(req_id, None)
+            raise RuntimeError(
+                f"list_audio_devices timed out after {timeout}s — host did not respond"
+            )
+        if ev.get("error"):
+            raise RuntimeError(f"list_audio_devices failed: {ev.get('error')}")
+        return AudioDeviceList(
+            inputs=[
+                AudioDeviceInfo(
+                    id=str(p.get("id", "")),
+                    name=str(p.get("name", "")),
+                    default=bool(p.get("default", False)),
+                )
+                for p in ev.get("inputs", [])
+            ],
+            outputs=[
+                AudioDeviceInfo(
                     id=str(p.get("id", "")),
                     name=str(p.get("name", "")),
                     default=bool(p.get("default", False)),

@@ -54,6 +54,9 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 libc = "0.2"
 # CoreAudio capture + device enumeration (#277). Cross-platform PCM I/O.
 cpal = "0.17"
+# Host-owned audio playback (#341). Decoder-agnostic; WAV built-in via hound
+# integration; MP3/FLAC/OGG via default symphonia features.
+rodio = "0.19"
 # Hot reload (#83). Cross-platform fs watcher; on macOS uses FSEvents.
 # `macos_fsevent` is the recommended backend (kqueue is the alt, slower for
 # nested dirs). default-features disabled to avoid pulling crossbeam-channel.
