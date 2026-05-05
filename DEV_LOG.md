@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [CHANGED] CLI tagline updated to "the last app you'll ever need" (PR #739 → alpha)
+
+One-line change in `src/cli_args.rs`: `about` string on the `Cli` struct. Replaced "the spatial terminal" (descriptive) with "the last app you'll ever need" (conviction statement).
+**Breaks if:** `plexi --help` still shows "the spatial terminal".
+
 ## 2026-05-05 — [FIX] CLI setup modal stays open and shows manual fallback on symlink failure (PR #735 → alpha)
 
 Root cause: `mark_prompted()` and `show_cli_setup_prompt = false` were called unconditionally after `install_symlink()`, so a failed install (e.g. `/usr/local/bin` read-only on a fresh macOS without Homebrew) silently dismissed the modal and wrote the sentinel — permanently suppressing the prompt with no PATH setup. Fix: move `mark_prompted()` + `show_cli_setup_prompt = false` inside the `Ok` arm only. On `Err`: store the error string in `cli_setup_error: Option<String>` on `PlexiApp`, render it inline in the modal with the manual `sudo ln` command. "Not now" and Escape clear `cli_setup_error` and session-dismiss as before.
