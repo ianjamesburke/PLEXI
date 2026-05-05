@@ -1007,48 +1007,57 @@ impl ProcessApp {
                 // Enumeration is not gated — device names are already visible
                 // to any macOS app via System Information. The per-device
                 // capture call goes through the `AudioRecord` gate.
-                let inputs = self
-                    .audio_device
-                    .list_input_devices()
-                    .into_iter()
-                    .map(AudioDeviceWire::from)
-                    .collect();
-                let outputs = self
-                    .audio_device
-                    .list_output_devices()
-                    .into_iter()
-                    .map(AudioDeviceWire::from)
-                    .collect();
-                self.outbound_events
-                    .push_back(PlexiEvent::AudioDevicesListed {
+                // Offload to a background thread: cpal device enumeration can
+                // block for hundreds of milliseconds on macOS (Bluetooth scan).
+                let audio = std::sync::Arc::clone(&self.audio_device);
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    let inputs = audio
+                        .list_input_devices()
+                        .into_iter()
+                        .map(AudioDeviceWire::from)
+                        .collect();
+                    let outputs = audio
+                        .list_output_devices()
+                        .into_iter()
+                        .map(AudioDeviceWire::from)
+                        .collect();
+                    log::info!("ProcessApp[{type_id}]: ListAudioDevices complete");
+                    let _ = tx.send(PlexiEvent::AudioDevicesListed {
                         request_id,
                         inputs,
                         outputs,
                         error: None,
                     });
+                });
             }
             HostCommand::ListMidiDevices { request_id } => {
                 // MIDI enumeration mirrors audio: not gated. Port names are
                 // already visible in Audio MIDI Setup.app, no privacy gate.
-                let inputs = self
-                    .midi_device
-                    .list_input_ports()
-                    .into_iter()
-                    .map(MidiPortWire::from)
-                    .collect();
-                let outputs = self
-                    .midi_device
-                    .list_output_ports()
-                    .into_iter()
-                    .map(MidiPortWire::from)
-                    .collect();
-                self.outbound_events
-                    .push_back(PlexiEvent::MidiDevicesListed {
+                // Offload to a background thread for the same reason as audio.
+                let midi = std::sync::Arc::clone(&self.midi_device);
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::spawn(move || {
+                    let inputs = midi
+                        .list_input_ports()
+                        .into_iter()
+                        .map(MidiPortWire::from)
+                        .collect();
+                    let outputs = midi
+                        .list_output_ports()
+                        .into_iter()
+                        .map(MidiPortWire::from)
+                        .collect();
+                    log::info!("ProcessApp[{type_id}]: ListMidiDevices complete");
+                    let _ = tx.send(PlexiEvent::MidiDevicesListed {
                         request_id,
                         inputs,
                         outputs,
                         error: None,
                     });
+                });
             }
             HostCommand::OpenMidiInput { port_id, pipe_id } => {
                 if let PermissionCheck::Denied(reason) =
