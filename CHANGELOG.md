@@ -4,45 +4,54 @@ Newest releases appear first.
 ## [3.4.85] — 2026-05-05
 
 ### Changes
+- fix: correct mypy ignore code for sys.stdout.reconfigure
+- fix: add missing README.md for plexi-sdk hatchling build
+- fix: run SDK type check on main/beta/alpha pushes, not just sdk/python paths
+- fix: add workflow_dispatch trigger to SDK type check
+- fix: use uv venv instead of --system for SDK type check CI
+
 ## [3.4.84] — 2026-05-04
 
 ### Changes
-## [3.4.83] — 2026-05-04
+- Enhance README with more details and formatting
+- Delete .plexi directory
+- Delete .superpowers directory
+- improve: add North Star alignment audit to triage-issues skill
+- improve: add cargo bundle --bin lesson to CLAUDE.md
+- fix(install): move gen_schema to workspace, restore display name + icon for PR builds (#655)
+- feat(sdk): typed command models, py.typed, and plexi validate preflight tool (#627) (#651)
+- fix(workspace): new window/page inherits cwd from focused pane (#652)
+- feat(updater): once-a-day cached update check with toolbar badge (#648)
+- refactor(sdk): split plexi_sdk/__init__.py into focused modules (#649)
 
-### Changes
-## [3.4.82] — 2026-05-04
-
-### Changes
-## [3.4.81] — 2026-05-04
-
-### Changes
-## [3.4.80] — 2026-05-04
-
-### Changes
 ## [3.4.79] — 2026-05-04
 
 ### Changes
-## [3.4.78] — 2026-05-04
+- docs(readme): overhaul for accuracy — features + roadmap, drop stale sections (#647)
+- feat(tiling): keyboard pane swap Cmd+Ctrl+HJKL + edge pulse (#413) (#646)
 
-### Changes
 ## [3.4.77] — 2026-05-04
 
 ### Changes
+- fix: BSD awk compat in release notes extraction (#643)
+
 ## [3.4.76] — 2026-05-04
 
 ### Changes
+- fix: pass --bin plexi to cargo bundle in release workflow (#642)
+
 ## [3.4.75] — 2026-05-04
 
 ### Changes
-## [3.4.74] — 2026-05-04
+- feat(promote): chain alpha→beta→main when promoting to main from alpha (#641)
+- fix(ci): use lowercase plexi.app path in release workflow (#640)
+- fix(promote): skip tag creation/push if already exists (#639)
 
-### Changes
-## [3.4.73] — 2026-05-04
-
-### Changes
 ## [3.4.72] — 2026-05-04
 
 ### Changes
+- refactor(pipeline): clean up release pipeline (#638)
+- feat(release): git-cliff changelog + explicit release-version command (#637)
 
 ## [3.4.71] — 2026-05-04 01:55 ET
 

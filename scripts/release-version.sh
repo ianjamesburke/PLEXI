@@ -49,12 +49,11 @@ sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$TREE/Cargo.toml"
 # ── update CHANGELOG via git-cliff ───────────────────────────────────────────
 
 echo "Generating changelog..."
-git-cliff \
-    --config "$TREE/cliff.toml" \
-    --workdir "$TREE" \
+(cd "$TREE" && git-cliff \
+    --config cliff.toml \
     --unreleased \
     --tag "v$new" \
-    --prepend "$TREE/CHANGELOG.md"
+    --prepend CHANGELOG.md)
 
 # ── commit ────────────────────────────────────────────────────────────────────
 
