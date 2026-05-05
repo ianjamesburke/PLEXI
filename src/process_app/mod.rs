@@ -86,6 +86,17 @@ pub struct NavEntry {
 }
 
 // ---------------------------------------------------------------------------
+// StreamHandle — per-correlation-id state for active StreamProcess children
+// ---------------------------------------------------------------------------
+
+pub(crate) struct StreamHandle {
+    /// Set to `true` to request cancellation. Shared with the reader thread.
+    pub(crate) cancel: Arc<AtomicBool>,
+    /// OS process ID — used for SIGTERM / SIGKILL escalation on CancelProcess.
+    pub(crate) pid: u32,
+}
+
+// ---------------------------------------------------------------------------
 // ProcessApp
 // ---------------------------------------------------------------------------
 
@@ -240,6 +251,10 @@ pub struct ProcessApp {
     /// Updated each time a new `ExposeTools` command arrives. The routing
     /// layer re-registers these in the global tool registry on each update.
     pub(crate) exposed_tools: Vec<crate::app_protocol::AiTool>,
+    /// Active `StreamProcess` children, keyed on `correlation_id` (#358).
+    /// Dropping an entry cancels nothing automatically — the cancel flag
+    /// must be set and a signal sent before removing the handle.
+    pub(crate) stream_handles: HashMap<String, StreamHandle>,
 }
 
 impl ProcessApp {
@@ -528,6 +543,7 @@ impl ProcessApp {
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             scroll_offsets: HashMap::new(),
             exposed_tools: Vec::new(),
+            stream_handles: HashMap::new(),
         })
     }
 
@@ -639,6 +655,7 @@ impl ProcessApp {
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             scroll_offsets: HashMap::new(),
             exposed_tools: Vec::new(),
+            stream_handles: HashMap::new(),
             file_picker_tx,
             file_picker_rx,
         };

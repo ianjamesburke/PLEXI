@@ -4,14 +4,18 @@
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
 use crate::app_permissions::{check, Capability, PermissionCheck};
-use crate::app_protocol::{AudioDeviceWire, HostCommand, MidiPortWire, PlexiEvent};
+use crate::app_protocol::{AudioDeviceWire, HostCommand, MidiPortWire, PlexiEvent, StreamChannel};
 use crate::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
 use crate::event_log::{self, HostEvent};
 use crate::plexi_ai::broker::AiBrokerRequest;
 use crate::typed_pipes::PipeDirection;
+use std::io::Read;
+use std::process::Stdio;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-use super::ProcessApp;
+use super::{ProcessApp, StreamHandle};
 
 impl ProcessApp {
     /// Route a v3 host command to the appropriate subsystem.
@@ -527,6 +531,129 @@ impl ProcessApp {
                     self.type_id,
                     self.nav_stack.len(),
                 );
+            }
+
+            // ── Process streaming (#358) ───────────────────────────────────
+            HostCommand::StreamProcess {
+                correlation_id,
+                terminal_pane_id: _,
+                command,
+                channel,
+            } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::TerminalBindings)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: StreamProcess {correlation_id} denied — {reason}",
+                        self.type_id
+                    );
+                    self.outbound_events.push_back(PlexiEvent::StreamEnd {
+                        correlation_id,
+                        exit_code: 1,
+                    });
+                    return;
+                }
+                log::info!(
+                    "ProcessApp[{}]: StreamProcess {correlation_id} — command={command:?} channel={channel:?}",
+                    self.type_id
+                );
+                let mut child = match std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!(
+                            "ProcessApp[{}]: StreamProcess {correlation_id} — spawn failed: {e}",
+                            self.type_id
+                        );
+                        self.outbound_events.push_back(PlexiEvent::StreamEnd {
+                            correlation_id,
+                            exit_code: 1,
+                        });
+                        return;
+                    }
+                };
+                let pid = child.id();
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.stream_handles.insert(
+                    correlation_id.clone(),
+                    StreamHandle { cancel: Arc::clone(&cancel), pid },
+                );
+                // Take the appropriate pipe before moving child into the thread.
+                let pipe: Box<dyn Read + Send> = match channel {
+                    StreamChannel::Stdout | StreamChannel::Structured => {
+                        Box::new(child.stdout.take().expect("stdout piped"))
+                    }
+                    StreamChannel::Stderr => {
+                        Box::new(child.stderr.take().expect("stderr piped"))
+                    }
+                };
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                let corr_id = correlation_id.clone();
+                std::thread::spawn(move || {
+                    let mut buf = vec![0u8; 4096];
+                    let mut pipe = pipe;
+                    loop {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        match pipe.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                let _ = tx.send(PlexiEvent::StreamChunk {
+                                    correlation_id: corr_id.clone(),
+                                    channel,
+                                    bytes: buf[..n].to_vec(),
+                                });
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    // Drop the pipe so the child's pipe descriptor is closed,
+                    // then reap the child to avoid zombies.
+                    drop(pipe);
+                    let exit_code = child
+                        .wait()
+                        .map(|s| s.code().unwrap_or(-1))
+                        .unwrap_or(-1);
+                    log::info!(
+                        "ProcessApp[{type_id}]: StreamProcess {corr_id} ended — exit_code={exit_code}"
+                    );
+                    let _ = tx.send(PlexiEvent::StreamEnd {
+                        correlation_id: corr_id,
+                        exit_code,
+                    });
+                });
+            }
+
+            HostCommand::CancelProcess { correlation_id } => {
+                if let Some(handle) = self.stream_handles.remove(&correlation_id) {
+                    log::info!(
+                        "ProcessApp[{}]: CancelProcess {correlation_id} — pid={}",
+                        self.type_id,
+                        handle.pid
+                    );
+                    handle.cancel.store(true, Ordering::Relaxed);
+                    // SIGTERM first; reader thread exits when the pipe closes.
+                    unsafe {
+                        libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
+                    }
+                    // Escalate to SIGKILL after a 1s grace period on a
+                    // background thread so the UI never blocks.
+                    let pid = handle.pid;
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
+                    });
+                }
+                // else: stream already ended — no-op, no error event.
             }
 
             // ── File picker (#514) ─────────────────────────────────────────
