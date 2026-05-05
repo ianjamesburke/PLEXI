@@ -3,7 +3,7 @@ use crate::render;
 use crate::theme::Colors;
 use egui::Color32;
 use egui_term::{BackendCommand, TerminalTheme};
-use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
+use egui_tiles::{Behavior, ResizeState, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -158,6 +158,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
         4.0
+    }
+
+    fn resize_stroke(&self, _style: &egui::Style, resize_state: ResizeState) -> egui::Stroke {
+        match resize_state {
+            ResizeState::Idle => egui::Stroke::NONE,
+            ResizeState::Hovering | ResizeState::Dragging => {
+                egui::Stroke::new(2.0, self.colors.text_primary)
+            }
+        }
     }
 
     fn paint_on_top_of_tile(
