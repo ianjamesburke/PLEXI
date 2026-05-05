@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [FIX] Bundle Python runtime in release zip (PR #718 → alpha)
+
+`release.yml` never ran `fetch-python-runtime.sh` — `assets/python/` was never populated on the CI runner, so the zip shipped without a Python interpreter. Python apps (e.g. Balls) failed to launch on any clean install that lacked a system Python. Fix: add a `Fetch Python runtime` step before `cargo bundle`, using the same versions pinned in the Justfile (3.12.13 / 20260414). The script already skips the download if the correct version is cached locally, so local builds are unaffected.
+**Breaks if:** A fresh install from the release zip opens any Python app and it fails to launch with a missing-interpreter error.
+
 ## 2026-05-05 — [CHANGED] Migrate CLI dispatch to clap — structured subcommands, --help (PR #714 → alpha)
 
 Replaced the 370-line hand-rolled `match args[1].as_str()` dispatch in `main.rs` with `clap` derive structs. New `src/cli_args.rs` holds `Cli`, `Commands`, and 10 sub-enum types. All 16 subcommands (`run`, `workspace`, `secret`, `app`, `install`, `uninstall`, `update`, `list`, `validate`, `pack`, `notify`, `pane`, `open`, `descriptor`, `registry`, `context`, `shell-init`) now produce auto-generated `--help`. `cli.rs` functions untouched — only the arg-parsing surface changed. `parse_profile_flag` and `parse_workspace_path_arg` remain manual (must run before clap for config_dir resolution and workspace-open path detection respectively).
