@@ -19,9 +19,9 @@ if ! command -v cargo-bundle &>/dev/null; then
 fi
 
 echo "Building Plexi.app..."
-cargo bundle --release
+cargo bundle --release --bin plexi
 
-APP_SRC="target/release/bundle/osx/Plexi.app"
+APP_SRC="target/release/bundle/osx/plexi.app"
 APP_DEST="/Applications/Plexi.app"
 
 if [ ! -d "$APP_SRC" ]; then
