@@ -139,9 +139,9 @@ class AudioRecorderApp(App):
         self.emit.info(f"audio-recorder: saved {path}")
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        if key == "left" and not self._capturing:
+        if key in ("ArrowLeft", "[") and not self._capturing:
             self._device_idx = (self._device_idx - 1) % max(1, len(self._devices))
-        elif key == "right" and not self._capturing:
+        elif key in ("ArrowRight", "]") and not self._capturing:
             self._device_idx = (self._device_idx + 1) % max(1, len(self._devices))
         elif key == "r":
             if self._capturing:
@@ -162,11 +162,13 @@ class AudioRecorderApp(App):
 
         # Device selector
         dev = self._selected_device()
-        dev_name = dev.name if dev else "(no devices)"
+        n_dev = len(self._devices)
+        dev_idx_label = f" ({self._device_idx + 1}/{n_dev})" if n_dev > 1 else ""
+        dev_name = (dev.name if dev else "(no devices)") + dev_idx_label
         ctx.text(PAD, y, "Device:", size=13.0, color="#a6adc8")
         ctx.text(PAD + 65, y, dev_name, size=13.0, color="#cdd6f4")
         if not self._capturing:
-            ctx.text(PAD, y + 18, "left/right to change device", size=11.0, color="#585b70")
+            ctx.text(PAD, y + 18, "← → or [ ] to change device", size=11.0, color="#585b70")
         y += 45
 
         # Peak meter
