@@ -1,5 +1,10 @@
 <!-- DEV_LOG.md — decision journal for the Plexi project. Newest entries at the top. Records non-obvious choices, abandoned approaches, and root causes so future sessions don't repeat mistakes. -->
 
+## 2026-05-05 — [CHANGED] Cmd+P palette ranks active context first (PR #691 → alpha)
+
+Cmd+P entries previously sorted by a single recency key, so a pane visited 10 minutes ago in another context could outrank a pane opened seconds ago in the active context. Changed `rank_of` in `src/command_palette.rs` to return a two-tier `(tier, recency)` key: tier 0 if the entry's window belongs to the active context (matches `windows[active_window].context_id`), tier 1 otherwise. Recency calculation unchanged. Mirrors macOS Cmd+Tab behavior — current app's windows first.
+**Breaks if:** Open contexts A and B, focus a pane in A, touch a pane in B, switch back to A, hit Cmd+P → any B pane appears above any A pane.
+
 ## 2026-05-05 — [CHANGED] Tier 3 --help crawl fallback descriptor renderer (PR #685 → alpha)
 
 Added `src/cli_crawl.rs` — the third tier of CLI descriptor resolution. When a CLI has no `--plexi` native support (Tier 1) and no embedded registry entry (Tier 2), `plexi descriptor probe` now runs `<cli> --help`, parses the command list, and synthesises a `PlexiDescriptor`. Results cached under `~/.plexi-<channel>/cache/descriptors/<cli>.json`. Added `Serialize` to all `PlexiDescriptor` types for cache write. Added `--no-crawl` flag and `SummarySource::Crawled { from_cache }` badge in probe output. Two parsing strategies: (1) recognized section headers (COMMANDS, SUBCOMMANDS, CORE COMMANDS) for tools like `gh`/`cargo`; (2) broad 3-space-indent scan fallback for prose-header CLIs like `git`. The fallback was discovered necessary during testing — `git --help` uses section labels like "start a working area" rather than any standard COMMANDS keyword.
