@@ -207,7 +207,7 @@ impl<'a> TerminalView<'a> {
                             &layout,
                         ));
                     } else if let egui::Event::Key {
-                        key: Key::OpenBracket,
+                        key: Key::C,
                         pressed: true,
                         modifiers: key_mods,
                         ..
