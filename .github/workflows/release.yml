@@ -13,6 +13,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -40,21 +42,15 @@ jobs:
           cd target/release/bundle/osx
           zip -r Plexi-${{ github.ref_name }}.zip plexi.app
 
-      - name: Extract release notes since last tag
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Extract release notes
         id: notes
         run: |
-          # Find the previous tag (the one before the tag being released)
-          prev_tag=$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -1)
-          prev_ver=${prev_tag#v}
-          # Collect every CHANGELOG entry from the top until we reach prev_ver.
-          # If there is no previous tag, include everything.
-          notes=$(awk -v stop="$prev_ver" '
-            /^## \[/ {
-              if (stop != "" && index($0, "[" stop "]") > 0) exit
-              found=1
-            }
-            found { print }
-          ' CHANGELOG.md)
+          notes=$(git-cliff --latest --strip header)
           echo "body<<EOF" >> "$GITHUB_OUTPUT"
           echo "$notes" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
