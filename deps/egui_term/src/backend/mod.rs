@@ -40,6 +40,7 @@ pub enum BackendCommand {
     Resize(Size, Size),
     SelectStart(SelectionType, f32, f32, f32),
     SelectUpdate(f32, f32, f32),
+    ClearSelection,
     ProcessLink(LinkAction, Point),
     MouseReport(MouseButton, Modifiers, Point, bool),
 }
@@ -266,6 +267,9 @@ impl TerminalBackend {
             },
             BackendCommand::SelectUpdate(x, y, ppp) => {
                 self.update_selection(&mut term, x, y, ppp);
+            },
+            BackendCommand::ClearSelection => {
+                term.selection = None;
             },
             BackendCommand::ProcessLink(link_action, point) => {
                 self.process_link_action(&term, link_action, point);
