@@ -462,6 +462,17 @@ impl PlexiApp {
         layout: Option<String>,
         args: &[String],
     ) {
+        // "terminal" is a builtin pane type, not in the app registry.
+        // All dispatch paths (socket IPC, spawn-queue, in-process) must share
+        // this early-return so `plexi open terminal` works from any context.
+        if id == "terminal" {
+            let layout_str = layout.as_deref().unwrap_or("split_v");
+            let vertical = matches!(layout_str, "split_h" | "split_above");
+            log::info!("SpawnPane: terminal layout='{layout_str}' vertical={vertical}");
+            self.split_focused(vertical);
+            return;
+        }
+
         let cwd = self.windows[self.active_window]
             .focused_pane
             .and_then(|fp| self.windows[self.active_window].get_focused_pane_cwd(fp))
@@ -557,6 +568,39 @@ mod tests {
         assert!(
             h.app.windows[0].tree.root.is_some(),
             "tree root should be set after launch into empty context"
+        );
+    }
+
+    /// Regression guard for issue #742: `plexi open terminal` (socket/spawn-queue paths) silently
+    /// failed because `launch_app_by_id_with_layout("terminal", …)` fell through to the app
+    /// registry, which logged a warn and did nothing. The fix adds an early-return that calls
+    /// `split_focused` directly, matching the in-process `AppCommand::SpawnPane` path.
+    #[test]
+    fn spawn_pane_terminal_via_socket_path_creates_pane() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        // add_test_pane does not set focused_pane; wire it up so split_focused can run.
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_v".to_string(),
+            args: vec![],
+            pipe_id: None,
+        });
+        h.run_frames(2);
+
+        let snap = h.state();
+        assert!(
+            snap.open_panes.len() > 1,
+            "SpawnPane terminal via socket must open a new pane (got {:?})",
+            snap.pane_titles,
+        );
+        assert!(
+            snap.pane_titles.values().any(|t| t == "Terminal"),
+            "expected a Terminal pane in snapshot after SpawnPane, got: {:?}",
+            snap.pane_titles,
         );
     }
 }
