@@ -55,18 +55,22 @@ Milestones (`v3.1`, `v3.2`, `v3.3`, …) define the actual release collections �
 
 Issues without a milestone are accepted into an era but unslotted. Assign a milestone when the work is actively being planned for a release. An issue can carry `v3.1+` as its version label and a `v3.4` milestone simultaneously — the label is the era, the milestone is the slot.
 
-## App Installation Paths
+## Build Channels & Isolated Profiles
 
-Build-specific, resolved at runtime by binary name:
+Each build channel is a **fully isolated instance** — its own binary, app bundle, config dir, log file, secrets index, and apps. The channel is detected at runtime from the binary name (e.g. `plexi-pr-783`).
 
-| Build | Apps directory |
-|---|---|
-| Alpha (frozen) | `~/.plexi-alpha/apps/` |
-| Beta | `~/.plexi-beta/apps/` |
-| Stable | `~/.plexi/apps/` |
-| v3 dev build | `~/.plexi-v3/apps/` |
+| Channel | Binary | Profile dir | App bundle |
+|---|---|---|---|
+| Stable | `plexi` | `~/.plexi/` | `Plexi.app` |
+| Beta | `plexi-beta` | `~/.plexi-beta/` | `Plexi Beta.app` |
+| Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `Plexi Alpha.app` |
+| PR build | `plexi-pr-<N>` | `~/.plexi-pr-<N>/` | `Plexi PR<N>.app` |
 
-Each app is a subdirectory with `manifest.toml` and an executable entry point. Installing to the wrong directory silently does nothing.
+**PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just pr-clean <N>`.
+
+**Workspace** (`.plexi/workspace.toml`) is a separate per-project concept — the directory a user initializes with `plexi workspace init` inside their project root. It is not the same as the profile dir. Never run `workspace init` from `~` — it would create `~/.plexi/workspace.toml`, colliding with the stable profile dir.
+
+**When writing test instructions for a PR build:** use `plexi-pr-<N>` (not `plexi`), and if the feature requires workspace context, direct the user to `cd` into a real project dir first.
 
 ## Branch Workflow
 
