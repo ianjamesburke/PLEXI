@@ -1367,10 +1367,15 @@ impl eframe::App for PlexiApp {
                         //   split_focused(true)  → insert_vertical_tile   → stacked (BELOW)
                         // So: split_v (right) → false, split_h/split_above (below) → true.
                         let vertical = matches!(layout.as_str(), "split_h" | "split_above");
+                        let initial_cmd = if effective_args.is_empty() {
+                            None
+                        } else {
+                            Some(effective_args.join(" "))
+                        };
                         log::info!(
-                            "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id}"
+                            "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
                         );
-                        self.split_focused(vertical);
+                        self.split_focused(vertical, initial_cmd.as_deref());
                     } else {
                         self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
@@ -1799,12 +1804,12 @@ impl eframe::App for PlexiApp {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
-                    self.split_focused(false);
+                    self.split_focused(false, None);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].zoomed_pane = None;
-                    self.split_focused(true);
+                    self.split_focused(true, None);
                     self.save_workspace();
                 }
                 Action::SplitRight => {
