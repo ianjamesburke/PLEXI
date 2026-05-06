@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.4] — 2026-05-06
+
+### Changes
+- fix(cli): atomic response file write + UUID filename in notify_cli (#755)
+- fix(typed_pipes): replace yield_now() spin with 1ms sleep in drain loop (#756)
+- fix(cli): plexi open terminal now opens a pane via socket and spawn-queue paths (#757)
+- chore: commit skill changes before branching
+- docs: remove voice agent spec file — content lives in GitHub issues
+- docs: voice agent design spec
+- refactor: migrate issue dependencies from front-matter to native GitHub blocking
+- fix(cli): stop PLEXI_RUNNING walk before home dir to avoid reporting stable profile as workspace (#740)
+- refactor: replace DEV_LOG with GOTCHAS.md + detailed commit messages
+- docs: GOTCHAS.md + ship skill git flow redesign spec
 ## [3.5.3] — 2026-05-06
 
 ### Changes
