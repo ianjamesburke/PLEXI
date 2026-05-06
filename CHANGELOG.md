@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.1] — 2026-05-06
+
+### Changes
+- fix(cli): stop PLEXI_RUNNING walk before home dir to avoid reporting stable profile as workspace (#740)
+- refactor: replace DEV_LOG with GOTCHAS.md + detailed commit messages
+- docs: GOTCHAS.md + ship skill git flow redesign spec
 ## [3.5.0] — 2026-05-06
 
 ### Changes
