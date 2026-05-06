@@ -600,7 +600,25 @@ impl ProcessApp {
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
                 let corr_id = correlation_id.clone();
-                std::thread::spawn(move || {
+                const MAX_STREAM_THREADS: usize = 32;
+                let active = Arc::clone(&self.active_stream_threads);
+                let prior = active.fetch_add(1, Ordering::Relaxed);
+                if prior >= MAX_STREAM_THREADS {
+                    active.fetch_sub(1, Ordering::Relaxed);
+                    log::warn!(
+                        "ProcessApp[{}]: StreamProcess {correlation_id} rejected — stream thread limit ({MAX_STREAM_THREADS}) reached",
+                        self.type_id
+                    );
+                    let _ = self.http_tx.send(PlexiEvent::StreamEnd {
+                        correlation_id,
+                        exit_code: -1,
+                    });
+                    return;
+                }
+                let thread_name = format!("stream-reader-{}-{}", type_id, corr_id);
+                std::thread::Builder::new()
+                    .name(thread_name)
+                    .spawn(move || {
                     let mut buf = vec![0u8; 4096];
                     let mut pipe = pipe;
                     loop {
@@ -633,7 +651,8 @@ impl ProcessApp {
                         correlation_id: corr_id,
                         exit_code,
                     });
-                });
+                    active.fetch_sub(1, Ordering::Relaxed);
+                }).expect("failed to spawn stream-reader thread");
             }
 
             HostCommand::CancelProcess { correlation_id } => {
@@ -651,12 +670,14 @@ impl ProcessApp {
                     // Escalate to SIGKILL after a 1s grace period on a
                     // background thread so the UI never blocks.
                     let pid = handle.pid;
-                    std::thread::spawn(move || {
+                    std::thread::Builder::new()
+                        .name(format!("sigkill-{pid}"))
+                        .spawn(move || {
                         std::thread::sleep(std::time::Duration::from_secs(1));
                         unsafe {
                             libc::kill(pid as libc::pid_t, libc::SIGKILL);
                         }
-                    });
+                    }).expect("failed to spawn sigkill thread");
                 }
                 // else: stream already ended — no-op, no error event.
             }
@@ -679,7 +700,9 @@ impl ProcessApp {
                 );
                 let tx = self.file_picker_tx.clone();
                 let type_id = self.type_id.clone();
-                std::thread::spawn(move || {
+                std::thread::Builder::new()
+                    .name(format!("file-picker-{type_id}"))
+                    .spawn(move || {
                     let result = pick_files(&filter, multiple);
                     log::debug!("ProcessApp[{type_id}]: OpenFilePicker {request_id} → {result:?}");
                     let event = match result {
@@ -689,7 +712,7 @@ impl ProcessApp {
                         _ => PlexiEvent::FilePickCancelled { request_id },
                     };
                     let _ = tx.send(event);
-                });
+                }).expect("failed to spawn file-picker thread");
             }
 
             // ── Mouse tracking toggle ──────────────────────────────────────
@@ -802,7 +825,9 @@ impl ProcessApp {
                 let net = std::sync::Arc::clone(&self.net);
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
-                std::thread::spawn(move || {
+                std::thread::Builder::new()
+                    .name(format!("http-{type_id}-{request_id}"))
+                    .spawn(move || {
                     let resp = net.http(&method, &url, &headers, body.as_deref());
                     log::debug!("ProcessApp[{type_id}]: HttpRequest {request_id} → {}", resp.status);
                     let _ = tx.send(PlexiEvent::HttpResponse {
@@ -811,7 +836,7 @@ impl ProcessApp {
                         body: resp.body,
                         error: resp.error,
                     });
-                });
+                }).expect("failed to spawn http thread");
             }
             // ── ai.query broker (#284) ─────────────────────────────────────
             HostCommand::AiQuery {
@@ -856,7 +881,9 @@ impl ProcessApp {
                 let tool_dispatcher = std::sync::Arc::new(
                     crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(),
                 );
-                std::thread::spawn(move || {
+                std::thread::Builder::new()
+                    .name(format!("ai-query-{app_id}-{request_id}"))
+                    .spawn(move || {
                     let resp = broker.dispatch(AiBrokerRequest {
                         app_id,
                         model_tier,
@@ -877,7 +904,7 @@ impl ProcessApp {
                     if let Err(e) = tx.send(event) {
                         log::warn!("ai broker: response receiver dropped: {e}");
                     }
-                });
+                }).expect("failed to spawn ai-query thread");
             }
 
             HostCommand::AudioPlay {
@@ -1013,7 +1040,9 @@ impl ProcessApp {
                 let audio = std::sync::Arc::clone(&self.audio_device);
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
-                std::thread::spawn(move || {
+                std::thread::Builder::new()
+                    .name(format!("audio-devices-{type_id}"))
+                    .spawn(move || {
                     let inputs = audio
                         .list_input_devices()
                         .into_iter()
@@ -1031,7 +1060,7 @@ impl ProcessApp {
                         outputs,
                         error: None,
                     });
-                });
+                }).expect("failed to spawn audio-devices thread");
             }
             HostCommand::ListMidiDevices { request_id } => {
                 // MIDI enumeration mirrors audio: not gated. Port names are
@@ -1040,7 +1069,9 @@ impl ProcessApp {
                 let midi = std::sync::Arc::clone(&self.midi_device);
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
-                std::thread::spawn(move || {
+                std::thread::Builder::new()
+                    .name(format!("midi-devices-{type_id}"))
+                    .spawn(move || {
                     let inputs = midi
                         .list_input_ports()
                         .into_iter()
@@ -1058,7 +1089,7 @@ impl ProcessApp {
                         outputs,
                         error: None,
                     });
-                });
+                }).expect("failed to spawn midi-devices thread");
             }
             HostCommand::OpenMidiInput { port_id, pipe_id } => {
                 if let PermissionCheck::Denied(reason) =
@@ -1196,13 +1227,15 @@ impl ProcessApp {
                 self.pending_timers.insert(timer_id.clone(), std::sync::Arc::clone(&cancelled));
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
-                std::thread::spawn(move || {
+                std::thread::Builder::new()
+                    .name(format!("timer-{type_id}-{timer_id}"))
+                    .spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(after_ms));
                     if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                         log::debug!("ProcessApp[{type_id}]: timer {timer_id} fired");
                         let _ = tx.send(PlexiEvent::Timer { timer_id });
                     }
-                });
+                }).expect("failed to spawn timer thread");
             }
 
             // ── Cancel timer ───────────────────────────────────────────────
