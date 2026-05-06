@@ -227,7 +227,7 @@ impl PlexiApp {
             log::info!("split_focused: initial_cmd={cmd:?}");
             settings.args = vec!["-l".to_string(), "-c".to_string(), cmd.to_string()];
         }
-        let Some(pane) = TerminalPane::new(
+        let Some(mut pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
@@ -237,6 +237,7 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
+        pane.close_on_exit = initial_cmd.is_some();
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
