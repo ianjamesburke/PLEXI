@@ -524,6 +524,7 @@ impl PlexiApp {
                 // active_window based on context_active_window. We override it
                 // immediately below.
                 self.switch_workspace(ctx_idx_sidebar);
+                self.skip_auto_switch_frames = 2;
             }
         }
         self.active_window = ctx_idx;

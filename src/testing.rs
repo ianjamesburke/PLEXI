@@ -425,4 +425,36 @@ mod tests {
         h.ipc_tx.send(HostCommand::SetPaneTitle { pane_id: 9999, name: "ghost".into() }).unwrap();
         h.run_frames(1); // must not panic; logs warn "not found"
     }
+
+    // -- Auto-switch context on pane focus ------------------------------------
+
+    /// `skip_auto_switch_frames` decrements to zero over successive frames.
+    /// This guards against regressions where the inhibit counter never clears
+    /// and auto-switch stops working after the first manual context switch.
+    #[test]
+    fn skip_auto_switch_frames_decrements_each_frame() {
+        let mut h = HostHarness::new();
+        h.app.skip_auto_switch_frames = 3;
+        h.run_frames(3);
+        assert_eq!(
+            h.app.skip_auto_switch_frames, 0,
+            "skip_auto_switch_frames should reach zero after 3 frames"
+        );
+    }
+
+    /// Auto-switch must not fire when context roots are None (no root configured).
+    /// With no terminal panes and no context roots, router stays on context 0.
+    #[test]
+    fn auto_switch_no_op_without_context_roots() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+
+        // All contexts have root = None by default in new_for_test.
+        let before_idx = h.app.router.active_idx();
+        h.run_frames(2);
+        assert_eq!(
+            h.app.router.active_idx(), before_idx,
+            "auto-switch must not fire when no context has a root configured"
+        );
+    }
 }
