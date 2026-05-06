@@ -2078,6 +2078,12 @@ impl Drop for ProcessApp {
                     Ok(None) => {
                         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
                     }
+                    Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
+                        // Background reaper already called waitpid and won the
+                        // race — ECHILD means the child is gone. Treat as clean exit.
+                        exited = true;
+                        break;
+                    }
                     Err(e) => {
                         log::warn!(
                             "ProcessApp[{}]: try_wait error during shutdown: {e}",
