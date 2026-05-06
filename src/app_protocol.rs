@@ -909,6 +909,21 @@ pub enum HostCommand {
         name: String,
     },
 
+    /// List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.
+    ListPanes {
+        response_file: String,
+    },
+
+    /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
+    FocusPane {
+        pane_id: u64,
+    },
+
+    /// Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.
+    ClosePane {
+        pane_id: u64,
+    },
+
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
     CreateContext {
         #[serde(default, skip_serializing_if = "Option::is_none")]

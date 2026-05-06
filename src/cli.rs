@@ -1390,6 +1390,77 @@ pub fn pane_set_title_cli(name: &str) -> i32 {
     0
 }
 
+/// `plexi pane list`
+///
+/// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
+/// to a response file; this function polls for it and prints it to stdout.
+/// Returns 0 on success, 1 on error.
+pub fn pane_list_cli() -> i32 {
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("pane-list-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+
+    let payload = serde_json::json!({
+        "type": "list_panes",
+        "response_file": response_file,
+    });
+
+    log::info!("pane_list:cli: sending via socket response_file={:?}", response_file);
+
+    let code = send_to_socket(payload);
+    if code != 0 {
+        return code;
+    }
+
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    print!("{content}");
+                    return 0;
+                }
+                Err(e) => {
+                    log::warn!("pane_list:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane list response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// `plexi pane focus <pane_id>`
+///
+/// Sends a `focus_pane` command to PLEXI_SOCKET. Fire-and-forget.
+/// Returns 0 on success, 1 on error.
+pub fn pane_focus_cli(pane_id: u64) -> i32 {
+    send_to_socket(serde_json::json!({
+        "type": "focus_pane",
+        "pane_id": pane_id,
+    }))
+}
+
+/// `plexi pane close <pane_id>`
+///
+/// Sends a `close_pane` command to PLEXI_SOCKET. Fire-and-forget.
+/// Returns 0 on success, 1 on error.
+pub fn pane_close_cli(pane_id: u64) -> i32 {
+    send_to_socket(serde_json::json!({
+        "type": "close_pane",
+        "pane_id": pane_id,
+    }))
+}
+
 /// `plexi open <type_id> [args...] [--layout=X]`
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a

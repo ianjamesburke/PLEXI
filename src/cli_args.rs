@@ -191,6 +191,22 @@ pub enum PaneCmd {
     SetTitle {
         name: String,
     },
+    /// List all open panes as a JSON array
+    List,
+    /// Move UI focus to a pane by ID
+    ///
+    /// NOTE: This moves the *user's visual focus* to the target pane — it does NOT
+    /// relocate the agent's execution context. An agent calling this from pane A
+    /// remains in pane A after the call; only the user sees focus shift to pane B.
+    Focus {
+        /// Pane ID (from `plexi pane list`)
+        pane_id: u64,
+    },
+    /// Close a pane by ID
+    Close {
+        /// Pane ID (from `plexi pane list`)
+        pane_id: u64,
+    },
 }
 
 #[derive(Subcommand)]

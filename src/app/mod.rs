@@ -865,6 +865,62 @@ impl PlexiApp {
                         log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                     }
                 }
+                crate::app_protocol::HostCommand::ListPanes { response_file } => {
+                    log::info!("pane_ipc: kind=list_panes response_file={:?}", response_file);
+                    let active_win = self.active_window;
+                    let mut entries: Vec<serde_json::Value> = Vec::new();
+                    for (win_idx, win) in self.windows.iter().enumerate() {
+                        let focused_pane_id = win.focused_pane
+                            .and_then(|t| win.tree.tiles.get(t))
+                            .and_then(|tile| {
+                                if let egui_tiles::Tile::Pane(id) = tile { Some(*id) } else { None }
+                            });
+                        for (pane_id, pane) in &win.panes {
+                            let (pane_type, title) = match pane {
+                                crate::pane::Pane::Terminal(t) => {
+                                    ("terminal", t.name.clone().unwrap_or_else(|| "terminal".to_string()))
+                                }
+                                crate::pane::Pane::App(a) => {
+                                    ("app", a.name.clone())
+                                }
+                            };
+                            let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
+                            entries.push(serde_json::json!({
+                                "id": pane_id,
+                                "type": pane_type,
+                                "title": title,
+                                "focused": focused,
+                            }));
+                        }
+                    }
+                    let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
+                    if let Err(e) = std::fs::write(response_file, &json_str) {
+                        log::error!("pane_ipc: list_panes: could not write response file {response_file:?}: {e}");
+                    }
+                }
+                crate::app_protocol::HostCommand::FocusPane { pane_id } => {
+                    log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
+                    let mut found = false;
+                    for win in &mut self.windows {
+                        if let Some(tile_id) = win.tree.tiles.find_pane(pane_id) {
+                            win.focused_pane = Some(tile_id);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        log::warn!("pane_ipc: focus_pane: pane_id={pane_id} not found");
+                    }
+                }
+                crate::app_protocol::HostCommand::ClosePane { pane_id } => {
+                    log::info!("pane_ipc: kind=close_pane pane_id={pane_id}");
+                    let before: usize = self.windows.iter().map(|w| w.panes.len()).sum();
+                    self.close_pane_by_id(*pane_id);
+                    let after: usize = self.windows.iter().map(|w| w.panes.len()).sum();
+                    if before == after {
+                        log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
+                    }
+                }
                 crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, .. } => {
                     log::info!("pane_ipc: kind=spawn_pane type_id={type_id}");
                     self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);

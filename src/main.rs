@@ -249,6 +249,9 @@ fn main() -> eframe::Result {
                     }
                     Commands::Pane { cmd } => match cmd {
                         PaneCmd::SetTitle { name } => std::process::exit(cli::pane_set_title_cli(&name)),
+                        PaneCmd::List => std::process::exit(cli::pane_list_cli()),
+                        PaneCmd::Focus { pane_id } => std::process::exit(cli::pane_focus_cli(pane_id)),
+                        PaneCmd::Close { pane_id } => std::process::exit(cli::pane_close_cli(pane_id)),
                     },
                     Commands::Open { type_id, layout, extra_args } => {
                         std::process::exit(cli::open_cli(&type_id, &extra_args, layout.as_deref()));
