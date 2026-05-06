@@ -292,15 +292,15 @@ fn main() -> eframe::Result {
         let home = dirs::home_dir().unwrap_or_default();
         let mut dir = cwd.as_path();
         loop {
+            if dir == home || dir.parent().is_none() {
+                break;
+            }
             if dir.join(".plexi").is_dir() {
                 eprintln!(
                     "plexi: already running inside Plexi. Nearest workspace: {}",
                     dir.join(".plexi").display()
                 );
                 std::process::exit(0);
-            }
-            if dir == home || dir.parent().is_none() {
-                break;
             }
             dir = dir.parent().unwrap();
         }
