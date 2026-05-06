@@ -34,7 +34,7 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 **Terminal pane** — A pane hosting a PTY (shell). Input is vt100 bytes; output is terminal escape sequences.
 
-**Agent pane** — A pane hosting a Plexi IQ instance (LLM turn loop). Requests are passed to the backend (Claude CLI or Anthropic API); results stream to the UI. Persists session ID and transcript.
+**Agent pane** — A pane hosting an LLM turn loop via IQ query. Requests are passed to the backend (OpenRouter now; Ollama next); results stream to the UI. Persists session ID and transcript. Cost and token usage logged to ledger per turn.
 
 ## State & Persistence
 
