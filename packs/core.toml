@@ -41,14 +41,6 @@ id      = "ui-playground"
 source  = "local:ui-playground"
 version = "bundled"
 
-# The Installer App itself — fresh installs get the App Store for free
-# (#308 Phase 3). It shells out to `plexi-<channel>` for install / update /
-# uninstall / pack export, so the host is what runs `git`, not the app.
-[[app]]
-id      = "app-store"
-source  = "local:app-store"
-version = "1.0.0"
-
 # Video substrate POC (#345). Drives the mock decoder via
 # `video.playback`. Production AvfVideoDecoder still returns
 # NotImplemented until #346 lands real backing — launch with
