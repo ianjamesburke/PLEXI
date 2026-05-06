@@ -4,10 +4,6 @@ about: Speculative or exploratory proposal
 labels: idea
 ---
 
----
-depends_on: []
----
-
 ## What
 
 

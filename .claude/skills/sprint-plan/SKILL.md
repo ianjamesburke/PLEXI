@@ -21,13 +21,14 @@ Parse each issue for front matter fields. A well-triaged issue has:
 
 ```yaml
 ---
-depends_on: []
 touches: [src/app/mod.rs, sdk/python/]
 clarification_needed: []
 ---
 ```
 
-For issues missing front matter entirely, treat all three fields as unknown — flag them in the output as **untriaged**.
+For issues missing front matter entirely, treat both fields as unknown — flag them in the output as **untriaged**.
+
+**Dependencies use native GitHub blocking relations**, not front matter. Query them per-issue in Step 2.
 
 ---
 
@@ -36,9 +37,12 @@ For issues missing front matter entirely, treat all three fields as unknown — 
 Before planning, check whether any `blocked` issues can be unblocked now:
 
 For each issue labeled `blocked`:
-1. Extract `depends_on` numbers from front matter
-2. For each dep number, check: `gh issue view <n> --json state --jq '.state'`
-3. If **all** deps are `CLOSED`: remove `blocked`, add `ready`:
+1. Query native blocking relations:
+   ```bash
+   gh issue-ext blocking list <number>
+   ```
+2. Parse the "Blocked by" list from the output. For each blocker, check if its state is `CLOSED`.
+3. If **all** blockers are `CLOSED`: remove `blocked`, add `ready`:
    ```bash
    gh issue edit <n> --remove-label "blocked" --add-label "ready"
    ```
@@ -80,14 +84,14 @@ If no issues need clarification: output `── No clarification needed. All ope
 For each open issue, collect:
 - `number`
 - `priority` (P0–P4, extracted from labels)
-- `depends_on` (from front matter, empty list if absent)
+- `blockers` (from `gh issue-ext blocking list <number>`, empty list if none)
 - `touches` (from front matter, empty list if absent)
 - `status` (`ready` / `blocked` / `in progress` / unlabeled)
 
 Filter to **only `ready` and `in progress` issues** for the execution plan — blocked issues cannot be scheduled.
 
 Topological sort:
-1. Issues with no open `depends_on` deps are roots — they can start immediately
+1. Issues with no open blockers are roots — they can start immediately
 2. For each root, children become schedulable once their parent is done
 3. Within the same dependency level, sort by priority (P0 first)
 
@@ -141,7 +145,7 @@ Priority order within each level. Lanes are parallel-safe.
   Lane A
   └── #625 [P2] arch(sdk): Rust-owned canonical PGAP schema
             touches: [src/, sdk/python/]
-            depends_on: [] (ready now — shown here for sequencing context only)
+            blocked by: none (ready now — shown here for sequencing context only)
 
 ── SUMMARY ───────────────────────────────────────────
   Ready to start:    8 issues across 3 parallel lanes

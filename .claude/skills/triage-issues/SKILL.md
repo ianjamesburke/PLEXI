@@ -197,13 +197,24 @@ clarification_needed:
   - "Which existing DrawCommand variant does this extend, or is it a new variant?"
 ```
 
-**Dependency check:** If the issue depends on other open issues before work can start, populate the `depends_on` front matter and apply `blocked` instead of `ready`. If the issue body doesn't already have the front matter block, prepend it:
-```
----
-depends_on: [N, M]
----
+**Dependency check:** If the issue depends on other open issues before work can start, add native GitHub blocking relations and apply `blocked` instead of `ready`:
+```bash
+# Preferred (if gh-issue-ext is installed):
+gh issue-ext blocking add <this-issue> <blocker-issue>
+
+# Fallback (raw GraphQL — works in CI and anywhere gh is available):
+BLOCKED_ID=$(gh issue view <this-issue> --json id --jq '.id')
+BLOCKER_ID=$(gh issue view <blocker-issue> --json id --jq '.id')
+gh api graphql -f query='mutation($blockedId:ID!,$blockerId:ID!){addBlockedBy(input:{issueId:$blockedId,blockingIssueId:$blockerId}){issue{number}}}' -f blockedId="$BLOCKED_ID" -f blockerId="$BLOCKER_ID"
 ```
 Then: `gh issue edit <number> --add-label "blocked"`
+
+To check existing blocking relations on any issue:
+```bash
+gh issue-ext blocking list <number>
+# Or via GraphQL:
+gh issue view <number> --json id --jq '.id' | xargs -I{} gh api graphql -f query='query($id:ID!){node(id:$id){...on Issue{trackedInIssues(first:10){nodes{number title state}}trackedIssues(first:10){nodes{number title state}}}}}' -f id={}
+```
 
 ---
 
@@ -237,7 +248,6 @@ Write or update the front matter block. If the issue body is missing the block e
 The canonical front matter shape:
 ```yaml
 ---
-depends_on: []
 touches: [src/app/mod.rs, sdk/python/]
 clarification_needed: []
 ---
@@ -245,7 +255,6 @@ clarification_needed: []
 
 ```bash
 gh issue edit <number> --body "---
-depends_on: []
 touches: [src/app/mod.rs, sdk/python/]
 clarification_needed: []
 ---
@@ -259,8 +268,10 @@ Then apply labels:
 gh issue edit <number> --add-label "<type>,<priority>,<era>"
 # If actionable and no open dependencies:
 gh issue edit <number> --add-label "ready"
-# If has open dependencies (depends_on populated):
+# If has open dependencies:
 gh issue edit <number> --add-label "blocked"
+# Add native blocking relations:
+gh issue-ext blocking add <number> <blocker-number>
 # If slotted:
 gh issue edit <number> --milestone "<title>"
 ```
