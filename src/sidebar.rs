@@ -1,5 +1,5 @@
 use crate::context::WindowMenuAction;
-use crate::sidebar_row::{with_alpha, SidebarRow, ROW_HEIGHT};
+use crate::sidebar_row::{with_alpha, SidebarAction, SidebarRow, ROW_HEIGHT};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 
 use crate::app::PlexiApp;
@@ -133,7 +133,7 @@ impl PlexiApp {
             let dim_color = self.colors.text_dim;
             let accent_color = self.colors.accent;
 
-            let result = row.draw(
+            let (action, response) = row.draw(
                 ui,
                 egui::Id::new(("ctx", i)),
                 &self.colors,
@@ -161,12 +161,15 @@ impl PlexiApp {
 
             row_rects.push(row_full);
 
-            if result.drag_started { self.drag_context = Some(i); }
-            if result.drag_stopped { drag_released = true; }
+            match action {
+                SidebarAction::DragStart => { self.drag_context = Some(i); }
+                SidebarAction::DragEnd => { drag_released = true; }
+                _ => {}
+            }
 
             if delete_context.is_none() {
                 let num_ctxs = num_contexts;
-                result.drag_response.context_menu(|ui| {
+                response.context_menu(|ui| {
                     if ui.button("Rename").clicked() {
                         menu_action = Some((i, WindowMenuAction::Rename));
                         ui.close_menu();
@@ -186,13 +189,14 @@ impl PlexiApp {
                     }
                 });
 
-                if result.action_clicked {
-                    delete_context = Some(i);
-                } else if result.primary_double_clicked && !any_dragging {
-                    menu_action = Some((i, WindowMenuAction::Rename));
-                } else if result.primary_clicked && !any_dragging {
-                    log::debug!("sidebar: primary_clicked ctx={i} active={}", self.router.active_idx());
-                    clicked_workspace = Some(i);
+                match action {
+                    SidebarAction::Delete => { delete_context = Some(i); }
+                    SidebarAction::Rename => { menu_action = Some((i, WindowMenuAction::Rename)); }
+                    SidebarAction::Activate => {
+                        log::debug!("sidebar: activate ctx={i} active={}", self.router.active_idx());
+                        clicked_workspace = Some(i);
+                    }
+                    _ => {}
                 }
             }
         }

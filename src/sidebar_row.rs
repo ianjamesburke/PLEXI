@@ -16,7 +16,7 @@ pub struct RowLayout {
     /// The drag/click/context-menu zone (left portion). Stable regardless of hover state.
     pub content: Rect,
     /// The action zone (delete button) — right-anchored, None when the action is disabled.
-    /// Geometry is always carved out when Some; glyph + interaction are gated on hover in draw().
+    /// Geometry is always carved out when Some; glyph is gated on hover in draw().
     pub action: Option<Rect>,
 }
 
@@ -53,15 +53,15 @@ impl RowLayout {
     }
 }
 
-/// Typed result from rendering a sidebar row. All interaction state flows through here.
-pub struct RowResult {
-    pub primary_clicked: bool,
-    pub primary_double_clicked: bool,
-    pub drag_started: bool,
-    pub drag_stopped: bool,
-    pub action_clicked: bool,
-    /// Exposed for context_menu and tooltip attachment only.
-    pub drag_response: egui::Response,
+/// Single action returned from rendering a sidebar row. Priority is encoded inside draw() —
+/// at most one action fires per frame. The caller matches exhaustively.
+pub enum SidebarAction {
+    None,
+    Activate,
+    Rename,
+    Delete,
+    DragStart,
+    DragEnd,
 }
 
 /// Builder that snapshots the cursor origin at construction and computes all zones
@@ -77,7 +77,7 @@ impl SidebarRow {
     /// Compute layout zones from the current cursor position.
     /// `action_enabled`: whether to carve out the action zone.
     /// Pass `false` when only one context exists or dragging is active.
-    /// The action glyph and interaction are gated on hover inside draw() — geometry is stable.
+    /// The action glyph is gated on hover inside draw() — geometry is stable.
     pub fn new(ui: &egui::Ui, width: f32, action_enabled: bool) -> Self {
         let origin = ui.cursor().min;
         Self {
@@ -96,17 +96,19 @@ impl SidebarRow {
         self
     }
 
-    /// Render the row and return typed interaction results.
+    /// Render the row and return a typed action plus the full-row response.
     ///
     /// `content_fn` receives a `&mut Ui` scoped to the content zone only.
     /// It must not call `interact()` or set cursor icons — the row builder owns those.
+    ///
+    /// The returned `Response` covers the full row and is intended for context_menu attachment.
     pub fn draw(
         self,
         ui: &mut egui::Ui,
         id: Id,
         colors: &Colors,
         content_fn: impl FnOnce(&mut egui::Ui, bool),
-    ) -> RowResult {
+    ) -> (SidebarAction, egui::Response) {
         let row_alpha = if self.is_this_dragging { 0.4_f32 } else { 1.0_f32 };
         let hovered = self.layout.hovered(ui);
 
@@ -141,11 +143,11 @@ impl SidebarRow {
             |ui| content_fn(ui, hovered),
         );
 
-        // Action zone — glyph and interaction only active when hovered.
-        // Geometry is always carved out (content rect is stable), so no hit-rect shifts on hover.
-        let action_clicked = if let Some(az) = self.layout.action {
+        // Action zone — glyph only (no interact call). Click detection is via pointer-position
+        // geometry against the single full-row interact registered below.
+        let in_action = self.layout.in_action(ui);
+        if let Some(az) = self.layout.action {
             if hovered && !self.is_this_dragging {
-                let in_action = self.layout.in_action(ui);
                 let glyph_color = with_alpha(
                     if in_action { colors.text_primary } else { colors.text_dim },
                     row_alpha,
@@ -157,38 +159,41 @@ impl SidebarRow {
                     egui::FontId::proportional(13.0),
                     glyph_color,
                 );
-                let resp = ui.interact(az, id.with("action"), Sense::click());
-                let clicked = resp.clicked();
-                if in_action {
-                    resp.on_hover_text("Delete context");
-                }
-                clicked
-            } else {
-                false
             }
-        } else {
-            false
-        };
+        }
 
-        // Drag / click on content zone — registered after action zone so no overlap
-        let drag_response = ui.interact(
-            self.layout.content,
-            id.with("drag"),
-            Sense::click_and_drag(),
-        );
+        // Single interact on the full row. Priority chain encodes mutual exclusion:
+        // 1. double_clicked → Rename (full row is the target)
+        // 2. drag_started   → DragStart
+        // 3. drag_stopped   → DragEnd
+        // 4. clicked + in_action + hovered → Delete
+        // 5. clicked        → Activate
+        let response = ui.interact(self.layout.full, id, Sense::click_and_drag());
+
+        // Tooltip for the action zone — shown via the full-row response when pointer is in zone.
+        if in_action {
+            response.clone().on_hover_text("Delete context");
+        }
 
         // Cursor — single authority, derived from zones only
         if let Some(icon) = self.layout.resolve_cursor(ui, self.is_this_dragging, self.is_any_dragging) {
             ui.ctx().set_cursor_icon(icon);
         }
 
-        RowResult {
-            primary_clicked: drag_response.clicked(),
-            primary_double_clicked: drag_response.double_clicked(),
-            drag_started: drag_response.drag_started(),
-            drag_stopped: drag_response.drag_stopped(),
-            action_clicked,
-            drag_response,
-        }
+        let action = if response.double_clicked() {
+            SidebarAction::Rename
+        } else if response.drag_started() {
+            SidebarAction::DragStart
+        } else if response.drag_stopped() {
+            SidebarAction::DragEnd
+        } else if response.clicked() && in_action && hovered {
+            SidebarAction::Delete
+        } else if response.clicked() {
+            SidebarAction::Activate
+        } else {
+            SidebarAction::None
+        };
+
+        (action, response)
     }
 }
