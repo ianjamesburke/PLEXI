@@ -27,7 +27,7 @@
 // Escape (app active)         — close app
 // Tab (app active)            — navigate to linked terminal
 //
-// Cmd+Shift+V                — toggle voice listening
+// Cmd+Shift+I                — toggle voice listening
 //
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
@@ -117,7 +117,7 @@ pub enum Action {
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
-    /// Toggle host-owned voice listening. Cmd+Shift+V (configurable; Fn requires macOS-specific integration).
+    /// Toggle host-owned voice listening. Cmd+Shift+I (configurable; Fn requires macOS-specific integration).
     ToggleListening,
 }
 
@@ -358,9 +358,9 @@ pub fn poll_actions(
             actions.push(Action::ToggleNotificationModal);
         }
 
-        // Toggle voice listening (Cmd+Shift+V).
+        // Toggle voice listening (Cmd+Shift+I).
         // Fn double-tap requires macOS-specific integration — see GOTCHAS.md.
-        if input.consume_key(cmd_shift, egui::Key::V) {
+        if input.consume_key(cmd_shift, egui::Key::I) {
             actions.push(Action::ToggleListening);
         }
 
