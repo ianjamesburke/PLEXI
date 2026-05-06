@@ -2488,6 +2488,278 @@ _plexi_chpwd
     }
 }
 
+/// `plexi completions <shell>`
+///
+/// Prints a static shell completion script to stdout. Pipe to the appropriate
+/// location for your shell (see `plexi completions --help`).
+pub fn completions_cli(shell: &str) -> i32 {
+    match shell {
+        "zsh" => { print!("{}", ZSH_COMPLETION); 0 }
+        "bash" => { print!("{}", BASH_COMPLETION); 0 }
+        "fish" => { print!("{}", FISH_COMPLETION); 0 }
+        other => {
+            eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash, fish");
+            1
+        }
+    }
+}
+
+const ZSH_COMPLETION: &str = r#"#compdef plexi
+
+_plexi() {
+  local state line
+  typeset -A opt_args
+
+  _arguments -C \
+    '1: :->command' \
+    '*:: :->args'
+
+  case $state in
+    command)
+      local commands
+      commands=(
+        'run:Run a named command from .plexi/commands.toml'
+        'workspace:Workspace management'
+        'secret:Secret management'
+        'app:App management'
+        'install:Install an app'
+        'uninstall:Uninstall an app'
+        'update:Update apps or self'
+        'list:List installed apps'
+        'validate:Validate a Plexi app directory'
+        'pack:Pack management'
+        'notify:Send a notification'
+        'pane:Pane management'
+        'open:Open an app or terminal pane'
+        'descriptor:Descriptor probe'
+        'registry:CLI registry'
+        'context:Context management'
+        'shell-init:Print shell integration snippet'
+        'completions:Print shell completion script'
+      )
+      _describe 'command' commands
+      ;;
+    args)
+      case $line[1] in
+        secret)
+          local subcmds
+          subcmds=('set:Store a secret' 'list:List stored secrets' 'delete:Delete a secret')
+          _describe 'subcommand' subcmds
+          ;;
+        app)
+          local subcmds
+          subcmds=('init:Scaffold a new app' 'install:Install an app from GitHub' 'uninstall:Uninstall an app' 'list:List installed apps')
+          _describe 'subcommand' subcmds
+          ;;
+        workspace)
+          local subcmds
+          subcmds=('init:Initialise a .plexi/ workspace')
+          _describe 'subcommand' subcmds
+          ;;
+        update)
+          local subcmds
+          subcmds=('apps:Update installed apps')
+          _describe 'subcommand' subcmds
+          ;;
+        pack)
+          local subcmds
+          subcmds=('export:Export current apps as a pack file')
+          _describe 'subcommand' subcmds
+          ;;
+        pane)
+          local subcmds
+          subcmds=('set-title:Set the title of the current pane')
+          _describe 'subcommand' subcmds
+          ;;
+        descriptor)
+          local subcmds
+          subcmds=('probe:Probe a CLI for its Plexi descriptor')
+          _describe 'subcommand' subcmds
+          ;;
+        registry)
+          local subcmds
+          subcmds=('watch:Watch installed CLIs for descriptor drift')
+          _describe 'subcommand' subcmds
+          ;;
+        context)
+          local subcmds
+          subcmds=('new:Create a new context' 'open:Open a context at a path' 'set-root:Set the root directory')
+          _describe 'subcommand' subcmds
+          ;;
+        notify)
+          _arguments \
+            '--title[Notification title]:title:' \
+            '--body[Notification body]:body:' \
+            '--level[Level]:level:(info warn error)' \
+            '--choice[Choice option (key:Label)]:choice:' \
+            '--timeout[Timeout in seconds]:seconds:'
+          ;;
+        install)
+          _arguments '--pack[Install from a pack file or core]:pack:'
+          ;;
+        uninstall)
+          _arguments '--yes[Skip confirmation prompt]'
+          ;;
+        shell-init)
+          _arguments '--shell[Shell name]:shell:(zsh bash fish)'
+          ;;
+        completions)
+          local shells
+          shells=('zsh' 'bash' 'fish')
+          _describe 'shell' shells
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_plexi "$@"
+"#;
+
+const BASH_COMPLETION: &str = r#"_plexi_completions() {
+  local cur prev words cword
+  _init_completion || return
+
+  local commands="run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions"
+
+  if [[ $cword -eq 1 ]]; then
+    COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+    return
+  fi
+
+  local cmd="${words[1]}"
+  case $cmd in
+    secret)
+      COMPREPLY=($(compgen -W "set list delete" -- "$cur"))
+      ;;
+    app)
+      COMPREPLY=($(compgen -W "init install uninstall list" -- "$cur"))
+      ;;
+    workspace)
+      COMPREPLY=($(compgen -W "init" -- "$cur"))
+      ;;
+    update)
+      COMPREPLY=($(compgen -W "apps" -- "$cur"))
+      ;;
+    pack)
+      COMPREPLY=($(compgen -W "export" -- "$cur"))
+      ;;
+    pane)
+      COMPREPLY=($(compgen -W "set-title" -- "$cur"))
+      ;;
+    descriptor)
+      COMPREPLY=($(compgen -W "probe" -- "$cur"))
+      ;;
+    registry)
+      COMPREPLY=($(compgen -W "watch" -- "$cur"))
+      ;;
+    context)
+      COMPREPLY=($(compgen -W "new open set-root" -- "$cur"))
+      ;;
+    notify)
+      if [[ $prev == "--level" ]]; then
+        COMPREPLY=($(compgen -W "info warn error" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "--title --body --level --choice --timeout" -- "$cur"))
+      fi
+      ;;
+    install)
+      COMPREPLY=($(compgen -W "--pack" -- "$cur"))
+      ;;
+    uninstall)
+      COMPREPLY=($(compgen -W "--yes" -- "$cur"))
+      ;;
+    shell-init)
+      if [[ $prev == "--shell" ]]; then
+        COMPREPLY=($(compgen -W "zsh bash fish" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "--shell" -- "$cur"))
+      fi
+      ;;
+    completions)
+      COMPREPLY=($(compgen -W "zsh bash fish" -- "$cur"))
+      ;;
+  esac
+}
+
+complete -F _plexi_completions plexi
+"#;
+
+const FISH_COMPLETION: &str = r#"# Plexi shell completions for fish
+
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a run -d "Run a named command"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a workspace -d "Workspace management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a secret -d "Secret management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a app -d "App management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a install -d "Install an app"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a uninstall -d "Uninstall an app"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a update -d "Update apps or self"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a list -d "List installed apps"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a validate -d "Validate a Plexi app directory"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a pack -d "Pack management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a notify -d "Send a notification"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a pane -d "Pane management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a open -d "Open an app or terminal pane"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a descriptor -d "Descriptor probe"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a registry -d "CLI registry"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a context -d "Context management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a shell-init -d "Print shell integration snippet"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a completions -d "Print shell completion script"
+
+# secret subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a set -d "Store a secret"
+complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a list -d "List stored secrets"
+complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a delete -d "Delete a secret"
+
+# app subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a init -d "Scaffold a new app"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a install -d "Install an app from GitHub"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a uninstall -d "Uninstall an app"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a list -d "List installed apps"
+
+# workspace subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from workspace" -a init -d "Initialise a .plexi/ workspace"
+
+# update subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from update" -a apps -d "Update installed apps"
+
+# pack subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from pack" -a export -d "Export current apps as a pack file"
+
+# pane subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a set-title -d "Set the title of the current pane"
+
+# descriptor subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from descriptor" -a probe -d "Probe a CLI for its Plexi descriptor"
+
+# registry subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from registry" -a watch -d "Watch installed CLIs for descriptor drift"
+
+# context subcommands
+complete -c plexi -f -n "__fish_seen_subcommand_from context" -a new -d "Create a new context"
+complete -c plexi -f -n "__fish_seen_subcommand_from context" -a open -d "Open a context at a path"
+complete -c plexi -f -n "__fish_seen_subcommand_from context" -a set-root -d "Set the root directory"
+
+# notify flags
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l title -d "Notification title"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l body -d "Notification body"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l level -d "Level" -a "info warn error"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l choice -d "Choice option (key:Label)"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l timeout -d "Timeout in seconds"
+
+# install flags
+complete -c plexi -n "__fish_seen_subcommand_from install" -l pack -d "Install from a pack file or core"
+
+# uninstall flags
+complete -c plexi -n "__fish_seen_subcommand_from uninstall" -l yes -d "Skip confirmation prompt"
+
+# shell-init flags
+complete -c plexi -n "__fish_seen_subcommand_from shell-init" -l shell -d "Shell name" -a "zsh bash fish"
+
+# completions args
+complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash fish"
+"#;
+
 #[cfg(test)]
 mod notify_tests {
     use super::notify_cli;

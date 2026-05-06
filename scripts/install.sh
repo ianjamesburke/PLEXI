@@ -70,6 +70,43 @@ if [[ ! "$channel" =~ ^pr- ]]; then
   ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" /usr/local/bin/plexi
 fi
 
+# Install shell completions (non-PR builds only).
+# Called after the binary symlink is in place at $bin_dest.
+install_completions() {
+  local binary="$1"
+
+  # zsh: prefer Homebrew site-functions (already on fpath), else ~/.zfunc/
+  if command -v brew &>/dev/null; then
+    local brew_zsh_dir
+    brew_zsh_dir="$(brew --prefix)/share/zsh/site-functions"
+    if [[ -d "$brew_zsh_dir" ]]; then
+      "$binary" completions zsh > "$brew_zsh_dir/_plexi"
+      echo "Completions (zsh): $brew_zsh_dir/_plexi"
+    fi
+  else
+    mkdir -p "$HOME/.zfunc"
+    "$binary" completions zsh > "$HOME/.zfunc/_plexi"
+    echo "Completions (zsh): ~/.zfunc/_plexi"
+    echo "  note: add 'fpath=(~/.zfunc \$fpath)' to ~/.zshrc if not already present"
+  fi
+
+  # bash: ~/.bash_completion.d/
+  mkdir -p "$HOME/.bash_completion.d"
+  "$binary" completions bash > "$HOME/.bash_completion.d/plexi"
+  echo "Completions (bash): ~/.bash_completion.d/plexi"
+
+  # fish: only if fish is installed
+  if [[ -d "$HOME/.config/fish" ]]; then
+    mkdir -p "$HOME/.config/fish/completions"
+    "$binary" completions fish > "$HOME/.config/fish/completions/plexi.fish"
+    echo "Completions (fish): ~/.config/fish/completions/plexi.fish"
+  fi
+}
+
+if [[ ! "$channel" =~ ^pr- ]]; then
+  install_completions "$bin_dest"
+fi
+
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
 rm -rf "$profile_dir/sdk/plexi_sdk.py" "$profile_dir/sdk/plexi_sdk"
 cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk"
