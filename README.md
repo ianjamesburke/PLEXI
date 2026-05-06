@@ -62,6 +62,65 @@ curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/install.sh
 
 ---
 
+## Apps
+
+A fresh install seeds a core set of apps automatically. Browse them with `Cmd+P` or manage them from the terminal.
+
+### Install an app
+
+```bash
+plexi install <id>                        # from the registry
+plexi install github:owner/repo           # any public git repo
+plexi install git+https://example.com/repo.git   # explicit git URL
+plexi install --pack path/to/pack.toml    # apply a whole pack at once
+```
+
+Registry IDs resolve against the [Plexi app registry](https://github.com/ianjamesburke/plexi-registry). Git URLs clone the repo directly — no registry needed.
+
+### Manage installed apps
+
+```bash
+plexi list                    # show all installed apps and versions
+plexi uninstall <id>          # remove an app
+plexi update apps             # update all installed apps
+plexi update apps <id>        # update a specific app
+plexi validate <path>         # validate a manifest before publishing
+```
+
+### Build an app
+
+Every Plexi app is a git repo with a `manifest.toml` at the root and a Python entry point. Scaffold one with:
+
+```bash
+plexi app init my-app
+```
+
+This creates `.plexi/apps/my-app/` in the current directory with `manifest.toml`, `main.py`, and a bundled `plexi_sdk.py`. Edit `main.py`, launch Plexi, and the app appears in the command palette immediately — no restart needed.
+
+The minimal `manifest.toml`:
+
+```toml
+schema_version = 1
+type = "app"
+
+[app]
+id = "my-app"
+name = "My App"
+entry = "main.py"
+version = "0.1.0"
+description = "What this app does"
+
+[app.capabilities]
+capabilities = []   # e.g. ["fs.read", "ai.query"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
+```
+
+To share your app: push the repo to GitHub, then anyone can install it with `plexi install github:you/your-app`. To add it to the public registry, open a PR against [plexi-registry](https://github.com/ianjamesburke/plexi-registry).
+
+---
+
 ## Roadmap
 
 - Background apps — persist across pane close, restart on demand
