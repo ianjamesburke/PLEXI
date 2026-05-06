@@ -168,6 +168,10 @@ impl PlexiApp {
         let removed_x = self.windows[index].grid_x;
         let removed_y = self.windows[index].grid_y;
 
+        // Save current minimap state before deletion so it's always fresh.
+        self.minimap_visible_per_context
+            .insert(removed_ws_id, self.minimap.visible);
+
         self.windows.remove(index);
 
         // If the deleted window was the stored last-visited for its context,
@@ -214,14 +218,19 @@ impl PlexiApp {
         // ── Compact the grid: shift columns left if a column becomes empty ──
         self.compact_workspace_grid(removed_ws_id);
 
-        // Restore minimap state for the context we landed on.
+        // Minimap: if we stayed in the same context, preserve the current
+        // visibility state (the render loop hides it when page_count < 2). If
+        // the deletion caused a context switch (context was fully deleted), restore
+        // the saved state for the new context.
         let ws_id = self.router.active().context_id;
-        let page_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
-        self.minimap.visible = self
-            .minimap_visible_per_context
-            .get(&ws_id)
-            .copied()
-            .unwrap_or(page_count > 1);
+        if ws_id != removed_ws_id {
+            let page_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
+            self.minimap.visible = self
+                .minimap_visible_per_context
+                .get(&ws_id)
+                .copied()
+                .unwrap_or(page_count > 1);
+        }
     }
 
     /// After a deletion, compact each row independently: within each row,
