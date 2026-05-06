@@ -1291,6 +1291,41 @@ impl App for ProcessApp {
             self.outbound_events.push_back(event);
         }
 
+        // Per-frame: detect audio capture pipes whose drain thread exited due
+        // to a write error (e.g. Broken pipe when the app-side socket closed
+        // unexpectedly). Emit AudioCaptureError immediately so the app is
+        // notified within one render frame rather than waiting for the next
+        // start_audio_capture retry to discover the stale session.
+        let failed_audio_pipes: Vec<String> = self
+            .audio_capture_sessions
+            .keys()
+            .filter(|pipe_id| {
+                self.pipe_registry
+                    .lock()
+                    .map(|r| r.drain_failed(pipe_id))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        for pipe_id in failed_audio_pipes {
+            log::warn!(
+                "ProcessApp[{}]: AudioCapture pipe_id={pipe_id} drain failed — cleaning up",
+                self.type_id
+            );
+            self.audio_capture_sessions.remove(&pipe_id);
+            self.pipe_registry
+                .lock()
+                .expect("pipe_registry poisoned")
+                .close(&pipe_id);
+            if let Ok(mut m) = self.audio_peak_meters.lock() {
+                m.remove(&pipe_id);
+            }
+            self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
+                pipe_id,
+                error: "pipe drain failed (broken pipe)".to_owned(),
+            });
+        }
+
         let new_cmds = self.drain_draw_commands();
 
         for cmd in new_cmds {
