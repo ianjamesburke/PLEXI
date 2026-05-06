@@ -146,12 +146,14 @@ impl TypedPipeRegistry {
         let ring_drain = Arc::clone(&ring);
         let shutdown_drain = Arc::clone(&shutdown);
         let socket_path_drain = socket_path.clone();
+        let pipe_id_log = pipe_id.clone();
 
         // Drain thread: blocks waiting for the app to connect, then drains the
         // ring into the socket. Exits when `shutdown` is set and ring is empty.
         let drain_handle = thread::Builder::new()
             .name(format!("pipe-drain-{pipe_id}"))
             .spawn(move || {
+                log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
                 // Poll for a client connection. Listener is non-blocking so we
                 // can observe `shutdown` and exit if the app never connects
                 // (e.g. start_capture failed before PipeOpened was sent).
@@ -184,8 +186,7 @@ impl TypedPipeRegistry {
                     } else if shutdown_drain.load(Ordering::Acquire) {
                         break;
                     } else {
-                        // Brief yield to avoid spinning at 100% CPU.
-                        thread::yield_now();
+                        thread::sleep(std::time::Duration::from_millis(1));
                     }
                 }
                 // Signal end-of-stream.
