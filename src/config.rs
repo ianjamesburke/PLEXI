@@ -271,6 +271,25 @@ pub fn ensure_profile_initialized() {
 }
 
 /// Returns the config directory name.
+/// Returns the build channel for this binary: `alpha`, `beta`, `pr-<N>`, `v3`, or `None` (stable).
+pub fn build_channel() -> Option<String> {
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;
+    let name = binary.as_str();
+    if name.contains("alpha") {
+        Some("alpha".into())
+    } else if name.contains("beta") {
+        Some("beta".into())
+    } else if name.contains("pr-") {
+        Some(name.trim_start_matches("plexi-").to_string())
+    } else if name.contains("v3") {
+        Some("v3".into())
+    } else {
+        None
+    }
+}
+
 /// Priority: `--profile <name>` CLI flag → binary-name detection → `.plexi`.
 fn config_dir_name() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {

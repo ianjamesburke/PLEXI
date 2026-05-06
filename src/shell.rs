@@ -183,6 +183,10 @@ pub fn build_env() -> HashMap<String, String> {
     }
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("PLEXI_RUNNING".into(), "1".into());
+    if let Some(channel) = crate::config::build_channel() {
+        log::info!("shell::build_env: PLEXI_CHANNEL={channel}");
+        env.insert("PLEXI_CHANNEL".into(), channel);
+    }
 
     env.insert(
         "LANG".into(),
