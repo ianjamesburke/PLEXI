@@ -263,6 +263,12 @@ pub struct PlexiApp {
     /// Receiver for HostCommands sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::HostCommand>,
+    /// Current voice listening state. Off until toggled by Cmd+Shift+V.
+    pub(crate) voice_state: crate::voice::VoiceState,
+    /// Holds the active mic capture session while listening. Dropped to stop capture.
+    pub(crate) voice_capture: Option<crate::audio::CaptureSession>,
+    /// Audio device for host-owned voice capture (separate from per-pane app audio).
+    pub(crate) voice_audio_device: std::sync::Arc<dyn crate::audio::AudioDevice>,
 }
 
 #[cfg(test)]
@@ -615,6 +621,9 @@ impl PlexiApp {
                     update_rx: Some(update_rx),
                     update_available: None,
                     pane_ipc_rx,
+                    voice_state: crate::voice::VoiceState::Off,
+                    voice_capture: None,
+                    voice_audio_device: default_audio_device(),
                 };
             }
         }
@@ -706,6 +715,9 @@ impl PlexiApp {
             update_rx: Some(update_rx),
             update_available: None,
             pane_ipc_rx,
+            voice_state: crate::voice::VoiceState::Off,
+            voice_capture: None,
+            voice_audio_device: default_audio_device(),
         }
     }
 
@@ -809,6 +821,9 @@ impl PlexiApp {
             update_rx: None,
             update_available: None,
             pane_ipc_rx,
+            voice_state: crate::voice::VoiceState::Off,
+            voice_capture: None,
+            voice_audio_device: std::sync::Arc::new(crate::audio::MockAudioDevice::new()),
         }, pane_ipc_tx)
     }
 
@@ -2037,6 +2052,9 @@ impl eframe::App for PlexiApp {
                 Action::ToggleMinimap => {
                     self.minimap.toggle();
                 }
+                Action::ToggleListening => {
+                    self.toggle_listening();
+                }
             }
         }
 
@@ -2845,8 +2863,56 @@ impl PlexiApp {
 
     }
 
+    /// Toggle host-owned voice listening on/off.
+    ///
+    /// On → starts mic capture and transitions to `ListeningIdle`.
+    /// Off → drops the capture session and transitions to `Off`.
+    /// Bound to Cmd+Shift+V. Fn double-tap requires macOS IOKit integration — see GOTCHAS.md.
+    fn toggle_listening(&mut self) {
+        match self.voice_state {
+            crate::voice::VoiceState::Off => {
+                let device = std::sync::Arc::clone(&self.voice_audio_device);
+                let sink: crate::audio::FrameSink = std::sync::Arc::new(|_frames| Ok(()));
+                let request = crate::audio::AudioCaptureRequest {
+                    device_id: None,
+                    requested_sample_rate: 16_000,
+                    requested_buffer_size: 512,
+                };
+                match device.start_capture(request, sink) {
+                    Ok(session) => {
+                        log::info!("voice: listening started (device: {})", session.negotiated.device_name);
+                        self.voice_capture = Some(session);
+                        self.voice_state = crate::voice::VoiceState::ListeningIdle;
+                    }
+                    Err(e) => {
+                        log::error!("voice: failed to start capture: {e}");
+                    }
+                }
+            }
+            _ => {
+                self.voice_capture = None;
+                self.voice_state = crate::voice::VoiceState::Off;
+                log::info!("voice: listening stopped");
+            }
+        }
+    }
+
 }
 
+
+// ── Audio device helper ───────────────────────────────────────────────────────
+
+/// Build the host-owned audio device for voice capture. Uses cpal in production
+/// builds and the mock in test builds (same pattern as `process_app`).
+#[cfg(not(test))]
+fn default_audio_device() -> std::sync::Arc<dyn crate::audio::AudioDevice> {
+    std::sync::Arc::new(crate::audio::CoreAudioDevice::new())
+}
+
+#[cfg(test)]
+fn default_audio_device() -> std::sync::Arc<dyn crate::audio::AudioDevice> {
+    std::sync::Arc::new(crate::audio::MockAudioDevice::new())
+}
 
 // ── Directed pipe helpers (#286) ─────────────────────────────────────────────
 
@@ -2880,5 +2946,32 @@ fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str)
             log::warn!("register_directed_pipe_on_target: open_json failed: {e}");
             false
         }
+    }
+}
+
+// ── Voice tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod voice_tests {
+    use super::*;
+
+    #[test]
+    fn toggle_listening_flips_voice_state() {
+        let ctx = egui::Context::default();
+        let tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx, tick);
+
+        // starts off
+        assert_eq!(app.voice_state, crate::voice::VoiceState::Off);
+
+        // toggle on
+        app.toggle_listening();
+        assert_eq!(app.voice_state, crate::voice::VoiceState::ListeningIdle);
+        assert!(app.voice_capture.is_some());
+
+        // toggle off
+        app.toggle_listening();
+        assert_eq!(app.voice_state, crate::voice::VoiceState::Off);
+        assert!(app.voice_capture.is_none());
     }
 }

@@ -57,6 +57,7 @@ mod tiling;
 mod typed_pipes;
 mod updater;
 mod video;
+mod voice;
 mod widgets;
 mod workspace;
 #[cfg(test)]

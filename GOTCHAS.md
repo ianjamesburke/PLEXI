@@ -4,6 +4,9 @@
 
 ---
 
+## 2026-05-06 — [egui] Fn key (Globe) not accessible via egui 0.31
+`egui::Key` has no `Fn`/`Globe` variant and `egui-winit` does not map `KeyCode::Fn` to any egui event. Voice listening toggle defaults to `Cmd+Shift+V`. To use Fn double-tap, the integration would need to use macOS `IOKit` / `NSEvent` at the `eframe::App::raw_input_hook` layer. Do not attempt to detect Fn through egui polling — it will never fire.
+
 ## 2026-05-05 — [ship] Uncommitted bump on alpha
 When alpha's `Cargo.toml` shows a dirty version bump, `just bump` ran but failed to commit. Commit manually with `git commit -m "chore: bump alpha to X.Y.Z"` before creating a worktree — otherwise the feature branch diverges from origin at a bump commit that isn't on origin, and `gh pr merge` will fail.
 

@@ -27,6 +27,8 @@
 // Escape (app active)         — close app
 // Tab (app active)            — navigate to linked terminal
 //
+// Cmd+Shift+V                — toggle voice listening
+//
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
 // K, L, Backspace, or other keys that Plexi uses with Cmd modifier.
@@ -115,6 +117,8 @@ pub enum Action {
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
+    /// Toggle host-owned voice listening. Cmd+Shift+V (configurable; Fn requires macOS-specific integration).
+    ToggleListening,
 }
 
 /// Poll global keyboard actions.
@@ -352,6 +356,12 @@ pub fn poll_actions(
         // or closes the modal if already open.
         if input.consume_key(cmd_shift, egui::Key::A) {
             actions.push(Action::ToggleNotificationModal);
+        }
+
+        // Toggle voice listening (Cmd+Shift+V).
+        // Fn double-tap requires macOS-specific integration — see GOTCHAS.md.
+        if input.consume_key(cmd_shift, egui::Key::V) {
+            actions.push(Action::ToggleListening);
         }
 
         // Switch context (Cmd+1 through Cmd+9)

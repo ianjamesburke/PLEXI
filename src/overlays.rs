@@ -94,6 +94,18 @@ impl PlexiApp {
 
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Voice listening indicator — static dot when active.
+                // Right-to-left layout: first-added appears rightmost.
+                if self.voice_state != crate::voice::VoiceState::Off {
+                    let dot_radius = 5.0;
+                    let (dot_rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::splat(dot_radius * 2.0 + 4.0),
+                        egui::Sense::hover(),
+                    );
+                    let color = self.colors.accent;
+                    ui.painter().circle_filled(dot_rect.center(), dot_radius, color);
+                }
+
                 if ui
                     .add(
                         egui::Button::new(
