@@ -1,6 +1,34 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.14] — 2026-05-06
+
+### Changes
+- feat(context): auto-switch context on pane focus via host-side CWD watch (#717) (#782)
+- feat(cli): add pane list, focus, close subcommands (#744) (#779)
+- refactor(sidebar): replace RowResult with SidebarAction enum (#778)
+- feat(pty): inject PLEXI_CHANNEL into PTY environment (#776)
+- chore: rename alpha bundle to 'Plexi Alpha'
+- feat(terminal): auto-close pane when initial_cmd process exits (#772)
+- fix(minimap): preserve visibility when closing a window in same context (#773)
+- chore: add DEV_LOG.md
+- fix(zoom): block background resize handles when pane is zoomed (#771)
+- docs(readme): add Apps section — install, manage, and build apps via CLI
+- fix(tetris): remove keyboard_capture = true from manifest (#770)
+- feat(cli): plexi open terminal <cmd> passthrough + just next-issue recipe (#765)
+- chore: remove premature/abandoned example apps from binary
+- docs(glossary): replace stale "Plexi IQ" with "IQ query" in agent pane definition
+- fix(process_app): name all spawned threads + background reaper + stream thread cap (#758)
+- fix(cli): atomic response file write + UUID filename in notify_cli (#755)
+- fix(typed_pipes): replace yield_now() spin with 1ms sleep in drain loop (#756)
+- fix(cli): plexi open terminal now opens a pane via socket and spawn-queue paths (#757)
+- chore: commit skill changes before branching
+- docs: remove voice agent spec file — content lives in GitHub issues
+- docs: voice agent design spec
+- refactor: migrate issue dependencies from front-matter to native GitHub blocking
+- fix(cli): stop PLEXI_RUNNING walk before home dir to avoid reporting stable profile as workspace (#740)
+- refactor: replace DEV_LOG with GOTCHAS.md + detailed commit messages
+- docs: GOTCHAS.md + ship skill git flow redesign spec
 ## [3.5.13] — 2026-05-06
 
 ### Changes
