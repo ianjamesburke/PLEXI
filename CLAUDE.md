@@ -4,8 +4,8 @@ Always confirm best practices by researching the docs.
 
 **CLAUDE.md does not track in-progress work or completion status.** It goes stale immediately and will mislead future sessions.
 
-- **What shipped and why** → `DEV_LOG.md` (read the first 100 lines at session start)
-- **What's currently in flight** → `git log --oneline -20` and `git status`
+- **What shipped and why** → `git log --oneline -20` and `GOTCHAS.md` for non-obvious discoveries
+- **What's currently in flight** → `git status`
 - **What's planned** → GitHub issues
 
 Before reporting anything as "done" or "missing", verify against `git log`. Never trust a status list in this file.
@@ -18,7 +18,7 @@ Before reporting anything as "done" or "missing", verify against `git log`. Neve
 
 See [`GLOSSARY.md`](GLOSSARY.md) for the full shared vocabulary — context, pane, PGAP, capability, secret, etc.
 
-When a DEV_LOG entry introduces or significantly changes terminology, update `GLOSSARY.md` in the same commit. Keep it brief — a one-line addition is enough.
+When a change introduces or significantly changes terminology, update `GLOSSARY.md` in the same commit. Keep it brief — a one-line addition is enough.
 
 ## Branches
 
@@ -88,12 +88,11 @@ All changes, no matter how small, follow this cycle:
 3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
 4. **Wait for user approval** — do not merge unilaterally
 5. **Squash-merge**: `gh pr merge <number> --squash` — lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch checked out by a worktree.
-6. **Sync alpha**: `git pull` from inside `worktrees/alpha/`
+6. **Sync alpha**: `git pull --rebase origin alpha` from inside `worktrees/alpha/`
 7. **Close related issue(s)**: `gh issue close <number> --comment "Closed by PR #<pr>"`
-8. **Update DEV_LOG.md** and commit the update — this must happen before bump+install so alpha stays clean at the end
-9. **Bump and install**: `just bump && just install` from inside `worktrees/alpha/`
-10. **Remove the feature worktree**: `wtp remove <branch-name>`
-11. **Delete the remote branch**: `git push origin --delete <branch-name>`
+8. **Bump and install**: `just bump && just install` from inside `worktrees/alpha/`
+9. **Remove the feature worktree**: `wtp remove <branch-name>`
+10. **Delete the remote branch**: `git push origin --delete <branch-name>`
 
 **Always run `wtp add` from inside `worktrees/alpha/`**, not the repo root. This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
 
@@ -200,20 +199,13 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 ## Lessons Carried Into v3
 
-- **Python version in GUI app bundles:** macOS GUI bundles do NOT inherit shell PATH. `#!/usr/bin/env python3` → Apple's frozen `/usr/bin/python3` 3.9.6. Always add `from __future__ import annotations` as the first line of every app Python file so `str | None` is safe on 3.7+.
 - **Coupled state:** When adding state that derives from or shadows existing state, grep every mutation site of the original and update each one.
 - **Fallback chain audit:** When a value looks correct on the surface but behavior is stale, enumerate every fallback source in priority order (cookies, env vars, caches, defaults). Fix the chain, not the surface.
 - **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
-- **Uncommitted bump on alpha:** When alpha shows a dirty Cargo.toml with a version change, `just bump` ran without its commit — commit manually as `chore: bump alpha to X.Y.Z` before creating a worktree.
 - **Platform behavior validation:** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns — observe first, then code.
-- **Egui pointer state during macOS file drags:** `ui.rect_contains_pointer()` and `i.pointer.hover_pos()` are stale during macOS OS-level file drags — winit only updates them from its own events, not the drag-tracking run loop. Never gate drop-target detection on egui pointer checks; test for drop event presence alone. When the drop target is unambiguous (e.g. a single zoomed pane covering the whole overlay), drop the check entirely.
-- **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame. If you find yourself writing `self.some_collection.iter().find(|x| x.id == cmd.id)` inside a handler, the missing data belongs in the command variant instead. This also means split dispatch paths (e.g. early modal cmds vs. deferred queue) both get complete handling automatically, since the data travels with the command.
+- **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
 - **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
-- **cargo-bundle multi-bin:** When any `[[bin]]` entry exists in `Cargo.toml`, cargo bundle assigns the metadata bundle name to the first binary it encounters; subsequent binaries fall back to their own name. Always pass `--bin plexi` to `cargo bundle` in `install.sh` and use `app_src="target/release/bundle/osx/plexi.app"` — the binary-named bundle, not the display-named one.
-- **SDK import proxy:** `plexi_sdk` is only on PYTHONPATH for Plexi-spawned app processes — a terminal pane's `python3` never sees it. Test SDK import changes by observing whether canvas apps open and render, not by running `python3` directly in a terminal.
-- **`cargo bundle --bin` ignores metadata name:** `cargo bundle --release --bin <name>` uses the binary name, not `[package.metadata.bundle] name`, as the app bundle name. Multi-binary packages must use a workspace to isolate binaries — the workspace approach eliminates the conflict entirely and restores the metadata name for the main bundle.
-- **SDK proxy wrappers:** `_render_context.py` contains proxy wrappers for every `Emitter` method (`notify`, `notify_choice`, `notify_input`, `notify_and_wait`, etc.). When adding parameters to `_emitter.py` methods, always update the matching proxies in `_render_context.py` in the same edit.
-- **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed. Rebase conflict is the symptom; a 30-second grep is the cure.
+- **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed.
 
 ## PlexiApp State
 
