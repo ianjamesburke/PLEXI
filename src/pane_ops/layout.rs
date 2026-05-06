@@ -182,7 +182,7 @@ impl PlexiApp {
         match kind {
             Kind::Terminal => {
                 // Reuse the existing terminal split path.
-                self.split_focused(vertical);
+                self.split_focused(vertical, None);
             }
             Kind::App(manifest_id) => {
                 // Fresh instance of the same app at the requested placement.
@@ -199,7 +199,7 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn split_focused(&mut self, vertical: bool) {
+    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>) {
         let Some(focused) = self.windows[self.active_window].focused_pane else {
             return;
         };
@@ -222,7 +222,11 @@ impl PlexiApp {
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
         let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(new_id, cwd, &self.colors);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors);
+        if let Some(cmd) = initial_cmd {
+            log::info!("split_focused: initial_cmd={cmd:?}");
+            settings.args = vec!["-l".to_string(), "-c".to_string(), cmd.to_string()];
+        }
         let Some(pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
