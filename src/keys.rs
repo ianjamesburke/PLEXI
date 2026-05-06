@@ -135,6 +135,19 @@ pub fn poll_actions(
     shortcuts_overlay_open: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
+
+    // Diagnostic: log any Cmd+Shift key events so we can see exactly what
+    // egui receives from the OS. Remove after the shortcut issue is resolved.
+    ctx.input(|i| {
+        for event in &i.events {
+            if let egui::Event::Key { key, modifiers, pressed: true, .. } = event {
+                if modifiers.command && modifiers.shift {
+                    log::info!("poll_actions: saw Cmd+Shift+{key:?} (mac_cmd={}, command={})", modifiers.mac_cmd, modifiers.command);
+                }
+            }
+        }
+    });
+
     let cmd_shift = egui::Modifiers {
         shift: true,
         ..egui::Modifiers::COMMAND
