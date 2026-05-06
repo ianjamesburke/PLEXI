@@ -1031,6 +1031,188 @@ impl ProcessApp {
                 }
                 self.start_audio_capture(pipe_id, device_id, sample_rate, buffer_size);
             }
+            HostCommand::Speak { text, voice } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::AudioSpeak)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: Speak denied — {reason}",
+                        self.type_id
+                    );
+                    return;
+                }
+
+                log::info!(
+                    "ProcessApp[{}]: Speak text={:?} voice={:?}",
+                    self.type_id,
+                    &text[..text.len().min(40)],
+                    voice
+                );
+
+                let app_id = self.type_id.clone();
+                std::thread::Builder::new()
+                    .name(format!("tts-{app_id}"))
+                    .spawn(move || {
+                        let config = crate::config::PlexiConfig::load();
+                        let tts = config.voice.as_ref()
+                            .and_then(|v| v.tts.as_ref());
+                        let model = tts.and_then(|t| t.model.as_deref())
+                            .unwrap_or("gemini-2.5-flash-preview-tts")
+                            .to_owned();
+                        let api_key_env = tts.and_then(|t| t.api_key_env.as_deref())
+                            .unwrap_or("GOOGLE_API_KEY")
+                            .to_owned();
+
+                        let api_key = match std::env::var(&api_key_env) {
+                            Ok(k) if !k.is_empty() => k,
+                            _ => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: {api_key_env} not set — cannot call TTS");
+                                return;
+                            }
+                        };
+
+                        let url = format!(
+                            "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                        );
+                        let body = serde_json::json!({
+                            "contents": [{"parts": [{"text": text}]}],
+                            "generationConfig": {
+                                "response_modalities": ["AUDIO"],
+                                "speech_config": {
+                                    "voice_config": {
+                                        "prebuilt_voice_config": {
+                                            "voice_name": voice.as_deref().unwrap_or("Kore")
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
+                        let t0 = std::time::Instant::now();
+                        let resp = match ureq::post(&url)
+                            .set("Content-Type", "application/json")
+                            .send_string(&body.to_string())
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: Gemini API request failed: {e}");
+                                return;
+                            }
+                        };
+
+                        let resp_body = match resp.into_string() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: failed to read API response: {e}");
+                                return;
+                            }
+                        };
+
+                        let api_latency_ms = t0.elapsed().as_millis();
+
+                        let parsed: serde_json::Value = match serde_json::from_str(&resp_body) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: failed to parse API response: {e}");
+                                return;
+                            }
+                        };
+
+                        let inline_data = parsed
+                            .pointer("/candidates/0/content/parts/0/inlineData")
+                            .and_then(|v| v.as_object());
+
+                        let Some(inline) = inline_data else {
+                            log::warn!(
+                                "ProcessApp[{app_id}]: Speak: no inlineData in API response; response keys: {:?}",
+                                parsed.as_object().map(|o| o.keys().collect::<Vec<_>>())
+                            );
+                            return;
+                        };
+
+                        let mime = inline.get("mimeType").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let b64 = match inline.get("data").and_then(|v| v.as_str()) {
+                            Some(d) => d,
+                            None => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: no data field in inlineData");
+                                return;
+                            }
+                        };
+
+                        let pcm_bytes = match base64::Engine::decode(
+                            &base64::engine::general_purpose::STANDARD, b64
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: base64 decode failed: {e}");
+                                return;
+                            }
+                        };
+
+                        log::info!(
+                            "ProcessApp[{app_id}]: Speak: TTS latency={api_latency_ms}ms mime={mime} pcm_bytes={}",
+                            pcm_bytes.len()
+                        );
+
+                        // Parse sample rate from mimeType e.g. "audio/pcm;rate=24000"
+                        let sample_rate: u32 = mime
+                            .split(';')
+                            .find(|s| s.trim().starts_with("rate="))
+                            .and_then(|s| s.trim().strip_prefix("rate="))
+                            .and_then(|r| r.parse().ok())
+                            .unwrap_or(24000);
+
+                        // Write temp WAV file wrapping the raw PCM
+                        let wav_path = std::env::temp_dir()
+                            .join(format!("plexi-tts-{}.wav", uuid::Uuid::new_v4()));
+                        let spec = hound::WavSpec {
+                            channels: 1,
+                            sample_rate,
+                            bits_per_sample: 16,
+                            sample_format: hound::SampleFormat::Int,
+                        };
+                        let mut writer = match hound::WavWriter::create(&wav_path, spec) {
+                            Ok(w) => w,
+                            Err(e) => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: failed to create WAV file: {e}");
+                                return;
+                            }
+                        };
+                        for chunk in pcm_bytes.chunks(2) {
+                            if chunk.len() < 2 { break; }
+                            let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                            if let Err(e) = writer.write_sample(sample) {
+                                log::warn!("ProcessApp[{app_id}]: Speak: WAV write error: {e}");
+                                let _ = std::fs::remove_file(&wav_path);
+                                return;
+                            }
+                        }
+                        if let Err(e) = writer.finalize() {
+                            log::warn!("ProcessApp[{app_id}]: Speak: WAV finalize error: {e}");
+                            let _ = std::fs::remove_file(&wav_path);
+                            return;
+                        }
+
+                        let duration_secs = pcm_bytes.len() as f64 / (sample_rate as f64 * 2.0);
+                        log::info!("ProcessApp[{app_id}]: Speak: playing audio duration={duration_secs:.2}s");
+
+                        match crate::audio::start_playback(crate::audio::PlaybackRequest {
+                            source: wav_path.to_string_lossy().into_owned(),
+                            volume: 1.0,
+                        }) {
+                            Ok(session) => {
+                                session.sleep_until_end();
+                                log::info!("ProcessApp[{app_id}]: Speak: playback complete");
+                            }
+                            Err(e) => {
+                                log::warn!("ProcessApp[{app_id}]: Speak: playback failed: {e}");
+                            }
+                        }
+
+                        let _ = std::fs::remove_file(&wav_path);
+                    })
+                    .expect("failed to spawn tts thread");
+            }
             HostCommand::ListAudioDevices { request_id } => {
                 // Enumeration is not gated — device names are already visible
                 // to any macOS app via System Information. The per-device

@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "speak-tester"
+type = "app"
+name = "Speak Tester"
+version = "0.1.0"
+description = "POC app — tests the audio.speak TTS primitive. Press Enter to say 'Hello from Plexi'."
+entry = "speak_tester.py"
+
+[app.capabilities]
+capabilities = ["audio.speak"]
+
+[launch]
+layout_hint = { side = "right", split = 0.3 }

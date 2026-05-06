@@ -10,6 +10,7 @@ pub struct PlexiConfig {
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
     pub ai: Option<AiConfig>,
+    pub voice: Option<VoiceConfig>,
     /// Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true).
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
@@ -54,6 +55,21 @@ pub struct OllamaBackendConfig {
     pub model_medium: Option<String>,
     /// High-tier model. e.g. "qwq:32b"
     pub model_high: Option<String>,
+}
+
+/// Voice / TTS configuration (`[voice]` section in config.toml).
+#[derive(Deserialize, Default, Clone)]
+pub struct VoiceConfig {
+    pub tts: Option<TtsConfig>,
+}
+
+/// TTS backend configuration.
+#[derive(Deserialize, Default, Clone)]
+pub struct TtsConfig {
+    /// Gemini model ID. Default: "gemini-2.5-flash-preview-tts".
+    pub model: Option<String>,
+    /// Environment variable name for the API key. Default: "GOOGLE_API_KEY".
+    pub api_key_env: Option<String>,
 }
 
 impl AiConfig {

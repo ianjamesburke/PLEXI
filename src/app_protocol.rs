@@ -1003,6 +1003,15 @@ pub enum HostCommand {
     /// visible to any macOS app.
     ListAudioDevices { request_id: String },
 
+    /// Host TTS: synthesize `text` and play audio via Gemini TTS + rodio (#747).
+    /// Requires `audio.speak` capability. Fire-and-forget — no response event.
+    /// `voice`: optional Gemini voice name (e.g. "Kore"). Null = host default.
+    Speak {
+        text: String,
+        #[serde(default)]
+        voice: Option<String>,
+    },
+
     /// Request enumeration of MIDI ports (#320). Host responds with
     /// `PlexiEvent::MidiDevicesListed { request_id, inputs, outputs }`. No
     /// capability gate — enumeration discloses only port names already
@@ -2532,6 +2541,19 @@ mod tests {
         }
         let serialised = serde_json::to_string(&event).expect("serialise");
         assert!(serialised.contains(r#""type":"pane_spawn_error""#), "wire tag missing: {serialised}");
+    }
+
+    #[test]
+    fn speak_command_roundtrips() {
+        let json = r#"{"type":"speak","text":"Hello world","voice":null}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match cmd {
+            DrawCommand::Host(HostCommand::Speak { text, voice }) => {
+                assert_eq!(text, "Hello world");
+                assert_eq!(voice, None);
+            }
+            other => panic!("expected Speak, got {other:?}"),
+        }
     }
 
     #[test]

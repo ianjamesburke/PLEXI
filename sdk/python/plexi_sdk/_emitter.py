@@ -969,6 +969,16 @@ class Emitter:
         })
         return pipe
 
+    def speak(self, text: str, voice: "str | None" = None) -> None:
+        """Synthesize ``text`` as speech via the host TTS broker (Gemini).
+        Requires ``audio.speak`` capability. Fire-and-forget — no response event.
+        ``voice``: optional Gemini voice name (e.g. "Kore"). None = host default.
+        """
+        payload: dict = {"type": "speak", "text": text}
+        if voice is not None:
+            payload["voice"] = voice
+        _emit(payload)
+
     def set_timer(self, timer_id: str, after_ms: int) -> None:
         """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
         _emit({"type": "set_timer", "timer_id": timer_id, "after_ms": after_ms})

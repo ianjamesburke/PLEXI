@@ -68,6 +68,9 @@ pub enum Capability {
     FsPick,
     /// Spawn a new pane via DrawCommand::SpawnPane (#592).
     PanesSpawn,
+    /// Synthesize speech via host TTS broker (Gemini TTS, #747).
+    /// Required to use `emit.speak()` / the `speak` PGAP command.
+    AudioSpeak,
 }
 
 impl fmt::Display for Capability {
@@ -97,6 +100,7 @@ impl Capability {
             Self::TerminalBindings => "terminal.bindings",
             Self::FsPick => "fs.pick",
             Self::PanesSpawn => "panes.spawn",
+            Self::AudioSpeak => "audio.speak",
         }
     }
 
@@ -120,6 +124,7 @@ impl Capability {
             "terminal.bindings",
             "fs.pick",
             "panes.spawn",
+            "audio.speak",
         ]
     }
 }
@@ -161,6 +166,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "terminal.bindings" => Ok(Self::TerminalBindings),
             "fs.pick" => Ok(Self::FsPick),
             "panes.spawn" => Ok(Self::PanesSpawn),
+            "audio.speak" => Ok(Self::AudioSpeak),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -348,6 +354,28 @@ mod tests {
         match check(&AppPermissions::from_capability_strings(&[]), Capability::PanesSpawn) {
             PermissionCheck::Denied(reason) => {
                 assert!(reason.contains("panes.spawn"), "denial must name capability: {reason}");
+            }
+            PermissionCheck::Allowed => panic!("must be denied without declaration"),
+        }
+    }
+
+    #[test]
+    fn audio_speak_capability_recognized() {
+        let parsed = Capability::try_from("audio.speak").expect("audio.speak must parse");
+        assert_eq!(parsed, Capability::AudioSpeak);
+        assert_eq!(parsed.as_str(), "audio.speak");
+        let perms = AppPermissions::from_capability_strings(&["audio.speak".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::AudioSpeak),
+            "audio.speak must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::AudioSpeak),
+            PermissionCheck::Allowed
+        ));
+        match check(&AppPermissions::from_capability_strings(&[]), Capability::AudioSpeak) {
+            PermissionCheck::Denied(reason) => {
+                assert!(reason.contains("audio.speak"), "denial must name capability: {reason}");
             }
             PermissionCheck::Allowed => panic!("must be denied without declaration"),
         }

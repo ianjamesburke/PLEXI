@@ -164,6 +164,10 @@ impl PlaybackSession {
     pub fn set_volume(&self, v: f32) {
         self.sink.set_volume(v);
     }
+    /// Block the calling thread until playback has drained completely.
+    pub fn sleep_until_end(&self) {
+        self.sink.sleep_until_end();
+    }
 }
 
 #[cfg(not(test))]
@@ -212,6 +216,7 @@ impl PlaybackSession {
     pub fn pause(&self) {}
     pub fn resume(&self) {}
     pub fn set_volume(&self, _v: f32) {}
+    pub fn sleep_until_end(&self) {}
 }
 
 #[cfg(test)]
