@@ -126,6 +126,11 @@ pub enum Commands {
         /// Shell name as positional (alternative to --shell)
         shell_pos: Option<String>,
     },
+    /// Print shell completion script
+    Completions {
+        /// Shell name (zsh, bash, fish)
+        shell: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

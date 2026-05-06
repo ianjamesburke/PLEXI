@@ -278,6 +278,10 @@ fn main() -> eframe::Result {
                         let resolved = shell.as_deref().or(shell_pos.as_deref());
                         std::process::exit(cli::shell_init_cli(resolved));
                     }
+                    Commands::Completions { shell } => {
+                        let s = shell.as_deref().unwrap_or("zsh");
+                        std::process::exit(cli::completions_cli(s));
+                    }
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI
@@ -377,6 +381,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         // #680 — context root and shell integration.
         "context",
         "shell-init",
+        "completions",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
