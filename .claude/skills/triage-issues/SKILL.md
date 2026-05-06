@@ -107,7 +107,7 @@ The goal is a *realistic* estimate grounded in the actual codebase, not a hand-w
 
 6. **If the issue already contains a LOC estimate:** state where yours agrees or differs and why. Authors tend to underestimate changes to existing code and overestimate new-code areas.
 
-7. **Record the touch list** — the top-level files and directories identified in step 2. This becomes the `touches` field in front matter and is used by `/sprint-plan` to compute parallelization groups. Use the shortest unambiguous path (e.g. `src/app/mod.rs`, `sdk/python/`, `src/widgets.rs`). Aim for ≤ 5 entries; consolidate to a parent dir when 3+ files in the same module are affected.
+7. **Record the touch list** — the top-level files and directories identified in step 2. This becomes the `touches` field in front matter and is used to assess parallelization (disjoint touch sets = parallel-safe). Use the shortest unambiguous path (e.g. `src/app/mod.rs`, `sdk/python/`, `src/widgets.rs`). Aim for ≤ 5 entries; consolidate to a parent dir when 3+ files in the same module are affected.
 
 Note: `size:*` labels don't exist in the repo yet — include size in the triage comment but don't apply it as a label.
 
