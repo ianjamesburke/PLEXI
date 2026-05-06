@@ -67,6 +67,9 @@ egui_commonmark = "0.20"
 rfd = "0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Keychain access via Security.framework C API — no subprocess, distinct error
+# types for ItemNotFound vs AuthFailed (locked keychain). Replaces security CLI.
+security-framework = "3"
 # CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl
 # stays available under `cfg(test)`).
 coremidi = "0.9"

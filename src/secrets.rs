@@ -45,31 +45,21 @@ pub fn get_secret_scoped(
     app_id: &str,
     workspace_root: &Path,
 ) -> Option<Zeroizing<String>> {
-    use std::process::Command;
+    use security_framework::passwords::get_generic_password;
 
     if !validate_workspace_root(workspace_root, "get_secret_scoped", app_id, key) {
         return None;
     }
 
     let account = account_key_scoped(key, workspace_root);
-    match Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            SERVICE_NAME,
-            "-a",
-            &account,
-            "-w",
-        ])
-        .output()
-    {
-        Ok(output) if output.status.success() => Some(Zeroizing::new(
-            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    match get_generic_password(SERVICE_NAME, &account) {
+        Ok(data) => Some(Zeroizing::new(
+            String::from_utf8_lossy(&data).trim().to_string(),
         )),
-        Ok(_) => None,
+        Err(e) if e.code() == -25300 => None,
         Err(e) => {
-            error!(
-                "secrets::get_secret_scoped failed for app={app_id} workspace={} key={key}: {e}",
+            warn!(
+                "secrets::get_secret_scoped: keychain error for app={app_id} workspace={} key={key}: {e}",
                 workspace_root.display()
             );
             None
@@ -181,46 +171,16 @@ fn index_remove(key: &str, app_id: &str, directory: &str) {
 
 #[cfg(target_os = "macos")]
 pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bool {
-    use std::process::Command;
+    use security_framework::passwords::set_generic_password;
 
     let account = account_key(key, app_id, directory);
-
-    // Delete existing entry first (ignore errors if it doesn't exist)
-    let _ = Command::new("security")
-        .args([
-            "delete-generic-password",
-            "-s",
-            SERVICE_NAME,
-            "-a",
-            &account,
-        ])
-        .output();
-
-    match Command::new("security")
-        .args([
-            "add-generic-password",
-            "-s",
-            SERVICE_NAME,
-            "-a",
-            &account,
-            "-w",
-            value,
-        ])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
+    match set_generic_password(SERVICE_NAME, &account, value.as_bytes()) {
+        Ok(()) => {
             index_add(key, app_id, directory);
             true
         }
-        Ok(output) => {
-            error!(
-                "secrets::store_secret failed for account={account}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            false
-        }
         Err(e) => {
-            error!("secrets::store_secret failed to run security CLI: {e}");
+            error!("secrets::store_secret failed for account={account}: {e}");
             false
         }
     }
@@ -228,27 +188,16 @@ pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bo
 
 #[cfg(target_os = "macos")]
 pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
-    use std::process::Command;
+    use security_framework::passwords::get_generic_password;
 
     let account = account_key(key, app_id, directory);
-
-    match Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            SERVICE_NAME,
-            "-a",
-            &account,
-            "-w",
-        ])
-        .output()
-    {
-        Ok(output) if output.status.success() => Some(Zeroizing::new(
-            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    match get_generic_password(SERVICE_NAME, &account) {
+        Ok(data) => Some(Zeroizing::new(
+            String::from_utf8_lossy(&data).trim().to_string(),
         )),
-        Ok(_) => None, // not found is normal, not an error
+        Err(e) if e.code() == -25300 => None,
         Err(e) => {
-            error!("secrets::retrieve_secret failed to run security CLI: {e}");
+            warn!("secrets::retrieve_secret: keychain error for account={account}: {e}");
             None
         }
     }
@@ -256,33 +205,21 @@ pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroi
 
 #[cfg(target_os = "macos")]
 pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
-    use std::process::Command;
+    use security_framework::passwords::delete_generic_password;
 
     let account = account_key(key, app_id, directory);
-
-    match Command::new("security")
-        .args([
-            "delete-generic-password",
-            "-s",
-            SERVICE_NAME,
-            "-a",
-            &account,
-        ])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
+    match delete_generic_password(SERVICE_NAME, &account) {
+        Ok(()) => {
             index_remove(key, app_id, directory);
             true
         }
-        Ok(output) => {
-            error!(
-                "secrets::delete_secret failed for account={account}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            false
+        Err(e) if e.code() == -25300 => {
+            // Already gone — treat as success.
+            index_remove(key, app_id, directory);
+            true
         }
         Err(e) => {
-            error!("secrets::delete_secret failed to run security CLI: {e}");
+            error!("secrets::delete_secret failed for account={account}: {e}");
             false
         }
     }
