@@ -1225,10 +1225,7 @@ pub fn notify_cli(
         }
     };
 
-    let id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let id = uuid::Uuid::new_v4();
 
     let options_json: Vec<serde_json::Value> = choices
         .iter()
