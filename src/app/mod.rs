@@ -160,6 +160,7 @@ pub struct PlexiApp {
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
+    pub(crate) voice_config: crate::config::VoiceConfig,
     pub(crate) renaming_window: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) drag_context: Option<usize>,
@@ -344,6 +345,11 @@ impl PlexiApp {
         // project fields preserve the global value.
         let active_workspace = config::active_workspace_root();
         let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
+        let voice_config = config::VoiceConfig::load_with_workspace(active_workspace.as_deref());
+        log::info!(
+            "voice: config loaded at startup — enabled={}",
+            voice_config.is_enabled()
+        );
         let features = crate::features::FeatureFlags::from_config(&config);
         let notifications_enabled = config
             .notifications
@@ -580,6 +586,7 @@ impl PlexiApp {
                     quit_press_count: 0,
                     quit_last_press: None,
                     config: config.clone(),
+                    voice_config: voice_config.clone(),
                     pending_close: false,
                     frame_tick: frame_tick.clone(),
                     renaming_window: None,
@@ -673,6 +680,7 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             config,
+            voice_config,
             pending_close: false,
             frame_tick,
             renaming_window: None,
@@ -774,6 +782,7 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             config,
+            voice_config: config::VoiceConfig::default(),
             pending_close: false,
             frame_tick,
             renaming_window: None,
@@ -2734,6 +2743,15 @@ impl PlexiApp {
 
         // Replace the cached config
         self.config = fresh;
+
+        // Voice config
+        let fresh_voice =
+            crate::config::VoiceConfig::load_with_workspace(active_workspace.as_deref());
+        log::info!(
+            "voice: config reloaded — enabled={}",
+            fresh_voice.is_enabled()
+        );
+        self.voice_config = fresh_voice;
 
         log::info!("Configuration reloaded from disk.");
     }
