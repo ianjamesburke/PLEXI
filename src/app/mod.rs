@@ -2230,7 +2230,16 @@ impl eframe::App for PlexiApp {
                     workspace_root: self.router.active().root.clone().or_else(crate::config::active_workspace_root),
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
-                ctx.tree.ui(&mut behavior, ui);
+                ui.scope(|ui| {
+                    // When a pane is zoomed, the resize handles inside egui_tiles' linear
+                    // container are still rendered unconditionally. Disabling the UI prevents
+                    // their interact() calls from returning hovered/dragged, blocking background
+                    // pane resizing while the zoom overlay is active.
+                    if zoomed_pane.is_some() {
+                        ui.disable();
+                    }
+                    ctx.tree.ui(&mut behavior, ui);
+                });
                 log::debug!("[DRAG] tiling: done");
 
                 // Paint the active pane focus outline using the parent painter which
