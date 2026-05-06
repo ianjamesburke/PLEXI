@@ -34,7 +34,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver, Sender, TryRecvError},
     Arc, Mutex,
 };
@@ -264,6 +264,10 @@ pub struct ProcessApp {
     /// Dropping an entry cancels nothing automatically — the cancel flag
     /// must be set and a signal sent before removing the handle.
     pub(crate) stream_handles: HashMap<String, StreamHandle>,
+    /// Count of currently active `StreamProcess` reader threads. Incremented
+    /// before spawn, decremented when the thread exits. Capped at
+    /// `MAX_STREAM_THREADS` to bound peak stack memory.
+    pub(crate) active_stream_threads: Arc<AtomicUsize>,
 }
 
 impl ProcessApp {
@@ -380,7 +384,9 @@ impl ProcessApp {
             use std::io::Write as _;
             let render_slot_writer = Arc::clone(&render_slot);
             let render_in_queue_writer = Arc::clone(&render_in_queue);
-            thread::spawn(move || {
+            thread::Builder::new()
+                .name(format!("app-stdin-{stdin_type_id}"))
+                .spawn(move || {
                 let mut stdin = stdin;
                 for item in event_rx {
                     match item {
@@ -405,7 +411,7 @@ impl ProcessApp {
                         }
                     }
                 }
-            });
+            }).expect("failed to spawn app-stdin thread");
         }
 
         // Background thread: forward subprocess stderr to Plexi's logger,
@@ -418,7 +424,9 @@ impl ProcessApp {
         let recent_stderr_thread = Arc::clone(&recent_stderr_capture);
         let lifecycle_tracker = Arc::new(LifecycleTracker::new());
         let lifecycle_stderr = Arc::clone(&lifecycle_tracker);
-        thread::spawn(move || {
+        thread::Builder::new()
+            .name(format!("app-stderr-{stderr_type_id}"))
+            .spawn(move || {
             const STDERR_RING_CAP: usize = 32;
             let reader = std::io::BufReader::new(stderr);
             for line in std::io::BufRead::lines(reader) {
@@ -438,7 +446,7 @@ impl ProcessApp {
                     _ => {}
                 }
             }
-        });
+        }).expect("failed to spawn app-stderr thread");
 
         // Background thread: read draw commands line-by-line and forward via channel.
         // Also feeds the lifecycle tracker:
@@ -447,7 +455,9 @@ impl ProcessApp {
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
         let lifecycle_stdout = Arc::clone(&lifecycle_tracker);
         let stdout_type_id = type_id.clone();
-        thread::spawn(move || {
+        thread::Builder::new()
+            .name(format!("app-stdout-{stdout_type_id}"))
+            .spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
@@ -482,7 +492,31 @@ impl ProcessApp {
             // subprocess closed its stdout — flip Crashed unless already
             // terminal.
             lifecycle_stdout.on_stdout_closed();
-        });
+        }).expect("failed to spawn app-stdout thread");
+
+        // Background reaper: blocks on waitpid so the UI thread never polls try_wait.
+        // Fires on_process_exited() exactly once when the child exits — replaces the
+        // per-frame try_wait() poll that was causing 600 syscalls/sec with 10 panes open.
+        let reaper_pid = child.id();
+        let lifecycle_reaper = Arc::clone(&lifecycle_tracker);
+        let reaper_type_id = type_id.clone();
+        thread::Builder::new()
+            .name(format!("app-reaper-{reaper_type_id}"))
+            .spawn(move || {
+                let mut status = 0i32;
+                // SAFETY: reaper_pid is a valid child PID obtained from Command::spawn().
+                // We block until the child exits. The shutdown path's child.wait() may
+                // race and get ECHILD if we win — that's harmless since shutdown discards
+                // the result with `let _ = child.wait()`.
+                unsafe {
+                    libc::waitpid(reaper_pid as libc::pid_t, &mut status, 0);
+                }
+                log::info!(
+                    "ProcessApp[{reaper_type_id}]: child exited — reaper signaling lifecycle"
+                );
+                lifecycle_reaper.on_process_exited();
+            })
+            .expect("failed to spawn app-reaper thread");
 
         let permissions = AppPermissions {
             capabilities,
@@ -555,6 +589,7 @@ impl ProcessApp {
             scroll_offsets: HashMap::new(),
             exposed_tools: Vec::new(),
             stream_handles: HashMap::new(),
+            active_stream_threads: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -669,6 +704,7 @@ impl ProcessApp {
             scroll_offsets: HashMap::new(),
             exposed_tools: Vec::new(),
             stream_handles: HashMap::new(),
+            active_stream_threads: Arc::new(AtomicUsize::new(0)),
             file_picker_tx,
             file_picker_rx,
         };
@@ -1190,25 +1226,6 @@ impl App for ProcessApp {
         let size = ui.available_size();
 
         self.flush_outbound_events();
-
-        // Lifecycle: per-frame try_wait poll. `try_wait` is non-blocking on
-        // macOS — `Ok(Some(_))` means the child has exited; `Ok(None)` means
-        // still running; `Err(_)` is fatal-for-this-process and treated as
-        // "we can't observe it any more, assume crashed". Exited child is
-        // sticky Crashed.
-        if let Some(child) = self.process.as_mut() {
-            match child.try_wait() {
-                Ok(Some(_status)) => self.lifecycle.on_process_exited(),
-                Ok(None) => {}
-                Err(e) => {
-                    log::warn!(
-                        "ProcessApp[{}]: try_wait failed: {e} — marking Crashed",
-                        self.type_id
-                    );
-                    self.lifecycle.on_process_exited();
-                }
-            }
-        }
 
         // Lifecycle: track user-input recency on this pane. Only required
         // for the Hung detector — we just need a "did the user touch this
