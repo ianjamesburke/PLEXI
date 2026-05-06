@@ -161,6 +161,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn resize_stroke(&self, _style: &egui::Style, resize_state: ResizeState) -> egui::Stroke {
+        if self.zoomed_pane.is_some() {
+            return egui::Stroke::NONE;
+        }
         match resize_state {
             ResizeState::Idle => egui::Stroke::NONE,
             ResizeState::Hovering | ResizeState::Dragging => {
