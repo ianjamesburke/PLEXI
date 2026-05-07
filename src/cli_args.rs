@@ -80,7 +80,9 @@ pub enum Commands {
         /// Level: info, warn, or error
         #[arg(long, default_value = "info")]
         level: String,
-        /// Choice option in key:Label format (repeatable)
+        /// Choice option. Format: `key:Label` (returns key when selected) or
+        /// `Label:pane_focus:<pane_id>` (navigates to pane and returns label).
+        /// Repeatable.
         #[arg(long = "choice")]
         choices: Vec<String>,
         /// Timeout in seconds (0 = no timeout)

@@ -1446,6 +1446,12 @@ pub struct NotifyOption {
     /// Recommended safe set: letters excluding navigation keys; `y`/`n` for yes/no.
     #[serde(default)]
     pub shortcut: Option<String>,
+    /// Optional host-side action to execute synchronously at click time.
+    /// Format: `"action_type:action_arg"` (e.g. `"pane_focus:123"`).
+    /// If set, the host executes the action before writing the response file.
+    /// If not set, behavior is unchanged from before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_action: Option<String>,
 }
 
 /// Returns `true` if `key` is reserved by the notification overlay for navigation.
