@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.27] — 2026-05-07
+
+### Changes
+- fix(cli): honest help text for shell-init no-op and pane-only commands (#817)
+- docs: add bundle label definition to CLAUDE.md
+- chore(ship): add log verification rule — agent reads logs before surfacing testing block
+- refactor(secrets): replace security CLI subprocess with security-framework crate (#783)
+- fix(typed_pipes): detect drain thread broken pipe within one render frame (#763)
+- chore: update workflow for alpha-as-root layout (#808)
 ## [3.5.26] — 2026-05-07
 
 ### Changes
