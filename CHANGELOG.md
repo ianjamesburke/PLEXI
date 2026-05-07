@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.24] — 2026-05-07
+
+### Changes
+- feat(just): add uninstall command (#805)
+- chore(just): remove next-issue recipe (#806)
+- docs(claude): document completions testing gap for PR builds
 ## [3.5.23] — 2026-05-07
 
 ### Changes
