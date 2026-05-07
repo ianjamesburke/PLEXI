@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.20] — 2026-05-07
+
+### Changes
+- docs: use raw GitHub URL for install one-liner until plexiapp.com/install is live
 ## [3.5.19] — 2026-05-07
 
 ### Changes
