@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.25] — 2026-05-07
+
+### Changes
+- chore: update workflow for alpha-as-root layout (#808)
 ## [3.5.24] — 2026-05-07
 
 ### Changes
