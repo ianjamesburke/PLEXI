@@ -267,7 +267,6 @@ impl PlexiApp {
             self.delete_context(i);
         } else if let Some(i) = clicked_workspace {
             self.switch_workspace(i);
-            self.skip_auto_switch_frames = 2;
         }
 
         if add_clicked {
