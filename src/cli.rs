@@ -1512,7 +1512,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
     }
     log::info!("cli: open queued: type_id={type_id}");
     println!("queued: open {type_id}");
-    println!("(Plexi is not running — request saved and will execute when Plexi starts.)");
+    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
     0
 }
 
