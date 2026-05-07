@@ -52,7 +52,9 @@ install: fetch-python-runtime
 # Build and install the current worktree as a testable PR build.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Run from inside the feature worktree: just pr-install 123
+# Always cleans the previous PR build first for a fully fresh install.
 pr-install number: fetch-python-runtime
+    bash scripts/pr-clean.sh {{number}}
     bash scripts/install.sh "pr-{{number}}"
 
 # Remove a PR build: app bundle, CLI binary, and profile directory.
