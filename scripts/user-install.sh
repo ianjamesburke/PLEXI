@@ -30,7 +30,7 @@ require unzip
 
 info "Fetching latest release..."
 API="https://api.github.com/repos/$REPO/releases/latest"
-TAG=$(curl -fsSL "$API" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+TAG=$(curl -fsSL "$API" | grep -m 1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 [[ -n "$TAG" ]] || die "Could not determine latest release tag."
 
 ZIP_NAME="Plexi-${TAG}.zip"
