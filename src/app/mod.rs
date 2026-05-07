@@ -264,12 +264,6 @@ pub struct PlexiApp {
     /// Receiver for HostCommands sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::HostCommand>,
-    /// Last tile that triggered an auto-context-switch check. Avoids re-running
-    /// the CWD lookup every frame when focus hasn't changed.
-    pub(crate) last_focused_tile_for_auto_switch: Option<egui_tiles::TileId>,
-    /// Frames remaining before auto-context-switch is allowed after a manual
-    /// context switch. Prevents immediately overriding the user's intent.
-    pub(crate) skip_auto_switch_frames: u8,
 }
 
 #[cfg(test)]
@@ -628,8 +622,6 @@ impl PlexiApp {
                     update_rx: Some(update_rx),
                     update_available: None,
                     pane_ipc_rx,
-                    last_focused_tile_for_auto_switch: None,
-                    skip_auto_switch_frames: 0,
                 };
             }
         }
@@ -721,8 +713,6 @@ impl PlexiApp {
             update_rx: Some(update_rx),
             update_available: None,
             pane_ipc_rx,
-            last_focused_tile_for_auto_switch: None,
-            skip_auto_switch_frames: 0,
         }
     }
 
@@ -827,8 +817,6 @@ impl PlexiApp {
             update_rx: None,
             update_available: None,
             pane_ipc_rx,
-            last_focused_tile_for_auto_switch: None,
-            skip_auto_switch_frames: 0,
         }, pane_ipc_tx)
     }
 
@@ -1341,7 +1329,6 @@ impl eframe::App for PlexiApp {
         // closes (which caused the "ghost queue appears on reopen" bug).
         let deferred_app_cmds = self.drain_all_app_commands();
         self.sync_app_cwd();
-        self.check_context_auto_switch();
 
         // Dispatch any DeliverNotifyAction commands the early modal render
         // produced. Routes back to the originating pane as NotifyAction events.
@@ -2024,7 +2011,6 @@ impl eframe::App for PlexiApp {
                 Action::SwitchContext(n) => {
                     if n < self.router.len() {
                         self.switch_workspace(n);
-                        self.skip_auto_switch_frames = 2;
                     }
                 }
                 Action::NextTab => {

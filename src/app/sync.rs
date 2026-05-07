@@ -3,7 +3,6 @@
 use super::PlexiApp;
 use crate::plexi_ai::broker::PaneContext;
 use crate::shell;
-use egui_tiles::Tile;
 
 impl PlexiApp {
     /// Synchronize app panes that join the `cwd` pane group with any terminal's
@@ -94,64 +93,4 @@ impl PlexiApp {
         crate::plexi_ai::broker::update_pane_snapshot(panes);
     }
 
-    /// On every frame, if the focused pane changed and is a terminal, walk its CWD
-    /// up the directory tree looking for a matching context root. If found and not
-    /// already active, switch to it automatically.
-    ///
-    /// Skips when `skip_auto_switch_frames > 0` — set by manual context switches
-    /// to prevent immediately overriding the user's intent.
-    pub(super) fn check_context_auto_switch(&mut self) {
-        if self.skip_auto_switch_frames > 0 {
-            self.skip_auto_switch_frames -= 1;
-            return;
-        }
-
-        let active = self.active_window;
-        let Some(focused_tile) = self.windows[active].focused_pane else {
-            self.last_focused_tile_for_auto_switch = None;
-            return;
-        };
-
-        if self.last_focused_tile_for_auto_switch == Some(focused_tile) {
-            return;
-        }
-        self.last_focused_tile_for_auto_switch = Some(focused_tile);
-
-        let pane_id = match self.windows[active].tree.tiles.get(focused_tile) {
-            Some(Tile::Pane(id)) => *id,
-            _ => return,
-        };
-
-        let cwd = {
-            let Some(terminal) = self.windows[active]
-                .panes
-                .get(&pane_id)
-                .and_then(|p| p.as_terminal())
-            else {
-                return;
-            };
-            shell::get_pid_cwd(terminal.backend.child_pid())
-        };
-        let Some(cwd) = cwd else { return; };
-
-        let current_ctx_idx = self.router.active_idx();
-        let mut path = cwd.as_path();
-        loop {
-            if let Some(idx) = self.router.position(|ctx| ctx.root.as_deref() == Some(path)) {
-                if idx != current_ctx_idx {
-                    log::info!(
-                        "context:auto-switch: cwd={} → context_id={}",
-                        cwd.display(),
-                        self.router.get(idx).context_id
-                    );
-                    self.switch_workspace(idx);
-                }
-                break;
-            }
-            match path.parent() {
-                Some(parent) if parent != path => path = parent,
-                _ => break,
-            }
-        }
-    }
 }
