@@ -2428,11 +2428,30 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
 
 /// `plexi shell-init <shell>`
 ///
-/// Reserved for future shell integration. Auto-switching context on cd was
-/// removed in #796 — context switching is now always an explicit user action.
+/// Auto-switching context on cd was removed in #796. This now emits an
+/// uninstall snippet to clean up the old `_plexi_chpwd` hook from prior versions.
 pub fn shell_init_cli(shell: Option<&str>) -> i32 {
     match shell.unwrap_or("zsh") {
-        "zsh" | "bash" => 0,
+        "zsh" => {
+            println!(
+                r#"# Plexi shell integration — auto-context-switch removed
+# Uninstall the chpwd hook installed by older Plexi versions
+chpwd_functions=(${{chpwd_functions:#_plexi_chpwd}})
+unfunction _plexi_chpwd 2>/dev/null
+unset PLEXI_ACTIVE_WORKSPACE"#
+            );
+            0
+        }
+        "bash" => {
+            println!(
+                r#"# Plexi shell integration — auto-context-switch removed
+# Uninstall the chpwd hook installed by older Plexi versions
+unset -f _plexi_chpwd 2>/dev/null
+PROMPT_COMMAND="${{PROMPT_COMMAND//_plexi_chpwd;/}}"
+unset PLEXI_ACTIVE_WORKSPACE"#
+            );
+            0
+        }
         other => {
             eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash");
             1
