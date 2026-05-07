@@ -603,10 +603,17 @@ pub fn apps_dir() -> PathBuf {
 /// contains a `.plexi/` itself — `~/.plexi-<channel>/` is the global config
 /// dir, which lives next to `~`, not inside it.
 pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
     let mut current = start.to_path_buf();
     loop {
         if current.join(".plexi").is_dir() {
             return Some(current);
+        }
+        // Stop at home dir — never walk above it
+        if let Some(ref h) = home {
+            if current == *h {
+                return None;
+            }
         }
         if !current.pop() {
             return None;
