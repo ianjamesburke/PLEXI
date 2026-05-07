@@ -109,7 +109,7 @@ plexi pane set-title "#<number> — <short-title>"
 
 ## Phase 2 — Worktree Setup
 
-Run from inside `worktrees/alpha/`:
+Run from the repo root:
 ```bash
 wtp add -b feature/<issue-number>-short-description
 ```
@@ -119,10 +119,10 @@ wtp add -b feature/<issue-number>-short-description
 **Immediately verify the base:**
 ```bash
 git -C worktrees/<branch> log --oneline -1
-git -C worktrees/alpha log --oneline -1
+git log --oneline -1
 ```
 
-If they don't match: delete the worktree and branch, redo from inside `worktrees/alpha/`. Never proceed on the wrong base.
+If they don't match: delete the worktree and branch, redo from the repo root. Never proceed on the wrong base.
 
 ---
 
@@ -223,11 +223,11 @@ Run from inside the **feature worktree**:
 just pr-install <pr-number>
 ```
 
-> **CWD check:** If your shell is at `worktrees/alpha/`, `cd` to the feature worktree first — `just pr-install` runs `cargo bundle` from CWD, so running it from alpha silently builds the old code. A compile time under ~10s is proof the change wasn't picked up.
+> **CWD check:** If your shell is at the repo root, `cd` to the feature worktree first — `just pr-install` runs `cargo bundle` from CWD, so running it from alpha silently builds the old code. A compile time under ~10s is proof the change wasn't picked up.
 
 Installs as `/Applications/Plexi PR<number>.app` with isolated profile `~/.plexi-pr-<number>/`. Wait for it to complete.
 
-**Note for justfile/config-only changes:** `just pr-install` installs the Python binary only — justfile or config changes are not visible in `worktrees/alpha/` until after merge. For these changes, direct test steps to run from `worktrees/feature/<branch>/` instead.
+**Note for justfile/config-only changes:** `just pr-install` installs the Python binary only — justfile or config changes are not visible in the repo root until after merge. For these changes, direct test steps to run from `worktrees/feature/<branch>/` instead.
 
 **Before writing the testing block:** verify whether the PR build can actually exercise the feature's golden path. If the feature requires a configuration, environment, or runtime condition that the PR build cannot satisfy (e.g. a stable-only feature gated on a non-PR app directory, a capability requiring a device not present, a server-side dependency unavailable on the PR profile) — state that limitation explicitly at the top of the testing block as a `Note:` line rather than discovering it mid-instruction.
 
@@ -324,7 +324,7 @@ After user confirms pass. Run without stopping:
 
 1. Sync alpha — rebase handles divergence from parallel agent merges:
    ```bash
-   git pull --rebase origin alpha   # from inside worktrees/alpha/
+   git pull --rebase origin alpha   # from the repo root
    ```
    This handles all cases: behind (fast-forward replay), ahead (push after), diverged (rebase). If a rebase conflict occurs in GOTCHAS.md, keep all entries, newest-first.
 
@@ -349,10 +349,10 @@ After user confirms pass. Run without stopping:
 
    If anything non-obvious happened during this PR — a failed approach, an environment constraint, a tool behavior that cost time — add one entry to GOTCHAS.md on alpha now. Write a detailed commit message explaining the why. Skip GOTCHAS if nothing surprised you.
 
-4. `just pr-clean <pr-number>` — run from `worktrees/alpha/`
-5. `git pull --rebase origin alpha` — from inside `worktrees/alpha/`
+4. `just pr-clean <pr-number>` — run from the repo root
+5. `git pull --rebase origin alpha` — from the repo root
 6. `wtp remove <branch> --force` then `git push origin --delete <branch>`
-7. `just bump && just install` — from `worktrees/alpha/`
+7. `just bump && just install` — from the repo root
 8. `git push` — push bump commit to origin so alpha is not diverged at next session start
 
 ---
@@ -398,13 +398,13 @@ Output:
 
 ## Rules
 
-- Never branch from main — always from `worktrees/alpha/`
+- Never branch from main — always from the repo root
 - Never skip base verification after `wtp add`
 - Never merge before user confirms testing passed
 - Never claim [COMPLETE] without user verification
 - On branch protection: use `--admin` rather than rebasing just to satisfy "branch is behind" — only rebase for actual merge conflicts
 - `just pr-install` runs from the **feature worktree**
-- `just pr-clean`, `just bump`, and `just install` run from **`worktrees/alpha/`**
+- `just pr-clean`, `just bump`, and `just install` run from the **repo root**
 - Cosmetic issues spotted during testing go in separate issues — not blockers
 - "modify" is only valid if pass criteria were not yet met — not for post-pass polish or bonus improvements
 - "fail" without a description is not accepted — ask for it before taking any action

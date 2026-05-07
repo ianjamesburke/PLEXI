@@ -6,7 +6,7 @@
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
-TREE="${REPO_ROOT}/worktrees/alpha"
+TREE="$REPO_ROOT"
 
 die() { echo "error: $*" >&2; exit 1; }
 
