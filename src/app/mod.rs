@@ -997,9 +997,10 @@ impl PlexiApp {
                     self.save_workspace();
                 }
                 crate::app_protocol::HostCommand::FocusContext { root } => {
-                    log::info!("pane_ipc: kind=focus_context root={}", root.display());
-                    self.focus_or_create_context_by_root(root.clone());
-                    self.save_workspace();
+                    log::warn!(
+                        "pane_ipc: FocusContext ignored — CWD-based auto-switch removed (root={})",
+                        root.display()
+                    );
                 }
                 crate::app_protocol::HostCommand::SetContextRoot { root } => {
                     log::info!("pane_ipc: kind=set_context_root root={}", root.display());
