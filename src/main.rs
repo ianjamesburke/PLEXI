@@ -236,13 +236,24 @@ fn main() -> eframe::Result {
                         PackCmd::Export { path } => std::process::exit(cli::pack_export_cli(&path)),
                     },
                     Commands::Notify { title, body, level, choices, timeout } => {
-                        let mut parsed_choices: Vec<(String, String)> = Vec::new();
+                        let mut parsed_choices: Vec<(String, String, Option<String>)> = Vec::new();
                         for raw in &choices {
-                            if let Some(colon) = raw.find(':') {
-                                parsed_choices.push((raw[..colon].to_string(), raw[colon+1..].to_string()));
-                            } else {
-                                eprintln!("error: --choice value must be key:Label");
-                                std::process::exit(1);
+                            let segments: Vec<&str> = raw.splitn(3, ':').collect();
+                            match segments.len() {
+                                3 => {
+                                    // Label:action_type:action_arg — host-side action
+                                    let label = segments[0].to_string();
+                                    let host_action = format!("{}:{}", segments[1], segments[2]);
+                                    parsed_choices.push((label.clone(), label, Some(host_action)));
+                                }
+                                2 => {
+                                    // key:Label — existing format
+                                    parsed_choices.push((segments[0].to_string(), segments[1].to_string(), None));
+                                }
+                                _ => {
+                                    eprintln!("error: --choice must be key:Label or Label:action_type:action_arg");
+                                    std::process::exit(1);
+                                }
                             }
                         }
                         std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout));

@@ -1214,7 +1214,7 @@ pub fn notify_cli(
     title: &str,
     body: &str,
     level: &str,
-    choices: &[(String, String)],
+    choices: &[(String, String, Option<String>)],
     timeout_secs: u64,
 ) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
@@ -1229,8 +1229,12 @@ pub fn notify_cli(
 
     let options_json: Vec<serde_json::Value> = choices
         .iter()
-        .map(|(key, label)| {
-            serde_json::json!({"label": label, "value": key, "shortcut": key})
+        .map(|(key, label, host_action)| {
+            let mut opt = serde_json::json!({"label": label, "value": key, "shortcut": key});
+            if let Some(ha) = host_action {
+                opt["host_action"] = serde_json::Value::String(ha.clone());
+            }
+            opt
         })
         .collect();
 

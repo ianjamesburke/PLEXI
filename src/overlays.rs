@@ -1193,6 +1193,7 @@ impl PlexiApp {
                                                         "tombstone_dismiss".to_string(),
                                                     ),
                                                     response_file: n.response_file.clone(),
+                                                    host_action: None,
                                                 });
                                         }
                                     }
@@ -1230,6 +1231,7 @@ impl PlexiApp {
                                             action_label: opt.label.clone(),
                                             value: Some(value),
                                             response_file: notif.response_file.clone(),
+                                            host_action: opt.host_action.clone(),
                                         });
                                     }
                                     ui.add_space(style::SPACE_SM);
@@ -1282,6 +1284,7 @@ impl PlexiApp {
                                         action_label: "acknowledge".to_string(),
                                         value: None,
                                         response_file: notif.response_file.clone(),
+                                        host_action: None,
                                     });
                                 }
                             });
@@ -1478,6 +1481,7 @@ impl PlexiApp {
                             action_label: "acknowledge".to_string(),
                             value: None,
                             response_file: notif.response_file.clone(),
+                            host_action: None,
                         });
                     }
                 }
@@ -1517,6 +1521,7 @@ impl PlexiApp {
                             action_label: opt.label.clone(),
                             value: Some(value),
                             response_file: notif.response_file.clone(),
+                            host_action: opt.host_action.clone(),
                         });
                     }
                 }
@@ -1532,6 +1537,7 @@ impl PlexiApp {
                                 action_label: "submit".to_string(),
                                 value: Some(buf),
                                 response_file: notif.response_file.clone(),
+                                host_action: None,
                             });
                         }
                     }

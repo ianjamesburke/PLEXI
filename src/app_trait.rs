@@ -93,6 +93,8 @@ pub enum AppCommand {
         value: Option<String>,
         /// Path to write the chosen value for host-originated blocking notifications.
         response_file: Option<String>,
+        /// Host-side action to execute synchronously. Format: `"action_type:action_arg"`.
+        host_action: Option<String>,
     },
     /// Canvas Terminal Binding Primitives (#78). The host opens a fresh
     /// terminal next to `sender_pane_id`, sets the new terminal as the

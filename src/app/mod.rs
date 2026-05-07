@@ -908,15 +908,7 @@ impl PlexiApp {
                 }
                 crate::app_protocol::HostCommand::FocusPane { pane_id } => {
                     log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
-                    let mut found = false;
-                    for win in &mut self.windows {
-                        if let Some(tile_id) = win.tree.tiles.find_pane(pane_id) {
-                            win.focused_pane = Some(tile_id);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
+                    if !self.pane_navigate(*pane_id) {
                         log::warn!("pane_ipc: focus_pane: pane_id={pane_id} not found");
                     }
                 }
@@ -1204,6 +1196,7 @@ impl PlexiApp {
                     action_label: "timeout".to_string(),
                     value: Some(dismiss_value),
                     response_file: n.response_file.clone(),
+                    host_action: None,
                 }];
                 self.dispatch_notify_action_cmds(cmds);
             }
@@ -1573,10 +1566,23 @@ impl eframe::App for PlexiApp {
                         self.current_notify_id = Some(new_id);
                     }
                 }
-                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file } => {
+                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file, host_action } => {
                     log::info!(
-                        "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?}"
+                        "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                     );
+                    // Execute host-side action synchronously before writing the response
+                    // file so the navigation is complete before the shell unblocks.
+                    if let Some(ref action) = host_action {
+                        if let Some(id_str) = action.strip_prefix("pane_focus:") {
+                            if let Ok(pane_id_target) = id_str.parse::<u64>() {
+                                self.pane_navigate(pane_id_target);
+                            } else {
+                                log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                            }
+                        } else {
+                            log::warn!("notify:action: unknown host_action {:?}", action);
+                        }
+                    }
                     if let Some(rf) = &response_file {
                         let content = value.as_deref().unwrap_or("");
                         let tmp = format!("{rf}.tmp");
@@ -1585,16 +1591,20 @@ impl eframe::App for PlexiApp {
                             Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
                         }
                     }
-                    let active = self.active_window;
-                    if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
-                        if let Some(app) = pane.as_app_mut() {
-                            app.runtime.queue_outbound_event(
-                                crate::app_protocol::PlexiEvent::NotifyAction {
-                                    notify_id,
-                                    action_label,
-                                    value,
-                                },
-                            );
+                    // Search all windows for the sender pane — it may not be in the
+                    // active context (cross-context notification path).
+                    let window_idx = self.windows.iter().position(|w| w.panes.contains_key(&pane_id));
+                    if let Some(win_idx) = window_idx {
+                        if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
+                            if let Some(app) = pane.as_app_mut() {
+                                app.runtime.queue_outbound_event(
+                                    crate::app_protocol::PlexiEvent::NotifyAction {
+                                        notify_id,
+                                        action_label,
+                                        value,
+                                    },
+                                );
+                            }
                         }
                     }
                 }
@@ -2788,6 +2798,24 @@ impl PlexiApp {
         }
     }
 
+    /// Navigate to a pane by id, updating both `focused_pane` on its window and
+    /// `active_window`. Returns `true` if the pane was found.
+    pub(crate) fn pane_navigate(&mut self, pane_id: u64) -> bool {
+        for (idx, win) in self.windows.iter_mut().enumerate() {
+            if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
+                let prev = self.active_window;
+                win.focused_pane = Some(tile_id);
+                self.active_window = idx;
+                log::info!(
+                    "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id}"
+                );
+                return true;
+            }
+        }
+        log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
+        false
+    }
+
     /// Reconcile the rename-pane focus layer with `renaming_pane`.
     pub(crate) fn sync_rename_pane_focus(&mut self) {
         let should_own = self.renaming_pane.is_some();
@@ -2866,10 +2894,23 @@ impl PlexiApp {
     pub(crate) fn dispatch_notify_action_cmds(&mut self, cmds: Vec<crate::app_trait::AppCommand>) {
         use crate::app_trait::AppCommand;
         for cmd in cmds {
-            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file } = cmd {
+            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file, host_action } = cmd {
                 log::info!(
-                    "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?}"
+                    "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                 );
+                // Execute host-side action synchronously before writing the response
+                // file so the navigation is complete before the shell unblocks.
+                if let Some(ref action) = host_action {
+                    if let Some(id_str) = action.strip_prefix("pane_focus:") {
+                        if let Ok(pane_id_target) = id_str.parse::<u64>() {
+                            self.pane_navigate(pane_id_target);
+                        } else {
+                            log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                        }
+                    } else {
+                        log::warn!("notify:action: unknown host_action {:?}", action);
+                    }
+                }
                 if let Some(rf) = &response_file {
                     let content = value.as_deref().unwrap_or("");
                     let tmp = format!("{rf}.tmp");
@@ -2878,16 +2919,20 @@ impl PlexiApp {
                         Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
                     }
                 }
-                let active = self.active_window;
-                if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
-                    if let Some(app) = pane.as_app_mut() {
-                        app.runtime.queue_outbound_event(
-                            crate::app_protocol::PlexiEvent::NotifyAction {
-                                notify_id,
-                                action_label,
-                                value,
-                            },
-                        );
+                // Search all windows for the sender pane — it may not be in the
+                // active context (cross-context notification path).
+                let window_idx = self.windows.iter().position(|w| w.panes.contains_key(&pane_id));
+                if let Some(win_idx) = window_idx {
+                    if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            app.runtime.queue_outbound_event(
+                                crate::app_protocol::PlexiEvent::NotifyAction {
+                                    notify_id,
+                                    action_label,
+                                    value,
+                                },
+                            );
+                        }
                     }
                 }
             }
