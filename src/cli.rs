@@ -846,11 +846,10 @@ pub fn self_update_cli() -> i32 {
         return 1;
     }
     if binary_name.contains("beta") {
-        eprintln!("Self-update for beta builds is not yet supported.");
-        eprintln!(
-            "Download the latest beta from: https://github.com/ianjamesburke/PLEXI/releases"
-        );
-        return 1;
+        log::info!("cli: self-update skipped — beta build");
+        println!("Self-update for beta builds is not yet supported.");
+        println!("Download the latest beta from: https://github.com/ianjamesburke/PLEXI/releases");
+        return 0;
     }
 
     let current_version = env!("CARGO_PKG_VERSION");
@@ -942,9 +941,10 @@ pub fn self_update_cli() -> i32 {
     let app_bundle = match app_bundle {
         Some(p) => p,
         None => {
-            eprintln!("error: binary does not appear to be inside a .app bundle");
-            eprintln!("Self-update requires a bundled installation.");
-            return 1;
+            log::info!("cli: self-update skipped — not a bundle install");
+            println!("Self-update requires a bundled .app installation.");
+            println!("For a dev install, update from source: git pull && just install");
+            return 0;
         }
     };
 
@@ -1510,7 +1510,9 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
+    log::info!("cli: open queued: type_id={type_id}");
     println!("queued: open {type_id}");
+    println!("(Plexi is not running — request saved and will execute when Plexi starts.)");
     0
 }
 
@@ -2434,6 +2436,10 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
 /// compatibility with dotfiles that still `eval "$(plexi shell-init)"` — it
 /// now emits nothing so those evals are safe no-ops.
 pub fn shell_init_cli(_shell: Option<&str>) -> i32 {
+    log::info!("cli: shell-init (no-op)");
+    eprintln!("note: plexi shell-init is currently a no-op.");
+    eprintln!("      Shell integration will be re-introduced in a future release.");
+    eprintln!("      If your dotfiles contain `eval \"$(plexi shell-init)\"`, it is safe to leave as-is.");
     0
 }
 
