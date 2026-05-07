@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.22] — 2026-05-07
+
+### Changes
+- fix(install): correct app bundle name, icon, and shell-init job noise
+- revert(context): remove CWD-based auto-switch — sidebar flashing bug (#793)
 ## [3.5.21] — 2026-05-07
 
 ### Changes
