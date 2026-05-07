@@ -51,7 +51,7 @@ uninstall_channel() {
   local backlog_src="$profile_dir/backlog"
   if [[ -d "$backlog_src" ]]; then
     mkdir -p "$ARCHIVE_BASE"
-    local archive_dest="$ARCHIVE_BASE/plexi${suffix}-backlog"
+    local archive_dest="$ARCHIVE_BASE/plexi${suffix}-backlog-$(date +%Y%m%d%H%M%S)"
     mv "$backlog_src" "$archive_dest"
     ok "Archived backlog → $archive_dest"
     removed=1
@@ -109,17 +109,25 @@ case "$channel" in
     uninstall_channel "-alpha" " Alpha"
     info "Channel: beta"
     uninstall_channel "-beta" " Beta"
-    info "CLI symlink"
-    remove_file /usr/local/bin/plexi
     remove_shell_integration
     remove_completions
     ;;
 
   stable)
+    echo ""
+    echo "This will remove the stable Plexi channel:"
+    echo "  • /Applications/Plexi.app"
+    echo "  • /usr/local/bin/plexi"
+    echo "  • ~/.plexi/  (profile directory)"
+    echo "  • Shell integration from ~/.zshrc / ~/.bashrc"
+    echo "  • Shell completions (zsh, bash, fish)"
+    echo ""
+    read -r -p "Proceed? [y/N] " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+    echo ""
+
     info "Channel: stable"
     uninstall_channel "" ""
-    info "CLI symlink"
-    remove_file /usr/local/bin/plexi
     remove_shell_integration
     remove_completions
     ;;
