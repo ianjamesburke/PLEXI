@@ -56,11 +56,9 @@ jobs:
             Step 5 — Apply the labels:
             gh issue edit ${{ github.event.issue.number }} --add-label "<type>,<priority>,<era>,<status>"
 
-            Step 6 — If status is blocked, add native GitHub blocking relations:
-            BLOCKED_ID=$(gh issue view ${{ github.event.issue.number }} --json id --jq '.id')
-            BLOCKER_ID=$(gh issue view <blocker-number> --json id --jq '.id')
-            gh api graphql -f query='mutation($blockedId:ID!,$blockerId:ID!){addBlockedBy(input:{issueId:$blockedId,blockingIssueId:$blockerId}){issue{number}}}' -f blockedId="$BLOCKED_ID" -f blockerId="$BLOCKER_ID"
-            Only do this when the blocking issue number is explicitly clear.
+            Step 6 — If status is blocked, add native GitHub blocking relations using a single gh command per blocker:
+            gh api graphql -f query='mutation($blockedId:ID!,$blockerId:ID!){addBlockedBy(input:{issueId:$blockedId,blockingIssueId:$blockerId}){issue{number}}}' -f blockedId="$(gh issue view ${{ github.event.issue.number }} --json id --jq '.id')" -f blockerId="$(gh issue view <blocker-number> --json id --jq '.id')"
+            Repeat for each blocker. Only do this when the blocking issue number is explicitly clear from the issue body. Each call is one gh api graphql command with the IDs inlined — no shell variable assignments.
 
             Step 7 — If status is needs-info, post explicit answerable questions:
             Each question must be specific enough that a yes/no or one-sentence answer fully resolves it.
