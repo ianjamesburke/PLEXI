@@ -90,23 +90,3 @@ bump bump="patch":
 #   just promote main   — skip prompt, promote beta→main
 promote to="":
     bash scripts/promote.sh "{{to}}"
-
-# Print the numbers of the top N unblocked open issues (default 1), labelling each "in progress".
-# Enables: just next-issue 4 | while read -r num; do plexi open terminal --layout split_v "c /ship $num"; done
-next-issue n="1":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    gh issue list --state open --limit 100 \
-      --json number,labels \
-      --jq '[.[] | select(.labels | map(.name) | (contains(["in progress"]) | not))] |
-            sort_by(.labels | map(.name) |
-              if contains(["P0"]) then 0
-              elif contains(["P1"]) then 1
-              elif contains(["P2"]) then 2
-              elif contains(["P3"]) then 3
-              else 4 end) |
-            .[: {{n}}][].number' | \
-    while read -r num; do
-        gh issue edit "$num" --add-label "in progress" > /dev/null
-        echo "$num"
-    done
