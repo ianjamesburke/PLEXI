@@ -225,6 +225,8 @@ Every CLI command and feature must work identically on alpha, beta, stable, and 
 
 **Enforcement:** Never hardcode a profile directory path (e.g. `~/.plexi-alpha/`) in CLI code — always use `config_dir()`. Never route around `PLEXI_SOCKET` when it is set. Any new CLI command that communicates with a running instance must follow the socket-first pattern in `open_cli()`.
 
+**Testing completions on PR builds:** `just pr-install` intentionally skips completion installation — all channels share a single completion file path (e.g. `$(brew --prefix)/share/zsh/site-functions/_plexi`) and a PR build overwriting it would corrupt the active channel's completions. To test a completion change on a PR build, manually run `plexi-pr-<N> completions zsh > <completions-path>` after install and restore the previous file afterward. Completion changes that don't require interactive testing can be merged to alpha and verified there.
+
 ## General Rules
 
 - Before SSH/networking setup, ask if machines are on the same LAN or remote. Before any multi-step infra task, clarify topology first.
