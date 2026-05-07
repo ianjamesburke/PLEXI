@@ -1,6 +1,17 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.23] — 2026-05-07
+
+### Changes
+- fix(context): strip CWD auto-switch shell hook + neutralise FocusContext (#796) (#798)
+- chore(just): pr-install auto-cleans previous build before reinstalling
+- chore(skills): move ship skill into repo, remove triage-issues
+- docs(claude): clean up stale CLAUDE.md — remove version labels, PlexiApp State, Terminology; point North Star to NORTH_STAR.md; document worktree subdirs
+- fix(triage): inline GraphQL ID lookups to stay within Bash(gh *) tool allowlist
+- chore(issues): auto-label new issues + modernize triage workflow
+- chore(triage): add needs-info label + sharpen clarification step
+- docs: add NORTH_STAR.md and wire triage-issues to it
 ## [3.5.22] — 2026-05-07
 
 ### Changes
