@@ -77,25 +77,15 @@ impl MacKeychain {
 #[cfg(target_os = "macos")]
 impl SecretStore for MacKeychain {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
-        use std::process::Command;
-        match Command::new("security")
-            .args([
-                "find-generic-password",
-                "-s",
-                "plexi",
-                "-a",
-                account,
-                "-w",
-            ])
-            .output()
-        {
-            Ok(out) if out.status.success() => Some(Zeroizing::new(
-                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        use security_framework::passwords::get_generic_password;
+        match get_generic_password("plexi", account) {
+            Ok(data) => Some(Zeroizing::new(
+                String::from_utf8_lossy(&data).trim().to_string(),
             )),
-            Ok(_) => None,
+            Err(e) if e.code() == -25300 => None,
             Err(e) => {
-                log::error!(
-                    "workspace_secrets::MacKeychain::get failed for account={account}: {e}"
+                log::warn!(
+                    "workspace_secrets::MacKeychain::get: keychain error for account={account}: {e}"
                 );
                 None
             }
@@ -103,42 +93,20 @@ impl SecretStore for MacKeychain {
     }
 
     fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
-        use std::process::Command;
-        // Delete first so re-adds overwrite cleanly.
-        let _ = Command::new("security")
-            .args(["delete-generic-password", "-s", "plexi", "-a", account])
-            .output();
-        let out = Command::new("security")
-            .args([
-                "add-generic-password",
-                "-s",
-                "plexi",
-                "-a",
-                account,
-                "-w",
-                value,
-            ])
-            .output()
-            .map_err(|e| SecretError::Backend(format!("security CLI: {e}")))?;
-        if !out.status.success() {
-            return Err(SecretError::Backend(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
-        }
+        use security_framework::passwords::set_generic_password;
+        set_generic_password("plexi", account, value.as_bytes())
+            .map_err(|e| SecretError::Backend(format!("{e}")))?;
         index_add(account);
         Ok(())
     }
 
     fn delete(&self, account: &str) -> Result<(), SecretError> {
-        use std::process::Command;
-        let out = Command::new("security")
-            .args(["delete-generic-password", "-s", "plexi", "-a", account])
-            .output()
-            .map_err(|e| SecretError::Backend(format!("security CLI: {e}")))?;
-        if !out.status.success() {
-            return Err(SecretError::Backend(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
+        use security_framework::passwords::delete_generic_password;
+        match delete_generic_password("plexi", account) {
+            Ok(()) => {}
+            // Already gone — treat as success.
+            Err(e) if e.code() == -25300 => {}
+            Err(e) => return Err(SecretError::Backend(format!("{e}"))),
         }
         index_remove(account);
         Ok(())
@@ -246,7 +214,7 @@ fn index_remove(account: &str) {
 /// in the new flat-string form.
 #[cfg(target_os = "macos")]
 pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
-    use std::process::Command;
+    use security_framework::passwords::get_generic_password;
     let path = index_path();
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
@@ -264,21 +232,15 @@ pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
     for entry in &legacy {
         // Read the legacy Keychain account: `{app_id}/{directory}/{key}`.
         let legacy_account = format!("{}/{}/{}", entry.app_id, entry.directory, entry.key);
-        let value_out = Command::new("security")
-            .args([
-                "find-generic-password",
-                "-s",
-                "plexi",
-                "-a",
-                &legacy_account,
-                "-w",
-            ])
-            .output();
-        let value = match value_out {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout).trim().to_string()
+        let value = match get_generic_password("plexi", &legacy_account) {
+            Ok(data) => String::from_utf8_lossy(&data).trim().to_string(),
+            Err(e) if e.code() == -25300 => {
+                continue; // legacy entry already gone; index is stale
             }
-            _ => continue, // legacy entry already gone; index is stale
+            Err(e) => {
+                log::warn!("workspace_secrets::migrate: keychain error for {legacy_account}: {e}");
+                continue;
+            }
         };
         let new_account = keychain_user_name(&entry.key);
         if let Err(e) = store.set(&new_account, &value) {
