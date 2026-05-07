@@ -12,13 +12,7 @@ Before reporting anything as "done" or "missing", verify against `git log`. Neve
 
 ## North Star
 
-- [`GLOSSARY.md`](GLOSSARY.md) — shared vocabulary. Refer here when terms like "pane," "context," "PGAP," "capability," "secret" are new to you.
-
-## Terminology
-
-See [`GLOSSARY.md`](GLOSSARY.md) for the full shared vocabulary — context, pane, PGAP, capability, secret, etc.
-
-When a change introduces or significantly changes terminology, update `GLOSSARY.md` in the same commit. Keep it brief — a one-line addition is enough.
+Before making architectural decisions, read [`NORTH_STAR.md`](NORTH_STAR.md) for product direction and [`GLOSSARY.md`](GLOSSARY.md) for shared vocabulary (pane, context, PGAP, capability, secret, etc.).
 
 ## Branches
 
@@ -32,11 +26,10 @@ Feature branch naming: `feature/<issue-number>-short-description`. Never push di
 
 ## GitHub Issue Labels
 
-Every issue gets one **type**, one **priority**, one **version**.
+Every issue gets one **type**, one **priority**.
 
 - **type:** `bug` | `enhancement` | `idea`
 - **priority:** `P0` | `P1` → `P2` → `P3` → `P4`
-- **version:** `v3.0` | `v3.1+` | `future`
 - **status** (optional): `in progress` | `testing` | `ready` | `blocked`
 
 **Priority definitions:**
@@ -48,12 +41,7 @@ Every issue gets one **type**, one **priority**, one **version**.
 
 ## Milestones
 
-Milestones (`v3.1`, `v3.2`, `v3.3`, …) define the actual release collections — the specific dot releases that ship work. They are distinct from version era labels:
-
-- **Version era label** (`v3.1+`) — "this belongs in the v3.x era." Accepted but not yet slotted.
-- **Milestone** (`v3.2`) — "this is committed to that specific release sprint."
-
-Issues without a milestone are accepted into an era but unslotted. Assign a milestone when the work is actively being planned for a release. An issue can carry `v3.1+` as its version label and a `v3.4` milestone simultaneously — the label is the era, the milestone is the slot.
+Milestones define release collections. Assign a milestone when work is actively planned for a specific release sprint. Issues without a milestone are accepted but unslotted.
 
 ## Build Channels & Isolated Profiles
 
@@ -128,6 +116,8 @@ This pushes beta→main, creates and pushes the version tag, and triggers the Gi
 Worktrees:
 - `worktrees/alpha` — alpha branch
 - `worktrees/beta` — beta branch
+- `worktrees/feature/<branch>` — feature branches (created by `wtp add`)
+- `worktrees/fix/<branch>` — fix branches (created by `wtp add`)
 
 ## Releases
 
@@ -210,10 +200,6 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
 - **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
 - **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed.
-
-## PlexiApp State
-
-`PlexiApp` fields are declared in `src/app/mod.rs`. There are exactly two struct-literal initialization blocks — both contain `renaming_window: None` and are the only places new fields need to be initialized.
 
 ## Host UI Systems — Reuse Before Rolling Your Own
 
