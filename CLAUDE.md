@@ -75,27 +75,27 @@ Never commit directly to `beta` or `main`. All work flows through alpha.
 All changes, no matter how small, follow this cycle:
 
 0. **Label the issue** `in progress`: `gh issue edit <number> --add-label "in progress"`
-1. **Create a worktree** from inside `worktrees/alpha/`: `wtp add -b <branch-name>`
+1. **Create a worktree** from the repo root: `wtp add -b <branch-name>`
 2. **Implement** and commit inside that worktree
 3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
 4. **Wait for user approval** — do not merge unilaterally
 5. **Squash-merge**: `gh pr merge <number> --squash` — lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch checked out by a worktree.
-6. **Sync alpha**: `git pull --rebase origin alpha` from inside `worktrees/alpha/`
+6. **Sync alpha**: `git pull --rebase origin alpha` from the repo root
 7. **Close related issue(s)**: `gh issue close <number> --comment "Closed by PR #<pr>"`
-8. **Bump and install**: `just bump && just install` from inside `worktrees/alpha/`
+8. **Bump and install**: `just bump && just install` from the repo root
 9. **Remove the feature worktree**: `wtp remove <branch-name>`
 10. **Delete the remote branch**: `git push origin --delete <branch-name>`
 
-**Always run `wtp add` from inside `worktrees/alpha/`**, not the repo root. This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
+**Always run `wtp add` from the repo root.** This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
 
 **Verify the base immediately after `wtp add`** — before delegating any work to a subagent or writing any code, confirm the new worktree is on the right commit:
 ```bash
 git -C worktrees/<new-branch> log --oneline -1   # must match ↓
-git -C worktrees/alpha log --oneline -1
+git log --oneline -1
 ```
-If they don't match, delete the worktree and branch immediately and redo from inside `worktrees/alpha/`. Discovering the wrong base after a subagent has run wastes the entire run.
+If they don't match, delete the worktree and branch immediately and redo from the repo root. Discovering the wrong base after a subagent has run wastes the entire run.
 
-**Before creating a worktree:** run `git status` AND `git diff --stat` in `worktrees/alpha`. Alpha must be clean (no uncommitted changes, no unstaged diffs) before branching. If it's dirty, stop and ask: commit first, or is this work meant to be carried into the new branch? Never silently proceed on a dirty base.
+**Before creating a worktree:** run `git status` AND `git diff --stat` in the repo root. Alpha must be clean (no uncommitted changes, no unstaged diffs) before branching. If it's dirty, stop and ask: commit first, or is this work meant to be carried into the new branch? Never silently proceed on a dirty base.
 
 **Small-changes batch PR:** Multiple small related fixes may land in one PR if they share a single commit message and a single `Breaks if:` line. Unrelated changes go in separate PRs.
 
@@ -105,7 +105,7 @@ When alpha has stabilised enough for broader testing:
 ```
 git push origin alpha:beta
 ```
-Run from `worktrees/alpha/` (or anywhere with origin access). This fast-forwards beta to alpha's current HEAD. Then `just install` from `worktrees/beta/` to verify the beta build.
+Run from the repo root (or anywhere with origin access). This fast-forwards beta to alpha's current HEAD. Then `just install` from `worktrees/beta/` to verify the beta build.
 
 When beta is ready to ship as a release:
 ```
@@ -114,8 +114,9 @@ just promote main
 This pushes beta→main, creates and pushes the version tag, and triggers the GitHub Actions release workflow.
 
 Worktrees:
-- `worktrees/alpha` — alpha branch
+- `.` (repo root) — alpha branch
 - `worktrees/beta` — beta branch
+- `worktrees/main` — main branch
 - `worktrees/feature/<branch>` — feature branches (created by `wtp add`)
 - `worktrees/fix/<branch>` — fix branches (created by `wtp add`)
 
@@ -129,13 +130,13 @@ Release flow:
 
 ## Build & Install
 
-`just bump && just install` is the standard post-merge command — bumps the version and regenerates CHANGELOG via git-cliff, then builds and installs. Always run from inside `worktrees/alpha/`.
+`just bump && just install` is the standard post-merge command — bumps the version and regenerates CHANGELOG via git-cliff, then builds and installs. Always run from the repo root.
 
-`just install` alone is for re-installing without a version bump (e.g. after editing config or docs without a code change). Run from inside `worktrees/alpha/`.
+`just install` alone is for re-installing without a version bump (e.g. after editing config or docs without a code change). Run from the repo root.
 
 `just bump [minor|major]` without install is for explicit pre-promote version bumps when you need a minor or major release.
 
-**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in `worktrees/alpha/` → `just bump && just install` from `worktrees/alpha/`.
+**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in the repo root → `just bump && just install` from the repo root.
 
 ## Logging
 

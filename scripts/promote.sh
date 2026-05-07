@@ -8,8 +8,9 @@
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
-ALPHA_TREE="$REPO_ROOT/worktrees/alpha"
+ALPHA_TREE="$REPO_ROOT"
 BETA_TREE="$REPO_ROOT/worktrees/beta"
+MAIN_TREE="$REPO_ROOT/worktrees/main"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ fi
 
 check_clean "$BETA_TREE" "beta"
 check_pushed "$BETA_TREE" "beta" "beta"
-check_clean "$REPO_ROOT" "main worktree"
+check_clean "$MAIN_TREE" "main worktree"
 
 version=$(grep '^version' "$BETA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
@@ -102,18 +103,18 @@ echo "Promoting beta → main (v$version)..."
 git push origin beta:main
 
 echo "Syncing main worktree..."
-git -C "$REPO_ROOT" pull origin main
+git -C "$MAIN_TREE" pull origin main
 
-if git -C "$REPO_ROOT" tag -l "v$version" | grep -q "v$version"; then
+if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
     echo "Tag v$version already exists — skipping tag creation."
 else
-    git -C "$REPO_ROOT" tag "v$version"
+    git -C "$MAIN_TREE" tag "v$version"
 fi
 
 if git ls-remote --tags origin "v$version" | grep -q "v$version"; then
     echo "Tag v$version already on remote — skipping push."
 else
-    git -C "$REPO_ROOT" push origin "v$version"
+    git -C "$MAIN_TREE" push origin "v$version"
 fi
 
 echo ""
