@@ -2442,7 +2442,7 @@ _plexi_chpwd() {{
         if [[ -d "$dir/.plexi" ]]; then
             if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
                 export PLEXI_ACTIVE_WORKSPACE="$dir"
-                plexi context open "$dir" &>/dev/null &
+                plexi context open "$dir" &>/dev/null &!
             fi
             return
         fi
@@ -2467,7 +2467,7 @@ _plexi_chpwd() {{
         if [[ -d "$dir/.plexi" ]]; then
             if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
                 export PLEXI_ACTIVE_WORKSPACE="$dir"
-                plexi context open "$dir" &>/dev/null &
+                plexi context open "$dir" &>/dev/null &!
             fi
             return
         fi

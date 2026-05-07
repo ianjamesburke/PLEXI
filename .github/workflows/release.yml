@@ -38,15 +38,15 @@ jobs:
         run: rm -rf target/release/bundle
 
       - name: Build app bundle
-        run: cargo bundle --release --bin plexi
+        run: cargo bundle --release
 
       - name: Ad-hoc sign (required for ARM64)
-        run: codesign --force --deep --sign - target/release/bundle/osx/plexi.app
+        run: codesign --force --deep --sign - target/release/bundle/osx/Plexi.app
 
       - name: Create zip
         run: |
           cd target/release/bundle/osx
-          zip -r Plexi-${{ github.ref_name }}.zip plexi.app
+          zip -r Plexi-${{ github.ref_name }}.zip Plexi.app
 
       - name: Install git-cliff
         uses: taiki-e/install-action@v2
