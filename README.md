@@ -27,7 +27,7 @@ One binary. A tiling shell that brings Unix composability to the desktop — ter
 ### One-liner
 
 ```bash
-curl -fsSL https://plexiapp.com/install | sh
+curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/scripts/user-install.sh | sh
 ```
 
 Downloads the latest release, installs to `/Applications`, sets up the `plexi` CLI, and wires ZSH integration. Restart your terminal when done.
