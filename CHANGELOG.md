@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.19] — 2026-05-07
+
+### Changes
+- fix(first-run): re-prompt CLI setup on migrated profiles, always seed SDK (#792)
 ## [3.5.18] — 2026-05-06
 
 ### Changes
