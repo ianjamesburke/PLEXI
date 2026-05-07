@@ -96,6 +96,7 @@ fi
 check_clean "$BETA_TREE" "beta"
 check_pushed "$BETA_TREE" "beta" "beta"
 check_clean "$MAIN_TREE" "main worktree"
+[[ $(git -C "$MAIN_TREE" rev-parse --abbrev-ref HEAD) == "main" ]] || die "main worktree is not on 'main' branch"
 
 version=$(grep '^version' "$BETA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
