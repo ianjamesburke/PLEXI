@@ -69,7 +69,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PackCmd,
     },
-    /// Send a notification
+    /// Send a notification [requires PLEXI_SOCKET — run inside a Plexi pane]
     Notify {
         /// Notification title (required)
         #[arg(long)]
@@ -87,7 +87,7 @@ pub enum Commands {
         #[arg(long, default_value = "0")]
         timeout: u64,
     },
-    /// Pane management
+    /// Pane management [requires PLEXI_SOCKET — run inside a Plexi pane]
     Pane {
         #[command(subcommand)]
         cmd: PaneCmd,
@@ -113,12 +113,12 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RegistryCmd,
     },
-    /// Context management
+    /// Context management [requires PLEXI_SOCKET — run inside a Plexi pane]
     Context {
         #[command(subcommand)]
         cmd: ContextCmd,
     },
-    /// Print shell integration snippet
+    /// [deprecated] Shell integration — currently a no-op; prints a notice
     ShellInit {
         /// Shell name (zsh, bash, fish)
         #[arg(long)]

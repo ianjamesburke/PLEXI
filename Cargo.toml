@@ -1,5 +1,5 @@
 [workspace]
-members = ["tools/gen_schema"]
+members = ["tools/gen_schema", "sdk/rust"]
 resolver = "2"
 
 [package]
