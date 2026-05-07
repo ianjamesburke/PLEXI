@@ -31,6 +31,7 @@ Every issue gets one **type**, one **priority**.
 - **type:** `bug` | `enhancement` | `idea`
 - **priority:** `P0` | `P1` → `P2` → `P3` → `P4`
 - **status** (optional): `in progress` | `testing` | `ready` | `blocked`
+- **bundle** (optional): marks an issue as a micro-change suitable for batching into a single maintenance PR with other `bundle` issues. Bundle issues must be verifiable by diff alone — no "install and test" step required. When several `bundle` + `ready` issues accumulate, ship them together in one PR rather than individually.
 
 **Priority definitions:**
 - `P0` — Drop everything. On-fire critical; fix before anything else.
