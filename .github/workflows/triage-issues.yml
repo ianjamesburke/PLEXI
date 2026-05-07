@@ -6,7 +6,7 @@ on:
 
 jobs:
   triage:
-    # Public repo — only triage issues from the owner to prevent spam-triggered API costs
+    # Only triage owner issues — external issues stay as untriaged+external for manual review
     if: github.event.issue.author_association == 'OWNER'
     runs-on: ubuntu-latest
     permissions:
@@ -22,35 +22,70 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--allowedTools "Bash(gh *)"'
+          claude_args: '--allowedTools "Bash(gh *)" "Bash(cat *)"'
           prompt: |
             Triage GitHub issue #${{ github.event.issue.number }} for the Plexi project.
 
-            Plexi north star: all-in-one productive terminal environment for macOS — keyboard-driven, terminal-native, with a plugin app infrastructure (PGAP protocol) so you can build anything inside it. Apps are sandboxed processes that draw via JSON draw commands. The host brokers capabilities: AI, audio, secrets, net, MIDI.
+            First, read the project North Star to understand what Plexi is and where it's going:
+            cat NORTH_STAR.md
+
+            Then triage the issue using these steps:
 
             Step 1 — Read the issue:
             gh issue view ${{ github.event.issue.number }} --json number,title,body,labels
 
-            Step 2 — Pick exactly one label from each group:
-            - type:     bug | enhancement | idea | documentation
-            - priority: P0 (critical/on-fire) | P1 (shipping blocker) | P2 (important, near-term) | P3 (nice-to-have) | P4 (backlog)
-            - era:      v3.1+ (near-term v3.x work) | v4.0+ (next major, protocol-breaking) | v5.0+ (far future) | future (speculative, no clear scope)
-            - status:   ready (can start now, no blockers) | blocked (depends on another open issue — only if explicitly clear)
+            Step 2 — Search for related open issues that might be blockers or dependencies:
+            gh issue list --state open --limit 50 --json number,title,labels --jq '.[] | "\(.number): \(.title)"'
+            Look for issues whose scope overlaps with this one. If any must land first, note them.
 
-            Do NOT apply a label that is already on the issue.
+            Step 3 — Score the issue on three axes:
+            - Specificity: is the affected file/module/function named?
+            - Outcome: is the expected behaviour concrete enough to test?
+            - Blockers: are there unresolved design questions or external dependencies?
 
-            North Star alignment: if the issue is clearly off-brand (unrelated to terminal UX, pane composition, or app plugin infrastructure), note it in the comment and apply idea + P4 + future.
+            Step 4 — Pick exactly one label from each group (use only labels that exist in the repo):
+            - type:     bug | enhancement | idea
+            - priority: P0 | P1 | P2 | P3 | P4
+            - era:      (use whatever v* era labels exist — check with `gh label list`)
+            - status:   ready (all axes satisfied, North Star aligned, no open deps)
+                        blocked (depends on another open issue that must land first)
+                        needs-info (any axis incomplete or ambiguous — requires questions posted to issue)
 
-            Step 3 — Apply the labels:
+            If the issue diverges from the North Star, note it and apply idea + P4 + future era.
+
+            Step 5 — Apply the labels:
             gh issue edit ${{ github.event.issue.number }} --add-label "<type>,<priority>,<era>,<status>"
 
-            Step 4 — If blocked, add native GitHub blocking relations using GraphQL:
+            Step 6 — If status is blocked, add native GitHub blocking relations:
             BLOCKED_ID=$(gh issue view ${{ github.event.issue.number }} --json id --jq '.id')
             BLOCKER_ID=$(gh issue view <blocker-number> --json id --jq '.id')
             gh api graphql -f query='mutation($blockedId:ID!,$blockerId:ID!){addBlockedBy(input:{issueId:$blockedId,blockingIssueId:$blockerId}){issue{number}}}' -f blockedId="$BLOCKED_ID" -f blockerId="$BLOCKER_ID"
-            Repeat for each blocker. Only do this when the blocking issue number is explicitly clear from the issue body.
+            Only do this when the blocking issue number is explicitly clear.
 
-            Step 5 — Post exactly one comment in this format (no markdown, no preamble):
-            gh issue comment ${{ github.event.issue.number }} --body "<priority> / <era> / <status> — <one sentence: what it is and why this priority>"
+            Step 7 — If status is needs-info, post explicit answerable questions:
+            Each question must be specific enough that a yes/no or one-sentence answer fully resolves it.
+            gh issue comment ${{ github.event.issue.number }} --body "**Triage**
+
+            - **Type:** <type>
+            - **Priority:** <priority>
+            - **Era:** <era>
+            - **Status:** needs-info
+            - **North Star alignment:** <aligned / diverges — one sentence>
+            - **Clarification needed:**
+              - <question 1?>
+              - <question 2?>"
+
+            Step 8 — Otherwise post one triage summary comment:
+            gh issue comment ${{ github.event.issue.number }} --body "**Triage**
+
+            - **Type:** <type>
+            - **Priority:** <priority>
+            - **Era:** <era>
+            - **Status:** <status>
+            - **North Star alignment:** <aligned / diverges — one sentence>
+            - **Recommended next step:** <one concrete action>"
+
+            Step 9 — Remove the untriaged label now that triage is complete:
+            gh issue edit ${{ github.event.issue.number }} --remove-label "untriaged"
 
             Do nothing else. No PRs, no code changes, no additional comments.

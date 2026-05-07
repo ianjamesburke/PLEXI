@@ -1,0 +1,22 @@
+name: Label new issues
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Apply untriaged
+        run: gh issue edit ${{ github.event.issue.number }} --add-label "untriaged" --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply external (non-owner issues)
+        if: github.event.issue.author_association != 'OWNER'
+        run: gh issue edit ${{ github.event.issue.number }} --add-label "external" --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
