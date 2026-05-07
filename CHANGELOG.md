@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.21] — 2026-05-07
+
+### Changes
+- revert(context): remove CWD-based auto-switch — sidebar flashing bug (#793)
 ## [3.5.20] — 2026-05-07
 
 ### Changes
