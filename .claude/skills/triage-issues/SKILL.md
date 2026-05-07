@@ -36,7 +36,7 @@ From the label list, identify:
 - **Era labels** — any label matching `v*` (e.g. `v3.5+`, `v4.0+`, `future`). These are your valid era options.
 - **Priority labels** — `P1`, `P2`, `P3`, `P4`
 - **Type labels** — `bug`, `enhancement`, `idea`
-- **Status labels** — `ready`, `in progress`, `blocked`
+- **Status labels** — `ready`, `in progress`, `blocked`, `needs-info`
 
 From the milestones, identify open ones — these are valid slots. Note the lowest-numbered open milestone as the current sprint.
 
@@ -176,17 +176,28 @@ For `size:XS` through `size:M`, score actionability on three axes:
 | Outcome | Is the expected behaviour described concretely enough to test? |
 | Blockers | Are there unresolved design questions or external dependencies? |
 
-Don't treat this as pass/fail. Note which axes are incomplete and what specifically would close the gap — this becomes the comment you post.
+**North Star alignment** — also ask: does this issue move Plexi toward the garden model (local-first, human+AI collaboration, portable identity)? If not, flag it. Issues that diverge from the North Star should be noted in the triage comment with a recommendation to close or convert to `idea` + `future`.
 
-Apply `ready` only if all three axes are fully satisfied AND there are no open blocking dependencies.
+**Status decision — pick exactly one:**
 
-**Clarification questions** — for any axis that is incomplete, write a concrete question that, when answered, would close that gap. These become the `clarification_needed` list in front matter. If all axes are satisfied, `clarification_needed` is empty.
+| Status | Condition |
+|--------|-----------|
+| `ready` | All three axes satisfied, no open dependencies, North Star aligned |
+| `blocked` | Depends on another open issue that must land first |
+| `needs-info` | Any axis is incomplete, or the issue is ambiguous enough that an agent would make wrong assumptions — **requires explicit questions posted to the issue** |
+| *(none)* | `future` or `idea` issues that aren't actionable yet — label the era, skip status |
 
-Example:
+**If applying `needs-info`:** you must write at least one concrete, answerable question per incomplete axis. Vague notes are not enough. Each question must be specific enough that a yes/no or a one-sentence answer fully resolves it. Post these questions in the triage comment AND populate `clarification_needed` in front matter.
+
 ```yaml
 clarification_needed:
   - "Should the rename modal appear when the sidebar is hidden, or only when visible?"
   - "Which existing DrawCommand variant does this extend, or is it a new variant?"
+```
+
+Apply the label:
+```bash
+gh issue edit <number> --add-label "needs-info"
 ```
 
 **Dependency check:** If the issue depends on other open issues before work can start, add native GitHub blocking relations and apply `blocked` instead of `ready`:
@@ -258,11 +269,11 @@ Then apply labels:
 
 ```bash
 gh issue edit <number> --add-label "<type>,<priority>,<era>"
-# If actionable and no open dependencies:
-gh issue edit <number> --add-label "ready"
-# If has open dependencies:
-gh issue edit <number> --add-label "blocked"
-# Add native blocking relations:
+# Pick exactly one status:
+gh issue edit <number> --add-label "ready"          # all axes satisfied, no deps
+gh issue edit <number> --add-label "blocked"        # depends on another open issue
+gh issue edit <number> --add-label "needs-info"     # any axis incomplete or ambiguous
+# Add native blocking relations (if blocked):
 gh issue-ext blocking add <number> <blocker-number>
 # If slotted:
 gh issue edit <number> --milestone "<title>"
@@ -282,8 +293,9 @@ gh issue comment <number> --body "$(cat <<'COMMENT'
 - **Milestone:** unslotted
 - **Size:** M (~400 LOC, high confidence) — [1-sentence reasoning]
 - **Touches:** [src/app/mod.rs, sdk/python/]
-- **Actionable:** partial — [what's missing and what would close the gap]
-- **Clarification needed:** [question 1] / [question 2] (or "none")
+- **North Star alignment:** [aligned / diverges — one sentence why]
+- **Actionable:** [ready / needs-info / blocked] — [one sentence on what's missing or what blocks]
+- **Clarification needed:** [question 1?] / [question 2?] (or "none")
 - **Reproduction test:** [failing assertion in plain English, or "not applicable"]
 - **Recommended next step:** [one concrete action — e.g. "write the HostHarness reproduction test, then implement the fix in the same PR"]
 COMMENT
