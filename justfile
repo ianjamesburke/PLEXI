@@ -90,3 +90,14 @@ bump bump="patch":
 #   just promote main   — skip prompt, promote beta→main
 promote to="":
     bash scripts/promote.sh "{{to}}"
+
+# Remove a Plexi channel and its profile dir, app bundle, and CLI binary.
+# Defaults to removing all channels plus shell integration and completions.
+# Backlog folders inside profile dirs are archived to ~/plexi-backlog-archive/.
+#   just uninstall              — remove all channels (stable, alpha, beta)
+#   just uninstall stable       — remove stable only (also removes bare symlink, shell integration, completions)
+#   just uninstall alpha        — remove alpha only
+#   just uninstall beta         — remove beta only
+#   just uninstall pr-123       — remove a specific PR build
+uninstall channel="all":
+    bash scripts/uninstall.sh {{channel}}
