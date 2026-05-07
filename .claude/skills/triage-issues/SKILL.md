@@ -11,23 +11,15 @@ Turn a raw, unlabeled GitHub issue into an actionable, prioritized, slotted tick
 
 ---
 
-## North Star
+## Step 0 — Load the North Star
 
-**Plexi is an all-in-one Linux-style productive environment for macOS — terminal-native, keyboard-driven, with a plugin infrastructure that lets you build anything inside it.**
+Before touching the issue, read the project compass:
 
-The core value proposition: one compositor that makes your terminal tools, agents, and custom apps feel like a single coherent system. Panes compose freely. Apps speak one protocol (PGAP). The host brokers capabilities (AI, audio, secrets, net) so apps stay sandboxed. Everything is keyboard-accessible.
+```bash
+cat NORTH_STAR.md
+```
 
-**Use this to audit every issue for North Star alignment:**
-
-| Aligns | Diverges |
-|--------|----------|
-| Terminal ergonomics, pane management | Anything requiring a browser/Electron runtime |
-| App/agent plugin infrastructure | Standalone GUI features unrelated to pane composition |
-| Capability brokering (AI, audio, secrets, net, MIDI) | Features that only make sense outside a terminal context |
-| SDK primitives that unlock whole categories of apps | One-off integrations with no generalization |
-| Composability: pipes, linked terminals, context nesting | Features that centralize control away from the user |
-
-If an issue is off-brand, note it in the triage comment and suggest closing or converting to an idea-only label with `future` era.
+Use it to audit whether the issue aligns with Plexi's vision and where it fits in the progression. If an issue is off-brand, note it in the triage comment and suggest closing or converting to an idea-only label with `future` era.
 
 ---
 
