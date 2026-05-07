@@ -2428,64 +2428,13 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
 
 /// `plexi shell-init <shell>`
 ///
-/// Prints a shell hook snippet that calls `plexi context open` whenever the
-/// working directory changes and a `.plexi/` directory is found above it.
-pub fn shell_init_cli(shell: Option<&str>) -> i32 {
-    match shell.unwrap_or("zsh") {
-        "zsh" => {
-            println!(
-                r#"
-# Plexi shell integration — add to ~/.zshrc: eval "$(plexi shell-init)"
-_plexi_chpwd() {{
-    local dir="$PWD"
-    while [[ "$dir" != "/" ]]; do
-        if [[ -d "$dir/.plexi" ]]; then
-            if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
-                export PLEXI_ACTIVE_WORKSPACE="$dir"
-                plexi context open "$dir" &>/dev/null &!
-            fi
-            return
-        fi
-        dir="$(dirname "$dir")"
-    done
-    unset PLEXI_ACTIVE_WORKSPACE
-}}
-autoload -Uz add-zsh-hook
-add-zsh-hook chpwd _plexi_chpwd
-_plexi_chpwd
-"#
-            );
-            0
-        }
-        "bash" => {
-            println!(
-                r#"
-# Plexi shell integration — add to ~/.bashrc: eval "$(plexi shell-init --shell bash)"
-_plexi_chpwd() {{
-    local dir="$PWD"
-    while [[ "$dir" != "/" ]]; do
-        if [[ -d "$dir/.plexi" ]]; then
-            if [[ "$dir" != "$PLEXI_ACTIVE_WORKSPACE" ]]; then
-                export PLEXI_ACTIVE_WORKSPACE="$dir"
-                plexi context open "$dir" &>/dev/null &!
-            fi
-            return
-        fi
-        dir="${{dir%/*}}"
-    done
-    unset PLEXI_ACTIVE_WORKSPACE
-}}
-PROMPT_COMMAND="_plexi_chpwd${{PROMPT_COMMAND:+;$PROMPT_COMMAND}}"
-_plexi_chpwd
-"#
-            );
-            0
-        }
-        other => {
-            eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash");
-            1
-        }
-    }
+/// Previously emitted a `_plexi_chpwd` hook that called `plexi context open`
+/// on directory change. That hook drove the CWD-based auto-switch which was
+/// removed as actively disruptive. The command is kept for backwards
+/// compatibility with dotfiles that still `eval "$(plexi shell-init)"` — it
+/// now emits nothing so those evals are safe no-ops.
+pub fn shell_init_cli(_shell: Option<&str>) -> i32 {
+    0
 }
 
 /// `plexi completions <shell>`
