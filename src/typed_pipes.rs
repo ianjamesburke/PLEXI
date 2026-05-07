@@ -71,6 +71,11 @@ struct BinaryPipeEntry {
     /// capture callback) clone this `Arc` and push frames; the drain thread
     /// pops and writes them to the socket.
     ring: Arc<ArrayQueue<Vec<u8>>>,
+    /// Set by the drain thread before it exits due to a write error (e.g.
+    /// Broken pipe). The host polls this flag per-frame via `drain_failed()`
+    /// and emits an error event so the app is notified promptly rather than
+    /// waiting for the next retry attempt.
+    error_flag: Arc<AtomicBool>,
 }
 
 struct JsonPipeEntry {
@@ -142,9 +147,11 @@ impl TypedPipeRegistry {
 
         let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let error_flag = Arc::new(AtomicBool::new(false));
 
         let ring_drain = Arc::clone(&ring);
         let shutdown_drain = Arc::clone(&shutdown);
+        let error_flag_drain = Arc::clone(&error_flag);
         let socket_path_drain = socket_path.clone();
         let pipe_id_log = pipe_id.clone();
 
@@ -181,6 +188,7 @@ impl TypedPipeRegistry {
                     if let Some(frame) = ring_drain.pop() {
                         if let Err(e) = write_frame(&mut writer, &frame) {
                             log::warn!("typed_pipes: drain write error: {e}");
+                            error_flag_drain.store(true, Ordering::Release);
                             break;
                         }
                     } else if shutdown_drain.load(Ordering::Acquire) {
@@ -201,6 +209,7 @@ impl TypedPipeRegistry {
             shutdown,
             drain_handle: Some(drain_handle),
             ring: Arc::clone(&ring),
+            error_flag,
         };
 
         self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
@@ -261,6 +270,16 @@ impl TypedPipeRegistry {
         match self.pipes.get(pipe_id) {
             Some(PipeEntry::Binary(b)) => Some(Arc::clone(&b.ring)),
             _ => None,
+        }
+    }
+
+    /// Returns true if the drain thread for `pipe_id` exited due to a write
+    /// error (e.g. Broken pipe). The host polls this per-frame to detect pipe
+    /// failures promptly rather than waiting for the app to retry.
+    pub fn drain_failed(&self, pipe_id: &str) -> bool {
+        match self.pipes.get(pipe_id) {
+            Some(PipeEntry::Binary(b)) => b.error_flag.load(Ordering::Acquire),
+            _ => false,
         }
     }
 
@@ -354,6 +373,56 @@ mod tests {
         assert!(
             !bystander_reg.has_reader("coord-to-worker"),
             "bystander pane never opted in — has_reader must be false"
+        );
+    }
+
+    #[test]
+    fn drain_failed_set_after_broken_pipe() {
+        // Open a binary pipe, connect a client, then immediately drop it to
+        // simulate the app-side socket closing unexpectedly (Broken pipe).
+        // After the drain thread attempts a write and fails, drain_failed()
+        // must return true.
+        let mut reg = TypedPipeRegistry::new();
+        let alloc = reg
+            .open_binary("test-broken-pipe".to_string(), PipeDirection::In)
+            .expect("open_binary");
+
+        // Connect and immediately close to give the drain thread a peer that
+        // will produce Broken pipe / Connection reset on the first write.
+        {
+            let _client =
+                std::os::unix::net::UnixStream::connect(&alloc.socket_path).expect("connect");
+            // `_client` drops here, closing the far end.
+        }
+
+        // Give the drain thread time to accept the connection.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Push a frame — drain thread will attempt to write to the closed socket.
+        let ring = reg.binary_ring("test-broken-pipe").expect("ring");
+        let _ = ring.push(vec![1, 2, 3]);
+
+        // Give the drain thread time to attempt the write and set error_flag.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(
+            reg.drain_failed("test-broken-pipe"),
+            "drain_failed should be true after Broken pipe"
+        );
+    }
+
+    #[test]
+    fn drain_failed_false_for_healthy_pipe() {
+        let mut reg = TypedPipeRegistry::new();
+        reg.open_binary("test-healthy".to_string(), PipeDirection::In)
+            .expect("open_binary");
+        assert!(
+            !reg.drain_failed("test-healthy"),
+            "drain_failed should be false before any write error"
+        );
+        assert!(
+            !reg.drain_failed("nonexistent"),
+            "drain_failed should be false for unknown pipe"
         );
     }
 
