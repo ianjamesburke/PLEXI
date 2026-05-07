@@ -27,13 +27,23 @@ pub fn mark_prompted() {
 
 /// Shows every launch until the user clicks Install (writes sentinel).
 /// "Not now" and Escape dismiss for the session only.
+///
+/// If the sentinel exists but the binary isn't installed (e.g. profile was
+/// migrated from another machine), the stale sentinel is cleared and the
+/// prompt is shown again.
 pub fn should_prompt() -> bool {
-    if was_prompted() {
-        return false;
-    }
     if is_installed() {
         log::info!("cli_setup: {} already installed — skipping prompt", cli_name());
         return false;
+    }
+    if was_prompted() {
+        // Sentinel was set on a different machine or the symlink was deleted.
+        // Clear it so the prompt shows.
+        log::info!(
+            "cli_setup: stale sentinel found but {} not installed — clearing and re-prompting",
+            cli_name()
+        );
+        let _ = std::fs::remove_file(sentinel_path());
     }
     log::info!("cli_setup: {} not installed — showing prompt", cli_name());
     true

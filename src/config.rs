@@ -204,56 +204,57 @@ pub fn set_profile(name: Option<String>) {
     let _ = PROFILE_OVERRIDE.set(normalized);
 }
 
-/// If a profile is set and its directory doesn't exist yet, create it and
-/// seed `apps/` from the example apps embedded at compile time.
+/// Seed apps from embedded examples into a fresh profile dir, and ensure the
+/// Python SDK is present in the profile sdk dir. The SDK seeding runs on every
+/// launch so migrated profiles (which skip the apps-seeding block) still get
+/// the SDK written on first run with a new binary.
 pub fn ensure_profile_initialized() {
     let dir = config_dir();
-    if dir.exists() {
-        return;
-    }
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("profile init: failed to create {}: {e}", dir.display());
-        return;
-    }
-    let apps_dir = dir.join("apps");
-    if let Err(e) = std::fs::create_dir_all(&apps_dir) {
-        eprintln!("profile init: failed to create apps dir: {e}");
-        return;
-    }
-    let embedded = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
-    if let Err(e) = embedded.extract(&apps_dir) {
-        eprintln!("profile init: failed to seed apps from bundle: {e}");
-        return;
-    }
-    // chmod +x on all .py entries.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(entries) = std::fs::read_dir(&apps_dir) {
-            for app_dir in entries.flatten().filter(|e| e.path().is_dir()) {
-                if let Ok(files) = std::fs::read_dir(app_dir.path()) {
-                    for f in files.flatten() {
-                        let p = f.path();
-                        if p.extension().and_then(|x| x.to_str()) == Some("py") {
-                            if let Ok(meta) = std::fs::metadata(&p) {
-                                let mut perms = meta.permissions();
-                                perms.set_mode(perms.mode() | 0o111);
-                                let _ = std::fs::set_permissions(&p, perms);
+    if !dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("profile init: failed to create {}: {e}", dir.display());
+            return;
+        }
+        let apps_dir = dir.join("apps");
+        if let Err(e) = std::fs::create_dir_all(&apps_dir) {
+            eprintln!("profile init: failed to create apps dir: {e}");
+            return;
+        }
+        let embedded = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
+        if let Err(e) = embedded.extract(&apps_dir) {
+            eprintln!("profile init: failed to seed apps from bundle: {e}");
+            return;
+        }
+        // chmod +x on all .py entries.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(entries) = std::fs::read_dir(&apps_dir) {
+                for app_dir in entries.flatten().filter(|e| e.path().is_dir()) {
+                    if let Ok(files) = std::fs::read_dir(app_dir.path()) {
+                        for f in files.flatten() {
+                            let p = f.path();
+                            if p.extension().and_then(|x| x.to_str()) == Some("py") {
+                                if let Ok(meta) = std::fs::metadata(&p) {
+                                    let mut perms = meta.permissions();
+                                    perms.set_mode(perms.mode() | 0o111);
+                                    let _ = std::fs::set_permissions(&p, perms);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        eprintln!(
+            "profile init: seeded {} with {} apps",
+            dir.display(),
+            std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0)
+        );
     }
-    eprintln!(
-        "profile init: seeded {} with {} apps",
-        dir.display(),
-        std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0)
-    );
 
-    // Embed the SDK so Python apps work on first launch without relying on the
-    // bundle resource path, which can be absent on a cache-hit CI build.
+    // Always ensure the SDK is present — runs on every launch so that
+    // migrated profiles (pre-existing dir) get the SDK on first run.
     let sdk_dest = dir.join("sdk").join("plexi_sdk");
     if !sdk_dest.exists() {
         if let Err(e) = std::fs::create_dir_all(&sdk_dest) {

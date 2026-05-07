@@ -673,8 +673,7 @@ impl PlexiApp {
             sidebar_visible: true,
             show_shortcuts: false,
             show_changelog: false,
-            show_cli_setup_prompt: !crate::cli_setup::was_prompted()
-                && !crate::cli_setup::is_installed(),
+            show_cli_setup_prompt: crate::cli_setup::should_prompt(),
             cli_setup_error: None,
             quitting: false,
             quit_press_count: 0,

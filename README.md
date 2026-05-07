@@ -24,20 +24,31 @@ One binary. A tiling shell that brings Unix composability to the desktop — ter
 
 > **macOS only.** Linux is untested.
 
-### Download
+### One-liner
 
-1. Grab the latest `Plexi-vX.Y.Z.zip` from [Releases](https://github.com/ianjamesburke/PLEXI/releases).
+```bash
+curl -fsSL https://plexiapp.com/install | sh
+```
+
+Downloads the latest release, installs to `/Applications`, sets up the `plexi` CLI, and wires ZSH integration. Restart your terminal when done.
+
+**First launch (unsigned app):** macOS may block it on first open.
+- **macOS 15+:** System Settings → Privacy & Security → "Open Anyway".
+- **Or:** `xattr -cr /Applications/Plexi.app && open /Applications/Plexi.app`
+
+### Manual
+
+1. Download the latest `Plexi-vX.Y.Z.zip` from [Releases](https://github.com/ianjamesburke/PLEXI/releases).
 2. Unzip and move `Plexi.app` to `/Applications`.
-3. First launch (unsigned app):
-   - **macOS 15+:** System Settings → Privacy & Security → "Open Anyway".
-   - **Or:** `xattr -cr /Applications/Plexi.app`.
+3. Run `xattr -cr /Applications/Plexi.app` if macOS blocks it.
+4. On first launch, click **Install CLI** in the setup prompt to add `plexi` to your PATH.
 
 ### Build from source
 
 Needs Rust ([rustup.rs](https://rustup.rs)).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/install.sh | bash
+just install
 ```
 
 ---
