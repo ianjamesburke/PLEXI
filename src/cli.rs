@@ -138,6 +138,23 @@ pub fn workspace_init() -> i32 {
             return 1;
         }
     };
+    // Guard: refuse home dir, root dir, and inside any ~/.plexi* profile dir
+    {
+        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+        let cwd_str = cwd.to_string_lossy();
+        let is_home_or_root = cwd == std::path::Path::new("/")
+            || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
+        let is_inside_profile = home.as_ref().map(|h| {
+            let prefix = format!("{}/.plexi", h.to_string_lossy());
+            cwd_str.starts_with(&prefix)
+        }).unwrap_or(false);
+        if is_home_or_root || is_inside_profile {
+            eprintln!("error: cannot initialize a workspace in your home or root directory.");
+            eprintln!("  This would conflict with your Plexi profile (~/.plexi/).");
+            eprintln!("  cd into a project directory first.");
+            return 1;
+        }
+    }
     match crate::workspace_secrets::init_workspace(&cwd) {
         Ok(cfg) => {
             println!("Initialized workspace at {}", cwd.display());
@@ -184,35 +201,73 @@ fn require_workspace(
     Ok((root, cfg))
 }
 
-/// `plexi secret set <friendly-name>` — prompt for a value (no echo) and
-/// store it under `plexi:<workspace-id>:<friendly-name>`.
-pub fn workspace_secret_set(friendly: &str) -> i32 {
-    let (root, cfg) = match require_workspace() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
+/// `plexi secret set <friendly-name>` — store a secret in Keychain.
+///
+/// Value source (in priority order):
+///   --from-env   reads from env var named FRIENDLY_NAME
+///   default      hidden stdin prompt
+///
+/// Scope:
+///   --global     store under `plexi:user:<name>` (cross-workspace)
+///   default      walk up to nearest .plexi/ workspace, store workspace-scoped
+pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32 {
+    // Resolve value
+    let value: String = if from_env {
+        match std::env::var(friendly) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("error: env var {friendly} is not set");
+                return 1;
+            }
+        }
+    } else {
+        eprint!("Enter value for {friendly}: ");
+        let _ = io::stderr().flush();
+        match read_secret_from_stdin() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("\nerror: failed to read secret: {e}");
+                return 1;
+            }
         }
     };
-    eprint!("Enter value for {friendly}: ");
-    let _ = io::stderr().flush();
-    let value = match read_secret_from_stdin() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("\nerror: failed to read secret: {e}");
-            return 1;
-        }
-    };
-    eprintln!();
     if value.is_empty() {
         eprintln!("error: empty value, nothing stored");
         return 1;
     }
+
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace_secrets::{keychain_workspace_name, MacKeychain, SecretStore};
-        let account = keychain_workspace_name(&cfg.id, friendly);
+        use crate::workspace_secrets::{
+            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+        };
         let store = MacKeychain::new();
+
+        if global {
+            let account = keychain_user_name(friendly);
+            return match store.set(&account, &value) {
+                Ok(()) => {
+                    eprintln!("Stored '{friendly}' globally (plexi:user:{friendly})");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: keychain write failed: {e}");
+                    1
+                }
+            };
+        }
+
+        // Workspace-scoped: walk up to nearest .plexi/
+        let (root, cfg) = match require_workspace() {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("error: no .plexi/ workspace found in this directory tree.");
+                eprintln!("  → plexi workspace init        (initialize one here, then retry)");
+                eprintln!("  → plexi secret set --global {friendly}   (set globally — requires explicit flag)");
+                return 1;
+            }
+        };
+        let account = keychain_workspace_name(&cfg.id, friendly);
         match store.set(&account, &value) {
             Ok(()) => {
                 eprintln!(
@@ -230,7 +285,7 @@ pub fn workspace_secret_set(friendly: &str) -> i32 {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (root, cfg, friendly, value);
+        let _ = (friendly, value, global);
         eprintln!("error: keychain not available on this platform");
         1
     }
