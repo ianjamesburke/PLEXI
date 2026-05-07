@@ -235,6 +235,12 @@ Installs as `/Applications/Plexi PR<number>.app` with isolated profile `~/.plexi
 
 **PR build CLI rule:** When testing instructions require running a `plexi` CLI command, use `plexi-pr-<N>` (e.g. `plexi-pr-757 open terminal`), not the bare `plexi` command — `plexi` resolves to the stable build, not the PR build.
 
+**Log verification rule:** Never include `tail` or log-reading commands in the user-facing testing block. If pass/fail criteria involve checking the log, read it yourself before surfacing the testing block:
+```bash
+tail -100 ~/.plexi-pr-<number>/plexi.log
+```
+If the log already confirms pass or fail, state your finding directly rather than asking the user to check. The user should never be asked to tail a log — that's the agent's job.
+
 Surface the testing block — output EXACTLY this format, then stop:
 
 ```
