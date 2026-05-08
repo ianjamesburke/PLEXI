@@ -263,9 +263,7 @@ async fn handle_server_event(
         }
 
         _ => {
-            // Log all unhandled events at info so we can discover the GA API event names.
-            log::info!("agent:event:unhandled type={event_type} keys={}",
-                event.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default());
+            log::debug!("agent:event:unhandled type={event_type}");
         }
     }
 
@@ -334,13 +332,14 @@ async fn run_session(
         }
     });
 
-    // session.update — GA API schema: audio config is nested under audio.input / audio.output.
-    // tools inline registration not supported in gpt-realtime-2; set instructions only for now.
+    // session.update — GA API schema: audio config nested under audio.input/audio.output;
+    // tools registered at the top level of the session object.
     let session_update = json!({
         "type": "session.update",
         "session": {
             "type": "realtime",
             "instructions": system_prompt(),
+            "tools": tools,
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
