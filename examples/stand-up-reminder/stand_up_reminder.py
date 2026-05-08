@@ -73,6 +73,12 @@ def _format_duration(secs: float) -> str:
 
 
 class StandUpReminderApp(App):
+    def on_inject(self, ctx: RenderContext, payload: dict) -> None:
+        if "interval_idx" in payload:
+            self._interval_idx = int(payload["interval_idx"])
+            _, label = INTERVALS[self._interval_idx]
+            ctx.info(f"Restored interval to {label} from persisted state")
+
     def on_init(self, ctx: RenderContext) -> None:
         self._interval_idx = 4  # default: 15 min
         self._reminders_today = 0
@@ -177,6 +183,7 @@ class StandUpReminderApp(App):
             self._schedule_timer(ctx)
             _, label = INTERVALS[self._interval_idx]
             self.emit.info(f"Interval changed to {label}")
+            ctx.save_state({"interval_idx": self._interval_idx})
             self.emit.schedule_render(after_ms=50)
 
     def on_suspend(self) -> None:

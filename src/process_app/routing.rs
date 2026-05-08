@@ -1451,6 +1451,39 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+
+            // ── App state save ─────────────────────────────────────────────
+            HostCommand::SaveAppState { payload } => {
+                let filename = format!("{}.json", self.type_id);
+                let workspace_toml = self.workspace_root.join(".plexi").join("workspace.toml");
+                let state_path = if workspace_toml.exists() {
+                    self.workspace_root.join(".plexi").join("app_state").join(&filename)
+                } else {
+                    crate::config::config_dir().join("app_state").join(&filename)
+                };
+                if let Some(dir) = state_path.parent() {
+                    if let Err(e) = std::fs::create_dir_all(dir) {
+                        log::warn!("ProcessApp[{}]: SaveAppState: mkdir failed: {e}", self.type_id);
+                        return;
+                    }
+                }
+                match serde_json::to_vec_pretty(&payload) {
+                    Ok(bytes) => {
+                        if let Err(e) = std::fs::write(&state_path, &bytes) {
+                            log::warn!("ProcessApp[{}]: SaveAppState: write failed: {e}", self.type_id);
+                        } else {
+                            log::info!(
+                                "ProcessApp[{}]: saved app state to {}",
+                                self.type_id,
+                                state_path.display()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("ProcessApp[{}]: SaveAppState: serialize failed: {e}", self.type_id);
+                    }
+                }
+            }
         }
     }
 
