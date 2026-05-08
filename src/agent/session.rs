@@ -339,7 +339,6 @@ async fn run_session(
         "type": "session.update",
         "session": {
             "type": "realtime",
-            "modalities": ["audio"],
             "instructions": system_prompt(),
             "voice": "alloy",
             "tools": tools,
