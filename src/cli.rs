@@ -522,6 +522,106 @@ pub fn app_list() -> i32 {
     0
 }
 
+/// `plexi app render <id> --size WxH [--state state.json] [--output path.png]`
+/// Renders an app to PNG headlessly via the offscreen egui/wgpu pipeline.
+pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str>) -> i32 {
+    // Parse WxH
+    let (width, height) = match parse_render_size(size) {
+        Some(v) => v,
+        None => {
+            eprintln!("error: invalid --size format '{size}' — expected WxH (e.g. 500x500)");
+            return 1;
+        }
+    };
+
+    // Optional: pre-seed app state
+    let seeded_path = state.and_then(|s| {
+        let json = match std::fs::read_to_string(s) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("error: could not read state file '{s}': {e}");
+                return None;
+            }
+        };
+        let dest = crate::config::config_dir().join("app_state").join(format!("{id}.json"));
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&dest, &json) {
+            eprintln!("error: could not write state to {}: {e}", dest.display());
+            return None;
+        }
+        log::info!("app_render[{id}]: pre-seeded state from '{s}' → {}", dest.display());
+        Some(dest)
+    });
+
+    // Resolve the app binary
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let registry = crate::app_registry::AppRegistry::load(&cwd);
+    let app_bin = match registry.list().into_iter().find(|a| a.manifest.id == id) {
+        Some(a) => a.bin_path.clone(),
+        None => {
+            eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
+            if let Some(path) = seeded_path {
+                let _ = std::fs::remove_file(path);
+            }
+            return 1;
+        }
+    };
+
+    let png_bytes = match crate::app_render::render_app_to_png(id, &app_bin, width, height) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: render failed: {e}");
+            if let Some(path) = seeded_path {
+                let _ = std::fs::remove_file(path);
+            }
+            return 1;
+        }
+    };
+
+    // Clean up seeded state if we wrote it
+    if let Some(ref path) = seeded_path {
+        let _ = std::fs::remove_file(path);
+        log::info!("app_render[{id}]: cleaned up seeded state at {}", path.display());
+    }
+
+    // Write output
+    match output {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, &png_bytes) {
+                eprintln!("error: could not write output to '{path}': {e}");
+                return 1;
+            }
+            log::info!("app_render[{id}]: wrote {width}×{height} PNG to '{path}'");
+            eprintln!("Wrote {width}×{height} PNG to '{path}'");
+        }
+        None => {
+            use std::io::Write;
+            if let Err(e) = std::io::stdout().write_all(&png_bytes) {
+                eprintln!("error: could not write PNG to stdout: {e}");
+                return 1;
+            }
+            log::info!(
+                "app_render[{id}]: wrote {width}×{height} PNG to stdout ({} bytes)",
+                png_bytes.len()
+            );
+        }
+    }
+
+    0
+}
+
+fn parse_render_size(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once('x')?;
+    let w = w.parse::<u32>().ok()?;
+    let h = h.parse::<u32>().ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some((w, h))
+}
+
 // ── Top-level package manager subcommands (#308 Phase 2) ──────────────────────
 
 /// `plexi install <source-spec>[@ref]` — clone + place one app into the

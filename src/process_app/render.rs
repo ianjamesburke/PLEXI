@@ -29,7 +29,7 @@ use egui::Color32;
 /// process_app paints via `ui.painter()` without allocating, so min_rect
 /// never grows), which clipped every draw to nothing — all apps appeared
 /// blank. Single-source-of-geometry: the caller hands us the rect once.
-pub(super) fn render_draw_commands(
+pub(crate) fn render_draw_commands(
     ui: &mut egui::Ui,
     pane_rect: egui::Rect,
     commands: &[RenderCommand],

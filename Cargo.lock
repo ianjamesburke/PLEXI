@@ -3540,6 +3540,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "egui-wgpu",
  "egui_commonmark",
  "egui_term",
  "egui_tiles",
@@ -3560,6 +3561,8 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.2.2",
  "objc2-foundation 0.3.2",
+ "png 0.17.16",
+ "pollster",
  "rfd",
  "rodio",
  "schemars",
@@ -3572,6 +3575,7 @@ dependencies = [
  "toml",
  "ureq",
  "uuid",
+ "wgpu",
  "zeroize",
 ]
 
