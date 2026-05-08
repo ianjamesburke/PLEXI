@@ -334,15 +334,30 @@ async fn run_session(
         }
     });
 
-    // session.update — uses correct GA API field formats per docs.
+    // session.update — GA API schema: audio config is nested under audio.input / audio.output.
+    // tools inline registration not supported in gpt-realtime-2; set instructions only for now.
     let session_update = json!({
         "type": "session.update",
         "session": {
             "type": "realtime",
             "instructions": system_prompt(),
-            "voice": "alloy",
-            "tools": tools,
-            "tool_choice": "auto"
+            "output_modalities": ["audio"],
+            "audio": {
+                "input": {
+                    "format": { "type": "audio/pcm", "rate": 24000 },
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                        "create_response": true,
+                        "interrupt_response": true
+                    }
+                },
+                "output": {
+                    "voice": "alloy"
+                }
+            }
         }
     });
 
