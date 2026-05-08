@@ -2136,7 +2136,14 @@ impl eframe::App for PlexiApp {
                     self.open_secrets_manager();
                 }
                 Action::RenameContext => {
-                    self.renaming_window = Some(self.active_window);
+                    let ctx_idx = self.router.active_idx();
+                    self.rename_buffer = self.router.active().name.clone();
+                    self.renaming_window = Some(ctx_idx);
+                    log::info!(
+                        "RenameContext: opening rename for context {:?} (idx {})",
+                        self.router.active().name,
+                        ctx_idx
+                    );
                 }
                 Action::ToggleNotificationModal => {
                     if self.show_notification_modal {
