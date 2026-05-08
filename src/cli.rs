@@ -1427,6 +1427,19 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
     }))
 }
 
+/// `plexi pane send <pane_id> <text>`
+///
+/// Writes text to the target pane's PTY stdin. Fire-and-forget.
+/// Returns 0 on success, 1 on error.
+pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
+    log::info!("pane_send:cli: pane_id={pane_id} len={}", text.len());
+    send_to_socket(serde_json::json!({
+        "type": "send_to_pane",
+        "pane_id": pane_id,
+        "text": text,
+    }))
+}
+
 /// `plexi open <type_id> [args...] [--layout=X]`
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a
@@ -1439,21 +1452,58 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 /// Returns 0 on success, 1 on error.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
     let layout_str = layout.unwrap_or("split_v");
-    let payload = serde_json::json!({
-        "type": "spawn_pane",
-        "type_id": type_id,
-        "args": args,
-        "layout": layout_str,
-    });
 
     // Socket path is set when running inside a Plexi pane — use it directly so
     // the command reaches the correct running instance regardless of channel.
     if std::env::var("PLEXI_SOCKET").is_ok() {
+        let id = uuid::Uuid::new_v4();
+        let response_file = crate::config::config_dir()
+            .join(format!("spawn-pane-response-{id}.json"))
+            .to_string_lossy()
+            .into_owned();
+        let payload = serde_json::json!({
+            "type": "spawn_pane",
+            "type_id": type_id,
+            "args": args,
+            "layout": layout_str,
+            "response_file": response_file,
+        });
+        log::info!("open:cli: sending via socket response_file={response_file:?}");
         let code = send_to_socket(payload);
-        if code == 0 {
-            println!("opened: {type_id}");
+        if code != 0 {
+            return code;
         }
-        return code;
+        let response_path = std::path::PathBuf::from(&response_file);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if response_path.exists() {
+                match std::fs::read_to_string(&response_path) {
+                    Ok(content) => {
+                        let _ = std::fs::remove_file(&response_path);
+                        // Parse {"pane_id": N} and print just the number
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+                                println!("{pid}");
+                                return 0;
+                            }
+                        }
+                        // Fallback: print raw content
+                        print!("{content}");
+                        return 0;
+                    }
+                    Err(e) => {
+                        log::warn!("open:cli: could not read response file: {e}");
+                        eprintln!("error: could not read response file: {e}");
+                        return 1;
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                eprintln!("error: timed out waiting for open response");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     // Fallback: write to the spawn-queue for the channel this binary belongs to.

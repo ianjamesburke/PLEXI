@@ -677,6 +677,7 @@ mod tests {
             pipe_id: None,
             from_pane_id: None,
             request_id: None,
+            response_file: None,
         });
         h.run_frames(2);
 
