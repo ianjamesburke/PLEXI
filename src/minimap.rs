@@ -35,6 +35,74 @@ const INSET_TOP: f32 = 54.0;
 const CORNER_RADIUS: f32 = 6.0;
 const NAME_FONT_SIZE: f32 = 12.0;
 
+/// Compute the panel rect for the minimap overlay without needing a `Ui`.
+///
+/// Returns `None` if there are no windows in the workspace (nothing to show).
+/// Used by `draw_minimap_overlay` to anchor the egui Area at the actual panel
+/// position so it doesn't occlude the sidebar's hit-test layer.
+pub fn minimap_panel_rect(
+    ctx: &egui::Context,
+    content_rect: egui::Rect,
+    windows: &[Window],
+    workspace_id: u64,
+    workspace_name: &str,
+) -> Option<egui::Rect> {
+    let visible: Vec<&Window> = windows
+        .iter()
+        .filter(|c| c.context_id == workspace_id)
+        .collect();
+
+    if visible.is_empty() {
+        return None;
+    }
+
+    let mut raw_ys: Vec<u32> = visible.iter().map(|c| c.grid_y).collect();
+    raw_ys.sort_unstable();
+    raw_ys.dedup();
+
+    let max_x = visible.iter().map(|c| c.grid_x).max().unwrap_or(0);
+    let cols = max_x + 1;
+    let rows = raw_ys.len() as u32;
+
+    let grid_pixel_w = cols as f32 * (CELL_W + CELL_GAP) - CELL_GAP;
+    let grid_pixel_h = rows as f32 * (CELL_H + CELL_GAP) - CELL_GAP;
+    let padding = 10.0;
+
+    let name_w = ctx.fonts(|f| {
+        f.layout(
+            workspace_name.to_string(),
+            egui::FontId::proportional(NAME_FONT_SIZE),
+            egui::Color32::WHITE,
+            f32::INFINITY,
+        )
+        .size()
+        .x
+    });
+    let name_h = ctx.fonts(|f| {
+        f.layout(
+            workspace_name.to_string(),
+            egui::FontId::proportional(NAME_FONT_SIZE),
+            egui::Color32::WHITE,
+            f32::INFINITY,
+        )
+        .size()
+        .y
+    });
+
+    let panel_w = (grid_pixel_w + padding * 2.0).max(name_w + padding * 2.0 + 8.0);
+    let panel_h = grid_pixel_h + padding * 2.0 + name_h + 4.0;
+
+    let panel_min = egui::pos2(
+        content_rect.right() - panel_w - INSET_RIGHT,
+        content_rect.top() + INSET_TOP,
+    );
+
+    Some(egui::Rect::from_min_size(
+        panel_min,
+        egui::Vec2::new(panel_w, panel_h),
+    ))
+}
+
 pub fn render_minimap(
     ui: &mut egui::Ui,
     content_rect: egui::Rect,

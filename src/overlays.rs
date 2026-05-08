@@ -1774,9 +1774,24 @@ impl PlexiApp {
         let ws_id = self.router.active().context_id;
         let ws_name = self.router.active().name.clone();
 
+        // Anchor the Area at the actual panel position so its bounding rect
+        // doesn't overlap the sidebar. Previously anchored at content_rect.min
+        // (0,0), which made layer_id_at return Foreground for the top sidebar
+        // rows, suppressing their hover state entirely (#852).
+        let Some(panel_rect) = crate::minimap::minimap_panel_rect(
+            ctx,
+            content_rect,
+            &self.windows,
+            ws_id,
+            &ws_name,
+        ) else {
+            return;
+        };
+        log::debug!("minimap area anchored at {:?}", panel_rect.min);
+
         egui::Area::new(egui::Id::new("minimap_overlay"))
             .order(egui::Order::Foreground)
-            .fixed_pos(content_rect.min)
+            .fixed_pos(panel_rect.min)
             .interactable(true)
             .show(ctx, |ui| {
                 if let Some(clicked_idx) = crate::minimap::render_minimap(
