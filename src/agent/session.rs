@@ -250,35 +250,8 @@ async fn handle_server_event(
             }
         }
 
-        // GA API delivers completed tool calls via response.done output array.
         "response.done" => {
-            if let Some(outputs) = event["response"]["output"].as_array() {
-                for item in outputs {
-                    if item["type"].as_str() == Some("function_call") {
-                        let call_id = item["call_id"].as_str().unwrap_or("").to_string();
-                        let name = item["name"].as_str().unwrap_or("").to_string();
-                        let args_str = item["arguments"].as_str().unwrap_or("{}");
-                        let args_value: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
-
-                        println!("\n\x1b[33m→ {name} {}\x1b[0m", serde_json::to_string(&args_value).unwrap_or_default());
-                        log::info!("agent:tool_execute: name={name} call_id={call_id}");
-
-                        let result = execute_tool(&name, &args_value);
-                        log::info!("agent:tool_result: name={name} result_len={}", result.len());
-
-                        let output_event = json!({
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "function_call_output",
-                                "call_id": call_id,
-                                "output": result
-                            }
-                        });
-                        ws_tx.send(Message::Text(output_event.to_string())).await?;
-                        ws_tx.send(Message::Text(json!({ "type": "response.create" }).to_string())).await?;
-                    }
-                }
-            }
+            log::info!("agent:response: done");
         }
 
         "error" => {
