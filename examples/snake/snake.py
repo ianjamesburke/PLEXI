@@ -12,6 +12,7 @@ import os
 import threading
 import time
 from plexi_sdk import App, RenderContext, BG, ACCENT, FG, RED, GREEN, MUTED
+from plexi_sdk._pipe import Pipe
 
 CELL = 20.0          # cell size in logical px
 TICK = 0.15          # seconds per game tick
@@ -30,8 +31,20 @@ DIR_MAP = {
 }
 
 
+def _parse_pipe_id() -> "str | None":
+    for arg in sys.argv[1:]:
+        if arg.startswith("--pipe="):
+            return arg[len("--pipe="):]
+    return None
+
+
 class SnakeApp(App):
     def on_init(self, ctx: RenderContext) -> None:
+        self._pipe: "Pipe | None" = None
+        pipe_id = _parse_pipe_id()
+        if pipe_id:
+            self._pipe = self.emit.pipe_open(pipe_id, mode="json", direction="out")
+            self.emit.info(f"snake: pipe open pipe_id={pipe_id}")
         self._reset()
         self._timer_thread = threading.Thread(
             target=self._tick_loop, daemon=True
@@ -65,10 +78,16 @@ class SnakeApp(App):
         nx, ny = (hx + self._dir[0]) % COLS, (hy + self._dir[1]) % ROWS
         if (nx, ny) in self._snake:
             self._dead = True
+            if self._pipe:
+                self._pipe.send({"event": "game_over", "score": self._score})
+                self.emit.info(f"snake: game_over score={self._score}")
             return
         self._snake.insert(0, (nx, ny))
         if (nx, ny) == self._food:
             self._score += 1
+            if self._pipe:
+                self._pipe.send({"event": "score", "score": self._score})
+                self.emit.info(f"snake: score={self._score}")
             import random
             empty = [(c, r) for c in range(COLS) for r in range(ROWS)
                      if (c, r) not in self._snake]
