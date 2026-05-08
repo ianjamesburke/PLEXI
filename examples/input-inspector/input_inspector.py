@@ -82,13 +82,13 @@ class InputInspectorApp(App):
 
     # ── event handlers ──────────────────────────────────────────────────────
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    async def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         key_lower = key.lower()
         if key_lower == "i":
             self._show_inputs_page = not self._show_inputs_page
             return
         if key_lower == "m":
-            self._refresh_midi_ports()
+            await self._refresh_midi_ports()
             return
         if key_lower == "x" and self._midi_open_port_id:
             self._close_midi_input()
@@ -169,9 +169,9 @@ class InputInspectorApp(App):
 
     # ── MIDI helpers ─────────────────────────────────────────────────────────
 
-    def _refresh_midi_ports(self) -> None:
+    async def _refresh_midi_ports(self) -> None:
         try:
-            result = self.emit.run_sync(self.emit.list_midi_devices())
+            result = await self.emit.list_midi_devices()
             self._midi_inputs = result.inputs
             self._midi_error = ""
         except CapabilityDeniedError as e:
