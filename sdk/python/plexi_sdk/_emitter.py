@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList
@@ -21,6 +23,47 @@ _RESERVED_SHORTCUTS = frozenset("jkhl") | frozenset("123456789")
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _LOCK = threading.Lock()
+
+# Per-thread sentinel: True while a *sync* hook is executing on the event loop
+# thread. Blocking emit methods check this and raise immediately instead of
+# silently returning an un-awaited coroutine object.
+_SYNC_HOOK_LOCAL: threading.local = threading.local()
+
+
+@contextmanager
+def _sync_hook_scope():  # type: ignore[return]
+    """Mark the current thread as executing a sync hook."""
+    _SYNC_HOOK_LOCAL.active = True
+    try:
+        yield
+    finally:
+        _SYNC_HOOK_LOCAL.active = False
+
+
+def _blocking_emit_method(fn):  # type: ignore[return]
+    """Decorator: raises TypeError if a blocking emit is called from a sync hook.
+
+    Async hooks use ``await``, so the wrapper body runs, sentinel is clear,
+    and the inner coroutine is returned for the caller to await normally.
+    Sync hooks call without ``await`` — wrapper body runs, sentinel is set,
+    TypeError fires before any I/O is attempted.
+    Background threads (run_sync path) are on a different thread, so the
+    thread-local sentinel is always clear for them.
+    """
+    name = fn.__name__
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        if getattr(_SYNC_HOOK_LOCAL, 'active', False):
+            raise TypeError(
+                f"emit.{name}() must be called with 'await' from an 'async def' hook.\n"
+                f"Your hook is 'def' (sync) — blocking emit calls require 'async def'.\n"
+                f"Fix: change 'def on_init(self, ctx)' → 'async def on_init(self, ctx)'\n"
+                f"     then call:  result = await self.emit.{name}(...)"
+            )
+        return fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 def _emit(obj: dict) -> None:
@@ -124,6 +167,7 @@ class Emitter:
         return future.result()
 
     # kind = "choice"
+    @_blocking_emit_method
     async def notify_choice(self, title: str, options: list, body: str = "",
                             level: str = "info", required: bool = False,
                             priority: "int | None" = None,
@@ -182,6 +226,7 @@ class Emitter:
     # Convenience wrapper for the inline-image case (#74). Handles base64
     # encoding + size-cap enforcement client-side so we never spend wire
     # bytes on payloads the host will only reject.
+    @_blocking_emit_method
     async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
                                 mime: str, level: str = "info",
                                 priority: "int | None" = None,
@@ -228,6 +273,7 @@ class Emitter:
                                         image_inline=image_inline)
 
     # kind = "input"
+    @_blocking_emit_method
     async def notify_input(self, title: str, prompt: str = "", body: str = "",
                            level: str = "info", required: bool = False,
                            priority: "int | None" = None,
@@ -258,6 +304,7 @@ class Emitter:
         _emit(payload)
         return await q.get()
 
+    @_blocking_emit_method
     async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
                               actions: "list | None" = None,
                               priority: "int | None" = None,
@@ -420,6 +467,7 @@ class Emitter:
     # (typically inside `on_init`) and stash the returned pane id. Pass it
     # to every subsequent `run_in_linked_terminal` / `insert_path_token` /
     # `request_command_preview` call.
+    @_blocking_emit_method
     async def request_linked_terminal(
         self,
         cwd: "str | None" = None,
@@ -500,6 +548,7 @@ class Emitter:
             "mode": mode,
         })
 
+    @_blocking_emit_method
     async def request_command_preview(
         self,
         terminal_pane_id: int,
@@ -569,6 +618,7 @@ class Emitter:
     # Each of these is a coroutine — await them from async hooks, or call
     # self.emit.run_sync(self.emit.method(...)) from a background thread.
 
+    @_blocking_emit_method
     async def capability_request(self, capability: str) -> bool:
         """Await until host grants or denies the capability. Returns True if granted.
 
@@ -582,6 +632,7 @@ class Emitter:
                "capability": capability})
         return await q.get()
 
+    @_blocking_emit_method
     async def secret_get(self, key: str) -> "str | None":
         """Await until host returns the secret value (or None if denied).
 
@@ -593,10 +644,12 @@ class Emitter:
         _emit({"type": "secret_get", "key": key})
         return await q.get()
 
+    @_blocking_emit_method
     async def get_secret(self, key: str) -> "str | None":
         """Alias for secret_get(). Preferred name going forward."""
         return await self.secret_get(key)
 
+    @_blocking_emit_method
     async def http_get(self, url: str) -> str:
         """HTTP GET brokered through the host. Requires net.http capability.
         Raises RuntimeError on failure.
@@ -606,6 +659,7 @@ class Emitter:
         """
         return await self.http_request(url)
 
+    @_blocking_emit_method
     async def http_request(self, url: str, method: str = "GET",
                            headers: "dict[str, str] | None" = None,
                            body: "str | None" = None) -> str:
@@ -630,6 +684,7 @@ class Emitter:
             raise RuntimeError(f"http_request {url!r}: {value}")
         return value
 
+    @_blocking_emit_method
     async def ai_query(self, model_tier: str, system: str,
                        messages: "list[dict]",
                        tools: "list[dict] | None" = None) -> AiResponse:
@@ -708,6 +763,7 @@ class Emitter:
         """
         _emit({"type": "expose_tools", "tools": tools})
 
+    @_blocking_emit_method
     async def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
         """Enumerate CoreMIDI input + output ports (#320).
         No capability gate — port names are publicly visible in Audio MIDI
@@ -753,6 +809,7 @@ class Emitter:
             ],
         )
 
+    @_blocking_emit_method
     async def list_audio_devices(self, timeout: float = 5.0) -> "AudioDeviceList":
         """Enumerate CoreAudio input + output devices (#341).
         No capability gate — device names are publicly visible.
@@ -852,6 +909,7 @@ class Emitter:
         # 0..=255 and rejects empty arrays.
         _emit({"type": "send_midi", "port_id": port_id, "bytes": data})
 
+    @_blocking_emit_method
     async def open_video(
         self,
         source: str,
@@ -1043,6 +1101,7 @@ class Emitter:
         """
         _emit({"type": "pipe_send", "pipe_id": pipe_id, "payload": payload})
 
+    @_blocking_emit_method
     async def agent_roster(self) -> "list[AgentInfo]":
         """Query for live agent panes in the workspace (#286).
 

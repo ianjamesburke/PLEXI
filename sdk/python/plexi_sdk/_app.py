@@ -10,7 +10,7 @@ from typing import Any, Coroutine
 from ._protocol import PROTOCOL_VERSION
 from ._constants import _SDK_VERSION
 from ._types import AgentInfo
-from ._emitter import Emitter, _emit
+from ._emitter import Emitter, _emit, _sync_hook_scope
 from ._pipe import Pipe
 from ._render_context import RenderContext
 
@@ -812,7 +812,8 @@ class App:
         if inspect.iscoroutinefunction(hook):
             await hook(*args)
         else:
-            hook(*args)
+            with _sync_hook_scope():
+                hook(*args)
 
     def _dispatch_hook_task(self, hook: "Any", *args: Any) -> None:
         """Dispatch a lifecycle hook as a non-blocking background task.
@@ -848,7 +849,8 @@ class App:
             task.add_done_callback(_log_task_exception)
         else:
             try:
-                hook(*args)
+                with _sync_hook_scope():
+                    hook(*args)
             except Exception as e:
                 sys.stderr.write(f"plexi_sdk: sync hook {getattr(hook, '__name__', hook)!r} raised: {e}\n")
 
