@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "plexi"
-version = "3.5.38"
+version = "3.5.39"
 edition = "2021"
 
 [package.metadata.bundle]
