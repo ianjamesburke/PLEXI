@@ -3,7 +3,7 @@
 //! All visual draw commands stay in the frame pipeline; only control commands
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
-use crate::app_permissions::{check, Capability, PermissionCheck};
+use crate::app_permissions::{check, is_blocked, Capability, PermissionCheck};
 use crate::app_protocol::{AudioDeviceWire, HostCommand, MidiPortWire, PlexiEvent, StreamChannel};
 use crate::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
@@ -34,6 +34,16 @@ impl ProcessApp {
                                 .push_back(PlexiEvent::CapabilityDecision {
                                     request_id,
                                     granted: true,
+                                });
+                        } else if is_blocked(&self.permissions, cap) {
+                            log::info!(
+                                "ProcessApp[{}]: {} permanently blocked — auto-denying",
+                                self.type_id, cap
+                            );
+                            self.outbound_events
+                                .push_back(PlexiEvent::CapabilityDecision {
+                                    request_id,
+                                    granted: false,
                                 });
                         } else {
                             self.pending_prompts

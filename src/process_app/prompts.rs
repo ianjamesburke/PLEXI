@@ -87,6 +87,8 @@ pub(super) fn show_prompt_modal(
     type_id: &str,
     workspace_root: &Path,
     secret_input_buf: &mut String,
+    _config_dir: &Path,
+    permission_store: &mut crate::app_permissions::PermissionStore,
 ) {
     let Some(prompt) = pending_prompts.front() else {
         return;
@@ -142,12 +144,29 @@ pub(super) fn show_prompt_modal(
                     match Capability::try_from(capability.as_str()) {
                         Ok(cap) => {
                             permissions.capabilities.insert(cap);
+                            permission_store.set(type_id, workspace_root, cap, crate::app_permissions::PermissionState::Green);
+                            permission_store.save();
+                            log::info!(
+                                "permission_store: granted {} for {} in {}",
+                                cap, type_id, workspace_root.display()
+                            );
                         }
                         Err(e) => {
                             log::warn!(
                                 "prompts: cannot grant {e}; capability string not recognized"
                             );
                         }
+                    }
+                }
+                if denied {
+                    if let Ok(cap) = Capability::try_from(capability.as_str()) {
+                        permissions.blocked.insert(cap);
+                        permission_store.set(type_id, workspace_root, cap, crate::app_permissions::PermissionState::Red);
+                        permission_store.save();
+                        log::info!(
+                            "permission_store: permanently blocked {} for {} in {}",
+                            cap, type_id, workspace_root.display()
+                        );
                     }
                 }
                 event_log::emit(HostEvent::PermissionDecision {
