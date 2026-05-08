@@ -1089,15 +1089,24 @@ impl PlexiApp {
     // entry's current position in `pending_notifications`, which reflects
     // push order (we never reorder the Vec; dismissal removes by id).
     //
-    // Visibility: Context-scoped notifications are only visible when
-    // `source_context == self.router.active_idx()`. Global notifications are
-    // always visible. The raw `pending_notifications` Vec stays flat;
-    // only the *view* changes with the active workspace.
+    // Visibility by scope:
+    //   Window  — only when source_context == active context (default; most restrictive).
+    //             Equivalent to Context in today's single-window-per-context model;
+    //             the distinction will matter when multi-window contexts land.
+    //   Context — same as Window today; reserved for the multi-window distinction.
+    //   Global  — always visible.
+    // The raw `pending_notifications` Vec stays flat; only the *view* changes
+    // with the active workspace.
 
     /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
-        matches!(n.scope, crate::app_protocol::NotifyScope::Global)
-            || n.source_context == self.router.active_idx()
+        match n.scope {
+            crate::app_protocol::NotifyScope::Global => true,
+            crate::app_protocol::NotifyScope::Window
+            | crate::app_protocol::NotifyScope::Context => {
+                n.source_context == self.router.active_idx()
+            }
+        }
     }
 
     /// Return ids of all *visible* notifications (for the current context),
@@ -1220,14 +1229,19 @@ impl PlexiApp {
         }
     }
 
-    /// Count of context-scoped notifications whose source_context == ctx_idx.
-    /// Used for per-context sidebar badges on inactive contexts.
+    /// Count of window- or context-scoped notifications whose source_context == ctx_idx.
+    /// Used for per-context sidebar badges on inactive contexts. Global notifications
+    /// are excluded — they already appear everywhere via notification_is_visible.
     pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
         self.pending_notifications
             .iter()
             .filter(|n| {
-                matches!(n.scope, crate::app_protocol::NotifyScope::Context)
-                    && n.source_context == ctx_idx
+                matches!(
+                    n.scope,
+                    crate::app_protocol::NotifyScope::Window
+                        | crate::app_protocol::NotifyScope::Context
+                )
+                && n.source_context == ctx_idx
             })
             .count()
     }
@@ -1503,7 +1517,7 @@ impl eframe::App for PlexiApp {
                     }
                     let new_id = notify_id.clone();
                     // Capture scope/source_context before they move into the struct.
-                    let is_global = matches!(scope, crate::app_protocol::NotifyScope::Global);
+                    let notif_scope = scope;
                     let notif_source_ctx = source_context;
                     // Strip any per-option shortcut that conflicts with navigation keys.
                     let options: Vec<crate::app_protocol::NotifyOption> = options.into_iter().map(|mut opt| {
@@ -1540,16 +1554,21 @@ impl eframe::App for PlexiApp {
                         tombstoned: false,
                     });
                     // Auto-open rules:
-                    //   1. Visibility (Global or in active context) — else
-                    //      it stays invisible in the queue until the user
-                    //      switches to its context.
+                    //   1. Visibility — Global always; Window/Context only when
+                    //      source_context == active context.
                     //   2. focus_mode off — the global mute gate.
                     //   3. priority >= interrupt_threshold — don't
                     //      auto-open low-urgency notifications like
                     //      "note saved".
                     // If any gate fails, the notification still queues
                     // (badge ticks) but the modal doesn't pop.
-                    let is_visible = is_global || notif_source_ctx == self.active_window;
+                    let is_visible = match notif_scope {
+                        crate::app_protocol::NotifyScope::Global => true,
+                        crate::app_protocol::NotifyScope::Window
+                        | crate::app_protocol::NotifyScope::Context => {
+                            notif_source_ctx == self.router.active_idx()
+                        }
+                    };
                     let should_auto_open = is_visible
                         && !self.notifications_focus_mode
                         && priority >= self.notifications_interrupt_threshold;

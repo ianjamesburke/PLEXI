@@ -100,12 +100,6 @@ pub struct AppManifestApp {
     pub description: String,
     #[serde(default)]
     pub capabilities: AppCapabilities,
-    /// Default notification scope for this app. Optional — defaults to
-    /// `NotifyScope::Context` when unset (safe default: local confirmations
-    /// are local). Set to "global" in manifest for apps that must interrupt
-    /// the user regardless of which context is active (e.g. stand-up-reminder).
-    #[serde(default)]
-    pub default_notification_scope: DefaultNotifyScope,
     /// Hot-reload opt-in (#83). When true AND the app was discovered from a
     /// workspace-local `.plexi/apps/`, the host watches the app dir and
     /// reloads the subprocess on save. Off by default — global installs
@@ -131,14 +125,14 @@ pub enum ManifestType {
     Agent,
 }
 
-/// Newtype for the manifest `default_notification_scope` field so it
-/// deserialises from a snake_case string ("context" | "global") and has a
-/// sensible `Default` impl without pulling `NotifyScope` into the serde
-/// derive chain.
+/// Newtype for `[launch] notification_scope` in manifest.toml. Deserialises
+/// from `"window"` | `"context"` | `"global"`. Default is `window` — the most
+/// restrictive scope and the pre-525 behaviour for apps that don't declare it.
 #[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DefaultNotifyScope {
     #[default]
+    Window,
     Context,
     Global,
 }
@@ -146,6 +140,7 @@ pub enum DefaultNotifyScope {
 impl From<DefaultNotifyScope> for crate::app_protocol::NotifyScope {
     fn from(d: DefaultNotifyScope) -> Self {
         match d {
+            DefaultNotifyScope::Window => crate::app_protocol::NotifyScope::Window,
             DefaultNotifyScope::Context => crate::app_protocol::NotifyScope::Context,
             DefaultNotifyScope::Global => crate::app_protocol::NotifyScope::Global,
         }
@@ -199,6 +194,13 @@ pub struct LaunchSection {
     /// field on `iq.query`). Optional — `None` when the manifest omits it.
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Where this app's notifications surface. `"window"` (default) shows
+    /// notifications only when the app's window is active. `"context"` shows
+    /// them whenever the user is in the same sidebar context. `"global"` always
+    /// surfaces them regardless of active context — use for stand-up reminders,
+    /// timers, and monitoring dashboards.
+    #[serde(default)]
+    pub notification_scope: DefaultNotifyScope,
 }
 
 /// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
@@ -505,17 +507,16 @@ impl AppRegistry {
             .map(|h| h.split)
     }
 
-    /// Return the manifest-declared default notification scope for an app.
-    /// Used by operators and the host to understand the app's intent;
-    /// the actual scope is set per-notification by the app via the SDK.
+    /// Return the manifest-declared notification scope for an app.
+    /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.
     pub fn default_notification_scope_for(
         &self,
         app_id: &str,
     ) -> crate::app_protocol::NotifyScope {
         self.apps
             .get(app_id)
-            .map(|a| a.manifest.default_notification_scope.clone().into())
-            .unwrap_or(crate::app_protocol::NotifyScope::Context)
+            .map(|a| a.launch.notification_scope.clone().into())
+            .unwrap_or(crate::app_protocol::NotifyScope::Window)
     }
 
     /// Launch an app process for the given id.
@@ -569,7 +570,7 @@ impl AppRegistry {
         ) {
             Ok(app) => {
                 log::info!(
-                    "AppRegistry: launched '{}' from {:?} (default_notification_scope={:?})",
+                    "AppRegistry: launched '{}' from {:?} (notification_scope={:?})",
                     id,
                     installed.bin_path,
                     default_scope,
@@ -1037,5 +1038,88 @@ watch = true
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         assert!(registry.get("g").is_some());
         assert_eq!(registry.list().len(), 1);
+    }
+
+    // ── #525 notification scope — `[launch] notification_scope` ─────────────
+
+    #[test]
+    fn manifest_without_notification_scope_defaults_to_window() {
+        // Apps that omit `notification_scope` must default to `Window` —
+        // the pre-525 behaviour (no change for existing apps).
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app(global.path(), "no-scope", "No Scope");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let scope = registry.default_notification_scope_for("no-scope");
+        assert_eq!(scope, crate::app_protocol::NotifyScope::Window);
+    }
+
+    #[test]
+    fn manifest_with_notification_scope_global_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("stand-up");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"stand-up\"
+type = \"app\"
+name = \"Stand Up\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+
+[launch]
+notification_scope = \"global\"
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let scope = registry.default_notification_scope_for("stand-up");
+        assert_eq!(scope, crate::app_protocol::NotifyScope::Global);
+    }
+
+    #[test]
+    fn manifest_with_notification_scope_context_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("ctx-scoped");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"ctx-scoped\"
+type = \"app\"
+name = \"Context Scoped\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+
+[launch]
+notification_scope = \"context\"
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = app_dir.join("run.sh");
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&entry).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&entry, perms).unwrap();
+        }
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let scope = registry.default_notification_scope_for("ctx-scoped");
+        assert_eq!(scope, crate::app_protocol::NotifyScope::Context);
     }
 }
