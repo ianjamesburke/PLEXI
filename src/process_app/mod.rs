@@ -135,6 +135,8 @@ pub struct ProcessApp {
     pub(crate) workspace_root: PathBuf,
     /// Granted capabilities for this app instance.
     pub(crate) permissions: AppPermissions,
+    /// Persisted three-state permission store. Updated on grant/deny decisions.
+    pub(crate) permission_store: crate::app_permissions::PermissionStore,
     /// Typed pipe registry.
     pub(crate) pipe_registry: Arc<Mutex<TypedPipeRegistry>>,
     pub(crate) run_registry: RunRegistry,
@@ -518,8 +520,16 @@ impl ProcessApp {
             })
             .expect("failed to spawn app-reaper thread");
 
+        let config_dir = crate::config::config_dir();
+        let store = crate::app_permissions::PermissionStore::load_or_default(&config_dir);
+        let (granted_caps, blocked_caps) = store.build_permission_sets(
+            &type_id,
+            &workspace_root,
+            &capabilities,
+        );
         let permissions = AppPermissions {
-            capabilities,
+            capabilities: granted_caps,
+            blocked: blocked_caps,
             is_builtin: false,
             allowed_hosts: vec![],
         };
@@ -552,6 +562,7 @@ impl ProcessApp {
             features_used: Vec::new(),
             workspace_root,
             permissions,
+            permission_store: store,
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new())),
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
@@ -669,6 +680,7 @@ impl ProcessApp {
             features_used: Vec::new(),
             workspace_root: std::env::temp_dir(),
             permissions,
+            permission_store: crate::app_permissions::PermissionStore::default(),
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new())),
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
@@ -1345,8 +1357,10 @@ impl App for ProcessApp {
             let mut outbound_events = std::mem::take(&mut self.outbound_events);
             let mut permissions = std::mem::take(&mut self.permissions);
             let mut secret_input_buf = std::mem::take(&mut self.secret_input_buf);
+            let mut permission_store = std::mem::take(&mut self.permission_store);
             let type_id = self.type_id.clone();
             let workspace_root = self.workspace_root.clone();
+            let config_dir = crate::config::config_dir();
             prompts::show_prompt_modal(
                 ui,
                 &mut pending_prompts,
@@ -1355,11 +1369,14 @@ impl App for ProcessApp {
                 &type_id,
                 &workspace_root,
                 &mut secret_input_buf,
+                &config_dir,
+                &mut permission_store,
             );
             self.pending_prompts = pending_prompts;
             self.outbound_events = outbound_events;
             self.permissions = permissions;
             self.secret_input_buf = secret_input_buf;
+            self.permission_store = permission_store;
         }
 
         // Render the current committed frame.

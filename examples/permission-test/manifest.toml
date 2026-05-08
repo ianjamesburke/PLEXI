@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "permission-test"
+type = "app"
+name = "Permission Test"
+version = "0.1.0"
+description = "Tests PermissionStore persistence — requests net.http at runtime to trigger the grant/deny modal."
+entry = "main.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.4 }
