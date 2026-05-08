@@ -488,115 +488,6 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// `plexi app install <github-shorthand-or-url>` — clone + build an app from GitHub.
-pub fn app_install(source: &str) -> i32 {
-    let url = if source.starts_with("http://")
-        || source.starts_with("https://")
-        || source.starts_with("git@")
-    {
-        source.to_string()
-    } else {
-        // Treat as github shorthand: "user/repo"
-        format!("https://github.com/{source}")
-    };
-
-    // Derive app id from repo name (last path segment, strip .git)
-    let repo_name = url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or("app")
-        .trim_end_matches(".git");
-
-    let apps_dir = crate::app_registry::apps_dir();
-    if let Err(e) = std::fs::create_dir_all(&apps_dir) {
-        eprintln!("error: could not create apps dir: {e}");
-        return 1;
-    }
-
-    let dest = apps_dir.join(repo_name);
-    if dest.exists() {
-        eprintln!(
-            "error: {} already exists. Remove it first to reinstall.",
-            dest.display()
-        );
-        return 1;
-    }
-
-    println!("Cloning {url} ...");
-    let status = Command::new("git")
-        .args(["clone", "--depth", "1", &url, &dest.to_string_lossy()])
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!("error: git clone failed (exit {})", s.code().unwrap_or(1));
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("error: could not run git: {e}");
-            return 1;
-        }
-    }
-
-    // If the app has a Cargo.toml, build it.
-    if dest.join("Cargo.toml").exists() {
-        println!("Building Rust app (cargo build --release)...");
-        let status = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(&dest)
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {
-                // Copy the compiled binary to bin/plexi-app
-                let bin_dir = dest.join("bin");
-                if let Err(e) = std::fs::create_dir_all(&bin_dir) {
-                    eprintln!("warning: could not create bin dir: {e}");
-                } else {
-                    let src_bin = dest.join("target").join("release").join("plexi-app");
-                    if src_bin.exists() {
-                        if let Err(e) = std::fs::copy(&src_bin, bin_dir.join("plexi-app")) {
-                            eprintln!("warning: could not copy binary: {e}");
-                        }
-                    }
-                }
-            }
-            Ok(s) => {
-                eprintln!("error: cargo build failed (exit {})", s.code().unwrap_or(1));
-                let _ = std::fs::remove_dir_all(&dest);
-                return 1;
-            }
-            Err(e) => {
-                eprintln!("error: could not run cargo: {e}");
-                let _ = std::fs::remove_dir_all(&dest);
-                return 1;
-            }
-        }
-    } else {
-        // Python (or other): chmod +x any executable entry points
-        for candidate in ["main.py", "app.py", repo_name] {
-            let p = dest.join(candidate);
-            if p.exists() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = std::fs::metadata(&p) {
-                        let mut perms = meta.permissions();
-                        perms.set_mode(perms.mode() | 0o111);
-                        let _ = std::fs::set_permissions(&p, perms);
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    println!("Installed '{repo_name}'. Restart Plexi to load the app.");
-    0
-}
-
 /// `plexi app uninstall <id>` — remove a globally installed app.
 pub fn app_uninstall(id: &str) -> i32 {
     let app_dir = crate::app_registry::apps_dir().join(id);
@@ -619,7 +510,7 @@ pub fn app_list() -> i32 {
     let apps = registry.list();
     if apps.is_empty() {
         println!("No apps installed.");
-        println!("Install one with: plexi app install <github-user/repo>");
+        println!("Install one with: plexi install github:owner/repo");
     } else {
         for app in apps {
             println!(
@@ -637,6 +528,18 @@ pub fn app_list() -> i32 {
 /// Returns true if `s` looks like a bare app ID (no scheme prefix, no path separators).
 fn is_bare_id(s: &str) -> bool {
     !s.contains(':') && !s.contains('/') && !s.is_empty()
+}
+
+/// Returns true if `s` looks like a bare GitHub shorthand (`owner/repo`): no scheme,
+/// exactly one `/`, non-empty owner and repo segments.
+fn is_github_shorthand(s: &str) -> bool {
+    if s.contains(':') {
+        return false;
+    }
+    let mut parts = s.splitn(2, '/');
+    let owner = parts.next().unwrap_or("");
+    let repo = parts.next().unwrap_or("");
+    !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
 }
 
 /// Fetch the plexi app registry and resolve a bare app ID to a source spec string.
@@ -709,6 +612,10 @@ pub fn install_cli(spec: &str) -> i32 {
                 return 1;
             }
         }
+    } else if is_github_shorthand(&source_str) {
+        let prefixed = format!("github:{source_str}");
+        log::info!("install: bare shorthand '{source_str}' → {prefixed}");
+        prefixed
     } else {
         source_str
     };
