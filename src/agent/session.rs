@@ -342,8 +342,6 @@ async fn run_session(
             "modalities": ["audio"],
             "instructions": system_prompt(),
             "voice": "alloy",
-            "input_audio_format": { "type": "audio/pcm", "rate": 24000 },
-            "output_audio_format": { "type": "audio/pcm", "rate": 24000 },
             "tools": tools,
             "tool_choice": "auto",
             "turn_detection": {
