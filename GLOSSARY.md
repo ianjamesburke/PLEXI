@@ -6,7 +6,7 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 ## Core Concepts
 
-**Pane** — A single view in the tiling layout. Three types: Terminal (shell/PTY), App (external PGAP process), Agent (LLM turn loop). Panes are split horizontally or vertically to create the workspace grid.
+**Pane** — A single view in the tiling layout. Two types: Terminal (shell/PTY), App (external PGAP process). Panes are split horizontally or vertically to create the workspace grid. AI capability is app-level (`ai.query`), not a separate pane type.
 
 **Context** — A workspace or project directory. Each context has its own state, secrets (keyed by workspace root), and app instances. Contexts are independent — a secret granted in one context never leaks to another.
 
@@ -20,7 +20,7 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 **PlexiEvent** — Host → app message. Types: init, render, input (keyboard/mouse), capability decision, secret value, run update, pipe message, path changed, suspend/resume, shutdown.
 
-**DrawCommand** — App → host message. Types: frame primitives (rect, text, circle, line), VideoPlayer, AudioPlay, AudioCapture, log, capability request, SecretGet, RunGet, Notify, PipeOpen, PipeSend, StatusSummary, FrameDone.
+**DrawCommand** — App → host message. Three top-level variants: `Render(RenderCommand)` (frame primitives: rect, text, circle, line, etc.), `Host(HostCommand)` (capability requests, SecretGet, RunGet, Notify, PipeOpen, PipeSend, OpenVideo/SetVideoState/CloseVideo, AudioPlay, AudioCapture, StatusSummary), `Control(ControlCommand)` (clipboard, scheduling). Every frame ends with `FrameDone`.
 
 **Typed pipes** — Binary channels for audio, video, and custom data. Created by `PipeOpen`, messages routed by `PipeSend`. Each pipe has a declared type (audio, video, custom). Host enforces type safety; apps cannot send wrong data down a pipe.
 
@@ -34,15 +34,13 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 **Terminal pane** — A pane hosting a PTY (shell). Input is vt100 bytes; output is terminal escape sequences.
 
-**Agent pane** — A pane hosting an LLM turn loop via IQ query. Requests are passed to the backend (OpenRouter now; Ollama next); results stream to the UI. Persists session ID and transcript. Cost and token usage logged to ledger per turn.
-
 ## State & Persistence
 
 **Secret** — A workspace-scoped credential stored in macOS Keychain, keyed by `(workspace_root, secret_key)`. Host validates the app's actual CWD at spawn to prevent escalation. A secret granted in `/foo` is not readable by any app at any other workspace root without a new prompt.
 
 **Event bus** — Append-only `events.jsonl` log. Records every HostEvent: app spawn/close, permission decision, secret prompt/deny, run lifecycle, notification + action invoke, agent turn, pipe open/close.
 
-**Ledger** — `ledger.jsonl` in the agent's directory. Tracks agent turns, cost, tokens, metadata for cost accounting and debugging.
+**Ledger** — `ai-ledger.jsonl` in the build-appropriate config dir (e.g. `~/.plexi-alpha/ai-ledger.jsonl`). Tracks AI turns, cost, tokens, metadata for cost accounting and debugging.
 
 ## UI & Layout
 
