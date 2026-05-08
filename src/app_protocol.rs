@@ -135,9 +135,9 @@ pub enum PlexiEvent {
         pipe_id: String,
         dropped_frames: u64,
     },
-    /// Harness-only: drop a JSON payload into the app's `on_inject` hook.
-    /// Used by `pgap_test_harness` to seed deterministic state without
-    /// round-tripping through real inputs.
+    /// Drop a JSON payload into the app's `on_inject` hook.
+    /// Sent at startup with persisted app state (workspace if available, else global).
+    /// Also usable from `pgap_test_harness` to seed deterministic state.
     InjectState { payload: serde_json::Value },
     /// Host broker response to a `DrawCommand::HttpRequest`. `error` is present
     /// when the request failed; `body` may still carry a partial response.
@@ -768,6 +768,8 @@ pub enum HostCommand {
     },
     /// Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
     SecretGet { key: String },
+    /// Save app state. Host writes to workspace or global JSON file.
+    SaveAppState { payload: serde_json::Value },
     /// Request to start a run. Host surfaces in Run palette (Cmd+R).
     RunGet {
         intent: String,

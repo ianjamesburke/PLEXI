@@ -85,6 +85,7 @@ class App:
         # coroutine can await them without blocking the stdin reader.
         self._pending_capability: "dict[str, asyncio.Queue]" = {}
         self._pending_secret: "dict[str, asyncio.Queue]" = {}
+        self._app_state: dict = {}
         self._pending_http: "dict[str, asyncio.Queue]" = {}
         # v3.3 ai.query broker (#284): awaits PlexiEvent::AiResponse keyed
         # on request_id. Each entry is consumed by a single ai_query() call.
@@ -662,6 +663,7 @@ class App:
                     return
 
                 elif t == "inject_state":
+                    self._app_state = ev.get("payload") or {}
                     ctx = self._make_ctx()
                     self._dispatch_hook_task(self.on_inject, ctx, ev.get("payload", {}))
 

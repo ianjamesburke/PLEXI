@@ -504,6 +504,15 @@ class RenderContext:
         """Request a secret by key. Alias for emit.get_secret(). Use with ``await``."""
         return await self.emit.get_secret(key)
 
+    def load_state(self) -> dict:
+        """Return persisted app state loaded at startup. {} if nothing saved."""
+        return dict(self._app._app_state)
+
+    def save_state(self, state: dict) -> None:
+        """Persist state to workspace (if workspace active) or global storage.
+        Fire-and-forget — no acknowledgement from host."""
+        _emit({"type": "save_app_state", "payload": state})
+
     async def http_request(self, url: str, method: str = "GET",
                            headers: "dict[str, str] | None" = None,
                            body: "str | None" = None) -> str:

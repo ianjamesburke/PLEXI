@@ -1260,6 +1260,10 @@ impl App for ProcessApp {
                 capabilities: cap_strings,
                 feature_flags: vec!["pane_groups_v1".into()],
             });
+            // Inject persisted state before first render so on_inject runs with data.
+            let state = load_app_state(&self.type_id, &self.workspace_root);
+            self.outbound_events.push_back(PlexiEvent::InjectState { payload: state });
+            log::info!("ProcessApp[{}]: injected persisted state at startup", self.type_id);
         }
 
         if (size - self.last_size).length() > 1.0 {
@@ -1789,6 +1793,29 @@ fn default_midi_device() -> Arc<dyn MidiDevice> {
 #[cfg(test)]
 fn default_midi_device() -> Arc<dyn MidiDevice> {
     Arc::new(crate::midi::MockMidiDevice::new())
+}
+
+fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json::Value {
+    let filename = format!("{type_id}.json");
+    let workspace_path = workspace_root.join(".plexi").join("app_state").join(&filename);
+    if workspace_path.exists() {
+        if let Ok(bytes) = std::fs::read(&workspace_path) {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                log::info!("load_app_state[{type_id}]: loaded workspace state from {}", workspace_path.display());
+                return val;
+            }
+        }
+    }
+    let global_path = crate::config::config_dir().join("app_state").join(&filename);
+    if global_path.exists() {
+        if let Ok(bytes) = std::fs::read(&global_path) {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                log::info!("load_app_state[{type_id}]: loaded global state from {}", global_path.display());
+                return val;
+            }
+        }
+    }
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -3182,5 +3209,29 @@ mod reload_tests {
             id_a, id_b,
             "two launches of the same app must produce distinct PIDs"
         );
+    }
+}
+
+#[cfg(test)]
+mod app_state_tests {
+    use super::*;
+
+    #[test]
+    fn load_app_state_returns_empty_when_no_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = load_app_state("test-app", dir.path());
+        assert_eq!(result, serde_json::Value::Object(serde_json::Map::new()));
+    }
+
+    #[test]
+    fn load_app_state_reads_workspace_file_over_global() {
+        let ws_dir = tempfile::tempdir().expect("workspace tempdir");
+        let state_dir = ws_dir.path().join(".plexi").join("app_state");
+        std::fs::create_dir_all(&state_dir).expect("mkdir");
+        let state_path = state_dir.join("my-app.json");
+        std::fs::write(&state_path, r#"{"interval_idx":3}"#).expect("write");
+
+        let result = load_app_state("my-app", ws_dir.path());
+        assert_eq!(result["interval_idx"], serde_json::json!(3));
     }
 }
