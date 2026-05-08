@@ -402,6 +402,8 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "context",
         "shell-init",
         "completions",
+        // #816 — `plexi agent start` / `plexi agent schema`
+        "agent",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
