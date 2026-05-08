@@ -133,6 +133,11 @@ pub enum Commands {
         /// Shell name (zsh, bash, fish)
         shell: Option<String>,
     },
+    /// Voice agent commands
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -267,6 +272,14 @@ pub enum RegistryCmd {
         /// Only check this CLI
         cli: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum AgentCmd {
+    /// Start a live voice session with gpt-realtime-2
+    Start,
+    /// Print the auto-generated tool schema JSON for the Plexi CLI
+    Schema,
 }
 
 #[derive(Subcommand)]

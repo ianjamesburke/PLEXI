@@ -67,6 +67,10 @@ egui_commonmark = "0.20"
 rfd = "0.15"
 # Headless app render (#850). Already transitive via eframe; declared directly for explicit use.
 pollster = "0.4"
+# Realtime voice agent (#816). Async WebSocket to gpt-realtime-2.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
 wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] }
 egui-wgpu = "0.31"
 png = "0.17"

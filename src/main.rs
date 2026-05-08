@@ -5,6 +5,7 @@
 // PLEXI_AUDIO=mock://. Stubs must return `Err(NotImplemented)` instead.
 #![deny(clippy::todo, clippy::unimplemented)]
 
+mod agent;
 mod app;
 mod app_permissions;
 mod app_protocol;
@@ -190,7 +191,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd};
+    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, AgentCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -297,6 +298,10 @@ fn main() -> eframe::Result {
                         let s = shell.as_deref().unwrap_or("zsh");
                         std::process::exit(cli::completions_cli(s));
                     }
+                    Commands::Agent { cmd } => match cmd {
+                        AgentCmd::Start => std::process::exit(crate::agent::start_cli()),
+                        AgentCmd::Schema => std::process::exit(crate::agent::schema_cli()),
+                    },
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI
