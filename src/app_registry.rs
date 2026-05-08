@@ -345,7 +345,7 @@ impl AppRegistry {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
                     if let Some(existing) = self.apps.get(&id) {
-                        log::info!(
+                        log::debug!(
                             "AppRegistry: {} entry '{}' (from {:?}) shadows {} entry from {:?}",
                             source.label(),
                             id,
@@ -354,7 +354,7 @@ impl AppRegistry {
                             existing.bin_path.parent().unwrap_or(&existing.bin_path),
                         );
                     } else {
-                        log::info!(
+                        log::debug!(
                             "AppRegistry: loaded {} entry '{}' from {:?}",
                             source.label(),
                             id,
@@ -424,7 +424,7 @@ impl AppRegistry {
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
         for (name, decl) in &manifest.secrets {
-            log::info!(
+            log::debug!(
                 "AppRegistry: {} declares secret '{name}' (required={}, description=\"{}\")",
                 manifest.app.id,
                 decl.required,
