@@ -495,6 +495,12 @@ impl PlexiApp {
         // Try registry first; if it returns None, fall through to Tier 4.
         let registry_process = self.registry.launch_process(id, &cwd, args);
         if let Some(process) = registry_process {
+            if cli_binary_in_path(id) {
+                log::warn!(
+                    "launch_app_by_id: installed app '{id}' is shadowing a CLI of the same name \
+                     — installed app takes precedence; uninstall the app to use the CLI's plexi_app"
+                );
+            }
             self.open_process_app_pane(id, process, cwd, group, hint.as_deref());
             return;
         }
@@ -599,6 +605,14 @@ impl PlexiApp {
     }
 }
 
+/// Returns `true` if a binary named `name` exists in any directory on `PATH`.
+/// Used to detect when an installed Plexi app shadows a same-named CLI binary.
+fn cli_binary_in_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,6 +690,23 @@ mod tests {
             snap.pane_titles.values().any(|t| t == "Terminal"),
             "expected a Terminal pane in snapshot after SpawnPane, got: {:?}",
             snap.pane_titles,
+        );
+    }
+
+    #[test]
+    fn cli_binary_in_path_finds_real_binary() {
+        // `/bin/sh` is guaranteed to exist on macOS/Linux.
+        assert!(
+            cli_binary_in_path("sh"),
+            "expected to find `sh` on PATH"
+        );
+    }
+
+    #[test]
+    fn cli_binary_in_path_misses_nonexistent() {
+        assert!(
+            !cli_binary_in_path("plexi-815-nonexistent-binary-zzz"),
+            "expected not to find a nonexistent binary on PATH"
         );
     }
 }
