@@ -7,11 +7,11 @@ name = "Audio Bridge Test"
 version = "0.1.0"
 description = "POC for #79 — exercises the GUI↔Terminal media bridge end-to-end. Captures mic PCM via #277, paints a live waveform of the last 5s, and echoes the equivalent ffmpeg command into a linked terminal whenever the user starts/stops capture."
 entry = "audio_bridge_test.py"
-default_notification_scope = "context"
 layout_hint = "split_h"
 
 [app.capabilities]
 capabilities = ["audio.record", "terminal.bindings"]
 
 [launch]
+notification_scope = "context"
 background = false

@@ -7,11 +7,11 @@ name = "Descriptor Renderer"
 version = "0.1.0"
 description = "Auto-UI renderer for --plexi CLI descriptors (#361)"
 entry = "descriptor_renderer.py"
-default_notification_scope = "context"
 layout_hint = "split_h"
 
 [app.capabilities]
 capabilities = ["terminal.bindings"]
 
 [launch]
+notification_scope = "context"
 background = false

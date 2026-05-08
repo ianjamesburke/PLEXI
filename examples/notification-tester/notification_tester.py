@@ -29,9 +29,9 @@ Queue demos:
   s — Stack: fire ten LOW notifications in quick succession. Watch the
       count go live while the pinned top stays stable.
 
-Scope (context vs global) is NOT a runtime choice. It's declared per-app
-in manifest.toml::default_notification_scope. Flip this app's manifest to
-"global" to test cross-context visibility.
+Scope is NOT a runtime choice. It's declared per-app in manifest.toml under
+[launch] notification_scope. This app is set to "context". Flip to "global"
+to test cross-context visibility.
 """
 
 import threading

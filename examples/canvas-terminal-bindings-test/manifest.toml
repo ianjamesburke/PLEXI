@@ -7,11 +7,11 @@ name = "Canvas Terminal Bindings Demo"
 version = "0.1.0"
 description = "POC for #78 — exercises all five Canvas Terminal Binding Primitives over a freshly-opened linked terminal."
 entry = "canvas_terminal_bindings_test.py"
-default_notification_scope = "context"
 layout_hint = "split_h"
 
 [app.capabilities]
 capabilities = ["terminal.bindings"]
 
 [launch]
+notification_scope = "context"
 background = false

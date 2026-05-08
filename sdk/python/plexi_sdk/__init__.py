@@ -203,13 +203,18 @@ Queue model:
 - Cmd+] / Cmd+[ preview other queued notifications without acknowledging.
   Cmd+Shift+A toggles the modal on/off.
 
-Scope — context vs global — is NOT a runtime choice. It's declared per-app
-in the app's manifest.toml::default_notification_scope:
+Scope — window / context / global — is NOT a runtime choice. It's declared
+per-app in the app's manifest.toml under [launch]:
 
-  "context"  — notification is visible only when its source context is active
-               (default; safe — local confirmations stay local).
-  "global"   — notification is visible in all contexts (use for genuinely
-               cross-context things like stand-up reminders).
+  [launch]
+  notification_scope = "global"   # "window" | "context" | "global"
+
+  "window"   — default. Visible only when the app's window is active.
+               No behaviour change for apps that omit the field.
+  "context"  — visible whenever the user is in the same sidebar project,
+               regardless of which window page is showing.
+  "global"   — always visible across all contexts (use for stand-up
+               reminders, timers, monitoring dashboards).
 
 The user controls which scope a given app uses by editing its manifest.
 Apps do not see or set scope at the SDK level.
@@ -234,7 +239,8 @@ Required:
   entry = "my_app.py"       # executable entry point, relative to manifest
 
 Optional:
-  default_notification_scope = "context"  # "context" | "global" (default "context")
+  [launch]
+  notification_scope = "context"   # "window" (default) | "context" | "global"
 
   [app.capabilities]
   capabilities = []         # e.g. ["net.http", "audio.record"]

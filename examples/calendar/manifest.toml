@@ -7,10 +7,10 @@ name = "Calendar"
 version = "0.1.0"
 description = "Month-view calendar. Accepts pipe commands from the PAM voice agent for event CRUD."
 entry = "calendar_app.py"
-default_notification_scope = "context"
 
 [app.capabilities]
 capabilities = []
 
 [launch]
+notification_scope = "context"
 layout_hint = { side = "right", split = 0.4 }

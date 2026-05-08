@@ -60,10 +60,10 @@ class Emitter:
     # values: 0 (background info), 50 (normal), 100 (important), 200
     # (critical). No default — apps must pick deliberately.
     #
-    # Scope (context vs. global) is NOT set by the app. It's a per-app
-    # user-facing policy declared in manifest.toml:default_notification_scope
-    # and resolved by the host at dispatch time. Apps just call notify();
-    # the user chooses whether to be interrupted across contexts.
+    # Scope (window / context / global) is NOT set by the app. It's declared
+    # in manifest.toml under [launch] notification_scope and resolved by the
+    # host at dispatch time. Apps just call notify(); the manifest controls
+    # whether the notification crosses window or context boundaries.
     def notify(self, title: str, body: str = "", level: str = "info",
                priority: "int | None" = None,
                actions: "list | None" = None,

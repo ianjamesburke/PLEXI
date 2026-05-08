@@ -7,10 +7,10 @@ name = "Workspace Config Tester"
 version = "0.1.0"
 description = "POC for #308 Phase 1 — shows the resolved workspace root, workspace UUID, and demonstrates global → project config.toml merge."
 entry = "workspace_config_tester.py"
-default_notification_scope = "context"
 
 [app.capabilities]
 capabilities = ["fs.read"]
 
 [launch]
+notification_scope = "context"
 background = false

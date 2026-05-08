@@ -7,10 +7,10 @@ name = "Counter (Tool POC)"
 version = "0.1.0"
 description = "Counter app that exposes increment/reset as AI-callable tools. Demo: open alongside chat-poc and ask the AI to increment the counter."
 entry = "counter.py"
-default_notification_scope = "context"
 
 [app.capabilities]
 capabilities = []
 
 [launch]
+notification_scope = "context"
 background = false
