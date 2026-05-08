@@ -171,10 +171,6 @@ pub enum AppCmd {
         #[arg(long, default_value = "python")]
         lang: String,
     },
-    /// Install an app from GitHub
-    Install {
-        source: String,
-    },
     /// Uninstall an app
     Uninstall {
         id: String,
