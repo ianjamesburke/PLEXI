@@ -912,6 +912,8 @@ pub enum HostCommand {
         from_pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -934,6 +936,16 @@ pub enum HostCommand {
     /// Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.
     ClosePane {
         pane_id: u64,
+    },
+
+    /// Write text to a running pane's PTY stdin. Sent by `plexi pane send`.
+    /// `\n` in text (literal backslash-n) is interpreted as Enter.
+    /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
+    SendToPane {
+        pane_id: u64,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
 
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
@@ -2521,7 +2533,7 @@ mod tests {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","args":["--foo"],"pipe_id":"p1"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::SpawnPane { type_id, layout, args, pipe_id, from_pane_id, request_id }) => {
+            DrawCommand::Host(HostCommand::SpawnPane { type_id, layout, args, pipe_id, from_pane_id, request_id, .. }) => {
                 assert_eq!(type_id, "snake");
                 assert_eq!(layout, "split_v");
                 assert_eq!(args, &["--foo"]);

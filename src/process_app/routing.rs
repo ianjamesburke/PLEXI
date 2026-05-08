@@ -756,6 +756,7 @@ impl ProcessApp {
                 pipe_id,
                 from_pane_id,
                 request_id,
+                response_file: _,
             } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PanesSpawn)
@@ -1441,6 +1442,12 @@ impl ProcessApp {
             HostCommand::ClosePane { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received ClosePane over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
+            HostCommand::SendToPane { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received SendToPane over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }

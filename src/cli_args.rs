@@ -218,6 +218,17 @@ pub enum PaneCmd {
         /// Pane ID (from `plexi pane list`)
         pane_id: u64,
     },
+    /// Send text to a running pane's PTY stdin [requires PLEXI_SOCKET — run inside a Plexi pane]
+    ///
+    /// Use `\n` in the text to send Enter (submits the command).
+    ///
+    /// Example: plexi pane send 42 "git status\n"
+    Send {
+        /// Pane ID (from `plexi pane list`)
+        pane_id: u64,
+        /// Text to inject (use \n for Enter)
+        text: String,
+    },
 }
 
 #[derive(Subcommand)]

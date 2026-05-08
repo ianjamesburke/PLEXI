@@ -921,9 +921,43 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id}");
+                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, response_file, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} response_file={response_file:?}");
+                    let new_pane_id = self.host.next_pane_id();
                     self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                    if let Some(rf) = response_file {
+                        let json = format!("{{\"pane_id\":{new_pane_id}}}");
+                        if let Err(e) = std::fs::write(rf, &json) {
+                            log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
+                        }
+                    }
+                }
+                crate::app_protocol::HostCommand::SendToPane { pane_id, text, response_file } => {
+                    log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} response_file={response_file:?}", text.len());
+                    let text_with_newlines = text.replace("\\n", "\n");
+                    let active = self.active_window;
+                    let result = if let Some(term) = self.windows[active]
+                        .panes
+                        .get_mut(pane_id)
+                        .and_then(|p| p.as_terminal_mut())
+                    {
+                        term.backend.process_command(egui_term::BackendCommand::Write(
+                            text_with_newlines.into_bytes(),
+                        ));
+                        Ok(())
+                    } else {
+                        log::warn!("pane_ipc: send_to_pane: pane_id={pane_id} not found or not a terminal");
+                        Err(format!("pane {pane_id} not found or is not a terminal pane"))
+                    };
+                    if let Some(rf) = response_file {
+                        let json = match result {
+                            Ok(()) => r#"{"ok":true}"#.to_string(),
+                            Err(ref msg) => format!("{{\"error\":{}}}", serde_json::to_string(msg).unwrap_or_else(|_| format!("\"{msg}\""))),
+                        };
+                        if let Err(e) = std::fs::write(rf, &json) {
+                            log::error!("pane_ipc: send_to_pane: could not write response file: {e}");
+                        }
+                    }
                 }
                 crate::app_protocol::HostCommand::Notify {
                     level, title, body, kind, options, input_prompt,
