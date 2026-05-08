@@ -152,8 +152,12 @@ async fn handle_server_event(
     let event_type = event["type"].as_str().unwrap_or("");
 
     match event_type {
-        "session.created" | "session.updated" => {
-            log::info!("agent:session: {event_type}");
+        "session.created" => {
+            log::info!("agent:session: session.created");
+        }
+        "session.updated" => {
+            let tool_count = event["session"]["tools"].as_array().map(|a| a.len()).unwrap_or(0);
+            log::info!("agent:session: session.updated — server has {tool_count} tools");
         }
 
         // Output audio — base64 PCM16 LE at 24kHz, stream to rodio sink
@@ -340,6 +344,7 @@ async fn run_session(
             "type": "realtime",
             "instructions": system_prompt(),
             "tools": tools,
+            "tool_choice": "auto",
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
@@ -360,6 +365,7 @@ async fn run_session(
         }
     });
 
+    log::info!("agent:session: sending session.update with {} tools", tools.len());
     ws_tx
         .send(Message::Text(session_update.to_string()))
         .await?;
