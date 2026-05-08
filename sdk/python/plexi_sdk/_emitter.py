@@ -7,7 +7,7 @@ import sys
 import threading
 import uuid
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator
 
 from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList
 from ._types import CapabilityDeniedError, VideoHandle, AgentInfo
@@ -31,16 +31,17 @@ _SYNC_HOOK_LOCAL: threading.local = threading.local()
 
 
 @contextmanager
-def _sync_hook_scope():  # type: ignore[return]
+def _sync_hook_scope() -> Iterator[None]:
     """Mark the current thread as executing a sync hook."""
+    old_active = getattr(_SYNC_HOOK_LOCAL, 'active', False)
     _SYNC_HOOK_LOCAL.active = True
     try:
         yield
     finally:
-        _SYNC_HOOK_LOCAL.active = False
+        _SYNC_HOOK_LOCAL.active = old_active
 
 
-def _blocking_emit_method(fn):  # type: ignore[return]
+def _blocking_emit_method(fn):
     """Decorator: raises TypeError if a blocking emit is called from a sync hook.
 
     Async hooks use ``await``, so the wrapper body runs, sentinel is clear,
