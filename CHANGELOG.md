@@ -1,6 +1,23 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.32] — 2026-05-08
+
+### Changes
+- fix(notify): sync router active index in pane_navigate so sidebar updates (#829)
+- feat(descriptor): add plexi_app field — let CLIs declare a custom PGAP app entry point (#831)
+- improve: add cargo test binary target lesson to GOTCHAS.md
+- feat(manifest): notification_scope — window, context, global per app (#827)
+- chore: improve ship skill Phase 5 CWD guidance
+- feat(secrets): safe CLI for plexi secret set — hidden prompt, walk-up scoping, root guard (#818)
+- chore: apply CLAUDE.md linter update
+- fix(notify): host-side pane_navigate + cross-context action dispatch (#819)
+- fix(cli): honest help text for shell-init no-op and pane-only commands (#817)
+- docs: add bundle label definition to CLAUDE.md
+- chore(ship): add log verification rule — agent reads logs before surfacing testing block
+- refactor(secrets): replace security CLI subprocess with security-framework crate (#783)
+- fix(typed_pipes): detect drain thread broken pipe within one render frame (#763)
+- chore: update workflow for alpha-as-root layout (#808)
 ## [3.5.31] — 2026-05-08
 
 ### Changes
