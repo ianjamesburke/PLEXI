@@ -14,8 +14,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 const MODEL: &str = "gpt-realtime-2";
-const SAMPLE_RATE: u32 = 24_000;
-const CHANNELS: u16 = 1;
+const SAMPLE_RATE: u32 = 24_000; // fallback if audio thread doesn't report in time
 
 fn system_prompt() -> String {
     "You are a Plexi workspace assistant running inside a Plexi terminal pane. \
@@ -82,7 +81,7 @@ fn execute_tool(name: &str, args: &Value) -> String {
     }
 }
 
-fn setup_audio_capture(tx: std::sync::mpsc::Sender<Vec<u8>>) -> Result<cpal::Stream, String> {
+fn setup_audio_capture(tx: std::sync::mpsc::Sender<Vec<u8>>) -> Result<(cpal::Stream, u32), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     let host = cpal::default_host();
@@ -90,38 +89,48 @@ fn setup_audio_capture(tx: std::sync::mpsc::Sender<Vec<u8>>) -> Result<cpal::Str
         .default_input_device()
         .ok_or_else(|| "no default input device".to_string())?;
 
-    // Request 24kHz mono PCM16
-    let config = cpal::StreamConfig {
-        channels: CHANNELS,
-        sample_rate: SAMPLE_RATE,
-        buffer_size: cpal::BufferSize::Default,
-    };
+    // Prefer 24kHz (API native rate); fall back to device default.
+    let supported = device
+        .default_input_config()
+        .map_err(|e| format!("no default input config: {e}"))?;
 
-    let stream = device
-        .build_input_stream(
-            &config,
-            move |data: &[f32], _| {
-                // Convert f32 → PCM16 LE
-                let pcm: Vec<u8> = data
-                    .iter()
-                    .flat_map(|&s| {
-                        let clamped = s.clamp(-1.0, 1.0);
-                        let i16_val = (clamped * 32767.0) as i16;
-                        i16_val.to_le_bytes()
-                    })
-                    .collect();
-                let _ = tx.send(pcm);
-            },
-            |e| log::error!("agent:audio_capture_error: {e}"),
-            None,
-        )
-        .map_err(|e| format!("failed to build input stream: {e}"))?;
+    let actual_rate = supported.sample_rate();
+    let actual_channels = supported.channels();
+    log::info!("agent:audio: device config rate={actual_rate} channels={actual_channels} format={:?}", supported.sample_format());
+
+    let config: cpal::StreamConfig = supported.into();
+
+    let stream = match config.channels {
+        ch => {
+            let tx = tx;
+            device
+                .build_input_stream(
+                    &config,
+                    move |data: &[f32], _| {
+                        // Mix to mono if multichannel, then convert f32 → PCM16 LE
+                        let pcm: Vec<u8> = data
+                            .chunks(ch as usize)
+                            .flat_map(|frame| {
+                                let mono = frame.iter().copied().sum::<f32>() / ch as f32;
+                                let clamped = mono.clamp(-1.0, 1.0);
+                                let i16_val = (clamped * 32767.0) as i16;
+                                i16_val.to_le_bytes()
+                            })
+                            .collect();
+                        let _ = tx.send(pcm);
+                    },
+                    |e| log::error!("agent:audio_capture_error: {e}"),
+                    None,
+                )
+                .map_err(|e| format!("failed to build input stream: {e}"))?
+        }
+    };
 
     stream
         .play()
         .map_err(|e| format!("failed to start stream: {e}"))?;
 
-    Ok(stream)
+    Ok((stream, actual_rate))
 }
 
 type WsSink = futures_util::stream::SplitSink<
@@ -267,7 +276,44 @@ async fn run_session(
     let tools = get_tools();
     log::info!("agent:session: {} tools available", tools.len());
 
-    // Send session.update with tools + system prompt
+    // Start audio capture before session.update so we know the actual sample rate.
+    let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (sync_tx, sync_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+    let audio_tx_bridge = audio_tx.clone();
+    thread::spawn(move || {
+        while let Ok(chunk) = sync_rx.recv() {
+            if audio_tx_bridge.send(chunk).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Start cpal in a thread (cpal::Stream is not Send)
+    let (audio_rate_tx, audio_rate_rx) = std::sync::mpsc::channel::<u32>();
+    thread::spawn(move || {
+        match setup_audio_capture(sync_tx) {
+            Ok((_stream, rate)) => {
+                let _ = audio_rate_tx.send(rate);
+                loop {
+                    thread::sleep(std::time::Duration::from_secs(3600));
+                }
+            }
+            Err(e) => {
+                log::error!("agent:audio_setup_failed: {e}");
+                eprintln!("\x1b[31m[agent] Audio capture failed: {e}\x1b[0m");
+            }
+        }
+    });
+
+    // Wait up to 2s for the audio thread to report its sample rate.
+    let actual_rate = audio_rate_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or(SAMPLE_RATE);
+    log::info!("agent:audio: capturing at {actual_rate} Hz");
+
+    // Send session.update with tools + system prompt.
+    // input_audio_sample_rate tells the GA API the actual capture rate.
     let session_update = json!({
         "type": "session.update",
         "session": {
@@ -275,10 +321,8 @@ async fn run_session(
             "instructions": system_prompt(),
             "voice": "alloy",
             "input_audio_format": "pcm16",
+            "input_audio_sample_rate": actual_rate,
             "output_audio_format": "pcm16",
-            "input_audio_transcription": {
-                "model": "whisper-1"
-            },
             "tools": tools,
             "tool_choice": "auto",
             "turn_detection": {
@@ -294,35 +338,6 @@ async fn run_session(
         .send(Message::Text(session_update.to_string()))
         .await?;
     log::info!("agent:session: session.update sent");
-
-    // Bridge std::sync::mpsc → tokio unbounded channel for audio chunks
-    let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let (sync_tx, sync_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-
-    let audio_tx_bridge = audio_tx.clone();
-    thread::spawn(move || {
-        while let Ok(chunk) = sync_rx.recv() {
-            if audio_tx_bridge.send(chunk).is_err() {
-                break;
-            }
-        }
-    });
-
-    // Start cpal in a thread (cpal::Stream is not Send)
-    thread::spawn(move || {
-        match setup_audio_capture(sync_tx) {
-            Ok(_stream) => {
-                // Keep stream alive until thread exits
-                loop {
-                    thread::sleep(std::time::Duration::from_secs(3600));
-                }
-            }
-            Err(e) => {
-                log::error!("agent:audio_setup_failed: {e}");
-                eprintln!("\x1b[31m[agent] Audio capture failed: {e}\x1b[0m");
-            }
-        }
-    });
 
     // Pending tool call accumulator: (call_id, name, args_so_far)
     let mut pending_tool: Option<(String, String, String)> = None;
