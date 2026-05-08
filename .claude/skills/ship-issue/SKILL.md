@@ -1,6 +1,6 @@
 ---
-name: ship
-description: "Full PLEXI ship cycle. Three modes: /ship (auto-find next issue), /ship <issue-number> (specific issue), /ship <priority> (e.g. /ship P1)."
+name: ship-issue
+description: "Full PLEXI ship cycle. Three modes: /ship-issue (auto-find next issue), /ship-issue <issue-number> (specific issue), /ship-issue <priority> (e.g. /ship-issue P1)."
 risk: medium
 source: local
 date_added: "2026-05-03"
