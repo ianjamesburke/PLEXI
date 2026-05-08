@@ -2,9 +2,9 @@
 """permission-test — POC app for PermissionStore testing (issue #426).
 
 Requests net.http at runtime (not declared in manifest) so the grant/deny
-modal fires immediately on launch. Displays the decision result so the tester
-can confirm it was received. On relaunch with a Red entry in permissions.toml
-the host auto-denies without showing the modal.
+modal fires immediately on launch. Displays the decision so the tester can
+confirm it was received. On relaunch with a Red entry in permissions.toml the
+host auto-denies without showing the modal.
 """
 import sys
 import os
@@ -19,24 +19,21 @@ WHITE = "#cdd6f4"
 
 class PermissionTestApp(App):
     def __init__(self):
-        self.result = None      # None = pending, True = granted, False = denied
-        self.requested = False
+        self.result = None  # None = pending, True = granted, False = denied
 
-    def on_init(self, ctx, emit):
-        emit.info("permission-test: requesting net.http capability")
-        granted = emit.capability_request("net.http")
+    def on_init(self, ctx: RenderContext) -> None:
+        self.emit.info("permission-test: requesting net.http capability")
+        granted = self.emit.capability_request("net.http")
         self.result = granted
-        self.requested = True
         if granted:
-            emit.info("permission-test: net.http GRANTED")
+            self.emit.info("permission-test: net.http GRANTED")
         else:
-            emit.info("permission-test: net.http DENIED (or permanently blocked)")
+            self.emit.info("permission-test: net.http DENIED (or permanently blocked)")
 
-    def render(self, ctx: RenderContext, emit):
+    def render(self, ctx: RenderContext) -> None:
         ctx.clear()
-        w, h = ctx.width, ctx.height
-        cx = w / 2
-        cy = h / 2
+        cx = ctx.w / 2
+        cy = ctx.h / 2
 
         ctx.text(cx, cy - 30, "Permission Test", color=WHITE, size=18,
                  align="center", bold=True)
