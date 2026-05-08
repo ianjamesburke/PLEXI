@@ -134,6 +134,8 @@ wtp add -b feature/<issue-number>-short-description
 
 **If `wtp add -b` fails with "branch already exists":** check whether a worktree is already open for it (`git worktree list`). If not, add without `-b`: `wtp add feature/<issue-number>-short-description`. Then run `git log --oneline -5` on the branch to surface any prior commits — treat them as partial implementation to review in Phase 3 rather than starting from scratch.
 
+**If rebase of an existing branch leaves `git log origin/alpha..HEAD` empty** (all commits were skipped as already upstream): the feature is already on alpha. Skip to cleanup — remove the worktree, delete the branch, and close the issue. Do not look for new work to commit on this branch.
+
 **Immediately verify the base:**
 ```bash
 git -C worktrees/<branch> log --oneline -1
@@ -370,6 +372,7 @@ After user confirms pass. Run without stopping:
 3. Discard PR bundle metadata and merge:
    ```bash
    git -C worktrees/<branch> restore Cargo.toml  # pr-install rewrites Cargo.toml — discard it
+   git restore Cargo.toml                        # pr-install may also dirty alpha's workspace Cargo.toml
    gh pr merge <number> --squash
    ```
    If branch protection blocks the merge, use `--admin`:
