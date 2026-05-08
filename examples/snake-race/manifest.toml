@@ -12,4 +12,4 @@ entry = "snake_race.py"
 capabilities = ["panes.spawn", "pipe.open", "fs.read", "fs.write"]
 
 [launch]
-layout_hint = { side = "left", split = 0.2 }
+layout_hint = { side = "right", split = 0.2 }
