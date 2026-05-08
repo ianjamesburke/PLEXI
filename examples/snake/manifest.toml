@@ -9,7 +9,7 @@ description = "Classic snake game — proves input + draw primitives."
 entry = "snake.py"
 
 [app.capabilities]
-capabilities = []
+capabilities = ["pipe.open"]
 
 [launch]
 layout_hint = { side = "right", split = 0.5 }
