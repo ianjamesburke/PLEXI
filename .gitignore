@@ -39,6 +39,7 @@ assets/python/
 *.swp
 *.swo
 here.md
+NEXT.md
 examples/*/target/
 sdk/*/target/
 worktrees/

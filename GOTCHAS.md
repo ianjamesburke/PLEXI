@@ -4,6 +4,10 @@
 
 ---
 
+## 2026-05-07 — apps dir wiped on pr-install
+
+`~/.plexi-pr-<N>/apps/` is re-synced from `examples/` on every `just pr-install` run. Anything written directly to that directory is lost on the next install. Always put POC and test apps in the feature worktree's `examples/` directory — they will survive reinstalls and be included in the sync.
+
 ## cargo test --bin plexi for host tests (not --lib)
 
 `cargo test --lib` only runs the `app_protocol` lib target (~47 tests). Host tests — app_registry, HostHarness, process_app, workspace_secrets — live in the binary target. Always use `cargo test --bin plexi` to run the full host test suite. `--lib` will silently pass while missing newly added registry or harness tests.

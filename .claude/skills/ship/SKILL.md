@@ -136,6 +136,8 @@ Before writing any code, read the issue and the relevant codebase to produce a t
 - Full issue body: `gh issue view <number> --json title,body,labels`
 - Relevant source files: grep for the affected modules, then read them
 
+**When prior commits exist on the branch:** Before reading worktree files, grep the issue's key identifiers (field names, function names listed in "Files to change" or "Done when") directly on alpha (`src/` in the repo root). If a grep hit confirms an identifier already exists on alpha, that criterion is already implemented — skip reading its worktree file and focus Phase 3 only on what's genuinely missing. This avoids reading files that are identical to alpha and misreading branch-vs-alpha diffs.
+
 **Assess scope:** count the files that will likely change.
 
 **If the issue involves a third-party library or framework** (egui, egui_tiles, tokio, etc.) and the expected behavior isn't immediately obvious from the code: invoke the `coding-conventions` skill and read the relevant section before speculating on the approach. Unexpected API behavior not yet documented there is a signal to add it via `/improve` after the session.
@@ -229,7 +231,7 @@ Installs as `/Applications/Plexi PR<number>.app` with isolated profile `~/.plexi
 
 **Note for justfile/config-only changes:** `just pr-install` installs the Python binary only — justfile or config changes are not visible in the repo root until after merge. For these changes, direct test steps to run from `worktrees/feature/<branch>/` instead.
 
-**Before writing the testing block:** verify whether the PR build can actually exercise the feature's golden path. If the feature requires a configuration, environment, or runtime condition that the PR build cannot satisfy (e.g. a stable-only feature gated on a non-PR app directory, a capability requiring a device not present, a server-side dependency unavailable on the PR profile) — state that limitation explicitly at the top of the testing block as a `Note:` line rather than discovering it mid-instruction.
+**Before writing the testing block:** scan `examples/` in the feature worktree — the subagent may have already added a POC app for this feature as part of the implementation. If one exists, use it directly rather than writing a new test app. Then verify whether the PR build can actually exercise the feature's golden path. If the feature requires a configuration, environment, or runtime condition that the PR build cannot satisfy (e.g. a stable-only feature gated on a non-PR app directory, a capability requiring a device not present, a server-side dependency unavailable on the PR profile) — state that limitation explicitly at the top of the testing block as a `Note:` line rather than discovering it mid-instruction.
 
 **Command formatting rule:** Any command you give the user to run must appear alone in its own code block — never inline inside prose. One command per block, nothing else on the line.
 
