@@ -41,6 +41,15 @@ pub struct PlexiDescriptor {
     pub commands: Vec<Command>,
     #[serde(default)]
     pub live_state: Option<LiveState>,
+    /// Shell command to spawn as a PGAP process instead of rendering the
+    /// auto-generated form UI. Split on whitespace: first token is the binary,
+    /// rest are initial args.
+    #[serde(default)]
+    pub plexi_app: Option<String>,
+    /// Capability strings granted to the spawned PGAP process. Same vocabulary
+    /// as manifest.toml capabilities.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
@@ -518,6 +527,34 @@ mod tests {
             }
             other => panic!("expected EnumMissingValues, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_descriptor_with_plexi_app() {
+        let json = r#"{
+            "plexi_version": "0.1",
+            "name": "parallax",
+            "version": "1.0.0",
+            "commands": [],
+            "plexi_app": "parallax-ui --pane",
+            "capabilities": ["ai.query", "panes.spawn"]
+        }"#;
+        let d = parse(json).expect("descriptor with plexi_app parses");
+        assert_eq!(d.plexi_app.as_deref(), Some("parallax-ui --pane"));
+        assert_eq!(d.capabilities, vec!["ai.query", "panes.spawn"]);
+    }
+
+    #[test]
+    fn parse_descriptor_without_plexi_app_still_works() {
+        let json = r#"{
+            "plexi_version": "0.1",
+            "name": "old-cli",
+            "version": "0.1.0",
+            "commands": []
+        }"#;
+        let d = parse(json).expect("old-style descriptor without plexi_app parses");
+        assert!(d.plexi_app.is_none());
+        assert!(d.capabilities.is_empty());
     }
 
     #[test]

@@ -83,13 +83,30 @@ pub(crate) fn crawl_with_runner(
     let cache_file = cache_dir.join(format!("{cli_name}.json"));
 
     // Cache hit — try to deserialize; on failure, fall through and re-crawl.
+    // Also check version: if the CLI version changed since we cached, invalidate.
     if cache_file.exists() {
         if let Ok(bytes) = std::fs::read_to_string(&cache_file) {
             if let Ok(descriptor) = serde_json::from_str::<PlexiDescriptor>(&bytes) {
-                return Ok(CrawlResult {
-                    descriptor,
-                    from_cache: true,
-                });
+                let current_version = runner
+                    .run_version(cli_name)
+                    .as_deref()
+                    .map(|s| extract_version(cli_name, s));
+                let stale = current_version
+                    .as_deref()
+                    .map(|v| v != descriptor.version)
+                    .unwrap_or(false);
+                if stale {
+                    log::info!(
+                        "cli_crawl: cache stale for `{cli_name}` — version changed from {} to {}; re-crawling",
+                        descriptor.version,
+                        current_version.as_deref().unwrap_or("unknown"),
+                    );
+                } else {
+                    return Ok(CrawlResult {
+                        descriptor,
+                        from_cache: true,
+                    });
+                }
             }
         }
     }
@@ -159,6 +176,8 @@ fn parse_help(cli_name: &str, text: &str, version: Option<String>) -> PlexiDescr
         },
         commands,
         live_state: None,
+        plexi_app: None,
+        capabilities: vec![],
     }
 }
 
@@ -492,6 +511,8 @@ SUBCOMMANDS:
                 commands: vec![],
             }],
             live_state: None,
+            plexi_app: None,
+            capabilities: vec![],
         };
         let json = serde_json::to_string_pretty(&descriptor).unwrap();
         std::fs::write(&cache_file, &json).unwrap();
@@ -573,5 +594,50 @@ COMMANDS
         let _ = crawl_with_runner("cached-cli", &runner, &cache_dir).unwrap();
         let result2 = crawl_with_runner("cached-cli", &runner, &cache_dir).unwrap();
         assert!(result2.from_cache);
+    }
+
+    #[test]
+    fn cache_invalidated_on_version_change() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Pre-populate cache with version "0.9.0".
+        let stale_descriptor = PlexiDescriptor {
+            plexi_version: "0.1".to_string(),
+            name: "version-cli".to_string(),
+            version: "0.9.0".to_string(),
+            description: None,
+            icon: None,
+            default_view: Some(UiHint::List),
+            commands: vec![Command {
+                name: "run".to_string(),
+                description: None,
+                icon: None,
+                ui_hint: None,
+                args: vec![],
+                flags: vec![],
+                writes: vec![],
+                reads: vec![],
+                streaming: None,
+                output_format: None,
+                commands: vec![],
+            }],
+            live_state: None,
+            plexi_app: None,
+            capabilities: vec![],
+        };
+        let cache_file = cache_dir.join("version-cli.json");
+        std::fs::write(&cache_file, serde_json::to_string(&stale_descriptor).unwrap()).unwrap();
+
+        // Runner reports version "1.0.0" and help with commands so crawl succeeds.
+        let runner = MockRunner {
+            help: "COMMANDS\n  run   Do the thing\n".to_string(),
+            version: Some("version-cli 1.0.0".to_string()),
+        };
+
+        let result = crawl_with_runner("version-cli", &runner, &cache_dir).unwrap();
+        assert!(!result.from_cache, "stale cache should have been invalidated");
+        assert_eq!(result.descriptor.version, "1.0.0");
     }
 }

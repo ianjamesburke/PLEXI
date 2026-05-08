@@ -492,10 +492,80 @@ impl PlexiApp {
             return;
         }
 
-        if let Some(process) = self.registry.launch_process(id, &cwd, args) {
+        // Try registry first; if it returns None, fall through to Tier 4.
+        let registry_process = self.registry.launch_process(id, &cwd, args);
+        if let Some(process) = registry_process {
             self.open_process_app_pane(id, process, cwd, group, hint.as_deref());
+            return;
+        }
+
+        // Tier 4 — CLI native descriptor (plexi_app field).
+        if let Some(process) = self.try_launch_cli_pgap_app(id, &cwd) {
+            self.open_process_app_pane(&format!("cli:{id}"), process, cwd, group, hint.as_deref());
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
+        }
+    }
+
+    /// Attempt to spawn a PGAP process from the CLI's native `--plexi` descriptor
+    /// `plexi_app` field. Returns `None` if the CLI is not found, does not support
+    /// `--plexi`, or has no `plexi_app` field.
+    fn try_launch_cli_pgap_app(
+        &self,
+        cli_name: &str,
+        cwd: &PathBuf,
+    ) -> Option<crate::process_app::ProcessApp> {
+        // Step 1: Run `<cli_name> --plexi` to get the native descriptor.
+        let output = std::process::Command::new(cli_name)
+            .arg("--plexi")
+            .output()
+            .ok()?;
+        if !output.status.success() && output.stdout.is_empty() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let descriptor = crate::plexi_descriptor::parse(&stdout).ok()?;
+
+        // None = no plexi_app field declared, skip Tier 4.
+        let plexi_app_cmd = descriptor.plexi_app.as_deref()?;
+
+        // Step 2: Split the command string into binary + args.
+        let mut tokens = plexi_app_cmd.split_whitespace();
+        let bin = tokens.next()?;
+        let extra_args: Vec<String> = tokens.map(|s| s.to_string()).collect();
+
+        // Step 3: Build permissions from descriptor.capabilities.
+        let perms = crate::app_permissions::AppPermissions::from_capability_strings(
+            &descriptor.capabilities,
+        );
+        let caps = perms.capabilities.clone();
+
+        // Step 4: Spawn the ProcessApp.
+        let app_id = format!("cli:{cli_name}");
+        let bin_path = std::path::PathBuf::from(bin);
+        match crate::process_app::ProcessApp::launch(
+            app_id.clone(),
+            descriptor.name.clone(),
+            &bin_path,
+            cwd,
+            &extra_args,
+            cwd.clone(),
+            caps,
+            false, // keyboard_capture
+        ) {
+            Ok(app) => {
+                log::info!(
+                    "cli_pgap: spawned `{}` for CLI `{cli_name}` (plexi_app=`{plexi_app_cmd}`)",
+                    app_id
+                );
+                Some(app)
+            }
+            Err(e) => {
+                log::warn!(
+                    "cli_pgap: failed to launch `{cli_name}` via plexi_app=`{plexi_app_cmd}`: {e}"
+                );
+                None
+            }
         }
     }
 

@@ -2152,6 +2152,12 @@ pub mod descriptor {
                 ls.source, ls.path, ls.poll_ms, ls.format
             );
         }
+        if let Some(app_cmd) = &d.plexi_app {
+            println!("plexi_app: {app_cmd}");
+            if !d.capabilities.is_empty() {
+                println!("  capabilities: {}", d.capabilities.join(", "));
+            }
+        }
     }
 
     #[cfg(test)]
