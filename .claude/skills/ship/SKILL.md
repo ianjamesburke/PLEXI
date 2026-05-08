@@ -449,3 +449,5 @@ Output:
 - Subagents stage only — orchestrator owns the commit and the PR
 - Never dispatch a subagent without first producing the Phase 3 implementation spec
 - Every implementation must include a logging plan — no feature ships without info-level traces and warn-level bail-outs
+- **CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md`** in the same PR — bump `skill_version` to match the new Plexi version
+- **SDK changes must update the build-plexi-app skill** (issue #608, not yet created) in the same PR once that skill exists — bump its `skill_version` to match
