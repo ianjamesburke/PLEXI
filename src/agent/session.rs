@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 const MODEL: &str = "gpt-realtime-2";
-const SAMPLE_RATE: u32 = 24_000; // fallback if audio thread doesn't report in time
 
 fn system_prompt() -> String {
     "You are a Plexi workspace assistant running inside a Plexi terminal pane. \
@@ -81,7 +80,9 @@ fn execute_tool(name: &str, args: &Value) -> String {
     }
 }
 
-fn setup_audio_capture(tx: std::sync::mpsc::Sender<Vec<u8>>) -> Result<(cpal::Stream, u32), String> {
+/// Capture mic audio, downsample to 24kHz PCM16 mono, and send chunks to `tx`.
+/// Always outputs at 24kHz regardless of device sample rate.
+fn setup_audio_capture(tx: std::sync::mpsc::Sender<Vec<u8>>) -> Result<cpal::Stream, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     let host = cpal::default_host();
@@ -89,48 +90,48 @@ fn setup_audio_capture(tx: std::sync::mpsc::Sender<Vec<u8>>) -> Result<(cpal::St
         .default_input_device()
         .ok_or_else(|| "no default input device".to_string())?;
 
-    // Prefer 24kHz (API native rate); fall back to device default.
     let supported = device
         .default_input_config()
         .map_err(|e| format!("no default input config: {e}"))?;
 
-    let actual_rate = supported.sample_rate();
-    let actual_channels = supported.channels();
-    log::info!("agent:audio: device config rate={actual_rate} channels={actual_channels} format={:?}", supported.sample_format());
+    let device_rate = supported.sample_rate();
+    let ch = supported.channels();
+    log::info!("agent:audio: device rate={device_rate} channels={ch} format={:?}", supported.sample_format());
 
     let config: cpal::StreamConfig = supported.into();
+    let ratio = device_rate as f64 / 24_000f64;
 
-    let stream = match config.channels {
-        ch => {
-            let tx = tx;
-            device
-                .build_input_stream(
-                    &config,
-                    move |data: &[f32], _| {
-                        // Mix to mono if multichannel, then convert f32 → PCM16 LE
-                        let pcm: Vec<u8> = data
-                            .chunks(ch as usize)
-                            .flat_map(|frame| {
-                                let mono = frame.iter().copied().sum::<f32>() / ch as f32;
-                                let clamped = mono.clamp(-1.0, 1.0);
-                                let i16_val = (clamped * 32767.0) as i16;
-                                i16_val.to_le_bytes()
-                            })
-                            .collect();
-                        let _ = tx.send(pcm);
-                    },
-                    |e| log::error!("agent:audio_capture_error: {e}"),
-                    None,
-                )
-                .map_err(|e| format!("failed to build input stream: {e}"))?
-        }
-    };
+    let stream = device
+        .build_input_stream(
+            &config,
+            move |data: &[f32], _| {
+                // Mix to mono then downsample to 24kHz via nearest-neighbour decimation.
+                let mono: Vec<f32> = data
+                    .chunks(ch as usize)
+                    .map(|frame| frame.iter().copied().sum::<f32>() / ch as f32)
+                    .collect();
 
-    stream
-        .play()
-        .map_err(|e| format!("failed to start stream: {e}"))?;
+                let out_len = (mono.len() as f64 / ratio) as usize;
+                let pcm: Vec<u8> = (0..out_len)
+                    .flat_map(|i| {
+                        let src = (i as f64 * ratio) as usize;
+                        let s = mono.get(src).copied().unwrap_or(0.0).clamp(-1.0, 1.0);
+                        let i16_val = (s * 32767.0) as i16;
+                        i16_val.to_le_bytes()
+                    })
+                    .collect();
 
-    Ok((stream, actual_rate))
+                if !pcm.is_empty() {
+                    let _ = tx.send(pcm);
+                }
+            },
+            |e| log::error!("agent:audio_capture_error: {e}"),
+            None,
+        )
+        .map_err(|e| format!("failed to build input stream: {e}"))?;
+
+    stream.play().map_err(|e| format!("failed to start stream: {e}"))?;
+    Ok(stream)
 }
 
 type WsSink = futures_util::stream::SplitSink<
@@ -224,6 +225,37 @@ async fn handle_server_event(
             }
         }
 
+        // GA API delivers completed tool calls via response.done output array.
+        "response.done" => {
+            if let Some(outputs) = event["response"]["output"].as_array() {
+                for item in outputs {
+                    if item["type"].as_str() == Some("function_call") {
+                        let call_id = item["call_id"].as_str().unwrap_or("").to_string();
+                        let name = item["name"].as_str().unwrap_or("").to_string();
+                        let args_str = item["arguments"].as_str().unwrap_or("{}");
+                        let args_value: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+
+                        println!("\n\x1b[33m→ {name} {}\x1b[0m", serde_json::to_string(&args_value).unwrap_or_default());
+                        log::info!("agent:tool_execute: name={name} call_id={call_id}");
+
+                        let result = execute_tool(&name, &args_value);
+                        log::info!("agent:tool_result: name={name} result_len={}", result.len());
+
+                        let output_event = json!({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": result
+                            }
+                        });
+                        ws_tx.send(Message::Text(output_event.to_string())).await?;
+                        ws_tx.send(Message::Text(json!({ "type": "response.create" }).to_string())).await?;
+                    }
+                }
+            }
+        }
+
         "error" => {
             let msg = event["error"]["message"]
                 .as_str()
@@ -276,7 +308,7 @@ async fn run_session(
     let tools = get_tools();
     log::info!("agent:session: {} tools available", tools.len());
 
-    // Start audio capture before session.update so we know the actual sample rate.
+    // Start audio capture. Always outputs 24kHz PCM16 after downsampling.
     let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (sync_tx, sync_rx) = std::sync::mpsc::channel::<Vec<u8>>();
 
@@ -289,16 +321,12 @@ async fn run_session(
         }
     });
 
-    // Start cpal in a thread (cpal::Stream is not Send)
-    let (audio_rate_tx, audio_rate_rx) = std::sync::mpsc::channel::<u32>();
+    // cpal::Stream is not Send — own it in a dedicated thread.
     thread::spawn(move || {
         match setup_audio_capture(sync_tx) {
-            Ok((_stream, rate)) => {
-                let _ = audio_rate_tx.send(rate);
-                loop {
-                    thread::sleep(std::time::Duration::from_secs(3600));
-                }
-            }
+            Ok(_stream) => loop {
+                thread::sleep(std::time::Duration::from_secs(3600));
+            },
             Err(e) => {
                 log::error!("agent:audio_setup_failed: {e}");
                 eprintln!("\x1b[31m[agent] Audio capture failed: {e}\x1b[0m");
@@ -306,31 +334,25 @@ async fn run_session(
         }
     });
 
-    // Wait up to 2s for the audio thread to report its sample rate.
-    let actual_rate = audio_rate_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap_or(SAMPLE_RATE);
-    log::info!("agent:audio: capturing at {actual_rate} Hz");
-
-    // Send session.update with tools + system prompt.
-    // input_audio_sample_rate tells the GA API the actual capture rate.
+    // session.update — uses correct GA API field formats per docs.
     let session_update = json!({
         "type": "session.update",
         "session": {
             "type": "realtime",
-            "modalities": ["text", "audio"],
+            "modalities": ["audio"],
             "instructions": system_prompt(),
             "voice": "alloy",
-            "input_audio_format": "pcm16",
-            "input_audio_sample_rate": actual_rate,
-            "output_audio_format": "pcm16",
+            "input_audio_format": { "type": "audio/pcm", "rate": 24000 },
+            "output_audio_format": { "type": "audio/pcm", "rate": 24000 },
             "tools": tools,
             "tool_choice": "auto",
             "turn_detection": {
                 "type": "server_vad",
                 "threshold": 0.5,
                 "prefix_padding_ms": 300,
-                "silence_duration_ms": 800
+                "silence_duration_ms": 500,
+                "create_response": true,
+                "interrupt_response": true
             }
         }
     });
