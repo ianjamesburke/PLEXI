@@ -3101,3 +3101,106 @@ fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str)
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_trait::AppCommand;
+    use crate::context::Window;
+    use crate::testing::HostHarness;
+
+    fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
+        let mut tree = egui_tiles::Tree::empty("test_tree_2");
+        let tile = tree.tiles.insert_pane(pane_id);
+        tree.root = Some(tile);
+        Window {
+            name: "Context B".into(),
+            path: std::env::temp_dir(),
+            tree,
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 1,
+            window_id,
+            context_id,
+        }
+    }
+
+    /// Regression guard for #791: pane_navigate with a pane in the active
+    /// window must set focused_pane and return true.
+    #[test]
+    fn pane_navigate_same_window_sets_focused_pane() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        assert!(h.app.pane_navigate(pane_id));
+        assert_eq!(h.app.active_window, 0);
+        assert!(h.app.windows[0].focused_pane.is_some());
+    }
+
+    /// Regression guard for #791: pane_navigate to a pane in window 1 must
+    /// update active_window to 1 (the missing piece before the fix).
+    #[test]
+    fn pane_navigate_cross_window_updates_active_window() {
+        let mut h = HostHarness::new();
+        let _pane_a = h.add_test_pane();
+        h.app.windows.push(second_window(2, 2, 9901));
+        h.app.router.push(crate::context::Context {
+            name: "Context B".into(),
+            path: std::env::temp_dir(),
+            root: None,
+            context_id: 2,
+        });
+
+        assert_eq!(h.app.active_window, 0);
+        assert!(h.app.pane_navigate(9901));
+        assert_eq!(h.app.active_window, 1, "active_window must switch to window 1");
+        assert!(h.app.windows[1].focused_pane.is_some(), "focused_pane must be set on target window");
+    }
+
+    /// Regression guard for #823: pane_navigate must also sync router.active_idx
+    /// so the sidebar context switcher reflects the new active context immediately.
+    #[test]
+    fn pane_navigate_cross_window_syncs_router() {
+        let mut h = HostHarness::new();
+        let _pane_a = h.add_test_pane();
+        h.app.windows.push(second_window(2, 2, 9902));
+        h.app.router.push(crate::context::Context {
+            name: "Context B".into(),
+            path: std::env::temp_dir(),
+            root: None,
+            context_id: 2,
+        });
+
+        assert_eq!(h.app.router.active_idx(), 0);
+        assert!(h.app.pane_navigate(9902));
+        assert_eq!(h.app.router.active_idx(), 1, "router must reflect new active context after pane_navigate");
+    }
+
+    /// Regression guard for #791: dispatch_notify_action_cmds with pane_focus
+    /// host_action must call pane_navigate synchronously before writing the
+    /// response file (so navigation is complete before the shell unblocks).
+    #[test]
+    fn dispatch_notify_action_pane_focus_navigates() {
+        let mut h = HostHarness::new();
+        let sender_id = h.add_test_pane();
+        h.app.windows.push(second_window(2, 2, 9903));
+        h.app.router.push(crate::context::Context {
+            name: "Context B".into(),
+            path: std::env::temp_dir(),
+            root: None,
+            context_id: 2,
+        });
+
+        assert_eq!(h.app.active_window, 0);
+        h.app.dispatch_notify_action_cmds(vec![AppCommand::DeliverNotifyAction {
+            pane_id: sender_id,
+            notify_id: "n1".into(),
+            action_label: "Go".into(),
+            value: None,
+            response_file: None,
+            host_action: Some("pane_focus:9903".into()),
+        }]);
+        assert_eq!(h.app.active_window, 1, "pane_focus host_action must navigate to the target window");
+    }
+}

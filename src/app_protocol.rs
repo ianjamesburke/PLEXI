@@ -18,7 +18,7 @@
 //!
 //! # Example app (pseudocode)
 //!
-//! ```
+//! ```no_run
 //! let init = read_json_line(stdin);  // PlexiEvent::Init
 //! write_json(DrawCommand::Ready { sdk: "my-sdk/1.0.0".into(), features_used: vec![] });
 //! loop {

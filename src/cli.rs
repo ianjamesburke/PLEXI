@@ -2609,7 +2609,7 @@ _plexi() {
             '--title[Notification title]:title:' \
             '--body[Notification body]:body:' \
             '--level[Level]:level:(info warn error)' \
-            '--choice[Choice option (key:Label)]:choice:' \
+            '--choice[Choice option (key:Label or Label:pane_focus:<id>)]:choice:' \
             '--timeout[Timeout in seconds]:seconds:'
           ;;
         install)
@@ -2762,7 +2762,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from context" -a set-root -d "Se
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l title -d "Notification title"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l body -d "Notification body"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l level -d "Level" -a "info warn error"
-complete -c plexi -n "__fish_seen_subcommand_from notify" -l choice -d "Choice option (key:Label)"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l choice -d "Choice option (key:Label or Label:pane_focus:<id>)"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l timeout -d "Timeout in seconds"
 
 # install flags
