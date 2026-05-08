@@ -248,10 +248,7 @@ async fn run_session(
         "Authorization",
         format!("Bearer {api_key}").parse().map_err(|e| format!("bad auth header: {e}"))?,
     );
-    headers.insert(
-        "OpenAI-Beta",
-        "realtime=v1".parse().map_err(|e| format!("bad beta header: {e}"))?,
-    );
+    // gpt-realtime-2 is the GA API — no OpenAI-Beta header needed.
 
     log::info!("agent:session: connecting to {url}");
     eprintln!("\x1b[2m[agent] Connecting to gpt-realtime-2...\x1b[0m");
