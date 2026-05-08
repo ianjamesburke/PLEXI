@@ -18,7 +18,6 @@ const PROTOCOL: &str = "pgap/3";
 /// Spawn the app at `bin_path`, collect one frame at `width`×`height`, render to PNG bytes.
 pub fn render_app_to_png(app_id: &str, bin_path: &Path, width: u32, height: u32) -> Result<Vec<u8>, String> {
     let commands = spawn_and_collect_frame(app_id, bin_path, width, height)?;
-    log::info!("app_render[{app_id}]: collected {} render commands for {width}×{height}", commands.len());
     render_commands_to_png(&commands, width, height)
 }
 
