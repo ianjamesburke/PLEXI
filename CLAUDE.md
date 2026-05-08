@@ -202,6 +202,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
 - **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
 - **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed.
+- **git worktree staging:** Always use `git -C /absolute/worktree/path add <file>` to stage files in a worktree — never `git --git-dir=... --work-tree=...` for staging, which modifies the main repo's index instead and causes `git pull --rebase` to fail at Phase 5.
 
 ## Host UI Systems — Reuse Before Rolling Your Own
 
