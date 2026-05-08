@@ -940,9 +940,12 @@ pub enum HostCommand {
 
     /// Write text to a running pane's PTY stdin. Sent by `plexi pane send`.
     /// `\n` in text (literal backslash-n) is interpreted as Enter.
+    /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
     SendToPane {
         pane_id: u64,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
 
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.

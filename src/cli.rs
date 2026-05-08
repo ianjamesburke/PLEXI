@@ -1429,15 +1429,56 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 
 /// `plexi pane send <pane_id> <text>`
 ///
-/// Writes text to the target pane's PTY stdin. Fire-and-forget.
+/// Writes text to the target pane's PTY stdin. Polls a response file to
+/// surface errors (e.g. pane not found) back to the caller.
 /// Returns 0 on success, 1 on error.
 pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
-    log::info!("pane_send:cli: pane_id={pane_id} len={}", text.len());
-    send_to_socket(serde_json::json!({
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("send-to-pane-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+    log::info!("pane_send:cli: pane_id={pane_id} len={} response_file={response_file:?}", text.len());
+    let code = send_to_socket(serde_json::json!({
         "type": "send_to_pane",
         "pane_id": pane_id,
         "text": text,
-    }))
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            return 0;
+                        }
+                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+                            eprintln!("error: {msg}");
+                            return 1;
+                        }
+                    }
+                    return 0;
+                }
+                Err(e) => {
+                    log::warn!("pane_send:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane send response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// `plexi open <type_id> [args...] [--layout=X]`

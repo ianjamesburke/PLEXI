@@ -932,11 +932,11 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::HostCommand::SendToPane { pane_id, text } => {
-                    log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={}", text.len());
+                crate::app_protocol::HostCommand::SendToPane { pane_id, text, response_file } => {
+                    log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} response_file={response_file:?}", text.len());
                     let text_with_newlines = text.replace("\\n", "\n");
                     let active = self.active_window;
-                    if let Some(term) = self.windows[active]
+                    let result = if let Some(term) = self.windows[active]
                         .panes
                         .get_mut(pane_id)
                         .and_then(|p| p.as_terminal_mut())
@@ -944,9 +944,19 @@ impl PlexiApp {
                         term.backend.process_command(egui_term::BackendCommand::Write(
                             text_with_newlines.into_bytes(),
                         ));
+                        Ok(())
                     } else {
                         log::warn!("pane_ipc: send_to_pane: pane_id={pane_id} not found or not a terminal");
-                        eprintln!("error: pane {pane_id} not found or is not a terminal pane");
+                        Err(format!("pane {pane_id} not found or is not a terminal pane"))
+                    };
+                    if let Some(rf) = response_file {
+                        let json = match result {
+                            Ok(()) => r#"{"ok":true}"#.to_string(),
+                            Err(ref msg) => format!("{{\"error\":{}}}", serde_json::to_string(msg).unwrap_or_else(|_| format!("\"{msg}\""))),
+                        };
+                        if let Err(e) = std::fs::write(rf, &json) {
+                            log::error!("pane_ipc: send_to_pane: could not write response file: {e}");
+                        }
                     }
                 }
                 crate::app_protocol::HostCommand::Notify {
