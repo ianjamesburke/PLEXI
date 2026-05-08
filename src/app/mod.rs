@@ -2820,16 +2820,30 @@ impl PlexiApp {
     /// Navigate to a pane by id, updating both `focused_pane` on its window and
     /// `active_window`. Returns `true` if the pane was found.
     pub(crate) fn pane_navigate(&mut self, pane_id: u64) -> bool {
-        for (idx, win) in self.windows.iter_mut().enumerate() {
-            if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
-                let prev = self.active_window;
+        // Use find_map so the mutable borrow of self.windows ends before we
+        // touch self.router (Rust can't prove disjointness across the loop).
+        let found = self.windows.iter_mut().enumerate().find_map(|(idx, win)| {
+            win.tree.tiles.find_pane(&pane_id).map(|tile_id| {
                 win.focused_pane = Some(tile_id);
-                self.active_window = idx;
+                (idx, win.context_id)
+            })
+        });
+        if let Some((idx, ctx_id)) = found {
+            let prev = self.active_window;
+            self.active_window = idx;
+            // Sync the router so the sidebar context switcher reflects the
+            // new active context immediately (router.active_idx() drives the highlight).
+            if let Some(ctx_idx) = self.router.position(|ctx| ctx.context_id == ctx_id) {
+                self.router.set_active(ctx_idx);
                 log::info!(
-                    "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id}"
+                    "notify:action: pane_navigate active_window {prev}→{idx} ctx_idx={ctx_idx} pane_id={pane_id}"
                 );
-                return true;
+            } else {
+                log::warn!(
+                    "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id} ctx_id={ctx_id} not found in router"
+                );
             }
+            return true;
         }
         log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
         false
