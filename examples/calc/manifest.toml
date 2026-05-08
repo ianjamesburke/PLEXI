@@ -1,0 +1,7 @@
+[app]
+id = "calc"
+name = "Calculator"
+description = "Four-function calculator. Demonstrates ctx.button() with hover and click."
+version = "0.1.0"
+entry = "calc.py"
+mouse_tracking = true
