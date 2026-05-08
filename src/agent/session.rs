@@ -5,10 +5,12 @@
 //! subprocess calls using PLEXI_SOCKET (auto-injected since agent runs in a pane).
 
 use std::io::Write as _;
+use std::sync::Arc;
 use std::thread;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
+use rodio::{Sink, buffer::SamplesBuffer};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -145,6 +147,7 @@ async fn handle_server_event(
     event: &Value,
     ws_tx: &mut WsSink,
     pending_tool: &mut Option<(String, String, String)>,
+    sink: &Arc<Sink>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let event_type = event["type"].as_str().unwrap_or("");
 
@@ -153,11 +156,33 @@ async fn handle_server_event(
             log::info!("agent:session: {event_type}");
         }
 
-        "conversation.item.input_audio_transcription.delta" => {
+        // Output audio — base64 PCM16 LE at 24kHz, stream to rodio sink
+        "response.output_audio.delta" => {
+            if let Some(b64) = event["delta"].as_str() {
+                if let Ok(bytes) = BASE64.decode(b64) {
+                    let samples: Vec<i16> = bytes
+                        .chunks_exact(2)
+                        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                        .collect();
+                    sink.append(SamplesBuffer::new(1, 24_000, samples));
+                }
+            }
+        }
+
+        "response.output_audio.done" => {
+            log::info!("agent:audio_out: done");
+        }
+
+        // Transcript of what the model said — print so the user can read along
+        "response.output_audio_transcript.delta" => {
             if let Some(delta) = event["delta"].as_str() {
-                print!("\x1b[2m{delta}\x1b[0m");
+                print!("{delta}");
                 let _ = std::io::stdout().flush();
             }
+        }
+
+        "response.output_audio_transcript.done" => {
+            println!();
         }
 
         "response.text.delta" => {
@@ -368,6 +393,15 @@ async fn run_session(
         .await?;
     log::info!("agent:session: session.update sent");
 
+    // Audio output: rodio OutputStream must live as long as the sink.
+    let (_out_stream, out_stream_handle) = rodio::OutputStream::try_default()
+        .map_err(|e| format!("audio output init failed: {e}"))?;
+    let sink = Arc::new(
+        rodio::Sink::try_new(&out_stream_handle)
+            .map_err(|e| format!("audio sink init failed: {e}"))?,
+    );
+    log::info!("agent:session: audio output ready");
+
     // Pending tool call accumulator: (call_id, name, args_so_far)
     let mut pending_tool: Option<(String, String, String)> = None;
 
@@ -398,7 +432,7 @@ async fn run_session(
                     Some(Ok(Message::Text(text))) => {
                         let event: Value =
                             serde_json::from_str(&text).unwrap_or(Value::Null);
-                        handle_server_event(&event, &mut ws_tx, &mut pending_tool)
+                        handle_server_event(&event, &mut ws_tx, &mut pending_tool, &sink)
                             .await?;
                     }
                     Some(Ok(Message::Close(_))) => {
