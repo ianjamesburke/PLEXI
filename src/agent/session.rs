@@ -236,12 +236,22 @@ async fn run_session(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = format!("wss://api.openai.com/v1/realtime?model={MODEL}");
 
-    let request = tokio_tungstenite::tungstenite::http::Request::builder()
-        .uri(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("OpenAI-Beta", "realtime=v1")
-        .body(())
+    // Build from the URL so tungstenite generates Sec-WebSocket-Key automatically,
+    // then add auth headers on top.
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = url
+        .as_str()
+        .into_client_request()
         .map_err(|e| format!("failed to build request: {e}"))?;
+    let headers = request.headers_mut();
+    headers.insert(
+        "Authorization",
+        format!("Bearer {api_key}").parse().map_err(|e| format!("bad auth header: {e}"))?,
+    );
+    headers.insert(
+        "OpenAI-Beta",
+        "realtime=v1".parse().map_err(|e| format!("bad beta header: {e}"))?,
+    );
 
     log::info!("agent:session: connecting to {url}");
     eprintln!("\x1b[2m[agent] Connecting to gpt-realtime-2...\x1b[0m");
