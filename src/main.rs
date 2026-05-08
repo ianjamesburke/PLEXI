@@ -8,6 +8,7 @@
 mod app;
 mod app_permissions;
 mod app_protocol;
+mod app_render;
 mod app_registry;
 mod app_trait;
 mod audio;
@@ -211,6 +212,9 @@ fn main() -> eframe::Result {
                         AppCmd::Init { name, lang } => std::process::exit(cli::app_init(&name, &lang)),
                         AppCmd::Uninstall { id } => std::process::exit(cli::app_uninstall(&id)),
                         AppCmd::List => std::process::exit(cli::app_list()),
+                        AppCmd::Render { id, size, state, output } => {
+                            std::process::exit(cli::app_render(&id, &size, state.as_deref(), output.as_deref()))
+                        }
                     },
                     Commands::Install { spec, pack } => {
                         if let Some(p) = pack {

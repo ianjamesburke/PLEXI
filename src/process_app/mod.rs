@@ -13,7 +13,7 @@
 
 mod lifecycle;
 mod prompts;
-mod render;
+pub(crate) mod render;
 mod routing;
 
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};

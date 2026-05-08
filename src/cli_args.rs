@@ -177,6 +177,20 @@ pub enum AppCmd {
     },
     /// List installed apps
     List,
+    /// Render an app to PNG headlessly
+    Render {
+        /// App id to render (e.g. "snake")
+        id: String,
+        /// Dimensions as WxH (e.g. 500x500)
+        #[arg(long, default_value = "800x600")]
+        size: String,
+        /// Pre-seed app state from a JSON file before render
+        #[arg(long)]
+        state: Option<String>,
+        /// Output PNG path (default: stdout)
+        #[arg(long)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
