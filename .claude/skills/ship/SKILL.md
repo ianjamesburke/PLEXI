@@ -107,6 +107,18 @@ plexi pane set-title "#<number> — <short-title>"
 
 ---
 
+## Phase 1b — Implementation Audit
+
+Before creating a worktree, check whether the work is already done or partially landed on alpha.
+
+Grep alpha `src/` for the key identifiers from the issue's **Done When** criteria. Scan `git log --oneline -20` for related commits.
+
+- **All criteria already met:** close the issue, remove `in progress`, skip to Phase 6.
+- **Partial or ambiguous:** surface what's done vs missing, state the plan, and ask any open design questions. Wait for confirmation before branching.
+- **Nothing done and no questions:** proceed, but note "Audit: nothing on alpha yet."
+
+---
+
 ## Phase 2 — Worktree Setup
 
 Run from the repo root:
