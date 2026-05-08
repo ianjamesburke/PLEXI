@@ -265,7 +265,9 @@ async fn handle_server_event(
         }
 
         _ => {
-            log::debug!("agent:event: {event_type}");
+            // Log all unhandled events at info so we can discover the GA API event names.
+            log::info!("agent:event:unhandled type={event_type} keys={}",
+                event.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default());
         }
     }
 
