@@ -356,9 +356,10 @@ After user confirms pass. Run without stopping:
    If anything non-obvious happened during this PR — a failed approach, an environment constraint, a tool behavior that cost time — add one entry to GOTCHAS.md on alpha now. Write a detailed commit message explaining the why. Skip GOTCHAS if nothing surprised you.
 
 4. `just pr-clean <pr-number>` — run from the repo root
+> **CWD check:** The shell may still be inside the feature worktree. Use `cd /Users/ianburke/Documents/GitHub/PLEXI &&` as a prefix for all remaining Phase 5 commands, or confirm CWD with `pwd` first.
 5. `git pull --rebase origin alpha` — from the repo root
 6. `wtp remove <branch> --force` then `git push origin --delete <branch>`
-7. `just bump && just install` — from the repo root
+7. `git status` in the repo root — linter or hook changes (e.g. CLAUDE.md) can dirty alpha between testing and merge. Stage and commit any such changes before bumping. Then `just bump && just install` — from the repo root
 8. `git push` — push bump commit to origin so alpha is not diverged at next session start
 
 ---
