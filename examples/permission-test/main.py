@@ -21,7 +21,7 @@ class PermissionTestApp(App):
     def __init__(self):
         self.result = None  # None = pending, True = granted, False = denied
 
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self, _ctx: RenderContext) -> None:
         self.emit.info("permission-test: requesting net.http capability")
         granted = self.emit.capability_request("net.http")
         self.result = granted
@@ -31,7 +31,7 @@ class PermissionTestApp(App):
             self.emit.info("permission-test: net.http DENIED (or permanently blocked)")
 
     def render(self, ctx: RenderContext) -> None:
-        ctx.clear()
+        ctx.clear("#1e1e2e")
         cx = ctx.w / 2
         cy = ctx.h / 2
 
