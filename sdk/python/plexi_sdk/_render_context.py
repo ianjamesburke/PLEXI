@@ -528,9 +528,12 @@ class RenderContext:
 
     def spawn_pane(self, type_id: str, layout: str = "split_v",
                    args: "list[str] | None" = None,
-                   pipe_id: "str | None" = None) -> None:
+                   pipe_id: "str | None" = None,
+                   from_pane_id: "int | None" = None,
+                   request_id: "str | None" = None) -> None:
         """Request the host to open a new pane. Requires panes.spawn capability."""
-        self.emit.spawn_pane(type_id, layout=layout, args=args, pipe_id=pipe_id)
+        self.emit.spawn_pane(type_id, layout=layout, args=args, pipe_id=pipe_id,
+                             from_pane_id=from_pane_id, request_id=request_id)
 
     def frame_done(self) -> None:
         self._buf.append(json.dumps({"type": "frame_done", "frame_id": self.frame_id}) + "\n")
