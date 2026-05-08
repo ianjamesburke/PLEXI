@@ -18,10 +18,8 @@ RED = "#f38ba8"
 WHITE = "#cdd6f4"
 
 class PermissionTestApp(App):
-    def __init__(self):
-        self.result = None  # None = pending, True = granted, False = denied
-
     def on_init(self, _ctx: RenderContext) -> None:
+        self.result = None
         self.emit.info("permission-test: requesting net.http capability")
         granted = self.emit.capability_request("net.http")
         self.result = granted
