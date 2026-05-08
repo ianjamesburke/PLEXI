@@ -317,6 +317,7 @@ async fn run_session(
     let session_update = json!({
         "type": "session.update",
         "session": {
+            "type": "realtime",
             "modalities": ["text", "audio"],
             "instructions": system_prompt(),
             "voice": "alloy",
