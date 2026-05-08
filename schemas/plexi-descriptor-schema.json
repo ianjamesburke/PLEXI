@@ -39,7 +39,16 @@
       "description": "Top-level commands. Each command may itself contain nested `commands[]` to model subcommand groups (e.g. `git remote add`).",
       "items": { "$ref": "#/definitions/command" }
     },
-    "live_state": { "$ref": "#/definitions/liveState" }
+    "live_state": { "$ref": "#/definitions/liveState" },
+    "plexi_app": {
+      "type": "string",
+      "description": "Shell command to spawn as a PGAP process instead of rendering the auto-generated form UI. Split on whitespace: first token is the binary, rest are initial args."
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "Capability strings granted to the spawned PGAP process. Same vocabulary as manifest.toml capabilities.",
+      "items": { "type": "string" }
+    }
   },
   "definitions": {
     "uiHint": {
