@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "snake-race"
+type = "app"
+name = "Snake Race"
+version = "0.1.0"
+description = "Four-pane Snake speedrun — combined score to 100, timer, personal best."
+entry = "snake_race.py"
+
+[app.capabilities]
+capabilities = ["panes.spawn", "pipe.open", "fs.read", "fs.write"]
+
+[launch]
+layout_hint = { side = "right", split = 0.2 }
