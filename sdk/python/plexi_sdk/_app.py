@@ -161,10 +161,10 @@ class App:
         """
         return None
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
-    def on_pane_spawned(self, pane_id: int) -> None:
+    def on_pane_spawned(self, pane_id: int, request_id: "str | None" = None) -> None:
         """Called when a SpawnPane request succeeded (#592). Override to track the spawned pane."""
 
-    def on_pane_spawn_error(self, reason: str) -> None:
+    def on_pane_spawn_error(self, reason: str, request_id: "str | None" = None) -> None:
         """Called when a SpawnPane request failed (#592). Override to handle the error."""
 
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
@@ -718,15 +718,19 @@ class App:
                     )
 
                 elif t == "pane_spawned":
+                    req_id = ev.get("request_id")
                     self._dispatch_hook_task(
                         self.on_pane_spawned,
                         int(ev.get("pane_id", 0)),
+                        str(req_id) if req_id is not None else None,
                     )
 
                 elif t == "pane_spawn_error":
+                    req_id = ev.get("request_id")
                     self._dispatch_hook_task(
                         self.on_pane_spawn_error,
                         str(ev.get("reason", "")),
+                        str(req_id) if req_id is not None else None,
                     )
 
                 elif t == "nav_back":
