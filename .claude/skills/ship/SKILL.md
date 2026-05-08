@@ -86,6 +86,12 @@ The `blocked` label is the fast filter; front matter is the data. Only parse bod
 
 ## Phase 1 — Pre-flight
 
+**First — check issue state before touching anything:**
+```bash
+gh issue view <number> --json state,title --jq '{state: .state, title: .title}'
+```
+If state is `CLOSED`: stop immediately. Tell the user: "Issue #<n> is already closed — nothing to do." Do NOT add labels, create worktrees, or proceed further.
+
 Run in parallel:
 ```bash
 git fetch origin
