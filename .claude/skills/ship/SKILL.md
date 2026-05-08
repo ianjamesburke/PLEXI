@@ -241,6 +241,8 @@ tail -100 ~/.plexi-pr-<number>/plexi.log
 ```
 If the log already confirms pass or fail, state your finding directly rather than asking the user to check. The user should never be asked to tail a log — that's the agent's job.
 
+**Test fixture rule:** If testing requires a helper binary, shim, or fixture that can be installed in advance, install it yourself before surfacing the testing block. Remove it after the user confirms pass. Never include a multi-step shell heredoc in the testing instructions for the user to run — that's the agent's job.
+
 Surface the testing block — output EXACTLY this format, then stop:
 
 ```
