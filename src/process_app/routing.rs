@@ -754,17 +754,19 @@ impl ProcessApp {
                 layout,
                 args,
                 pipe_id,
+                from_pane_id,
+                request_id,
             } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PanesSpawn)
                 {
                     log::warn!("ProcessApp[{}]: SpawnPane denied — {reason}", self.type_id);
                     self.outbound_events
-                        .push_back(PlexiEvent::PaneSpawnError { reason });
+                        .push_back(PlexiEvent::PaneSpawnError { reason, request_id });
                     return;
                 }
                 log::info!(
-                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout}' args={args:?} pipe_id={pipe_id:?}",
+                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout}' args={args:?} pipe_id={pipe_id:?} from_pane_id={from_pane_id:?} request_id={request_id:?}",
                     self.type_id
                 );
                 self.pending_commands.push(AppCommand::SpawnPane {
@@ -772,6 +774,8 @@ impl ProcessApp {
                     layout,
                     args,
                     pipe_id,
+                    from_pane_id,
+                    request_id,
                 });
             }
 

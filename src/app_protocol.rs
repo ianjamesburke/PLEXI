@@ -114,9 +114,17 @@ pub enum PlexiEvent {
         type_id: String,
     },
     /// Confirmation that a SpawnPane request succeeded (#592).
-    PaneSpawned { pane_id: u64 },
+    PaneSpawned {
+        pane_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
     /// SpawnPane could not be fulfilled (#592). `reason` is a human-readable error.
-    PaneSpawnError { reason: String },
+    PaneSpawnError {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
     /// Binary pipe opened — app connects to `socket_path` as a unix socket client.
     PipeOpened {
         pipe_id: String,
@@ -900,6 +908,10 @@ pub enum HostCommand {
         args: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pipe_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_pane_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -2509,11 +2521,13 @@ mod tests {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","args":["--foo"],"pipe_id":"p1"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::SpawnPane { type_id, layout, args, pipe_id }) => {
+            DrawCommand::Host(HostCommand::SpawnPane { type_id, layout, args, pipe_id, from_pane_id, request_id }) => {
                 assert_eq!(type_id, "snake");
                 assert_eq!(layout, "split_v");
                 assert_eq!(args, &["--foo"]);
                 assert_eq!(pipe_id.as_deref(), Some("p1"));
+                assert!(from_pane_id.is_none());
+                assert!(request_id.is_none());
             }
             other => panic!("expected SpawnPane, got {other:?}"),
         }
@@ -2524,10 +2538,12 @@ mod tests {
         let minimal = r#"{"type":"spawn_pane","type_id":"snake"}"#;
         let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            DrawCommand::Host(HostCommand::SpawnPane { layout, args, pipe_id, .. }) => {
+            DrawCommand::Host(HostCommand::SpawnPane { layout, args, pipe_id, from_pane_id, request_id, .. }) => {
                 assert_eq!(layout, "split_v");
                 assert!(args.is_empty());
                 assert!(pipe_id.is_none());
+                assert!(from_pane_id.is_none());
+                assert!(request_id.is_none());
             }
             other => panic!("expected SpawnPane, got {other:?}"),
         }
@@ -2538,9 +2554,13 @@ mod tests {
         let json = r#"{"type":"pane_spawned","pane_id":99}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
         match &event {
-            PlexiEvent::PaneSpawned { pane_id } => assert_eq!(*pane_id, 99),
+            PlexiEvent::PaneSpawned { pane_id, .. } => {
+                assert_eq!(*pane_id, 99);
+            }
             other => panic!("expected PaneSpawned, got {other:?}"),
         }
+        // request_id is None when not present
+        assert!(matches!(event, PlexiEvent::PaneSpawned { request_id: None, .. }));
         let serialised = serde_json::to_string(&event).expect("serialise");
         assert!(serialised.contains(r#""type":"pane_spawned""#), "wire tag missing: {serialised}");
 
@@ -2553,11 +2573,63 @@ mod tests {
         let json = r#"{"type":"pane_spawn_error","reason":"capability denied"}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
         match &event {
-            PlexiEvent::PaneSpawnError { reason } => assert_eq!(reason, "capability denied"),
+            PlexiEvent::PaneSpawnError { reason, .. } => assert_eq!(reason, "capability denied"),
             other => panic!("expected PaneSpawnError, got {other:?}"),
         }
         let serialised = serde_json::to_string(&event).expect("serialise");
         assert!(serialised.contains(r#""type":"pane_spawn_error""#), "wire tag missing: {serialised}");
+    }
+
+    #[test]
+    fn spawn_pane_with_new_fields_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","from_pane_id":42,"request_id":"req-1"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::SpawnPane { from_pane_id, request_id, .. }) => {
+                assert_eq!(*from_pane_id, Some(42u64));
+                assert_eq!(request_id.as_deref(), Some("req-1"));
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""from_pane_id":42"#), "from_pane_id missing: {serialised}");
+        assert!(serialised.contains(r#""request_id":"req-1""#), "request_id missing: {serialised}");
+    }
+
+    #[test]
+    fn pane_spawned_with_request_id_round_trips_serde() {
+        let json = r#"{"type":"pane_spawned","pane_id":99,"request_id":"req-abc"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::PaneSpawned { pane_id, request_id } => {
+                assert_eq!(*pane_id, 99);
+                assert_eq!(request_id.as_deref(), Some("req-abc"));
+            }
+            other => panic!("expected PaneSpawned, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(serialised.contains(r#""request_id":"req-abc""#), "request_id missing: {serialised}");
+        // Omitting request_id → None
+        let no_req: PlexiEvent = serde_json::from_str(r#"{"type":"pane_spawned","pane_id":1}"#).unwrap();
+        assert!(matches!(no_req, PlexiEvent::PaneSpawned { request_id: None, .. }));
+    }
+
+    #[test]
+    fn pane_spawn_error_with_request_id_round_trips_serde() {
+        let json = r#"{"type":"pane_spawn_error","reason":"denied","request_id":"req-xyz"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::PaneSpawnError { reason, request_id } => {
+                assert_eq!(reason, "denied");
+                assert_eq!(request_id.as_deref(), Some("req-xyz"));
+            }
+            other => panic!("expected PaneSpawnError, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(serialised.contains(r#""request_id":"req-xyz""#), "request_id missing: {serialised}");
+        // Omitting request_id → None
+        let no_req: PlexiEvent = serde_json::from_str(r#"{"type":"pane_spawn_error","reason":"x"}"#).unwrap();
+        assert!(matches!(no_req, PlexiEvent::PaneSpawnError { request_id: None, .. }));
     }
 
     #[test]

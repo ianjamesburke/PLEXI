@@ -661,6 +661,8 @@ mod tests {
             layout: "split_v".to_string(),
             args: vec![],
             pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
         });
         h.run_frames(2);
 

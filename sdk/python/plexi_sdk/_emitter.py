@@ -358,12 +358,14 @@ class Emitter:
         layout: str = "split_v",
         args: "list[str] | None" = None,
         pipe_id: "str | None" = None,
+        from_pane_id: "int | None" = None,
+        request_id: "str | None" = None,
     ) -> None:
         """Request the host to open a new pane with the given app (#592).
 
         Requires the ``panes.spawn`` capability. The host responds with
-        ``on_pane_spawned(pane_id)`` on success or ``on_pane_spawn_error(reason)``
-        on failure.
+        ``on_pane_spawned(pane_id, request_id)`` on success or
+        ``on_pane_spawn_error(reason, request_id)`` on failure.
 
         Args:
             type_id: App manifest id or ``"terminal"``.
@@ -372,6 +374,10 @@ class Emitter:
             args: Extra argv passed to the spawned app.
             pipe_id: Optional. If set, the host appends ``--pipe=<id>`` to the
                      spawned app's args so it can reply via ``emit.pipe_send()``.
+            from_pane_id: Optional pane_id to split relative to instead of the
+                          currently focused pane.
+            request_id: Optional correlation id echoed back in on_pane_spawned /
+                        on_pane_spawn_error.
         """
         cmd: "dict[str, object]" = {
             "type": "spawn_pane",
@@ -381,6 +387,10 @@ class Emitter:
         }
         if pipe_id is not None:
             cmd["pipe_id"] = pipe_id
+        if from_pane_id is not None:
+            cmd["from_pane_id"] = from_pane_id
+        if request_id is not None:
+            cmd["request_id"] = request_id
         _emit(cmd)
 
     def cd_to(self, cwd: str) -> None:

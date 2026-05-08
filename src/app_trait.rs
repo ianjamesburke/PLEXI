@@ -23,6 +23,8 @@ pub enum AppCommand {
         layout: String,
         args: Vec<String>,
         pipe_id: Option<String>,
+        from_pane_id: Option<u64>,
+        request_id: Option<String>,
     },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest { cwd: String, sender_pane_id: u64 },

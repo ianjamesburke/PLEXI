@@ -1386,6 +1386,8 @@ impl eframe::App for PlexiApp {
                     layout,
                     args,
                     pipe_id,
+                    from_pane_id,
+                    request_id,
                 } => {
                     // "background" layout is not yet implemented (blocked on #291).
                     if layout == "background" {
@@ -1407,6 +1409,7 @@ impl eframe::App for PlexiApp {
                                     a.runtime.queue_outbound_event(
                                         crate::app_protocol::PlexiEvent::PaneSpawnError {
                                             reason: "layout 'background' not yet implemented".to_string(),
+                                            request_id: request_id.clone(),
                                         },
                                     );
                                 }
@@ -1423,7 +1426,7 @@ impl eframe::App for PlexiApp {
                         effective_args.push(format!("--pipe={pid}"));
                     }
 
-                    // Predict the pane id that will be allocated (next_pane_id peeks without allocating).
+                    // Capture requesting_pane_id from the CURRENT focused pane (the calling app pane).
                     let active = self.active_window;
                     let requesting_pane_id = self.windows[active]
                         .focused_pane
@@ -1435,6 +1438,19 @@ impl eframe::App for PlexiApp {
                                 None
                             }
                         });
+
+                    // Override focused_pane for the split if from_pane_id is specified.
+                    let original_focused = self.windows[active].focused_pane;
+                    if let Some(from_id) = from_pane_id {
+                        if let Some(tile) = self.windows[active].tree.tiles.find_pane(&from_id) {
+                            log::info!("SpawnPane: splitting relative to pane_id={from_id}");
+                            self.windows[active].focused_pane = Some(tile);
+                        } else {
+                            log::warn!("SpawnPane: from_pane_id={from_id} not found, using focused pane");
+                        }
+                    }
+
+                    // Predict the pane id that will be allocated (next_pane_id peeks without allocating).
                     let new_pane_id = self.host.next_pane_id();
                     if type_id == "terminal" {
                         // "terminal" is a builtin pane type, not in the app registry.
@@ -1457,6 +1473,9 @@ impl eframe::App for PlexiApp {
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
                     }
 
+                    // Restore focused_pane after the split so the coordinator app keeps focus.
+                    self.windows[active].focused_pane = original_focused;
+
                     // Send PaneSpawned back to the requesting pane.
                     if let Some(req_pane_id) = requesting_pane_id {
                         let active = self.active_window;
@@ -1465,6 +1484,7 @@ impl eframe::App for PlexiApp {
                                 a.runtime.queue_outbound_event(
                                     crate::app_protocol::PlexiEvent::PaneSpawned {
                                         pane_id: new_pane_id,
+                                        request_id,
                                     },
                                 );
                             }
