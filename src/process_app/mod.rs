@@ -2506,6 +2506,60 @@ mod midi_tests {
         assert_eq!(entries.len(), 1, "exactly one send dispatched");
         assert_eq!(entries[0], vec![0x90u8, 0x3C, 0x64]);
     }
+
+    #[test]
+    fn midi_e2e_bytes_reach_ring() {
+        // Proves the complete host-side delivery path: bytes injected via
+        // MockMidiDevice.inject() travel through the packet sink wired by
+        // start_midi_input() and land in the binary pipe ring (#545).
+        //
+        // This is the fixture-backed validation that the plumbing works before
+        // MIDI controls are re-added to the input-inspector app.
+        let mut caps = HashSet::new();
+        caps.insert(Capability::MidiIn);
+        let Some(mut app) = make_app(caps) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+
+        let mock = Arc::new(MockMidiDevice::new());
+        app.midi_device = Arc::clone(&mock) as Arc<dyn crate::midi::MidiDevice>;
+
+        // Use a distinct pipe_id to avoid socket-path collision with the
+        // parallel `granted_app_dispatches_open_input_to_device` test (both
+        // resolve to /tmp/plexi-pipe-{subsec_nanos}-{pipe_id}.sock and a
+        // nanosecond-level tie produces EADDRINUSE on the second bind).
+        app.route_command(HostCommand::OpenMidiInput {
+            port_id: "mock-input-1".to_owned(),
+            pipe_id: "midi-e2e-ring-pipe".to_owned(),
+        });
+
+        assert!(
+            app.outbound_events
+                .iter()
+                .any(|e| matches!(e, PlexiEvent::MidiInputOpened { .. })),
+            "expected MidiInputOpened before injecting bytes"
+        );
+
+        let ring = app
+            .pipe_registry
+            .lock()
+            .expect("pipe_registry poisoned")
+            .binary_ring("midi-e2e-ring-pipe")
+            .expect("ring must exist after OpenMidiInput");
+
+        assert_eq!(ring.len(), 0, "ring must be empty before inject");
+
+        // NoteOn ch=0 note=60 vel=100, then a clock pulse.
+        assert!(mock.inject("mock-input-1", &[0x90, 0x3C, 0x64]));
+        assert!(mock.inject("mock-input-1", &[0xF8]));
+
+        let frame1 = ring.pop().expect("NoteOn frame must be in ring");
+        let frame2 = ring.pop().expect("Clock frame must be in ring");
+        assert_eq!(frame1, vec![0x90u8, 0x3C, 0x64], "NoteOn bytes must match");
+        assert_eq!(frame2, vec![0xF8u8], "Clock bytes must match");
+        assert!(ring.pop().is_none(), "no extra frames must remain in ring");
+    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,10 @@
 Two-panel layout:
   Left  — interactive zone; click, drag, and type here to generate events.
   Right — scrollable event log showing every key, mouse, and scroll event.
+
+MIDI support requires the `midi.in` capability (declared in manifest.toml).
+Network MIDI / RTP-MIDI is out of scope — only IAC Driver and USB/hardware
+endpoints are supported by the CoreMIDI layer.
 """
 from __future__ import annotations
 
@@ -17,7 +21,8 @@ if os.path.isdir(_sdk_path):
     sys.path.insert(0, _sdk_path)
 
 from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, FG, MUTED, ACCENT
-from plexi_sdk import BODY, CAPTION, PAD
+from plexi_sdk import BODY, CAPTION, PAD, CapabilityDeniedError
+from plexi_sdk import midi as midi_sdk
 
 MAX_EVENTS = 200
 MOVE_LOG_MIN_INTERVAL = 1.0 / 30.0
@@ -27,6 +32,7 @@ HEADER_H = 44.0
 FOOTER_H = 32.0
 DIVIDER_X_FRAC = 0.4   # left panel takes 40% of width
 INPUT_SCROLL_ID = "interactive-zone-scroll"
+MIDI_PIPE_ID = "inspector-midi-in"
 
 # Colour-code by event category
 CAT_COLOR = {
@@ -36,6 +42,7 @@ CAT_COLOR = {
     "mouse_up":   "#a6e3a1",   # green
     "mouse_move": "#fab387",   # peach
     "scroll":     "#f9e2af",   # yellow
+    "midi":       "#94e2d5",   # teal
 }
 DEFAULT_COLOR = MUTED
 
@@ -62,9 +69,16 @@ class InputInspectorApp(App):
             "mouse_up": True,
             "mouse_move": True,
             "scroll": True,
+            "midi": True,
         }
+        # MIDI state
+        self._midi_inputs: list = []     # list of MidiPortInfo
+        self._midi_pipe = None           # Pipe | None
+        self._midi_open_port_id: str = ""
+        self._midi_error: str = ""
         # Enable continuous mouse-move delivery
         ctx.set_mouse_tracking(True)
+        ctx.info("input-inspector: on_init")
 
     # ── event handlers ──────────────────────────────────────────────────────
 
@@ -73,7 +87,23 @@ class InputInspectorApp(App):
         if key_lower == "i":
             self._show_inputs_page = not self._show_inputs_page
             return
-        if key_lower in ("1", "2", "3", "4", "5", "6"):
+        if key_lower == "m":
+            self._refresh_midi_ports()
+            return
+        if key_lower == "x" and self._midi_open_port_id:
+            self._close_midi_input()
+            return
+        # Digit keys on inputs page open a MIDI port by index.
+        if self._show_inputs_page and key_lower in "0123456789":
+            idx = int(key_lower)
+            if idx < len(self._midi_inputs):
+                port = self._midi_inputs[idx]
+                if self._midi_open_port_id == port.id:
+                    self._close_midi_input()
+                else:
+                    self._open_midi_input(port.id)
+            return
+        if key_lower in ("1", "2", "3", "4", "5", "6", "7"):
             mapping = {
                 "1": "key",
                 "2": "click",
@@ -81,6 +111,7 @@ class InputInspectorApp(App):
                 "4": "mouse_up",
                 "5": "mouse_move",
                 "6": "scroll",
+                "7": "midi",
             }
             cat = mapping[key_lower]
             self._enabled_categories[cat] = not self._enabled_categories[cat]
@@ -90,6 +121,13 @@ class InputInspectorApp(App):
         label = "+".join(mod_parts + [key]) if mod_parts else key
         self._last_key = label
         self._push("key", f"key  {label!r}")
+
+    def on_midi_input_opened(
+        self, pipe_id: str, port_id: str, port_name: str
+    ) -> None:
+        self.emit.info(f"midi.input opened: port_id={port_id} port_name={port_name!r}")
+        self._midi_open_port_id = port_id
+        self._midi_error = ""
 
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
         self._push("click", f"click  {button}  ({x:.0f}, {y:.0f})")
@@ -129,6 +167,43 @@ class InputInspectorApp(App):
             self._push("scroll", f"scroll  zone=interactive  dir={direction}  delta={delta:.1f}")
             self._last_scroll_log_at = now
 
+    # ── MIDI helpers ─────────────────────────────────────────────────────────
+
+    def _refresh_midi_ports(self) -> None:
+        try:
+            result = self.emit.run_sync(self.emit.list_midi_devices())
+            self._midi_inputs = result.inputs
+            self._midi_error = ""
+        except CapabilityDeniedError as e:
+            self._midi_error = f"capability denied: {e}"
+        except Exception as e:
+            self._midi_error = f"list_midi_devices error: {e}"
+
+    def _open_midi_input(self, port_id: str) -> None:
+        if self._midi_open_port_id:
+            self._close_midi_input()
+        try:
+            self._midi_pipe = self.emit.open_midi_input(port_id, MIDI_PIPE_ID)
+            # _midi_open_port_id is set in on_midi_input_opened
+        except CapabilityDeniedError as e:
+            self._midi_error = f"capability denied: {e}"
+
+    def _close_midi_input(self) -> None:
+        if not self._midi_open_port_id:
+            return
+        self.emit.close_midi_input(self._midi_open_port_id)
+        self._midi_open_port_id = ""
+        self._midi_pipe = None
+
+    def _drain_midi_pipe(self) -> None:
+        if self._midi_pipe is None:
+            return
+        while True:
+            frame = self._midi_pipe.read_frame()
+            if frame is None:
+                break
+            self._push("midi", f"midi  {midi_sdk.describe(frame)}")
+
     # ── helpers ─────────────────────────────────────────────────────────────
 
     def _push(self, cat: str, msg: str) -> None:
@@ -142,6 +217,7 @@ class InputInspectorApp(App):
     # ── render ───────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
+        self._drain_midi_pipe()
         ctx.clear(BG)
         if self._show_inputs_page:
             self._draw_inputs_page(ctx)
@@ -191,6 +267,11 @@ class InputInspectorApp(App):
         ctx.text(cx, base_y + 48, f"last key  {self._last_key or '—'}",
                  size=CAPTION, color=CAT_COLOR["key"], align="center", monospace=True)
 
+        # MIDI status badge
+        if self._midi_open_port_id:
+            ctx.text(cx, base_y + 74, f"midi  {self._midi_open_port_id}",
+                     size=CAPTION, color=CAT_COLOR["midi"], align="center", monospace=True)
+
         # Big crosshair dot at mouse pos (clamped to left panel)
         dot_x = min(mx, div_x - 8)
         dot_y = my
@@ -200,7 +281,7 @@ class InputInspectorApp(App):
         # Instruction hint at bottom
         hint_y = ctx.h - FOOTER_H / 2
         ctx.text(cx, hint_y,
-                 "click · drag · type · scroll · i:inputs",
+                 "click · drag · type · scroll · i:inputs · m:midi",
                  size=CAPTION, color=MUTED, align="center")
         ctx.end_scroll()
 
@@ -248,7 +329,7 @@ class InputInspectorApp(App):
         ctx.text(
             ctx.w - PAD,
             22,
-            "i:back  1-6:toggle",
+            "i:back  1-7:toggle",
             size=CAPTION,
             color=MUTED,
             align="right_center",
@@ -263,6 +344,7 @@ class InputInspectorApp(App):
             ("4", "mouse up", "mouse_up"),
             ("5", "mouse move", "mouse_move"),
             ("6", "scroll events", "scroll"),
+            ("7", "midi events", "midi"),
         ]
         y = HEADER_H + 16.0
         for key, label, cat in rows:
@@ -282,11 +364,48 @@ class InputInspectorApp(App):
             )
             y += 24.0
 
-        y += 18.0
+        # MIDI port section
+        y += 12.0
+        ctx.line(PAD, y, ctx.w - PAD, y, color=HIGHLIGHT, width=0.5)
+        y += 12.0
+        ctx.text(PAD, y, "MIDI Inputs", size=CAPTION, color=FG, align="left_top")
+        hint = "m:refresh"
+        if self._midi_open_port_id:
+            hint += "  x:close"
+        ctx.text(ctx.w - PAD, y, hint, size=CAPTION, color=MUTED, align="right_top", monospace=True)
+        y += 20.0
+
+        if self._midi_error:
+            ctx.text(PAD, y, self._midi_error, size=CAPTION, color="#f38ba8", align="left_top",
+                     max_width=ctx.w - PAD * 2)
+            y += 20.0
+        elif not self._midi_inputs:
+            ctx.text(PAD, y, "press m to enumerate ports",
+                     size=CAPTION, color=MUTED, align="left_top")
+            y += 20.0
+        else:
+            for idx, port in enumerate(self._midi_inputs):
+                is_open = port.id == self._midi_open_port_id
+                badge = "● OPEN" if is_open else f"[{idx}] open"
+                badge_color = CAT_COLOR["midi"] if is_open else MUTED
+                ctx.text_row(
+                    PAD,
+                    y,
+                    items=[
+                        {"text": f"{idx}:", "color": MUTED, "size": CAPTION, "monospace": True},
+                        {"text": port.name, "color": FG, "size": CAPTION, "monospace": True},
+                        {"text": badge, "color": badge_color, "size": CAPTION, "monospace": True},
+                    ],
+                    gap=10.0,
+                    align="left_top",
+                )
+                y += 22.0
+
+        y += 8.0
         ctx.text(
             PAD,
             y,
-            "MIDI support is temporarily removed from this inspector.",
+            "Note: Network MIDI (RTP-MIDI) is not supported.",
             size=CAPTION,
             color=MUTED,
             align="left_top",

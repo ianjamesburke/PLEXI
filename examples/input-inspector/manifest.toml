@@ -9,7 +9,7 @@ description = "POC for #331 — live event log showing all keyboard, mouse, and 
 entry = "input_inspector.py"
 
 [app.capabilities]
-capabilities = []
+capabilities = ["midi.in"]
 
 [launch]
 layout_hint = { side = "right", split = 0.6 }
