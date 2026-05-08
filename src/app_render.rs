@@ -29,11 +29,42 @@ fn spawn_and_collect_frame(
     width: u32,
     height: u32,
 ) -> Result<Vec<RenderCommand>, String> {
-    let mut child = Command::new(bin_path)
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Mirror the env setup from ProcessApp::launch so Python apps can import plexi_sdk.
+    const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
+    let mut cmd = Command::new(bin_path);
+    cmd.current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
+        .env_clear();
+    for var in ENV_WHITELIST {
+        if let Ok(v) = std::env::var(var) {
+            cmd.env(var, v);
+        }
+    }
+    for (k, v) in std::env::vars() {
+        if k.starts_with("PLEXI_") {
+            cmd.env(k, v);
+        }
+    }
+    // PYTHONPATH: config-dir SDK first, then bundle SDK if present.
+    let sdk_dir = crate::config::config_dir().join("sdk");
+    let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
+    let bundle_sdk = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()))
+        .map(|p| p.join("Resources").join("sdk").join("python"))
+        .filter(|p| p.exists());
+    if let Some(bsdk) = bundle_sdk {
+        pythonpath.push(':');
+        pythonpath.push_str(&bsdk.to_string_lossy());
+    }
+    cmd.env("PYTHONPATH", &pythonpath);
+    log::info!("app_render[{app_id}]: PYTHONPATH={pythonpath}");
+
+    let mut child = cmd.spawn()
         .map_err(|e| format!("failed to spawn '{app_id}' at {}: {e}", bin_path.display()))?;
 
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
