@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Snake Race — four-pane speedrun to 100 combined points with timer and personal best.
+"""Snake Race — four-pane speedrun to 50 combined points with timer and personal best.
 
 Spawns four Snake instances in a 2×2 grid, aggregates scores via pipes,
-and records the time to reach 100 total points.
+and records the time to reach 50 total points.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any
 
 from plexi_sdk import App, RenderContext, BG, FG, MUTED, ACCENT, GREEN, SURFACE
 
-TOTAL_TARGET = 100
+TOTAL_TARGET = 50
 NUM_SNAKES = 4
 PB_FILE = "snake-race-pb.json"
 
