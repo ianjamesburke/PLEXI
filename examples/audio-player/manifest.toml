@@ -7,11 +7,11 @@ name = "Audio Player"
 version = "0.1.0"
 description = "GUI↔Terminal media bridge POC (#79). Spawned by the file browser when the user opens an audio file (mp3/wav/flac/m4a/aac/ogg/opus). v3.4 path: requests a linked terminal and emits the equivalent ffplay/ffmpeg command for every transport action — actual decode is shelled. CoreAudio playback is on the v3.5+ roadmap."
 entry = "audio_player.py"
-default_notification_scope = "context"
 layout_hint = "split_h"
 
 [app.capabilities]
 capabilities = ["terminal.bindings"]
 
 [launch]
+notification_scope = "context"
 background = false

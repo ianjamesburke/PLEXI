@@ -1382,12 +1382,17 @@ pub struct ShortcutPair {
 /// - `Global`  — always visible, regardless of which context is active.
 ///
 /// Host-side enum. Apps do NOT emit this on the wire — scope is a per-app
-/// user-facing policy declared in `manifest.toml::default_notification_scope`,
+/// user-facing policy declared in `manifest.toml::[launch] notification_scope`,
 /// resolved by the host at dispatch time. Apps never think about it.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyScope {
-    /// Only visible when the source context is the active context.
+    /// Only visible when the source window is the active window. Default.
+    /// In the current single-window-per-context model this is equivalent to
+    /// `Context`; the distinction matters when multi-window contexts land.
+    Window,
+    /// Visible whenever the source context is the active context (sidebar
+    /// item), regardless of which window page is showing.
     Context,
     /// Always visible regardless of which context is active.
     Global,

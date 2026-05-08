@@ -7,10 +7,10 @@ name = "Notification Tester"
 version = "0.1.0"
 description = "Fires each Notify kind (message / choice / input) on demand. Proof-of-concept playground for the notification modal."
 entry = "notification_tester.py"
-default_notification_scope = "context"
 
 [app.capabilities]
 capabilities = []
 
 [launch]
+notification_scope = "context"
 background = false
