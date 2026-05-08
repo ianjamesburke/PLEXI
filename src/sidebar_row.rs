@@ -98,7 +98,8 @@ impl SidebarRow {
 
     /// Render the row and return a typed action plus the full-row response.
     ///
-    /// `content_fn` receives a `&mut Ui` scoped to the content zone only.
+    /// `content_fn` receives a `&mut Ui` scoped to the content zone only and should return
+    /// the `Response` of the primary label widget (used for double-click rename detection).
     /// It must not call `interact()` or set cursor icons — the row builder owns those.
     ///
     /// The returned `Response` covers the full row and is intended for context_menu attachment.
@@ -107,7 +108,7 @@ impl SidebarRow {
         ui: &mut egui::Ui,
         id: Id,
         colors: &Colors,
-        content_fn: impl FnOnce(&mut egui::Ui, bool),
+        content_fn: impl FnOnce(&mut egui::Ui, bool) -> Option<egui::Response>,
     ) -> (SidebarAction, egui::Response) {
         let row_alpha = if self.is_this_dragging { 0.4_f32 } else { 1.0_f32 };
         let hovered = self.layout.hovered(ui);
@@ -135,13 +136,13 @@ impl SidebarRow {
             );
         }
 
-        // Content zone — sub-Ui is restricted to the content rect
-        ui.allocate_new_ui(
+        // Content zone — sub-Ui is restricted to the content rect; returns the label response.
+        let label_response = ui.allocate_new_ui(
             UiBuilder::new()
                 .max_rect(self.layout.content)
                 .layout(Layout::left_to_right(Align::Center)),
             |ui| content_fn(ui, hovered),
-        );
+        ).inner;
 
         // Action zone — glyph only (no interact call). Click detection is via pointer-position
         // geometry against the single full-row interact registered below.
@@ -163,11 +164,11 @@ impl SidebarRow {
         }
 
         // Single interact on the full row. Priority chain encodes mutual exclusion:
-        // 1. double_clicked → Rename (full row is the target)
-        // 2. drag_started   → DragStart
-        // 3. drag_stopped   → DragEnd
+        // 1. label double_clicked → Rename (label hitbox only)
+        // 2. drag_started        → DragStart
+        // 3. drag_stopped        → DragEnd
         // 4. clicked + in_action + hovered → Delete
-        // 5. clicked        → Activate
+        // 5. clicked             → Activate
         let response = ui.interact(self.layout.full, id, Sense::click_and_drag());
 
         // Tooltip for the action zone — shown via the full-row response when pointer is in zone.
@@ -175,12 +176,20 @@ impl SidebarRow {
             response.clone().on_hover_text("Delete context");
         }
 
-        // Cursor — single authority, derived from zones only
+        // Cursor — single authority, derived from zones only.
+        // If the pointer is over the label text, show Default (not Grab) so it feels clickable.
         if let Some(icon) = self.layout.resolve_cursor(ui, self.is_this_dragging, self.is_any_dragging) {
             ui.ctx().set_cursor_icon(icon);
         }
+        if let Some(ref lr) = label_response {
+            if ui.rect_contains_pointer(lr.rect) {
+                ui.ctx().set_cursor_icon(CursorIcon::Default);
+            }
+        }
 
-        let action = if response.double_clicked() {
+        let label_double_clicked = label_response.as_ref().map_or(false, |r| r.double_clicked());
+        let action = if label_double_clicked {
+            log::info!("sidebar: rename triggered by label double-click");
             SidebarAction::Rename
         } else if response.drag_started() {
             SidebarAction::DragStart

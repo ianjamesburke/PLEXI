@@ -1,6 +1,6 @@
 use crate::context::WindowMenuAction;
 use crate::sidebar_row::{with_alpha, SidebarAction, SidebarRow, ROW_HEIGHT};
-use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui::{Align, CornerRadius, Layout, Rect, RichText, Sense, Stroke, Vec2};
 
 use crate::app::PlexiApp;
 
@@ -144,9 +144,10 @@ impl PlexiApp {
                             RichText::new(format!("{}", i + 1)).size(11.0).color(dim_color),
                         );
                     }
-                    row_ui.add(
+                    let label_resp = row_ui.add(
                         egui::Label::new(RichText::new(&ctx_name).size(12.0).color(text_color))
-                            .selectable(false),
+                            .selectable(false)
+                            .sense(Sense::click()),
                     );
                     // Badge — only when not hovering (X button takes that space on hover)
                     if badge_count > 0 && !hovered {
@@ -156,6 +157,7 @@ impl PlexiApp {
                             ui.label(RichText::new(badge_text).size(10.0).color(accent_color));
                         });
                     }
+                    Some(label_resp)
                 },
             );
 
