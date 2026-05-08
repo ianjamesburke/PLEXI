@@ -20,7 +20,8 @@ class RenderContext:
 
     def __init__(self, frame_id: int, rect: dict, workspace_root: str,
                  capabilities: "list[str]", feature_flags: "list[str]", app: "App",
-                 elapsed: float = 0.0):
+                 elapsed: float = 0.0,
+                 clicks: "list[tuple[float, float]] | None" = None):
         self.frame_id = frame_id
         self.x: float = rect.get("x", 0.0)
         self.y: float = rect.get("y", 0.0)
@@ -36,6 +37,10 @@ class RenderContext:
         self.elapsed: float = elapsed
         # Buffered JSON lines — flushed as a single write in frame_done().
         self._buf: "list[str]" = []
+        # Mouse state for ctx.button() hit-testing (#255).
+        self._mx: float = app._mx
+        self._my: float = app._my
+        self._clicks: list[tuple[float, float]] = clicks or []
 
     def _queue(self, obj: dict) -> None:
         """Buffer a render command for batch flush at frame_done()."""
@@ -144,6 +149,35 @@ class RenderContext:
         """
         self._queue({"type": "badge", "x": x, "y": y_center, "label": label,
                      "fill": fill, "fg": fg, "font_size": font_size, "radius": radius})
+
+    def button(self, id: str, x: float, y: float, w: float, h: float,
+               label: str,
+               fill: str = "#313244",
+               hover_fill: str = "#45475a",
+               active_fill: str = "#585b70",
+               text_color: str = "#cdd6f4",
+               font_size: float = 13.0,
+               radius: float = 6.0) -> bool:
+        """Draw a button and return True if it was clicked this frame.
+
+        Hover state is derived from the current mouse position (requires
+        mouse_tracking = true in the manifest, or degrades gracefully without it).
+        Click state is derived from buffered click events since the previous frame.
+
+        `id` is currently unused but reserved for future focus tracking.
+        """
+        hovered = (x <= self._mx <= x + w) and (y <= self._my <= y + h)
+        clicked = any(
+            (x <= cx <= x + w) and (y <= cy <= y + h)
+            for cx, cy in self._clicks
+        )
+        bg = active_fill if clicked else (hover_fill if hovered else fill)
+        self.rect(x, y, w, h, fill=bg, radius=radius)
+        self.text(x + w / 2, y + h / 2, label, size=font_size,
+                  color=text_color, align="center")
+        if clicked:
+            self.info(f"button clicked: id={id!r}")
+        return clicked
 
     def key_chip_row(self, x: float, y: float, keys: "list[str]",
                      description: "str | None" = None,

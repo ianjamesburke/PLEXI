@@ -133,6 +133,11 @@ class App:
         # calls expose the cumulative list instead of replacing prior tools.
         self._tool_defs: dict[str, dict] = {}
         self.emit = Emitter(self)
+        # v3.x button primitive (#255): last known mouse position and buffered
+        # click events for ctx.button() hit-testing during on_render.
+        self._mx: float = 0.0
+        self._my: float = 0.0
+        self._click_buf: list[tuple[float, float]] = []
 
     # ── Override these ──────────────────────────────────────────────────────
     # All hooks may be overridden as either `def` (sync) or `async def`.
@@ -311,7 +316,8 @@ class App:
         """
         return self._text_submissions.pop(id, None)
 
-    def _make_ctx(self, frame_id: int = 0, elapsed: float = 0.0) -> RenderContext:
+    def _make_ctx(self, frame_id: int = 0, elapsed: float = 0.0,
+                  clicks: "list[tuple[float, float]] | None" = None) -> RenderContext:
         return RenderContext(
             frame_id=frame_id,
             rect=self._rect,
@@ -320,6 +326,7 @@ class App:
             feature_flags=self.feature_flags,
             app=self,
             elapsed=elapsed,
+            clicks=clicks or [],
         )
 
     def run(self) -> None:
@@ -585,7 +592,9 @@ class App:
                         # legacy compat
                         self._rect = {"x": 0.0, "y": 0.0,
                                       "w": ev["width"], "h": ev["height"]}
-                    ctx = self._make_ctx(frame_id, elapsed=elapsed)
+                    pending_clicks = list(self._click_buf)
+                    self._click_buf.clear()
+                    ctx = self._make_ctx(frame_id, elapsed=elapsed, clicks=pending_clicks)
                     try:
                         await self._dispatch_hook(self.on_render, ctx)
                         self._consecutive_render_errors = 0
@@ -603,6 +612,7 @@ class App:
                     self._dispatch_hook_task(self.on_key, ctx, _normalize_key(ev.get("key", "")), ev.get("modifiers", {}))
 
                 elif t == "click":
+                    self._click_buf.append((ev.get("x", 0.0), ev.get("y", 0.0)))
                     ctx = self._make_ctx()
                     self._dispatch_hook_task(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
                                              ev.get("button", "primary"))
@@ -618,6 +628,8 @@ class App:
                                               ev.get("button", "primary"))
 
                 elif t == "mouse_move":
+                    self._mx = ev.get("x", 0.0)
+                    self._my = ev.get("y", 0.0)
                     ctx = self._make_ctx()
                     await self._dispatch_hook(self.on_mouse_move, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
                                               ev.get("buttons", []))

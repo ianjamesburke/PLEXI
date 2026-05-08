@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "calc"
+type = "app"
+name = "Calculator"
+version = "0.1.0"
+description = "Four-function calculator. Demonstrates ctx.button() with hover and click."
+entry = "calc.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
