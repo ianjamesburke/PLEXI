@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: scripts/install.sh [channel]
-# Reads .channel from CWD if no argument given. Must be run from the repo root.
+# Derives channel from git branch (main→stable, alpha→alpha, beta→beta).
+# Falls back to .channel file, then "stable". Must be run from the repo root.
 set -euo pipefail
 
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -8,7 +9,18 @@ if [[ "$(uname)" != "Darwin" ]]; then
   exit 1
 fi
 
-channel="${1:-$(cat .channel 2>/dev/null || echo "stable")}"
+_git_channel() {
+  local branch
+  branch="$(git branch --show-current 2>/dev/null || echo "")"
+  case "$branch" in
+    main)   echo "stable" ;;
+    alpha)  echo "alpha" ;;
+    beta)   echo "beta" ;;
+    *)      cat .channel 2>/dev/null || echo "stable" ;;
+  esac
+}
+
+channel="${1:-$(_git_channel)}"
 
 if [[ "$channel" == "stable" ]]; then
   cap=""

@@ -44,8 +44,8 @@ check-schema:
 run:
     cargo run --release
 
-# Reads .channel from CWD and installs the appropriate build.
-# Run from any worktree: just install
+# Derives channel from git branch (main→stable, alpha/beta pass through).
+# Run from repo root or any worktree: just install
 install: fetch-python-runtime
     bash scripts/install.sh
 
