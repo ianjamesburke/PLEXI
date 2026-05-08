@@ -1,6 +1,17 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.49] — 2026-05-08
+
+### Changes
+- feat(snake): emit score and game_over events via pipe (#882)
+- docs: add env setup gotcha for Plexi app subprocess spawning
+- feat(cli): plexi app render — headless app screenshot via offscreen egui/wgpu (#873)
+- chore: stop ignoring sdk/python/tests/ — test files should be tracked
+- Rename ship skill to ship-issue
+- Add Plexi-specific ship cycle gotchas to ship skill
+- fix(sdk): raise TypeError when blocking emit called from sync hook (#872)
+- chore: commit alpha changes before branching
 ## [3.5.48] — 2026-05-08
 
 ### Changes
