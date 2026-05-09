@@ -1,6 +1,36 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.61] — 2026-05-09
+
+### Changes
+- feat(apps): default launch layout to overlay instead of split_v (#904)
+- feat(ship): add AI review phase + PR number in pane title
+- fix(cli): restore --ephemeral support after PR #890 removed close_on_exit field
+- fix: update close_on_exit → ephemeral after TerminalPane field rename
+- chore: commit alpha changes before branching
+- improve: HostHarness add_test_pane() creates App pane — doc + lesson
+- fix(palette): Cmd+P bypasses keyboard capture so palette always opens (#899)
+- feat(cli): promote plexi terminal as top-level command (#901)
+- chore: commit alpha changes before branching
+- fix(terminal): plexi open terminal <cmd> panes persist on process exit (#890) (#898)
+- chore: update ship-issue skill — pane capture, Cargo.toml restore, end-of-run notify
+- feat(cli): pane set-title accepts optional pane ID — plexi pane set-title [id] <title> (#897)
+- docs: add parse_workspace_path_arg subcommands gotcha
+- feat(snake): increase grid to 26×20 with 18px cells (#887)
+- fix(pane): closing a pane focuses the pane to the right (or below) (#895)
+- feat(cli): plexi pane info — dump current pane context as JSON (#894)
+- feat(cli): pane list — add context_id, context_name, window_id, cwd fields (#893)
+- fix(snake-race): lower combined target from 100 to 50 (#886)
+- feat: snake-race — four-pane speedrun to 100 with timer and personal best (#883)
+- feat(snake): emit score and game_over events via pipe (#882)
+- docs: add env setup gotcha for Plexi app subprocess spawning
+- feat(cli): plexi app render — headless app screenshot via offscreen egui/wgpu (#873)
+- chore: stop ignoring sdk/python/tests/ — test files should be tracked
+- Rename ship skill to ship-issue
+- Add Plexi-specific ship cycle gotchas to ship skill
+- fix(sdk): raise TypeError when blocking emit called from sync hook (#872)
+- chore: commit alpha changes before branching
 ## [3.5.60] — 2026-05-09
 
 ### Changes
