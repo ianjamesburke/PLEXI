@@ -1,1 +1,1 @@
-requests>=2.28
+# No external dependencies — stdlib only (urllib, wave, struct, etc.)

@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import struct
 import subprocess
 import tempfile
 import threading
+import urllib.error
+import urllib.request
+import uuid
 import wave
 from typing import Optional
-
-import requests
 
 from plexi_sdk import App, RenderContext, CapabilityDeniedError
 
@@ -396,29 +398,56 @@ def _encode_wav(pcm_i16: list[int]) -> bytes:
     return buf.getvalue()
 
 
+def _multipart(fields: dict, files: dict) -> tuple[str, bytes]:
+    """Build a multipart/form-data body without external dependencies."""
+    boundary = uuid.uuid4().hex
+    body = io.BytesIO()
+    for name, value in fields.items():
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(f"{value}\r\n".encode())
+    for name, (filename, data, mimetype) in files.items():
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(
+            f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+            f"Content-Type: {mimetype}\r\n\r\n".encode()
+        )
+        body.write(data)
+        body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    return f"multipart/form-data; boundary={boundary}", body.getvalue()
+
+
 def _transcribe(wav_bytes: bytes, api_key: str) -> str:
-    resp = requests.post(
-        "https://api.openai.com/v1/audio/transcriptions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        files={"file": ("turn.wav", wav_bytes, "audio/wav")},
-        data={"model": "whisper-1", "response_format": "json"},
-        timeout=15,
+    content_type, body = _multipart(
+        {"model": "whisper-1", "response_format": "json"},
+        {"file": ("turn.wav", wav_bytes, "audio/wav")},
     )
-    resp.raise_for_status()
-    return resp.json().get("text", "").strip()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/audio/transcriptions",
+        data=body,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": content_type},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read()).get("text", "").strip()
 
 
 def _tts(text: str, api_key: str) -> str:
     """Synthesise text to speech. Returns path to temp mp3 file."""
-    resp = requests.post(
+    body = json.dumps(
+        {"model": "tts-1", "voice": "alloy", "input": text[:4096]}
+    ).encode()
+    req = urllib.request.Request(
         "https://api.openai.com/v1/audio/speech",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={"model": "tts-1", "voice": "alloy", "input": text[:4096]},
-        timeout=15,
+        data=body,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
     )
-    resp.raise_for_status()
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        audio_data = resp.read()
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        f.write(resp.content)
+        f.write(audio_data)
         return f.name
 
 
