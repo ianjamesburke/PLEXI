@@ -145,7 +145,7 @@
       "description": "Remove stale lock files and outdated downloads",
       "flags": [
         {"name": "--dry-run", "type": "bool", "default": false, "description": "List files that would be removed"},
-        {"name": "--prune", "type": "string", "description": "Remove all cache files older than specified days"}
+        {"name": "--prune", "type": "int", "description": "Remove all cache files older than specified days"}
       ]
     }
   ]

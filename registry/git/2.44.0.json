@@ -146,13 +146,10 @@
       "name": "branch",
       "description": "List, create, or delete branches",
       "ui_hint": "list",
-      "args": [
-        {"name": "branchname", "type": "string", "required": false}
-      ],
       "flags": [
-        {"name": "--delete", "type": "string", "description": "Delete the named branch"},
+        {"name": "--delete", "type": "string", "description": "Delete the named branch (pass branch name as value)"},
         {"name": "--all", "type": "bool", "default": false, "description": "List both remote-tracking and local branches"},
-        {"name": "--move", "type": "string", "description": "Rename the current branch"}
+        {"name": "--move", "type": "string", "description": "Rename current branch to the given name"}
       ]
     },
     {

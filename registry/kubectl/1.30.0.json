@@ -42,7 +42,7 @@
       "flags": [
         {"name": "--filename", "type": "path", "required": true, "description": "File, directory, or URL to apply"},
         {"name": "--namespace", "type": "string"},
-        {"name": "--dry-run", "type": "string", "description": "Dry run mode: none, client, or server"},
+        {"name": "--dry-run", "type": "enum", "enum_values": ["none", "client", "server"], "default": "none", "description": "Dry run mode: none, client, or server"},
         {"name": "--recursive", "type": "bool", "default": false, "description": "Recursively apply all files in the directory"}
       ]
     },
