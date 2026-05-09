@@ -16,14 +16,15 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-const MODEL: &str = "gpt-realtime-2";
+const MODEL: &str = "gpt-realtime";
 
 fn system_prompt() -> String {
-    "You are a Plexi workspace assistant running inside a Plexi terminal pane. \
-    You can control the workspace by calling the available tools, which map directly \
-    to `plexi` CLI subcommands. Keep responses concise. When you call a tool, it runs \
-    as a subprocess in this pane's environment with PLEXI_SOCKET set, so host commands \
-    will reach the running Plexi instance."
+    "You are a Plexi workspace assistant with access to function tools that execute `plexi` CLI commands. \
+    You MUST call the appropriate function tool to act on any user request. \
+    Never describe what you are about to do — just call the tool. \
+    For example, if the user says 'open a pane', call the `pane_open` function tool immediately. \
+    If a request maps to one of your registered tools, call it. Speak only to confirm completion or report errors. \
+    Keep speech to one short sentence."
         .to_string()
 }
 
@@ -159,7 +160,14 @@ async fn handle_server_event(
         }
         "session.updated" => {
             let tool_count = event["session"]["tools"].as_array().map(|a| a.len()).unwrap_or(0);
-            log::info!("agent:session: session.updated — server has {tool_count} tools");
+            let tool_choice = event["session"]["tool_choice"].as_str().unwrap_or("?");
+            let modalities = event["session"]["output_modalities"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            log::info!(
+                "agent:session: session.updated — tools={tool_count} tool_choice={tool_choice} output_modalities=[{modalities}]"
+            );
         }
 
         // Output audio — base64 PCM16 LE at 24kHz, stream to rodio sink
@@ -203,15 +211,21 @@ async fn handle_server_event(
             println!();
         }
 
-        "response.function_call_arguments.start" => {
-            let call_id = event["call_id"].as_str().unwrap_or("").to_string();
-            let name = event["name"].as_str().unwrap_or("").to_string();
-            log::info!("agent:tool_start: call_id={call_id} name={name}");
-            print!("\n\x1b[33m→ {name}\x1b[0m");
-            let _ = std::io::stdout().flush();
-            *pending_tool = Some((call_id, name, String::new()));
+        // GA Realtime emits a function_call output item BEFORE streaming arguments.
+        // Capture name + call_id here so the .delta/.done events can find them.
+        "response.output_item.added" => {
+            let item = &event["item"];
+            if item["type"].as_str() == Some("function_call") {
+                let call_id = item["call_id"].as_str().unwrap_or("").to_string();
+                let name = item["name"].as_str().unwrap_or("").to_string();
+                log::info!("agent:tool_start: call_id={call_id} name={name}");
+                print!("\n\x1b[33m→ {name}\x1b[0m");
+                let _ = std::io::stdout().flush();
+                *pending_tool = Some((call_id, name, String::new()));
+            }
         }
 
+        // Argument JSON streams in as deltas (per types/realtime/response_function_call_arguments_delta_event.py).
         "response.function_call_arguments.delta" => {
             if let Some((_, _, ref mut args)) = pending_tool {
                 if let Some(delta) = event["delta"].as_str() {
@@ -220,41 +234,57 @@ async fn handle_server_event(
             }
         }
 
+        // .done event carries the full final arguments + name (per
+        // types/realtime/response_function_call_arguments_done_event.py),
+        // so we can recover even if .added wasn't seen.
         "response.function_call_arguments.done" => {
-            if let Some((call_id, name, args)) = pending_tool.take() {
-                let args_value: Value =
-                    serde_json::from_str(&args).unwrap_or(json!({}));
-                println!(
-                    " {}",
-                    serde_json::to_string(&args_value).unwrap_or_default()
-                );
+            // Prefer accumulated state; fall back to fields on the done event.
+            let (call_id, name, args) = match pending_tool.take() {
+                Some((cid, n, a)) if !n.is_empty() => (cid, n, a),
+                _ => (
+                    event["call_id"].as_str().unwrap_or("").to_string(),
+                    event["name"].as_str().unwrap_or("").to_string(),
+                    event["arguments"].as_str().unwrap_or("").to_string(),
+                ),
+            };
 
-                log::info!("agent:tool_execute: name={name} args={args}");
-                let result = execute_tool(&name, &args_value);
-                log::info!(
-                    "agent:tool_result: name={name} result_len={}",
-                    result.len()
-                );
+            let args_str = if args.is_empty() {
+                event["arguments"].as_str().unwrap_or("{}").to_string()
+            } else {
+                args
+            };
+            let args_value: Value =
+                serde_json::from_str(&args_str).unwrap_or(json!({}));
+            println!(
+                " {}",
+                serde_json::to_string(&args_value).unwrap_or_default()
+            );
 
-                // Submit tool result back to the session
-                let response_event = json!({
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": result
-                    }
-                });
-                ws_tx
-                    .send(Message::Text(response_event.to_string()))
-                    .await?;
+            log::info!("agent:tool_execute: name={name} args={args_str}");
+            let result = execute_tool(&name, &args_value);
+            log::info!(
+                "agent:tool_result: name={name} result_len={}",
+                result.len()
+            );
 
-                // Trigger the model to continue
-                let continue_event = json!({ "type": "response.create" });
-                ws_tx
-                    .send(Message::Text(continue_event.to_string()))
-                    .await?;
-            }
+            // Submit tool result back to the session
+            let response_event = json!({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": result
+                }
+            });
+            ws_tx
+                .send(Message::Text(response_event.to_string()))
+                .await?;
+
+            // Trigger the model to continue
+            let continue_event = json!({ "type": "response.create" });
+            ws_tx
+                .send(Message::Text(continue_event.to_string()))
+                .await?;
         }
 
         "response.done" => {
@@ -270,7 +300,9 @@ async fn handle_server_event(
         }
 
         _ => {
-            log::debug!("agent:event:unhandled type={event_type}");
+            // Promoted to info so unexpected events (especially around tool calls)
+            // are visible in plexi.log without bumping the global log level.
+            log::info!("agent:event:unhandled type={event_type}");
         }
     }
 
@@ -339,8 +371,15 @@ async fn run_session(
         }
     });
 
-    // session.update — GA API schema: audio config nested under audio.input/audio.output;
-    // tools registered at the top level of the session object.
+    // session.update — GA Realtime API schema (verified against openai-python types/realtime/):
+    //   - session.type = "realtime" (required)
+    //   - audio.input.format = { type: "audio/pcm", rate: 24000 } (PCM only at 24kHz)
+    //   - audio.input.turn_detection = server_vad with auto-create_response
+    //   - audio.output.voice from canonical voice list
+    //   - tools = list of {type:"function", name, description, parameters} (FLAT, not Chat-Completions-style)
+    //   - tool_choice = "auto" | "none" | "required"
+    //   - output_modalities = ["audio"] (default; includes transcript). text-only tools still fire here.
+    //   - parallel_tool_calls = true (supported on reasoning realtime models)
     let session_update = json!({
         "type": "session.update",
         "session": {
@@ -348,6 +387,7 @@ async fn run_session(
             "instructions": system_prompt(),
             "tools": tools,
             "tool_choice": "auto",
+            "parallel_tool_calls": true,
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
@@ -362,7 +402,8 @@ async fn run_session(
                     }
                 },
                 "output": {
-                    "voice": "alloy"
+                    "format": { "type": "audio/pcm", "rate": 24000 },
+                    "voice": "marin"
                 }
             }
         }
