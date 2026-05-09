@@ -241,20 +241,11 @@ fn main() -> eframe::Result {
                     Commands::Notify { title, body, level, choices, timeout } => {
                         let mut parsed_choices: Vec<(String, String, Option<String>)> = Vec::new();
                         for raw in &choices {
-                            let segments: Vec<&str> = raw.splitn(3, ':').collect();
-                            match segments.len() {
-                                3 => {
-                                    // Label:action_type:action_arg — host-side action
-                                    let label = segments[0].to_string();
-                                    let host_action = format!("{}:{}", segments[1], segments[2]);
-                                    parsed_choices.push((label.clone(), label, Some(host_action)));
-                                }
-                                2 => {
-                                    // key:Label — existing format
-                                    parsed_choices.push((segments[0].to_string(), segments[1].to_string(), None));
-                                }
-                                _ => {
-                                    eprintln!("error: --choice must be key:Label or Label:action_type:action_arg");
+                            match cli::parse_notify_choice(raw) {
+                                Ok(choice) => parsed_choices.push(choice),
+                                Err(msg) => {
+                                    log::warn!("notify:cli: {msg}");
+                                    eprintln!("{msg}");
                                     std::process::exit(1);
                                 }
                             }
