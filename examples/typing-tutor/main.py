@@ -36,7 +36,7 @@ def _calc_stars(errors: int, total: int, time_remaining: float, time_limit: floa
         return 0
     pct = time_remaining / time_limit if time_limit > 0 else 0
     for threshold, stars in _STAR_THRESHOLDS:
-        if pct > threshold:
+        if pct >= threshold:
             return stars
     return 1
 
@@ -120,12 +120,10 @@ class TypingTutorApp(App):
         level = LEVELS[self._play_level]
         elapsed = time.time() - self._start_time
         time_remaining = max(0.0, level.time_sec - elapsed)
-        total_typed = len(level.text) if timed_out else self._typed
         errors = len(self._errors)
-        stars = 0 if timed_out and errors >= int(_MAX_ERROR_RATE * max(total_typed, 1)) else \
-            _calc_stars(errors, total_typed, time_remaining, level.time_sec)
+        stars = 0 if timed_out else _calc_stars(errors, self._typed, time_remaining, level.time_sec)
 
-        accuracy = (1.0 - errors / max(total_typed, 1)) * 100.0
+        accuracy = (1.0 - errors / max(self._typed, 1)) * 100.0
         self._result_stars = stars
         self._result_accuracy = accuracy
         self._result_time_taken = elapsed
@@ -303,14 +301,14 @@ class TypingTutorApp(App):
 
         # Live star preview
         live_stars = _calc_stars(
-            len(self._errors), max(self._typed, 1), time_remaining, level.time_sec
-        )
+            len(self._errors), self._typed, time_remaining, level.time_sec
+        ) if self._typed > 0 else 0
         star_str = "★" * live_stars + "☆" * (5 - live_stars)
 
         ctx.rect(0, 0, ctx.w, bar_h, fill=SURFACE)
         ctx.text(pad, 12, f"Level {level.id} — {level.name}", size=CAPTION, color=FG)
         ctx.text(ctx.w / 2 - 30, 12, star_str, size=CAPTION, color=ACCENT)
-        ctx.text(ctx.w - 120, 12, f"Errors: {len(self._errors)}/{max(self._typed, 1)}",
+        ctx.text(ctx.w - 120, 12, f"Errors: {len(self._errors)}/{self._typed}",
                  size=CAPTION, color=RED if self._errors else MUTED)
 
         # --- Character grid ---
@@ -381,8 +379,9 @@ class TypingTutorApp(App):
         ctx.text(cx + 20, cy + 118, f"Time:      {elapsed:.1f}s / {level.time_sec}s",
                  size=BODY, color=FG)
 
+        timed_out = self._result_time_taken >= LEVELS[self._play_level].time_sec
         if stars == 0:
-            msg = "Keep practicing — error rate too high"
+            msg = "Time's up!" if timed_out else "Keep practicing — error rate too high"
             color = RED
         elif stars == 5:
             msg = "Perfect run!"
