@@ -14,10 +14,10 @@ import time
 from plexi_sdk import App, RenderContext, BG, ACCENT, FG, RED, GREEN, MUTED
 from plexi_sdk._pipe import Pipe
 
-CELL = 20.0          # cell size in logical px
+CELL = 18.0          # cell size in logical px
 TICK = 0.15          # seconds per game tick
-COLS = 20
-ROWS = 16
+COLS = 26
+ROWS = 20
 
 DIR_MAP = {
     "up":    (0, -1),
