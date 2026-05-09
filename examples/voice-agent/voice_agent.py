@@ -14,6 +14,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -289,31 +290,35 @@ class VoiceAgentApp(App):
             self._status = "Error: OPENAI_API_KEY not set"
             return
 
+        turn_start = time.perf_counter()
+
         # 1. Transcribe
         self._status = "Transcribing..."
         self.emit.schedule_render(after_ms=50)
         loop = asyncio.get_event_loop()
+        t0 = time.perf_counter()
         try:
             text = await loop.run_in_executor(None, _transcribe, wav_bytes, api_key)
         except Exception as e:
             self.emit.error(f"voice-agent: transcription failed: {e}")
             return
+        self.emit.info(f"voice-agent: STT complete in {time.perf_counter()-t0:.2f}s text={text!r}")
         if not text:
             self.emit.info("voice-agent: empty transcription, skipping")
             return
 
-        self.emit.info(f"voice-agent: heard: {text}")
         self._status = f"Heard: {text[:50]}"
         self.emit.schedule_render(after_ms=50)
 
-        # 2. AI query (broker handles full tool-call loop)
+        # 2. AI query — model_tier="low" (Gemini Flash) is sufficient for voice
+        # commands and ~5x faster than medium for short conversational replies.
         self._history.append({"role": "user", "content": text})
         self._status = "Thinking..."
         self.emit.schedule_render(after_ms=50)
-
+        t0 = time.perf_counter()
         try:
             response = await self.emit.ai_query(
-                model_tier="medium",
+                model_tier="low",
                 system=SYSTEM_PROMPT,
                 messages=self._history,
             )
@@ -325,16 +330,27 @@ class VoiceAgentApp(App):
         reply = (response.content or "").strip()
         if reply:
             self._history.append({"role": "assistant", "content": reply})
-        self.emit.info(f"voice-agent: AI replied: {reply[:120]}")
+        self.emit.info(
+            f"voice-agent: AI complete in {time.perf_counter()-t0:.2f}s "
+            f"reply_len={len(reply)} reply={reply[:80]!r}"
+        )
 
-        # 3. TTS + play
+        # 3. TTS + play — use local macOS `say` for near-zero synthesis latency.
+        # Falls back to OpenAI TTS when OPENAI_TTS=1 is set in the environment.
         if reply:
             self._status = "Speaking..."
             self.emit.schedule_render(after_ms=50)
+            t0 = time.perf_counter()
             try:
-                tmp_path = await loop.run_in_executor(None, _tts, reply, api_key)
+                if os.environ.get("OPENAI_TTS") == "1":
+                    tmp_path = await loop.run_in_executor(None, _tts, reply, api_key)
+                else:
+                    tmp_path = await loop.run_in_executor(None, _tts_local, reply)
                 self._temp_files.append(tmp_path)
-                self.emit.info(f"voice-agent: playing TTS {tmp_path}")
+                self.emit.info(
+                    f"voice-agent: TTS complete in {time.perf_counter()-t0:.2f}s "
+                    f"total_turn={time.perf_counter()-turn_start:.2f}s"
+                )
                 self.emit.audio_play(tmp_path)  # type: ignore[attr-defined]
             except Exception as e:
                 self.emit.error(f"voice-agent: TTS failed: {e}")
@@ -426,7 +442,7 @@ def _multipart(fields: dict, files: dict) -> tuple[str, bytes]:
 
 def _transcribe(wav_bytes: bytes, api_key: str) -> str:
     content_type, body = _multipart(
-        {"model": "whisper-1", "response_format": "json"},
+        {"model": "gpt-4o-transcribe", "response_format": "json"},
         {"file": ("turn.wav", wav_bytes, "audio/wav")},
     )
     req = urllib.request.Request(
@@ -439,8 +455,25 @@ def _transcribe(wav_bytes: bytes, api_key: str) -> str:
         return json.loads(resp.read()).get("text", "").strip()
 
 
+def _tts_local(text: str) -> str:
+    """Synthesise text using macOS `say` — near-zero latency, no network round-trip.
+
+    Returns path to a temp AIFF file. Raises subprocess.CalledProcessError on failure.
+    Uses the built-in Samantha voice; set VOICE_AGENT_VOICE env var to override.
+    """
+    voice = os.environ.get("VOICE_AGENT_VOICE", "Samantha")
+    with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as f:
+        tmp_path = f.name
+    subprocess.run(
+        ["say", "-v", voice, "-o", tmp_path, text],
+        check=True,
+        timeout=10,
+    )
+    return tmp_path
+
+
 def _tts(text: str, api_key: str) -> str:
-    """Synthesise text to speech. Returns path to temp mp3 file."""
+    """Synthesise text to speech via OpenAI TTS. Returns path to temp mp3 file."""
     body = json.dumps(
         {"model": "tts-1", "voice": "alloy", "input": text[:4096]}
     ).encode()
