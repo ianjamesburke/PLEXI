@@ -245,10 +245,10 @@ pub enum PaneCmd {
         /// Pane ID (from `plexi pane list`)
         pane_id: u64,
     },
-    /// Close a pane by ID
+    /// Close a pane. Omit <pane_id> to close the current pane via PLEXI_PANE_ID.
     Close {
-        /// Pane ID (from `plexi pane list`)
-        pane_id: u64,
+        /// Pane ID (from `plexi pane list`). Defaults to PLEXI_PANE_ID if not given.
+        pane_id: Option<u64>,
     },
     /// Send text to a running pane's PTY stdin [requires PLEXI_SOCKET — run inside a Plexi pane]
     ///

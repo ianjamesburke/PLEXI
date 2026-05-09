@@ -268,7 +268,29 @@ fn main() -> eframe::Result {
                         }
                         PaneCmd::List => std::process::exit(cli::pane_list_cli()),
                         PaneCmd::Focus { pane_id } => std::process::exit(cli::pane_focus_cli(pane_id)),
-                        PaneCmd::Close { pane_id } => std::process::exit(cli::pane_close_cli(pane_id)),
+                        PaneCmd::Close { pane_id } => {
+                            let id = match pane_id {
+                                Some(id) => id,
+                                None => {
+                                    let s = match std::env::var("PLEXI_PANE_ID") {
+                                        Ok(s) => s,
+                                        Err(_) => {
+                                            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or pass a pane ID explicitly");
+                                            std::process::exit(1);
+                                        }
+                                    };
+                                    match s.parse::<u64>() {
+                                        Ok(id) => id,
+                                        Err(_) => {
+                                            eprintln!("error: PLEXI_PANE_ID is not a valid number: {s}");
+                                            std::process::exit(1);
+                                        }
+                                    }
+                                }
+                            };
+                            log::info!("pane_close:cli: pane_id={id}");
+                            std::process::exit(cli::pane_close_cli(id));
+                        }
                         PaneCmd::Send { pane_id, text } => std::process::exit(cli::pane_send_cli(pane_id, &text)),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                     },
