@@ -375,13 +375,13 @@ Then send a synchronous notification so the user gets pulled in only when ready 
 ```bash
 RESULT=$(plexi notify --title "PR #<n> ready to test" \
   --body "<title>. Pass criteria: <one-line summary>. Reply pass/fail/modify in pane." \
-  --choice "a:Open PR" \
+  --choice "a:Talk to Claude:pane_focus:$SHIP_PANE" \
   --choice "b:Open PR build" \
-  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE")
+  --choice "c:Open PR")
 
 case "$RESULT" in
-  a) open "<pr-url>" ;;
   b) open -a "Plexi PR<n>" ;;
+  c) open "<pr-url>" ;;
 esac
 ```
 Choice `c` is the only host-side action (focuses this pane). `a` and `b` return their key; the case statement runs the corresponding shell command. After the click, **STOP. Do not proceed until the user replies in the pane with pass/fail/modify.**
