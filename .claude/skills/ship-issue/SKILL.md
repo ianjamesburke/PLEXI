@@ -247,7 +247,7 @@ Run after PR creation, before installing the PR build.
 
 **1. CodeRabbit local review** — run from inside the feature worktree:
 ```bash
-coderabbit review --agent 2>&1
+cr 2>&1
 ```
 Read the output. Fix any `error` or `warning` severity findings on the feature branch before proceeding — these are blocking. `info`/`suggestion` items are advisory; apply if trivial, skip if out of scope. If fixes were made, commit, push, then re-run to confirm clean.
 
@@ -307,6 +307,10 @@ If the log already confirms pass or fail, state your finding directly rather tha
 **Test fixture rule:** If testing requires a helper binary, shim, or fixture that can be installed in advance, install it yourself before surfacing the testing block. Remove it after the user confirms pass. Never include a multi-step shell heredoc in the testing instructions for the user to run — that's the agent's job.
 
 **CLI output verification rule:** Before including any command in the testing block, run it yourself with `plexi-pr-<N>` and verify the output is what the user will see — no log noise, unexpected errors, or extraneous text mixed into stdout. If the output is noisy, investigate and note it in the testing block rather than letting the user discover it.
+
+**Test discrimination rule:** For bug-fix PRs, the test command must produce *different* output in the broken vs fixed case — not just confirm the feature ran. Before adding any command to the testing block, mentally simulate what the broken behavior would output. `echo 'a b'` and `echo a b` produce identical output, making it useless for arg-splitting bugs; prefer `printf '%s\n' "a b"` (shows 1 line fixed vs 2 broken) or `python3 -c "import sys; print(len(sys.argv)-1)"` to count args.
+
+**CLI self-test rule:** For changes where behavior is verifiable without a running Plexi host (completions output, help text, arg parsing, command exit codes, stdout format), run those commands yourself using `plexi-pr-<N>` after install and report the result directly. Do not surface a testing block asking the user to run a pure CLI command you could have run yourself. Reserve the testing block for behavior that genuinely requires human eyes or a running app (UI, notifications, terminal pane output, socket-dependent responses).
 
 **Python test script rule:** For any PR where the user must run more than one command, or where copy-pasting commands across panes is awkward, write a `test_pr<N>.py` at the repo root instead of a markdown testing block. The script:
 - Runs all non-interactive checks itself (CLI exit codes, error message content, log assertions via `tail`)
