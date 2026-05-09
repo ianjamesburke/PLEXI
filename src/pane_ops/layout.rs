@@ -476,10 +476,10 @@ impl PlexiApp {
                         .iter()
                         .position(|&c| c == child_in_parent)
                         .map(|pos| {
-                            let sibling = if pos > 0 {
-                                children[pos - 1]
-                            } else {
+                            let sibling = if pos + 1 < children.len() {
                                 children[pos + 1]
+                            } else {
+                                children[pos - 1]
                             };
                             let is_tabs = matches!(container, Container::Tabs(_));
                             let is_linear = matches!(container, Container::Linear(_));
@@ -537,6 +537,7 @@ impl PlexiApp {
                 all_panes_must_have_tabs: true,
                 ..SimplificationOptions::default()
             });
+            log::info!("close_tile: focus -> {:?}", next);
             ctx.focused_pane = next;
 
             removed
