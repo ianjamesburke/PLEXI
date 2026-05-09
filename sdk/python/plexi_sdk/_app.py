@@ -73,6 +73,7 @@ class App:
     """
 
     def __init__(self) -> None:
+        self._sdk_initialized: bool = True
         self.app_id: str = ""
         self.workspace_root: str = ""
         self.capabilities: list[str] = []
@@ -138,6 +139,16 @@ class App:
         self._mx: float = 0.0
         self._my: float = 0.0
         self._click_buf: list[tuple[float, float]] = []
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        orig_init = cls.__dict__.get("__init__")
+        if orig_init is not None:
+            def wrapped(self_inner: "App", *args: Any, _orig: Any = orig_init, **kw: Any) -> None:
+                if not getattr(self_inner, "_sdk_initialized", False):
+                    App.__init__(self_inner)
+                _orig(self_inner, *args, **kw)
+            cls.__init__ = wrapped  # type: ignore[method-assign]
 
     # ── Override these ──────────────────────────────────────────────────────
     # All hooks may be overridden as either `def` (sync) or `async def`.
