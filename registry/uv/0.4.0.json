@@ -1,0 +1,202 @@
+{
+  "plexi_version": "0.1",
+  "name": "uv",
+  "version": "0.4.0",
+  "description": "An extremely fast Python package and project manager",
+  "icon": "⚡",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "init",
+      "description": "Create a new Python project",
+      "ui_hint": "form",
+      "args": [
+        {"name": "path", "type": "path", "required": false, "description": "Path to initialize the project at (default: current directory)"}
+      ],
+      "flags": [
+        {"name": "--name", "type": "string", "description": "Project name (default: directory name)"},
+        {"name": "--lib", "type": "bool", "default": false, "description": "Set up the project as a library"},
+        {"name": "--script", "type": "bool", "default": false, "description": "Set up as a single-file script"},
+        {"name": "--no-readme", "type": "bool", "default": false, "description": "Do not create a README.md"}
+      ],
+      "writes": ["pyproject.toml", "src/"]
+    },
+    {
+      "name": "add",
+      "description": "Add dependencies to the project",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "packages", "type": "string", "required": true, "description": "Package(s) to add"}
+      ],
+      "flags": [
+        {"name": "--dev", "type": "bool", "default": false, "description": "Add as a development dependency"},
+        {"name": "--optional", "type": "string", "description": "Add to a named optional dependency group"},
+        {"name": "--editable", "type": "bool", "default": false, "description": "Add as an editable install from a local path"}
+      ]
+    },
+    {
+      "name": "remove",
+      "description": "Remove dependencies from the project",
+      "args": [
+        {"name": "packages", "type": "string", "required": true, "description": "Package(s) to remove"}
+      ],
+      "flags": [
+        {"name": "--dev", "type": "bool", "default": false}
+      ]
+    },
+    {
+      "name": "sync",
+      "description": "Sync the project environment with the lockfile",
+      "ui_hint": "stream",
+      "streaming": true,
+      "flags": [
+        {"name": "--frozen", "type": "bool", "default": false, "description": "Sync without updating the lockfile"},
+        {"name": "--no-dev", "type": "bool", "default": false, "description": "Omit development dependencies"},
+        {"name": "--extra", "type": "string", "description": "Include optional dependency group"}
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Run a command in the project environment",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "command", "type": "string", "required": true, "description": "Command to run (e.g. python, pytest, myapp)"}
+      ],
+      "flags": [
+        {"name": "--with", "type": "string", "description": "Run with additional packages installed"},
+        {"name": "--python", "type": "string", "description": "Python interpreter to use"}
+      ]
+    },
+    {
+      "name": "tool",
+      "description": "Run and install commands provided by Python packages",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "install",
+          "description": "Install a tool",
+          "ui_hint": "stream",
+          "streaming": true,
+          "args": [
+            {"name": "package", "type": "string", "required": true}
+          ],
+          "flags": [
+            {"name": "--force", "type": "bool", "default": false}
+          ]
+        },
+        {
+          "name": "run",
+          "description": "Run a tool without installing it permanently",
+          "ui_hint": "stream",
+          "streaming": true,
+          "args": [
+            {"name": "command", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "uninstall",
+          "description": "Uninstall a tool",
+          "args": [
+            {"name": "package", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "list",
+          "description": "List installed tools",
+          "ui_hint": "list"
+        }
+      ]
+    },
+    {
+      "name": "pip",
+      "description": "Manage packages in a virtual environment",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "install",
+          "description": "Install packages",
+          "ui_hint": "stream",
+          "streaming": true,
+          "args": [
+            {"name": "packages", "type": "string", "required": false, "description": "Package(s) to install"}
+          ],
+          "flags": [
+            {"name": "--requirement", "type": "path", "description": "Install from requirements file"},
+            {"name": "--editable", "type": "path", "description": "Install in editable mode from path"},
+            {"name": "--upgrade", "type": "bool", "default": false}
+          ]
+        },
+        {
+          "name": "uninstall",
+          "description": "Uninstall packages",
+          "args": [
+            {"name": "packages", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "list",
+          "description": "List installed packages",
+          "ui_hint": "list",
+          "flags": [
+            {"name": "--outdated", "type": "bool", "default": false}
+          ]
+        },
+        {
+          "name": "freeze",
+          "description": "Output installed packages in requirements format",
+          "ui_hint": "output"
+        }
+      ]
+    },
+    {
+      "name": "venv",
+      "description": "Create a virtual environment",
+      "ui_hint": "form",
+      "args": [
+        {"name": "path", "type": "path", "required": false, "description": "Path to create the environment (default: .venv)"}
+      ],
+      "flags": [
+        {"name": "--python", "type": "string", "description": "Python interpreter version (e.g. 3.11)"},
+        {"name": "--seed", "type": "bool", "default": false, "description": "Prepopulate with pip, setuptools, and wheel"}
+      ],
+      "writes": [".venv/"]
+    },
+    {
+      "name": "lock",
+      "description": "Update the project's lockfile",
+      "ui_hint": "stream",
+      "streaming": true,
+      "flags": [
+        {"name": "--upgrade", "type": "bool", "default": false, "description": "Allow package upgrades"},
+        {"name": "--upgrade-package", "type": "string", "description": "Allow upgrades for a specific package only"}
+      ],
+      "writes": ["uv.lock"]
+    },
+    {
+      "name": "python",
+      "description": "Manage Python installations",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "install",
+          "description": "Install a Python version",
+          "ui_hint": "stream",
+          "streaming": true,
+          "args": [
+            {"name": "version", "type": "string", "required": true, "description": "Python version (e.g. 3.11, 3.12)"}
+          ]
+        },
+        {
+          "name": "list",
+          "description": "List available and installed Python versions",
+          "ui_hint": "list",
+          "flags": [
+            {"name": "--only-installed", "type": "bool", "default": false}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,152 @@
+{
+  "plexi_version": "0.1",
+  "name": "brew",
+  "version": "4.2.0",
+  "description": "The Missing Package Manager for macOS",
+  "icon": "🍺",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "install",
+      "description": "Install a formula or cask",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "formula", "type": "string", "required": true, "description": "Formula or cask name(s)"}
+      ],
+      "flags": [
+        {"name": "--cask", "type": "bool", "default": false, "description": "Install as a cask (macOS app)"},
+        {"name": "--formula", "type": "bool", "default": false, "description": "Treat as a formula"},
+        {"name": "--force", "type": "bool", "default": false, "description": "Install without checking if already installed"}
+      ]
+    },
+    {
+      "name": "uninstall",
+      "description": "Uninstall a formula or cask",
+      "args": [
+        {"name": "formula", "type": "string", "required": true}
+      ],
+      "flags": [
+        {"name": "--cask", "type": "bool", "default": false},
+        {"name": "--force", "type": "bool", "default": false, "description": "Delete even if used by dependent formulae"}
+      ]
+    },
+    {
+      "name": "update",
+      "description": "Fetch latest version of Homebrew and formulae",
+      "ui_hint": "stream",
+      "streaming": true
+    },
+    {
+      "name": "upgrade",
+      "description": "Upgrade outdated casks and outdated, unpinned formulae",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "formula", "type": "string", "required": false, "description": "Formula(e) to upgrade (default: all outdated)"}
+      ],
+      "flags": [
+        {"name": "--cask", "type": "bool", "default": false, "description": "Upgrade casks only"},
+        {"name": "--formula", "type": "bool", "default": false, "description": "Upgrade formulae only"},
+        {"name": "--dry-run", "type": "bool", "default": false, "description": "Show what would be upgraded without upgrading"}
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Perform a substring search of cask tokens and formula names",
+      "ui_hint": "list",
+      "args": [
+        {"name": "text", "type": "string", "required": false, "description": "Search query (omit to list all formulae)"}
+      ],
+      "flags": [
+        {"name": "--casks", "type": "bool", "default": false, "description": "Search casks only"},
+        {"name": "--formulae", "type": "bool", "default": false, "description": "Search formulae only"}
+      ]
+    },
+    {
+      "name": "info",
+      "description": "Display brief statistics for a formula or cask",
+      "ui_hint": "output",
+      "args": [
+        {"name": "formula", "type": "string", "required": false, "description": "Formula or cask name"}
+      ],
+      "flags": [
+        {"name": "--json", "type": "bool", "default": false, "description": "Output in JSON format"},
+        {"name": "--installed", "type": "bool", "default": false, "description": "Print JSON of all installed formulae"}
+      ]
+    },
+    {
+      "name": "list",
+      "description": "List installed formulae and casks",
+      "ui_hint": "list",
+      "flags": [
+        {"name": "--casks", "type": "bool", "default": false},
+        {"name": "--formulae", "type": "bool", "default": false},
+        {"name": "--versions", "type": "bool", "default": false, "description": "Show the version number for installed formulae"}
+      ]
+    },
+    {
+      "name": "services",
+      "description": "Manage background services",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "list",
+          "description": "List all managed services",
+          "ui_hint": "list"
+        },
+        {
+          "name": "start",
+          "description": "Start the service formula immediately and register it to launch at login",
+          "args": [
+            {"name": "formula", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "stop",
+          "description": "Stop the service formula immediately and unregister it from launching at login",
+          "args": [
+            {"name": "formula", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "restart",
+          "description": "Stop and then start the service formula",
+          "args": [
+            {"name": "formula", "type": "string", "required": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tap",
+      "description": "Tap a formula repository",
+      "args": [
+        {"name": "user-repo", "type": "string", "required": false, "description": "Tap name in user/repo format"}
+      ],
+      "flags": [
+        {"name": "--list-pinned", "type": "bool", "default": false, "description": "List pinned taps"}
+      ]
+    },
+    {
+      "name": "untap",
+      "description": "Remove a tapped formula repository",
+      "args": [
+        {"name": "tap", "type": "string", "required": true}
+      ]
+    },
+    {
+      "name": "doctor",
+      "description": "Check your system for potential problems",
+      "ui_hint": "output"
+    },
+    {
+      "name": "cleanup",
+      "description": "Remove stale lock files and outdated downloads",
+      "flags": [
+        {"name": "--dry-run", "type": "bool", "default": false, "description": "List files that would be removed"},
+        {"name": "--prune", "type": "string", "description": "Remove all cache files older than specified days"}
+      ]
+    }
+  ]
+}

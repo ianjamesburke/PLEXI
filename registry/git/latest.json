@@ -1,0 +1,249 @@
+{
+  "plexi_version": "0.1",
+  "name": "git",
+  "version": "2.44.0",
+  "description": "Distributed version control system",
+  "icon": "🌿",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "clone",
+      "description": "Clone a repository into a new directory",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "repository", "type": "string", "required": true, "description": "Repository URL or path"},
+        {"name": "directory", "type": "path", "required": false, "description": "Target directory name"}
+      ],
+      "flags": [
+        {"name": "--depth", "type": "int", "description": "Create a shallow clone with history truncated to N commits"},
+        {"name": "--branch", "type": "string", "description": "Point HEAD at this branch instead of the default"},
+        {"name": "--single-branch", "type": "bool", "default": false, "description": "Clone only history leading to the tip of a single branch"}
+      ],
+      "writes": ["<directory>/"]
+    },
+    {
+      "name": "init",
+      "description": "Create an empty Git repository or reinitialize an existing one",
+      "ui_hint": "form",
+      "args": [
+        {"name": "directory", "type": "path", "required": false}
+      ],
+      "flags": [
+        {"name": "--bare", "type": "bool", "default": false, "description": "Create a bare repository"},
+        {"name": "--initial-branch", "type": "string", "description": "Initial branch name"}
+      ]
+    },
+    {
+      "name": "add",
+      "description": "Add file contents to the index",
+      "ui_hint": "form",
+      "args": [
+        {"name": "pathspec", "type": "path", "required": true, "description": "Files to stage"}
+      ],
+      "flags": [
+        {"name": "--all", "type": "bool", "default": false, "description": "Stage all changes including deletions"},
+        {"name": "--patch", "type": "bool", "default": false, "description": "Interactively choose hunks to stage"}
+      ]
+    },
+    {
+      "name": "commit",
+      "description": "Record changes to the repository",
+      "ui_hint": "form",
+      "flags": [
+        {"name": "--message", "type": "string", "required": true, "description": "Commit message"},
+        {"name": "--all", "type": "bool", "default": false, "description": "Stage all tracked modifications before committing"},
+        {"name": "--amend", "type": "bool", "default": false, "description": "Replace the tip of the current branch"}
+      ]
+    },
+    {
+      "name": "push",
+      "description": "Update remote refs along with associated objects",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "remote", "type": "string", "required": false, "description": "Remote name (default: origin)"},
+        {"name": "refspec", "type": "string", "required": false, "description": "Branch or ref to push"}
+      ],
+      "flags": [
+        {"name": "--force-with-lease", "type": "bool", "default": false, "description": "Safer force push; aborts if remote has new commits"},
+        {"name": "--set-upstream", "type": "bool", "default": false, "description": "Set upstream tracking for the branch"},
+        {"name": "--tags", "type": "bool", "default": false, "description": "Push all tags"}
+      ]
+    },
+    {
+      "name": "pull",
+      "description": "Fetch from and integrate with another repository or branch",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "remote", "type": "string", "required": false},
+        {"name": "branch", "type": "string", "required": false}
+      ],
+      "flags": [
+        {"name": "--rebase", "type": "bool", "default": false, "description": "Rebase instead of merge"},
+        {"name": "--ff-only", "type": "bool", "default": false, "description": "Refuse to merge; only fast-forward"}
+      ]
+    },
+    {
+      "name": "fetch",
+      "description": "Download objects and refs from another repository",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "remote", "type": "string", "required": false}
+      ],
+      "flags": [
+        {"name": "--prune", "type": "bool", "default": false, "description": "Remove remote-tracking branches no longer on the remote"},
+        {"name": "--all", "type": "bool", "default": false, "description": "Fetch all remotes"}
+      ]
+    },
+    {
+      "name": "status",
+      "description": "Show the working tree status",
+      "ui_hint": "output",
+      "flags": [
+        {"name": "--short", "type": "bool", "default": false, "description": "Give output in short format"},
+        {"name": "--porcelain", "type": "bool", "default": false, "description": "Machine-readable output"}
+      ]
+    },
+    {
+      "name": "log",
+      "description": "Show commit logs",
+      "ui_hint": "output",
+      "flags": [
+        {"name": "--oneline", "type": "bool", "default": false, "description": "Show each commit on one line"},
+        {"name": "--graph", "type": "bool", "default": false, "description": "Draw a text-based graph of commits"},
+        {"name": "--decorate", "type": "bool", "default": false, "description": "Print ref names alongside commits"},
+        {"name": "--author", "type": "string", "description": "Filter commits by author"}
+      ]
+    },
+    {
+      "name": "diff",
+      "description": "Show changes between commits, commit and working tree, etc.",
+      "ui_hint": "output",
+      "args": [
+        {"name": "commit", "type": "string", "required": false, "description": "Commit, branch, or ref to diff against"}
+      ],
+      "flags": [
+        {"name": "--staged", "type": "bool", "default": false, "description": "Compare staged changes to last commit"},
+        {"name": "--stat", "type": "bool", "default": false, "description": "Show diffstat summary only"}
+      ]
+    },
+    {
+      "name": "checkout",
+      "description": "Switch branches or restore working tree files",
+      "ui_hint": "form",
+      "args": [
+        {"name": "branch-or-path", "type": "string", "required": true, "description": "Branch name, tag, or file path"}
+      ],
+      "flags": [
+        {"name": "--branch", "type": "string", "description": "Create and check out a new branch"},
+        {"name": "--force", "type": "bool", "default": false, "description": "Proceed even if index or working tree differs from HEAD"}
+      ]
+    },
+    {
+      "name": "branch",
+      "description": "List, create, or delete branches",
+      "ui_hint": "list",
+      "args": [
+        {"name": "branchname", "type": "string", "required": false}
+      ],
+      "flags": [
+        {"name": "--delete", "type": "string", "description": "Delete the named branch"},
+        {"name": "--all", "type": "bool", "default": false, "description": "List both remote-tracking and local branches"},
+        {"name": "--move", "type": "string", "description": "Rename the current branch"}
+      ]
+    },
+    {
+      "name": "merge",
+      "description": "Join two or more development histories together",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "branch", "type": "string", "required": true, "description": "Branch to merge into HEAD"}
+      ],
+      "flags": [
+        {"name": "--no-ff", "type": "bool", "default": false, "description": "Create a merge commit even for fast-forward cases"},
+        {"name": "--squash", "type": "bool", "default": false, "description": "Squash all merged commits into a single working tree change"},
+        {"name": "--abort", "type": "bool", "default": false, "description": "Abort an in-progress merge"}
+      ]
+    },
+    {
+      "name": "rebase",
+      "description": "Reapply commits on top of another base tip",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "upstream", "type": "string", "required": false, "description": "Branch or commit to rebase onto"}
+      ],
+      "flags": [
+        {"name": "--abort", "type": "bool", "default": false, "description": "Abort the current rebase operation"},
+        {"name": "--continue", "type": "bool", "default": false, "description": "Restart after resolving a conflict"},
+        {"name": "--skip", "type": "bool", "default": false, "description": "Skip the current conflicting patch"}
+      ]
+    },
+    {
+      "name": "stash",
+      "description": "Stash the changes in a dirty working directory away",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "push",
+          "description": "Save local modifications to a new stash entry",
+          "flags": [
+            {"name": "--message", "type": "string", "description": "Stash description"},
+            {"name": "--include-untracked", "type": "bool", "default": false}
+          ]
+        },
+        {
+          "name": "pop",
+          "description": "Apply a stash and remove it from the stash list"
+        },
+        {
+          "name": "list",
+          "description": "List stash entries",
+          "ui_hint": "output"
+        },
+        {
+          "name": "drop",
+          "description": "Remove a stash entry",
+          "args": [
+            {"name": "stash", "type": "string", "required": false, "description": "Stash ref (default: stash@{0})"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "remote",
+      "description": "Manage set of tracked repositories",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "add",
+          "description": "Add a remote named <name> for the repository at <url>",
+          "ui_hint": "form",
+          "args": [
+            {"name": "name", "type": "string", "required": true},
+            {"name": "url", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "remove",
+          "description": "Remove the remote named <name>",
+          "args": [
+            {"name": "name", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "get-url",
+          "description": "Retrieve the URL for a remote",
+          "ui_hint": "output",
+          "args": [
+            {"name": "name", "type": "string", "required": true}
+          ]
+        }
+      ]
+    }
+  ]
+}

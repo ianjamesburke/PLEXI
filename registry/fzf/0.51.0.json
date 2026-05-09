@@ -1,0 +1,44 @@
+{
+  "plexi_version": "0.1",
+  "name": "fzf",
+  "version": "0.51.0",
+  "description": "A command-line fuzzy finder",
+  "icon": "🔎",
+  "default_view": "output",
+  "commands": [
+    {
+      "name": "fzf",
+      "description": "Fuzzy-search over stdin and output selected items to stdout",
+      "ui_hint": "output",
+      "flags": [
+        {"name": "--query", "type": "string", "description": "Start the finder with the given query"},
+        {"name": "--filter", "type": "string", "description": "Filter mode: apply the query and exit without interactive UI"},
+        {"name": "--multi", "type": "bool", "default": false, "description": "Enable multi-select with Tab/Shift-Tab"},
+        {"name": "--no-sort", "type": "bool", "default": false, "description": "Do not sort the result"},
+        {"name": "--reverse", "type": "bool", "default": false, "description": "Display in reverse order (prompt at top)"},
+        {"name": "--exact", "type": "bool", "default": false, "description": "Enable exact-match"},
+        {"name": "--case-sensitive", "type": "bool", "default": false},
+        {"name": "--ignore-case", "type": "bool", "default": false},
+        {"name": "--delimiter", "type": "string", "description": "Field delimiter regex for nth and with-nth (default: AWK-style)"},
+        {"name": "--nth", "type": "string", "description": "Comma-separated list of field index expressions for search scope"},
+        {"name": "--with-nth", "type": "string", "description": "Transform presentation of each line using field index expressions"},
+        {"name": "--prompt", "type": "string", "description": "Input prompt (default: '> ')"},
+        {"name": "--header", "type": "string", "description": "String to print as sticky header"},
+        {"name": "--header-lines", "type": "int", "description": "Treat N lines of input as sticky header"},
+        {"name": "--preview", "type": "string", "description": "Command to execute as preview for the focused item (use {} as placeholder)"},
+        {"name": "--preview-window", "type": "string", "description": "Preview window layout (e.g. right:50%:wrap)"},
+        {"name": "--bind", "type": "string", "description": "Custom key binding (key:action, e.g. ctrl-a:select-all)"},
+        {"name": "--height", "type": "string", "description": "Display fzf window below the cursor with the given height (e.g. 40%)"},
+        {"name": "--min-height", "type": "int", "description": "Minimum height when --height is given as a percent"},
+        {"name": "--border", "type": "string", "description": "Draw border around the finder: rounded, sharp, bold, block, etc."},
+        {"name": "--ansi", "type": "bool", "default": false, "description": "Enable processing of ANSI color codes in input"},
+        {"name": "--color", "type": "string", "description": "Color scheme (e.g. dark, light, 16, bw, or custom fg:N,bg:N)"},
+        {"name": "--no-mouse", "type": "bool", "default": false, "description": "Disable mouse"},
+        {"name": "--print0", "type": "bool", "default": false, "description": "Separate output items with NUL instead of newline"},
+        {"name": "--read0", "type": "bool", "default": false, "description": "Read input items delimited by NUL instead of newline"},
+        {"name": "--select-1", "type": "bool", "default": false, "description": "Automatically select the only match"},
+        {"name": "--exit-0", "type": "bool", "default": false, "description": "Exit immediately when there's no match"}
+      ]
+    }
+  ]
+}

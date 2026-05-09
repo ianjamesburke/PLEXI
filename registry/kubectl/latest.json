@@ -1,0 +1,193 @@
+{
+  "plexi_version": "0.1",
+  "name": "kubectl",
+  "version": "1.30.0",
+  "description": "Kubernetes command-line tool",
+  "icon": "☸️",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "get",
+      "description": "Display one or many resources",
+      "ui_hint": "list",
+      "args": [
+        {"name": "resource", "type": "string", "required": true, "description": "Resource type (pods, deployments, services, nodes, etc.)"},
+        {"name": "name", "type": "string", "required": false, "description": "Resource name (omit to list all)"}
+      ],
+      "flags": [
+        {"name": "--namespace", "type": "string", "description": "Namespace to query (default: current context)"},
+        {"name": "--all-namespaces", "type": "bool", "default": false, "description": "Query across all namespaces"},
+        {"name": "--output", "type": "string", "description": "Output format: json, yaml, wide, name, jsonpath=..."},
+        {"name": "--selector", "type": "string", "description": "Label selector to filter resources"},
+        {"name": "--watch", "type": "bool", "default": false, "description": "Watch for changes to the resource"}
+      ]
+    },
+    {
+      "name": "describe",
+      "description": "Show detailed state of one or many resources",
+      "ui_hint": "output",
+      "args": [
+        {"name": "resource", "type": "string", "required": true, "description": "Resource type"},
+        {"name": "name", "type": "string", "required": false, "description": "Resource name"}
+      ],
+      "flags": [
+        {"name": "--namespace", "type": "string"}
+      ]
+    },
+    {
+      "name": "apply",
+      "description": "Apply a configuration to a resource by file or stdin",
+      "ui_hint": "stream",
+      "streaming": true,
+      "flags": [
+        {"name": "--filename", "type": "path", "required": true, "description": "File, directory, or URL to apply"},
+        {"name": "--namespace", "type": "string"},
+        {"name": "--dry-run", "type": "string", "description": "Dry run mode: none, client, or server"},
+        {"name": "--recursive", "type": "bool", "default": false, "description": "Recursively apply all files in the directory"}
+      ]
+    },
+    {
+      "name": "delete",
+      "description": "Delete resources by file names, stdin, resource and names",
+      "ui_hint": "form",
+      "args": [
+        {"name": "resource", "type": "string", "required": false, "description": "Resource type"},
+        {"name": "name", "type": "string", "required": false, "description": "Resource name"}
+      ],
+      "flags": [
+        {"name": "--filename", "type": "path", "description": "File containing resource to delete"},
+        {"name": "--namespace", "type": "string"},
+        {"name": "--grace-period", "type": "int", "description": "Period of time in seconds given to the resource to terminate"},
+        {"name": "--force", "type": "bool", "default": false, "description": "Force immediate deletion (bypasses graceful termination)"}
+      ]
+    },
+    {
+      "name": "logs",
+      "description": "Print the logs for a container in a pod",
+      "ui_hint": "output",
+      "args": [
+        {"name": "pod", "type": "string", "required": true, "description": "Pod name"}
+      ],
+      "flags": [
+        {"name": "--container", "type": "string", "description": "Container name (if pod has multiple)"},
+        {"name": "--follow", "type": "bool", "default": false, "description": "Stream the logs"},
+        {"name": "--previous", "type": "bool", "default": false, "description": "Print logs from a previously terminated container"},
+        {"name": "--tail", "type": "int", "description": "Lines of recent log output to show"},
+        {"name": "--namespace", "type": "string"}
+      ]
+    },
+    {
+      "name": "exec",
+      "description": "Execute a command in a container",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "pod", "type": "string", "required": true},
+        {"name": "command", "type": "string", "required": false}
+      ],
+      "flags": [
+        {"name": "--container", "type": "string"},
+        {"name": "--stdin", "type": "bool", "default": false},
+        {"name": "--tty", "type": "bool", "default": false},
+        {"name": "--namespace", "type": "string"}
+      ]
+    },
+    {
+      "name": "port-forward",
+      "description": "Forward one or more local ports to a pod",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "resource", "type": "string", "required": true, "description": "Pod, deployment, or service to forward to"},
+        {"name": "ports", "type": "string", "required": true, "description": "Local:remote port mapping (e.g. 8080:80)"}
+      ],
+      "flags": [
+        {"name": "--namespace", "type": "string"}
+      ]
+    },
+    {
+      "name": "rollout",
+      "description": "Manage the rollout of a resource",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "status",
+          "description": "Show the status of the rollout",
+          "ui_hint": "output",
+          "args": [
+            {"name": "resource", "type": "string", "required": true, "description": "Deployment or daemonset name"}
+          ]
+        },
+        {
+          "name": "restart",
+          "description": "Restart a resource",
+          "args": [
+            {"name": "resource", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "undo",
+          "description": "Undo a previous rollout",
+          "args": [
+            {"name": "resource", "type": "string", "required": true}
+          ],
+          "flags": [
+            {"name": "--to-revision", "type": "int", "description": "Revision to roll back to"}
+          ]
+        },
+        {
+          "name": "history",
+          "description": "View rollout history",
+          "ui_hint": "output",
+          "args": [
+            {"name": "resource", "type": "string", "required": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "scale",
+      "description": "Set a new size for a deployment, replica set, or stateful set",
+      "ui_hint": "form",
+      "args": [
+        {"name": "resource", "type": "string", "required": true, "description": "Resource type/name (e.g. deployment/myapp)"}
+      ],
+      "flags": [
+        {"name": "--replicas", "type": "int", "required": true, "description": "Number of replicas"},
+        {"name": "--namespace", "type": "string"}
+      ]
+    },
+    {
+      "name": "config",
+      "description": "Modify kubeconfig files",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "get-contexts",
+          "description": "List available kubeconfig contexts",
+          "ui_hint": "list"
+        },
+        {
+          "name": "use-context",
+          "description": "Switch to a different kubeconfig context",
+          "ui_hint": "form",
+          "args": [
+            {"name": "context", "type": "string", "required": true}
+          ]
+        },
+        {
+          "name": "current-context",
+          "description": "Display the current context",
+          "ui_hint": "output"
+        },
+        {
+          "name": "set-namespace",
+          "description": "Set the default namespace in the current context",
+          "args": [
+            {"name": "namespace", "type": "string", "required": true}
+          ]
+        }
+      ]
+    }
+  ]
+}
