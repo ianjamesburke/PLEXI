@@ -1739,8 +1739,14 @@ impl App for ProcessApp {
                             | egui::Key::Comma
                             | egui::Key::Period
                             | egui::Key::Slash
+                            | egui::Key::Space
+                            | egui::Key::Plus
                     );
-                    if !is_printable_key || modifiers.ctrl || modifiers.command {
+                    // Cmd-modified chords are reserved for host shortcuts
+                    // (Cmd+Enter zoom, Cmd+P palette, Cmd+Shift+A notifications,
+                    // etc.). Apps can't shadow a host keybind; they use bare
+                    // letters or non-Cmd modifiers instead.
+                    if (!is_printable_key || modifiers.ctrl) && !modifiers.command {
                         self.send_event(&PlexiEvent::Key {
                             key: format!("{key:?}"),
                             modifiers: Modifiers {
