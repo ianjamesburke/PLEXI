@@ -1264,6 +1264,36 @@ pub fn pack_export_cli(dest_path: &str) -> i32 {
     }
 }
 
+/// Parse a single `--choice` argument into `(key, label, host_action)`.
+///
+/// Accepted formats:
+/// - `key:Label`                            → (key, Label, None)
+/// - `Label:action_type:action_arg`         → (Label, Label, Some("action_type:action_arg"))
+/// - `key:Label:action_type:action_arg`     → (key, Label, Some("action_type:action_arg"))
+///
+/// Any other segment count is rejected with a clear error string.
+pub(crate) fn parse_notify_choice(raw: &str) -> Result<(String, String, Option<String>), String> {
+    let segments: Vec<&str> = raw.splitn(5, ':').collect();
+    match segments.as_slice() {
+        [key, label, action_type, action_arg] => Ok((
+            key.to_string(),
+            label.to_string(),
+            Some(format!("{action_type}:{action_arg}")),
+        )),
+        [label, action_type, action_arg] => {
+            let label_str = label.to_string();
+            Ok((label_str.clone(), label_str, Some(format!("{action_type}:{action_arg}"))))
+        }
+        [key, label] => Ok((key.to_string(), label.to_string(), None)),
+        _ => Err(format!(
+            "error: --choice requires 2, 3, or 4 colon-separated segments \
+             (key:Label / Label:action:arg / key:Label:action:arg) — got {} in {:?}",
+            segments.len(),
+            raw
+        )),
+    }
+}
+
 /// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]
 ///   [--choice key:Label]... [--timeout N]`.
 ///
@@ -2953,7 +2983,7 @@ _plexi() {
             '--title[Notification title]:title:' \
             '--body[Notification body]:body:' \
             '--level[Level]:level:(info warn error)' \
-            '--choice[Choice option (key:Label or Label:pane_focus:<id>)]:choice:' \
+            '--choice[Choice option (key:Label / Label:action:arg / key:Label:action:arg)]:choice:' \
             '--timeout[Timeout in seconds]:seconds:'
           ;;
         install)
@@ -3114,7 +3144,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from context" -a set-root -d "Se
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l title -d "Notification title"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l body -d "Notification body"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l level -d "Level" -a "info warn error"
-complete -c plexi -n "__fish_seen_subcommand_from notify" -l choice -d "Choice option (key:Label or Label:pane_focus:<id>)"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l choice -d "Choice option (key:Label / Label:action:arg / key:Label:action:arg)"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l timeout -d "Timeout in seconds"
 
 # install flags
@@ -3136,14 +3166,50 @@ complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout
 
 #[cfg(test)]
 mod notify_tests {
-    use super::notify_cli;
+    use super::{notify_cli, parse_notify_choice};
 
     /// Without PLEXI_SOCKET set, notify_cli must fail fast (exit 1) rather than panic.
     #[test]
     fn notify_cli_no_socket_returns_one() {
-        // Ensure env var is unset for this test.
         std::env::remove_var("PLEXI_SOCKET");
         let code = notify_cli("Test title", "Test body", "info", &[], 0);
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn parse_choice_two_segment() {
+        let (key, label, action) = parse_notify_choice("open_pr:Open PR").unwrap();
+        assert_eq!(key, "open_pr");
+        assert_eq!(label, "Open PR");
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn parse_choice_three_segment_host_action() {
+        let (key, label, action) = parse_notify_choice("Talk to Claude:pane_focus:188").unwrap();
+        assert_eq!(key, "Talk to Claude");
+        assert_eq!(label, "Talk to Claude");
+        assert_eq!(action.as_deref(), Some("pane_focus:188"));
+    }
+
+    #[test]
+    fn parse_choice_four_segment_key_label_action() {
+        let (key, label, action) =
+            parse_notify_choice("c:Talk to Claude:pane_focus:188").unwrap();
+        assert_eq!(key, "c");
+        assert_eq!(label, "Talk to Claude");
+        assert_eq!(action.as_deref(), Some("pane_focus:188"));
+    }
+
+    #[test]
+    fn parse_choice_five_segment_is_error() {
+        let err = parse_notify_choice("a:b:c:d:e").unwrap_err();
+        assert!(err.contains("5"), "error should mention segment count: {err}");
+    }
+
+    #[test]
+    fn parse_choice_one_segment_is_error() {
+        let err = parse_notify_choice("nocolon").unwrap_err();
+        assert!(err.contains("1"), "error should mention segment count: {err}");
     }
 }
