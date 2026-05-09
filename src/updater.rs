@@ -32,13 +32,16 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
 }
 
 /// Returns true only when `a` is strictly newer than `b` by semver (M.m.p).
-/// Unparseable components are treated as 0.
+/// Pre-release suffixes (e.g. `-alpha`, `-rc1`) are stripped before comparison.
 fn semver_gt(a: &str, b: &str) -> bool {
+    fn parse_component(s: &str) -> u64 {
+        s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
+    }
     let parse = |s: &str| -> (u64, u64, u64) {
         let mut parts = s.splitn(4, '.');
-        let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-        let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-        let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let major = parts.next().map(parse_component).unwrap_or(0);
+        let minor = parts.next().map(parse_component).unwrap_or(0);
+        let patch = parts.next().map(parse_component).unwrap_or(0);
         (major, minor, patch)
     };
     parse(a) > parse(b)
@@ -56,6 +59,11 @@ mod tests {
         assert!(!semver_gt("3.4.113", "3.4.113")); // equal
         assert!(!semver_gt("3.4.111", "3.4.113")); // behind
         assert!(!semver_gt("3.4.112", "3.4.113")); // one behind
+        // pre-release suffix stripping (#876)
+        assert!(!semver_gt("3.4.84", "3.4.84-alpha")); // equal after strip
+        assert!(semver_gt("3.4.85", "3.4.84-alpha"));  // newer than pre-release
+        assert!(!semver_gt("3.4.84-alpha", "3.4.84")); // pre-release not newer than release
+        assert!(!semver_gt("3.5.0-rc1", "3.5.0"));     // rc not newer than final
     }
 }
 
@@ -76,7 +84,10 @@ fn cached_or_fetch(cache_path: &Path) -> Option<String> {
 }
 
 fn fetch_and_cache(cache_path: &Path) -> Option<String> {
-    let response = ureq::get(API_URL)
+    let response = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .get(API_URL)
         .set("User-Agent", "plexi-updater")
         .call()
         .map_err(|e| log::warn!("update check: request failed: {e}"))
