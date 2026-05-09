@@ -15,6 +15,94 @@ const ROW_HEIGHT: f32 = 58.0;
 const MIN_SIDEBAR_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Normal,
+    Search,
+    Empty,
+}
+
+#[derive(Debug)]
+enum FileBrowserAction {
+    SelectNext,
+    SelectPrev,
+    SelectFirst,
+    SelectLast,
+    PageDown,
+    PageUp,
+    Activate,
+    NavigateUp,
+    Backspace,
+    Escape,
+    EnterSearch,
+    ToggleSort,
+    Refresh,
+    AppendText(String),
+}
+
+fn classify_key(input: &egui::InputState) -> Option<FileBrowserAction> {
+    if input.key_pressed(egui::Key::Escape) {
+        return Some(FileBrowserAction::Escape);
+    }
+    if input.key_pressed(egui::Key::Backspace) {
+        return Some(FileBrowserAction::Backspace);
+    }
+    if input.key_pressed(egui::Key::ArrowDown)
+        || (input.key_pressed(egui::Key::J) && !input.modifiers.any())
+    {
+        return Some(FileBrowserAction::SelectNext);
+    }
+    if input.key_pressed(egui::Key::ArrowUp)
+        || (input.key_pressed(egui::Key::K) && !input.modifiers.any())
+    {
+        return Some(FileBrowserAction::SelectPrev);
+    }
+    if input.key_pressed(egui::Key::Home) {
+        return Some(FileBrowserAction::SelectFirst);
+    }
+    if input.key_pressed(egui::Key::End) {
+        return Some(FileBrowserAction::SelectLast);
+    }
+    if input.key_pressed(egui::Key::PageDown) {
+        return Some(FileBrowserAction::PageDown);
+    }
+    if input.key_pressed(egui::Key::PageUp) {
+        return Some(FileBrowserAction::PageUp);
+    }
+    if !input.modifiers.command
+        && (input.key_pressed(egui::Key::Enter)
+            || input.key_pressed(egui::Key::ArrowRight)
+            || input.key_pressed(egui::Key::L))
+    {
+        return Some(FileBrowserAction::Activate);
+    }
+    if !input.modifiers.command
+        && (input.key_pressed(egui::Key::ArrowLeft)
+            || input.key_pressed(egui::Key::H))
+    {
+        return Some(FileBrowserAction::NavigateUp);
+    }
+    if input.key_pressed(egui::Key::Slash) && !input.modifiers.command {
+        return Some(FileBrowserAction::EnterSearch);
+    }
+    if input.key_pressed(egui::Key::S) && !input.modifiers.any() {
+        return Some(FileBrowserAction::ToggleSort);
+    }
+    if input.key_pressed(egui::Key::R) && !input.modifiers.any() {
+        return Some(FileBrowserAction::Refresh);
+    }
+    let mut text = String::new();
+    for event in &input.events {
+        if let egui::Event::Text(t) = event {
+            text.push_str(t);
+        }
+    }
+    if !text.is_empty() {
+        return Some(FileBrowserAction::AppendText(text));
+    }
+    None
+}
+
 pub struct FileBrowserApp {
     pub cwd: PathBuf,
     entries: Vec<Entry>,
@@ -715,18 +803,43 @@ impl App for FileBrowserApp {
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> bool {
-        // Search mode: handle all input here and return.
-        if self.in_search {
-            if input.key_pressed(egui::Key::Escape) {
+        let mode = if self.in_search {
+            Mode::Search
+        } else if self.entries.is_empty() {
+            Mode::Empty
+        } else {
+            Mode::Normal
+        };
+        let action = classify_key(input);
+        log::debug!("file_browser: handle_key mode={mode:?} action={action:?}");
+
+        match (mode, action) {
+            // Escape: closes browser in normal/empty, exits search in search mode
+            (Mode::Search, Some(FileBrowserAction::Escape)) => {
                 self.exit_search();
-                return true;
+                true
             }
-            if input.key_pressed(egui::Key::Backspace) {
+            (_, Some(FileBrowserAction::Escape)) => {
+                self.should_close = true;
+                true
+            }
+            // NavigateUp (← / H): global — no modal conflict
+            (_, Some(FileBrowserAction::NavigateUp)) => {
+                self.navigate_up();
+                true
+            }
+            // Backspace: delete char in search, navigate up elsewhere
+            (Mode::Search, Some(FileBrowserAction::Backspace)) => {
                 self.search_query.pop();
                 self.refilter();
-                return true;
+                true
             }
-            if input.key_pressed(egui::Key::Enter) {
+            (_, Some(FileBrowserAction::Backspace)) => {
+                self.navigate_up();
+                true
+            }
+            // Search mode actions
+            (Mode::Search, Some(FileBrowserAction::Activate)) => {
                 if let Some(&entry_idx) = self.search_indices.get(self.selected) {
                     let entry = self.entries[entry_idx].clone();
                     if entry.is_dir {
@@ -737,127 +850,92 @@ impl App for FileBrowserApp {
                         self.exit_search();
                     }
                 }
-                return true;
+                true
             }
-            let last_filtered = self.search_indices.len().saturating_sub(1);
-            if input.key_pressed(egui::Key::ArrowDown) || input.key_pressed(egui::Key::J) {
-                self.selected = (self.selected + 1).min(last_filtered);
+            (Mode::Search, Some(FileBrowserAction::SelectNext)) => {
+                let last = self.search_indices.len().saturating_sub(1);
+                self.selected = (self.selected + 1).min(last);
                 self.pending_scroll = true;
-                return true;
+                true
             }
-            if input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::K) {
+            (Mode::Search, Some(FileBrowserAction::SelectPrev)) => {
                 self.selected = self.selected.saturating_sub(1);
                 self.pending_scroll = true;
-                return true;
+                true
             }
-            for event in &input.events {
-                if let egui::Event::Text(text) = event {
-                    self.search_query.push_str(text);
-                    self.refilter();
+            (Mode::Search, Some(FileBrowserAction::AppendText(text))) => {
+                self.search_query.push_str(&text);
+                self.refilter();
+                true
+            }
+            // Search mode consumes all unhandled input
+            (Mode::Search, _) => true,
+            // Empty mode: no further keys handled
+            (Mode::Empty, _) => false,
+            // Normal mode actions
+            (Mode::Normal, Some(FileBrowserAction::EnterSearch)) => {
+                self.in_search = true;
+                self.search_query.clear();
+                self.refilter();
+                log::info!("file_browser: entering search mode");
+                true
+            }
+            (Mode::Normal, Some(FileBrowserAction::SelectNext)) => {
+                let last = self.entries.len().saturating_sub(1);
+                self.selected = (self.selected + 1).min(last);
+                self.pending_scroll = true;
+                true
+            }
+            (Mode::Normal, Some(FileBrowserAction::SelectPrev)) => {
+                self.selected = self.selected.saturating_sub(1);
+                self.pending_scroll = true;
+                true
+            }
+            (Mode::Normal, Some(FileBrowserAction::SelectFirst)) => {
+                self.selected = 0;
+                self.pending_scroll = true;
+                true
+            }
+            (Mode::Normal, Some(FileBrowserAction::SelectLast)) => {
+                self.selected = self.entries.len().saturating_sub(1);
+                self.pending_scroll = true;
+                true
+            }
+            (Mode::Normal, Some(FileBrowserAction::PageDown)) => {
+                let last = self.entries.len().saturating_sub(1);
+                self.selected = (self.selected + 10).min(last);
+                self.pending_scroll = true;
+                true
+            }
+            (Mode::Normal, Some(FileBrowserAction::PageUp)) => {
+                self.selected = self.selected.saturating_sub(10);
+                self.pending_scroll = true;
+                true
+            }
+            (Mode::Normal, Some(FileBrowserAction::Activate)) => {
+                if let Some(entry) = self.selected_entry().cloned() {
+                    if entry.is_dir {
+                        self.navigate_into(entry.path);
+                    } else {
+                        self.open_file(&entry.path);
+                    }
                 }
+                true
             }
-            return true;
-        }
-
-        if self.entries.is_empty() {
-            if input.key_pressed(egui::Key::Backspace) {
-                self.navigate_up();
-                return true;
+            (Mode::Normal, Some(FileBrowserAction::ToggleSort)) => {
+                self.sort_mode = match self.sort_mode {
+                    SortMode::RecentlyTouched => SortMode::Name,
+                    SortMode::Name => SortMode::RecentlyTouched,
+                };
+                self.refresh();
+                true
             }
-            return false;
-        }
-
-        // Escape closes the file browser.
-        if input.key_pressed(egui::Key::Escape) {
-            self.should_close = true;
-            return true;
-        }
-
-        // '/' enters search mode.
-        if input.key_pressed(egui::Key::Slash) && !input.modifiers.command {
-            self.in_search = true;
-            self.search_query.clear();
-            self.refilter();
-            return true;
-        }
-
-        let last = self.entries.len().saturating_sub(1);
-        let mut consumed = false;
-
-        if input.key_pressed(egui::Key::ArrowDown)
-            || (input.key_pressed(egui::Key::J) && !input.modifiers.any())
-        {
-            self.selected = (self.selected + 1).min(last);
-            self.pending_scroll = true;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::ArrowUp)
-            || (input.key_pressed(egui::Key::K) && !input.modifiers.any())
-        {
-            self.selected = self.selected.saturating_sub(1);
-            self.pending_scroll = true;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::Home) {
-            self.selected = 0;
-            self.pending_scroll = true;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::End) {
-            self.selected = last;
-            self.pending_scroll = true;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::PageDown) {
-            self.selected = (self.selected + 10).min(last);
-            self.pending_scroll = true;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::PageUp) {
-            self.selected = self.selected.saturating_sub(10);
-            self.pending_scroll = true;
-            consumed = true;
-        }
-
-        if !input.modifiers.command
-            && (input.key_pressed(egui::Key::Enter)
-                || input.key_pressed(egui::Key::ArrowRight)
-                || input.key_pressed(egui::Key::L))
-        {
-            if let Some(entry) = self.selected_entry().cloned() {
-                if entry.is_dir {
-                    self.navigate_into(entry.path);
-                } else {
-                    self.open_file(&entry.path);
-                }
+            (Mode::Normal, Some(FileBrowserAction::Refresh)) => {
+                self.refresh();
+                true
             }
-            consumed = true;
+            _ => false,
         }
-
-        if !input.modifiers.command
-            && (input.key_pressed(egui::Key::Backspace)
-                || input.key_pressed(egui::Key::ArrowLeft)
-                || input.key_pressed(egui::Key::H))
-        {
-            self.navigate_up();
-            consumed = true;
-        }
-
-        if input.key_pressed(egui::Key::S) && !input.modifiers.any() {
-            self.sort_mode = match self.sort_mode {
-                SortMode::RecentlyTouched => SortMode::Name,
-                SortMode::Name => SortMode::RecentlyTouched,
-            };
-            self.refresh();
-            consumed = true;
-        }
-
-        if input.key_pressed(egui::Key::R) && !input.modifiers.any() {
-            self.refresh();
-            consumed = true;
-        }
-
-        consumed
     }
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
@@ -894,5 +972,132 @@ impl App for FileBrowserApp {
         if let Some(sel) = state["selected"].as_u64() {
             self.selected = (sel as usize).min(self.entries.len().saturating_sub(1));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, Key, Modifiers, RawInput};
+
+    fn key_event(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    fn run_handle_key(app: &mut FileBrowserApp, events: Vec<Event>) -> bool {
+        let ctx = egui::Context::default();
+        let raw = RawInput { events, ..Default::default() };
+        let mut consumed = false;
+        let _ = ctx.run(raw, |ctx| {
+            ctx.input(|i| {
+                consumed = app.handle_key(i);
+            });
+        });
+        consumed
+    }
+
+    fn make_empty_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        (app, dir)
+    }
+
+    fn make_populated_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file.txt"), b"hi").expect("write");
+        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        (app, dir)
+    }
+
+    // ── Regression tests for issue #926 ──────────────────────────────────────
+    // The empty-dir guard previously swallowed Escape, H, and ← without acting.
+
+    #[test]
+    fn empty_dir_escape_closes() {
+        let (mut app, _dir) = make_empty_dir_app();
+        assert!(app.entries.is_empty());
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+        assert!(consumed, "Escape must be consumed in empty dir");
+        assert!(app.should_close, "Escape must set should_close in empty dir");
+    }
+
+    #[test]
+    fn empty_dir_arrow_left_navigates_up() {
+        let (mut app, _dir) = make_empty_dir_app();
+        let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::ArrowLeft, Modifiers::default())]);
+        assert!(consumed, "← must be consumed in empty dir");
+        assert_eq!(app.cwd, parent, "← must navigate to parent in empty dir");
+    }
+
+    #[test]
+    fn empty_dir_h_navigates_up() {
+        let (mut app, _dir) = make_empty_dir_app();
+        let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::H, Modifiers::default())]);
+        assert!(consumed, "H must be consumed in empty dir");
+        assert_eq!(app.cwd, parent, "H must navigate to parent in empty dir");
+    }
+
+    #[test]
+    fn empty_dir_backspace_navigates_up() {
+        let (mut app, _dir) = make_empty_dir_app();
+        let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::Backspace, Modifiers::default())]);
+        assert!(consumed);
+        assert_eq!(app.cwd, parent);
+    }
+
+    #[test]
+    fn empty_dir_other_keys_not_consumed() {
+        let (mut app, _dir) = make_empty_dir_app();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::ArrowDown, Modifiers::default())]);
+        assert!(!consumed, "↓ must not be consumed in empty dir");
+    }
+
+    // ── Normal mode smoke tests ───────────────────────────────────────────────
+
+    #[test]
+    fn normal_mode_escape_closes() {
+        let (mut app, _dir) = make_populated_dir_app();
+        run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+        assert!(app.should_close);
+    }
+
+    #[test]
+    fn normal_mode_slash_enters_search() {
+        let (mut app, _dir) = make_populated_dir_app();
+        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(app.in_search);
+    }
+
+    // ── Search mode smoke tests ───────────────────────────────────────────────
+
+    #[test]
+    fn search_escape_exits_search() {
+        let (mut app, _dir) = make_populated_dir_app();
+        app.in_search = true;
+        app.search_query = "abc".to_string();
+        run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+        assert!(!app.in_search);
+        assert!(!app.should_close, "Escape in search must not close the browser");
+    }
+
+    #[test]
+    fn handle_key_has_no_key_pressed_calls() {
+        // Structural invariant: all key_pressed calls live in classify_key, not handle_key.
+        // This test fails at compile time if violated — it's a documentation check.
+        // The real enforcement is: grep the source for key_pressed outside classify_key.
+        let src = include_str!("mod.rs");
+        let classify_start = src.find("fn classify_key").expect("classify_key must exist");
+        let handle_key_start = src.find("fn handle_key").expect("handle_key must exist");
+        let handle_key_body = &src[handle_key_start..];
+        let after_classify = &src[classify_start..handle_key_start];
+        // classify_key should contain key_pressed calls
+        assert!(after_classify.contains("key_pressed"), "classify_key must contain key_pressed calls");
+        // handle_key body must not contain key_pressed calls
+        let handle_body_end = handle_key_body[10..].find("fn ").map(|i| i + 10).unwrap_or(handle_key_body.len());
+        let handle_body = &handle_key_body[..handle_body_end];
+        assert!(!handle_body.contains("key_pressed"), "handle_key must not contain key_pressed calls — they belong in classify_key");
     }
 }
