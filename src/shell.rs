@@ -343,3 +343,88 @@ precmd_functions+=(__plexi_precmd)
     Ok(zsh_dir)
 }
 
+/// Join args into a single shell-safe string for passing to `sh -c` / `zsh -c`.
+///
+/// Plain `args.join(" ")` loses quote structure — `["c", "ship it"]` becomes
+/// `"c ship it"` which zsh re-tokenizes into three words. This function wraps
+/// any arg containing whitespace or shell metacharacters in single quotes,
+/// with inner `'` escaped as `'\''`.
+pub fn shell_join(args: &[String]) -> String {
+    args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ")
+}
+
+fn shell_quote(s: &str) -> String {
+    let needs_quoting = s.is_empty()
+        || s.chars().any(|c| {
+            matches!(
+                c,
+                ' ' | '\t'
+                    | '\n'
+                    | '"'
+                    | '\''
+                    | '\\'
+                    | '!'
+                    | '#'
+                    | '$'
+                    | '&'
+                    | '('
+                    | ')'
+                    | '*'
+                    | ';'
+                    | '<'
+                    | '>'
+                    | '?'
+                    | '['
+                    | ']'
+                    | '^'
+                    | '{'
+                    | '|'
+                    | '}'
+                    | '~'
+                    | '`'
+            )
+        });
+    if !needs_quoting {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_join_plain_args_no_quoting() {
+        let args = vec!["claude".to_string(), "--version".to_string()];
+        assert_eq!(shell_join(&args), "claude --version");
+    }
+
+    #[test]
+    fn shell_join_multi_word_arg_single_quoted() {
+        // Regression: args.join(" ") on ["c", "ship something useful"] → "c ship something useful"
+        // zsh re-tokenizes this to 4 words. shell_join must produce "c 'ship something useful'".
+        let args = vec!["c".to_string(), "ship something useful".to_string()];
+        assert_eq!(shell_join(&args), "c 'ship something useful'");
+    }
+
+    #[test]
+    fn shell_join_single_quote_in_arg_escaped() {
+        let args = vec!["echo".to_string(), "it's alive".to_string()];
+        assert_eq!(shell_join(&args), r"echo 'it'\''s alive'");
+    }
+
+    #[test]
+    fn shell_join_empty_arg_quoted() {
+        let args = vec!["echo".to_string(), String::new()];
+        assert_eq!(shell_join(&args), "echo ''");
+    }
+
+    #[test]
+    fn shell_join_special_chars_quoted() {
+        let args = vec!["echo".to_string(), "$HOME".to_string()];
+        assert_eq!(shell_join(&args), "echo '$HOME'");
+    }
+}
+

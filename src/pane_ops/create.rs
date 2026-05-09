@@ -468,7 +468,7 @@ impl PlexiApp {
         if id == "terminal" {
             let layout_str = layout.as_deref().unwrap_or("split_v");
             let vertical = matches!(layout_str, "split_h" | "split_above");
-            let initial_cmd = if args.is_empty() { None } else { Some(args.join(" ")) };
+            let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(args)) };
             log::info!(
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} initial_cmd={initial_cmd:?}"
             );
