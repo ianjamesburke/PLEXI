@@ -96,7 +96,7 @@ impl HostHarness {
 
     // ── Pane management ──────────────────────────────────────────────────────
 
-    /// Add a test `ProcessApp` pane. Returns the assigned `PaneId`.
+    /// Add a `ProcessApp` pane (not a Terminal) for protocol testing.
     /// The pane has builtin permissions (all capability checks pass).
     pub fn add_test_pane(&mut self) -> PaneId {
         self.add_test_pane_with_permissions(AppPermissions::builtin())
