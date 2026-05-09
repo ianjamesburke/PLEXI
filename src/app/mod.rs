@@ -1612,7 +1612,7 @@ impl eframe::App for PlexiApp {
                 AppCommand::CdRequest { cwd, sender_pane_id } => {
                     let active = self.active_window;
                     let escaped = cwd.replace('\'', "'\\''");
-                    let cd_cmd = format!("cd '{}'\n", escaped);
+                    let cd_cmd = format!("\x15cd '{}'\n", escaped);
                     let linked_id = self.windows[active]
                         .panes
                         .get(&sender_pane_id)
@@ -1627,6 +1627,11 @@ impl eframe::App for PlexiApp {
                             t.backend.process_command(egui_term::BackendCommand::Write(
                                 cd_cmd.as_bytes().to_vec(),
                             ));
+                            log::info!(
+                                "file_browser: CdRequest synced cwd '{}' to terminal pane {}",
+                                cwd,
+                                tid
+                            );
                         }
                     }
                 }

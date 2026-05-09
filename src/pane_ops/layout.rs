@@ -459,7 +459,7 @@ impl PlexiApp {
             {
                 if let Some(cwd) = maybe_cwd {
                     let escaped = cwd.to_string_lossy().replace('\'', "'\\''");
-                    let cd_cmd = format!("cd '{}'\n", escaped);
+                    let cd_cmd = format!("\x15cd '{}'\n", escaped);
                     if let Some(t) = self.windows[self.active_window]
                         .panes
                         .get_mut(&pane_id)
@@ -727,7 +727,7 @@ impl PlexiApp {
         {
             if let Some(cwd) = maybe_cwd {
                 let escaped = cwd.to_string_lossy().replace('\'', "'\\''");
-                let cd_cmd = format!("cd '{}'\n", escaped);
+                let cd_cmd = format!("\x15cd '{}'\n", escaped);
                 if let Some(t) = self.windows[active]
                     .panes
                     .get_mut(&pane_id)
