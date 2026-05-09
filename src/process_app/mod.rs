@@ -1684,7 +1684,13 @@ impl App for ProcessApp {
                     modifiers,
                     ..
                 } => {
-                    let is_bare_letter = matches!(
+                    // Keys that generate egui::Event::Text at the OS level —
+                    // digits, letters, and punctuation. For these, Arm 2 (Text)
+                    // delivers the OS-resolved character (including shift-layer),
+                    // so Arm 1 (Key) must be suppressed to avoid a double call.
+                    // Ctrl/Cmd-modified chords suppress Text generation at the OS
+                    // level, so they still need Arm 1 to reach the app.
+                    let is_printable_key = matches!(
                         key,
                         egui::Key::A
                             | egui::Key::B
@@ -1712,13 +1718,35 @@ impl App for ProcessApp {
                             | egui::Key::X
                             | egui::Key::Y
                             | egui::Key::Z
-                    ) && !modifiers.any();
+                            | egui::Key::Num0
+                            | egui::Key::Num1
+                            | egui::Key::Num2
+                            | egui::Key::Num3
+                            | egui::Key::Num4
+                            | egui::Key::Num5
+                            | egui::Key::Num6
+                            | egui::Key::Num7
+                            | egui::Key::Num8
+                            | egui::Key::Num9
+                            | egui::Key::Minus
+                            | egui::Key::Equals
+                            | egui::Key::OpenBracket
+                            | egui::Key::CloseBracket
+                            | egui::Key::Backslash
+                            | egui::Key::Semicolon
+                            | egui::Key::Quote
+                            | egui::Key::Backtick
+                            | egui::Key::Comma
+                            | egui::Key::Period
+                            | egui::Key::Slash
+                            | egui::Key::Space
+                            | egui::Key::Plus
+                    );
                     // Cmd-modified chords are reserved for host shortcuts
                     // (Cmd+Enter zoom, Cmd+P palette, Cmd+Shift+A notifications,
-                    // etc.). Apps that want keyboard shortcuts use bare letters
-                    // or non-Cmd modifiers. Skip forwarding so the app can't
-                    // shadow a host keybind.
-                    if !is_bare_letter && !modifiers.command {
+                    // etc.). Apps can't shadow a host keybind; they use bare
+                    // letters or non-Cmd modifiers instead.
+                    if (!is_printable_key || modifiers.ctrl) && !modifiers.command {
                         self.send_event(&PlexiEvent::Key {
                             key: format!("{key:?}"),
                             modifiers: Modifiers {
