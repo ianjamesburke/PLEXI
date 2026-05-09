@@ -153,3 +153,43 @@ Contribute it back to `sdk/python/plexi_sdk/ui.py` once it proves useful in two 
 - **Scrolling containers beyond `ScrollLog`.** A general `Scroll` container is future work.
 
 Add these when the need exists. Don't speculatively invent components — the cost of a bad API in the SDK is rewrites across every app.
+
+---
+
+## Testing Apps with AppHarness
+
+`AppHarness` in `plexi_sdk.testing` spawns a real Python Plexi app subprocess and lets you drive it headlessly — no running Plexi instance or display required.
+
+```python
+from plexi_sdk.testing import AppHarness
+
+with AppHarness("my_app.py", width=400, height=300) as h:
+    cmds = h.run(1)                     # step one render frame
+    h.key("enter")                      # inject a key event
+    cmds = h.run(1)                     # render again to see effects
+    assert any(c.get("type") == "text" for c in cmds)
+```
+
+### Methods
+
+- `run(n_frames=1)` — step N render frames; returns draw commands from the last frame
+- `key(key, modifiers=None)` — inject a synthetic key event (e.g. `"enter"`, `"a"`)
+- `screenshot()` — render draw commands to PNG bytes (requires `plexi` binary or `PLEXI_RENDER_BIN`)
+- `assert_pixel(x, y, expected, tolerance=4)` — assert a pixel color in the last rendered frame
+- `save_snapshot(path)` — write the last rendered frame to a PNG file
+- `close()` — shut down the subprocess; also called by `__exit__`
+
+### CI usage
+
+`AppHarness` runs without a display. Pixel assertions via `screenshot()` require the `plexi` binary; skip them in CI by guarding with:
+
+```python
+import os
+if os.environ.get("PLEXI_RENDER_BIN") or Path("target/release/plexi").exists():
+    h.assert_pixel(10, 10, "#ff0000")
+```
+
+Run the full test suite with:
+```
+cd sdk/python && uv run pytest tests/
+```
