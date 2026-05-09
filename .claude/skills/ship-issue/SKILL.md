@@ -105,11 +105,14 @@ Handle each state automatically — do not stop and ask:
 - **Local commits ahead of origin:** If they're chore/release commits (`chore: release`, `chore: bump`), push them with `git push`. If they look like real unmerged feature work, surface to the user and ask before proceeding.
 - **Clean and synced:** `git pull --rebase origin alpha` to confirm up-to-date.
 
-Mark the issue in progress and update the pane title:
+Mark the issue in progress, capture the origin pane ID, and update the pane title:
 ```bash
 gh issue edit <number> --add-label "in progress"
+SHIP_PANE=$(plexi pane list | python3 -c "import json,sys; print(next(p['id'] for p in json.load(sys.stdin) if p['focused']))")
 plexi pane set-title "#<number> — <short-title>"
 ```
+
+Hold `$SHIP_PANE` for the rest of the cycle — every decision-point and end-of-run notification uses it as the `pane_focus` target so the user can route back to this conversation from the notification UI.
 
 ---
 
@@ -267,7 +270,7 @@ If the log already confirms pass or fail, state your finding directly rather tha
 
 **CLI output verification rule:** Before including any command in the testing block, run it yourself with `plexi-pr-<N>` and verify the output is what the user will see — no log noise, unexpected errors, or extraneous text mixed into stdout. If the output is noisy, investigate and note it in the testing block rather than letting the user discover it.
 
-Surface the testing block — output EXACTLY this format, then stop:
+Surface the testing block — output EXACTLY this format:
 
 ```
 [TESTING] PR #<n> — <title>
@@ -289,7 +292,15 @@ Reply with one of:
 - "modify: <specific change needed>" — only if pass criteria not yet met; must stay within original scope
 ```
 
-**STOP. Do not proceed until the user replies.**
+Then send a synchronous notification so the user gets pulled in only when ready to test:
+```bash
+plexi notify --title "PR #<n> ready to test" \
+  --body "<title>. Pass criteria: <one-line summary>. Reply pass/fail/modify in pane." \
+  --choice "a:Open PR:open_url:<pr-url>" \
+  --choice "b:Open PR build:open_app:Plexi PR<n>" \
+  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE"
+```
+The notify call blocks until the user clicks. After click, **STOP. Do not proceed until the user replies in the pane with pass/fail/modify.**
 
 ---
 
@@ -354,8 +365,9 @@ Regardless of option chosen: post the failure comment on the issue (same format 
 
 After user confirms pass. Run without stopping:
 
-1. Sync alpha — rebase handles divergence from parallel agent merges:
+1. Restore any pr-install Cargo.toml artifact on alpha, then sync:
    ```bash
+   git restore Cargo.toml           # discard pr-install artifact if present
    git pull --rebase origin alpha   # from the repo root
    ```
    This handles all cases: behind (fast-forward replay), ahead (push after), diverged (rebase). If a rebase conflict occurs in GOTCHAS.md, keep all entries, newest-first.
@@ -428,6 +440,32 @@ Output:
 [COMPLETE]
 ```
 
+### End-of-run notification + pane close
+
+After surfacing `[COMPLETE]`, fire a non-blocking notification and close this pane. Two cases:
+
+**Clean exit (no unresolved questions, no pending improvements awaiting user decision):**
+```bash
+plexi notify --title "Shipped #<number>" --body "<title> — v<version>" \
+  --choice "ok:Dismiss" \
+  --choice "open:Open PR:open_url:<pr-url>" &
+plexi pane close
+```
+The `&` makes it fire-and-forget — do not block on a choice. `plexi pane close` exits the pane cleanly.
+
+**Soft exit (improvements proposed, awaiting user vote/approval, or any deferred thread):**
+Do NOT auto-close. Send a synchronous notification with the standard 3-choice convention so the user can route back:
+```bash
+plexi notify --title "Shipped #<number> — review needed" \
+  --body "<title> — v<version>. <N> improvement(s) proposed for review." \
+  --choice "a:Approve all" \
+  --choice "b:Skip all" \
+  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE"
+```
+Pane stays alive; user can land back here via choice `c` to discuss.
+
+**Decision: clean vs soft** — if `/improve` output had any tier-2 (codebase change) proposals filed as `proposed-improvement` issues that need user vote, OR any deferred threads from the cycle, that's a soft exit. Otherwise clean.
+
 ---
 
 ## Rules
@@ -454,3 +492,6 @@ Output:
 - Every implementation must include a logging plan — no feature ships without info-level traces and warn-level bail-outs
 - **CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md`** in the same PR — bump `skill_version` to match the new Plexi version
 - **SDK changes must update the build-plexi-app skill** (issue #608, not yet created) in the same PR once that skill exists — bump its `skill_version` to match
+- **Decision-point notifications** — when the cycle blocks for user input (Phase 4 testing block, Phase 4b fail/modify branch, Phase 5 large-diff conversation), in addition to surfacing the block in chat, send a `plexi notify` with the 3-choice convention: `a:<proactive option A>`, `b:<proactive option B>`, `c:Talk to Claude:pane_focus:$SHIP_PANE`. The notification is synchronous — the bash command blocks until the user clicks. This lets the user be away from this pane and still be pulled in only when a real decision is needed.
+- **Origin pane ID** — `$SHIP_PANE` is captured in Phase 1 and reused for every notification's `pane_focus` choice. If the user closes the pane mid-cycle, `pane_focus` will fail silently — fall back to `c:Open new Claude pane:run:plexi terminal claude` if a notify call returns a stale-pane error.
+- **End-of-run** — every cycle ends with `plexi notify` + `plexi pane close` (clean exit) or `plexi notify` with `pane_focus` choice (soft exit, pane stays alive). Never let a ship cycle end without one or the other — silent exits leave the user with no signal.
