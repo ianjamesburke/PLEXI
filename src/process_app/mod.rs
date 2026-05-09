@@ -1220,10 +1220,6 @@ impl ProcessApp {
                         height: sz.y,
                     });
             }
-            // AppendConversation is a host-side no-op — it is intended as a
-            // signal to the SDK for conversation-history management. The host
-            // acknowledges receipt silently.
-            ControlCommand::AppendConversation { .. } => {}
         }
     }
 }

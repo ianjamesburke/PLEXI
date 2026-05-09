@@ -177,8 +177,6 @@ pub enum PlexiEvent {
     /// buffer for `id` after emitting this event so the field is empty for
     /// the next input.
     TextSubmitted { id: String, value: String },
-    /// User submitted text in the focused app pane.
-    UserMessage { text: String },
     /// Clipboard paste forwarded into the focused app pane.
     ///
     /// Emitted whenever the host observes `egui::Event::Paste(text)` while an
@@ -1330,22 +1328,6 @@ pub enum ControlCommand {
         #[serde(default)]
         monospace: bool,
     },
-    /// Append a row to the host-owned conversation history of an agent pane.
-    ///
-    /// Only meaningful for panes whose manifest declares `[app] type = "agent"`.
-    /// The host renders the conversation history as the pane's primary surface;
-    /// the agent emits one of these per logical turn boundary (user echo,
-    /// assistant reply, tool result, system note).
-    ///
-    /// `role` is one of `"user"` | `"assistant"` | `"tool"` | `"system"`. Other
-    /// values are accepted at the wire level (forward-compatibility) but the
-    /// host renders unknown roles as plain text. Required field — no
-    /// `serde(default)`.
-    ///
-    /// `content` is the plain-text body of the row. Required field. Empty
-    /// strings are valid (e.g. a placeholder turn while a stream is in flight)
-    /// but discouraged — emit on completion, not on dispatch.
-    AppendConversation { role: String, content: String },
 }
 
 /// Top-level wire type. The `type` field is globally unique across all three
@@ -1707,75 +1689,6 @@ mod tests {
             }
             other => panic!("expected AiResponse, got {other:?}"),
         }
-    }
-
-    // ── v3.3 agent-as-app wire shape (#285) ──────────────────────────────
-    // Pin the on-the-wire shape for the three new variants. All fields are
-    // required — no `serde(default)`.
-
-    #[test]
-    fn user_message_event_round_trips_serde() {
-        let json = r#"{"type":"user_message","text":"tell me a joke"}"#;
-        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
-        match &event {
-            PlexiEvent::UserMessage { text } => assert_eq!(text, "tell me a joke"),
-            other => panic!("expected UserMessage, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&event).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"user_message""#),
-            "wire tag missing: {serialised}"
-        );
-        assert!(
-            serialised.contains(r#""text":"tell me a joke""#),
-            "text missing: {serialised}"
-        );
-    }
-
-    #[test]
-    fn user_message_missing_text_fails_deserialise() {
-        // No `text` field — must fail because the field is required (no
-        // `serde(default)`).
-        let json = r#"{"type":"user_message"}"#;
-        let result: Result<PlexiEvent, _> = serde_json::from_str(json);
-        assert!(
-            result.is_err(),
-            "deserialise should fail without `text` field"
-        );
-    }
-
-    #[test]
-    fn append_conversation_drawcommand_round_trips() {
-        let json =
-            r#"{"type":"append_conversation","role":"assistant","content":"Hello!"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Control(ControlCommand::AppendConversation { role, content }) => {
-                assert_eq!(role, "assistant");
-                assert_eq!(content, "Hello!");
-            }
-            other => panic!("expected AppendConversation, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"append_conversation""#),
-            "wire tag missing: {serialised}"
-        );
-        assert!(
-            serialised.contains(r#""role":"assistant""#),
-            "role missing: {serialised}"
-        );
-    }
-
-    #[test]
-    fn append_conversation_missing_content_fails_deserialise() {
-        // No `content` field — must fail. Required.
-        let json = r#"{"type":"append_conversation","role":"user"}"#;
-        let result: Result<DrawCommand, _> = serde_json::from_str(json);
-        assert!(
-            result.is_err(),
-            "deserialise should fail without `content` field"
-        );
     }
 
     #[test]

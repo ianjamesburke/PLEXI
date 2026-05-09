@@ -26,22 +26,6 @@ class VideoHandle:
     pipe: "object"  # Pipe — avoid circular import; typed as object here
 
 
-# ── agents.list (#286) types ──────────────────────────────────────────────────
-
-@dataclass
-class AgentInfo:
-    """One row of the agent roster returned by `Emitter.agent_roster`.
-
-    `pane_id` is the host's stable id for the agent pane; pass it to
-    `Emitter.pipe_open_directed(pipe_id, pane_id)` to wire an inter-agent
-    channel. `app_id` is the manifest id for subprocess agents (or the
-    sentinel `"iq"` for the legacy in-process Cmd+I agent backend).
-    """
-    pane_id: int
-    app_id: str
-    name: str
-
-
 # ── Typed draw command dataclasses (#627) ─────────────────────────────────────
 
 _VALID_TEXT_ALIGN = {"top_left", "center", "top_center", "right"}
