@@ -6,6 +6,7 @@
 
 use std::io::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -148,6 +149,7 @@ async fn handle_server_event(
     ws_tx: &mut WsSink,
     pending_tool: &mut Option<(String, String, String)>,
     sink: &Arc<Sink>,
+    model_speaking: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let event_type = event["type"].as_str().unwrap_or("");
 
@@ -175,6 +177,7 @@ async fn handle_server_event(
 
         "response.output_audio.done" => {
             log::info!("agent:audio_out: done");
+            model_speaking.store(false, Ordering::Relaxed);
         }
 
         // Transcript of what the model said — print so the user can read along
@@ -380,20 +383,27 @@ async fn run_session(
     );
     log::info!("agent:session: audio output ready");
 
+    // Echo gate: true while the model is speaking. Mic chunks are discarded during
+    // this window to prevent the model's speaker output feeding back into the session.
+    let model_speaking = Arc::new(AtomicBool::new(false));
+
     // Pending tool call accumulator: (call_id, name, args_so_far)
     let mut pending_tool: Option<(String, String, String)> = None;
 
     // Event loop
     loop {
         tokio::select! {
-            // Forward audio chunks to the API
+            // Forward audio chunks to the API — gated: discard while model is speaking
+            // to prevent speaker output feeding back into the session.
             Some(chunk) = audio_rx.recv() => {
-                let b64 = BASE64.encode(&chunk);
-                let event = json!({
-                    "type": "input_audio_buffer.append",
-                    "audio": b64
-                });
-                ws_tx.send(Message::Text(event.to_string())).await?;
+                if !model_speaking.load(Ordering::Relaxed) {
+                    let b64 = BASE64.encode(&chunk);
+                    let event = json!({
+                        "type": "input_audio_buffer.append",
+                        "audio": b64
+                    });
+                    ws_tx.send(Message::Text(event.to_string())).await?;
+                }
             }
 
             // Handle server events
@@ -410,7 +420,18 @@ async fn run_session(
                     Some(Ok(Message::Text(text))) => {
                         let event: Value =
                             serde_json::from_str(&text).unwrap_or(Value::Null);
-                        handle_server_event(&event, &mut ws_tx, &mut pending_tool, &sink)
+
+                        // On first audio delta, raise the echo gate and flush the
+                        // input buffer to discard any speaker bleed already captured.
+                        if event["type"].as_str() == Some("response.output_audio.delta")
+                            && !model_speaking.swap(true, Ordering::Relaxed)
+                        {
+                            let _ = ws_tx.send(Message::Text(
+                                json!({"type": "input_audio_buffer.clear"}).to_string()
+                            )).await;
+                        }
+
+                        handle_server_event(&event, &mut ws_tx, &mut pending_tool, &sink, &model_speaking)
                             .await?;
                     }
                     Some(Ok(Message::Close(_))) => {
