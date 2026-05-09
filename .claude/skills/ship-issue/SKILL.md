@@ -304,7 +304,7 @@ Installs as `/Applications/Plexi PR<number>.app` with isolated profile `~/.plexi
 
 **Note for justfile/config-only changes:** `just pr-install` installs the Python binary only — justfile or config changes are not visible in the repo root until after merge. For these changes, direct test steps to run from `worktrees/feature/<branch>/` instead.
 
-**Before writing the testing block:** scan `examples/` in the feature worktree — the subagent may have already added a POC app for this feature as part of the implementation. If one exists, use it directly rather than writing a new test app. Then verify whether the PR build can actually exercise the feature's golden path. If the feature requires a configuration, environment, or runtime condition that the PR build cannot satisfy (e.g. a stable-only feature gated on a non-PR app directory, a capability requiring a device not present, a server-side dependency unavailable on the PR profile) — state that limitation explicitly at the top of the testing block as a `Note:` line rather than discovering it mid-instruction.
+**Before writing the testing block:** scan `examples/` in the feature worktree — the subagent may have already added a POC app for this feature as part of the implementation. If one exists, use it directly rather than writing a new test app. If the fix changes event delivery or routing (key events, mouse events, protocol messages), read the source of any example app being used for testing — it may have key bindings or handlers that silently encoded assumptions about the old (broken) behavior, making the test appear to fail when the fix is correct. Then verify whether the PR build can actually exercise the feature's golden path. If the feature requires a configuration, environment, or runtime condition that the PR build cannot satisfy (e.g. a stable-only feature gated on a non-PR app directory, a capability requiring a device not present, a server-side dependency unavailable on the PR profile) — state that limitation explicitly at the top of the testing block as a `Note:` line rather than discovering it mid-instruction.
 
 **Command formatting rule:** Any command you give the user to run must appear alone in its own code block — never inline inside prose. One command per block, nothing else on the line.
 
@@ -442,9 +442,9 @@ Either way I'll post a full failure comment on the issue so the next agent has c
 ```bash
 plexi notify --title "PR #<n> failed — ~<N> line diff" \
   --body "<title>. Reverting discards significant work. Pick a path." \
-  --choice "a:Draft + waiting-for-redesign" \
-  --choice "b:Close + delete branch" \
-  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE"
+  --choice "a:Talk to Claude:pane_focus:$SHIP_PANE" \
+  --choice "b:Draft + waiting-for-redesign" \
+  --choice "c:Close + delete branch"
 ```
 The notify return value (`a`/`b`/`c`) drives the next action directly — no follow-up chat reply needed for `a` or `b`. `c` pulls the user back to this pane for the conversation.
 
@@ -556,9 +556,9 @@ Do NOT auto-close. Send a synchronous notification with the standard 3-choice co
 ```bash
 plexi notify --title "Shipped #<number> — review needed" \
   --body "<title> — v<version>. <N> improvement(s) proposed for review." \
-  --choice "a:Approve all" \
-  --choice "b:Skip all" \
-  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE"
+  --choice "a:Talk to Claude:pane_focus:$SHIP_PANE" \
+  --choice "b:Approve all" \
+  --choice "c:Skip all"
 ```
 Pane stays alive; user can land back here via choice `c` to discuss.
 
@@ -590,7 +590,7 @@ Pane stays alive; user can land back here via choice `c` to discuss.
 - Every implementation must include a logging plan — no feature ships without info-level traces and warn-level bail-outs
 - **CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md`** in the same PR — bump `skill_version` to match the new Plexi version
 - **SDK changes must update the build-plexi-app skill** (issue #608, not yet created) in the same PR once that skill exists — bump its `skill_version` to match
-- **Decision-point notifications** — when the cycle blocks for user input (Phase 4 testing block, Phase 4b fail/modify branch, Phase 5 large-diff conversation), in addition to surfacing the block in chat, send a `plexi notify` with the 3-choice convention: `a:<proactive option A>`, `b:<proactive option B>`, `c:Talk to Claude:pane_focus:$SHIP_PANE`. The notification is synchronous — the bash command blocks until the user clicks. This lets the user be away from this pane and still be pulled in only when a real decision is needed.
+- **Decision-point notifications** — when the cycle blocks for user input (Phase 4 testing block, Phase 4b fail/modify branch, Phase 5 large-diff conversation), in addition to surfacing the block in chat, send a `plexi notify` with the 3-choice convention: `a:Talk to Claude:pane_focus:$SHIP_PANE`, `b:<primary action>`, `c:<secondary action>`. Talk to Claude is always first — it's the escape hatch the user needs most. The notification is synchronous — the bash command blocks until the user clicks. This lets the user be away from this pane and still be pulled in only when a real decision is needed.
 - **Origin pane ID** — `$SHIP_PANE` is captured in Phase 1 and reused for every notification's `pane_focus` choice. If the user closes the pane mid-cycle, `pane_focus` will fail silently — detect via `plexi pane list | grep -q "\"id\": $SHIP_PANE"` before each notify, and if absent, swap the `c` choice to a plain `c:Open new Claude pane` key whose handler runs `plexi terminal claude` after the click.
 - **Choice action types** — only `pane_focus` is a host-side action. Every other "do something" choice is just `key:Label` — capture the return value into `$RESULT` and run the shell command (`open <url>`, `open -a <app>`, etc.) after the click in a `case` statement. Do not invent action types like `open_url` or `open_app` — they don't exist.
 - **End-of-run** — every cycle ends with `plexi notify` + `plexi pane close` (clean exit) or `plexi notify` with `pane_focus` choice (soft exit, pane stays alive). Never let a ship cycle end without one or the other — silent exits leave the user with no signal.
