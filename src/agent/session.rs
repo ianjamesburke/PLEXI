@@ -329,7 +329,7 @@ async fn run_session(
     // gpt-realtime-2 is the GA API — no OpenAI-Beta header needed.
 
     log::info!("agent:session: connecting to {url}");
-    eprintln!("\x1b[2m[agent] Connecting to gpt-realtime-2...\x1b[0m");
+    eprintln!("\x1b[2m[agent] Connecting to {MODEL}...\x1b[0m");
 
     let (ws_stream, _) = tokio_tungstenite::connect_async(request)
         .await
@@ -387,7 +387,6 @@ async fn run_session(
             "instructions": system_prompt(),
             "tools": tools,
             "tool_choice": "auto",
-            "parallel_tool_calls": true,
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
@@ -402,8 +401,7 @@ async fn run_session(
                     }
                 },
                 "output": {
-                    "format": { "type": "audio/pcm", "rate": 24000 },
-                    "voice": "marin"
+                    "voice": "alloy"
                 }
             }
         }
