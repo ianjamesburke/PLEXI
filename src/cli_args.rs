@@ -212,9 +212,16 @@ pub enum PackCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
-    /// Set the title of the current pane
+    /// Set the title of a pane
+    ///
+    /// Usage:
+    ///   plexi pane set-title <title>           — renames the current (focused) pane
+    ///   plexi pane set-title <pane-id> <title> — renames an arbitrary pane by ID
     SetTitle {
-        name: String,
+        /// Pane ID (from `plexi pane list`) or title when used alone
+        first: String,
+        /// Title when pane-id is given as the first argument
+        second: Option<String>,
     },
     /// List all open panes as a JSON array
     List,

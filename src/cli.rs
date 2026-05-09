@@ -1408,18 +1408,13 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi pane set-title <name>`
+/// `plexi pane set-title [pane_id] <name>`
 ///
-/// Connects to PLEXI_SOCKET and sends a `set_pane_title` command for the
-/// current pane (identified by PLEXI_PANE_ID). Returns 0 on success, 1 on error.
-pub fn pane_set_title_cli(name: &str) -> i32 {
-    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
-            return 1;
-        }
-    };
+/// Sends a `set_pane_title` command over PLEXI_SOCKET.
+/// When `pane_id` is None, reads PLEXI_PANE_ID from the environment (current pane).
+/// When `pane_id` is Some, targets that pane directly (no PLEXI_PANE_ID required).
+/// Returns 0 on success, 1 on error.
+pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
         Err(_) => {
@@ -1427,16 +1422,29 @@ pub fn pane_set_title_cli(name: &str) -> i32 {
             return 1;
         }
     };
-    let pane_id: u64 = match pane_id_str.parse() {
-        Ok(n) => n,
-        Err(_) => {
-            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-            return 1;
+    let resolved_pane_id = match pane_id {
+        Some(id) => id,
+        None => {
+            let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or provide a pane ID");
+                    return 1;
+                }
+            };
+            match pane_id_str.parse::<u64>() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+                    return 1;
+                }
+            }
         }
     };
+    log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name={name:?}");
     let payload = serde_json::json!({
         "type": "set_pane_title",
-        "pane_id": pane_id,
+        "pane_id": resolved_pane_id,
         "name": name,
     });
     use std::io::Write;
@@ -2776,7 +2784,7 @@ _plexi() {
           ;;
         pane)
           local subcmds
-          subcmds=('set-title:Set the title of the current pane')
+          subcmds=('set-title:Set the title of a pane (current or by ID)')
           _describe 'subcommand' subcmds
           ;;
         descriptor)
@@ -2935,7 +2943,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from update" -a apps -d "Update 
 complete -c plexi -f -n "__fish_seen_subcommand_from pack" -a export -d "Export current apps as a pack file"
 
 # pane subcommands
-complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a set-title -d "Set the title of the current pane"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a set-title -d "Set the title of a pane (current or by ID)"
 
 # descriptor subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from descriptor" -a probe -d "Probe a CLI for its Plexi descriptor"

@@ -262,7 +262,19 @@ fn main() -> eframe::Result {
                         std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout));
                     }
                     Commands::Pane { cmd } => match cmd {
-                        PaneCmd::SetTitle { name } => std::process::exit(cli::pane_set_title_cli(&name)),
+                        PaneCmd::SetTitle { first, second } => {
+                            let (pane_id, name) = match second {
+                                Some(title) => match first.parse::<u64>() {
+                                    Ok(id) => (Some(id), title),
+                                    Err(_) => {
+                                        eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
+                                        std::process::exit(1);
+                                    }
+                                },
+                                None => (None, first),
+                            };
+                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
+                        }
                         PaneCmd::List => std::process::exit(cli::pane_list_cli()),
                         PaneCmd::Focus { pane_id } => std::process::exit(cli::pane_focus_cli(pane_id)),
                         PaneCmd::Close { pane_id } => std::process::exit(cli::pane_close_cli(pane_id)),
