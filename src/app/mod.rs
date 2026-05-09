@@ -906,6 +906,61 @@ impl PlexiApp {
                         log::error!("pane_ipc: list_panes: could not write response file {response_file:?}: {e}");
                     }
                 }
+                crate::app_protocol::HostCommand::GetPaneInfo { pane_id, response_file } => {
+                    log::info!("pane_ipc: kind=get_pane_info pane_id={pane_id} response_file={:?}", response_file);
+                    let active_win = self.active_window;
+                    let mut found = false;
+                    'outer: for (win_idx, win) in self.windows.iter().enumerate() {
+                        let focused_pane_id = win.focused_pane
+                            .and_then(|t| win.tree.tiles.get(t))
+                            .and_then(|tile| {
+                                if let egui_tiles::Tile::Pane(id) = tile { Some(*id) } else { None }
+                            });
+                        if let Some(pane) = win.panes.get(pane_id) {
+                            let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
+                            let info = match pane {
+                                crate::pane::Pane::Terminal(t) => {
+                                    let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
+                                        .map(|p| p.to_string_lossy().into_owned());
+                                    serde_json::json!({
+                                        "id": pane_id,
+                                        "type": "terminal",
+                                        "title": t.name.clone().unwrap_or_else(|| "terminal".to_string()),
+                                        "focused": focused,
+                                        "context_id": win.context_id,
+                                        "window_id": win.window_id,
+                                        "cwd": cwd,
+                                    })
+                                }
+                                crate::pane::Pane::App(a) => {
+                                    serde_json::json!({
+                                        "id": pane_id,
+                                        "type": "app",
+                                        "title": a.name.clone(),
+                                        "focused": focused,
+                                        "context_id": win.context_id,
+                                        "window_id": win.window_id,
+                                        "cwd": a.workspace_root.to_string_lossy().as_ref(),
+                                        "manifest_id": a.manifest_id.clone(),
+                                    })
+                                }
+                            };
+                            let json_str = serde_json::to_string(&info).unwrap_or_else(|_| "{}".to_string());
+                            if let Err(e) = std::fs::write(response_file, &json_str) {
+                                log::error!("pane_ipc: get_pane_info: could not write response file {:?}: {e}", response_file);
+                            }
+                            found = true;
+                            break 'outer;
+                        }
+                    }
+                    if !found {
+                        log::warn!("pane_ipc: get_pane_info: pane_id={pane_id} not found");
+                        let json_str = format!("{{\"error\":\"pane {pane_id} not found\"}}");
+                        if let Err(e) = std::fs::write(response_file, &json_str) {
+                            log::error!("pane_ipc: get_pane_info: could not write error response: {e}");
+                        }
+                    }
+                }
                 crate::app_protocol::HostCommand::FocusPane { pane_id } => {
                     log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
                     if !self.pane_navigate(*pane_id) {

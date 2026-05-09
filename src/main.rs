@@ -267,6 +267,7 @@ fn main() -> eframe::Result {
                         PaneCmd::Focus { pane_id } => std::process::exit(cli::pane_focus_cli(pane_id)),
                         PaneCmd::Close { pane_id } => std::process::exit(cli::pane_close_cli(pane_id)),
                         PaneCmd::Send { pane_id, text } => std::process::exit(cli::pane_send_cli(pane_id, &text)),
+                        PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                     },
                     Commands::Open { type_id, layout, extra_args } => {
                         std::process::exit(cli::open_cli(&type_id, &extra_args, layout.as_deref()));
