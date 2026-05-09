@@ -1274,21 +1274,21 @@ pub fn pack_export_cli(dest_path: &str) -> i32 {
 /// Any other segment count is rejected with a clear error string.
 pub(crate) fn parse_notify_choice(raw: &str) -> Result<(String, String, Option<String>), String> {
     let segments: Vec<&str> = raw.splitn(5, ':').collect();
-    match segments.len() {
-        4 => Ok((
-            segments[0].to_string(),
-            segments[1].to_string(),
-            Some(format!("{}:{}", segments[2], segments[3])),
+    match segments.as_slice() {
+        [key, label, action_type, action_arg] => Ok((
+            key.to_string(),
+            label.to_string(),
+            Some(format!("{action_type}:{action_arg}")),
         )),
-        3 => {
-            let label = segments[0].to_string();
-            let host_action = format!("{}:{}", segments[1], segments[2]);
-            Ok((label.clone(), label, Some(host_action)))
+        [label, action_type, action_arg] => {
+            let label_str = label.to_string();
+            Ok((label_str.clone(), label_str, Some(format!("{action_type}:{action_arg}"))))
         }
-        2 => Ok((segments[0].to_string(), segments[1].to_string(), None)),
-        n => Err(format!(
+        [key, label] => Ok((key.to_string(), label.to_string(), None)),
+        _ => Err(format!(
             "error: --choice requires 2, 3, or 4 colon-separated segments \
-             (key:Label / Label:action:arg / key:Label:action:arg) — got {n} in {:?}",
+             (key:Label / Label:action:arg / key:Label:action:arg) — got {} in {:?}",
+            segments.len(),
             raw
         )),
     }
