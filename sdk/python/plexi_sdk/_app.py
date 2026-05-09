@@ -4,12 +4,10 @@ import asyncio
 import inspect
 import json
 import sys
-import uuid
 from typing import Any, Coroutine
 
 from ._protocol import PROTOCOL_VERSION
 from ._constants import _SDK_VERSION
-from ._types import AgentInfo
 from ._emitter import Emitter, _emit, _sync_hook_scope
 from ._pipe import Pipe
 from ._render_context import RenderContext
@@ -101,9 +99,6 @@ class App:
         # VideoOpenError keyed on request_id. Each entry is consumed by a
         # single open_video() call.
         self._pending_video_open: "dict[str, asyncio.Queue]" = {}
-        # v3.3 P2 agents.list (#286): awaits PlexiEvent::AgentRoster keyed
-        # on request_id. Each entry is consumed by a single agent_roster() call.
-        self._pending_agent_roster: "dict[str, asyncio.Queue]" = {}
         self._pending_notify: "dict[str, asyncio.Queue]" = {}
         # v3.5 Canvas Terminal Binding Primitives (#78). Two response shapes:
         # `linked_terminal_ready` carries an int pane_id; `command_preview`
@@ -254,11 +249,6 @@ class App:
             return fn
         return decorator
 
-    # ── Agent-as-app hooks (#338, type = "agent" manifests only) ────────────
-    # `Agent` subclass wires these. Plain `App` subclasses get no-op defaults
-    # so a misclassified manifest doesn't crash on the host's emit.
-    def on_agent_init(self, _system_prompt: "str | None") -> None: pass
-    def on_user_message(self, _ctx: "RenderContext", _text: str) -> None: pass
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
@@ -482,17 +472,6 @@ class App:
                             str(ev.get("would_run_in_cwd", "")),
                         ))
 
-                elif t == "agent_roster":
-                    # v3.3 P2 agents.list (#286). The `agents` field is always
-                    # a list (empty when the app lacks the `agents.list`
-                    # capability — the host returns an empty roster, not an
-                    # error). Forwarded as-is to the queue waiting in
-                    # `Emitter.agent_roster`.
-                    req_id = ev.get("request_id", "")
-                    q = self._pending_agent_roster.pop(req_id, None)
-                    if q:
-                        q.put_nowait(ev.get("agents", []) or [])
-
                 elif t == "notify_action":
                     # notify_choice / notify_input: put the value back.
                     # notify / notify_and_wait: put action_label back.
@@ -702,20 +681,6 @@ class App:
                         str(ev.get("port_name", "")),
                     )
 
-                elif t == "agent_init":
-                    # v3.3 agent-as-app (#338): the host forwards the manifest's
-                    # `[launch].system_prompt` once at startup. Apps that subclass
-                    # `Agent` consume this in `_on_agent_init`; plain App
-                    # subclasses can override `on_agent_init` to receive it.
-                    await self._dispatch_hook(self.on_agent_init, ev.get("system_prompt"))
-
-                elif t == "user_message":
-                    # v3.3 agent-as-app (#338): the user submitted text in the
-                    # host-rendered conversation input box. Forwarded to
-                    # `on_user_message`. Only delivered to type=agent panes.
-                    ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_user_message, ctx, ev.get("text", ""))
-
                 elif t == "timer":
                     timer_id = ev.get("timer_id", "")
                     ctx = self._make_ctx()
@@ -864,147 +829,6 @@ class App:
                     hook(*args)
             except Exception as e:
                 sys.stderr.write(f"plexi_sdk: sync hook {getattr(hook, '__name__', hook)!r} raised: {e}\n")
-
-
-# ── Agent base class (issue #338) ────────────────────────────────────────────
-
-class Agent(App):
-    """Subclass for `type = "agent"` manifests. Wires the conversation loop.
-
-    The host renders the conversation UI (history scrollback + input box).
-    The agent owns the dialogue logic. The contract is symmetric:
-
-        Host → Agent      PlexiEvent::AgentInit  { system_prompt }   (once)
-        Host → Agent      PlexiEvent::UserMessage { text }            (per submit)
-        Agent → Host      DrawCommand::AppendConversation { role, content }
-
-    Author writes a single `on_user_message(text) -> str | None` callback.
-    Returning a string auto-emits an assistant `AppendConversation`. Returning
-    `None` means "I'll append manually" — useful for agents that emit
-    multiple rows per turn (tool use, partial replies).
-
-    Conversation history (`self.history`) is auto-built from `append_*`
-    helpers — pass it directly to `emit.ai_query(...)` for multi-turn.
-
-    Example:
-
-        class JokeAgent(Agent):
-            def on_user_message(self, text: str) -> str:
-                resp = self.emit.ai_query(
-                    model_tier="medium",
-                    system=self.system_prompt or "",
-                    messages=self.history,
-                )
-                return resp.content
-
-        if __name__ == "__main__":
-            JokeAgent().run()
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        # Populated by AgentInit. None until the host emits it (or forever
-        # if the manifest omits `[launch].system_prompt`).
-        self.system_prompt: "str | None" = None
-        # Conversation history in Anthropic Messages shape — built by the
-        # `append_*` helpers and passed straight to `emit.ai_query`.
-        self.history: list = []
-
-    # ── Wire-up (do not override) ───────────────────────────────────────────
-    def on_agent_init(self, system_prompt: "str | None") -> None:  # type: ignore[override]
-        self.system_prompt = system_prompt
-        self.emit.info(
-            f"agent: AgentInit received (system_prompt={'set' if system_prompt else 'unset'})"
-        )
-
-    async def on_user_message(self, ctx: "RenderContext", text: str) -> None:  # type: ignore[override]
-        # Append the user turn before invoking the override so `self.history`
-        # already contains it when the override calls `emit.ai_query`.
-        self.append_user_message(text)
-        try:
-            if inspect.iscoroutinefunction(self.respond):
-                reply = await self.respond(text)  # type: ignore[misc]
-            else:
-                reply = self.respond(text)
-        except Exception as e:
-            self.emit.error(f"agent: respond() raised: {e}")
-            self.append_system_message(f"Error: {e}")
-            return
-        # `None` means "I'll handle appends myself" — common for agents that
-        # stream multiple rows (tool use, partial replies). A returned string
-        # is the conventional one-shot reply path.
-        if reply is not None:
-            self.append_assistant_message(reply)
-
-    # ── User override ───────────────────────────────────────────────────────
-    def respond(self, _text: str) -> "str | None":
-        """Override this. Called once per `user_message` event.
-
-        May be a regular ``def`` or ``async def``. Return a string to
-        auto-append as the assistant turn. Return ``None`` if you've already
-        called ``append_assistant_message`` (or other ``append_*`` helpers)
-        yourself — useful for tool-use loops.
-        """
-        raise NotImplementedError(
-            "Agent subclasses must override `respond(text) -> str | None`"
-        )
-
-    # ── Conversation surface ────────────────────────────────────────────────
-    def append_user_message(self, text: str) -> None:
-        """Append a user row to the transcript. Updates `self.history` so the
-        next `emit.ai_query` call sees the turn."""
-        self.history.append({"role": "user", "content": text})
-        _emit({"type": "append_conversation", "role": "user", "content": text})
-
-    def append_assistant_message(self, text: str) -> None:
-        """Append an assistant row. Mirrors into `self.history`."""
-        self.history.append({"role": "assistant", "content": text})
-        _emit({"type": "append_conversation", "role": "assistant", "content": text})
-
-    def append_tool_message(self, text: str) -> None:
-        """Append a tool-use status row. Tool messages are NOT mirrored into
-        `self.history` (they're not part of the LLM-visible conversation)."""
-        _emit({"type": "append_conversation", "role": "tool", "content": text})
-
-    def append_system_message(self, text: str) -> None:
-        """Append a system / error status row. NOT mirrored into history."""
-        _emit({"type": "append_conversation", "role": "system", "content": text})
-
-    # ── Inter-agent helpers (#286) ──────────────────────────────────────────
-    async def list_agents(self) -> "list[AgentInfo]":
-        """Return the workspace's live agent roster. Use with ``await``.
-
-        Thin wrapper around ``await self.emit.agent_roster()``. Apps without
-        the `agents.list` capability receive an EMPTY list (not an error).
-
-        Pass an entry's `pane_id` to `open_pipe_to(pane_id, ...)` to start
-        an inter-agent channel.
-        """
-        return await self.emit.agent_roster()
-
-    def open_pipe_to(self, pane_id: int, pipe_id: "str | None" = None) -> Pipe:
-        """Open a duplex JSON pipe to another agent pane (#286).
-
-        `pipe_id` defaults to a fresh uuid4 — pass an explicit id only when
-        both ends agreed on one out-of-band. The pipe is duplex; either
-        side calls `pipe.send(payload)` and the other receives it via
-        `on_pipe_message(ctx, pipe_id, payload)`.
-
-        Capability: `pipe.open`.
-        """
-        pid = pipe_id or f"agent-{uuid.uuid4()}"
-        return self.emit.pipe_open_directed(pid, int(pane_id))
-
-    def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> "Coroutine[Any, Any, None] | None":
-        """Override to receive directed inter-agent messages.
-
-        The default `App.on_pipe_message` is a no-op. Override on `Agent`
-        subclasses that act as workers / fan-out targets to handle
-        delegated requests.
-        """
-        # Same default as App.on_pipe_message — overridable by subclasses.
-        del ctx, pipe_id, payload
-        return None
 
 
 # SDK_ID used in the ready handshake. Derived from the version constant so

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Iterator
 
 from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList
-from ._types import CapabilityDeniedError, VideoHandle, AgentInfo
+from ._types import CapabilityDeniedError, VideoHandle
 
 if TYPE_CHECKING:
     from ._app import App
@@ -1090,12 +1090,9 @@ class Emitter:
         only the caller and `target_pane_id` see traffic on `pipe_id` —
         peers that coincidentally `pipe_open` the same id stay isolated.
         Always JSON-mode duplex; `pipe.send(payload)` is symmetric on
-        either end. Used to wire inter-agent channels after discovering
-        a target via `emit.agent_roster()`.
+        either end.
 
-        Capability: `pipe.open` (same as `pipe_open`). The target pane
-        does NOT need `agents.list` to be subscribed — only to be
-        addressable via the roster.
+        Capability: `pipe.open` (same as `pipe_open`).
         """
         from ._pipe import Pipe
         p = Pipe(pipe_id=pipe_id, mode="json", direction="duplex", app=self._app)
@@ -1118,32 +1115,3 @@ class Emitter:
         """
         _emit({"type": "pipe_send", "pipe_id": pipe_id, "payload": payload})
 
-    @_blocking_emit_method
-    async def agent_roster(self) -> "list[AgentInfo]":
-        """Query for live agent panes in the workspace (#286).
-
-        Returns a list of `AgentInfo` rows sorted by `pane_id` ascending.
-        Each row carries `pane_id`, `app_id`, and `name`. Pass the
-        `pane_id` back to `pipe_open_directed(...)` to address an
-        inter-agent pipe.
-
-        Capability: `agents.list`. Apps without it receive an EMPTY
-        list (NOT an error) — the host returns an empty roster on the
-        wire so the caller can't probe the workspace via this surface.
-
-        From background threads:
-        ``self.emit.run_sync(self.emit.agent_roster())``.
-        """
-        req_id = str(uuid.uuid4())
-        q: asyncio.Queue[list[dict]] = _make_async_queue()
-        self._app._pending_agent_roster[req_id] = q
-        _emit({"type": "agent_roster_get", "request_id": req_id})
-        rows = await q.get()
-        return [
-            AgentInfo(
-                pane_id=int(r.get("pane_id", 0)),
-                app_id=str(r.get("app_id", "")),
-                name=str(r.get("name", "")),
-            )
-            for r in rows
-        ]

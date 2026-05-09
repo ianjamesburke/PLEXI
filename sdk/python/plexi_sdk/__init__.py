@@ -451,11 +451,11 @@ from ._constants import (
     rgba, dim,
 )
 from ._types import (
-    CapabilityDeniedError, VideoHandle, AgentInfo,
+    CapabilityDeniedError, VideoHandle,
     RectCommand, TextCommand, BadgeCommand, TextInputSpec, ShortcutPair, NotifyOption,
 )
 from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList, PROTOCOL_VERSION
 from ._emitter import Emitter, _emit, _make_async_queue, _LOCK
 from ._pipe import Pipe
 from ._render_context import RenderContext
-from ._app import App, Agent
+from ._app import App
