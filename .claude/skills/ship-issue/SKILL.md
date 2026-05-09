@@ -556,7 +556,7 @@ After user confirms pass. Run without stopping:
 
    If anything non-obvious happened during this PR — a failed approach, an environment constraint, a tool behavior that cost time — add one entry to GOTCHAS.md on alpha now. Write a detailed commit message explaining the why. Skip GOTCHAS if nothing surprised you.
 
-4. `just pr-clean <pr-number>` — run from the repo root
+4. `just pr-clean <pr-number>` — run from the repo root. **Skip if no `just pr-install` was run for this PR** (diff-review path).
 > **CWD check:** The shell may still be inside the feature worktree. Use `cd /Users/ianburke/Documents/GitHub/PLEXI &&` as a prefix for all remaining Phase 5 commands, or confirm CWD with `pwd` first.
 5. `git pull --rebase origin alpha` — from the repo root
 6. `wtp remove <branch> --force` then `git push origin --delete <branch>`
