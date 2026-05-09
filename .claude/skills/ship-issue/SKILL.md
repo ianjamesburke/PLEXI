@@ -294,13 +294,18 @@ Reply with one of:
 
 Then send a synchronous notification so the user gets pulled in only when ready to test:
 ```bash
-plexi notify --title "PR #<n> ready to test" \
+RESULT=$(plexi notify --title "PR #<n> ready to test" \
   --body "<title>. Pass criteria: <one-line summary>. Reply pass/fail/modify in pane." \
-  --choice "a:Open PR:open_url:<pr-url>" \
-  --choice "b:Open PR build:open_app:Plexi PR<n>" \
-  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE"
+  --choice "a:Open PR" \
+  --choice "b:Open PR build" \
+  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE")
+
+case "$RESULT" in
+  a) open "<pr-url>" ;;
+  b) open -a "Plexi PR<n>" ;;
+esac
 ```
-The notify call blocks until the user clicks. After click, **STOP. Do not proceed until the user replies in the pane with pass/fail/modify.**
+Choice `c` is the only host-side action (focuses this pane). `a` and `b` return their key; the case statement runs the corresponding shell command. After the click, **STOP. Do not proceed until the user replies in the pane with pass/fail/modify.**
 
 ---
 
@@ -343,7 +348,7 @@ git -C worktrees/<branch> diff origin/alpha --stat | tail -1
 4. `wtp remove <branch>` then `git push origin --delete <branch>`
 
 **If diff is over ~1000 lines (conversation required):**
-Do not revert without asking. Present options:
+Do not revert without asking. Present options in chat AND fire a synchronous notification with the 3-choice convention:
 
 ```
 Diff is ~<N> lines — reverting would discard significant work. Options:
@@ -353,9 +358,16 @@ B. Close PR and delete the branch — clean slate
 C. Keep PR open with a comment explaining what failed and what needs rethinking before it can land
 
 Either way I'll post a full failure comment on the issue so the next agent has complete context.
-
-Which do you prefer?
 ```
+
+```bash
+plexi notify --title "PR #<n> failed — ~<N> line diff" \
+  --body "<title>. Reverting discards significant work. Pick a path." \
+  --choice "a:Draft + waiting-for-redesign" \
+  --choice "b:Close + delete branch" \
+  --choice "c:Talk to Claude:pane_focus:$SHIP_PANE"
+```
+The notify return value (`a`/`b`/`c`) drives the next action directly — no follow-up chat reply needed for `a` or `b`. `c` pulls the user back to this pane for the conversation.
 
 Regardless of option chosen: post the failure comment on the issue (same format as above). Remove `in progress` label. The issue stays open. Never close the issue on a fail.
 
@@ -446,12 +458,13 @@ After surfacing `[COMPLETE]`, fire a non-blocking notification and close this pa
 
 **Clean exit (no unresolved questions, no pending improvements awaiting user decision):**
 ```bash
-plexi notify --title "Shipped #<number>" --body "<title> — v<version>" \
+(RESULT=$(plexi notify --title "Shipped #<number>" --body "<title> — v<version>" \
   --choice "ok:Dismiss" \
-  --choice "open:Open PR:open_url:<pr-url>" &
+  --choice "open:Open PR")
+ [ "$RESULT" = "open" ] && open "<pr-url>") &
 plexi pane close
 ```
-The `&` makes it fire-and-forget — do not block on a choice. `plexi pane close` exits the pane cleanly.
+The outer `&` makes it fire-and-forget — do not block on a choice. The subshell runs `open` only if the user clicks "Open PR". `plexi pane close` exits the pane cleanly without waiting for the click.
 
 **Soft exit (improvements proposed, awaiting user vote/approval, or any deferred thread):**
 Do NOT auto-close. Send a synchronous notification with the standard 3-choice convention so the user can route back:
@@ -493,5 +506,6 @@ Pane stays alive; user can land back here via choice `c` to discuss.
 - **CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md`** in the same PR — bump `skill_version` to match the new Plexi version
 - **SDK changes must update the build-plexi-app skill** (issue #608, not yet created) in the same PR once that skill exists — bump its `skill_version` to match
 - **Decision-point notifications** — when the cycle blocks for user input (Phase 4 testing block, Phase 4b fail/modify branch, Phase 5 large-diff conversation), in addition to surfacing the block in chat, send a `plexi notify` with the 3-choice convention: `a:<proactive option A>`, `b:<proactive option B>`, `c:Talk to Claude:pane_focus:$SHIP_PANE`. The notification is synchronous — the bash command blocks until the user clicks. This lets the user be away from this pane and still be pulled in only when a real decision is needed.
-- **Origin pane ID** — `$SHIP_PANE` is captured in Phase 1 and reused for every notification's `pane_focus` choice. If the user closes the pane mid-cycle, `pane_focus` will fail silently — fall back to `c:Open new Claude pane:run:plexi terminal claude` if a notify call returns a stale-pane error.
+- **Origin pane ID** — `$SHIP_PANE` is captured in Phase 1 and reused for every notification's `pane_focus` choice. If the user closes the pane mid-cycle, `pane_focus` will fail silently — detect via `plexi pane list | grep -q "\"id\": $SHIP_PANE"` before each notify, and if absent, swap the `c` choice to a plain `c:Open new Claude pane` key whose handler runs `plexi terminal claude` after the click.
+- **Choice action types** — only `pane_focus` is a host-side action. Every other "do something" choice is just `key:Label` — capture the return value into `$RESULT` and run the shell command (`open <url>`, `open -a <app>`, etc.) after the click in a `case` statement. Do not invent action types like `open_url` or `open_app` — they don't exist.
 - **End-of-run** — every cycle ends with `plexi notify` + `plexi pane close` (clean exit) or `plexi notify` with `pane_focus` choice (soft exit, pane stays alive). Never let a ship cycle end without one or the other — silent exits leave the user with no signal.
