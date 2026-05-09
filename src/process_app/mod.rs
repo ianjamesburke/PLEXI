@@ -342,6 +342,11 @@ impl ProcessApp {
             log::info!("ProcessApp[{}]: injecting user secret '{}'", type_id, env_name);
             cmd.env(&env_name, value.as_str());
         }
+        // Set PLEXI_SOCKET so the app can invoke `plexi` CLI commands against
+        // the running host. macOS GUI apps don't inherit shell env, so this
+        // is never present via PLEXI_* passthrough above.
+        let socket_path = crate::config::config_dir().join("notify.sock");
+        cmd.env("PLEXI_SOCKET", &socket_path);
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
         // Python app shebangs (`#!/usr/bin/env python3`) resolve to our hermetic
         // Python 3.12, not whatever the host machine happens to have installed.
