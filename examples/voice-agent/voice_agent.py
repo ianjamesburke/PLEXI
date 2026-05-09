@@ -82,7 +82,7 @@ class VoiceAgentApp(App):
     def _register_tools(self) -> None:
         @self.tool(
             "pane_open",
-            description="Open a new pane. type_id: 'terminal' or an app id.",
+            description="Open a new pane. type_id: 'terminal' or an installed app id.",
             schema={
                 "type": "object",
                 "properties": {
@@ -92,29 +92,43 @@ class VoiceAgentApp(App):
             },
         )
         def handle_pane_open(args: dict) -> dict:
-            return self._run_plexi(["pane", "open", args["type_id"]])
+            return self._run_plexi(["open", args["type_id"]])
+
+        @self.tool(
+            "pane_list",
+            description="List all open panes as JSON. Returns pane IDs and titles needed for pane_close and pane_focus.",
+            schema={"type": "object", "properties": {}},
+        )
+        def handle_pane_list(_args: dict) -> dict:
+            return self._run_plexi(["pane", "list"])
 
         @self.tool(
             "pane_close",
-            description="Close the current focused pane.",
-            schema={"type": "object", "properties": {}},
-        )
-        def handle_pane_close(_args: dict) -> dict:
-            return self._run_plexi(["pane", "close"])
-
-        @self.tool(
-            "pane_focus",
-            description="Move focus to an adjacent pane by direction.",
+            description="Close a pane by its numeric ID. Call pane_list first to get IDs.",
             schema={
                 "type": "object",
                 "properties": {
-                    "direction": {"type": "string", "description": "One of: left, right, up, down"},
+                    "pane_id": {"type": "integer", "description": "Pane ID from pane_list"},
                 },
-                "required": ["direction"],
+                "required": ["pane_id"],
+            },
+        )
+        def handle_pane_close(args: dict) -> dict:
+            return self._run_plexi(["pane", "close", str(args["pane_id"])])
+
+        @self.tool(
+            "pane_focus",
+            description="Move UI focus to a pane by its numeric ID. Call pane_list first to get IDs.",
+            schema={
+                "type": "object",
+                "properties": {
+                    "pane_id": {"type": "integer", "description": "Pane ID from pane_list"},
+                },
+                "required": ["pane_id"],
             },
         )
         def handle_pane_focus(args: dict) -> dict:
-            return self._run_plexi(["pane", "focus", args["direction"]])
+            return self._run_plexi(["pane", "focus", str(args["pane_id"])])
 
         @self.tool(
             "notify",
@@ -129,20 +143,6 @@ class VoiceAgentApp(App):
         )
         def handle_notify(args: dict) -> dict:
             return self._run_plexi(["notify", args["message"]])
-
-        @self.tool(
-            "context_switch",
-            description="Switch the active workspace context by name.",
-            schema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Context name to switch to"},
-                },
-                "required": ["name"],
-            },
-        )
-        def handle_context_switch(args: dict) -> dict:
-            return self._run_plexi(["context", "switch", args["name"]])
 
         @self.tool(
             "run",
