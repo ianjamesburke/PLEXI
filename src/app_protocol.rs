@@ -930,6 +930,13 @@ pub enum HostCommand {
         response_file: String,
     },
 
+    /// Query info for a specific pane by ID. Host writes JSON object to `response_file`.
+    /// Sent by `plexi pane info`.
+    GetPaneInfo {
+        pane_id: u64,
+        response_file: String,
+    },
+
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
     FocusPane {
         pane_id: u64,

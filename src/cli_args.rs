@@ -243,6 +243,8 @@ pub enum PaneCmd {
         /// Text to inject (use \n for Enter)
         text: String,
     },
+    /// Print JSON info for the current pane [requires PLEXI_PANE_ID]
+    Info,
 }
 
 #[derive(Subcommand)]

@@ -1494,6 +1494,12 @@ impl ProcessApp {
                     }
                 }
             }
+            HostCommand::GetPaneInfo { pane_id, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: GetPaneInfo pane_id={pane_id} received in app routing — ignored (host-only command)",
+                    self.type_id
+                );
+            }
         }
     }
 
