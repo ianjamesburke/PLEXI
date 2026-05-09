@@ -232,10 +232,46 @@ git -C worktrees/<branch> commit -m "<message>"
 git -C worktrees/<branch> push -u origin HEAD
 ```
 
-When done, open a PR targeting `alpha`:
+When done, open a PR targeting `alpha` and update the pane title with the PR number so both the issue and PR are searchable:
 ```bash
-gh pr create --base alpha --title "<title>" --body "..."
+PR_URL=$(gh pr create --base alpha --title "<title>" --body "...")
+PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+plexi pane set-title "#<issue-number> / PR #${PR_NUMBER} — <short-title>"
 ```
+
+---
+
+## Phase 4b — AI Review
+
+Run after PR creation, before installing the PR build.
+
+**1. CodeRabbit local review** — run from inside the feature worktree:
+```bash
+coderabbit review --agent 2>&1
+```
+Read the output. Fix any `error` or `warning` severity findings on the feature branch before proceeding — these are blocking. `info`/`suggestion` items are advisory; apply if trivial, skip if out of scope. If fixes were made, commit, push, then re-run to confirm clean.
+
+**2. Poll for Gemini / CodeRabbit bot PR comments** — up to 8 minutes, check every 60s:
+```bash
+for i in $(seq 1 8); do
+  COUNT=$(gh pr view $PR_NUMBER --json comments \
+    --jq '[.comments[] | select(.author.login | test("gemini|coderabbit"; "i"))] | length')
+  if [ "$COUNT" -gt 0 ]; then
+    echo "Found $COUNT bot comment(s):"
+    gh pr view $PR_NUMBER --json comments \
+      --jq '.comments[] | select(.author.login | test("gemini|coderabbit"; "i")) | "[\(.author.login)] \(.body)"'
+    break
+  fi
+  echo "AI review check $i/8 — no bot comments yet, waiting 60s..."
+  sleep 60
+done
+```
+After the loop, read all surfaced comments. For each:
+- **Correctness / bug / type safety** → fix on the feature branch, commit, push
+- **Style / naming / docs** → apply if trivial, skip if out of scope
+- **False positive** → note and ignore
+
+If no bot comments appear after 8 minutes, proceed — the bots may be slow or not configured for this repo.
 
 ---
 
@@ -249,6 +285,8 @@ just pr-install <pr-number>
 ```
 
 > **CWD check:** If your shell is at the repo root, `cd` to the feature worktree first — `just pr-install` runs `cargo bundle` from CWD, so running it from alpha silently builds the old code. A compile time under ~10s is proof the change wasn't picked up.
+
+> **Compile check:** If `just pr-install` output shows no `Compiling plexi` line, the release binary was cached and the Rust source change was not picked up. Run `touch src/<changed-file>.rs` then `just pr-install <N>` again to force a recompile. A compile time under ~10s is proof the change wasn't picked up.
 
 Installs as `/Applications/Plexi PR<number>.app` with isolated profile `~/.plexi-pr-<number>/`. Wait for it to complete.
 
@@ -515,3 +553,4 @@ Pane stays alive; user can land back here via choice `c` to discuss.
 - **Origin pane ID** — `$SHIP_PANE` is captured in Phase 1 and reused for every notification's `pane_focus` choice. If the user closes the pane mid-cycle, `pane_focus` will fail silently — detect via `plexi pane list | grep -q "\"id\": $SHIP_PANE"` before each notify, and if absent, swap the `c` choice to a plain `c:Open new Claude pane` key whose handler runs `plexi terminal claude` after the click.
 - **Choice action types** — only `pane_focus` is a host-side action. Every other "do something" choice is just `key:Label` — capture the return value into `$RESULT` and run the shell command (`open <url>`, `open -a <app>`, etc.) after the click in a `case` statement. Do not invent action types like `open_url` or `open_app` — they don't exist.
 - **End-of-run** — every cycle ends with `plexi notify` + `plexi pane close` (clean exit) or `plexi notify` with `pane_focus` choice (soft exit, pane stays alive). Never let a ship cycle end without one or the other — silent exits leave the user with no signal.
+- **Pane title lifecycle** — set to `"#<issue> — <short-title>"` at Phase 1 start; update to `"#<issue> / PR #<pr> — <short-title>"` immediately after `gh pr create` in Phase 4. Both forms must be set so the pane is findable by either number.
