@@ -62,6 +62,9 @@ pub struct TerminalPane {
     pub exited: bool,
     pub name: Option<String>,
     pub font_size: f32,
+    /// When true, the pane closes automatically when its process exits (no "[process exited]" prompt).
+    /// Set by `plexi terminal --ephemeral`.
+    pub ephemeral: bool,
 }
 
 impl TerminalPane {
@@ -85,6 +88,7 @@ impl TerminalPane {
             exited: false,
             name: None,
             font_size: default_font_size,
+            ephemeral: false,
         })
     }
 }

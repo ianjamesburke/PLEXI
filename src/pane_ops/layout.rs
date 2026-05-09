@@ -248,7 +248,7 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
-        pane.close_on_exit = close_on_exit;
+        pane.ephemeral = close_on_exit;
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));

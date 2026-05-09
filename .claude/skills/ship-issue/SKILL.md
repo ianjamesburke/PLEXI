@@ -377,6 +377,12 @@ Regardless of option chosen: post the failure comment on the issue (same format 
 
 After user confirms pass. Run without stopping:
 
+0. Check PR state before doing anything:
+   ```bash
+   gh pr view <number> --json state --jq '.state'
+   ```
+   If state is `MERGED`: skip the rebase, Cargo.toml restore, and merge steps entirely. Jump straight to step 4 (`just pr-clean`). Another session already merged — don't revert or re-merge.
+
 1. Restore any pr-install Cargo.toml artifact on alpha, then sync:
    ```bash
    git restore Cargo.toml           # discard pr-install artifact if present

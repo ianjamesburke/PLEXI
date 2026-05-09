@@ -1168,7 +1168,10 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 t.exited = true;
-                                log::info!("pty: pane {id} process exited");
+                                log::info!("pty: pane {id} process exited ephemeral={}", t.ephemeral);
+                                if t.ephemeral {
+                                    panes_to_close.push(id);
+                                }
                             }
                             break;
                         }
