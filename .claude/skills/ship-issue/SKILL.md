@@ -308,6 +308,31 @@ If the log already confirms pass or fail, state your finding directly rather tha
 
 **CLI output verification rule:** Before including any command in the testing block, run it yourself with `plexi-pr-<N>` and verify the output is what the user will see — no log noise, unexpected errors, or extraneous text mixed into stdout. If the output is noisy, investigate and note it in the testing block rather than letting the user discover it.
 
+**Python test script rule:** For any PR where the user must run more than one command, or where copy-pasting commands across panes is awkward, write a `test_pr<N>.py` at the repo root instead of a markdown testing block. The script:
+- Runs all non-interactive checks itself (CLI exit codes, error message content, log assertions via `tail`)
+- Emits `PASS` / `FAIL` per check with color, and a final summary
+- Blocks only on genuinely interactive steps (e.g. clicking a notification button) with clear printed instructions
+- At the end, fires `plexi notify` to pull the user back to the ship pane with the result
+- Is deleted by the agent in Phase 5 (before the bump commit) — never committed
+
+```python
+# Template structure:
+import subprocess, json, sys
+CLI = "plexi-pr-<N>"
+PASS = "\033[32mPASS\033[0m"; FAIL = "\033[31mFAIL\033[0m"
+failures = []
+def check(label, ok, detail=""):
+    if ok: print(f"  {PASS}  {label}")
+    else: print(f"  {FAIL}  {label}{': ' + detail if detail else ''}"); failures.append(label)
+# ... checks ...
+if failures: sys.exit(1)
+```
+
+Tell the user to run it with:
+```
+python3 test_pr<N>.py
+```
+
 Surface the testing block — output EXACTLY this format:
 
 ```
