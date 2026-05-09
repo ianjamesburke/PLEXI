@@ -1,6 +1,20 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.52] — 2026-05-09
+
+### Changes
+- feat(cli): pane list — add context_id, context_name, window_id, cwd fields (#893)
+- fix(snake-race): lower combined target from 100 to 50 (#886)
+- feat: snake-race — four-pane speedrun to 100 with timer and personal best (#883)
+- feat(snake): emit score and game_over events via pipe (#882)
+- docs: add env setup gotcha for Plexi app subprocess spawning
+- feat(cli): plexi app render — headless app screenshot via offscreen egui/wgpu (#873)
+- chore: stop ignoring sdk/python/tests/ — test files should be tracked
+- Rename ship skill to ship-issue
+- Add Plexi-specific ship cycle gotchas to ship skill
+- fix(sdk): raise TypeError when blocking emit called from sync hook (#872)
+- chore: commit alpha changes before branching
 ## [3.5.51] — 2026-05-08
 
 ### Changes
