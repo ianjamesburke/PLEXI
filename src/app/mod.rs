@@ -993,7 +993,7 @@ impl PlexiApp {
                     let new_pane_id = self.host.next_pane_id();
                     if type_id == "terminal" {
                         let vertical = matches!(layout.as_str(), "split_h" | "split_above");
-                        let initial_cmd = if args.is_empty() { None } else { Some(args.join(" ")) };
+                        let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(args)) };
                         log::info!("pane_ipc: spawn_pane terminal vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                         self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
                     } else {
@@ -1150,7 +1150,7 @@ impl PlexiApp {
             if type_id == "terminal" {
                 let layout_str = layout.as_deref().unwrap_or("split_v");
                 let vertical = matches!(layout_str, "split_h" | "split_above");
-                let initial_cmd = if args.is_empty() { None } else { Some(args.join(" ")) };
+                let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(&args)) };
                 self.split_focused(vertical, initial_cmd.as_deref(), ephemeral);
             } else {
                 self.launch_app_by_id_with_layout(&type_id, layout, &args);
@@ -1578,7 +1578,7 @@ impl eframe::App for PlexiApp {
                         let initial_cmd = if effective_args.is_empty() {
                             None
                         } else {
-                            Some(effective_args.join(" "))
+                            Some(crate::shell::shell_join(&effective_args))
                         };
                         log::info!(
                             "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
