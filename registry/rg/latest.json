@@ -1,0 +1,45 @@
+{
+  "plexi_version": "0.1",
+  "name": "rg",
+  "version": "14.1.0",
+  "description": "ripgrep — fast recursive search tool respecting .gitignore",
+  "icon": "🔍",
+  "default_view": "output",
+  "commands": [
+    {
+      "name": "rg",
+      "description": "Search for PATTERN in files",
+      "ui_hint": "output",
+      "args": [
+        {"name": "pattern", "type": "string", "required": true, "description": "Regular expression to search for"},
+        {"name": "path", "type": "path", "required": false, "description": "Directory or file to search (default: current directory)"}
+      ],
+      "flags": [
+        {"name": "--type", "type": "string", "description": "Search only files matching this type (e.g. rust, py, js)"},
+        {"name": "--glob", "type": "string", "description": "Include or exclude files matching this glob pattern"},
+        {"name": "--hidden", "type": "bool", "default": false, "description": "Search hidden files and directories"},
+        {"name": "--no-ignore", "type": "bool", "default": false, "description": "Do not respect .gitignore and similar files"},
+        {"name": "--case-sensitive", "type": "bool", "default": false, "description": "Search case-sensitively"},
+        {"name": "--ignore-case", "type": "bool", "default": false, "description": "Search case-insensitively"},
+        {"name": "--smart-case", "type": "bool", "default": false, "description": "Case-insensitive if pattern is lowercase, otherwise sensitive"},
+        {"name": "--fixed-strings", "type": "bool", "default": false, "description": "Treat pattern as literal string, not regex"},
+        {"name": "--line-number", "type": "bool", "default": false, "description": "Show line numbers (default in terminal)"},
+        {"name": "--column", "type": "bool", "default": false, "description": "Show column numbers"},
+        {"name": "--count", "type": "bool", "default": false, "description": "Show count of matching lines per file"},
+        {"name": "--files-with-matches", "type": "bool", "default": false, "description": "Print only filenames with matches"},
+        {"name": "--files-without-match", "type": "bool", "default": false, "description": "Print only filenames with no matches"},
+        {"name": "--word-regexp", "type": "bool", "default": false, "description": "Match only whole words"},
+        {"name": "--multiline", "type": "bool", "default": false, "description": "Enable multiline matching"},
+        {"name": "--context", "type": "int", "description": "Show NUM lines before and after each match"},
+        {"name": "--before-context", "type": "int", "description": "Show NUM lines before each match"},
+        {"name": "--after-context", "type": "int", "description": "Show NUM lines after each match"},
+        {"name": "--max-depth", "type": "int", "description": "Limit search depth in directory traversal"},
+        {"name": "--max-count", "type": "int", "description": "Stop after NUM matches per file"},
+        {"name": "--follow", "type": "bool", "default": false, "description": "Follow symbolic links"},
+        {"name": "--json", "type": "bool", "default": false, "description": "Output results in JSON format"},
+        {"name": "--replace", "type": "string", "description": "Replace each match with the given text in output"},
+        {"name": "--only-matching", "type": "bool", "default": false, "description": "Print only the matched parts of each matching line"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+{
+  "plexi_version": "0.1",
+  "name": "docker",
+  "version": "26.1.0",
+  "description": "Container platform for building and running applications",
+  "icon": "🐳",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "build",
+      "description": "Build an image from a Dockerfile",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "path", "type": "path", "required": true, "description": "Build context path (usually .)"}
+      ],
+      "flags": [
+        {"name": "--tag", "type": "string", "required": true, "description": "Name and optionally tag in name:tag format"},
+        {"name": "--file", "type": "path", "description": "Name of the Dockerfile (default: PATH/Dockerfile)"},
+        {"name": "--no-cache", "type": "bool", "default": false, "description": "Do not use cache when building the image"},
+        {"name": "--platform", "type": "string", "description": "Set target platform for build (e.g. linux/amd64)"}
+      ]
+    },
+    {
+      "name": "run",
+      "description": "Run a command in a new container",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "image", "type": "string", "required": true, "description": "Image name (and optional tag)"},
+        {"name": "command", "type": "string", "required": false, "description": "Command to run inside the container"}
+      ],
+      "flags": [
+        {"name": "--rm", "type": "bool", "default": false, "description": "Automatically remove the container when it exits"},
+        {"name": "--interactive", "type": "bool", "default": false, "description": "Keep STDIN open"},
+        {"name": "--tty", "type": "bool", "default": false, "description": "Allocate a pseudo-TTY"},
+        {"name": "--name", "type": "string", "description": "Assign a name to the container"},
+        {"name": "--env", "type": "string", "description": "Set environment variables"},
+        {"name": "--volume", "type": "string", "description": "Bind mount a volume (host:container)"},
+        {"name": "--publish", "type": "string", "description": "Publish container port(s) to the host (host:container)"},
+        {"name": "--detach", "type": "bool", "default": false, "description": "Run container in background"}
+      ]
+    },
+    {
+      "name": "pull",
+      "description": "Download an image from a registry",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "image", "type": "string", "required": true, "description": "Image name (and optional tag)"}
+      ]
+    },
+    {
+      "name": "push",
+      "description": "Upload an image to a registry",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "image", "type": "string", "required": true}
+      ]
+    },
+    {
+      "name": "images",
+      "description": "List images",
+      "ui_hint": "list",
+      "flags": [
+        {"name": "--all", "type": "bool", "default": false, "description": "Show all images (default hides intermediate)"},
+        {"name": "--format", "type": "string", "description": "Format output using a Go template or 'json'"},
+        {"name": "--filter", "type": "string", "description": "Filter output based on conditions (e.g. dangling=true)"}
+      ]
+    },
+    {
+      "name": "ps",
+      "description": "List containers",
+      "ui_hint": "list",
+      "flags": [
+        {"name": "--all", "type": "bool", "default": false, "description": "Show all containers (default shows running only)"},
+        {"name": "--format", "type": "string", "description": "Format output using a Go template or 'json'"},
+        {"name": "--filter", "type": "string", "description": "Filter output based on conditions"}
+      ]
+    },
+    {
+      "name": "stop",
+      "description": "Stop one or more running containers",
+      "args": [
+        {"name": "container", "type": "string", "required": true, "description": "Container name or ID"}
+      ],
+      "flags": [
+        {"name": "--time", "type": "int", "description": "Seconds to wait for stop before killing (default 10)"}
+      ]
+    },
+    {
+      "name": "rm",
+      "description": "Remove one or more containers",
+      "args": [
+        {"name": "container", "type": "string", "required": true, "description": "Container name or ID"}
+      ],
+      "flags": [
+        {"name": "--force", "type": "bool", "default": false, "description": "Force removal of a running container"},
+        {"name": "--volumes", "type": "bool", "default": false, "description": "Remove anonymous volumes associated with the container"}
+      ]
+    },
+    {
+      "name": "rmi",
+      "description": "Remove one or more images",
+      "args": [
+        {"name": "image", "type": "string", "required": true, "description": "Image name or ID"}
+      ],
+      "flags": [
+        {"name": "--force", "type": "bool", "default": false, "description": "Force removal of the image"}
+      ]
+    },
+    {
+      "name": "exec",
+      "description": "Run a command in a running container",
+      "ui_hint": "stream",
+      "streaming": true,
+      "args": [
+        {"name": "container", "type": "string", "required": true},
+        {"name": "command", "type": "string", "required": true}
+      ],
+      "flags": [
+        {"name": "--interactive", "type": "bool", "default": false},
+        {"name": "--tty", "type": "bool", "default": false}
+      ]
+    },
+    {
+      "name": "logs",
+      "description": "Fetch the logs of a container",
+      "ui_hint": "output",
+      "args": [
+        {"name": "container", "type": "string", "required": true}
+      ],
+      "flags": [
+        {"name": "--follow", "type": "bool", "default": false, "description": "Follow log output"},
+        {"name": "--tail", "type": "string", "description": "Number of lines from the end to show (e.g. 100)"},
+        {"name": "--timestamps", "type": "bool", "default": false, "description": "Show timestamps"}
+      ]
+    },
+    {
+      "name": "compose",
+      "description": "Define and run multi-container applications",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "up",
+          "description": "Create and start containers",
+          "ui_hint": "stream",
+          "streaming": true,
+          "flags": [
+            {"name": "--detach", "type": "bool", "default": false, "description": "Run containers in background"},
+            {"name": "--build", "type": "bool", "default": false, "description": "Build images before starting containers"}
+          ]
+        },
+        {
+          "name": "down",
+          "description": "Stop and remove containers, networks",
+          "flags": [
+            {"name": "--volumes", "type": "bool", "default": false, "description": "Remove named volumes declared in the compose file"}
+          ]
+        },
+        {
+          "name": "ps",
+          "description": "List containers defined by the compose file",
+          "ui_hint": "list"
+        },
+        {
+          "name": "logs",
+          "description": "View output from containers",
+          "ui_hint": "output",
+          "flags": [
+            {"name": "--follow", "type": "bool", "default": false}
+          ]
+        }
+      ]
+    }
+  ]
+}
