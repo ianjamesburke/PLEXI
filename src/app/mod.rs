@@ -883,13 +883,21 @@ impl PlexiApp {
                             .and_then(|tile| {
                                 if let egui_tiles::Tile::Pane(id) = tile { Some(*id) } else { None }
                             });
+                        let context_name = self.router.iter()
+                            .find(|ctx| ctx.context_id == win.context_id)
+                            .map(|ctx| ctx.name.clone())
+                            .unwrap_or_default();
                         for (pane_id, pane) in &win.panes {
-                            let (pane_type, title) = match pane {
+                            let (pane_type, title, cwd) = match pane {
                                 crate::pane::Pane::Terminal(t) => {
-                                    ("terminal", t.name.clone().unwrap_or_else(|| "terminal".to_string()))
+                                    let name = t.name.clone().unwrap_or_else(|| "terminal".to_string());
+                                    let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
+                                        .map(|p| p.to_string_lossy().into_owned());
+                                    ("terminal", name, cwd)
                                 }
                                 crate::pane::Pane::App(a) => {
-                                    ("app", a.name.clone())
+                                    let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
+                                    ("app", a.name.clone(), cwd)
                                 }
                             };
                             let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
@@ -898,6 +906,10 @@ impl PlexiApp {
                                 "type": pane_type,
                                 "title": title,
                                 "focused": focused,
+                                "context_id": win.context_id,
+                                "context_name": context_name,
+                                "window_id": win.window_id,
+                                "cwd": cwd,
                             }));
                         }
                     }
