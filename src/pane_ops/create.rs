@@ -472,7 +472,7 @@ impl PlexiApp {
             log::info!(
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} initial_cmd={initial_cmd:?}"
             );
-            self.split_focused(vertical, initial_cmd.as_deref());
+            self.split_focused(vertical, initial_cmd.as_deref(), false);
             return;
         }
 
@@ -678,6 +678,7 @@ mod tests {
             from_pane_id: None,
             request_id: None,
             response_file: None,
+            ephemeral: false,
         });
         h.run_frames(2);
 

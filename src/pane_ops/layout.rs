@@ -182,7 +182,7 @@ impl PlexiApp {
         match kind {
             Kind::Terminal => {
                 // Reuse the existing terminal split path.
-                self.split_focused(vertical, None);
+                self.split_focused(vertical, None, false);
             }
             Kind::App(manifest_id) => {
                 // Fresh instance of the same app at the requested placement.
@@ -199,7 +199,7 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>) {
+    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>, close_on_exit: bool) {
         let Some(focused) = self.windows[self.active_window].focused_pane else {
             return;
         };
@@ -248,6 +248,7 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
+        pane.close_on_exit = close_on_exit;
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));

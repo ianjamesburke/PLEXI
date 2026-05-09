@@ -916,6 +916,8 @@ pub enum HostCommand {
         request_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        ephemeral: bool,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -1514,6 +1516,10 @@ pub struct ListItem {
 
 fn default_spawn_layout() -> String {
     "split_v".to_string()
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn default_stroke_width() -> f32 {

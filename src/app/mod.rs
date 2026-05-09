@@ -988,10 +988,17 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, response_file, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} response_file={response_file:?}");
+                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} ephemeral={ephemeral} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
-                    self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                    if type_id == "terminal" {
+                        let vertical = matches!(layout.as_str(), "split_h" | "split_above");
+                        let initial_cmd = if args.is_empty() { None } else { Some(args.join(" ")) };
+                        log::info!("pane_ipc: spawn_pane terminal vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                        self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
+                    } else {
+                        self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                    }
                     if let Some(rf) = response_file {
                         let json = format!("{{\"pane_id\":{new_pane_id}}}");
                         if let Err(e) = std::fs::write(rf, &json) {
@@ -1565,7 +1572,7 @@ impl eframe::App for PlexiApp {
                         log::info!(
                             "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
                         );
-                        self.split_focused(vertical, initial_cmd.as_deref());
+                        self.split_focused(vertical, initial_cmd.as_deref(), false);
                     } else {
                         self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
@@ -2020,12 +2027,12 @@ impl eframe::App for PlexiApp {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
-                    self.split_focused(false, None);
+                    self.split_focused(false, None, false);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].zoomed_pane = None;
-                    self.split_focused(true, None);
+                    self.split_focused(true, None, false);
                     self.save_workspace();
                 }
                 Action::SplitRight => {

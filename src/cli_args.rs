@@ -94,7 +94,18 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PaneCmd,
     },
-    /// Open an app or terminal pane
+    /// Open a terminal pane
+    Terminal {
+        /// Optional command to run in the terminal
+        cmd: Option<String>,
+        /// Close the pane when the process exits
+        #[arg(long)]
+        ephemeral: bool,
+        /// Layout hint (split_v, split_h, split_above)
+        #[arg(long)]
+        layout: Option<String>,
+    },
+    /// Open an app pane
     Open {
         /// App or pane type id
         type_id: String,

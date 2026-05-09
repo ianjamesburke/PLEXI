@@ -767,6 +767,7 @@ impl ProcessApp {
                 from_pane_id,
                 request_id,
                 response_file: _,
+                ephemeral: _,
             } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PanesSpawn)

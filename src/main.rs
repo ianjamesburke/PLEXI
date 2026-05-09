@@ -281,6 +281,9 @@ fn main() -> eframe::Result {
                         PaneCmd::Send { pane_id, text } => std::process::exit(cli::pane_send_cli(pane_id, &text)),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                     },
+                    Commands::Terminal { cmd, ephemeral, layout } => {
+                        std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref()));
+                    }
                     Commands::Open { type_id, layout, extra_args } => {
                         std::process::exit(cli::open_cli(&type_id, &extra_args, layout.as_deref()));
                     }
