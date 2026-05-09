@@ -694,6 +694,41 @@ mod tests {
         );
     }
 
+    /// Regression guard for issue #890: terminal panes spawned with an initial_cmd
+    /// must persist after the process exits (no auto-close). The pane must appear
+    /// in pane list and accept pane send calls.
+    #[test]
+    fn spawn_pane_terminal_with_initial_cmd_creates_persistent_pane() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_v".to_string(),
+            args: vec!["echo".to_string(), "hello".to_string()],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+        });
+        h.run_frames(2);
+
+        // add_test_pane creates an App pane; after spawn we have 1 App + 1 Terminal.
+        let snap = h.state();
+        assert!(
+            snap.open_panes.len() > 1,
+            "SpawnPane with initial_cmd must create a new pane (got {:?})",
+            snap.pane_titles,
+        );
+        assert!(
+            snap.pane_titles.values().any(|t| t == "Terminal"),
+            "expected a Terminal pane after SpawnPane with args, got: {:?}",
+            snap.pane_titles,
+        );
+    }
+
     #[test]
     fn cli_binary_in_path_finds_real_binary() {
         // `/bin/sh` is guaranteed to exist on macOS/Linux.

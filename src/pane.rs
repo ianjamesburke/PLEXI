@@ -62,9 +62,6 @@ pub struct TerminalPane {
     pub exited: bool,
     pub name: Option<String>,
     pub font_size: f32,
-    /// When true, the pane closes automatically when its process exits.
-    /// Set for panes spawned with an initial_cmd (e.g. `plexi open terminal <cmd>`).
-    pub close_on_exit: bool,
 }
 
 impl TerminalPane {
@@ -88,7 +85,6 @@ impl TerminalPane {
             exited: false,
             name: None,
             font_size: default_font_size,
-            close_on_exit: false,
         })
     }
 }

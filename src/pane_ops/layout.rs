@@ -225,9 +225,20 @@ impl PlexiApp {
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors);
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?}");
-            settings.args = vec!["-l".to_string(), "-c".to_string(), cmd.to_string()];
+            let shell_name = std::path::Path::new(&settings.shell)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            // `-i` sources ~/.zshrc so PATH additions (Homebrew, nvm, etc.) are
+            // visible. Fish uses different flags; for other POSIX shells we use
+            // the safe no-interactive fallback.
+            settings.args = match shell_name {
+                "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), cmd.to_string()],
+                "fish" => vec!["--login".to_string(), "-c".to_string(), cmd.to_string()],
+                _ => vec!["-l".to_string(), "-c".to_string(), cmd.to_string()],
+            };
         }
-        let Some(mut pane) = TerminalPane::new(
+        let Some(pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
@@ -237,7 +248,6 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
-        pane.close_on_exit = initial_cmd.is_some();
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
