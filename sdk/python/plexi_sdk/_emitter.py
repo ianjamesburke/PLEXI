@@ -1038,6 +1038,22 @@ class Emitter:
         })
         return pipe
 
+    def audio_play(self, source: str, volume: float = 1.0) -> None:
+        """Play an audio file via the host (rodio). Requires audio.playback capability.
+
+        source: absolute path to audio file (mp3, wav, ogg, etc.)
+        volume: playback volume 0.0–1.0 (default 1.0)
+
+        Fire-and-forget — no response event. Stop playback by calling
+        audio_play(source, state="stopped") or closing the pane.
+        """
+        _emit({
+            "type": "audio_play",
+            "source": source,
+            "state": "playing",
+            "volume": float(volume),
+        })
+
     def set_timer(self, timer_id: str, after_ms: int) -> None:
         """Fire PlexiEvent::Timer after after_ms milliseconds. Requires timer capability."""
         _emit({"type": "set_timer", "timer_id": timer_id, "after_ms": after_ms})

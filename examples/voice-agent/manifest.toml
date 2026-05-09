@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "voice-agent"
+type = "app"
+name = "Voice Agent"
+version = "0.1.0"
+description = "Voice control for Plexi — listens continuously, transcribes speech, executes Plexi commands via AI tool use, and confirms verbally via TTS. Requires OPENAI_API_KEY and OPENROUTER_API_KEY secrets."
+entry = "voice_agent.py"
+
+[app.capabilities]
+capabilities = ["audio.record", "audio.playback", "ai.query", "net.http"]
+
+[launch]
+notification_scope = "context"
+background = false
