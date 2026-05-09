@@ -80,7 +80,11 @@ pub(crate) fn crawl_with_runner(
     runner: &dyn HelpRunner,
     cache_dir: &std::path::Path,
 ) -> Result<CrawlResult, CrawlError> {
-    let cache_file = cache_dir.join(format!("{cli_name}.json"));
+    let safe_name: String = cli_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let cache_file = cache_dir.join(format!("{safe_name}.json"));
 
     // Cache hit — try to deserialize; on failure, fall through and re-crawl.
     // Also check version: if the CLI version changed since we cached, invalidate.
@@ -639,5 +643,32 @@ COMMANDS
         let result = crawl_with_runner("version-cli", &runner, &cache_dir).unwrap();
         assert!(!result.from_cache, "stale cache should have been invalidated");
         assert_eq!(result.descriptor.version, "1.0.0");
+    }
+
+    #[test]
+    fn path_traversal_cli_name_stays_within_cache_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let runner = MockRunner {
+            help: "COMMANDS\n  run   Do the thing\n".to_string(),
+            version: None,
+        };
+
+        // "../../evil" → each of '.','.','/','.','.','/' is non-alphanumeric → "______evil"
+        crawl_with_runner("../../evil", &runner, &cache_dir)
+            .expect("crawl should succeed even with traversal input");
+
+        let expected = cache_dir.join("______evil.json");
+        assert!(expected.exists(), "sanitized cache file should exist at {expected:?}");
+        assert!(
+            expected.starts_with(&cache_dir),
+            "cache file escaped cache_dir: {expected:?}"
+        );
+
+        // No file created outside the cache dir.
+        let parent = tmp.path().parent().unwrap();
+        assert!(!parent.join("evil.json").exists(), "path traversal wrote outside cache_dir");
     }
 }
