@@ -1137,6 +1137,7 @@ impl PlexiApp {
                 continue;
             }
             let layout = val["layout"].as_str().map(|s| s.to_string());
+            let ephemeral = val["ephemeral"].as_bool().unwrap_or(false);
             let args: Vec<String> = val["args"]
                 .as_array()
                 .map(|a| {
@@ -1145,8 +1146,15 @@ impl PlexiApp {
                         .collect()
                 })
                 .unwrap_or_default();
-            log::info!("spawn-queue: launching '{type_id}' layout={layout:?}");
-            self.launch_app_by_id_with_layout(&type_id, layout, &args);
+            log::info!("spawn-queue: launching '{type_id}' layout={layout:?} ephemeral={ephemeral}");
+            if type_id == "terminal" {
+                let layout_str = layout.as_deref().unwrap_or("split_v");
+                let vertical = matches!(layout_str, "split_h" | "split_above");
+                let initial_cmd = if args.is_empty() { None } else { Some(args.join(" ")) };
+                self.split_focused(vertical, initial_cmd.as_deref(), ephemeral);
+            } else {
+                self.launch_app_by_id_with_layout(&type_id, layout, &args);
+            }
         }
     }
 
