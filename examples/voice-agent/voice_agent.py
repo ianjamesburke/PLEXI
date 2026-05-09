@@ -462,13 +462,17 @@ def _tts_local(text: str) -> str:
     Uses the built-in Samantha voice; set VOICE_AGENT_VOICE env var to override.
     """
     voice = os.environ.get("VOICE_AGENT_VOICE", "Samantha")
-    with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as f:
-        tmp_path = f.name
-    subprocess.run(
-        ["say", "-v", voice, "-o", tmp_path, text],
-        check=True,
-        timeout=10,
-    )
+    fd, tmp_path = tempfile.mkstemp(suffix=".aiff")
+    os.close(fd)
+    try:
+        subprocess.run(
+            ["say", "-v", voice, "-o", tmp_path, text],
+            check=True,
+            timeout=10,
+        )
+    except Exception:
+        os.unlink(tmp_path)
+        raise
     return tmp_path
 
 
