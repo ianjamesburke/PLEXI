@@ -302,19 +302,47 @@ impl PermissionStore {
         format!("{}::{}::{}", app_id, workspace_root.display(), cap.as_str())
     }
 
-    /// Load from `config_dir/permissions.toml`. Returns empty store on missing/corrupt file.
+    /// Load from `config_dir/permissions.toml`. Returns empty store on missing file.
+    /// On parse failure: logs the error, renames the corrupt file to
+    /// `permissions.toml.corrupt-<timestamp>` for recovery, and returns an empty store.
     pub fn load_or_default(config_dir: &Path) -> Self {
         let path = config_dir.join("permissions.toml");
-        let data = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| toml::from_str::<PermissionStoreData>(&s).ok())
-            .unwrap_or_default();
-        log::info!(
-            "permission_store: loaded {} entries from {}",
-            data.entries.len(),
-            path.display()
-        );
-        Self { data, path }
+        let raw = match std::fs::read_to_string(&path) {
+            Err(_) => {
+                // File absent — first run or already cleaned up.
+                return Self { data: PermissionStoreData::default(), path };
+            }
+            Ok(s) => s,
+        };
+        match toml::from_str::<PermissionStoreData>(&raw) {
+            Ok(data) => {
+                log::info!(
+                    "permission_store: loaded {} entries from {}",
+                    data.entries.len(),
+                    path.display()
+                );
+                Self { data, path }
+            }
+            Err(e) => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let backup = path.with_file_name(format!("permissions.toml.corrupt-{ts}"));
+                log::error!(
+                    "permission_store: failed to parse {}: {e} — backing up to {}",
+                    path.display(),
+                    backup.display()
+                );
+                if let Err(rename_err) = std::fs::rename(&path, &backup) {
+                    log::error!(
+                        "permission_store: could not rename corrupt file to {}: {rename_err}",
+                        backup.display()
+                    );
+                }
+                Self { data: PermissionStoreData::default(), path }
+            }
+        }
     }
 
     /// Get the stored state for a (app, workspace, capability) triple.
@@ -370,7 +398,7 @@ impl PermissionStore {
         }
 
         // Also restore any runtime-granted capabilities from previous sessions
-        let prefix_green = format!("{}::{}", app_id, workspace_root.display());
+        let prefix_green = format!("{}::{}::", app_id, workspace_root.display());
         for (key, &state) in &self.data.entries {
             if !key.starts_with(&prefix_green) { continue; }
             let cap_str = match key.split("::").nth(2) {
@@ -553,5 +581,48 @@ mod tests {
         let mut perms = AppPermissions::builtin();
         perms.blocked.insert(Capability::NetHttp); // even if manually set
         assert!(!is_blocked(&perms, Capability::NetHttp));
+    }
+
+    #[test]
+    fn permission_store_corrupt_file_backed_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let perm_path = tmp.path().join("permissions.toml");
+        std::fs::write(&perm_path, b"this is not valid toml ][[[").unwrap();
+
+        let store = PermissionStore::load_or_default(tmp.path());
+
+        // Corrupt file must be renamed away — original path gone.
+        assert!(!perm_path.exists(), "corrupt permissions.toml must be renamed, not left in place");
+
+        // A .corrupt-* backup must exist.
+        let backup_exists = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .any(|e| e.unwrap().file_name().to_string_lossy().starts_with("permissions.toml.corrupt-"));
+        assert!(backup_exists, "a .corrupt-<timestamp> backup must be created");
+
+        // Returned store must be empty.
+        assert!(store.data.entries.is_empty(), "store must be empty after corrupt-file recovery");
+    }
+
+    #[test]
+    fn permission_store_no_prefix_bleed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_extra = std::path::Path::new("/work/project-extra");
+        let workspace = std::path::Path::new("/work/project");
+
+        // Grant fs.read for app in /work/project-extra.
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        store.set("my-app", workspace_extra, Capability::FsRead, PermissionState::Green);
+        store.save();
+
+        let reloaded = PermissionStore::load_or_default(tmp.path());
+        let declared: HashSet<Capability> = HashSet::new();
+        let (caps, _blocked) = reloaded.build_permission_sets("my-app", workspace, &declared);
+
+        // /work/project must not inherit the permission granted for /work/project-extra.
+        assert!(
+            !caps.contains(&Capability::FsRead),
+            "fs.read granted for /work/project-extra must not bleed into /work/project"
+        );
     }
 }
