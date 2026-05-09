@@ -26,10 +26,11 @@ PIPE_ID = "voice-agent-mic"
 SAMPLE_RATE = 48_000
 BUFFER_SIZE = 512
 
-VAD_THRESHOLD = 0.01
+VAD_THRESHOLD = 0.03       # raised from 0.01 — typical MacBook ambient noise ~0.01-0.02
 SPEECH_START_FRAMES = 5   # 100ms at 16kHz/20ms
 SPEECH_END_FRAMES = 35    # 700ms at 16kHz/20ms
 MIN_TURN_FRAMES = 12      # 250ms at 16kHz/20ms
+MAX_TURN_FRAMES = 1500    # 30s hard cap — prevents VAD sticking if silence never arrives
 
 SYSTEM_PROMPT = (
     "You are Plexi's voice agent. The user's speech is transcribed and given to you. "
@@ -224,13 +225,18 @@ class VoiceAgentApp(App):
                     speech_frames += 1
                     if not speaking and speech_frames >= SPEECH_START_FRAMES:
                         speaking = True
-                        self.emit.info("voice-agent: speech start detected")
+                        self.emit.info(f"voice-agent: speech start detected rms={rms:.4f}")
                         self._status = "Hearing..."
                         self.emit.schedule_render(after_ms=50)
                     if speaking:
                         pcm_buf.extend(
                             int(max(-1.0, min(1.0, s)) * 32767) for s in vad_frame
                         )
+                        if len(pcm_buf) >= MAX_TURN_FRAMES * FRAME_LEN:
+                            self.emit.info(
+                                f"voice-agent: max turn length reached ({MAX_TURN_FRAMES} frames), flushing"
+                            )
+                            silent_frames = SPEECH_END_FRAMES  # force end-of-turn path below
                 else:
                     if speaking:
                         silent_frames += 1
