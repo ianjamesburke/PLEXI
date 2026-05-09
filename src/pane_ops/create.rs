@@ -453,9 +453,9 @@ impl PlexiApp {
 
     /// Launch an installed app with an explicit layout and args override.
     /// `layout` overrides the manifest's `layout_hint` when `Some`.
-    ///   "split_v" (default) — vertical split, new pane below
+    ///   "overlay" (default) — full pane takeover; Esc restores the original pane
+    ///   "split_v"           — vertical split, new pane below
     ///   "split_h"           — horizontal split, new pane to the right
-    ///   "overlay"           — full pane, no terminal split
     pub(crate) fn launch_app_by_id_with_layout(
         &mut self,
         id: &str,
@@ -482,7 +482,12 @@ impl PlexiApp {
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
         let group = self.registry.group_for(id);
-        let hint = layout.or_else(|| self.registry.layout_hint_for(id));
+        let hint = layout
+            .or_else(|| self.registry.layout_hint_for(id))
+            .or_else(|| {
+                log::info!("app::{id}: no layout_hint — defaulting to overlay");
+                Some("overlay".to_string())
+            });
 
         // Re-attach a parked background app if one is waiting
         if let Some(mut parked) = self.background_apps.remove(id) {

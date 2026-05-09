@@ -175,7 +175,7 @@ pub struct LaunchSection {
     /// Convention: "cwd" for generic directory-synced apps.
     #[serde(default)]
     pub join_group: Option<String>,
-    /// Preferred pane layout. Default: `LayoutHint { side: "right", split: 0.5 }`.
+    /// Preferred pane layout. When absent, the host defaults to `overlay` (full pane takeover).
     #[serde(default)]
     pub layout_hint: Option<LayoutHint>,
     /// If true, this app captures all keyboard input when focused. Host
