@@ -1690,7 +1690,7 @@ pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
 ///
 /// Returns 0 on success, 1 on error.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
-    let layout_str = layout.unwrap_or("split_v");
+    let layout_str = layout.unwrap_or("overlay");
     if type_id == "terminal" {
         log::warn!("open:cli: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
         eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");

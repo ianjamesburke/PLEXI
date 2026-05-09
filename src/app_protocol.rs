@@ -1515,7 +1515,7 @@ pub struct ListItem {
 }
 
 fn default_spawn_layout() -> String {
-    "split_v".to_string()
+    "overlay".to_string()
 }
 
 fn is_false(b: &bool) -> bool {
@@ -2561,12 +2561,12 @@ mod tests {
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(serialised.contains(r#""type":"spawn_pane""#), "wire tag missing: {serialised}");
 
-        // defaults: layout defaults to "split_v", args to [], pipe_id absent
+        // defaults: layout defaults to "overlay", args to [], pipe_id absent
         let minimal = r#"{"type":"spawn_pane","type_id":"snake"}"#;
         let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
             DrawCommand::Host(HostCommand::SpawnPane { layout, args, pipe_id, from_pane_id, request_id, .. }) => {
-                assert_eq!(layout, "split_v");
+                assert_eq!(layout, "overlay");
                 assert!(args.is_empty());
                 assert!(pipe_id.is_none());
                 assert!(from_pane_id.is_none());
