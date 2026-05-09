@@ -46,8 +46,16 @@ class RenderContext:
         """Buffer a render command for batch flush at frame_done()."""
         self._buf.append(json.dumps(obj) + "\n")
 
+    @property
+    def width(self) -> float:
+        return self.w
+
+    @property
+    def height(self) -> float:
+        return self.h
+
     # ── Visual primitives ──
-    def clear(self, fill: str) -> None:
+    def clear(self, fill: str = "#000000") -> None:
         """Fill the entire pane with a single color. Shorthand for a full-size rect."""
         self._queue({"type": "rect", "x": 0.0, "y": 0.0, "w": self.w, "h": self.h,
                      "fill": fill, "radius": 0.0})
