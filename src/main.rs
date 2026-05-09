@@ -395,6 +395,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "workspace",
         "notify",
         "pane",
+        "terminal",
         "open",
         "--render",
         // #308 Phase 2 — top-level package manager subcommands
