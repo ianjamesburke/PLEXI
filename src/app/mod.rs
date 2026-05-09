@@ -1572,7 +1572,9 @@ impl eframe::App for PlexiApp {
                         log::info!(
                             "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
                         );
-                        self.split_focused(vertical, initial_cmd.as_deref(), false);
+                        // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
+                        // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
+                        self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some());
                     } else {
                         self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
