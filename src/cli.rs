@@ -1464,6 +1464,54 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
     0
 }
 
+/// Prints JSON to stdout. If `jq` is in PATH, pipes through `jq .` for
+/// colour and pretty-printing; otherwise falls back to serde pretty-print.
+fn print_json_output(json_str: &str) -> i32 {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let jq_available = Command::new("jq")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if jq_available {
+        match Command::new("jq").arg(".").stdin(Stdio::piped()).spawn() {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(json_str.as_bytes());
+                }
+                let _ = child.wait();
+                log::info!("print_json_output: rendered via jq");
+                return 0;
+            }
+            Err(e) => {
+                log::warn!("print_json_output: jq spawn failed ({e}), falling back to serde");
+            }
+        }
+    }
+
+    match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(v) => match serde_json::to_string_pretty(&v) {
+            Ok(pretty) => {
+                println!("{pretty}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: could not serialize: {e}");
+                1
+            }
+        },
+        Err(_) => {
+            print!("{json_str}");
+            0
+        }
+    }
+}
+
 /// `plexi pane list`
 ///
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
@@ -1495,8 +1543,7 @@ pub fn pane_list_cli() -> i32 {
             match std::fs::read_to_string(&response_path) {
                 Ok(content) => {
                     let _ = std::fs::remove_file(&response_path);
-                    print!("{content}");
-                    return 0;
+                    return print_json_output(&content);
                 }
                 Err(e) => {
                     log::warn!("pane_list:cli: could not read response file: {e}");
@@ -1576,8 +1623,8 @@ pub fn pane_info_cli() -> i32 {
                         obj["socket"] = serde_json::Value::String(socket_path.clone());
                         let channel = crate::config::build_channel().unwrap_or_else(|| "stable".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
-                        match serde_json::to_string_pretty(&obj) {
-                            Ok(pretty) => { println!("{pretty}"); return 0; }
+                        match serde_json::to_string(&obj) {
+                            Ok(json_str) => { return print_json_output(&json_str); }
                             Err(e) => {
                                 eprintln!("error: could not serialize response: {e}");
                                 return 1;
