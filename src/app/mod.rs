@@ -2760,6 +2760,15 @@ impl eframe::App for PlexiApp {
 
         self.draw_feature_effects(ctx);
 
+        // Re-request focus for the palette search field after all pane rendering.
+        // App panes call request_focus() on their TextInput widgets during
+        // CentralPanel rendering, and egui focus is last-write-wins — without
+        // this, a keyboard-capture app pane steals focus from the palette every
+        // frame, making the search field non-typeable even though it's visible.
+        if self.show_command_palette {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("palette_search")));
+        }
+
         let frame_ms = _frame_start.elapsed().as_millis();
         if frame_ms > 50 {
             log::warn!("slow frame: {}ms", frame_ms);

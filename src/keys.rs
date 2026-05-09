@@ -121,8 +121,8 @@ pub enum Action {
 ///
 /// `app_active` — focused pane has an active app surface (affects Escape/Tab).
 /// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
-///   When true, all host shortcuts are suppressed *except* Cmd+Q (quit) and Cmd+W (close pane),
-///   which are structural safety operations that must always work.
+///   When true, all host shortcuts are suppressed *except* Cmd+Q (quit), Cmd+W (close pane),
+///   and Cmd+P (command palette) — structural safety operations that must always work.
 pub fn poll_actions(
     ctx: &egui::Context,
     app_active: bool,
@@ -145,6 +145,12 @@ pub fn poll_actions(
         // Close pane (Cmd+W) — always active, even in keyboard capture mode.
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
             actions.push(Action::ClosePane);
+        }
+
+        // Command palette (Cmd+P) — always active, even in keyboard capture mode.
+        // The palette is a host-level UI surface; apps cannot block access to it.
+        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
+            actions.push(Action::ToggleCommandPalette);
         }
 
         // All remaining shortcuts are suppressed when an app has declared keyboard capture.
@@ -243,11 +249,6 @@ pub fn poll_actions(
         // Toggle shortcuts overlay (Cmd+/)
         if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Slash) {
             actions.push(Action::ToggleShortcuts);
-        }
-
-        // Command palette (Cmd+P)
-        if input.consume_key(egui::Modifiers::COMMAND, egui::Key::P) {
-            actions.push(Action::ToggleCommandPalette);
         }
 
         // Rename context (Cmd+Shift+R) vs rename pane (Cmd+R). Check shifted
