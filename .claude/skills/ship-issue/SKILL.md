@@ -251,12 +251,14 @@ cr 2>&1
 ```
 Read the output. Fix any `error` or `warning` severity findings on the feature branch before proceeding — these are blocking. `info`/`suggestion` items are advisory; apply if trivial, skip if out of scope. If fixes were made, commit, push, then re-run to confirm clean.
 
-**2. Poll for Gemini / CodeRabbit bot feedback** — up to 8 minutes, check every 60s.
+**2. Poll for Gemini / CodeRabbit bot feedback** — wait 5 minutes after PR creation, then check every 60s up to the 10-minute mark (6 checks total).
 
 > **Note:** Gemini posts as a PR **review** (not a comment). Check both endpoints — `gh pr view --json comments` only surfaces issue-style comments; inline and summary bot feedback lands in `pulls/<n>/reviews` and `pulls/<n>/comments`.
 
 ```bash
-for i in $(seq 1 8); do
+echo "Waiting 5 minutes for AI reviewers to post..."
+sleep 300
+for i in $(seq 1 6); do
   COMMENT_COUNT=$(gh pr view $PR_NUMBER --json comments \
     --jq '[.comments[] | select(.author.login | test("gemini|coderabbit"; "i"))] | length')
   REVIEW_COUNT=$(gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/reviews \
@@ -274,8 +276,10 @@ for i in $(seq 1 8); do
       --jq '.[] | select(.user.login | test("gemini|coderabbit"; "i")) | "[\(.user.login)] \(.body)"'
     break
   fi
-  echo "AI review check $i/8 — no bot feedback yet, waiting 60s..."
-  sleep 60
+  if [ "$i" -lt 6 ]; then
+    echo "AI review check $i/6 — no bot feedback yet, waiting 60s..."
+    sleep 60
+  fi
 done
 ```
 After the loop, read all surfaced feedback. For each:
@@ -283,11 +287,34 @@ After the loop, read all surfaced feedback. For each:
 - **Style / naming / docs** → apply if trivial, skip if out of scope
 - **False positive** → note and ignore
 
-If no bot feedback appears after 8 minutes, proceed — the bots may be slow or not configured for this repo.
+**The final approver is always the user in this Claude Code instance.** AI/bot reviews inform the fix pass, but no PR merges without explicit user confirmation in Phase 4.
+
+If no bot feedback appears after 10 minutes, proceed — the bots may be slow or not configured for this repo.
 
 ---
 
 ## Phase 4 — Install & Test
+
+### Install gate
+
+Before running `just pr-install`, assess whether a binary install is actually needed.
+
+**Diff-review only (skip install) when all changed files fall into these categories:**
+- Non-Rust files only: justfile, TOML config, scripts, docs, skills, completion files, markdown
+- Rust changes that are pure code deletion with no behavioral change
+- Rust test-only additions (`#[cfg(test)]` or `tests/` only, no production path changes)
+- CLI output changes verifiable without a running host (help text, error messages, completions)
+
+Check the diff:
+```bash
+git -C worktrees/<branch> diff origin/alpha --name-only
+```
+
+**If install is not needed:** surface a diff-review testing block instead (see "Diff-review testing block" below). Do not run `just pr-install`. Skip the pr-install and pr-clean steps in Phase 5 as well.
+
+**If install is needed:** proceed below.
+
+---
 
 **Run the install and confirm it completes before writing the testing block.** Do not surface the testing block while the install is pending or if it hasn't been run yet.
 
@@ -348,6 +375,44 @@ Tell the user to run it with:
 ```
 python3 test_pr<N>.py
 ```
+
+**Diff-review testing block** (used when install is not needed):
+```
+[TESTING] PR #<n> — <title>
+
+No binary install needed for this change.
+
+Please review the diff and confirm it looks correct:
+<pr-url>
+
+Pass criteria:
+- <concrete observable change visible in the diff>
+
+Fail criteria:
+- <what would look wrong in the diff>
+
+Reply with one of:
+- "pass" — diff looks correct, ready to merge
+- "fail: <exact description of what's wrong>"
+- "modify: <specific change needed>"
+```
+
+Then send the notification:
+```bash
+RESULT=$(plexi notify --title "PR #<n> ready to review" \
+  --body "<title>. No install needed — just check the diff." \
+  --choice "a:Talk to Claude:pane_focus:$SHIP_PANE" \
+  --choice "b:Open PR" \
+  --choice "c:Open PR")
+
+case "$RESULT" in
+  b|c) open "<pr-url>" ;;
+esac
+```
+
+**STOP. Do not proceed until the user replies with pass/fail/modify.**
+
+---
 
 Surface the testing block — output EXACTLY this format:
 
