@@ -262,6 +262,27 @@ pub fn migrate_legacy_global_secrets(_store: &dyn SecretStore) -> usize {
     0
 }
 
+/// Return all user-scope (`plexi:user:*`) secrets as `(env_name, value)` pairs.
+/// Used to inject user-global secrets into app subprocess environments.
+#[cfg(target_os = "macos")]
+pub fn list_user_secrets() -> Vec<(String, Zeroizing<String>)> {
+    let store = MacKeychain::new();
+    store
+        .list_with_prefix("plexi:user:")
+        .into_iter()
+        .filter_map(|account| {
+            let env_name = account.strip_prefix("plexi:user:")?.to_string();
+            let value = store.get(&account)?;
+            Some((env_name, value))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn list_user_secrets() -> Vec<(String, Zeroizing<String>)> {
+    Vec::new()
+}
+
 /// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
 /// interior mutability so tests can share a single instance behind `&dyn`.
 #[cfg(test)]

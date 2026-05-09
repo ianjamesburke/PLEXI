@@ -336,6 +336,12 @@ impl ProcessApp {
                 cmd.env(k, v);
             }
         }
+        // Inject user-global secrets (stored via `plexi secret set --global`) into the
+        // app subprocess env. Apps must declare net.http capability to use them.
+        for (env_name, value) in crate::workspace_secrets::list_user_secrets() {
+            log::info!("ProcessApp[{}]: injecting user secret '{}'", type_id, env_name);
+            cmd.env(&env_name, value.as_str());
+        }
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
         // Python app shebangs (`#!/usr/bin/env python3`) resolve to our hermetic
         // Python 3.12, not whatever the host machine happens to have installed.
