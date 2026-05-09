@@ -4,6 +4,10 @@
 
 ---
 
+## New top-level CLI subcommands must be added to parse_workspace_path_arg SUBCOMMANDS list (cli · ship)
+
+`src/main.rs` contains `parse_workspace_path_arg` with a hardcoded `SUBCOMMANDS: &[&str]` list. Any new top-level subcommand not in this list will be silently consumed as a workspace path argument (manifesting as "workspace path does not exist: <subcommand>"). Every new entry in `cli_args.rs` `Commands` enum must be mirrored there.
+
 - Any code that spawns a Plexi app subprocess outside `ProcessApp::launch` must replicate its env setup: ENV_WHITELIST (HOME/PATH/LANG/LC_ALL/TERM/USER/SHELL), PLEXI_* passthrough, and PYTHONPATH → config_dir/sdk + bundle SDK path. Reference: `src/process_app/mod.rs` lines ~320–368.
 
 ## 2026-05-07 — apps dir wiped on pr-install
