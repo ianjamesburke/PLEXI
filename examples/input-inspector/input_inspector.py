@@ -70,10 +70,12 @@ class InputInspectorApp(App):
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         key_lower = key.lower()
-        if key_lower == "i":
+        if key_lower == "i" and not any(mods.values()):
             self._show_inputs_page = not self._show_inputs_page
             return
-        if key_lower in ("1", "2", "3", "4", "5", "6"):
+        # Ctrl+1–6 toggle category visibility. Bare digits 1–6 are now logged as
+        # regular key events (host fixed duplicate-firing in #933).
+        if mods.get("ctrl") and key_lower in ("1", "2", "3", "4", "5", "6"):
             mapping = {
                 "1": "key",
                 "2": "click",
@@ -248,7 +250,7 @@ class InputInspectorApp(App):
         ctx.text(
             ctx.w - PAD,
             22,
-            "i:back  1-6:toggle",
+            "i:back  ctrl+1-6:toggle",
             size=CAPTION,
             color=MUTED,
             align="right_center",
