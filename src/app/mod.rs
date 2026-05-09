@@ -988,10 +988,17 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, response_file, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} response_file={response_file:?}");
+                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} ephemeral={ephemeral} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
-                    self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                    if type_id == "terminal" {
+                        let vertical = matches!(layout.as_str(), "split_h" | "split_above");
+                        let initial_cmd = if args.is_empty() { None } else { Some(args.join(" ")) };
+                        log::info!("pane_ipc: spawn_pane terminal vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                        self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
+                    } else {
+                        self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                    }
                     if let Some(rf) = response_file {
                         let json = format!("{{\"pane_id\":{new_pane_id}}}");
                         if let Err(e) = std::fs::write(rf, &json) {
@@ -1130,6 +1137,7 @@ impl PlexiApp {
                 continue;
             }
             let layout = val["layout"].as_str().map(|s| s.to_string());
+            let ephemeral = val["ephemeral"].as_bool().unwrap_or(false);
             let args: Vec<String> = val["args"]
                 .as_array()
                 .map(|a| {
@@ -1138,8 +1146,15 @@ impl PlexiApp {
                         .collect()
                 })
                 .unwrap_or_default();
-            log::info!("spawn-queue: launching '{type_id}' layout={layout:?}");
-            self.launch_app_by_id_with_layout(&type_id, layout, &args);
+            log::info!("spawn-queue: launching '{type_id}' layout={layout:?} ephemeral={ephemeral}");
+            if type_id == "terminal" {
+                let layout_str = layout.as_deref().unwrap_or("split_v");
+                let vertical = matches!(layout_str, "split_h" | "split_above");
+                let initial_cmd = if args.is_empty() { None } else { Some(args.join(" ")) };
+                self.split_focused(vertical, initial_cmd.as_deref(), ephemeral);
+            } else {
+                self.launch_app_by_id_with_layout(&type_id, layout, &args);
+            }
         }
     }
 
@@ -1565,7 +1580,9 @@ impl eframe::App for PlexiApp {
                         log::info!(
                             "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
                         );
-                        self.split_focused(vertical, initial_cmd.as_deref());
+                        // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
+                        // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
+                        self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some());
                     } else {
                         self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
@@ -2020,12 +2037,12 @@ impl eframe::App for PlexiApp {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
-                    self.split_focused(false, None);
+                    self.split_focused(false, None, false);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].zoomed_pane = None;
-                    self.split_focused(true, None);
+                    self.split_focused(true, None, false);
                     self.save_workspace();
                 }
                 Action::SplitRight => {

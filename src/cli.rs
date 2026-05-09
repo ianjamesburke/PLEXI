@@ -1691,6 +1691,10 @@ pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
 /// Returns 0 on success, 1 on error.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
     let layout_str = layout.unwrap_or("split_v");
+    if type_id == "terminal" {
+        log::warn!("open:cli: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
+        eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
+    }
 
     // Socket path is set when running inside a Plexi pane — use it directly so
     // the command reaches the correct running instance regardless of channel.
@@ -1767,6 +1771,95 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
     }
     log::info!("cli: open queued: type_id={type_id}");
     println!("queued: open {type_id}");
+    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
+    0
+}
+
+/// `plexi terminal [cmd] [--ephemeral] [--layout=X]`
+///
+/// Opens a terminal pane. Supports the --ephemeral flag which closes the pane when the
+/// process exits.
+pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>) -> i32 {
+    let layout_str = layout.unwrap_or("split_v");
+    let args: Vec<String> = cmd.map(|c| vec![c.to_string()]).unwrap_or_default();
+
+    if std::env::var("PLEXI_SOCKET").is_ok() {
+        let id = uuid::Uuid::new_v4();
+        let response_file = crate::config::config_dir()
+            .join(format!("spawn-pane-response-{id}.json"))
+            .to_string_lossy()
+            .into_owned();
+        let mut payload = serde_json::json!({
+            "type": "spawn_pane",
+            "type_id": "terminal",
+            "args": args,
+            "layout": layout_str,
+            "response_file": response_file,
+        });
+        if ephemeral {
+            payload["ephemeral"] = serde_json::Value::Bool(true);
+        }
+        log::info!("terminal:cli: sending via socket ephemeral={ephemeral} response_file={response_file:?}");
+        let code = send_to_socket(payload);
+        if code != 0 {
+            return code;
+        }
+        let response_path = std::path::PathBuf::from(&response_file);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if response_path.exists() {
+                match std::fs::read_to_string(&response_path) {
+                    Ok(content) => {
+                        let _ = std::fs::remove_file(&response_path);
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+                                println!("{pid}");
+                                return 0;
+                            }
+                        }
+                        print!("{content}");
+                        return 0;
+                    }
+                    Err(e) => {
+                        log::warn!("terminal:cli: could not read response file: {e}");
+                        eprintln!("error: could not read response file: {e}");
+                        return 1;
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                eprintln!("error: timed out waiting for terminal response");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    // Fallback: spawn-queue (outside a Plexi pane)
+    let queue_dir = crate::config::config_dir().join("spawn-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        eprintln!("error: could not create spawn queue: {e}");
+        return 1;
+    }
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut queue_payload = serde_json::json!({
+        "type_id": "terminal",
+        "args": args,
+        "layout": layout_str,
+    });
+    if ephemeral {
+        queue_payload["ephemeral"] = serde_json::Value::Bool(true);
+    }
+    let file = queue_dir.join(format!("{id}.json"));
+    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
+        eprintln!("error: could not write spawn request: {e}");
+        return 1;
+    }
+    log::info!("terminal:cli: queued ephemeral={ephemeral}");
+    println!("queued: open terminal");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
     0
 }
@@ -2746,7 +2839,8 @@ _plexi() {
         'pack:Pack management'
         'notify:Send a notification'
         'pane:Pane management'
-        'open:Open an app or terminal pane'
+        'terminal:Open a terminal pane'
+        'open:Open an app pane'
         'descriptor:Descriptor probe'
         'registry:CLI registry'
         'context:Context management'
@@ -2786,6 +2880,11 @@ _plexi() {
           local subcmds
           subcmds=('set-title:Set the title of a pane (current or by ID)')
           _describe 'subcommand' subcmds
+          ;;
+        terminal)
+          _arguments \
+            '--ephemeral[Close the pane when the process exits]' \
+            '--layout[Layout hint]:layout:(split_v split_h split_above)'
           ;;
         descriptor)
           local subcmds
@@ -2836,7 +2935,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions"
+  local commands="run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions"
 
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -2862,6 +2961,13 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       ;;
     pane)
       COMPREPLY=($(compgen -W "set-title" -- "$cur"))
+      ;;
+    terminal)
+      if [[ $prev == "--layout" ]]; then
+        COMPREPLY=($(compgen -W "split_v split_h split_above" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "--ephemeral --layout" -- "$cur"))
+      fi
       ;;
     descriptor)
       COMPREPLY=($(compgen -W "probe" -- "$cur"))
@@ -2903,24 +3009,25 @@ complete -F _plexi_completions plexi
 
 const FISH_COMPLETION: &str = r#"# Plexi shell completions for fish
 
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a run -d "Run a named command"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a workspace -d "Workspace management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a secret -d "Secret management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a app -d "App management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a install -d "Install an app"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a uninstall -d "Uninstall an app"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a update -d "Update apps or self"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a list -d "List installed apps"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a validate -d "Validate a Plexi app directory"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a pack -d "Pack management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a notify -d "Send a notification"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a pane -d "Pane management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a open -d "Open an app or terminal pane"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a descriptor -d "Descriptor probe"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a registry -d "CLI registry"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a context -d "Context management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a shell-init -d "Print shell integration snippet"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane open descriptor registry context shell-init completions" -a completions -d "Print shell completion script"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a run -d "Run a named command"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a workspace -d "Workspace management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a secret -d "Secret management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a app -d "App management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a install -d "Install an app"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a uninstall -d "Uninstall an app"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a update -d "Update apps or self"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a list -d "List installed apps"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a validate -d "Validate a Plexi app directory"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a pack -d "Pack management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a notify -d "Send a notification"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a pane -d "Pane management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a terminal -d "Open a terminal pane"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a open -d "Open an app pane"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a descriptor -d "Descriptor probe"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a registry -d "CLI registry"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a context -d "Context management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a shell-init -d "Print shell integration snippet"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a completions -d "Print shell completion script"
 
 # secret subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a set -d "Store a secret"
@@ -2974,6 +3081,10 @@ complete -c plexi -n "__fish_seen_subcommand_from shell-init" -l shell -d "Shell
 
 # completions args
 complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash fish"
+
+# terminal flags
+complete -c plexi -n "__fish_seen_subcommand_from terminal" -l ephemeral -d "Close the pane when the process exits"
+complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above"
 "#;
 
 #[cfg(test)]

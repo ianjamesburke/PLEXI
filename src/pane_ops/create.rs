@@ -463,8 +463,8 @@ impl PlexiApp {
         args: &[String],
     ) {
         // "terminal" is a builtin pane type, not in the app registry.
-        // All dispatch paths (socket IPC, spawn-queue, in-process) must share
-        // this early-return so `plexi open terminal` works from any context.
+        // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
+        // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
         if id == "terminal" {
             let layout_str = layout.as_deref().unwrap_or("split_v");
             let vertical = matches!(layout_str, "split_h" | "split_above");
@@ -472,7 +472,7 @@ impl PlexiApp {
             log::info!(
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} initial_cmd={initial_cmd:?}"
             );
-            self.split_focused(vertical, initial_cmd.as_deref());
+            self.split_focused(vertical, initial_cmd.as_deref(), false);
             return;
         }
 
@@ -678,6 +678,7 @@ mod tests {
             from_pane_id: None,
             request_id: None,
             response_file: None,
+            ephemeral: false,
         });
         h.run_frames(2);
 
