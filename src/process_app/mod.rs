@@ -1827,21 +1827,39 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     let filename = format!("{type_id}.json");
     let workspace_path = workspace_root.join(".plexi").join("app_state").join(&filename);
     if workspace_path.exists() {
-        if let Ok(bytes) = std::fs::read(&workspace_path) {
-            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                log::info!("load_app_state[{type_id}]: loaded workspace state from {}", workspace_path.display());
-                return val;
+        match std::fs::read(&workspace_path) {
+            Err(e) => {
+                log::warn!("load_app_state[{type_id}]: could not read workspace state {}: {e}", workspace_path.display());
             }
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Err(e) => {
+                    log::warn!("load_app_state[{type_id}]: could not parse workspace state {}: {e}", workspace_path.display());
+                }
+                Ok(val) => {
+                    log::info!("load_app_state[{type_id}]: loaded workspace state from {}", workspace_path.display());
+                    return val;
+                }
+            },
         }
     }
     let global_path = crate::config::config_dir().join("app_state").join(&filename);
     if global_path.exists() {
-        if let Ok(bytes) = std::fs::read(&global_path) {
-            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                log::info!("load_app_state[{type_id}]: loaded global state from {}", global_path.display());
-                return val;
+        match std::fs::read(&global_path) {
+            Err(e) => {
+                log::warn!("load_app_state[{type_id}]: could not read global state {}: {e}", global_path.display());
             }
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Err(e) => {
+                    log::warn!("load_app_state[{type_id}]: could not parse global state {}: {e}", global_path.display());
+                }
+                Ok(val) => {
+                    log::info!("load_app_state[{type_id}]: loaded global state from {}", global_path.display());
+                    return val;
+                }
+            },
         }
+    } else {
+        log::debug!("load_app_state[{type_id}]: no state file found, starting empty");
     }
     serde_json::Value::Object(serde_json::Map::new())
 }

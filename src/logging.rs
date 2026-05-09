@@ -17,8 +17,6 @@ use std::time::{Duration, Instant};
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 /// How often the watchdog samples the frame counter. Short enough to catch brief freezes.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
-/// How many sample intervals between full heartbeat log lines (1s × 30 = 30s).
-const HEARTBEAT_EVERY_N_SAMPLES: u64 = 30;
 /// UI thread is considered frozen after this many seconds without a frame tick.
 /// Lowered from 5s — real stalls of 3–4s (enough for the macOS spinning ball)
 /// were silently missed by the old threshold.
@@ -112,9 +110,6 @@ pub fn spawn_heartbeat(frame_tick: FrameTick) {
     std::thread::Builder::new()
         .name("plexi-heartbeat".into())
         .spawn(move || {
-            let born = Instant::now();
-            let mut beat: u64 = 0;
-            let mut sample: u64 = 0;
             let mut last_tick = frame_tick.load(Ordering::Relaxed);
             // Track when we last saw the frame counter advance so freeze duration is accurate.
             let mut last_tick_seen_at = Instant::now();
@@ -122,7 +117,6 @@ pub fn spawn_heartbeat(frame_tick: FrameTick) {
 
             loop {
                 std::thread::sleep(SAMPLE_INTERVAL);
-                sample += 1;
 
                 let now_tick = frame_tick.load(Ordering::Relaxed);
                 let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
@@ -136,10 +130,6 @@ pub fn spawn_heartbeat(frame_tick: FrameTick) {
                         freeze_reported = true;
                         lines.push_str(&format!(
                             "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s\n"
-                        ));
-                    } else if frozen_secs >= FREEZE_THRESHOLD_SECS {
-                        lines.push_str(&format!(
-                            "[{now}] [WARN] [plexi::heartbeat] [FREEZE] still frozen — {frozen_secs}s unresponsive\n"
                         ));
                     }
                 } else {
@@ -155,25 +145,15 @@ pub fn spawn_heartbeat(frame_tick: FrameTick) {
                     last_tick_seen_at = Instant::now();
                 }
 
-                // Write a full heartbeat line every 30s (every Nth sample).
-                if sample % HEARTBEAT_EVERY_N_SAMPLES == 0 {
-                    beat += 1;
-                    let uptime = born.elapsed().as_secs();
-                    let h = uptime / 3600;
-                    let m = (uptime % 3600) / 60;
-                    let s = uptime % 60;
-                    lines.push_str(&format!(
-                        "[{now}] [INFO] [plexi::heartbeat] beat={beat} uptime={h:02}:{m:02}:{s:02}\n"
-                    ));
-                }
-
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                {
-                    use std::io::Write;
-                    let _ = f.write_all(lines.as_bytes());
+                if !lines.is_empty() {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                    {
+                        use std::io::Write;
+                        let _ = f.write_all(lines.as_bytes());
+                    }
                 }
             }
         })

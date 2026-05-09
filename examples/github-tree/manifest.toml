@@ -12,4 +12,4 @@ entry = "commit_graph.py"
 capabilities = []
 
 [launch]
-layout_hint = { side = "above", split = 0.5 }
+layout_hint = { side = "above", split = 0.75 }
