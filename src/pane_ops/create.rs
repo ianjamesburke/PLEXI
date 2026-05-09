@@ -713,6 +713,7 @@ mod tests {
             from_pane_id: None,
             request_id: None,
             response_file: None,
+            ephemeral: false,
         });
         h.run_frames(2);
 
