@@ -35,7 +35,8 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
 /// Pre-release suffixes (e.g. `-alpha`, `-rc1`) are stripped before comparison.
 fn semver_gt(a: &str, b: &str) -> bool {
     fn parse_component(s: &str) -> u64 {
-        s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
+        let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        s[..end].parse().unwrap_or(0)
     }
     let parse = |s: &str| -> (u64, u64, u64) {
         let mut parts = s.splitn(4, '.');
