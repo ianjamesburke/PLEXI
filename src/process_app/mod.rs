@@ -1858,9 +1858,8 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
                 }
             },
         }
-    } else {
-        log::debug!("load_app_state[{type_id}]: no state file found, starting empty");
     }
+    log::debug!("load_app_state[{type_id}]: no valid state file loaded, returning empty state");
     serde_json::Value::Object(serde_json::Map::new())
 }
 
