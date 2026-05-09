@@ -872,6 +872,10 @@ impl App for FileBrowserApp {
         self.sync_cwd(new_cwd.to_path_buf());
     }
 
+    fn current_cwd(&self) -> Option<std::path::PathBuf> {
+        Some(self.cwd.clone())
+    }
+
     fn serialize_state(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "cwd": self.cwd.display().to_string(),
