@@ -225,9 +225,12 @@ impl PlexiApp {
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors);
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?}");
-            settings.args = vec!["-l".to_string(), "-c".to_string(), cmd.to_string()];
+            // `-i` is required so the shell sources ~/.zshrc and picks up PATH
+            // additions (e.g. Homebrew, nvm, claude). Without it, `-l -c` only
+            // loads login files and misses interactive-only PATH entries.
+            settings.args = vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), cmd.to_string()];
         }
-        let Some(mut pane) = TerminalPane::new(
+        let Some(pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
@@ -237,7 +240,9 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
-        pane.close_on_exit = initial_cmd.is_some();
+        // close_on_exit stays false: panes opened via `plexi open terminal <cmd>`
+        // persist with [process exited] if the command exits, matching the
+        // default terminal behaviour (issue #890).
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));

@@ -694,6 +694,49 @@ mod tests {
         );
     }
 
+    /// Regression guard for issue #890: terminal panes spawned with an initial_cmd
+    /// must NOT auto-close when the process exits. close_on_exit must remain false
+    /// so the pane persists with [process exited] state.
+    #[test]
+    fn spawn_pane_terminal_with_initial_cmd_does_not_set_close_on_exit() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_v".to_string(),
+            args: vec!["echo".to_string(), "hello".to_string()],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+        });
+        h.run_frames(2);
+
+        // add_test_pane creates an App pane; after spawn we have 1 App + 1 Terminal.
+        let snap = h.state();
+        assert!(
+            snap.open_panes.len() > 1,
+            "SpawnPane with initial_cmd must create a new pane (got {:?})",
+            snap.pane_titles,
+        );
+        let win = &h.app.windows[0];
+        let terminal_panes: Vec<_> = win.panes.values()
+            .filter_map(|p| p.as_terminal())
+            .collect();
+        assert!(!terminal_panes.is_empty(), "expected a Terminal pane after SpawnPane with args");
+        // close_on_exit must be false — pane must persist when process exits (issue #890).
+        for t in &terminal_panes {
+            assert!(
+                !t.close_on_exit,
+                "pane {} has close_on_exit=true — terminals must persist on exit (#890)",
+                t.id
+            );
+        }
+    }
+
     #[test]
     fn cli_binary_in_path_finds_real_binary() {
         // `/bin/sh` is guaranteed to exist on macOS/Linux.
