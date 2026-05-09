@@ -238,7 +238,7 @@ impl PlexiApp {
                 _ => vec!["-l".to_string(), "-c".to_string(), cmd.to_string()],
             };
         }
-        let Some(pane) = TerminalPane::new(
+        let Some(mut pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
