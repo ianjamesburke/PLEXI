@@ -424,8 +424,8 @@ impl PlexiApp {
             perms,
             cwd,
             Some("cwd".to_string()),
-            Some("split_above"),
-            Some(0.75),
+            Some("overlay"),
+            None,
         );
     }
 

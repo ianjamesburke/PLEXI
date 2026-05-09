@@ -21,27 +21,31 @@ pub(crate) enum SwapResult {
 /// If `pane_id` is an app pane that was opened as an overlay over another
 /// pane (`hint = Some("overlay")`), restore the original pane and return
 /// `true`. Otherwise return `false` and leave the map unchanged.
+/// Restores the pane hidden by an overlay app.
+/// Returns `Some(cwd)` if an overlay was restored and the closed app reported a CWD to sync,
+/// `Some(None)` if restored with no CWD to sync, or `None` if this was not an overlay.
 pub(super) fn restore_overlay_replacement(
     panes: &mut HashMap<PaneId, Pane>,
     pane_id: PaneId,
-) -> bool {
+) -> Option<Option<std::path::PathBuf>> {
     let Some(pane) = panes.remove(&pane_id) else {
-        return false;
+        return None;
     };
 
     match pane {
         Pane::App(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
+                let cwd = app.runtime.current_cwd();
                 panes.insert(pane_id, *replaced);
-                true
+                Some(cwd)
             } else {
                 panes.insert(pane_id, Pane::App(app));
-                false
+                None
             }
         }
         other => {
             panes.insert(pane_id, other);
-            false
+            None
         }
     }
 }
@@ -450,7 +454,27 @@ impl PlexiApp {
                 _ => None,
             });
         if let Some(pane_id) = focused_pane_id {
-            if restore_overlay_replacement(&mut self.windows[self.active_window].panes, pane_id) {
+            if let Some(maybe_cwd) =
+                restore_overlay_replacement(&mut self.windows[self.active_window].panes, pane_id)
+            {
+                if let Some(cwd) = maybe_cwd {
+                    let escaped = cwd.to_string_lossy().replace('\'', "'\\''");
+                    let cd_cmd = format!("cd '{}'\n", escaped);
+                    if let Some(t) = self.windows[self.active_window]
+                        .panes
+                        .get_mut(&pane_id)
+                        .and_then(|p| p.as_terminal_mut())
+                    {
+                        t.backend.process_command(egui_term::BackendCommand::Write(
+                            cd_cmd.as_bytes().to_vec(),
+                        ));
+                        log::info!(
+                            "file_browser: synced cwd '{}' to terminal pane {}",
+                            cwd.display(),
+                            pane_id
+                        );
+                    }
+                }
                 return;
             }
         }
@@ -698,7 +722,27 @@ impl PlexiApp {
         else {
             return;
         };
-        if restore_overlay_replacement(&mut self.windows[active].panes, pane_id) {
+        if let Some(maybe_cwd) =
+            restore_overlay_replacement(&mut self.windows[active].panes, pane_id)
+        {
+            if let Some(cwd) = maybe_cwd {
+                let escaped = cwd.to_string_lossy().replace('\'', "'\\''");
+                let cd_cmd = format!("cd '{}'\n", escaped);
+                if let Some(t) = self.windows[active]
+                    .panes
+                    .get_mut(&pane_id)
+                    .and_then(|p| p.as_terminal_mut())
+                {
+                    t.backend.process_command(egui_term::BackendCommand::Write(
+                        cd_cmd.as_bytes().to_vec(),
+                    ));
+                    log::info!(
+                        "file_browser: synced cwd '{}' to terminal pane {}",
+                        cwd.display(),
+                        pane_id
+                    );
+                }
+            }
             return;
         }
 
