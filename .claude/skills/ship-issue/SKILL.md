@@ -251,27 +251,39 @@ cr 2>&1
 ```
 Read the output. Fix any `error` or `warning` severity findings on the feature branch before proceeding — these are blocking. `info`/`suggestion` items are advisory; apply if trivial, skip if out of scope. If fixes were made, commit, push, then re-run to confirm clean.
 
-**2. Poll for Gemini / CodeRabbit bot PR comments** — up to 8 minutes, check every 60s:
+**2. Poll for Gemini / CodeRabbit bot feedback** — up to 8 minutes, check every 60s.
+
+> **Note:** Gemini posts as a PR **review** (not a comment). Check both endpoints — `gh pr view --json comments` only surfaces issue-style comments; inline and summary bot feedback lands in `pulls/<n>/reviews` and `pulls/<n>/comments`.
+
 ```bash
 for i in $(seq 1 8); do
-  COUNT=$(gh pr view $PR_NUMBER --json comments \
+  COMMENT_COUNT=$(gh pr view $PR_NUMBER --json comments \
     --jq '[.comments[] | select(.author.login | test("gemini|coderabbit"; "i"))] | length')
-  if [ "$COUNT" -gt 0 ]; then
-    echo "Found $COUNT bot comment(s):"
+  REVIEW_COUNT=$(gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/reviews \
+    --jq '[.[] | select(.user.login | test("gemini|coderabbit"; "i"))] | length')
+  INLINE_COUNT=$(gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/comments \
+    --jq '[.[] | select(.user.login | test("gemini|coderabbit"; "i"))] | length')
+  TOTAL=$((COMMENT_COUNT + REVIEW_COUNT + INLINE_COUNT))
+  if [ "$TOTAL" -gt 0 ]; then
+    echo "Found bot feedback ($COMMENT_COUNT comments, $REVIEW_COUNT reviews, $INLINE_COUNT inline):"
     gh pr view $PR_NUMBER --json comments \
       --jq '.comments[] | select(.author.login | test("gemini|coderabbit"; "i")) | "[\(.author.login)] \(.body)"'
+    gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/reviews \
+      --jq '.[] | select(.user.login | test("gemini|coderabbit"; "i")) | "[\(.user.login)] \(.body)"'
+    gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/comments \
+      --jq '.[] | select(.user.login | test("gemini|coderabbit"; "i")) | "[\(.user.login)] \(.body)"'
     break
   fi
-  echo "AI review check $i/8 — no bot comments yet, waiting 60s..."
+  echo "AI review check $i/8 — no bot feedback yet, waiting 60s..."
   sleep 60
 done
 ```
-After the loop, read all surfaced comments. For each:
+After the loop, read all surfaced feedback. For each:
 - **Correctness / bug / type safety** → fix on the feature branch, commit, push
 - **Style / naming / docs** → apply if trivial, skip if out of scope
 - **False positive** → note and ignore
 
-If no bot comments appear after 8 minutes, proceed — the bots may be slow or not configured for this repo.
+If no bot feedback appears after 8 minutes, proceed — the bots may be slow or not configured for this repo.
 
 ---
 
