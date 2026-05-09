@@ -656,23 +656,19 @@ COMMANDS
             version: None,
         };
 
-        // Supplying a traversal name should not produce a path outside cache_dir.
-        let result = crawl_with_runner("../../evil", &runner, &cache_dir);
-        if let Ok(ref r) = result {
-            // Verify any written cache file is inside cache_dir.
-            let safe_name = "____evil";
-            let expected = cache_dir.join(format!("{safe_name}.json"));
-            assert!(
-                expected.starts_with(&cache_dir),
-                "cache file escaped cache_dir"
-            );
-            let _ = r; // suppress unused warning
-        }
-        // The important thing: no file was created outside the tmp dir.
-        let parent = tmp.path().parent().unwrap();
+        // "../../evil" → each of '.','.','/','.','.','/' is non-alphanumeric → "______evil"
+        crawl_with_runner("../../evil", &runner, &cache_dir)
+            .expect("crawl should succeed even with traversal input");
+
+        let expected = cache_dir.join("______evil.json");
+        assert!(expected.exists(), "sanitized cache file should exist at {expected:?}");
         assert!(
-            !parent.join("evil.json").exists(),
-            "path traversal wrote outside cache_dir"
+            expected.starts_with(&cache_dir),
+            "cache file escaped cache_dir: {expected:?}"
         );
+
+        // No file created outside the cache dir.
+        let parent = tmp.path().parent().unwrap();
+        assert!(!parent.join("evil.json").exists(), "path traversal wrote outside cache_dir");
     }
 }
