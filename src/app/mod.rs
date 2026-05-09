@@ -1153,10 +1153,7 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 t.exited = true;
-                                if t.close_on_exit {
-                                    log::info!("pty: pane {id} process exited — auto-closing (close_on_exit=true)");
-                                    panes_to_close.push(id);
-                                }
+                                log::info!("pty: pane {id} process exited");
                             }
                             break;
                         }
