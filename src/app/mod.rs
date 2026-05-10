@@ -2182,7 +2182,9 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SwitchContext(n) => {
-                    if n < self.router.len() {
+                    let exists = n < self.router.len();
+                    log::info!("context jump: Cmd+Shift+{} → context {} (exists: {})", n + 1, n, exists);
+                    if exists {
                         self.switch_workspace(n);
                     }
                 }
@@ -3307,5 +3309,53 @@ mod tests {
             host_action: Some("pane_focus:9903".into()),
         }]);
         assert_eq!(h.app.active_window, 1, "pane_focus host_action must navigate to the target window");
+    }
+
+    /// Regression guard for #946: Cmd+Shift+2 must jump to context index 1
+    /// (0-based), leaving active_window at the corresponding window.
+    #[test]
+    fn cmd_option_number_jumps_to_context() {
+        let mut h = HostHarness::new();
+        let _pane_a = h.add_test_pane();
+
+        // Context 1 (index 1)
+        h.app.windows.push(second_window(10, 10, 9910));
+        h.app.router.push(crate::context::Context {
+            name: "Context B".into(),
+            path: std::env::temp_dir(),
+            root: None,
+            context_id: 10,
+        });
+
+        // Context 2 (index 2)
+        h.app.windows.push(second_window(11, 11, 9911));
+        h.app.router.push(crate::context::Context {
+            name: "Context C".into(),
+            path: std::env::temp_dir(),
+            root: None,
+            context_id: 11,
+        });
+
+        assert_eq!(h.app.router.active_idx(), 0, "starts at context 0");
+
+        // Inject Cmd+Option+2 (jumps to context index 1)
+        let cmd_option = egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND };
+        h.key(egui::Key::Num2, cmd_option);
+
+        assert_eq!(h.app.router.active_idx(), 1, "Cmd+Option+2 must activate context index 1");
+    }
+
+    /// Regression guard for #946: Cmd+Shift+N where N > context count must be
+    /// a no-op (no panic, active context unchanged).
+    #[test]
+    fn cmd_option_number_noop_when_context_absent() {
+        let mut h = HostHarness::new();
+        let _pane_a = h.add_test_pane();
+
+        // Only 1 context exists. Cmd+Option+5 targets index 4 — must no-op.
+        let cmd_option = egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND };
+        h.key(egui::Key::Num5, cmd_option);
+
+        assert_eq!(h.app.router.active_idx(), 0, "no-op when target context does not exist");
     }
 }

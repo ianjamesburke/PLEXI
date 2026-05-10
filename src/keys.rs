@@ -23,7 +23,8 @@
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
 // Cmd+0                       — quick note
-// Cmd+1–9                     — switch context (sidebar)
+// Cmd+1–9                     — switch context (sidebar); alias for Cmd+Option+1–9 until #563 lands
+// Cmd+Option+1–9              — jump directly to context N (0-indexed: Option+1 → context 0)
 // Escape (app active)         — close app
 // Tab (app active)            — navigate to linked terminal
 //
@@ -355,7 +356,16 @@ pub fn poll_actions(
             actions.push(Action::ToggleNotificationModal);
         }
 
-        // Switch context (Cmd+1 through Cmd+9)
+        // Switch context (Cmd+1 through Cmd+9 and Cmd+Option+1 through Cmd+Option+9)
+        //
+        // Cmd+Option+N is the primary numeric jump binding per issue #946.
+        // Cmd+Shift+3/4/5 are macOS screenshot shortcuts — Cmd+Option avoids the conflict.
+        // Cmd+N is kept as an alias until #563 (spatial ribbon) lands and
+        // repurposes it for lateral pane column jumping.
+        let cmd_option = egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::COMMAND
+        };
         let num_keys = [
             egui::Key::Num1,
             egui::Key::Num2,
@@ -368,7 +378,9 @@ pub fn poll_actions(
             egui::Key::Num9,
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key(egui::Modifiers::COMMAND, key) {
+            if input.consume_key(cmd_option, key) {
+                actions.push(Action::SwitchContext(i));
+            } else if input.consume_key(egui::Modifiers::COMMAND, key) {
                 actions.push(Action::SwitchContext(i));
             }
         }
