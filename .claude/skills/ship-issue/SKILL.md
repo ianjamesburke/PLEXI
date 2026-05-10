@@ -529,9 +529,15 @@ After user confirms pass. Run without stopping:
 
 1. Restore any pr-install Cargo.toml artifact on alpha, then sync:
    ```bash
-   git restore Cargo.toml           # discard pr-install artifact if present
-   git pull --rebase origin alpha   # from the repo root
+   git restore Cargo.toml                       # discard pr-install artifact if present
+   DIRTY=$(git status --porcelain | grep "^ M\|^M " | grep -v "Cargo.toml")
+   if [ -n "$DIRTY" ]; then
+     git add -u && git commit -m "chore: commit alpha changes before phase 5 rebase"
+   fi
+   git pull --rebase origin alpha               # from the repo root
    ```
+   > **Why:** Skill files and other tracked files may have been modified during the cycle (e.g. ship-issue SKILL.md self-updates). `git restore Cargo.toml` alone won't clear them, causing `git pull --rebase` to fail with "unstaged changes".
+
    This handles all cases: behind (fast-forward replay), ahead (push after), diverged (rebase). If a rebase conflict occurs in GOTCHAS.md, keep all entries, newest-first.
 
 2. Rebase the feature branch on origin/alpha and push:
