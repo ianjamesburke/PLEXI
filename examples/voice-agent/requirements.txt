@@ -1,1 +1,0 @@
-# No external dependencies — stdlib only (urllib, wave, struct, etc.)
