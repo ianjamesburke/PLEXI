@@ -2526,6 +2526,7 @@ impl eframe::App for PlexiApp {
                         let pane_id = *pane_id;
                         let panel_rect = ui.max_rect();
                         let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).copied();
+                        let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
 
                         // Drop behavior to release the mutable borrow on ctx.panes
                         drop(behavior);
@@ -2578,6 +2579,30 @@ impl eframe::App for PlexiApp {
                                         if dropped_to_zoom {
                                             crate::tiling::write_dropped_paths_to_terminal(ui, t);
                                         }
+                                        // Render name bar + tab dots — mirrors the non-zoomed path
+                                        {
+                                            use std::collections::HashMap;
+                                            let tab_info_map = zoomed_tab_info
+                                                .map(|ti| HashMap::from([(zoomed_tile, ti)]))
+                                                .unwrap_or_default();
+                                            let pane_names_map = zoomed_pane_name.as_ref()
+                                                .map(|n| HashMap::from([(pane_id, n.clone())]))
+                                                .unwrap_or_default();
+                                            if zoomed_pane_name.is_some() || zoomed_tab_info.is_some() {
+                                                log::info!(
+                                                    "zoom: rendering name bar — pane={pane_id:?} name={zoomed_pane_name:?} tabs={zoomed_tab_info:?}"
+                                                );
+                                            }
+                                            crate::render::terminal_pane::render_name_bar_and_dots(
+                                                ui,
+                                                zoomed_tile,
+                                                &pane_id,
+                                                &tab_info_map,
+                                                &pane_names_map,
+                                                &self.colors,
+                                                false,
+                                            );
+                                        }
                                         if t.exited {
                                             let rect = ui.max_rect();
                                             ui.painter().rect_filled(
@@ -2619,12 +2644,6 @@ impl eframe::App for PlexiApp {
                                                 },
                                             );
                                         } else {
-                                            // Reserve space for tab dots if in a tab group
-                                            if zoomed_tab_info.is_some() {
-                                                ui.add_space(
-                                                    crate::tiling::TAB_DOT_RESERVED_HEIGHT,
-                                                );
-                                            }
                                             let font_size = t.font_size;
                                             log::debug!("[DRAG] zoom overlay: TerminalView render start");
                                             let terminal = TerminalView::new(ui, &mut t.backend)
@@ -2646,19 +2665,6 @@ impl eframe::App for PlexiApp {
                                     }
                                 }
 
-                                // Draw tab indicator dots (same style as tiling.rs)
-                                if let Some((active_idx, count)) = zoomed_tab_info {
-                                    let rect = ui.max_rect();
-                                    crate::tiling::paint_tab_dots(
-                                        ui.painter(),
-                                        rect.left(),
-                                        rect.top() + 2.0 + 4.0, // 4.0 = dot radius
-                                        active_idx,
-                                        count,
-                                        self.colors.accent,
-                                        self.colors.bg_active,
-                                    );
-                                }
                             });
                     } else {
                         drop(behavior);
