@@ -1008,15 +1008,16 @@ impl PlexiApp {
                     }
                 }
                 crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} ephemeral={ephemeral} response_file={response_file:?}");
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
                     if type_id == "terminal" {
-                        let vertical = matches!(layout.as_str(), "split_h" | "split_above");
+                        let layout_str = layout.as_deref().unwrap_or("split_v");
+                        let vertical = matches!(layout_str, "split_h" | "split_above");
                         let initial_cmd = cmd_from_args(args);
-                        log::info!("pane_ipc: spawn_pane terminal vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                        log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                         self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
                     } else {
-                        self.launch_app_by_id_with_layout(type_id, Some(layout.clone()), args);
+                        self.launch_app_by_id_with_layout(type_id, layout.clone(), args);
                     }
                     if let Some(rf) = response_file {
                         let json = format!("{{\"pane_id\":{new_pane_id}}}");
