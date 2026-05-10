@@ -216,8 +216,10 @@ pub struct PlexiApp {
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
     /// Parked background ProcessApps — kept alive when their pane is closed.
-    /// Keyed by app type_id. Re-attached by B3 when the app is reopened.
-    pub(crate) background_apps: HashMap<String, Box<crate::process_app::ProcessApp>>,
+    /// Keyed by app type_id. Value is `(park_context_idx, app)` where
+    /// `park_context_idx` is the window index the app was running in when its
+    /// pane was closed. Used to route notifications to the correct context.
+    pub(crate) background_apps: HashMap<String, (usize, Box<crate::process_app::ProcessApp>)>,
     /// Directed inter-agent / inter-app pipes (#286). Keyed by `pipe_id`,
     /// value is the `(sender_pane_id, target_pane_id)` pair the host must
     /// scope `PipeMessage` deliveries to. `DeliverPipeMessage` consults this

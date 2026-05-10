@@ -4,6 +4,66 @@ use crate::app_trait::{App, AppCommand};
 
 use super::PlexiApp;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_permissions::AppPermissions;
+    use crate::app_protocol::{NotifyKind, NotifyScope};
+    use crate::process_app::ProcessApp;
+    use crate::testing::HostHarness;
+    /// Regression guard for issue #879: parked background app notifications
+    /// hardcoded `source_context: 0`. Verify that the context index recorded
+    /// at park time propagates to the `ShowNotification` command.
+    #[test]
+    fn parked_app_notification_uses_park_context() {
+        let mut h = HostHarness::new();
+
+        // Seed a ShowNotification on a fresh ProcessApp's pending_commands,
+        // then insert it into background_apps with park_ctx = 2.
+        let (mut process_app, _draw_tx) =
+            ProcessApp::new_for_test(999, AppPermissions::builtin());
+
+        process_app.pending_commands.push(AppCommand::ShowNotification {
+            notify_id: "test-notify".to_string(),
+            sender_pane_id: 0,
+            source_context: 0, // pre-filled stub value; drain should overwrite
+            level: "info".to_string(),
+            title: "hello from context 2".to_string(),
+            body: String::new(),
+            kind: NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            priority: 0,
+            scope: NotifyScope::Context,
+            image_inline: None,
+            image_pipe_id: None,
+            timeout_secs: None,
+            on_dismiss: None,
+        });
+
+        let park_ctx: usize = 2;
+        h.app
+            .background_apps
+            .insert("test-app".to_string(), (park_ctx, Box::new(process_app)));
+
+        let cmds = h.app.drain_all_app_commands();
+
+        let notification = cmds.iter().find(|c| {
+            matches!(c, AppCommand::ShowNotification { notify_id, .. } if notify_id == "test-notify")
+        });
+
+        let Some(AppCommand::ShowNotification { source_context, .. }) = notification else {
+            panic!("expected ShowNotification in drained commands — not found");
+        };
+
+        assert_eq!(
+            *source_context, park_ctx,
+            "source_context should be the park-time context ({park_ctx}), not hardcoded 0"
+        );
+    }
+}
+
 impl PlexiApp {
     /// Feed keyboard input to the focused app pane. Keys only go to the
     /// focused pane (that's the whole point of focus). Command drain
@@ -74,19 +134,20 @@ impl PlexiApp {
         // Mirrors the headless tick above but operates on self.background_apps
         // instead of context panes. Without this, timers stop and notifications
         // never fire the moment the pane is closed.
-        let parked: Vec<(String, Vec<AppCommand>)> = self
+        // Collect (type_id, park_context_idx, commands) for each parked app.
+        let parked: Vec<(String, usize, Vec<AppCommand>)> = self
             .background_apps
             .iter_mut()
-            .map(|(type_id, app)| {
+            .map(|(type_id, (park_ctx, app))| {
                 app.background_tick();
                 let cmds = app.take_pending_commands();
-                (type_id.to_owned(), cmds)
+                (type_id.to_owned(), *park_ctx, cmds)
             })
             .collect();
 
         let mut deferred = Vec::new();
 
-        for (type_id, cmds) in &parked {
+        for (type_id, park_ctx, cmds) in &parked {
             let resolved_scope = self.registry.default_notification_scope_for(type_id);
             for cmd in cmds.iter() {
                 match cmd {
@@ -107,13 +168,13 @@ impl PlexiApp {
                         ..
                     } => {
                         log::info!(
-                            "parked background app '{}' notification: {}",
-                            type_id, title
+                            "parked background app '{}' notification: {} (routing to context {})",
+                            type_id, title, park_ctx
                         );
                         deferred.push(AppCommand::ShowNotification {
                             notify_id: notify_id.clone(),
                             sender_pane_id: 0, // no live pane — tombstone won't fire
-                            source_context: 0,
+                            source_context: *park_ctx,
                             level: level.clone(),
                             title: title.clone(),
                             body: body.clone(),
