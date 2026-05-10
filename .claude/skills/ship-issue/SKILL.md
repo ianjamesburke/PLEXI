@@ -362,7 +362,7 @@ just pr-install <pr-number>
 
 > **Compile check:** If `just pr-install` output shows no `Compiling plexi` line, the release binary was cached and the Rust source change was not picked up. Run `touch src/<changed-file>.rs` then `just pr-install <N>` again to force a recompile. A compile time under ~10s is proof the change wasn't picked up.
 
-Installs as `/Applications/Plexi PR<number>.app` with isolated profile `~/.plexi-pr-<number>/`. Wait for it to complete.
+Installs as `/Applications/Plexi PR<number>.app` with isolated profile `~/.plexi-pr-<number>/`. Wait for it to complete. If AI review fixes were applied and pushed after the initial install, re-run `just pr-install <N>` again before writing the testing block — the binary from the first install will not include those fixes.
 
 **Note for justfile/config-only changes:** `just pr-install` installs the Python binary only — justfile or config changes are not visible in the repo root until after merge. For these changes, direct test steps to run from `worktrees/feature/<branch>/` instead.
 
