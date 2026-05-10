@@ -479,21 +479,14 @@ impl AppRegistry {
             })
     }
 
-    /// Hot-reload eligibility for an installed app (#83). True when the
-    /// manifest sets `[app] watch = true` AND the app was discovered from
-    /// a workspace-local `.plexi/apps/` (or `.plexi/agents/`). Global
-    /// installs never auto-reload regardless of the manifest field —
-    /// watching a global install is out of scope.
+    /// Returns true when the app's manifest sets `[app] watch = true`.
+    /// The file watcher only needs the resolved app directory — discovery
+    /// location is irrelevant.
     pub fn watch_eligible(&self, app_id: &str) -> bool {
-        let Some(installed) = self.apps.get(app_id) else {
-            return false;
-        };
-        let opted_in = installed.manifest.watch.unwrap_or(false);
-        let local = matches!(
-            installed.source,
-            RegistrySource::LocalApp | RegistrySource::LocalAgent
-        );
-        opted_in && local
+        self.apps
+            .get(app_id)
+            .map(|a| a.manifest.watch.unwrap_or(false))
+            .unwrap_or(false)
     }
 
     /// Path to the app's installation directory (parent of `bin_path`).
@@ -899,9 +892,9 @@ watch = true
     }
 
     #[test]
-    fn watch_field_only_engages_for_workspace_local_apps() {
-        // A global-installed manifest with `watch = true` must NOT be
-        // eligible for hot reload — workspace-local installs only.
+    fn watch_field_engages_for_any_source_when_opted_in() {
+        // Any app with `watch = true` in the manifest is eligible for hot reload
+        // regardless of whether it was discovered globally or workspace-locally.
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let local_apps = workspace.path().join(".plexi").join("apps");
@@ -957,8 +950,8 @@ watch = true
 
         let registry = AppRegistry::load_with_global(workspace.path(), global.path());
         assert!(
-            !registry.watch_eligible("global-watcher"),
-            "global install with watch=true must not be eligible"
+            registry.watch_eligible("global-watcher"),
+            "global install with watch=true must be eligible"
         );
         assert!(
             registry.watch_eligible("local-watcher"),
