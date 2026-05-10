@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.110] — 2026-05-10
+
+### Changes
+- fix(typing-tutor): correct key name strings to match host delivery format (#1016)
+- chore: skill edit carried through merge
+- chore(examples): remove voice-agent example app (#1015)
+- chore: skill edit carried through merge
+- feat(cli): reinstate `plexi app install <path>` command (#1014)
+- feat: transparent titlebar with fullsize content view (#1013)
 ## [3.5.109] — 2026-05-10
 
 ### Changes
