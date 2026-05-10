@@ -519,55 +519,74 @@ Regardless of option chosen: post the failure comment on the issue (same format 
 
 ## Phase 5 — Merge & Cleanup
 
-After user confirms pass. Run without stopping:
+After user confirms pass. Run without stopping.
 
-0. Check PR state before doing anything:
-   ```bash
-   gh pr view <number> --json state --jq '.state'
-   ```
-   If state is `MERGED`: skip the rebase, Cargo.toml restore, and merge steps entirely. Jump straight to step 4 (`just pr-clean`). Another session already merged — don't revert or re-merge.
+**CWD for all Phase 5 commands: the repo root** (`/Users/ianburke/Documents/GitHub/PLEXI`). Confirm with `pwd` if unsure.
 
-1. Restore any pr-install Cargo.toml artifact on alpha, then sync:
-   ```bash
-   git restore Cargo.toml                       # discard pr-install artifact if present
-   DIRTY=$(git status --porcelain | grep "^ M\|^M " | grep -v "Cargo.toml")
-   if [ -n "$DIRTY" ]; then
-     git add -u && git commit -m "chore: commit alpha changes before phase 5 rebase"
-   fi
-   git pull --rebase origin alpha               # from the repo root
-   ```
-   > **Why:** Skill files and other tracked files may have been modified during the cycle (e.g. ship-issue SKILL.md self-updates). `git restore Cargo.toml` alone won't clear them, causing `git pull --rebase` to fail with "unstaged changes".
+**0. Check PR state:**
+```bash
+gh pr view <number> --json state --jq '.state'
+```
+If `MERGED`: skip to step 4. Another session already merged — don't re-merge.
 
-   This handles all cases: behind (fast-forward replay), ahead (push after), diverged (rebase). If a rebase conflict occurs in GOTCHAS.md, keep all entries, newest-first.
+**1. Discard artifacts, stash local alpha edits:**
+```bash
+git restore Cargo.toml                              # discard pr-install artifact
+git -C worktrees/<branch> restore Cargo.toml        # discard from feature worktree too
+DIRTY=$(git status --porcelain | grep "^ M\|^M ")
+if [ -n "$DIRTY" ]; then
+  git stash push -m "session edits — restore after merge"
+  STASHED=1
+fi
+```
+> Stash instead of commit: a pre-merge commit on alpha gets replayed by any subsequent `--rebase` and conflicts with the squash content. Stash survives the reset in step 4 without replaying.
 
-2. Rebase the feature branch on origin/alpha and push:
-   ```bash
-   git -C worktrees/<branch> rebase origin/alpha
-   # resolve conflicts if any, then:
-   git -C worktrees/<branch> add <resolved-files>
-   GIT_EDITOR=true git -C worktrees/<branch> rebase --continue
-   git -C worktrees/<branch> push --force-with-lease origin HEAD
-   ```
+**2. Rebase feature branch on latest origin/alpha and push:**
+```bash
+git fetch origin
+git -C worktrees/<branch> rebase origin/alpha
+# if conflicts: resolve, then git -C worktrees/<branch> add <files> && GIT_EDITOR=true git -C worktrees/<branch> rebase --continue
+git -C worktrees/<branch> push --force-with-lease origin HEAD
+```
+> If anything non-obvious happened this PR — add one entry to GOTCHAS.md **in the feature worktree** and commit it there before pushing. It will land in the squash commit. Do not write GOTCHAS.md directly to alpha (it would be overwritten by the reset in step 4).
 
-3. Discard PR bundle metadata and merge:
-   ```bash
-   git -C worktrees/<branch> restore Cargo.toml  # pr-install rewrites Cargo.toml — discard it
-   git restore Cargo.toml                        # pr-install may also dirty alpha's workspace Cargo.toml
-   gh pr merge <number> --squash
-   ```
-   If branch protection blocks the merge, use `--admin`:
-   ```bash
-   gh pr merge <number> --squash --admin
-   ```
+**3. Squash-merge:**
+```bash
+gh pr merge <number> --squash
+```
+If branch protection blocks: `gh pr merge <number> --squash --admin`
 
-   If anything non-obvious happened during this PR — a failed approach, an environment constraint, a tool behavior that cost time — add one entry to GOTCHAS.md on alpha now. Write a detailed commit message explaining the why. Skip GOTCHAS if nothing surprised you.
+**4. Sync alpha — reset, not rebase:**
+```bash
+git fetch origin
+git reset --hard origin/alpha
+```
+> Why `reset --hard` instead of `pull --rebase`: after a squash merge, any local commit on alpha (including one from a previous dirty-state save) may share content with the squash commit. `--rebase` replays the local commit on top of the squash and conflicts. `reset --hard` moves HEAD cleanly to origin/alpha with no replay.
 
-4. `just pr-clean <pr-number>` — run from the repo root. **Skip if no `just pr-install` was run for this PR** (diff-review path).
-> **CWD check:** The shell may still be inside the feature worktree. Use `cd /Users/ianburke/Documents/GitHub/PLEXI &&` as a prefix for all remaining Phase 5 commands, or confirm CWD with `pwd` first.
-5. `git pull --rebase origin alpha` — from the repo root
-6. `wtp remove <branch> --force` then `git push origin --delete <branch>`
-7. `git status` in the repo root — linter or hook changes (e.g. CLAUDE.md) can dirty alpha between testing and merge. Stage and commit any such changes before bumping. Then `just bump && just install` — from the repo root
-8. `git push` — push bump commit to origin so alpha is not diverged at next session start
+Then restore the stash if one was created:
+```bash
+if [ "${STASHED:-0}" = 1 ]; then
+  git stash pop
+  RESTORED=$(git status --porcelain | grep "^ M\|^M ")
+  if [ -n "$RESTORED" ]; then
+    git add -u && git commit -m "chore: restore session edits carried through merge"
+  fi
+fi
+```
+If `stash pop` conflicts (rare — means the squash and the stash both touched the same file), take the squash version (`git checkout --theirs <file>`) since it was the reviewed and tested change.
+
+**5. Cleanup:**
+```bash
+just pr-clean <pr-number>          # skip if no just pr-install was run (diff-review path)
+wtp remove <branch> --force
+git push origin --delete <branch>
+```
+
+**6. Bump, install, push:**
+```bash
+just bump && just install          # from the repo root
+git push
+```
 
 ---
 
