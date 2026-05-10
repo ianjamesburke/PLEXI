@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.107] — 2026-05-10
+
+### Changes
+- feat: transparent titlebar with fullsize content view (#1013)
 ## [3.5.106] — 2026-05-10
 
 ### Changes
