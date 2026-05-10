@@ -939,6 +939,11 @@ class Emitter:
         carrying the negotiated width/height/fps/duration_ms plus the
         attached Pipe (#345). Requires `video.playback` capability.
 
+        **Pre-v1 note:** `video.playback` is not production-ready. The
+        `file:///` decoder returns NotImplemented in all shipping builds
+        until AVFoundation backing lands (#346). Only `mock://gradient`
+        works today. Do not ship apps that depend on real video decoding.
+
         Decoded frames flow as raw RGBA8 packets on the Pipe — one packet
         per video frame, length `width * height * 4`. Apps spin a reader
         thread that calls `handle.pipe.read_frame()` and either renders
