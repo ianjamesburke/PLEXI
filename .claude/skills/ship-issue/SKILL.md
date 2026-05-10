@@ -108,7 +108,7 @@ Handle each state automatically — do not stop and ask:
 Mark the issue in progress, capture the origin pane ID, and update the pane title:
 ```bash
 gh issue edit <number> --add-label "in progress"
-SHIP_PANE=$(plexi pane list | python3 -c "import json,sys; print(next(p['id'] for p in json.load(sys.stdin) if p['focused']))")
+SHIP_PANE=$PLEXI_PANE_ID
 plexi pane set-title "#<number> — <short-title>"
 ```
 
