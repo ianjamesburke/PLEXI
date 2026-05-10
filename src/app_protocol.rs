@@ -211,6 +211,13 @@ pub enum PlexiEvent {
         name: String,
         input_json: String,
     },
+    /// External MCP client called a tool declared in `[app.mcp]`. The app must
+    /// reply with `DrawCommand::Host(HostCommand::McpToolResult { call_id, … })`.
+    McpToolCall {
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
     /// Response to a `DrawCommand::ListAudioDevices` request (#277).
     /// Both vectors are always present — empty when enumeration finds no
     /// devices of that direction. `error` is set only when device
@@ -1019,6 +1026,16 @@ pub enum HostCommand {
         call_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output_json: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// App returns the result of a `PlexiEvent::McpToolCall` invocation.
+    /// `call_id` must match the `call_id` from the `McpToolCall` event.
+    /// Either `result` or `error` must be set.
+    McpToolResult {
+        call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },

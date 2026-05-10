@@ -1,0 +1,8 @@
+{
+  "name": "filesystem",
+  "description": "Read and write files via MCP",
+  "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem"],
+  "version": "2024-11-05",
+  "source": { "type": "npm", "package": "@modelcontextprotocol/server-filesystem" },
+  "pgap_app": "mcp-renderer"
+}

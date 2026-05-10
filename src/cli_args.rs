@@ -204,6 +204,10 @@ pub enum AppCmd {
         #[arg(long)]
         output: Option<String>,
     },
+    /// Show app info (id, name, version, MCP tools if any)
+    Info {
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]

@@ -1,0 +1,8 @@
+{
+  "name": "brave-search",
+  "description": "Brave Search API via MCP",
+  "command": ["npx", "-y", "@modelcontextprotocol/server-brave-search"],
+  "version": "2024-11-05",
+  "source": { "type": "npm", "package": "@modelcontextprotocol/server-brave-search" },
+  "pgap_app": "mcp-renderer"
+}

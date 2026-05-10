@@ -749,6 +749,24 @@ class Emitter:
             tokens_out=int(ev.get("tokens_out", 0) or 0),
         )
 
+    def mcp_tool_result(self, call_id: str, result: "dict | None" = None, error: "str | None" = None) -> None:
+        """Send a McpToolResult response for a pending McpToolCall.
+
+        One of ``result`` or ``error`` must be provided (not both, not neither).
+        ``result`` should be a MCP CallToolResult dict, e.g.:
+        ``{"content": [{"type": "text", "text": "done"}]}``.
+        """
+        if result is None and error is None:
+            raise ValueError("mcp_tool_result: either 'result' or 'error' must be provided")
+        if result is not None and error is not None:
+            raise ValueError("mcp_tool_result: 'result' and 'error' are mutually exclusive")
+        _emit({
+            "type": "mcp_tool_result",
+            "call_id": call_id,
+            "result": result,
+            "error": error,
+        })
+
     def expose_tools(self, tools: "list[dict]") -> None:
         """Declare callable tools to the host (#398, #399).
 

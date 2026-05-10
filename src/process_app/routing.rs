@@ -1409,6 +1409,30 @@ impl ProcessApp {
                 );
             }
 
+            // App returns the result of an McpToolCall from an external MCP client.
+            HostCommand::McpToolResult {
+                call_id,
+                result,
+                error,
+            } => {
+                log::info!(
+                    "ProcessApp[{}]: McpToolResult call_id={call_id:?} ok={}",
+                    self.type_id,
+                    result.is_some(),
+                );
+                if let Some(tx) = self.mcp_pending.remove(&call_id) {
+                    let _ = tx.send(crate::process_app::mcp_server::McpToolResponse {
+                        result,
+                        error,
+                    });
+                } else {
+                    log::warn!(
+                        "ProcessApp[{}]: McpToolResult for unknown call_id={call_id:?}",
+                        self.type_id
+                    );
+                }
+            }
+
             // SetPaneTitle is only valid over PLEXI_SOCKET; an app sending it
             // via PGAP is a protocol error — log and drop.
             HostCommand::SetPaneTitle { pane_id, .. } => {
