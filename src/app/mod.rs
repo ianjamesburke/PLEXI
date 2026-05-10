@@ -1350,14 +1350,26 @@ impl PlexiApp {
 
     /// Check every pending notification for expiry. For each that has exceeded
     /// its `timeout_secs`, deliver a `NotifyAction` dismiss event and remove it.
-    /// Called once per second from `update()`.
+    /// Also wakes snoozed notifications whose `deliver_after` has elapsed and
+    /// auto-reopens the modal when a high-priority one wakes. Called once per
+    /// second from `update()`.
     pub(crate) fn tick_notification_timeouts(&mut self) {
         let now = std::time::Instant::now();
+        let threshold = self.notifications_interrupt_threshold;
+        let focus_mode = self.notifications_focus_mode;
         let mut expired_ids: Vec<String> = Vec::new();
-        for n in &self.pending_notifications {
-            // Don't time out while snoozed — the user asked for a delay.
-            if n.deliver_after.map_or(false, |t| t > now) {
-                continue;
+        let mut woken_priority_met = false;
+        // Single mutable pass: wake snoozed entries, collect expired ids.
+        for n in &mut self.pending_notifications {
+            if let Some(t) = n.deliver_after {
+                if t > now {
+                    continue; // still snoozed — skip timeout check too
+                }
+                if !focus_mode && n.priority >= threshold {
+                    woken_priority_met = true;
+                }
+                log::info!("notify:snooze: woke notify_id={}", n.notify_id);
+                n.deliver_after = None;
             }
             if let Some(timeout) = n.timeout_secs {
                 if n.enqueued_at.elapsed() >= std::time::Duration::from_secs(timeout) {
@@ -1365,29 +1377,10 @@ impl PlexiApp {
                 }
             }
         }
-        // Auto-reopen the modal if any snoozed notifications just woke up.
-        let woken = self.pending_notifications.iter().any(|n| {
-            n.deliver_after.map_or(false, |t| t <= now)
-        });
-        if woken {
-            let priority_met = self.pending_notifications.iter().any(|n| {
-                n.deliver_after.map_or(false, |t| t <= now)
-                    && !self.notifications_focus_mode
-                    && n.priority >= self.notifications_interrupt_threshold
-            });
-            if priority_met {
-                self.show_notification_modal = true;
-                if self.current_notify_id.is_none() {
-                    self.current_notify_id = self.select_highest_priority();
-                }
-            }
-            // Clear deliver_after so the woken notification is no longer
-            // treated as freshly-woken on subsequent ticks.
-            for n in &mut self.pending_notifications {
-                if n.deliver_after.map_or(false, |t| t <= now) {
-                    log::info!("notify:snooze: woke notify_id={}", n.notify_id);
-                    n.deliver_after = None;
-                }
+        if woken_priority_met {
+            self.show_notification_modal = true;
+            if self.current_notify_id.is_none() {
+                self.current_notify_id = self.select_highest_priority();
             }
         }
         for id in expired_ids {
