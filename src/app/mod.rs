@@ -1007,21 +1007,25 @@ impl PlexiApp {
                     }
                 }
                 crate::app_protocol::HostCommand::SendToPane { pane_id, text, response_file } => {
-                    log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} response_file={response_file:?}", text.len());
+                    log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} windows={} response_file={response_file:?}", text.len(), self.windows.len());
                     let text_with_newlines = text.replace("\\n", "\n");
-                    let active = self.active_window;
-                    let result = if let Some(term) = self.windows[active]
-                        .panes
-                        .get_mut(pane_id)
-                        .and_then(|p| p.as_terminal_mut())
-                    {
-                        term.backend.process_command(egui_term::BackendCommand::Write(
-                            text_with_newlines.into_bytes(),
-                        ));
-                        Ok(())
-                    } else {
-                        log::warn!("pane_ipc: send_to_pane: pane_id={pane_id} not found or not a terminal");
-                        Err(format!("pane {pane_id} not found or is not a terminal pane"))
+                    let result = match self.windows.iter_mut().find_map(|win| win.panes.get_mut(pane_id)) {
+                        None => {
+                            log::warn!("pane_ipc: send_to_pane: pane_id={pane_id} not found in any window");
+                            Err(format!("pane {pane_id} not found"))
+                        }
+                        Some(pane) => match pane.as_terminal_mut() {
+                            None => {
+                                log::warn!("pane_ipc: send_to_pane: pane_id={pane_id} is not a terminal pane");
+                                Err(format!("pane {pane_id} is not a terminal pane"))
+                            }
+                            Some(term) => {
+                                term.backend.process_command(egui_term::BackendCommand::Write(
+                                    text_with_newlines.into_bytes(),
+                                ));
+                                Ok(())
+                            }
+                        },
                     };
                     if let Some(rf) = response_file {
                         let json = match result {
@@ -3307,5 +3311,74 @@ mod tests {
             host_action: Some("pane_focus:9903".into()),
         }]);
         assert_eq!(h.app.active_window, 1, "pane_focus host_action must navigate to the target window");
+    }
+
+    /// Regression guard for #878: `SendToPane` must search all windows, not just
+    /// `self.windows[self.active_window]`. Before the fix, a pane in window 1
+    /// returned "not found" when `active_window == 0`.
+    ///
+    /// Strategy: insert an App pane into a second window, keep `active_window = 0`,
+    /// inject `SendToPane` targeting that pane. The response must contain
+    /// "not a terminal pane" (pane was found across windows but is an App pane),
+    /// NOT "not found" (which would indicate the pre-fix single-window search).
+    #[test]
+    fn send_to_pane_searches_all_windows() {
+        let mut h = HostHarness::new();
+        // Window 0 exists with a test app pane (from HostHarness::new via add_test_pane).
+        // We need a second window with a known pane id.
+        let cross_window_pane_id: u64 = 9978;
+        let mut win1 = second_window(2, 2, cross_window_pane_id);
+        // Insert an App pane (not Terminal) so we can confirm lookup reaches it.
+        let app_pane = {
+            use crate::pane::{AppPane, AppRuntime};
+            use crate::process_app::ProcessApp;
+            use crate::app_permissions::AppPermissions;
+            let (process_app, _draw_tx) =
+                ProcessApp::new_for_test(cross_window_pane_id, AppPermissions::builtin());
+            AppPane {
+                id: cross_window_pane_id,
+                runtime: AppRuntime::Process(Box::new(process_app)),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "test".to_string(),
+                name: "Test App Win1".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+            }
+        };
+        win1.panes.insert(cross_window_pane_id, crate::pane::Pane::App(Box::new(app_pane)));
+        h.app.windows.push(win1);
+        h.app.router.push(crate::context::Context {
+            name: "Context B".into(),
+            path: std::env::temp_dir(),
+            root: None,
+            context_id: 2,
+        });
+
+        // active_window remains 0 — pane is in window 1.
+        assert_eq!(h.app.active_window, 0);
+
+        let resp_file = std::env::temp_dir().join("plexi_test_send_878.json");
+        h.inject_ipc(crate::app_protocol::HostCommand::SendToPane {
+            pane_id: cross_window_pane_id,
+            text: "hello".to_string(),
+            response_file: Some(resp_file.to_string_lossy().to_string()),
+        });
+
+        // drain_pane_cmd_channel processes the IPC queue synchronously.
+        h.app.drain_pane_cmd_channel();
+
+        let response = std::fs::read_to_string(&resp_file)
+            .expect("response file must be written by SendToPane handler");
+        // Pre-fix: response contains "not found" (pane not visible from active window).
+        // Post-fix: pane IS found across windows but is an App pane → "is not a terminal pane".
+        // The distinct error messages let us confirm the cross-window search reached the pane.
+        assert!(
+            response.contains("is not a terminal pane"),
+            "expected cross-window lookup to find the pane (error contains 'is not a terminal pane'), \
+             got: {response}. If 'not found', the single-window regression is back."
+        );
+        let _ = std::fs::remove_file(&resp_file);
     }
 }
