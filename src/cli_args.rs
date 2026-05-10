@@ -154,8 +154,10 @@ pub enum WorkspaceCmd {
 
 #[derive(Subcommand)]
 pub enum SecretCmd {
-    /// Store a secret (prompts for value with hidden input; walks up to nearest .plexi/ workspace).
-    /// Use --from-env to read from an env var, or --global to store cross-workspace.
+    /// Store a secret
+    ///
+    /// Prompts for value with hidden input; walks up to nearest .plexi/ workspace.
+    /// Use --from-env to read from an env var instead of prompting, or --global to store cross-workspace.
     Set {
         /// Name of the secret (also the env var name when using --from-env)
         friendly_name: String,
