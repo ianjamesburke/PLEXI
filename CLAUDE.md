@@ -205,6 +205,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **git worktree operations:** Always use absolute paths with `git -C /absolute/worktree/path <command>` — relative paths (`git -C worktrees/<branch>`) fail when CWD is not the repo root. Applies to all operations: `add`, `rebase`, `push`, etc.
 - **HostHarness initial state:** `add_test_pane()` inserts a `ProcessApp` pane — not a Terminal. Terminal-count assertions in tests must not assume the initial pane is a Terminal; offset accordingly.
 - **Shell suffix construction:** when appending a stay-alive or exec suffix to a user command string, use the absolute shell path from `settings.shell` (already resolved) rather than `$SHELL`, and `trim_end_matches([';', ' '])` the user command before appending to prevent `;;` syntax errors.
+- **cfg(unix) propagation on removal:** When removing a `#[cfg(unix)]` block or executable-bit check, grep for `set_mode`, `PermissionsExt`, and `0o755` across all test functions in the same file before staging. The helper function is never the only site.
 
 ## Host UI Systems — Reuse Before Rolling Your Own
 
