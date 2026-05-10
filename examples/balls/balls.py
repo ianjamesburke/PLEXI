@@ -61,10 +61,10 @@ class BallsApp(App):
         self.balls: list[Ball] = []
         w, h = ctx.w, ctx.h
         for i in range(10):
-            r = random.uniform(14.0, 44.0)
-            x = random.uniform(r, w - r)
-            y = random.uniform(r, h * 0.6)
-            self.balls.append(_new_ball(x, y, i))
+            ball = _new_ball(0, 0, i)
+            ball.x = random.uniform(ball.r, w - ball.r)
+            ball.y = random.uniform(ball.r, h * 0.6)
+            self.balls.append(ball)
         ctx.emit.info("balls: init complete, spawned 10 balls")
 
     def on_render(self, ctx: RenderContext) -> None:
