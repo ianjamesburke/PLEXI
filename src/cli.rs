@@ -611,6 +611,84 @@ pub fn app_uninstall(id: &str) -> i32 {
     0
 }
 
+/// `plexi app install <path>` — copy a local app directory into the channel's app store.
+pub fn app_install(path: &str) -> i32 {
+    let src = if std::path::Path::new(path).is_absolute() {
+        std::path::PathBuf::from(path)
+    } else {
+        match std::env::current_dir() {
+            Ok(d) => d.join(path),
+            Err(e) => { eprintln!("error: {e}"); return 1; }
+        }
+    };
+    let src = match src.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: could not resolve {path}: {e}");
+            return 1;
+        }
+    };
+
+    let manifest_path = src.join("manifest.toml");
+    if !manifest_path.exists() {
+        eprintln!("error: no manifest.toml found in {}", src.display());
+        eprintln!("  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one.");
+        return 1;
+    }
+    let manifest_str = match std::fs::read_to_string(&manifest_path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("error: could not read manifest.toml: {e}"); return 1; }
+    };
+    let manifest: toml::Value = match toml::from_str(&manifest_str) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
+    };
+    let app_section = match manifest.get("app") {
+        Some(a) => a,
+        None => { eprintln!("error: manifest.toml is missing [app] section"); return 1; }
+    };
+    let app_id = match app_section.get("id").and_then(|v| v.as_str()) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => { eprintln!("error: manifest.toml is missing a valid [app].id"); return 1; }
+    };
+    let app_version = app_section.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+
+    let dest = crate::app_registry::apps_dir().join(&app_id);
+
+    // Remove existing install (idempotent overwrite).
+    if dest.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&dest) {
+            eprintln!("error: could not remove existing install at {}: {e}", dest.display());
+            return 1;
+        }
+    }
+
+    if let Err(e) = copy_dir_all(&src, &dest) {
+        eprintln!("error: could not copy {} to {}: {e}", src.display(), dest.display());
+        return 1;
+    }
+
+    log::info!("app::install: installed {app_id} v{app_version} from {}", src.display());
+    println!("Installed '{app_id}' v{app_version} from {}.", src.display());
+    println!("Run `plexi open {app_id}` to launch it.");
+    0
+}
+
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// `plexi app link <path>` — register a local app directory with the nearest workspace.
 pub fn app_link(path: &str) -> i32 {
     let cwd = match std::env::current_dir() {
@@ -3255,7 +3333,7 @@ _plexi() {
           ;;
         app)
           local subcmds
-          subcmds=('init:Scaffold a new app' 'install:Install an app from GitHub' 'uninstall:Uninstall an app' 'list:List installed apps' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
+          subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Uninstall an app' 'list:List installed apps' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
           _describe 'subcommand' subcmds
           ;;
         workspace)
@@ -3436,7 +3514,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a delete -d "Delet
 
 # app subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a init -d "Scaffold a new app"
-complete -c plexi -f -n "__fish_seen_subcommand_from app" -a install -d "Install an app from GitHub"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a install -d "Install a local app directory"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a uninstall -d "Uninstall an app"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a list -d "List installed apps"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a link -d "Register a local app directory with the workspace"
