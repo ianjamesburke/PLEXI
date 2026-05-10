@@ -613,15 +613,7 @@ pub fn app_uninstall(id: &str) -> i32 {
 
 /// `plexi app install <path>` — copy a local app directory into the channel's app store.
 pub fn app_install(path: &str) -> i32 {
-    let src = if std::path::Path::new(path).is_absolute() {
-        std::path::PathBuf::from(path)
-    } else {
-        match std::env::current_dir() {
-            Ok(d) => d.join(path),
-            Err(e) => { eprintln!("error: {e}"); return 1; }
-        }
-    };
-    let src = match src.canonicalize() {
+    let src = match std::path::Path::new(path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: could not resolve {path}: {e}");
@@ -643,13 +635,29 @@ pub fn app_install(path: &str) -> i32 {
         Ok(v) => v,
         Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
     };
+
+    let schema_version = manifest.get("schema_version").and_then(|v| v.as_integer()).unwrap_or(0);
+    if schema_version > crate::app_registry::MANIFEST_SCHEMA_VERSION as i64 {
+        eprintln!(
+            "error: manifest.toml schema_version {schema_version} is newer than supported (max {})",
+            crate::app_registry::MANIFEST_SCHEMA_VERSION
+        );
+        return 1;
+    }
+
     let app_section = match manifest.get("app") {
         Some(a) => a,
         None => { eprintln!("error: manifest.toml is missing [app] section"); return 1; }
     };
     let app_id = match app_section.get("id").and_then(|v| v.as_str()) {
-        Some(id) if !id.is_empty() => id.to_string(),
-        _ => { eprintln!("error: manifest.toml is missing a valid [app].id"); return 1; }
+        Some(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+            id.to_string()
+        }
+        _ => {
+            eprintln!("error: manifest.toml is missing a valid [app].id");
+            eprintln!("  (IDs must be non-empty and contain only alphanumeric characters, dashes, or underscores)");
+            return 1;
+        }
     };
     let app_version = app_section.get("version").and_then(|v| v.as_str()).unwrap_or("?");
 
@@ -678,12 +686,12 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> 
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        let ty = entry.file_type()?;
+        let entry_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&entry.path(), &dst_path)?;
+        if entry_path.is_dir() {
+            copy_dir_all(&entry_path, &dst_path)?;
         } else {
-            std::fs::copy(entry.path(), dst_path)?;
+            std::fs::copy(entry_path, dst_path)?;
         }
     }
     Ok(())
