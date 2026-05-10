@@ -115,6 +115,13 @@ pub enum Action {
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
+    /// Jump directly to context N (0-indexed). No-op if context N doesn't exist.
+    /// Bound to Cmd+Shift+1-9.
+    SwitchContextDirect(usize),
+    /// Focus the Nth lateral column pane (0-indexed) in the current window.
+    /// Creates a new pane to the right if column N doesn't exist.
+    /// Bound to Cmd+1-9.
+    FocusOrCreateColumn(usize),
 }
 
 /// Poll global keyboard actions.
@@ -355,7 +362,8 @@ pub fn poll_actions(
             actions.push(Action::ToggleNotificationModal);
         }
 
-        // Switch context (Cmd+1 through Cmd+9)
+        // Numeric navigation (Cmd+Shift+1-9 = context jump; Cmd+1-9 = lateral column jump).
+        // Check Cmd+Shift first so the shifted variant is consumed before Cmd alone.
         let num_keys = [
             egui::Key::Num1,
             egui::Key::Num2,
@@ -368,8 +376,10 @@ pub fn poll_actions(
             egui::Key::Num9,
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key(egui::Modifiers::COMMAND, key) {
-                actions.push(Action::SwitchContext(i));
+            if input.consume_key(cmd_shift, key) {
+                actions.push(Action::SwitchContextDirect(i));
+            } else if input.consume_key(egui::Modifiers::COMMAND, key) {
+                actions.push(Action::FocusOrCreateColumn(i));
             }
         }
     });

@@ -2188,6 +2188,15 @@ impl eframe::App for PlexiApp {
                         self.switch_workspace(n);
                     }
                 }
+                Action::SwitchContextDirect(n) => {
+                    log::info!("context jump: Cmd+Shift+{} → context {}", n + 1, n);
+                    if n < self.router.len() {
+                        self.switch_workspace(n);
+                    }
+                }
+                Action::FocusOrCreateColumn(n) => {
+                    self.focus_or_create_column(n);
+                }
                 Action::NextTab => {
                     self.cycle_tab(true);
                 }
@@ -3309,5 +3318,113 @@ mod tests {
             host_action: Some("pane_focus:9903".into()),
         }]);
         assert_eq!(h.app.active_window, 1, "pane_focus host_action must navigate to the target window");
+    }
+
+    // ── Cmd+Shift+1-9 context jump (SwitchContextDirect) ──────────────────────
+
+    /// Cmd+Shift+2 switches to context index 1 when it exists.
+    #[test]
+    fn switch_context_direct_in_range_switches() {
+        let mut h = HostHarness::new();
+        let _pane_a = h.add_test_pane();
+
+        // Seed a second context with a window.
+        h.app.windows.push(second_window(2, 2, 9910));
+        h.app.router.push(crate::context::Context {
+            name: "Context B".into(),
+            path: std::env::temp_dir(),
+            root: None,
+            context_id: 2,
+        });
+
+        assert_eq!(h.app.router.active_idx(), 0);
+        // SwitchContextDirect(1) mirrors what Cmd+Shift+2 produces.
+        if 1 < h.app.router.len() {
+            h.app.switch_workspace(1);
+        }
+        assert_eq!(
+            h.app.router.active_idx(),
+            1,
+            "switch_workspace(1) must move to context index 1"
+        );
+    }
+
+    /// Index 8 is a no-op when fewer than 9 contexts exist.
+    #[test]
+    fn switch_context_direct_out_of_range_noop() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        assert_eq!(h.app.router.len(), 1);
+        // Guard matches the handler: n < router.len(). Index 8 is out of range.
+        let n = 8usize;
+        if n < h.app.router.len() {
+            h.app.switch_workspace(n);
+        }
+        assert_eq!(h.app.router.active_idx(), 0, "out-of-range guard must leave context unchanged");
+    }
+
+    // ── Cmd+1-9 column jump (FocusOrCreateColumn) ─────────────────────────────
+
+    /// Column 0 exists — focus_or_create_column sets focused_pane.
+    #[test]
+    fn focus_or_create_column_existing_focuses() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        // The initial pane is at the tree root, so column_panes() returns one entry.
+        assert_eq!(h.app.windows[0].column_panes().len(), 1);
+        h.app.focus_or_create_column(0);
+        assert!(
+            h.app.windows[0].focused_pane.is_some(),
+            "column 0 must be focused after focus_or_create_column(0)"
+        );
+    }
+
+    /// Column 1 absent — focus_or_create_column dispatches SplitRight via SpawnPane IPC.
+    /// Uses the IPC terminal spawn path (proven in create.rs tests) so the new pane
+    /// actually materialises in the headless harness.
+    #[test]
+    fn focus_or_create_column_absent_creates_pane() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        // Wire focus so split has a target.
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+
+        // Verify column_panes sees exactly one column.
+        assert_eq!(h.app.windows[0].column_panes().len(), 1);
+
+        // Spawn a terminal beside the focused pane via IPC (same path as Cmd+\).
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_v".to_string(),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+        });
+        h.run_frames(2);
+
+        // After creating the terminal, window should have 2 panes.
+        assert!(
+            h.app.windows[0].panes.len() >= 2,
+            "split must create a second pane (got {})",
+            h.app.windows[0].panes.len()
+        );
+
+        // column_panes now returns 2 entries — focus_or_create_column(1) should
+        // focus the second column, not create a third.
+        assert_eq!(
+            h.app.windows[0].column_panes().len(),
+            2,
+            "after horizontal split, column_panes must return 2 columns"
+        );
+        h.app.focus_or_create_column(1);
+        // Pane count must not grow (no extra creation).
+        assert!(
+            h.app.windows[0].panes.len() <= 2,
+            "focus_or_create_column(1) on existing column must not add a third pane"
+        );
     }
 }

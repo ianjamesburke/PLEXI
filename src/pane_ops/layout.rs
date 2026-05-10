@@ -674,6 +674,29 @@ impl PlexiApp {
         SwapResult::Swapped { rect_a, rect_b }
     }
 
+    /// Focus the Nth lateral column pane (0-indexed) in the current window.
+    /// If column N doesn't exist, creates a new pane to the right (same as Cmd+\).
+    pub(crate) fn focus_or_create_column(&mut self, n: usize) {
+        let columns = self.windows[self.active_window].column_panes();
+        if let Some(&target) = columns.get(n) {
+            log::info!(
+                "column jump: Cmd+{} → column {} (created: false)",
+                n + 1,
+                n
+            );
+            self.windows[self.active_window].focused_pane = Some(target);
+        } else {
+            log::info!(
+                "column jump: Cmd+{} → column {} (created: true)",
+                n + 1,
+                n
+            );
+            self.windows[self.active_window].zoomed_pane = None;
+            self.split_focused_mirror(crate::host::command::Placement::Right);
+            self.save_workspace();
+        }
+    }
+
     pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
         let ctx = &mut self.windows[self.active_window];
         let Some(focused_tile) = ctx.focused_pane else {

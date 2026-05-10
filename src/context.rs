@@ -49,6 +49,45 @@ pub struct Window {
 }
 
 impl Window {
+    /// Return the top-level pane tiles ordered left-to-right by column.
+    ///
+    /// Strategy: walk the tile tree from the root. At a horizontal linear
+    /// container, each direct child is a distinct column slot — recurse into
+    /// each slot to find its first visible pane. At any other container (vertical
+    /// linear, tabs), treat the whole subtree as a single column and return its
+    /// first visible pane. This matches the user's mental model without
+    /// requiring rendered rects (which are unavailable in tests).
+    ///
+    /// Returns one `TileId` per column, in left-to-right order. An empty vec
+    /// means no panes exist in the current window.
+    pub(crate) fn column_panes(&self) -> Vec<TileId> {
+        let Some(root) = self.tree.root else {
+            return vec![];
+        };
+        self.collect_column_slots(root)
+    }
+
+    fn collect_column_slots(&self, tile_id: TileId) -> Vec<TileId> {
+        match self.tree.tiles.get(tile_id) {
+            Some(Tile::Pane(_)) => vec![tile_id],
+            Some(Tile::Container(Container::Linear(linear)))
+                if linear.dir == egui_tiles::LinearDir::Horizontal =>
+            {
+                // Each child of a horizontal container is a distinct column.
+                linear
+                    .children
+                    .iter()
+                    .filter_map(|&child| self.find_first_pane_in(child))
+                    .collect()
+            }
+            Some(Tile::Container(_)) => {
+                // Vertical stack or tabs — treat as one opaque column.
+                self.find_first_pane_in(tile_id).into_iter().collect()
+            }
+            None => vec![],
+        }
+    }
+
     pub(crate) fn find_ancestor_tabs(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;
         loop {
