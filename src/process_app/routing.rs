@@ -1488,6 +1488,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            HostCommand::KeyPane { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received KeyPane over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
 
             // ── App state save ─────────────────────────────────────────────
             HostCommand::SaveAppState { payload } => {

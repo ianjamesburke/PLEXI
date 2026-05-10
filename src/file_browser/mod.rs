@@ -40,11 +40,17 @@ enum FileBrowserAction {
     AppendText(String),
 }
 
+fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
+    input.events.iter().any(|e| {
+        matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key)
+    })
+}
+
 fn classify_key(input: &egui::InputState) -> Option<FileBrowserAction> {
-    if input.key_pressed(egui::Key::Escape) {
+    if key_pressed_no_repeat(input, egui::Key::Escape) {
         return Some(FileBrowserAction::Escape);
     }
-    if input.key_pressed(egui::Key::Backspace) {
+    if key_pressed_no_repeat(input, egui::Key::Backspace) {
         return Some(FileBrowserAction::Backspace);
     }
     if input.key_pressed(egui::Key::ArrowDown)
@@ -70,25 +76,25 @@ fn classify_key(input: &egui::InputState) -> Option<FileBrowserAction> {
         return Some(FileBrowserAction::PageUp);
     }
     if !input.modifiers.command
-        && (input.key_pressed(egui::Key::Enter)
-            || input.key_pressed(egui::Key::ArrowRight)
-            || input.key_pressed(egui::Key::L))
+        && (key_pressed_no_repeat(input, egui::Key::Enter)
+            || key_pressed_no_repeat(input, egui::Key::ArrowRight)
+            || key_pressed_no_repeat(input, egui::Key::L))
     {
         return Some(FileBrowserAction::Activate);
     }
     if !input.modifiers.command
-        && (input.key_pressed(egui::Key::ArrowLeft)
-            || input.key_pressed(egui::Key::H))
+        && (key_pressed_no_repeat(input, egui::Key::ArrowLeft)
+            || key_pressed_no_repeat(input, egui::Key::H))
     {
         return Some(FileBrowserAction::NavigateUp);
     }
-    if input.key_pressed(egui::Key::Slash) && !input.modifiers.command {
+    if key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers.command {
         return Some(FileBrowserAction::EnterSearch);
     }
-    if input.key_pressed(egui::Key::S) && !input.modifiers.any() {
+    if key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers.any() {
         return Some(FileBrowserAction::ToggleSort);
     }
-    if input.key_pressed(egui::Key::R) && !input.modifiers.any() {
+    if key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers.any() {
         return Some(FileBrowserAction::Refresh);
     }
     let mut text = String::new();
@@ -1093,11 +1099,40 @@ mod tests {
         let handle_key_start = src.find("fn handle_key").expect("handle_key must exist");
         let handle_key_body = &src[handle_key_start..];
         let after_classify = &src[classify_start..handle_key_start];
-        // classify_key should contain key_pressed calls
+        // classify_key should contain key_pressed calls (for scroll keys)
         assert!(after_classify.contains("key_pressed"), "classify_key must contain key_pressed calls");
+        // classify_key must also use key_pressed_no_repeat for navigation keys
+        assert!(after_classify.contains("key_pressed_no_repeat"), "classify_key must use key_pressed_no_repeat for navigation keys");
         // handle_key body must not contain key_pressed calls
         let handle_body_end = handle_key_body[10..].find("fn ").map(|i| i + 10).unwrap_or(handle_key_body.len());
         let handle_body = &handle_key_body[..handle_body_end];
         assert!(!handle_body.contains("key_pressed"), "handle_key must not contain key_pressed calls — they belong in classify_key");
+    }
+
+    #[test]
+    fn key_pressed_no_repeat_requires_non_repeat_event() {
+        // key_pressed_no_repeat returns false when no events are present.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(RawInput::default(), |ctx| {
+            ctx.input(|i| {
+                assert!(!super::key_pressed_no_repeat(i, Key::ArrowRight));
+            });
+        });
+    }
+
+    #[test]
+    fn key_pressed_no_repeat_returns_true_for_fresh_press() {
+        // egui marks the first press of a key (repeat=false), so key_pressed_no_repeat
+        // must return true for a fresh key press event.
+        let ctx = egui::Context::default();
+        let raw = RawInput {
+            events: vec![key_event(Key::ArrowRight, Modifiers::default())],
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            ctx.input(|i| {
+                assert!(super::key_pressed_no_repeat(i, Key::ArrowRight));
+            });
+        });
     }
 }

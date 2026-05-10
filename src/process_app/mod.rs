@@ -2058,6 +2058,8 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     migrate_app_state_dir(&ws_old, &ws_new);
 
     let workspace_path = ws_new.join(&filename);
+    // Fallback: if migration failed (e.g. permission error), still read from old location
+    let workspace_path_legacy = ws_old.join(&filename);
     if workspace_path.exists() {
         match std::fs::read(&workspace_path) {
             Err(e) => {
@@ -2073,6 +2075,21 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
                 }
             },
         }
+    } else if workspace_path_legacy.exists() {
+        match std::fs::read(&workspace_path_legacy) {
+            Err(e) => {
+                log::warn!("load_app_state[{type_id}]: could not read legacy workspace state {}: {e}", workspace_path_legacy.display());
+            }
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Err(e) => {
+                    log::warn!("load_app_state[{type_id}]: could not parse legacy workspace state {}: {e}", workspace_path_legacy.display());
+                }
+                Ok(val) => {
+                    log::info!("load_app_state[{type_id}]: loaded workspace state from legacy path {}", workspace_path_legacy.display());
+                    return val;
+                }
+            },
+        }
     }
 
     // Migrate old app_state/ → app_states/ on first access (global).
@@ -2081,6 +2098,8 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     migrate_app_state_dir(&global_old, &global_new);
 
     let global_path = global_new.join(&filename);
+    // Fallback: if migration failed (e.g. permission error), still read from old location
+    let global_path_legacy = global_old.join(&filename);
     if global_path.exists() {
         match std::fs::read(&global_path) {
             Err(e) => {
@@ -2092,6 +2111,21 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
                 }
                 Ok(val) => {
                     log::info!("load_app_state[{type_id}]: loaded global state from {}", global_path.display());
+                    return val;
+                }
+            },
+        }
+    } else if global_path_legacy.exists() {
+        match std::fs::read(&global_path_legacy) {
+            Err(e) => {
+                log::warn!("load_app_state[{type_id}]: could not read legacy global state {}: {e}", global_path_legacy.display());
+            }
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Err(e) => {
+                    log::warn!("load_app_state[{type_id}]: could not parse legacy global state {}: {e}", global_path_legacy.display());
+                }
+                Ok(val) => {
+                    log::info!("load_app_state[{type_id}]: loaded global state from legacy path {}", global_path_legacy.display());
                     return val;
                 }
             },

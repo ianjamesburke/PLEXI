@@ -969,6 +969,19 @@ pub enum HostCommand {
         response_file: Option<String>,
     },
 
+    /// Deliver a synthetic key event to any pane. Sent by `plexi pane key`.
+    /// For terminal panes, the key is translated to PTY bytes.
+    /// For PGAP app panes, a `PlexiEvent::Key` is delivered.
+    /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
+    KeyPane {
+        pane_id: u64,
+        /// Key string: single char ("h"), named key ("enter", "escape", "up", "down",
+        /// "left", "right", "space", "backspace"), or chord ("ctrl+c", "ctrl+d").
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
     CreateContext {
         #[serde(default, skip_serializing_if = "Option::is_none")]
