@@ -644,12 +644,13 @@ pub fn app_link(path: &str) -> i32 {
         Ok(v) => v,
         Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
     };
-    let app_id = manifest
-        .get("app")
-        .and_then(|a| a.get("id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("<unknown>")
-        .to_string();
+    let app_id = match manifest.get("app").and_then(|a| a.get("id")).and_then(|v| v.as_str()) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            eprintln!("error: manifest.toml is missing a valid [app].id");
+            return 1;
+        }
+    };
 
     let workspace_root = match crate::app_registry::resolve_workspace_root(&cwd) {
         Some(r) => r,
@@ -668,14 +669,15 @@ pub fn app_link(path: &str) -> i32 {
     let links_path = workspace_root.join(".plexi").join("links.toml");
     let abs_path = app_dir.to_string_lossy().to_string();
 
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct LinksFile { #[serde(default)] links: Vec<String> }
+
     // Read existing links (or start fresh)
     let mut links: Vec<String> = if links_path.exists() {
         let content = match std::fs::read_to_string(&links_path) {
             Ok(s) => s,
             Err(e) => { eprintln!("error: could not read links.toml: {e}"); return 1; }
         };
-        #[derive(serde::Deserialize)]
-        struct LinksFile { #[serde(default)] links: Vec<String> }
         match toml::from_str::<LinksFile>(&content) {
             Ok(f) => f.links,
             Err(e) => { eprintln!("error: could not parse links.toml: {e}"); return 1; }
@@ -691,10 +693,9 @@ pub fn app_link(path: &str) -> i32 {
 
     links.push(abs_path);
 
-    // Serialize back as TOML
-    let new_content = {
-        let entries: Vec<String> = links.iter().map(|p| format!("  {:?}", p)).collect();
-        format!("links = [\n{},\n]\n", entries.join(",\n"))
+    let new_content = match toml::to_string_pretty(&LinksFile { links }) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("error: could not serialize links.toml: {e}"); return 1; }
     };
 
     if let Err(e) = std::fs::write(&links_path, new_content) {
@@ -746,7 +747,7 @@ pub fn app_unlink(path: &str) -> i32 {
         Ok(s) => s,
         Err(e) => { eprintln!("error: could not read links.toml: {e}"); return 1; }
     };
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, serde::Serialize)]
     struct LinksFile { #[serde(default)] links: Vec<String> }
     let mut links: Vec<String> = match toml::from_str::<LinksFile>(&content) {
         Ok(f) => f.links,
@@ -760,11 +761,9 @@ pub fn app_unlink(path: &str) -> i32 {
         return 0;
     }
 
-    let new_content = if links.is_empty() {
-        "links = []\n".to_string()
-    } else {
-        let entries: Vec<String> = links.iter().map(|p| format!("  {:?}", p)).collect();
-        format!("links = [\n{},\n]\n", entries.join(",\n"))
+    let new_content = match toml::to_string_pretty(&LinksFile { links }) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("error: could not serialize links.toml: {e}"); return 1; }
     };
 
     if let Err(e) = std::fs::write(&links_path, new_content) {

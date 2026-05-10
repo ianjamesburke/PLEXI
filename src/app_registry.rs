@@ -323,7 +323,7 @@ impl AppRegistry {
                 registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
             }
             // Linked apps — registered via `plexi app link`, stored as absolute paths in
-            // `.plexi/links.toml`. Scanned after local_apps/agents so agents still shadow.
+            // `.plexi/links.toml`. Scanned last — linked entries shadow all other sources.
             let links_path = root.join(".plexi").join("links.toml");
             if links_path.exists() {
                 registry.scan_links(&links_path);
@@ -416,6 +416,10 @@ impl AppRegistry {
         };
         for raw_path in &parsed.links {
             let app_dir = PathBuf::from(raw_path);
+            if !app_dir.is_absolute() {
+                log::warn!("AppRegistry: skipping relative path in links.toml: {:?} (must be absolute)", raw_path);
+                continue;
+            }
             match self.load_app(&app_dir) {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
