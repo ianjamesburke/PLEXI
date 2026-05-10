@@ -506,6 +506,20 @@ impl PlexiApp {
         for ctx_idx in 0..self.windows.len() {
             if let Some(tile_id) = self.windows[ctx_idx].tree.tiles.find_pane(&pane_id) {
                 self.close_tile(ctx_idx, tile_id);
+                // Mirror the guard in execute_close_pane: if the window is now empty
+                // and there are other pages in the same context, delete the zombie window.
+                // Without this, the window stays in self.windows[] as a phantom grid cell.
+                if self.windows[ctx_idx].panes.is_empty() {
+                    let ctx_id = self.windows[ctx_idx].context_id;
+                    let pages_in_context =
+                        self.windows.iter().filter(|w| w.context_id == ctx_id).count();
+                    if pages_in_context > 1 {
+                        log::info!(
+                            "close_pane_by_id: window {ctx_idx} empty, {pages_in_context} pages in context {ctx_id} — deleting zombie window"
+                        );
+                        self.delete_window(ctx_idx);
+                    }
+                }
                 return;
             }
         }
@@ -791,6 +805,82 @@ impl PlexiApp {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod close_pane_by_id_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft).0
+    }
+
+    fn window_with_pane(context_id: u64, window_id: u64, pane_id: u64, grid_y: u32) -> crate::context::Window {
+        let mut tree = egui_tiles::Tree::empty("test_tree_wid");
+        let tile = tree.tiles.insert_pane(pane_id);
+        tree.root = Some(tile);
+        crate::context::Window {
+            name: "test".into(),
+            path: std::env::temp_dir(),
+            tree,
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y,
+            window_id,
+            context_id,
+        }
+    }
+
+    /// Regression guard for #917: closing the last pane in a non-active window
+    /// via IPC must delete the zombie window, not leave it in self.windows[].
+    #[test]
+    fn close_pane_by_id_removes_zombie_non_active_window() {
+        let mut app = test_app();
+        // window[0]: context 1, no panes (will show welcome screen — sole page, must stay)
+        // window[1]: same context 1, one pane — closing it should delete window[1]
+        let pane_id: u64 = 9001;
+        app.windows.push(window_with_pane(1, 2, pane_id, 1));
+
+        assert_eq!(app.windows.len(), 2);
+        app.close_pane_by_id(pane_id);
+        assert_eq!(app.windows.len(), 1, "zombie window must be deleted after IPC close of last pane");
+    }
+
+    /// Regression guard for #917: closing the last pane in the active window via IPC
+    /// must delete that window and shift active_window to the remaining window.
+    #[test]
+    fn close_pane_by_id_removes_zombie_active_window() {
+        let mut app = test_app();
+        // window[0] (active): context 1, one pane
+        let pane_id: u64 = 9002;
+        let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
+        app.windows[0].tree.root = Some(tile);
+        // window[1]: same context 1, one pane (stays after active is closed)
+        app.windows.push(window_with_pane(1, 2, 9003, 1));
+
+        assert_eq!(app.windows.len(), 2);
+        assert_eq!(app.active_window, 0);
+        app.close_pane_by_id(pane_id);
+        assert_eq!(app.windows.len(), 1, "zombie active window must be deleted after IPC close of last pane");
+    }
+
+    /// Sole-page window must stay alive when its last pane closes — welcome screen path.
+    #[test]
+    fn close_pane_by_id_keeps_sole_page_window_alive() {
+        let mut app = test_app();
+        let pane_id: u64 = 9004;
+        let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
+        app.windows[0].tree.root = Some(tile);
+
+        assert_eq!(app.windows.len(), 1);
+        app.close_pane_by_id(pane_id);
+        assert_eq!(app.windows.len(), 1, "sole-page window must remain alive showing welcome screen");
     }
 }
 
