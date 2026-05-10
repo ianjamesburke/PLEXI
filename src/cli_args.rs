@@ -104,6 +104,9 @@ pub enum Commands {
         /// Layout hint (split_v, split_h, split_above)
         #[arg(long)]
         layout: Option<String>,
+        /// Split relative to this pane ID instead of the focused pane
+        #[arg(long)]
+        from_pane_id: Option<u64>,
     },
     /// Open an app pane
     Open {
@@ -112,6 +115,9 @@ pub enum Commands {
         /// Layout hint
         #[arg(long)]
         layout: Option<String>,
+        /// Split relative to this pane ID instead of the focused pane
+        #[arg(long)]
+        from_pane_id: Option<u64>,
         /// Extra args passed to the app
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
