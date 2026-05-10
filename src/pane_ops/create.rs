@@ -154,6 +154,10 @@ impl PlexiApp {
             return;
         }
 
+        if self.windows[active].zoomed_pane.take().is_some() {
+            log::info!("app::{app_id}: cleared zoom before launch");
+        }
+
         // Record which terminal we're splitting from before focus moves.
         let linked_pane_id = self.focused_terminal_id(active);
         let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
@@ -330,6 +334,10 @@ impl PlexiApp {
             self.windows[active].focused_pane = Some(focused_tile);
             log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
             return;
+        }
+
+        if self.windows[active].zoomed_pane.take().is_some() {
+            log::info!("builtin::{app_name}: cleared zoom before launch");
         }
 
         // Record which terminal we're splitting from before focus moves.
@@ -751,6 +759,56 @@ mod tests {
         assert!(
             !cli_binary_in_path("plexi-815-nonexistent-binary-zzz"),
             "expected not to find a nonexistent binary on PATH"
+        );
+    }
+
+    /// Regression guard for issue #920: launching a non-overlay app while a pane is
+    /// zoomed must clear the zoom so the new app is immediately visible.
+    #[test]
+    fn app_launch_clears_zoom() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+        h.app.windows[0].zoomed_pane = Some(root);
+
+        let (process, _tx) = ProcessApp::new_for_test(1, AppPermissions::builtin());
+        h.app.open_process_app_pane(
+            "test-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            None,
+        );
+
+        assert!(
+            h.app.windows[0].zoomed_pane.is_none(),
+            "zoom must be cleared when launching a non-overlay app"
+        );
+    }
+
+    /// Regression guard for issue #920: launching an overlay app while a pane is
+    /// zoomed must NOT clear the zoom — overlay replaces in-place.
+    #[test]
+    fn overlay_app_launch_preserves_zoom() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+        h.app.windows[0].zoomed_pane = Some(root);
+
+        let (process, _tx) = ProcessApp::new_for_test(2, AppPermissions::builtin());
+        h.app.open_process_app_pane(
+            "test-overlay-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            Some("overlay"),
+        );
+
+        assert!(
+            h.app.windows[0].zoomed_pane.is_some(),
+            "zoom must NOT be cleared when launching an overlay app"
         );
     }
 }
