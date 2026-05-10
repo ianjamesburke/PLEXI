@@ -106,8 +106,12 @@ class BallsApp(App):
                 if dist_sq >= min_dist * min_dist:
                     continue
 
-                dist = math.sqrt(dist_sq) or 0.001
-                nx, ny = dx / dist, dy / dist
+                if dist_sq > 0:
+                    dist = math.sqrt(dist_sq)
+                    nx, ny = dx / dist, dy / dist
+                else:
+                    dist = 0.0
+                    nx, ny = 1.0, 0.0  # default normal for exact overlap
 
                 # Separate overlapping circles (mass-weighted push)
                 overlap = min_dist - dist
@@ -134,12 +138,12 @@ class BallsApp(App):
         # ── Render ────────────────────────────────────────────────────────────
         ctx.clear("#0d0d1a")
 
+        # Draw shadows first so they don't overlap other balls' bodies
         for ball in self.balls:
-            # Shadow (subtle depth cue)
             ctx.circle(ball.x + 3, ball.y + 4, ball.r, dim("#000000", 60))
-            # Main body
+
+        for ball in self.balls:
             ctx.circle(ball.x, ball.y, ball.r, ball.color)
-            # Specular highlight — small bright circle offset toward top-left
             hi_r = max(3.0, ball.r * 0.28)
             hi_x = ball.x - ball.r * 0.28
             hi_y = ball.y - ball.r * 0.28
