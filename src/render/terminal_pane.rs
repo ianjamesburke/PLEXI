@@ -91,7 +91,7 @@ pub fn render(
 /// terminal in full-pane mode. When `outside_workspace` is true, paint a
 /// small right-aligned "↗ outside workspace" badge so the user can see the
 /// scope drift without it being intrusive.
-fn render_name_bar_and_dots(
+pub(crate) fn render_name_bar_and_dots(
     ui: &mut egui::Ui,
     tile_id: TileId,
     pane_id: &PaneId,
