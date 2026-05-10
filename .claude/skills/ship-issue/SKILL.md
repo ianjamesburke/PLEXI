@@ -287,6 +287,12 @@ After the loop, read all surfaced feedback. For each:
 - **Style / naming / docs** → apply if trivial, skip if out of scope
 - **False positive** → note and ignore
 
+If any fixes were applied from bot feedback, re-run the CodeRabbit local review to confirm clean before proceeding:
+```bash
+cr 2>&1
+```
+Fix any remaining `error` or `warning` findings, commit, push, then continue.
+
 **The final approver is always the user in this Claude Code instance.** AI/bot reviews inform the fix pass, but no PR merges without explicit user confirmation in Phase 4.
 
 If no bot feedback appears after 10 minutes, proceed — the bots may be slow or not configured for this repo.
