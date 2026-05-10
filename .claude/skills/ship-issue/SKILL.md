@@ -297,6 +297,30 @@ Fix any remaining `error` or `warning` findings, commit, push, then continue.
 
 If no bot feedback appears after 10 minutes, proceed — the bots may be slow or not configured for this repo.
 
+**Required: emit `[AI REVIEW]` block before proceeding to install/test.** This is mandatory — never silently skip to the next phase. Output exactly this format:
+
+```
+[AI REVIEW] PR #<n>
+
+CodeRabbit (local):
+  <one bullet per finding, or "No findings.">
+  - [error/warning/info] <short description> → FIXED: <what changed> | SKIPPED: <reason> | N/A (false positive)
+
+Gemini / bot:
+  <one bullet per finding, or "No feedback received.">
+  - [<severity>] <short description> → FIXED: <what changed> | SKIPPED: <reason> | N/A (false positive)
+
+Net: <N> fix(es) committed | no changes needed
+```
+
+Rules for the block:
+- Every finding gets a one-line disposition — FIXED, SKIPPED, or N/A. No vague "addressed" or "reviewed".
+- FIXED means code was changed, committed, and pushed. Name the file/function.
+- SKIPPED means deliberately ignored. Give the reason in one clause (e.g. "out of scope", "stylistic only", "pre-existing issue").
+- N/A means a false positive — explain why in one clause.
+- If `cr` was not available or produced no output, say "cr not available" or "No findings."
+- If no bot feedback arrived within 10 minutes, say "No feedback received (10 min timeout)."
+
 ---
 
 ## Phase 4 — Install & Test
