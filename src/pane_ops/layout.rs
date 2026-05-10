@@ -868,6 +868,7 @@ mod close_pane_by_id_tests {
         assert_eq!(app.active_window, 0);
         app.close_pane_by_id(pane_id);
         assert_eq!(app.windows.len(), 1, "zombie active window must be deleted after IPC close of last pane");
+        assert_eq!(app.active_window, 0, "active_window must point to the remaining window after deletion");
     }
 
     /// Sole-page window must stay alive when its last pane closes — welcome screen path.
