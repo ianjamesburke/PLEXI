@@ -207,6 +207,12 @@ impl AppRuntime {
             AppRuntime::Builtin(_) => String::new(),
         }
     }
+
+    pub(crate) fn set_pending_notification_count(&mut self, count: usize) {
+        if let AppRuntime::Process(app) = self {
+            app.pending_notification_count = count;
+        }
+    }
 }
 
 #[allow(dead_code)]
