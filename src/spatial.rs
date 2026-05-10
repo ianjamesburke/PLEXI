@@ -11,9 +11,9 @@
 //!
 //! `navigate_page` is a **pure navigation** function: it only switches
 //! `active_context` to an *existing* page. It never creates. The creation
-//! policy (e.g. "new rows start at column 0") lives exclusively in
-//! `navigate_page`. Never put creation semantics into `navigate_page` or
-//! `find_navigation_target`.
+//! policy (e.g. "new rows start at column 0") lives in
+//! `pane_ops/workspace.rs` (`create_page_at`). Never put creation semantics
+//! into `navigate_page` or `find_navigation_target`.
 //!
 //! This separation is enforced by `find_navigation_target` being a free
 //! function with no access to `&mut PlexiApp`. Unit tests in this module
