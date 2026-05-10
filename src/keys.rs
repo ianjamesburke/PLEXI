@@ -273,7 +273,8 @@ fn parse_key_combo(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
         "escape" | "esc" => egui::Key::Escape,
         "tab" => egui::Key::Tab,
         "space" => egui::Key::Space,
-        "backspace" | "delete" => egui::Key::Backspace,
+        "backspace" => egui::Key::Backspace,
+        "delete" | "del" => egui::Key::Delete,
         "up" | "arrowup" => egui::Key::ArrowUp,
         "down" | "arrowdown" => egui::Key::ArrowDown,
         "left" | "arrowleft" => egui::Key::ArrowLeft,
@@ -312,11 +313,13 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         return bindings;
     };
 
+    let mut override_count: usize = 0;
     macro_rules! apply_override {
         ($field:ident, $name:expr) => {
             if let Some(ref s) = cfg.$field {
                 if let Some(combo) = parse_key_combo(s) {
                     bindings.$field = combo;
+                    override_count += 1;
                 } else {
                     log::warn!("keybindings: invalid combo '{}' for '{}' — keeping default", s, $name);
                 }
@@ -365,26 +368,6 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(open_secrets_manager, "open_secrets_manager");
     apply_override!(force_reload_app, "force_reload_app");
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
-
-    // Count overrides applied
-    let mut override_count: usize = 0;
-    macro_rules! count_field {
-        ($field:ident) => { if cfg.$field.is_some() { override_count += 1; } };
-    }
-    count_field!(quit); count_field!(close_pane); count_field!(toggle_command_palette);
-    count_field!(split_horizontal); count_field!(split_vertical); count_field!(split_right);
-    count_field!(split_down); count_field!(page_left); count_field!(page_down);
-    count_field!(page_up); count_field!(page_right); count_field!(swap_pane_left);
-    count_field!(swap_pane_down); count_field!(swap_pane_up); count_field!(swap_pane_right);
-    count_field!(navigate_left); count_field!(navigate_down); count_field!(navigate_up);
-    count_field!(navigate_right); count_field!(new_tab); count_field!(next_tab);
-    count_field!(nav_back); count_field!(toggle_sidebar); count_field!(toggle_zoom);
-    count_field!(toggle_shortcuts); count_field!(rename_context); count_field!(rename_pane);
-    count_field!(new_context); count_field!(new_page_right); count_field!(toggle_minimap);
-    count_field!(scroll_up); count_field!(scroll_down); count_field!(increase_font_size);
-    count_field!(decrease_font_size); count_field!(open_file_browser); count_field!(open_quick_note);
-    count_field!(open_config); count_field!(reload_config); count_field!(open_secrets_manager);
-    count_field!(force_reload_app); count_field!(toggle_notification_modal);
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -559,7 +542,7 @@ pub fn poll_actions(
         // Rename context before rename pane — check shifted variant first.
         if input.consume_key(bindings.rename_context.0, bindings.rename_context.1) {
             actions.push(Action::RenameContext);
-        } else if !input.modifiers.alt
+        } else if input.modifiers == bindings.rename_pane.0
             && input.consume_key(bindings.rename_pane.0, bindings.rename_pane.1)
         {
             actions.push(Action::RenamePane);
@@ -590,10 +573,10 @@ pub fn poll_actions(
             actions.push(Action::ScrollDown);
         }
 
-        if !input.modifiers.shift && input.consume_key(bindings.increase_font_size.0, bindings.increase_font_size.1) {
+        if input.modifiers == bindings.increase_font_size.0 && input.consume_key(bindings.increase_font_size.0, bindings.increase_font_size.1) {
             actions.push(Action::IncreasePaneFontSize);
         }
-        if !input.modifiers.shift && input.consume_key(bindings.decrease_font_size.0, bindings.decrease_font_size.1) {
+        if input.modifiers == bindings.decrease_font_size.0 && input.consume_key(bindings.decrease_font_size.0, bindings.decrease_font_size.1) {
             actions.push(Action::DecreasePaneFontSize);
         }
 

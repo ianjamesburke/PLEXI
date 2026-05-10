@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 /// Omitting a field preserves the default binding for that action.
 /// Format: `[modifier+]...[modifier+]key` (case-insensitive).
 /// Modifiers: cmd/command, shift, ctrl/control, alt/opt/option.
-/// Keys: a-z, 0-9, enter, escape/esc, tab, space, backspace, up, down,
-///   left, right, [ ] \ / , . = + - and named aliases.
+/// Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down,
+///   left, right, open_bracket, close_bracket, backslash, slash, comma,
+///   period, equals, minus (and symbol aliases like "[", "]", "\\", etc.).
 #[derive(Deserialize, Default, Clone)]
 pub struct KeybindingsConfig {
     pub quit: Option<String>,
