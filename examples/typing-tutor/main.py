@@ -157,13 +157,13 @@ class TypingTutorApp(App):
 
     def _key_select(self, key: str) -> None:
         n = len(LEVELS)
-        if key in ("h", "ArrowLeft"):
+        if key in ("h", "left"):
             self._selected = max(0, self._selected - 1)
-        elif key in ("l", "ArrowRight"):
+        elif key in ("l", "right"):
             self._selected = min(n - 1, self._selected + 1)
-        elif key in ("k", "ArrowUp"):
+        elif key in ("k", "up"):
             self._selected = max(0, self._selected - 5)
-        elif key in ("j", "ArrowDown"):
+        elif key in ("j", "down"):
             self._selected = min(n - 1, self._selected + 5)
         elif key in (" ", "Enter"):
             if _is_unlocked(self._selected, self._level_stars):
