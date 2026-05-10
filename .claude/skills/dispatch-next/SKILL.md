@@ -94,7 +94,7 @@ print(new[-1] if new else '')
 Label it and start Claude inside it (no newline = not submitted yet for first lane; use `\n` to immediately start):
 
 ```bash
-plexi pane set-title $NEW_ID "Lane <X>: #<lead>"
+plexi pane name $NEW_ID "Lane <X>: #<lead>"
 plexi pane send $NEW_ID 'c "ship issue <lead>"\n'
 ```
 
@@ -119,7 +119,7 @@ Find the new pane ID (same pattern as Step 4).
 Pre-type the queued command **without** `\n` — it sits ready, not started:
 
 ```bash
-plexi pane set-title $QUEUE_ID "queued: #<next>"
+plexi pane name $QUEUE_ID "queued: #<next>"
 plexi pane send $QUEUE_ID 'c "ship issue <next>"'
 ```
 

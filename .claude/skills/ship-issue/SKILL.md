@@ -109,7 +109,7 @@ Mark the issue in progress, capture the origin pane ID, and update the pane titl
 ```bash
 gh issue edit <number> --add-label "in progress"
 SHIP_PANE=$PLEXI_PANE_ID
-plexi pane set-title "#<number> — <short-title>"
+plexi pane name "#<number> — <short-title>"
 ```
 
 Hold `$SHIP_PANE` for the rest of the cycle — every decision-point and end-of-run notification uses it as the `pane_focus` target so the user can route back to this conversation from the notification UI.
@@ -236,7 +236,7 @@ When done, open a PR targeting `alpha` and update the pane title with the PR num
 ```bash
 PR_URL=$(gh pr create --base alpha --title "<title>" --body "...")
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
-plexi pane set-title "#<issue-number> / PR #${PR_NUMBER} — <short-title>"
+plexi pane name "#<issue-number> / PR #${PR_NUMBER} — <short-title>"
 ```
 
 ---
