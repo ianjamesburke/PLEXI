@@ -174,6 +174,9 @@ Files to change:
 Files NOT to touch:
   - <list any that are adjacent but out of scope>
 
+CLI rename check:
+  - If the issue renames a CLI subcommand: grep -rn "<old-command>" .claude/skills/ and include any matching skill files in "Files to change"
+
 Test that must pass:
   - cargo test <test_name>   (or: write HostHarness test for <thing>)
 
@@ -234,7 +237,7 @@ git -C worktrees/<branch> push -u origin HEAD
 
 When done, open a PR targeting `alpha` and update the pane title with the PR number so both the issue and PR are searchable:
 ```bash
-PR_URL=$(gh pr create --base alpha --title "<title>" --body "...")
+PR_URL=$(gh pr create --base alpha --head feature/<issue-number>-short-description --title "<title>" --body "...")
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 plexi pane name "#<issue-number> / PR #${PR_NUMBER} — <short-title>"
 ```
