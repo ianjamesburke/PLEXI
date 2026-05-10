@@ -1109,8 +1109,8 @@ impl PlexiApp {
                     };
                     if let Some(rf) = response_file {
                         let json = match &result {
-                            Ok(()) => r#"{"ok":true}"#.to_string(),
-                            Err(msg) => format!("{{\"error\":{}}}", serde_json::to_string(msg).unwrap_or_else(|_| format!("\"{msg}\""))),
+                            Ok(()) => serde_json::json!({"ok": true}).to_string(),
+                            Err(msg) => serde_json::json!({"error": msg}).to_string(),
                         };
                         if let Err(e) = std::fs::write(rf, &json) {
                             log::error!("pane_ipc: key_pane: could not write response file: {e}");
@@ -3424,11 +3424,13 @@ fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers)
         "down" | "arrowdown" => "ArrowDown".to_string(),
         "right" | "arrowright" => "ArrowRight".to_string(),
         "left" | "arrowleft" => "ArrowLeft".to_string(),
-        other => {
-            if other.chars().count() == 1 {
-                other.to_string()
+        _ => {
+            // Preserve original case for single chars (e.g. "A" stays "A", not "a").
+            // Multi-word named keys get title-case.
+            if key_part.chars().count() == 1 {
+                key_part.to_string()
             } else {
-                let mut s = other.to_string();
+                let mut s = key_part.to_string();
                 if let Some(c) = s.get_mut(0..1) {
                     c.make_ascii_uppercase();
                 }
