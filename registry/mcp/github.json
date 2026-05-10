@@ -1,0 +1,8 @@
+{
+  "name": "github",
+  "description": "GitHub API operations via MCP",
+  "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+  "version": "2024-11-05",
+  "source": { "type": "npm", "package": "@modelcontextprotocol/server-github" },
+  "pgap_app": "mcp-renderer"
+}

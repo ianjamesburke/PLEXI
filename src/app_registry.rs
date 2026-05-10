@@ -106,6 +106,10 @@ pub struct AppManifestApp {
     /// `serde(default)`, which would conflate "absent" with "false" at the
     /// type level and lose the diagnostic that the field was never set.
     pub watch: Option<bool>,
+    /// Optional `[app.mcp]` section. When present the host starts an HTTP MCP server
+    /// on a dynamic port and injects PLEXI_MCP_PORT into the app's environment.
+    #[serde(default)]
+    pub mcp: Option<McpSection>,
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for
@@ -137,6 +141,23 @@ impl From<DefaultNotifyScope> for crate::app_protocol::NotifyScope {
             DefaultNotifyScope::Global => crate::app_protocol::NotifyScope::Global,
         }
     }
+}
+
+/// Manifest `[app.mcp.tools]` entry — one tool the app exposes to external MCP clients.
+#[derive(Deserialize, Debug, Clone)]
+pub struct McpTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// Manifest `[app.mcp]` section. Presence means the host starts an HTTP MCP server.
+#[derive(Deserialize, Debug, Clone)]
+pub struct McpSection {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tools: Vec<McpTool>,
 }
 
 /// v3 capability section — `[app.capabilities]`. Holds only the capability
@@ -303,8 +324,6 @@ impl AppRegistry {
     }
 
     /// Look up an installed entry by id (returns `None` if not discovered).
-    /// Test-only — runtime code uses `launch` / `is_background` etc.
-    #[cfg(test)]
     pub fn get(&self, id: &str) -> Option<&InstalledApp> {
         self.apps.get(id)
     }
@@ -540,6 +559,7 @@ impl AppRegistry {
             cwd.clone(),
             caps,
             keyboard_capture,
+            installed.manifest.mcp.as_ref(),
         ) {
             Ok(app) => {
                 log::info!(

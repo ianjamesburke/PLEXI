@@ -522,6 +522,44 @@ pub fn app_uninstall(id: &str) -> i32 {
     0
 }
 
+/// `plexi app info <id>` — show manifest info for an installed app, including MCP URL if applicable.
+pub fn app_info(id: &str) -> i32 {
+    let registry =
+        crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+    let Some(installed) = registry.get(id) else {
+        eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
+        return 1;
+    };
+    let m = &installed.manifest;
+    println!("id:          {}", m.id);
+    println!("name:        {}", m.name);
+    println!("version:     {}", m.version);
+    println!("description: {}", m.description);
+    if let Some(mcp) = &m.mcp {
+        if !mcp.description.is_empty() {
+            println!("mcp_desc:    {}", mcp.description);
+        }
+        let tool_names: Vec<&str> = mcp.tools.iter().map(|t| t.name.as_str()).collect();
+        println!(
+            "mcp_tools:   {}",
+            if tool_names.is_empty() {
+                "(none declared)".to_string()
+            } else {
+                tool_names.join(", ")
+            }
+        );
+        println!("mcp_url:     http://localhost:${{PLEXI_MCP_PORT}}/mcp  (port assigned at runtime)");
+        println!();
+        println!("Claude Desktop config:");
+        println!("  {{");
+        println!("    \"mcpServers\": {{");
+        println!("      \"{}\": {{ \"url\": \"http://localhost:${{PLEXI_MCP_PORT}}/mcp\" }}", m.id);
+        println!("    }}");
+        println!("  }}");
+    }
+    0
+}
+
 /// `plexi app list` — list installed apps.
 pub fn app_list() -> i32 {
     let registry =

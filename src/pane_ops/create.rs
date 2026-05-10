@@ -563,6 +563,7 @@ impl PlexiApp {
             cwd.clone(),
             caps,
             false, // keyboard_capture
+            None,  // mcp: CLI-spawned apps have no manifest [app.mcp]
         ) {
             Ok(app) => {
                 log::info!(

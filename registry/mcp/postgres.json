@@ -1,0 +1,8 @@
+{
+  "name": "postgres",
+  "description": "PostgreSQL database queries via MCP",
+  "command": ["npx", "-y", "@modelcontextprotocol/server-postgres"],
+  "version": "2024-11-05",
+  "source": { "type": "npm", "package": "@modelcontextprotocol/server-postgres" },
+  "pgap_app": "mcp-renderer"
+}

@@ -12,6 +12,7 @@
 //! - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
 
 mod lifecycle;
+pub(crate) mod mcp_server;
 mod prompts;
 pub(crate) mod render;
 mod routing;
@@ -270,6 +271,11 @@ pub struct ProcessApp {
     /// before spawn, decremented when the thread exits. Capped at
     /// `MAX_STREAM_THREADS` to bound peak stack memory.
     pub(crate) active_stream_threads: Arc<AtomicUsize>,
+    /// MCP server handle — `Some` when the app has `[app.mcp]` in its manifest.
+    mcp_server: Option<mcp_server::McpServerHandle>,
+    /// Pending MCP tool call responses awaiting `HostCommand::McpToolResult`.
+    /// Key = call_id, value = channel to the blocked HTTP handler thread.
+    pub(crate) mcp_pending: std::collections::HashMap<String, std::sync::mpsc::SyncSender<mcp_server::McpToolResponse>>,
 }
 
 impl ProcessApp {
@@ -286,6 +292,7 @@ impl ProcessApp {
         workspace_root: PathBuf,
         capabilities: std::collections::HashSet<Capability>,
         keyboard_capture: bool,
+        mcp: Option<&crate::app_registry::McpSection>,
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
@@ -347,6 +354,20 @@ impl ProcessApp {
         // is never present via PLEXI_* passthrough above.
         let socket_path = crate::config::config_dir().join("notify.sock");
         cmd.env("PLEXI_SOCKET", &socket_path);
+
+        // Start the MCP server when the manifest declares [app.mcp].
+        let mcp_server_handle = mcp.map(|section| {
+            match mcp_server::start_mcp_server(section.tools.clone()) {
+                Ok(handle) => {
+                    cmd.env("PLEXI_MCP_PORT", handle.port.to_string());
+                    Some(handle)
+                }
+                Err(e) => {
+                    log::error!("ProcessApp[{type_id}]: failed to start MCP server: {e}");
+                    None
+                }
+            }
+        }).flatten();
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
         // Python app shebangs (`#!/usr/bin/env python3`) resolve to our hermetic
         // Python 3.12, not whatever the host machine happens to have installed.
@@ -612,6 +633,8 @@ impl ProcessApp {
             exposed_tools: Vec::new(),
             stream_handles: HashMap::new(),
             active_stream_threads: Arc::new(AtomicUsize::new(0)),
+            mcp_server: mcp_server_handle,
+            mcp_pending: std::collections::HashMap::new(),
         })
     }
 
@@ -730,6 +753,8 @@ impl ProcessApp {
             active_stream_threads: Arc::new(AtomicUsize::new(0)),
             file_picker_tx,
             file_picker_rx,
+            mcp_server: None,
+            mcp_pending: std::collections::HashMap::new(),
         };
         (app, draw_tx)
     }
@@ -788,6 +813,28 @@ impl ProcessApp {
                 }
             }
             Err(e) => log::error!("ProcessApp: failed to serialize event: {e}"),
+        }
+    }
+
+    /// Drain the MCP call queue and forward each request to the app as a
+    /// `PlexiEvent::McpToolCall`. Called each frame (both `ui()` and
+    /// `background_tick()`) so tool calls are processed even for background apps.
+    pub(crate) fn poll_mcp_calls(&mut self) {
+        let Some(mcp) = &self.mcp_server else { return };
+        let requests: Vec<_> = mcp.call_queue.lock().unwrap().drain(..).collect();
+        for req in requests {
+            let call_id = req.call_id.clone();
+            log::info!(
+                "ProcessApp[{}]: dispatching McpToolCall call_id={call_id} tool={}",
+                self.type_id,
+                req.tool_name,
+            );
+            self.mcp_pending.insert(call_id.clone(), req.response_tx);
+            self.outbound_events.push_back(PlexiEvent::McpToolCall {
+                call_id,
+                tool_name: req.tool_name,
+                arguments: req.arguments,
+            });
         }
     }
 
@@ -1129,6 +1176,7 @@ impl ProcessApp {
         while let Ok(event) = self.file_picker_rx.try_recv() {
             self.outbound_events.push_back(event);
         }
+        self.poll_mcp_calls();
         self.flush_outbound_events();
         for cmd in self.drain_draw_commands() {
             match cmd {
@@ -1244,6 +1292,7 @@ impl App for ProcessApp {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let size = ui.available_size();
 
+        self.poll_mcp_calls();
         self.flush_outbound_events();
 
         // Lifecycle: track user-input recency on this pane. Only required

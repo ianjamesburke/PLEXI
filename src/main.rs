@@ -215,6 +215,7 @@ fn main() -> eframe::Result {
                         AppCmd::Render { id, size, state, output } => {
                             std::process::exit(cli::app_render(&id, &size, state.as_deref(), output.as_deref()))
                         }
+                        AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
                     },
                     Commands::Install { spec, pack } => {
                         if let Some(p) = pack {

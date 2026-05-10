@@ -199,6 +199,15 @@ class App:
     vertical offset in logical pixels. Override to re-render content at the
     new position.
     """
+    def on_mcp_call(self, _ctx: RenderContext, _tool_name: str, _arguments: dict) -> "dict | Coroutine[Any, Any, dict] | None":
+        """Called when an external MCP client calls a tool declared in [app.mcp].
+
+        Override to handle the call and return a result dict. The result should
+        follow MCP CallToolResult schema: ``{"content": [{"type": "text", "text": "..."}]}``.
+        Return ``None`` to respond with a generic 'not implemented' error.
+        """
+        return None
+
     def on_midi_input_opened(
         self,
         _pipe_id: str,
@@ -307,6 +316,43 @@ class App:
                 "call_id": call_id,
                 "output_json": None,
                 "error": f"tool_handler_error: {exc}",
+            })
+
+    async def _handle_mcp_tool_call(self, ev: dict) -> None:
+        """Dispatch a PlexiEvent::McpToolCall to on_mcp_call."""
+        call_id: str = ev.get("call_id", "")
+        tool_name: str = ev.get("tool_name", "")
+        arguments: dict = ev.get("arguments", {})
+
+        try:
+            import inspect as _inspect
+            if _inspect.iscoroutinefunction(self.on_mcp_call):
+                result = await self.on_mcp_call(self._make_ctx(), tool_name, arguments)
+            else:
+                result = self.on_mcp_call(self._make_ctx(), tool_name, arguments)
+
+            if result is None:
+                _emit({
+                    "type": "mcp_tool_result",
+                    "call_id": call_id,
+                    "result": None,
+                    "error": f"tool_not_implemented: {tool_name!r}",
+                })
+            else:
+                _emit({
+                    "type": "mcp_tool_result",
+                    "call_id": call_id,
+                    "result": result,
+                    "error": None,
+                })
+        except Exception as exc:
+            import traceback as _tb
+            _tb.print_exc()
+            _emit({
+                "type": "mcp_tool_result",
+                "call_id": call_id,
+                "result": None,
+                "error": f"mcp_tool_handler_error: {exc}",
             })
 
     def _take_text_submission(self, id: str) -> "str | None":
@@ -750,6 +796,10 @@ class App:
                     # a registered tool. Dispatched as a background task so it
                     # doesn't block the event loop while the handler runs.
                     self._dispatch_hook_task(self._handle_tool_call, ev)
+
+                elif t == "mcp_tool_call":
+                    # MCP bridge (#958). External MCP client called a tool — dispatch to on_mcp_call.
+                    self._dispatch_hook_task(self._handle_mcp_tool_call, ev)
 
         reader_task = asyncio.create_task(_reader())
         try:

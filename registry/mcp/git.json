@@ -1,0 +1,8 @@
+{
+  "name": "git",
+  "description": "Git repository operations via MCP",
+  "command": ["uvx", "mcp-server-git"],
+  "version": "2024-11-05",
+  "source": { "type": "pypi", "package": "mcp-server-git" },
+  "pgap_app": "mcp-renderer"
+}
