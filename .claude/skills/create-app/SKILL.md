@@ -48,7 +48,7 @@ plexi workspace init 2>/dev/null || true   # no-op if already initialised
 
 ---
 
-## Step 3 — Scaffold
+## Step 3 — Scaffold and open
 
 ```bash
 APP_NAME="<name>"
@@ -58,57 +58,47 @@ plexi app init "$APP_NAME"
 This creates:
 ```
 .plexi/apps/<name>/
-  manifest.toml
+  manifest.toml   (includes watch = true — hot reload active by default)
   main.py
 ```
 
 The host injects `plexi_sdk` via `PYTHONPATH` at launch — no local copy is needed or created.
 
----
-
-## Step 4 — Patch manifest
-
-Add `watch = true` to `[app]` so hot reload activates when the pane opens. Also inject the user's description.
-
-Read the generated manifest:
-```bash
-cat ".plexi/apps/$APP_NAME/manifest.toml"
-```
-
-Edit it in-place — use the Read + Edit tools (not sed). The `[app]` section should become:
-
-```toml
-[app]
-id = "<name>"
-name = "<Display Name>"
-type = "app"
-entry = "main.py"
-version = "0.1.0"
-description = "<user's description>"
-watch = true
-```
-
-Do NOT add any other fields or change the schema.
-
----
-
-## Step 5 — Open the pane
+When run inside a Plexi pane (`PLEXI_SOCKET` is set), `plexi app init` automatically opens the app and prints the new pane ID on the last line of stdout. Capture it:
 
 ```bash
+PANE_ID=$(plexi app init "$APP_NAME" 2>/dev/null | tail -1)
+echo "Opened pane: $PANE_ID"
+```
+
+If `PLEXI_SOCKET` is not set (running outside a Plexi pane), open manually after init:
+
+```bash
+plexi app init "$APP_NAME"
 PANE_ID=$(plexi open "$APP_NAME")
 echo "Opened pane: $PANE_ID"
 ```
 
-The host rescans the app registry on cache miss (v3.5.89+), so newly scaffolded apps are discoverable without restarting Plexi.
+The host rescans the app registry on cache miss (v3.5.92+), so newly scaffolded apps are discoverable without restarting Plexi.
 
-If `plexi open` prints nothing or exits non-zero:
+If the open fails or pane ID is empty:
 1. Check `~/.plexi-alpha/plexi.log` (or the channel-appropriate log) for errors
 2. Verify the manifest is valid: `plexi validate ".plexi/apps/$APP_NAME"`
 3. Report the error — do not silently continue
 
+## Step 4 — Patch description
+
+Edit the manifest in-place to inject the user's description — use the Read + Edit tools (not sed):
+
+```toml
+description = "<user's one-sentence description>"
+```
+
+Leave all other fields unchanged. `watch = true` is already present from the scaffold.
+
 ---
 
-## Step 6 — Report
+## Step 5 — Report
 
 Output exactly this block so the user can navigate immediately:
 
@@ -123,7 +113,7 @@ Edit main.py to update the app live. No restart needed.
 
 ---
 
-## What the agent does next
+## Step 6 — What the agent does next
 
 After reporting, the agent is in the live-edit loop:
 
