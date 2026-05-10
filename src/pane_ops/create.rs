@@ -505,8 +505,16 @@ impl PlexiApp {
             return;
         }
 
-        // Try registry first; if it returns None, fall through to Tier 4.
+        // Try registry first; if it returns None, rescan from disk (supports
+        // apps created mid-session via `plexi app init`) then fall through to Tier 4.
         let registry_process = self.registry.launch_process(id, &cwd, args);
+        let registry_process = if registry_process.is_none() {
+            log::info!("launch_app_by_id: '{id}' not in startup registry — rescanning from disk");
+            self.registry = crate::app_registry::AppRegistry::load(&cwd);
+            self.registry.launch_process(id, &cwd, args)
+        } else {
+            registry_process
+        };
         if let Some(process) = registry_process {
             if cli_binary_in_path(id) {
                 log::warn!(
