@@ -103,14 +103,15 @@ impl PlexiApp {
     /// Parked background apps (pane closed, process alive) are also ticked so
     /// their timers and notifications keep firing while detached.
     pub(super) fn drain_all_app_commands(&mut self) -> Vec<AppCommand> {
-        // Collect (ctx_idx, pane_id, type_id, commands) per pane. We capture
-        // type_id here because the manifest-declared notification scope is
-        // looked up from the registry by type_id, and we can't hold a
-        // mutable borrow on contexts + a shared borrow on the registry at
-        // the same time during the match below.
+        // Collect (context_id, pane_id, type_id, commands) per pane. We capture
+        // context_id (stable u64) and type_id here because the manifest-declared
+        // notification scope is looked up from the registry by type_id, and we
+        // can't hold a mutable borrow on contexts + a shared borrow on the
+        // registry at the same time during the match below.
         let active = self.active_window;
-        let mut per_pane: Vec<(usize, u64, String, Vec<AppCommand>)> = Vec::new();
+        let mut per_pane: Vec<(u64, u64, String, Vec<AppCommand>)> = Vec::new();
         for (ctx_idx, context) in self.windows.iter_mut().enumerate() {
+            let context_id = context.context_id;
             for (pane_id, pane) in context.panes.iter_mut() {
                 if let Some(app_pane) = pane.as_app_mut() {
                     // Active-context panes are already fully updated by ui()
@@ -123,7 +124,7 @@ impl PlexiApp {
                     let type_id = app_pane.runtime.type_id().to_string();
                     let cmds = app_pane.runtime.take_pending_commands();
                     if !cmds.is_empty() {
-                        per_pane.push((ctx_idx, *pane_id, type_id, cmds));
+                        per_pane.push((context_id, *pane_id, type_id, cmds));
                     }
                     continue;
                 }
@@ -201,7 +202,7 @@ impl PlexiApp {
             }
         }
 
-        for (ctx_idx, pane_id, type_id, cmds) in per_pane {
+        for (context_id, pane_id, type_id, cmds) in per_pane {
             // Scope is a per-app user-facing policy declared in the app's
             // manifest.toml. Apps never set it — the host resolves it once
             // per notification here. Defaults to `Context` when the manifest
@@ -247,7 +248,6 @@ impl PlexiApp {
                         on_dismiss,
                         ..
                     } => {
-                        let context_id = self.windows.get(ctx_idx).map(|w| w.context_id).unwrap_or(0);
                         deferred.push(AppCommand::ShowNotification {
                             notify_id,
                             sender_pane_id: pane_id,
