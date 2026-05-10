@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.108] — 2026-05-10
+
+### Changes
+- chore: skill edit carried through merge
+- feat(cli): reinstate `plexi app install <path>` command (#1014)
+- feat: transparent titlebar with fullsize content view (#1013)
 ## [3.5.107] — 2026-05-10
 
 ### Changes
