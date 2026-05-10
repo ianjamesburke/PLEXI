@@ -55,7 +55,7 @@ just install
 
 ## Features
 
-**PGAP** — every pane communicates over a single protocol (newline-delimited JSON on stdin/stdout). No shared memory, no inherited file descriptors. Binary payloads travel on typed pipes alongside the command channel. The protocol is the isolation boundary.
+**PGAP** — every pane communicates over a single protocol (newline-delimited JSON on stdin/stdout). No shared memory, no inherited file descriptors. Binary payloads travel on typed pipes alongside the command channel. The protocol is the isolation boundary. Full reference: [PGAP.md](PGAP.md).
 
 **Notification bus** — any terminal process can emit a notification; any app or pane can receive it. Route events across the workspace to tie independent processes together.
 
