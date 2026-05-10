@@ -1,6 +1,111 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+/// Per-action keybinding overrides. Each field is the name of an action;
+/// the value is a key combo string like `"cmd+d"` or `"cmd+shift+d"`.
+/// Omitting a field preserves the default binding for that action.
+/// Format: `[modifier+]...[modifier+]key` (case-insensitive).
+/// Modifiers: cmd/command, shift, ctrl/control, alt/opt/option.
+/// Keys: a-z, 0-9, enter, escape/esc, tab, space, backspace, up, down,
+///   left, right, [ ] \ / , . = + - and named aliases.
+#[derive(Deserialize, Default, Clone)]
+pub struct KeybindingsConfig {
+    pub quit: Option<String>,
+    pub close_pane: Option<String>,
+    pub toggle_command_palette: Option<String>,
+    pub split_horizontal: Option<String>,
+    pub split_vertical: Option<String>,
+    pub split_right: Option<String>,
+    pub split_down: Option<String>,
+    pub page_left: Option<String>,
+    pub page_down: Option<String>,
+    pub page_up: Option<String>,
+    pub page_right: Option<String>,
+    pub swap_pane_left: Option<String>,
+    pub swap_pane_down: Option<String>,
+    pub swap_pane_up: Option<String>,
+    pub swap_pane_right: Option<String>,
+    pub navigate_left: Option<String>,
+    pub navigate_down: Option<String>,
+    pub navigate_up: Option<String>,
+    pub navigate_right: Option<String>,
+    pub new_tab: Option<String>,
+    pub next_tab: Option<String>,
+    pub nav_back: Option<String>,
+    pub toggle_sidebar: Option<String>,
+    pub toggle_zoom: Option<String>,
+    pub toggle_shortcuts: Option<String>,
+    pub rename_context: Option<String>,
+    pub rename_pane: Option<String>,
+    pub new_context: Option<String>,
+    pub new_page_right: Option<String>,
+    pub toggle_minimap: Option<String>,
+    pub scroll_up: Option<String>,
+    pub scroll_down: Option<String>,
+    pub increase_font_size: Option<String>,
+    pub decrease_font_size: Option<String>,
+    pub open_file_browser: Option<String>,
+    pub open_quick_note: Option<String>,
+    pub open_config: Option<String>,
+    pub reload_config: Option<String>,
+    pub open_secrets_manager: Option<String>,
+    pub force_reload_app: Option<String>,
+    pub toggle_notification_modal: Option<String>,
+}
+
+impl KeybindingsConfig {
+    fn overlay(&mut self, other: Self) {
+        macro_rules! overlay_field {
+            ($field:ident) => {
+                if other.$field.is_some() {
+                    self.$field = other.$field;
+                }
+            };
+        }
+        overlay_field!(quit);
+        overlay_field!(close_pane);
+        overlay_field!(toggle_command_palette);
+        overlay_field!(split_horizontal);
+        overlay_field!(split_vertical);
+        overlay_field!(split_right);
+        overlay_field!(split_down);
+        overlay_field!(page_left);
+        overlay_field!(page_down);
+        overlay_field!(page_up);
+        overlay_field!(page_right);
+        overlay_field!(swap_pane_left);
+        overlay_field!(swap_pane_down);
+        overlay_field!(swap_pane_up);
+        overlay_field!(swap_pane_right);
+        overlay_field!(navigate_left);
+        overlay_field!(navigate_down);
+        overlay_field!(navigate_up);
+        overlay_field!(navigate_right);
+        overlay_field!(new_tab);
+        overlay_field!(next_tab);
+        overlay_field!(nav_back);
+        overlay_field!(toggle_sidebar);
+        overlay_field!(toggle_zoom);
+        overlay_field!(toggle_shortcuts);
+        overlay_field!(rename_context);
+        overlay_field!(rename_pane);
+        overlay_field!(new_context);
+        overlay_field!(new_page_right);
+        overlay_field!(toggle_minimap);
+        overlay_field!(scroll_up);
+        overlay_field!(scroll_down);
+        overlay_field!(increase_font_size);
+        overlay_field!(decrease_font_size);
+        overlay_field!(open_file_browser);
+        overlay_field!(open_quick_note);
+        overlay_field!(open_config);
+        overlay_field!(reload_config);
+        overlay_field!(open_secrets_manager);
+        overlay_field!(force_reload_app);
+        overlay_field!(toggle_notification_modal);
+    }
+}
+
 #[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
     pub font_size: Option<f32>,
@@ -14,6 +119,7 @@ pub struct PlexiConfig {
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
     pub confirm_close: Option<bool>,
+    pub keybindings: Option<KeybindingsConfig>,
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).
@@ -452,6 +558,56 @@ model_high   = "anthropic/claude-opus-4-7"
 # ── Logging ────────────────────────────────────────────────────
 # [log]
 # level = "info"   # error | warn | info | debug  (default: info)
+
+# ── Keybindings ────────────────────────────────────────────────
+# Override any default keybinding. Format: "modifier+key" (case-insensitive).
+# Modifiers: cmd, shift, ctrl, alt (aliases: command, control, opt, option).
+# Keys: a-z, 0-9, enter, escape, tab, space, backspace, up, down,
+#   left, right, open_bracket, close_bracket, backslash, slash, comma,
+#   period, equals, minus.
+# Unknown keys or conflicting overrides log an error at startup.
+# [keybindings]
+# quit                    = "cmd+q"
+# close_pane              = "cmd+w"
+# toggle_command_palette  = "cmd+p"
+# split_horizontal        = "cmd+d"
+# split_vertical          = "cmd+shift+d"
+# split_right             = "cmd+backslash"
+# split_down              = "cmd+shift+backslash"
+# navigate_left           = "cmd+h"
+# navigate_down           = "cmd+j"
+# navigate_up             = "cmd+k"
+# navigate_right          = "cmd+l"
+# page_left               = "cmd+shift+h"
+# page_down               = "cmd+shift+j"
+# page_up                 = "cmd+shift+k"
+# page_right              = "cmd+shift+l"
+# swap_pane_left          = "cmd+ctrl+h"
+# swap_pane_down          = "cmd+ctrl+j"
+# swap_pane_up            = "cmd+ctrl+k"
+# swap_pane_right         = "cmd+ctrl+l"
+# new_tab                 = "cmd+t"
+# next_tab                = "cmd+close_bracket"
+# nav_back                = "cmd+open_bracket"
+# toggle_sidebar          = "cmd+b"
+# toggle_zoom             = "cmd+enter"
+# toggle_shortcuts        = "cmd+slash"
+# rename_pane             = "cmd+r"
+# rename_context          = "cmd+shift+r"
+# new_page_right          = "cmd+n"
+# new_context             = "cmd+shift+n"
+# toggle_minimap          = "cmd+shift+m"
+# scroll_up               = "cmd+up"
+# scroll_down             = "cmd+down"
+# increase_font_size      = "cmd+equals"
+# decrease_font_size      = "cmd+minus"
+# open_file_browser       = "cmd+e"
+# open_quick_note         = "cmd+0"
+# open_config             = "cmd+comma"
+# reload_config           = "cmd+shift+comma"
+# open_secrets_manager    = "cmd+shift+s"
+# force_reload_app        = "cmd+alt+r"
+# toggle_notification_modal = "cmd+shift+a"
 "##;
 
 pub fn open_config_file() {
@@ -562,6 +718,11 @@ impl PlexiConfig {
         match (self.ai.as_mut(), other.ai) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.ai = Some(incoming),
+            _ => {}
+        }
+        match (self.keybindings.as_mut(), other.keybindings) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.keybindings = Some(incoming),
             _ => {}
         }
     }
