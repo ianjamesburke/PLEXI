@@ -17,7 +17,7 @@
 //!   my-pdf-viewer/
 //!     manifest.toml
 //!     bin/              # or just an executable named after the app id
-//!       plexi-app       # the app binary (must be executable)
+//!       plexi-app       # the app binary (.py entries are launched via python3)
 //!   file-browser/
 //!     manifest.toml
 //!     bin/plexi-app
@@ -608,26 +608,13 @@ pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Resolve the `entry` field from manifest.toml to an executable path.
+/// Resolve the `entry` field from manifest.toml to a path.
 /// Fails fast — no guessing, no fallbacks.
 fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
     let path = app_dir.join(entry);
 
     if !path.exists() {
         return Err(format!("entry '{entry}' not found in {:?}", app_dir));
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&path)
-            .map(|m| m.permissions().mode())
-            .unwrap_or(0);
-        if mode & 0o111 == 0 {
-            return Err(format!(
-                "entry '{entry}' exists but is not executable (run: chmod +x {entry})"
-            ));
-        }
     }
 
     Ok(path)
@@ -637,10 +624,8 @@ fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
-    /// Create a manifest + executable entry under `dir/<id>/`.
+    /// Create a manifest and entry script under `dir/<id>/`.
     /// `name` is what shows up in the manifest's `[app].name` so tests can
     /// distinguish two entries with the same id but different content.
     fn write_app(dir: &Path, id: &str, name: &str) {
@@ -656,12 +641,6 @@ mod tests {
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         let entry = app_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&entry).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&entry, perms).unwrap();
-        }
     }
 
     #[test]
@@ -678,6 +657,22 @@ mod tests {
         let foo = registry.get("foo").expect("foo should be discovered");
         assert_eq!(foo.manifest.name, "Local Foo");
         assert_eq!(foo.source, RegistrySource::LocalApp);
+    }
+
+    #[test]
+    fn py_entry_loads_without_executable_bit() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("myapp");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "schema_version = 1\n\n[app]\nid = \"myapp\"\ntype = \"app\"\nname = \"My App\"\nversion = \"0.0.1\"\nentry = \"app.py\"\n";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        // Write entry without shebang or executable bit.
+        fs::write(app_dir.join("app.py"), "import plexi\n").unwrap();
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let app = registry.get("myapp").expect("app.py entry must load without chmod+x");
+        assert!(app.bin_path.ends_with("app.py"));
     }
 
     #[test]
@@ -753,12 +748,6 @@ mod tests {
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         let entry = app_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&entry).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&entry, perms).unwrap();
-        }
 
         let bare = tempfile::tempdir().unwrap();
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
@@ -864,12 +853,6 @@ watch = true
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         let entry = app_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&entry).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&entry, perms).unwrap();
-        }
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let app = registry.get("watching-app").expect("manifest with watch=true should load");
@@ -917,12 +900,6 @@ watch = true
         fs::write(g_dir.join("manifest.toml"), manifest_g).unwrap();
         let entry_g = g_dir.join("run.sh");
         fs::write(&entry_g, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&entry_g).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&entry_g, perms).unwrap();
-        }
 
         // Local copy with watch=true (different id so they don't shadow).
         let l_dir = local_apps.join("local-watcher");
@@ -941,12 +918,6 @@ watch = true
         fs::write(l_dir.join("manifest.toml"), manifest_l).unwrap();
         let entry_l = l_dir.join("run.sh");
         fs::write(&entry_l, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&entry_l).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&entry_l, perms).unwrap();
-        }
 
         let registry = AppRegistry::load_with_global(workspace.path(), global.path());
         assert!(
@@ -1008,12 +979,6 @@ notification_scope = \"global\"
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         let entry = app_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&entry).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&entry, perms).unwrap();
-        }
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("stand-up");
@@ -1042,12 +1007,6 @@ notification_scope = \"context\"
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         let entry = app_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&entry).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&entry, perms).unwrap();
-        }
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("ctx-scoped");
