@@ -226,6 +226,11 @@ pub enum AppCmd {
     Info {
         id: String,
     },
+    /// Install a local app directory into the channel's app store
+    Install {
+        /// Path to the app directory containing manifest.toml
+        path: String,
+    },
     /// Register a local app directory with the workspace (does not move files)
     Link {
         /// Path to the app directory containing manifest.toml

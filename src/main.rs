@@ -211,6 +211,7 @@ fn main() -> eframe::Result {
                     },
                     Commands::App { cmd } => match cmd {
                         AppCmd::Init { name, lang } => std::process::exit(cli::app_init(&name, &lang)),
+                        AppCmd::Install { path } => std::process::exit(cli::app_install(&path)),
                         AppCmd::Uninstall { id } => std::process::exit(cli::app_uninstall(&id)),
                         AppCmd::List => std::process::exit(cli::app_list()),
                         AppCmd::Render { id, size, state, output } => {
