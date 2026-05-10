@@ -4,6 +4,17 @@ pub(crate) mod notification_image;
 mod sync;
 
 /// Returns true for old auto-generated window names ("Page 3,1", "Context 2")
+/// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
+/// A single arg is used as-is (it's already a shell expression — CLI path).
+/// Multiple args are joined with shell quoting so word-splitting is preserved.
+fn cmd_from_args(args: &[String]) -> Option<String> {
+    match args {
+        [] => None,
+        [single] => Some(single.clone()),
+        multiple => Some(crate::shell::shell_join(multiple)),
+    }
+}
+
 /// written before windows defaulted to an empty name. Stripped on load so they
 /// don't appear as user-given names in the command palette.
 fn is_auto_window_name(name: &str) -> bool {
@@ -995,7 +1006,7 @@ impl PlexiApp {
                     let new_pane_id = self.host.next_pane_id();
                     if type_id == "terminal" {
                         let vertical = matches!(layout.as_str(), "split_h" | "split_above");
-                        let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(args)) };
+                        let initial_cmd = cmd_from_args(args);
                         log::info!("pane_ipc: spawn_pane terminal vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                         self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
                     } else {
@@ -1156,7 +1167,7 @@ impl PlexiApp {
             if type_id == "terminal" {
                 let layout_str = layout.as_deref().unwrap_or("split_v");
                 let vertical = matches!(layout_str, "split_h" | "split_above");
-                let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(&args)) };
+                let initial_cmd = cmd_from_args(&args);
                 self.split_focused(vertical, initial_cmd.as_deref(), ephemeral);
             } else {
                 self.launch_app_by_id_with_layout(&type_id, layout, &args);
@@ -1582,11 +1593,7 @@ impl eframe::App for PlexiApp {
                         //   split_focused(true)  → insert_vertical_tile   → stacked (BELOW)
                         // So: split_v (right) → false, split_h/split_above (below) → true.
                         let vertical = matches!(layout.as_str(), "split_h" | "split_above");
-                        let initial_cmd = if effective_args.is_empty() {
-                            None
-                        } else {
-                            Some(crate::shell::shell_join(&effective_args))
-                        };
+                        let initial_cmd = cmd_from_args(&effective_args);
                         log::info!(
                             "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
                         );
