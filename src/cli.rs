@@ -3043,6 +3043,7 @@ _plexi() {
             '--body[Notification body]:body:' \
             '--level[Level]:level:(info warn error)' \
             '--choice[Choice option (key:Label / Label:action:arg / key:Label:action:arg)]:choice:' \
+            '--host-action[Host-side action for a choice key (key:action_type:action_arg)]:host_action:' \
             '--timeout[Timeout in seconds]:seconds:'
           ;;
         open)
@@ -3127,7 +3128,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       if [[ $prev == "--level" ]]; then
         COMPREPLY=($(compgen -W "info warn error" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "--title --body --level --choice --timeout" -- "$cur"))
+        COMPREPLY=($(compgen -W "--title --body --level --choice --host-action --timeout" -- "$cur"))
       fi
       ;;
     install)
@@ -3205,6 +3206,7 @@ complete -c plexi -n "__fish_seen_subcommand_from notify" -l title -d "Notificat
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l body -d "Notification body"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l level -d "Level" -a "info warn error"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l choice -d "Choice option (key:Label / Label:action:arg / key:Label:action:arg)"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l host-action -d "Host-side action for a choice key (key:action_type:action_arg)"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l timeout -d "Timeout in seconds"
 
 # install flags
@@ -3272,6 +3274,33 @@ mod notify_tests {
     fn parse_choice_one_segment_is_error() {
         let err = parse_notify_choice("nocolon").unwrap_err();
         assert!(err.contains("1"), "error should mention segment count: {err}");
+    }
+
+    /// --host-action merges into a clean key:Label choice.
+    #[test]
+    fn host_action_merges_into_clean_choice() {
+        let (key, label, embedded) = parse_notify_choice("view:View results").unwrap();
+        assert!(embedded.is_none());
+        // Simulate the merge: host_action_map has "view" → "pane_focus:99"
+        let merged_action = Some("pane_focus:99".to_string());
+        let action = Some(merged_action.unwrap());
+        assert_eq!(key, "view");
+        assert_eq!(label, "View results");
+        assert_eq!(action.as_deref(), Some("pane_focus:99"));
+    }
+
+    /// --host-action overrides an embedded action in a 4-segment --choice.
+    #[test]
+    fn host_action_overrides_embedded_choice_action() {
+        let (key, label, embedded) =
+            parse_notify_choice("a:Talk to Claude:pane_focus:OLD").unwrap();
+        assert_eq!(embedded.as_deref(), Some("pane_focus:OLD"));
+        // host_action_map contains key "a" → "pane_focus:NEW"
+        let override_action = Some("pane_focus:NEW".to_string());
+        let final_action = override_action.map(Some).unwrap_or(embedded);
+        assert_eq!(key, "a");
+        assert_eq!(label, "Talk to Claude");
+        assert_eq!(final_action.as_deref(), Some("pane_focus:NEW"));
     }
 }
 

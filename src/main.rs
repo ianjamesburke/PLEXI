@@ -239,11 +239,42 @@ fn main() -> eframe::Result {
                     Commands::Pack { cmd } => match cmd {
                         PackCmd::Export { path } => std::process::exit(cli::pack_export_cli(&path)),
                     },
-                    Commands::Notify { title, body, level, choices, timeout } => {
+                    Commands::Notify { title, body, level, choices, host_actions, timeout } => {
+                        // Parse --host-action flags into a key → "action_type:action_arg" map.
+                        let mut host_action_map: std::collections::HashMap<String, String> =
+                            std::collections::HashMap::new();
+                        for raw in &host_actions {
+                            let parts: Vec<&str> = raw.splitn(3, ':').collect();
+                            match parts.as_slice() {
+                                [key, action_type, action_arg] => {
+                                    host_action_map.insert(
+                                        key.to_string(),
+                                        format!("{action_type}:{action_arg}"),
+                                    );
+                                }
+                                _ => {
+                                    let msg = format!(
+                                        "error: --host-action requires 3 colon-separated segments \
+                                         (key:action_type:action_arg) — got {:?}",
+                                        raw
+                                    );
+                                    log::warn!("notify:cli: {msg}");
+                                    eprintln!("{msg}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
                         let mut parsed_choices: Vec<(String, String, Option<String>)> = Vec::new();
                         for raw in &choices {
                             match cli::parse_notify_choice(raw) {
-                                Ok(choice) => parsed_choices.push(choice),
+                                Ok((key, label, existing_action)) => {
+                                    // --host-action overrides any action embedded in --choice.
+                                    let action = host_action_map
+                                        .remove(&key)
+                                        .map(Some)
+                                        .unwrap_or(existing_action);
+                                    parsed_choices.push((key, label, action));
+                                }
                                 Err(msg) => {
                                     log::warn!("notify:cli: {msg}");
                                     eprintln!("{msg}");
@@ -251,6 +282,20 @@ fn main() -> eframe::Result {
                                 }
                             }
                         }
+                        // Any --host-action keys not matched to a --choice are an error.
+                        for (key, _) in &host_action_map {
+                            let msg = format!(
+                                "error: --host-action key {:?} does not match any --choice key",
+                                key
+                            );
+                            log::warn!("notify:cli: {msg}");
+                            eprintln!("{msg}");
+                            std::process::exit(1);
+                        }
+                        log::info!(
+                            "notify:cli: host_actions={} merged into choices",
+                            host_actions.len()
+                        );
                         std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout));
                     }
                     Commands::Pane { cmd } => match cmd {

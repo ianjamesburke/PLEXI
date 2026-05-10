@@ -85,6 +85,11 @@ pub enum Commands {
         /// Repeatable.
         #[arg(long = "choice")]
         choices: Vec<String>,
+        /// Host-side action for a choice key. Format: `key:action_type:action_arg`.
+        /// Repeatable. The host performs this action when the user clicks the matching
+        /// choice, even if the spawner has already exited.
+        #[arg(long = "host-action")]
+        host_actions: Vec<String>,
         /// Timeout in seconds (0 = no timeout)
         #[arg(long, default_value = "0")]
         timeout: u64,
