@@ -101,7 +101,7 @@ DrawCommand (app → host):
   PipeSend      — send a JSON payload on a json-mode pipe
   StatusSummary — set the status bar summary text for this pane
   ScheduleRender — ask the host to send a Render event after N milliseconds
-  SpawnApp      — request the host to open a new pane with a given app type
+  SpawnApp      — [DEPRECATED: use SpawnPane instead] request the host to open a new pane with a given app type
   SpawnPane     — request the host to open a pane with given app, layout, args, and optional pipe_id
   CdRequest     — request the host to cd all terminals in the pane group to a path
   Ready         — sent automatically after Init; do not emit manually

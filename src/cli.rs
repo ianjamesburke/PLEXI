@@ -2916,21 +2916,6 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     }))
 }
 
-/// `plexi shell-init <shell>`
-///
-/// Previously emitted a `_plexi_chpwd` hook that called `plexi context open`
-/// on directory change. That hook drove the CWD-based auto-switch which was
-/// removed as actively disruptive. The command is kept for backwards
-/// compatibility with dotfiles that still `eval "$(plexi shell-init)"` — it
-/// now emits nothing so those evals are safe no-ops.
-pub fn shell_init_cli(_shell: Option<&str>) -> i32 {
-    log::info!("cli: shell-init (no-op)");
-    eprintln!("note: plexi shell-init is currently a no-op.");
-    eprintln!("      Shell integration will be re-introduced in a future release.");
-    eprintln!("      If your dotfiles contain `eval \"$(plexi shell-init)\"`, it is safe to leave as-is.");
-    0
-}
-
 /// `plexi completions <shell>`
 ///
 /// Prints a static shell completion script to stdout. Pipe to the appropriate
@@ -2978,7 +2963,6 @@ _plexi() {
         'descriptor:Descriptor probe'
         'registry:CLI registry'
         'context:Context management'
-        'shell-init:Print shell integration snippet'
         'completions:Print shell completion script'
       )
       _describe 'command' commands
@@ -3049,9 +3033,6 @@ _plexi() {
         uninstall)
           _arguments '--yes[Skip confirmation prompt]'
           ;;
-        shell-init)
-          _arguments '--shell[Shell name]:shell:(zsh bash fish)'
-          ;;
         completions)
           local shells
           shells=('zsh' 'bash' 'fish')
@@ -3069,7 +3050,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions"
+  local commands="run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions"
 
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -3125,13 +3106,6 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
     uninstall)
       COMPREPLY=($(compgen -W "--yes" -- "$cur"))
       ;;
-    shell-init)
-      if [[ $prev == "--shell" ]]; then
-        COMPREPLY=($(compgen -W "zsh bash fish" -- "$cur"))
-      else
-        COMPREPLY=($(compgen -W "--shell" -- "$cur"))
-      fi
-      ;;
     completions)
       COMPREPLY=($(compgen -W "zsh bash fish" -- "$cur"))
       ;;
@@ -3143,25 +3117,24 @@ complete -F _plexi_completions plexi
 
 const FISH_COMPLETION: &str = r#"# Plexi shell completions for fish
 
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a run -d "Run a named command"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a workspace -d "Workspace management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a secret -d "Secret management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a app -d "App management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a install -d "Install an app"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a uninstall -d "Uninstall an app"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a update -d "Update apps or self"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a list -d "List installed apps"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a validate -d "Validate a Plexi app directory"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a pack -d "Pack management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a notify -d "Send a notification"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a pane -d "Pane management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a terminal -d "Open a terminal pane"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a open -d "Open an app pane"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a descriptor -d "Descriptor probe"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a registry -d "CLI registry"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a context -d "Context management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a shell-init -d "Print shell integration snippet"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context shell-init completions" -a completions -d "Print shell completion script"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a run -d "Run a named command"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a workspace -d "Workspace management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a secret -d "Secret management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a app -d "App management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a install -d "Install an app"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a uninstall -d "Uninstall an app"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a update -d "Update apps or self"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a list -d "List installed apps"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a validate -d "Validate a Plexi app directory"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a pack -d "Pack management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a notify -d "Send a notification"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a pane -d "Pane management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a terminal -d "Open a terminal pane"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a open -d "Open an app pane"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a descriptor -d "Descriptor probe"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a registry -d "CLI registry"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a context -d "Context management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions" -a completions -d "Print shell completion script"
 
 # secret subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a set -d "Store a secret"
@@ -3209,9 +3182,6 @@ complete -c plexi -n "__fish_seen_subcommand_from install" -l pack -d "Install f
 
 # uninstall flags
 complete -c plexi -n "__fish_seen_subcommand_from uninstall" -l yes -d "Skip confirmation prompt"
-
-# shell-init flags
-complete -c plexi -n "__fish_seen_subcommand_from shell-init" -l shell -d "Shell name" -a "zsh bash fish"
 
 # completions args
 complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash fish"

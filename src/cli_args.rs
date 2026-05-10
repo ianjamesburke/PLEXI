@@ -131,14 +131,6 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ContextCmd,
     },
-    /// [deprecated] Shell integration — currently a no-op; prints a notice
-    ShellInit {
-        /// Shell name (zsh, bash, fish)
-        #[arg(long)]
-        shell: Option<String>,
-        /// Shell name as positional (alternative to --shell)
-        shell_pos: Option<String>,
-    },
     /// Print shell completion script
     Completions {
         /// Shell name (zsh, bash, fish)

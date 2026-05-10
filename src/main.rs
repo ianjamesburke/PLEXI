@@ -319,10 +319,6 @@ fn main() -> eframe::Result {
                         ContextCmd::Open { path } => std::process::exit(cli::context_open_cli(path.as_deref())),
                         ContextCmd::SetRoot { path } => std::process::exit(cli::context_set_root_cli(path.as_deref())),
                     },
-                    Commands::ShellInit { shell, shell_pos } => {
-                        let resolved = shell.as_deref().or(shell_pos.as_deref());
-                        std::process::exit(cli::shell_init_cli(resolved));
-                    }
                     Commands::Completions { shell } => {
                         let s = shell.as_deref().unwrap_or("zsh");
                         std::process::exit(cli::completions_cli(s));
@@ -426,7 +422,6 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "validate",
         // #680 — context root and shell integration.
         "context",
-        "shell-init",
         "completions",
     ];
     let mut iter = args.iter().enumerate();
