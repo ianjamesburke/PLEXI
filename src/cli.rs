@@ -457,7 +457,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\ntype = \"app\"\n\n[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
@@ -484,7 +484,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\ntype = \"app\"\n\n[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
