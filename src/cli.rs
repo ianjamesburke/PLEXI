@@ -3294,7 +3294,13 @@ pub fn context_current_cli() -> i32 {
         }
     };
     let context_name = std::env::var("PLEXI_CONTEXT_NAME").unwrap_or_default();
-    let id_num: u64 = context_id.parse().unwrap_or(0);
+    let id_num: u64 = match context_id.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            eprintln!("error: PLEXI_CONTEXT_ID is not a valid number: {context_id}");
+            return 1;
+        }
+    };
     let json = serde_json::json!({
         "context_id": id_num,
         "context_name": context_name,
