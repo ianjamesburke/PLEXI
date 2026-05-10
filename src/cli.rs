@@ -3107,6 +3107,13 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
         COMPREPLY=($(compgen -W "--ephemeral --layout --from-pane-id" -- "$cur"))
       fi
       ;;
+    open)
+      if [[ $prev == "--layout" ]]; then
+        COMPREPLY=($(compgen -W "split_v split_h split_above overlay" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "--layout --from-pane-id" -- "$cur"))
+      fi
+      ;;
     descriptor)
       COMPREPLY=($(compgen -W "probe" -- "$cur"))
       ;;
@@ -3214,6 +3221,7 @@ complete -c plexi -n "__fish_seen_subcommand_from terminal" -l ephemeral -d "Clo
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l from-pane-id -d "Split relative to this pane ID"
 # open flags
+complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hint" -a "split_v split_h split_above overlay"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"
 "#;
 
