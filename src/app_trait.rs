@@ -58,9 +58,8 @@ pub enum AppCommand {
     ShowNotification {
         notify_id: String,
         sender_pane_id: u64,
-        /// Context index the notification originated from. Stamped by
-        /// `drain_all_app_commands` with the index of the originating context.
-        source_context: usize,
+        /// Stable context identity the notification originated from.
+        source_context_id: u64,
         level: String,
         title: String,
         body: String,

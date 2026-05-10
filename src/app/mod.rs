@@ -55,8 +55,8 @@ pub(crate) enum FocusLayer {
 pub(crate) struct PendingNotification {
     pub notify_id: String,
     pub sender_pane_id: u64,
-    /// Context index the notification originated from (stamped at drain time).
-    pub source_context: usize,
+    /// Stable context identity the notification originated from (stamped at drain time).
+    pub source_context_id: u64,
     pub level: String,
     pub title: String,
     pub body: String,
@@ -216,10 +216,10 @@ pub struct PlexiApp {
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
     /// Parked background ProcessApps — kept alive when their pane is closed.
-    /// Keyed by app type_id. Value is `(park_context_idx, app)` where
-    /// `park_context_idx` is the window index the app was running in when its
+    /// Keyed by app type_id. Value is `(park_context_id, app)` where
+    /// `park_context_id` is the context_id the app was running in when its
     /// pane was closed. Used to route notifications to the correct context.
-    pub(crate) background_apps: HashMap<String, (usize, Box<crate::process_app::ProcessApp>)>,
+    pub(crate) background_apps: HashMap<String, (u64, Box<crate::process_app::ProcessApp>)>,
     /// Directed inter-agent / inter-app pipes (#286). Keyed by `pipe_id`,
     /// value is the `(sender_pane_id, target_pane_id)` pair the host must
     /// scope `PipeMessage` deliveries to. `DeliverPipeMessage` consults this
@@ -1062,7 +1062,7 @@ impl PlexiApp {
                     self.pending_notifications.push(PendingNotification {
                         notify_id: internal_id.clone(),
                         sender_pane_id: 0,
-                        source_context: self.router.active_idx(),
+                        source_context_id: self.router.active().context_id,
                         scope: crate::app_protocol::NotifyScope::Global,
                         level: level.clone(),
                         title: title.clone(),
@@ -1226,7 +1226,7 @@ impl PlexiApp {
             crate::app_protocol::NotifyScope::Global => true,
             crate::app_protocol::NotifyScope::Window
             | crate::app_protocol::NotifyScope::Context => {
-                n.source_context == self.router.active_idx()
+                n.source_context_id == self.router.active().context_id
             }
         }
     }
@@ -1351,10 +1351,11 @@ impl PlexiApp {
         }
     }
 
-    /// Count of window- or context-scoped notifications whose source_context == ctx_idx.
+    /// Count of window- or context-scoped notifications whose source_context_id == the id of ctx_idx.
     /// Used for per-context sidebar badges on inactive contexts. Global notifications
     /// are excluded — they already appear everywhere via notification_is_visible.
     pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
+        let ctx_id = self.router.get(ctx_idx).context_id;
         self.pending_notifications
             .iter()
             .filter(|n| {
@@ -1363,7 +1364,7 @@ impl PlexiApp {
                     crate::app_protocol::NotifyScope::Window
                         | crate::app_protocol::NotifyScope::Context
                 )
-                && n.source_context == ctx_idx
+                && n.source_context_id == ctx_id
             })
             .count()
     }
@@ -1645,7 +1646,7 @@ impl eframe::App for PlexiApp {
                 AppCommand::ShowNotification {
                     notify_id,
                     sender_pane_id,
-                    source_context,
+                    source_context_id,
                     level,
                     title,
                     body,
@@ -1665,9 +1666,9 @@ impl eframe::App for PlexiApp {
                         continue;
                     }
                     let new_id = notify_id.clone();
-                    // Capture scope/source_context before they move into the struct.
+                    // Capture scope/source_context_id before they move into the struct.
                     let notif_scope = scope;
-                    let notif_source_ctx = source_context;
+                    let notif_source_ctx = source_context_id;
                     // Strip any per-option shortcut that conflicts with navigation keys.
                     let options: Vec<crate::app_protocol::NotifyOption> = options.into_iter().map(|mut opt| {
                         if let Some(ref sc) = opt.shortcut.clone() {
@@ -1684,7 +1685,7 @@ impl eframe::App for PlexiApp {
                     self.pending_notifications.push(PendingNotification {
                         notify_id,
                         sender_pane_id,
-                        source_context,
+                        source_context_id,
                         level,
                         title,
                         body,
@@ -1704,7 +1705,7 @@ impl eframe::App for PlexiApp {
                     });
                     // Auto-open rules:
                     //   1. Visibility — Global always; Window/Context only when
-                    //      source_context == active context.
+                    //      source_context_id == active context id.
                     //   2. focus_mode off — the global mute gate.
                     //   3. priority >= interrupt_threshold — don't
                     //      auto-open low-urgency notifications like
@@ -1715,7 +1716,7 @@ impl eframe::App for PlexiApp {
                         crate::app_protocol::NotifyScope::Global => true,
                         crate::app_protocol::NotifyScope::Window
                         | crate::app_protocol::NotifyScope::Context => {
-                            notif_source_ctx == self.router.active_idx()
+                            notif_source_ctx == self.router.active().context_id
                         }
                     };
                     let should_auto_open = is_visible

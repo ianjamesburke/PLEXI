@@ -366,7 +366,7 @@ impl ProcessApp {
                 self.pending_commands.push(AppCommand::ShowNotification {
                     notify_id: panel_id,
                     sender_pane_id: 0, // stamped by dispatch.rs with the real pane_id
-                    source_context: 0, // stamped by dispatch.rs with the real ctx_idx
+                    source_context_id: 0, // stamped by dispatch.rs with the real context_id
                     level,
                     title,
                     body,

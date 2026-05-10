@@ -12,21 +12,21 @@ mod tests {
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
     /// Regression guard for issue #879: parked background app notifications
-    /// hardcoded `source_context: 0`. Verify that the context index recorded
+    /// hardcoded `source_context_id: 0`. Verify that the context_id recorded
     /// at park time propagates to the `ShowNotification` command.
     #[test]
     fn parked_app_notification_uses_park_context() {
         let mut h = HostHarness::new();
 
         // Seed a ShowNotification on a fresh ProcessApp's pending_commands,
-        // then insert it into background_apps with park_ctx = 2.
+        // then insert it into background_apps with park_context_id = 42.
         let (mut process_app, _draw_tx) =
             ProcessApp::new_for_test(999, AppPermissions::builtin());
 
         process_app.pending_commands.push(AppCommand::ShowNotification {
             notify_id: "test-notify".to_string(),
             sender_pane_id: 0,
-            source_context: 0, // pre-filled stub value; drain should overwrite
+            source_context_id: 0, // pre-filled stub value; drain should overwrite
             level: "info".to_string(),
             title: "hello from context 2".to_string(),
             body: String::new(),
@@ -42,10 +42,10 @@ mod tests {
             on_dismiss: None,
         });
 
-        let park_ctx: usize = 2;
+        let park_context_id: u64 = 42;
         h.app
             .background_apps
-            .insert("test-app".to_string(), (park_ctx, Box::new(process_app)));
+            .insert("test-app".to_string(), (park_context_id, Box::new(process_app)));
 
         let cmds = h.app.drain_all_app_commands();
 
@@ -53,13 +53,13 @@ mod tests {
             matches!(c, AppCommand::ShowNotification { notify_id, .. } if notify_id == "test-notify")
         });
 
-        let Some(AppCommand::ShowNotification { source_context, .. }) = notification else {
+        let Some(AppCommand::ShowNotification { source_context_id, .. }) = notification else {
             panic!("expected ShowNotification in drained commands — not found");
         };
 
         assert_eq!(
-            *source_context, park_ctx,
-            "source_context should be the park-time context ({park_ctx}), not hardcoded 0"
+            *source_context_id, park_context_id,
+            "source_context_id should be the park-time context_id ({park_context_id}), not hardcoded 0"
         );
     }
 }
@@ -103,14 +103,15 @@ impl PlexiApp {
     /// Parked background apps (pane closed, process alive) are also ticked so
     /// their timers and notifications keep firing while detached.
     pub(super) fn drain_all_app_commands(&mut self) -> Vec<AppCommand> {
-        // Collect (ctx_idx, pane_id, type_id, commands) per pane. We capture
-        // type_id here because the manifest-declared notification scope is
-        // looked up from the registry by type_id, and we can't hold a
-        // mutable borrow on contexts + a shared borrow on the registry at
-        // the same time during the match below.
+        // Collect (context_id, pane_id, type_id, commands) per pane. We capture
+        // context_id (stable u64) and type_id here because the manifest-declared
+        // notification scope is looked up from the registry by type_id, and we
+        // can't hold a mutable borrow on contexts + a shared borrow on the
+        // registry at the same time during the match below.
         let active = self.active_window;
-        let mut per_pane: Vec<(usize, u64, String, Vec<AppCommand>)> = Vec::new();
+        let mut per_pane: Vec<(u64, u64, String, Vec<AppCommand>)> = Vec::new();
         for (ctx_idx, context) in self.windows.iter_mut().enumerate() {
+            let context_id = context.context_id;
             for (pane_id, pane) in context.panes.iter_mut() {
                 if let Some(app_pane) = pane.as_app_mut() {
                     // Active-context panes are already fully updated by ui()
@@ -123,7 +124,7 @@ impl PlexiApp {
                     let type_id = app_pane.runtime.type_id().to_string();
                     let cmds = app_pane.runtime.take_pending_commands();
                     if !cmds.is_empty() {
-                        per_pane.push((ctx_idx, *pane_id, type_id, cmds));
+                        per_pane.push((context_id, *pane_id, type_id, cmds));
                     }
                     continue;
                 }
@@ -135,19 +136,19 @@ impl PlexiApp {
         // instead of context panes. Without this, timers stop and notifications
         // never fire the moment the pane is closed.
         // Collect (type_id, park_context_idx, commands) for each parked app.
-        let parked: Vec<(String, usize, Vec<AppCommand>)> = self
+        let parked: Vec<(String, u64, Vec<AppCommand>)> = self
             .background_apps
             .iter_mut()
-            .map(|(type_id, (park_ctx, app))| {
+            .map(|(type_id, (park_context_id, app))| {
                 app.background_tick();
                 let cmds = app.take_pending_commands();
-                (type_id.to_owned(), *park_ctx, cmds)
+                (type_id.to_owned(), *park_context_id, cmds)
             })
             .collect();
 
         let mut deferred = Vec::new();
 
-        for (type_id, park_ctx, cmds) in &parked {
+        for (type_id, park_context_id, cmds) in &parked {
             let resolved_scope = self.registry.default_notification_scope_for(type_id);
             for cmd in cmds.iter() {
                 match cmd {
@@ -168,13 +169,13 @@ impl PlexiApp {
                         ..
                     } => {
                         log::info!(
-                            "parked background app '{}' notification: {} (routing to context {})",
-                            type_id, title, park_ctx
+                            "parked background app '{}' notification: {} (routing to context_id {})",
+                            type_id, title, park_context_id
                         );
                         deferred.push(AppCommand::ShowNotification {
                             notify_id: notify_id.clone(),
                             sender_pane_id: 0, // no live pane — tombstone won't fire
-                            source_context: *park_ctx,
+                            source_context_id: *park_context_id,
                             level: level.clone(),
                             title: title.clone(),
                             body: body.clone(),
@@ -201,7 +202,7 @@ impl PlexiApp {
             }
         }
 
-        for (ctx_idx, pane_id, type_id, cmds) in per_pane {
+        for (context_id, pane_id, type_id, cmds) in per_pane {
             // Scope is a per-app user-facing policy declared in the app's
             // manifest.toml. Apps never set it — the host resolves it once
             // per notification here. Defaults to `Context` when the manifest
@@ -247,13 +248,10 @@ impl PlexiApp {
                         on_dismiss,
                         ..
                     } => {
-                        let ws_idx = self.windows.get(ctx_idx)
-                            .and_then(|w| self.router.position(|c| c.context_id == w.context_id))
-                            .unwrap_or(0);
                         deferred.push(AppCommand::ShowNotification {
                             notify_id,
                             sender_pane_id: pane_id,
-                            source_context: ws_idx,
+                            source_context_id: context_id,
                             level,
                             title,
                             body,

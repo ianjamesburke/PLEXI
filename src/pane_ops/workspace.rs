@@ -139,7 +139,7 @@ impl PlexiApp {
         // Notifications scoped to this context are dropped.
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
-                && n.source_context == ws_index)
+                && n.source_context_id == ws_id)
         });
         if let Some(ref id) = self.current_notify_id.clone() {
             let still_present = self.pending_notifications.iter().any(|n| &n.notify_id == id);
