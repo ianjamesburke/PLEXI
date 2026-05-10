@@ -2526,6 +2526,7 @@ impl eframe::App for PlexiApp {
                         let pane_id = *pane_id;
                         let panel_rect = ui.max_rect();
                         let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).copied();
+                        let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
 
                         // Drop behavior to release the mutable borrow on ctx.panes
                         drop(behavior);
@@ -2569,10 +2570,56 @@ impl eframe::App for PlexiApp {
                             );
                         }
                         child_ui.set_opacity(0.88);
+                        // Render name bar outside the Frame so the terminal's background
+                        // fill inside the Frame cannot paint over it. The Frame gets its
+                        // own child_ui scoped to the area below the name bar, so there
+                        // is no cursor/spacing gap between them.
+                        let has_name = zoomed_pane_name.is_some();
+                        const NAME_BAR_HEIGHT: f32 = 20.0;
+                        if has_name {
+                            let bar_rect = egui::Rect::from_min_size(
+                                inner_rect.min,
+                                egui::vec2(inner_rect.width(), NAME_BAR_HEIGHT),
+                            );
+                            child_ui.painter().rect_filled(bar_rect, 0.0, self.colors.terminal_bg);
+                            if let Some((active_idx, count)) = zoomed_tab_info {
+                                crate::tiling::paint_tab_dots(
+                                    child_ui.painter(),
+                                    bar_rect.left(),
+                                    bar_rect.center().y,
+                                    active_idx,
+                                    count,
+                                    self.colors.accent,
+                                    self.colors.bg_active,
+                                );
+                            }
+                            if let Some(ref name) = zoomed_pane_name {
+                                child_ui.painter().text(
+                                    bar_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    name,
+                                    egui::FontId::proportional(11.0),
+                                    self.colors.text_dim,
+                                );
+                            }
+                            log::info!(
+                                "zoom: name bar — pane={pane_id:?} name={:?}",
+                                zoomed_pane_name
+                            );
+                        }
+                        // Frame rect starts exactly where the name bar ends (or at the
+                        // top of inner_rect when there is no name bar), so no gap appears.
+                        let frame_rect = if has_name {
+                            inner_rect.with_min_y(inner_rect.min.y + NAME_BAR_HEIGHT)
+                        } else {
+                            inner_rect
+                        };
+                        let mut frame_ui = ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
+                        frame_ui.set_opacity(0.88);
                         egui::Frame::new()
                             .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
-                            .show(&mut child_ui, |ui| {
+                            .show(&mut frame_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
                                     if let Some(t) = pane.as_terminal_mut() {
                                         if dropped_to_zoom {
@@ -2619,8 +2666,8 @@ impl eframe::App for PlexiApp {
                                                 },
                                             );
                                         } else {
-                                            // Reserve space for tab dots if in a tab group
-                                            if zoomed_tab_info.is_some() {
+                                            // Reserve space for tab dots when no name bar
+                                            if !has_name && zoomed_tab_info.is_some() {
                                                 ui.add_space(
                                                     crate::tiling::TAB_DOT_RESERVED_HEIGHT,
                                                 );
@@ -2646,18 +2693,20 @@ impl eframe::App for PlexiApp {
                                     }
                                 }
 
-                                // Draw tab indicator dots (same style as tiling.rs)
-                                if let Some((active_idx, count)) = zoomed_tab_info {
-                                    let rect = ui.max_rect();
-                                    crate::tiling::paint_tab_dots(
-                                        ui.painter(),
-                                        rect.left(),
-                                        rect.top() + 2.0 + 4.0, // 4.0 = dot radius
-                                        active_idx,
-                                        count,
-                                        self.colors.accent,
-                                        self.colors.bg_active,
-                                    );
+                                // Draw tab indicator dots for unnamed panes in a tab group
+                                if !has_name {
+                                    if let Some((active_idx, count)) = zoomed_tab_info {
+                                        let rect = ui.max_rect();
+                                        crate::tiling::paint_tab_dots(
+                                            ui.painter(),
+                                            rect.left(),
+                                            rect.top() + 2.0 + 4.0, // 4.0 = dot radius
+                                            active_idx,
+                                            count,
+                                            self.colors.accent,
+                                            self.colors.bg_active,
+                                        );
+                                    }
                                 }
                             });
                     } else {
