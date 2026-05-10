@@ -533,7 +533,7 @@ If `MERGED`: skip to step 4. Another session already merged — don't re-merge.
 ```bash
 git restore Cargo.toml                              # discard pr-install artifact
 git -C worktrees/<branch> restore Cargo.toml        # discard from feature worktree too
-DIRTY=$(git status --porcelain | grep "^ M\|^M ")
+DIRTY=$(git status --porcelain | grep -v "^??" | grep -v "Cargo.toml")
 if [ -n "$DIRTY" ]; then
   git stash push -m "session edits — restore after merge"
   STASHED=1
