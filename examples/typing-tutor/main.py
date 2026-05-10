@@ -165,7 +165,7 @@ class TypingTutorApp(App):
             self._selected = max(0, self._selected - 5)
         elif key in ("j", "down"):
             self._selected = min(n - 1, self._selected + 5)
-        elif key in ("return", "space", "Enter"):
+        elif key in (" ", "Enter"):
             if _is_unlocked(self._selected, self._level_stars):
                 self._start_level(self._selected)
 
@@ -173,12 +173,12 @@ class TypingTutorApp(App):
         level = LEVELS[self._play_level]
         text = level.text
 
-        if key == "escape":
+        if key == "Escape":
             self.emit.info(f"typing-tutor: aborted level={self._play_level + 1}")
             self._screen = Screen.LEVEL_SELECT
             return
 
-        if key == "backspace":
+        if key == "Backspace":
             if self._typed > 0:
                 self._typed -= 1
                 self._errors.discard(self._typed)
@@ -200,7 +200,7 @@ class TypingTutorApp(App):
             self._go_result(ctx, timed_out=False)
 
     def _key_result(self, key: str) -> None:
-        if key in ("return", "Enter", "space"):
+        if key in (" ", "Enter"):
             self._screen = Screen.LEVEL_SELECT
         elif key == "r":
             self._start_level(self._play_level)
@@ -280,7 +280,7 @@ class TypingTutorApp(App):
 
         # Footer hints
         ctx.text(pad, ctx.h - 18,
-                 "h/← l/→ k/↑ j/↓ navigate   Enter/Space launch",
+                 "h/← l/→ k/↑ j/↓   Enter/Space launch",
                  size=HINT, color=MUTED)
 
     def _render_play(self, ctx: RenderContext) -> None:
