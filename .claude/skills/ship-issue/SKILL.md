@@ -408,7 +408,7 @@ if failures: sys.exit(1)
 
 Tell the user to run it with:
 ```
-python3 test_pr<N>.py
+python3 ~/Documents/GitHub/PLEXI/test_pr<N>.py
 ```
 
 **Diff-review testing block** (used when install is not needed):
