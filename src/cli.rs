@@ -6,10 +6,6 @@ use std::process::Command;
 const APP_ID: &str = "plexi-run";
 const COMMANDS_FILE: &str = ".plexi/commands.toml";
 
-// Embed the Python SDK at compile time so `plexi app init` can write it out.
-// Source is now sdk/python/plexi_sdk/__init__.py (package layout); the file
-// written into scaffolded apps remains plexi_sdk.py for flat single-file import.
-const PYTHON_SDK: &str = include_str!("../sdk/python/plexi_sdk/__init__.py");
 
 /// Parsed .plexi/commands.toml
 #[derive(Deserialize)]
@@ -437,11 +433,21 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                 println!("\nNext steps:");
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
-                println!("  # then open a file in Plexi or run: plexi app launch {name}");
+                println!("  # then run: plexi open {name}");
             } else {
-                println!("\nNext steps:");
-                println!("  edit {}/main.py", app_dir.display());
-                println!("  # Plexi will pick it up on next launch (or reload)");
+                // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
+                // The host rescans the registry on cache miss, so newly scaffolded
+                // apps are immediately openable without restarting Plexi.
+                if std::env::var("PLEXI_SOCKET").is_ok() {
+                    log::info!("app_init: auto-opening '{name}' via socket");
+                    let exit_code = crate::cli::open_cli(name, &[], None, None);
+                    if exit_code != 0 {
+                        eprintln!("warning: app created but could not auto-open '{name}' (exit {exit_code}) — run: plexi open {name}");
+                    }
+                } else {
+                    println!("\nRun inside a Plexi pane to open it immediately:");
+                    println!("  plexi open {name}");
+                }
             }
             0
         }
@@ -457,17 +463,17 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\ntype = \"app\"\n\n[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
 
-    // plexi_sdk.py — embedded at compile time
-    std::fs::write(app_dir.join("plexi_sdk.py"), PYTHON_SDK)?;
-
-    // main.py
+    // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
+    // do NOT copy plexi_sdk.py alongside (the package uses relative imports
+    // that break when imported as a flat single file).
     let main_py = format!(
-        "#!/usr/bin/env python3\nimport sys, os\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nfrom plexi_sdk import App\n\napp = App()\n\n@app.on_render\ndef render(ctx):\n    ctx.rect(0, 0, ctx.width, ctx.height, fill=\"#1e1e2e\")\n    ctx.text(20, 20, \"{display}\", size=16, color=\"#cdd6f4\", bold=True)\n    ctx.text(20, 50, \"Edit main.py to build your app.\", size=13, color=\"#6c7086\")\n\n@app.on_key\ndef on_key(key, mods, emit):\n    pass  # handle key events here\n\napp.run()\n",
+        "#!/usr/bin/env python3\nfrom plexi_sdk import App, RenderContext\n\n\nclass {class_name}(App):\n    def on_render(self, ctx: RenderContext) -> None:\n        ctx.rect(0, 0, ctx.w, ctx.h, fill=\"#1e1e2e\")\n        ctx.text(20, 20, \"{display}\", size=16, color=\"#cdd6f4\", bold=True)\n        ctx.text(20, 50, \"Edit main.py to build your app.\", size=13, color=\"#6c7086\")\n\n    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:\n        pass\n\n\n{class_name}().run()\n",
+        class_name = to_struct_name(name),
         display = to_title_case(name),
     );
     let main_path = app_dir.join("main.py");
@@ -484,7 +490,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\ntype = \"app\"\n\n[app]\nid = \"{name}\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;

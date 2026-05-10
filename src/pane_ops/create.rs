@@ -489,6 +489,33 @@ impl PlexiApp {
             .and_then(|fp| self.windows[self.active_window].get_focused_pane_cwd(fp))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
+        // Re-attach a parked background app if one is waiting
+        if let Some((_park_context_id, mut parked)) = self.background_apps.remove(id) {
+            log::info!("re-attaching background app '{id}'");
+            parked.send_event(&crate::app_protocol::PlexiEvent::Resume);
+            let group = self.registry.group_for(id);
+            let hint = layout
+                .or_else(|| self.registry.layout_hint_for(id))
+                .or_else(|| {
+                    log::info!("app::{id}: no layout_hint — defaulting to overlay");
+                    Some("overlay".to_string())
+                });
+            self.open_process_app_pane(id, *parked, cwd, group, hint.as_deref());
+            return;
+        }
+
+        // Try registry first; if it returns None, rescan from disk (supports
+        // apps created mid-session via `plexi app init`) then fall through to Tier 4.
+        let registry_process = self.registry.launch_process(id, &cwd, args);
+        let registry_process = if registry_process.is_none() {
+            log::info!("launch_app_by_id: '{id}' not in startup registry — rescanning from disk");
+            self.registry = crate::app_registry::AppRegistry::load(&cwd);
+            self.registry.launch_process(id, &cwd, args)
+        } else {
+            registry_process
+        };
+        // Query group/hint after any registry reload so metadata reflects the
+        // actual registry that found the app.
         let group = self.registry.group_for(id);
         let hint = layout
             .or_else(|| self.registry.layout_hint_for(id))
@@ -496,17 +523,6 @@ impl PlexiApp {
                 log::info!("app::{id}: no layout_hint — defaulting to overlay");
                 Some("overlay".to_string())
             });
-
-        // Re-attach a parked background app if one is waiting
-        if let Some((_park_context_id, mut parked)) = self.background_apps.remove(id) {
-            log::info!("re-attaching background app '{id}'");
-            parked.send_event(&crate::app_protocol::PlexiEvent::Resume);
-            self.open_process_app_pane(id, *parked, cwd, group, hint.as_deref());
-            return;
-        }
-
-        // Try registry first; if it returns None, fall through to Tier 4.
-        let registry_process = self.registry.launch_process(id, &cwd, args);
         if let Some(process) = registry_process {
             if cli_binary_in_path(id) {
                 log::warn!(
