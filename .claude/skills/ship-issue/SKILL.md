@@ -551,7 +551,11 @@ Regardless of option chosen: post the failure comment on the issue (same format 
 
 After user confirms pass. Run without stopping.
 
-**CWD for all Phase 5 commands: the repo root** (`/Users/ianburke/Documents/GitHub/PLEXI`). Confirm with `pwd` if unsure.
+**CWD for all Phase 5 commands: the repo root.** Start Phase 5 by running this — no exceptions:
+```bash
+cd /Users/ianburke/Documents/GitHub/PLEXI
+```
+This is mandatory, not a suggestion. Shell CWD drifts during Phase 4 testing (feature worktree installs, log reads). A Phase 5 `git` or `just` command that runs from the wrong directory silently corrupts the alpha branch state.
 
 **0. Check PR state:**
 ```bash
