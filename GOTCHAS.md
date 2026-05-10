@@ -4,6 +4,13 @@
 
 ---
 
+## shell_join over-quotes single-arg terminal commands
+`shell_join(["echo hello"])` produces `'echo hello'` — zsh then tries to execute a command
+named `echo hello` (with the space), not `echo` with arg `hello`. Single-arg arrays are
+already shell expressions; only multi-arg arrays need joining/quoting.
+Use `cmd_from_args` (in `src/app/mod.rs`) everywhere a `-c` command string is built from
+the terminal args array: single arg → pass as-is, multiple args → `shell_join`.
+
 ## PR build GUI won't launch when PLEXI_SOCKET is set
 
 `open -a "Plexi PR<N>"` silently no-ops when run inside a Plexi pane because the binary detects `PLEXI_SOCKET`, prints "already running inside Plexi", and exits. Any test script that needs the PR build GUI to actually launch must either run outside Plexi (separate terminal) or `unset PLEXI_SOCKET` before the `open` call. This also affects `pkill`-and-relaunch loops — the relaunch silently fails while the script waits for a socket that never appears.
