@@ -57,7 +57,6 @@ pub enum Action {
     Navigate(Direction),
     ClosePane,
     NewTab,
-    SwitchContext(usize),
     NextTab,
     Quit,
     ToggleSidebar,

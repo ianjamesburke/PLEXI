@@ -2183,11 +2183,6 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
-                Action::SwitchContext(n) => {
-                    if n < self.router.len() {
-                        self.switch_workspace(n);
-                    }
-                }
                 Action::SwitchContextDirect(n) => {
                     log::info!("context jump: Cmd+Shift+{} → context {}", n + 1, n);
                     if n < self.router.len() {
