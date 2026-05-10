@@ -227,6 +227,11 @@ pub struct ProcessApp {
     /// When true, the click-to-reveal stderr overlay is displayed in the
     /// pane. Toggled by clicking a non-Running lifecycle pill.
     show_stderr_overlay: bool,
+    /// SystemTime when the app first entered a crash/hung/protocol-error state.
+    /// Stamped on first detection; cleared if state recovers to Running/Booting.
+    crashed_at: Option<std::time::SystemTime>,
+    /// Deadline for showing "✓ copied" overlay feedback. None = "C — copy report".
+    copied_feedback_until: Option<std::time::Instant>,
     /// When true, `PlexiEvent::MouseMove` is delivered to the app every frame
     /// that the pointer moves over the pane. Controlled by
     /// `DrawCommand::SetMouseTracking { enabled }`. Off by default to avoid
@@ -623,6 +628,8 @@ impl ProcessApp {
             pending_timers: HashMap::new(),
             lifecycle: lifecycle_tracker,
             show_stderr_overlay: false,
+            crashed_at: None,
+            copied_feedback_until: None,
             mouse_tracking_enabled: false,
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
@@ -741,6 +748,8 @@ impl ProcessApp {
             pending_timers: HashMap::new(),
             lifecycle,
             show_stderr_overlay: false,
+            crashed_at: None,
+            copied_feedback_until: None,
             mouse_tracking_enabled: false,
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
@@ -1525,6 +1534,13 @@ impl App for ProcessApp {
         //      mid-run shows the failure rather than a frozen last frame.
         //   3. The user clicked the lifecycle pill (show_stderr_overlay).
         let lifecycle_state = self.lifecycle.state();
+        if matches!(lifecycle_state, LifecycleState::Crashed | LifecycleState::Hung | LifecycleState::ProtocolError) {
+            if self.crashed_at.is_none() {
+                self.crashed_at = Some(std::time::SystemTime::now());
+            }
+        } else {
+            self.crashed_at = None;
+        }
         let stderr_overlay_active = self.show_stderr_overlay
             || self.frame.is_empty()
             || matches!(
@@ -1570,6 +1586,57 @@ impl App for ProcessApp {
                         break;
                     }
                 }
+
+                // C key: copy crash report to clipboard
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::C)) {
+                    let state_label = match lifecycle_state {
+                        LifecycleState::Crashed => "crashed",
+                        LifecycleState::Hung => "hung",
+                        LifecycleState::ProtocolError => "protocol error",
+                        _ => "error",
+                    };
+                    let time_str = self
+                        .crashed_at
+                        .map(|t| {
+                            chrono::DateTime::<chrono::Utc>::from(t)
+                                .format("%Y-%m-%dT%H:%M:%SZ")
+                                .to_string()
+                        })
+                        .unwrap_or_else(event_log::now_timestamp);
+                    let report = format!(
+                        "=== Plexi Crash Report ===\nApp:   {}\nState: {}\nTime:  {}\n\nRecent stderr ({} lines):\n{}",
+                        self.type_id,
+                        state_label,
+                        time_str,
+                        stderr_lines.len(),
+                        stderr_lines.iter().map(String::as_str).collect::<Vec<_>>().join("\n"),
+                    );
+                    ui.ctx().copy_text(report);
+                    self.copied_feedback_until =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    log::info!(
+                        "crash_overlay: copied report for '{}' ({} lines)",
+                        self.type_id,
+                        stderr_lines.len()
+                    );
+                }
+
+                // Hint label in bottom-left of overlay
+                let hint = if self
+                    .copied_feedback_until
+                    .map_or(false, |t| t > std::time::Instant::now())
+                {
+                    "✓ copied"
+                } else {
+                    "C — copy report"
+                };
+                ui.painter().text(
+                    egui::pos2(pane_rect.min.x + 16.0, pane_rect.max.y - 20.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    hint,
+                    egui::FontId::proportional(11.0),
+                    ctx.colors.text_dim,
+                );
             }
         }
 
@@ -1976,6 +2043,7 @@ mod clipboard_tests {
             workspace_root.clone(),
             HashSet::new(),
             false,
+            None,
         )
         .ok()
     }
@@ -2050,6 +2118,64 @@ mod clipboard_tests {
             "CopyToClipboard must emit OutputCommand::CopyText with the right text"
         );
     }
+
+    #[test]
+    fn crash_overlay_c_key_copies_report() {
+        use crate::testing::HostHarness;
+        use crate::pane::{AppRuntime, Pane};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+
+        // Force lifecycle to Crashed and inject known stderr lines.
+        {
+            let win = &mut h.app.windows[0];
+            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+                panic!("expected App pane");
+            };
+            let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+                panic!("expected Process runtime");
+            };
+            proc.lifecycle.on_process_exited(); // → Crashed
+            let mut buf = proc.recent_stderr.lock().unwrap();
+            buf.push_back("Traceback (most recent call last):".to_string());
+            buf.push_back("  File \"app.py\", line 42, in run".to_string());
+            buf.push_back("ZeroDivisionError: division by zero".to_string());
+        }
+
+        // One frame to trigger the overlay and stamp crashed_at.
+        h.run_frames(1);
+
+        // Send C — no modifier.
+        h.key(egui::Key::C, egui::Modifiers::NONE);
+
+        // Check the clipboard from the last frame's platform output.
+        let copy_cmd = h.last_platform_output.commands.iter().find_map(|cmd| {
+            if let egui::OutputCommand::CopyText(text) = cmd {
+                Some(text.clone())
+            } else {
+                None
+            }
+        });
+        let report = copy_cmd.expect("pressing C on crash overlay must write to clipboard");
+
+        assert!(
+            report.contains("=== Plexi Crash Report ==="),
+            "report must have header: {report}"
+        );
+        assert!(
+            report.contains("crashed"),
+            "report must name the state: {report}"
+        );
+        assert!(
+            report.contains("ZeroDivisionError"),
+            "report must contain stderr lines: {report}"
+        );
+        assert!(
+            report.contains("Traceback"),
+            "report must contain all stderr lines: {report}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2094,6 +2220,7 @@ mod text_input_tests {
             workspace_root.clone(),
             HashSet::new(),
             false,
+            None,
         )
         .ok()
     }
@@ -2348,6 +2475,7 @@ mod ai_tests {
             workspace_root.clone(),
             capabilities,
             false,
+            None,
         )
         .ok()
     }
@@ -2513,6 +2641,7 @@ mod midi_tests {
             workspace_root.clone(),
             capabilities,
             false,
+            None,
         )
         .ok()
     }
@@ -2684,6 +2813,7 @@ mod video_tests {
             workspace_root.clone(),
             capabilities,
             false,
+            None,
         )
         .ok()
     }
@@ -2886,6 +3016,7 @@ mod canvas_bindings_tests {
             workspace_root.clone(),
             capabilities,
             false,
+            None,
         )
         .ok()?;
         // Stamp a non-zero pane id so the AppCommand sender_pane_id is
@@ -3159,6 +3290,7 @@ mod reload_tests {
             workspace_root.clone(),
             HashSet::new(),
             false,
+            None,
         )
         .ok()
     }

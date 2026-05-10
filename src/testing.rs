@@ -77,6 +77,9 @@ pub struct HostHarness {
     next_pane_id: u64,
     /// IPC sender for injecting HostCommands into the pane_ipc channel.
     pub ipc_tx: std::sync::mpsc::Sender<HostCommand>,
+    /// Platform output from the most recently completed frame.
+    /// Contains clipboard writes, open URLs, etc.
+    pub last_platform_output: egui::PlatformOutput,
 }
 
 impl HostHarness {
@@ -91,6 +94,7 @@ impl HostHarness {
             inject_channels: HashMap::new(),
             next_pane_id: 100,
             ipc_tx,
+            last_platform_output: egui::PlatformOutput::default(),
         }
     }
 
@@ -136,10 +140,11 @@ impl HostHarness {
     /// Run one egui frame with the given raw input.
     pub fn frame(&mut self, input: RawInput) -> &mut Self {
         let app = &mut self.app;
-        let _ = self.ctx.run(input, |ctx| {
+        let full_output = self.ctx.run(input, |ctx| {
             use eframe::App;
             app.update(ctx, &mut eframe::Frame::_new_kittest());
         });
+        self.last_platform_output = full_output.platform_output;
         self
     }
 

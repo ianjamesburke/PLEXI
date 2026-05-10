@@ -466,6 +466,7 @@ mod integration_tests {
             workspace_root.clone(),
             HashSet::new(),
             false,
+            None,
         )
         .expect("launch crashing app");
 
