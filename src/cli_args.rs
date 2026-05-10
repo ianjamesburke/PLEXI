@@ -117,6 +117,7 @@ pub enum Commands {
         extra_args: Vec<String>,
     },
     /// Descriptor probe
+    #[command(hide = true)]
     Descriptor {
         #[command(subcommand)]
         cmd: DescriptorCmd,

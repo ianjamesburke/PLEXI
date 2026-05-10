@@ -1432,6 +1432,9 @@ pub fn notify_cli(
 
     // Fire-and-forget path — command is delivered, nothing to wait for.
     let Some(response_file) = response_file_str else {
+        if timeout_secs > 0 {
+            eprintln!("warning: --timeout has no effect without --choice (notification queued without auto-dismiss)");
+        }
         println!("notification queued");
         return 0;
     };
