@@ -907,6 +907,17 @@ impl PlexiApp {
                             .map(|ctx| ctx.name.clone())
                             .unwrap_or_default();
                         for (pane_id, pane) in &win.panes {
+                            // Only emit panes that have a corresponding tile in the tree.
+                            // win.panes and the tile tree can desync (e.g. from corrupted
+                            // restore state); omitting orphaned entries ensures every id
+                            // returned here is navigable via pane_focus. (#996)
+                            if win.tree.tiles.find_pane(pane_id).is_none() {
+                                log::warn!(
+                                    "pane_list: pane_id={pane_id} in win.panes but absent \
+                                     from tile tree — skipping (desync)"
+                                );
+                                continue;
+                            }
                             let (pane_type, title, cwd) = match pane {
                                 crate::pane::Pane::Terminal(t) => {
                                     let name = t.name.clone().unwrap_or_else(|| "terminal".to_string());
@@ -3496,6 +3507,58 @@ mod tests {
             "expected cross-window lookup to find the pane (error contains 'is not a terminal pane'), \
              got: {response}. If 'not found', the single-window regression is back."
         );
+        let _ = std::fs::remove_file(&resp_file);
+    }
+
+    /// Regression guard for #996: `pane list` must only return pane_ids that
+    /// have a corresponding tile in the tree, so every id it emits is navigable
+    /// via `pane_navigate`. When win.panes and the tile tree are out of sync,
+    /// the orphaned entry must be omitted rather than surfaced as a broken id.
+    #[test]
+    fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
+        let mut h = HostHarness::new();
+        let real_pane_id = h.add_test_pane();
+
+        // Artificially create the desync: insert a pane into win.panes without
+        // a corresponding tile in the tree. This simulates corrupted restore state
+        // or any create-path bug that leaves win.panes ahead of the tile tree.
+        let orphan_id: PaneId = 99991;
+        let (orphan_process, _tx) =
+            crate::process_app::ProcessApp::new_for_test(orphan_id, crate::app_permissions::AppPermissions::builtin());
+        let orphan_pane = crate::pane::Pane::App(Box::new(crate::pane::AppPane {
+            id: orphan_id,
+            runtime: crate::pane::AppRuntime::Process(Box::new(orphan_process)),
+            workspace_root: std::env::temp_dir(),
+            permissions: crate::app_permissions::AppPermissions::builtin(),
+            manifest_id: "orphan".to_string(),
+            name: "Orphan".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+        }));
+        h.app.windows[0].panes.insert(orphan_id, orphan_pane);
+        assert!(h.app.windows[0].tree.tiles.find_pane(&orphan_id).is_none(), "orphan has no tile");
+
+        let resp_file = std::env::temp_dir().join("plexi_test_pane_list_996.json");
+        h.inject_ipc(crate::app_protocol::HostCommand::ListPanes {
+            response_file: resp_file.to_string_lossy().to_string(),
+        });
+        h.app.drain_pane_cmd_channel();
+
+        let json = std::fs::read_to_string(&resp_file).expect("ListPanes must write response file");
+        let panes: Vec<serde_json::Value> = serde_json::from_str(&json).expect("valid JSON");
+        let ids: Vec<u64> = panes.iter().filter_map(|p| p["id"].as_u64()).collect();
+
+        assert!(ids.contains(&real_pane_id), "real pane must appear in pane_list");
+        assert!(!ids.contains(&orphan_id), "orphaned pane (no tile) must NOT appear in pane_list");
+
+        for id in &ids {
+            assert!(
+                h.app.pane_navigate(*id),
+                "pane_navigate must succeed for every id returned by pane_list (failed for {id})"
+            );
+        }
+
         let _ = std::fs::remove_file(&resp_file);
     }
 }
