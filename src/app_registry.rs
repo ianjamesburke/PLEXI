@@ -5,6 +5,7 @@
 //! 1. `~/.plexi-<channel>/apps/<id>/manifest.toml` — global apps (lowest priority)
 //! 2. `<workspace_root>/.plexi/apps/<id>/manifest.toml` — local app (overrides global)
 //! 3. `<workspace_root>/.plexi/agents/<id>/manifest.toml` — local agent (overrides above)
+//! 4. `<linked_path>/manifest.toml` — linked apps (`.plexi/links.toml`)
 //!
 //! `workspace_root` is the nearest ancestor of the current working directory that
 //! contains a `.plexi/` directory; if none is found, only global apps are loaded.
@@ -243,6 +244,8 @@ pub enum RegistrySource {
     LocalApp,
     /// `<workspace_root>/.plexi/agents/<id>/`
     LocalAgent,
+    /// Linked via `.plexi/links.toml` — absolute path registered by `plexi app link`
+    Linked,
 }
 
 impl RegistrySource {
@@ -251,6 +254,7 @@ impl RegistrySource {
             RegistrySource::Global => "global",
             RegistrySource::LocalApp => "local-app",
             RegistrySource::LocalAgent => "local-agent",
+            RegistrySource::Linked => "linked",
         }
     }
 }
@@ -318,6 +322,12 @@ impl AppRegistry {
             if local_agents.is_dir() {
                 registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
             }
+            // Linked apps — registered via `plexi app link`, stored as absolute paths in
+            // `.plexi/links.toml`. Scanned after local_apps/agents so agents still shadow.
+            let links_path = root.join(".plexi").join("links.toml");
+            if links_path.exists() {
+                registry.scan_links(&links_path);
+            }
         }
 
         registry
@@ -374,6 +384,63 @@ impl AppRegistry {
                 }
                 Err(e) => {
                     log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
+                }
+            }
+        }
+    }
+
+    /// Parse `.plexi/links.toml` and load each listed absolute path as a linked app.
+    /// links.toml format:
+    /// ```toml
+    /// links = ["/abs/path/to/app1", "/abs/path/to/app2"]
+    /// ```
+    fn scan_links(&mut self, links_path: &Path) {
+        let content = match std::fs::read_to_string(links_path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("AppRegistry: failed to read {:?}: {e}", links_path);
+                return;
+            }
+        };
+        #[derive(serde::Deserialize)]
+        struct LinksFile {
+            #[serde(default)]
+            links: Vec<String>,
+        }
+        let parsed: LinksFile = match toml::from_str(&content) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("AppRegistry: failed to parse {:?}: {e}", links_path);
+                return;
+            }
+        };
+        for raw_path in &parsed.links {
+            let app_dir = PathBuf::from(raw_path);
+            match self.load_app(&app_dir) {
+                Ok(installed) => {
+                    let id = installed.manifest.id.clone();
+                    if let Some(existing) = self.apps.get(&id) {
+                        log::debug!(
+                            "AppRegistry: linked entry '{}' (from {:?}) shadows {} entry from {:?}",
+                            id,
+                            app_dir,
+                            existing.source.label(),
+                            existing.bin_path.parent().unwrap_or(&existing.bin_path),
+                        );
+                    } else {
+                        log::debug!(
+                            "AppRegistry: loaded linked entry '{}' from {:?}",
+                            id,
+                            app_dir,
+                        );
+                    }
+                    for ext in &installed.manifest.capabilities.file_types {
+                        self.extension_map.insert(ext.to_lowercase(), id.clone());
+                    }
+                    self.apps.insert(id, InstalledApp { source: RegistrySource::Linked, ..installed });
+                }
+                Err(e) => {
+                    log::warn!("AppRegistry: skipping linked path {:?}: {e}", app_dir);
                 }
             }
         }
@@ -983,6 +1050,48 @@ notification_scope = \"global\"
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("stand-up");
         assert_eq!(scope, crate::app_protocol::NotifyScope::Global);
+    }
+
+    #[test]
+    fn linked_app_appears_in_registry() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        // Create workspace .plexi dir
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        // Create app directory outside .plexi/ — write_app creates <parent>/<id>/ subdir
+        let apps_parent = workspace.path().join("apps");
+        fs::create_dir_all(&apps_parent).unwrap();
+        write_app(&apps_parent, "linked-app", "Linked App");
+        let app_dir = apps_parent.join("linked-app");
+        // Write links.toml
+        let links_toml = format!("links = [{:?}]\n", app_dir.to_string_lossy());
+        fs::write(workspace.path().join(".plexi").join("links.toml"), links_toml).unwrap();
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let app = registry.get("linked-app").expect("linked app must appear in registry");
+        assert_eq!(app.source, RegistrySource::Linked);
+    }
+
+    #[test]
+    fn linked_app_shadows_global_with_same_id() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        // Global install of "my-app"
+        write_app(global.path(), "my-app", "Global My App");
+        // Workspace .plexi dir
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        // Linked version of same id — write_app creates <parent>/<id>/ subdir
+        let apps_parent = workspace.path().join("apps");
+        fs::create_dir_all(&apps_parent).unwrap();
+        write_app(&apps_parent, "my-app", "Linked My App");
+        let linked_app = apps_parent.join("my-app");
+        let links_toml = format!("links = [{:?}]\n", linked_app.to_string_lossy());
+        fs::write(workspace.path().join(".plexi").join("links.toml"), links_toml).unwrap();
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let app = registry.get("my-app").expect("my-app must be in registry");
+        assert_eq!(app.source, RegistrySource::Linked, "linked must shadow global");
+        assert_eq!(app.manifest.name, "Linked My App");
     }
 
     #[test]
