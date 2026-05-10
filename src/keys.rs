@@ -8,8 +8,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+N                       — new window to the right on the current grid row
 // Cmd+Shift+N                 — new context (sidebar item)
 // Cmd+W                       — close pane
-// Cmd+H/J/K/L                 — navigate panes
-// Cmd+Shift+H/J/K/L           — navigate to adjacent window (spatial grid)
+// Cmd+H/J/K/L                 — navigate panes (falls through to adjacent window at boundary)
 // Cmd+Ctrl+H/J/K/L            — swap focused pane with neighbor in direction
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
@@ -100,12 +99,6 @@ pub enum Action {
     /// Create a new context (sidebar item) and immediately open the rename modal.
     /// Bound to Cmd+Shift+N.
     NewContext,
-    /// Navigate to the adjacent window in the spatial grid. Bound to
-    /// Cmd+Shift+H/J/K/L (left/down/up/right).
-    PageLeft,
-    PageDown,
-    PageUp,
-    PageRight,
     /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
@@ -130,10 +123,6 @@ pub struct KeyBindings {
     pub split_vertical: (egui::Modifiers, egui::Key),
     pub split_right: (egui::Modifiers, egui::Key),
     pub split_down: (egui::Modifiers, egui::Key),
-    pub page_left: (egui::Modifiers, egui::Key),
-    pub page_down: (egui::Modifiers, egui::Key),
-    pub page_up: (egui::Modifiers, egui::Key),
-    pub page_right: (egui::Modifiers, egui::Key),
     pub swap_pane_left: (egui::Modifiers, egui::Key),
     pub swap_pane_down: (egui::Modifiers, egui::Key),
     pub swap_pane_up: (egui::Modifiers, egui::Key),
@@ -187,10 +176,6 @@ impl Default for KeyBindings {
             split_vertical:            (cmd_shift(), egui::Key::D),
             split_right:               (cmd(),       egui::Key::Backslash),
             split_down:                (cmd_shift(), egui::Key::Backslash),
-            page_left:                 (cmd_shift(), egui::Key::H),
-            page_down:                 (cmd_shift(), egui::Key::J),
-            page_up:                   (cmd_shift(), egui::Key::K),
-            page_right:                (cmd_shift(), egui::Key::L),
             swap_pane_left:            (cmd_ctrl(),  egui::Key::H),
             swap_pane_down:            (cmd_ctrl(),  egui::Key::J),
             swap_pane_up:              (cmd_ctrl(),  egui::Key::K),
@@ -334,10 +319,6 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(split_vertical, "split_vertical");
     apply_override!(split_right, "split_right");
     apply_override!(split_down, "split_down");
-    apply_override!(page_left, "page_left");
-    apply_override!(page_down, "page_down");
-    apply_override!(page_up, "page_up");
-    apply_override!(page_right, "page_right");
     apply_override!(swap_pane_left, "swap_pane_left");
     apply_override!(swap_pane_down, "swap_pane_down");
     apply_override!(swap_pane_up, "swap_pane_up");
@@ -378,10 +359,6 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("split_vertical",            bindings.split_vertical),
         ("split_right",               bindings.split_right),
         ("split_down",                bindings.split_down),
-        ("page_left",                 bindings.page_left),
-        ("page_down",                 bindings.page_down),
-        ("page_up",                   bindings.page_up),
-        ("page_right",                bindings.page_right),
         ("swap_pane_left",            bindings.swap_pane_left),
         ("swap_pane_down",            bindings.swap_pane_down),
         ("swap_pane_up",              bindings.swap_pane_up),
@@ -464,20 +441,6 @@ pub fn poll_actions(
             actions.push(Action::SplitVertical);
         } else if input.consume_key(bindings.split_horizontal.0, bindings.split_horizontal.1) {
             actions.push(Action::SplitHorizontal);
-        }
-
-        // Page navigation — check before plain pane navigation so shifted variants match first.
-        if input.consume_key(bindings.page_left.0, bindings.page_left.1) {
-            actions.push(Action::PageLeft);
-        }
-        if input.consume_key(bindings.page_down.0, bindings.page_down.1) {
-            actions.push(Action::PageDown);
-        }
-        if input.consume_key(bindings.page_up.0, bindings.page_up.1) {
-            actions.push(Action::PageUp);
-        }
-        if input.consume_key(bindings.page_right.0, bindings.page_right.1) {
-            actions.push(Action::PageRight);
         }
 
         // Pane swap — check before plain pane navigation.

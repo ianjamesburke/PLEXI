@@ -661,6 +661,15 @@ impl PlexiApp {
                         }
                     }
                 }
+            } else {
+                let (dx, dy) = match dir {
+                    Direction::Left  => (-1,  0),
+                    Direction::Right => ( 1,  0),
+                    Direction::Up    => ( 0, -1),
+                    Direction::Down  => ( 0,  1),
+                };
+                log::info!("navigate({:?}): at pane boundary, falling through to page navigation", dir);
+                self.navigate_page(dx, dy);
             }
         }
     }
