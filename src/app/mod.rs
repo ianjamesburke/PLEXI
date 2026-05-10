@@ -171,6 +171,7 @@ pub struct PlexiApp {
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
+    pub(crate) key_bindings: crate::keys::KeyBindings,
     pub(crate) voice_config: crate::config::VoiceConfig,
     pub(crate) renaming_window: Option<usize>,
     pub(crate) rename_buffer: String,
@@ -352,6 +353,7 @@ impl PlexiApp {
         // project fields preserve the global value.
         let active_workspace = config::active_workspace_root();
         let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
+        let key_bindings = crate::keys::build_key_bindings(config.keybindings.as_ref());
         let voice_config = config::VoiceConfig::load_with_workspace(active_workspace.as_deref());
         log::info!(
             "voice: config loaded at startup — enabled={}",
@@ -593,6 +595,7 @@ impl PlexiApp {
                     quit_press_count: 0,
                     quit_last_press: None,
                     config: config.clone(),
+                    key_bindings: key_bindings.clone(),
                     voice_config: voice_config.clone(),
                     pending_close: false,
                     frame_tick: frame_tick.clone(),
@@ -684,6 +687,7 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             config,
+            key_bindings,
             voice_config,
             pending_close: false,
             frame_tick,
@@ -739,6 +743,7 @@ impl PlexiApp {
         frame_tick: crate::logging::FrameTick,
     ) -> (Self, std::sync::mpsc::Sender<crate::app_protocol::HostCommand>) {
         let config = config::PlexiConfig::default();
+        let key_bindings = crate::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         configure_egui_ctx(&ctx, &colors);
@@ -784,6 +789,7 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             config,
+            key_bindings,
             voice_config: config::VoiceConfig::default(),
             pending_close: false,
             frame_tick,
@@ -2055,7 +2061,7 @@ impl eframe::App for PlexiApp {
 
         // Handle keyboard shortcuts
         let modal_open = self.show_notification_modal;
-        for action in keys::poll_actions(ctx, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
+        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
@@ -2980,6 +2986,8 @@ impl PlexiApp {
 
         // Replace the cached config
         self.config = fresh;
+        self.key_bindings = crate::keys::build_key_bindings(self.config.keybindings.as_ref());
+        log::info!("keybindings: rebuilt after config reload");
 
         // Voice config
         let fresh_voice =
