@@ -89,7 +89,7 @@ These are JSON objects the host writes to the app's stdin.
 | `text_submitted` | User pressed Enter in a `text_input` field. Fields: `id`, `value`. | **stable** |
 | `paste` | Clipboard paste forwarded. Fields: `text`. | **stable** |
 | `ai_response` | Response to `ai_query`. Fields: `request_id`, `content?`, `tokens_in`, `tokens_out`, `error?`. | **stable** |
-| `tool_call` | Host calls a tool exposed via `expose_tools`. Fields: `call_id`, `tool_name`, `arguments`. | **stable** |
+| `tool_call` | Host calls a tool exposed via `expose_tools`. Fields: `call_id`, `name`, `input_json`. | **stable** |
 | `mcp_tool_call` | External MCP client called a declared tool. Fields: `call_id`, `tool_name`, `arguments`. | **stable** |
 | `audio_devices_listed` | Response to `list_audio_devices`. Fields: `request_id`, `inputs`, `outputs`, `error?`. | **stable** |
 | `audio_capture_started` | Capture opened successfully. Fields: `pipe_id`, `sample_rate`, `channels`, `buffer_size`. | **stable** |
@@ -102,11 +102,11 @@ These are JSON objects the host writes to the app's stdin.
 | `video_open_error` | Video decoder failed. Fields: `request_id`, `error`. | **pre-v1** |
 | `linked_terminal_ready` | Linked terminal opened. Fields: `request_id`, `terminal_pane_id`. | **stable** |
 | `command_preview` | Response to `request_command_preview`. Fields: `request_id`, `command`, `would_run_in_cwd`. | **stable** |
-| `nav_back` | Escape pressed while nav stack depth > 0. No fields. | **stable** |
-| `file_picked` | User selected file(s). Fields: `paths` (array). | **stable** |
-| `file_pick_cancelled` | File picker dismissed or capability denied. No fields. | **stable** |
-| `stream_chunk` | Stdout/stderr bytes from `stream_process`. Fields: `correlation_id`, `bytes` (array of ints 0–255). | **stable** |
-| `stream_end` | Child process exited or was cancelled. Fields: `correlation_id`. | **stable** |
+| `nav_back` | Escape pressed while nav stack depth > 0. Fields: `view_id`. | **stable** |
+| `file_picked` | User selected file(s). Fields: `request_id`, `paths` (array). | **stable** |
+| `file_pick_cancelled` | File picker dismissed or capability denied. Fields: `request_id`. | **stable** |
+| `stream_chunk` | Stdout/stderr bytes from `stream_process`. Fields: `correlation_id`, `channel`, `bytes` (array of ints 0–255). Delivered at up to ~30 Hz. | **stable** |
+| `stream_end` | Child process exited or was cancelled. Fields: `correlation_id`, `exit_code`. | **stable** |
 | `scroll_offset` | Scroll offset changed for a `begin_scroll` region. Fields: `id`, `offset_y`. | **stable** |
 
 ---
@@ -154,13 +154,13 @@ Processed immediately by host routing; not queued to the frame buffer.
 | `save_app_state` | `payload` | — | Persist arbitrary JSON state. Host writes to workspace or global state file. | **stable** |
 | `run_get` | `intent`, `payload` | — | Request a run. Surfaces in the Run palette (Cmd+R). | **stable** |
 | `run_complete` | `run_id`, `result` | — | Signal a run the app owns has finished. | **stable** |
-| `notify` | `level`, `title`, `body`, `priority` (required), `kind?`, `options?`, `input_prompt?`, `required?`, `notify_id?`, `image_inline?`, `image_pipe_id?`, `timeout_secs?`, `on_dismiss?` | — | Post a notification. `kind`: `"message"` (default), `"choice"`, or `"input"`. `priority` typical values: 0 (background), 50 (normal), 100 (important), 200 (critical). | **stable** |
+| `notify` | `level`, `title`, `body`, `priority` (required), `kind?`, `options?`, `actions?`, `input_prompt?`, `required?`, `notify_id?`, `image_inline?`, `image_pipe_id?`, `timeout_secs?`, `on_dismiss?` | — | Post a notification. `kind`: `"message"` (default), `"choice"`, or `"input"`. `priority` typical values: 0 (background), 50 (normal), 100 (important), 200 (critical). | **stable** |
 | `pipe_open` | `pipe_id`, `mode` (`"json"` \| `"binary"`), `direction` (`"in"` \| `"out"` \| `"duplex"`) | `pipe.open` | Open a typed pipe. | **stable** |
 | `pipe_open_directed` | `pipe_id`, `target_pane_id` | `pipe.open` | Open a directed JSON pipe to a specific pane. Always duplex/JSON. | **stable** |
 | `pipe_send` | `pipe_id`, `payload` | — | Send a JSON payload on a pipe. | **stable** |
 | `status_summary` | `text` | — | Update the status text shown in the pane chrome. | **stable** |
 | `spawn_app` | `type_id`, `layout?`, `args?` | `spawn.app` | **Deprecated.** Use `spawn_pane` instead. Host replies with `app_spawned`. | **deprecated** |
-| `spawn_pane` | `type_id`, `layout?` (`"split_v"` \| `"split_h"` \| `"split_above"` \| `"split_left"` \| `"overlay"`), `args?`, `pipe_id?`, `from_pane_id?`, `request_id?`, `ephemeral?` | `panes.spawn` | Unified pane spawn. Host replies with `pane_spawned` or `pane_spawn_error`. | **stable** |
+| `spawn_pane` | `type_id`, `layout?` (`"split_v"` \| `"split_h"` \| `"split_above"` \| `"split_left"` \| `"overlay"`), `args?`, `pipe_id?`, `from_pane_id?`, `request_id?`, `response_file?`, `ephemeral?` | `panes.spawn` | Unified pane spawn. Host replies with `pane_spawned` or `pane_spawn_error`. | **stable** |
 | `set_pane_title` | `pane_id`, `name` | — | Set the title on a terminal pane's tab. | **stable** |
 | `list_panes` | `response_file` | — | List all open panes. Host writes JSON array to `response_file`. | **stable** |
 | `get_pane_info` | `pane_id`, `response_file` | — | Get info for a specific pane. | **stable** |
