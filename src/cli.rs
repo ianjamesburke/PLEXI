@@ -3305,7 +3305,13 @@ pub fn context_current_cli() -> i32 {
         "context_id": id_num,
         "context_name": context_name,
     });
-    println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
+    match serde_json::to_string_pretty(&json) {
+        Ok(s) => println!("{s}"),
+        Err(e) => {
+            eprintln!("error: failed to serialize context JSON: {e}");
+            return 1;
+        }
+    }
     0
 }
 
