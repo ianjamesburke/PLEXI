@@ -13,6 +13,7 @@ Result view: Shows tool call output inline. Escape or Back returns to list.
 """
 
 import json
+import select
 import subprocess
 import sys
 import threading
@@ -53,10 +54,18 @@ class McpClient:
             self._cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
         self._stdin = self._proc.stdin
         self._stdout = self._proc.stdout
+        # Drain stderr in background so it doesn't block; last line kept for diagnostics.
+        self._last_stderr: str = ""
+        stderr_pipe = self._proc.stderr
+        def _drain_stderr() -> None:
+            assert stderr_pipe is not None
+            for line in stderr_pipe:
+                self._last_stderr = line.decode(errors="replace").rstrip()
+        threading.Thread(target=_drain_stderr, daemon=True).start()
 
     def _send(self, msg: dict) -> None:
         assert self._stdin is not None
@@ -65,9 +74,12 @@ class McpClient:
             self._stdin.write(line.encode())
             self._stdin.flush()
 
-    def _recv(self) -> dict:
+    def _recv(self, timeout: float = 30.0) -> dict:
         assert self._stdout is not None
         while True:
+            ready, _, _ = select.select([self._stdout], [], [], timeout)
+            if not ready:
+                raise TimeoutError(f"MCP server did not respond within {timeout:.0f}s")
             raw = self._stdout.readline()
             if not raw:
                 raise EOFError("MCP server closed stdout")
@@ -109,6 +121,9 @@ class McpClient:
         if self._proc is not None:
             try:
                 self._proc.terminate()
+                self._proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
             except Exception:
                 pass
 
@@ -147,7 +162,12 @@ class McpRendererApp(App):
 
         ctx.status_summary("mcp-renderer: connecting…")
         self.emit.info(f"mcp-renderer: spawning {argv!r}")
-        threading.Thread(target=self._connect, args=(argv,), daemon=True).start()
+        try:
+            threading.Thread(target=self._connect, args=(argv,), daemon=True).start()
+        except RuntimeError as e:
+            self._error = f"Failed to start connection thread: {e}"
+            self._view = "error"
+            self.emit.warn(f"mcp-renderer: thread spawn failed: {e}")
 
     def _connect(self, cmd: list[str]) -> None:
         try:
