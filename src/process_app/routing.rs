@@ -1494,9 +1494,9 @@ impl ProcessApp {
                 let filename = format!("{}.json", self.type_id);
                 let workspace_toml = self.workspace_root.join(".plexi").join("workspace.toml");
                 let state_path = if workspace_toml.exists() {
-                    self.workspace_root.join(".plexi").join("app_state").join(&filename)
+                    self.workspace_root.join(".plexi").join("app_states").join(&filename)
                 } else {
-                    crate::config::config_dir().join("app_state").join(&filename)
+                    crate::config::config_dir().join("app_states").join(&filename)
                 };
                 if let Some(dir) = state_path.parent() {
                     if let Err(e) = std::fs::create_dir_all(dir) {

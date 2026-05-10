@@ -939,7 +939,7 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
                 return None;
             }
         };
-        let dest = crate::config::config_dir().join("app_state").join(format!("{id}.json"));
+        let dest = crate::config::config_dir().join("app_states").join(format!("{id}.json"));
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
