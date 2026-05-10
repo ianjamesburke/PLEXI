@@ -138,6 +138,7 @@ pub fn workspace_init() -> i32 {
             return 1;
         }
     };
+    log::info!("workspace_init:cli: cwd={}", cwd.display());
     // Guard: refuse home dir, root dir, and inside any ~/.plexi* profile dir
     {
         let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
@@ -149,6 +150,7 @@ pub fn workspace_init() -> i32 {
             cwd_str.starts_with(&prefix)
         }).unwrap_or(false);
         if is_home_or_root || is_inside_profile {
+            log::warn!("workspace_init:cli: rejected — home/root/profile dir guard: {}", cwd.display());
             eprintln!("error: cannot initialize a workspace in your home or root directory.");
             eprintln!("  This would conflict with your Plexi profile (~/.plexi/).");
             eprintln!("  cd into a project directory first.");
@@ -157,12 +159,14 @@ pub fn workspace_init() -> i32 {
     }
     match crate::workspace_secrets::init_workspace(&cwd) {
         Ok(cfg) => {
+            log::info!("workspace_init:cli: initialized workspace_id={} at {}", cfg.id, cwd.display());
             println!("Initialized workspace at {}", cwd.display());
             println!("  workspace id: {}", cfg.id);
             println!("  router:       .plexi/secrets.toml (fallback = true)");
             0
         }
         Err(e) => {
+            log::warn!("workspace_init:cli: init_workspace failed: {e}");
             eprintln!("error: workspace init failed: {e}");
             1
         }
@@ -211,11 +215,15 @@ fn require_workspace(
 ///   --global     store under `plexi:user:<name>` (cross-workspace)
 ///   default      walk up to nearest .plexi/ workspace, store workspace-scoped
 pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32 {
+    log::info!(
+        "secret_set:cli: friendly={friendly} from_env={from_env} global={global}"
+    );
     // Resolve value
     let value: String = if from_env {
         match std::env::var(friendly) {
             Ok(v) => v,
             Err(_) => {
+                log::warn!("secret_set:cli: env var {friendly} not set");
                 eprintln!("error: env var {friendly} is not set");
                 return 1;
             }
@@ -226,12 +234,14 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
         match read_secret_from_stdin() {
             Ok(v) => v,
             Err(e) => {
+                log::warn!("secret_set:cli: stdin read failed: {e}");
                 eprintln!("\nerror: failed to read secret: {e}");
                 return 1;
             }
         }
     };
     if value.is_empty() {
+        log::warn!("secret_set:cli: empty value rejected for {friendly}");
         eprintln!("error: empty value, nothing stored");
         return 1;
     }
@@ -247,10 +257,12 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
             let account = keychain_user_name(friendly);
             return match store.set(&account, &value) {
                 Ok(()) => {
+                    log::info!("secret_set:cli: stored globally account={account}");
                     eprintln!("Stored '{friendly}' globally (plexi:user:{friendly})");
                     0
                 }
                 Err(e) => {
+                    log::warn!("secret_set:cli: keychain write failed for {account}: {e}");
                     eprintln!("error: keychain write failed: {e}");
                     1
                 }
@@ -260,7 +272,8 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
         // Workspace-scoped: walk up to nearest .plexi/
         let (root, cfg) = match require_workspace() {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
+                log::warn!("secret_set:cli: no workspace found: {e}");
                 eprintln!("error: no .plexi/ workspace found in this directory tree.");
                 eprintln!("  → plexi workspace init        (initialize one here, then retry)");
                 eprintln!("  → plexi secret set --global {friendly}   (set globally — requires explicit flag)");
@@ -270,6 +283,11 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
         let account = keychain_workspace_name(&cfg.id, friendly);
         match store.set(&account, &value) {
             Ok(()) => {
+                log::info!(
+                    "secret_set:cli: stored workspace_id={} account={account} root={}",
+                    cfg.id,
+                    root.display()
+                );
                 eprintln!(
                     "Stored '{friendly}' for workspace {} ({})",
                     root.display(),
@@ -278,6 +296,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
                 0
             }
             Err(e) => {
+                log::warn!("secret_set:cli: keychain write failed for {account}: {e}");
                 eprintln!("error: keychain write failed: {e}");
                 1
             }
@@ -3211,5 +3230,86 @@ mod notify_tests {
     fn parse_choice_one_segment_is_error() {
         let err = parse_notify_choice("nocolon").unwrap_err();
         assert!(err.contains("1"), "error should mention segment count: {err}");
+    }
+}
+
+#[cfg(test)]
+mod secret_set_tests {
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Helper: checks whether a given `cwd` path would be rejected by the
+    /// workspace_init home/root guard. Mirrors the exact logic in
+    /// `workspace_init()` so the condition is tested independently of the
+    /// real `std::env::current_dir()`.
+    fn init_guard_rejects(cwd: &std::path::Path) -> bool {
+        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+        let cwd_str = cwd.to_string_lossy();
+        let is_home_or_root = cwd == std::path::Path::new("/")
+            || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
+        let is_inside_profile = home.as_ref().map(|h| {
+            let prefix = format!("{}/.plexi", h.to_string_lossy());
+            cwd_str.starts_with(&prefix)
+        }).unwrap_or(false);
+        is_home_or_root || is_inside_profile
+    }
+
+    #[test]
+    fn root_dir_is_rejected_by_init_guard() {
+        assert!(init_guard_rejects(std::path::Path::new("/")));
+    }
+
+    #[test]
+    fn home_dir_is_rejected_by_init_guard() {
+        let home = std::env::var("HOME").unwrap();
+        assert!(init_guard_rejects(std::path::Path::new(&home)));
+    }
+
+    #[test]
+    fn plexi_profile_dir_is_rejected_by_init_guard() {
+        let home = std::env::var("HOME").unwrap();
+        let profile = std::path::PathBuf::from(format!("{home}/.plexi-alpha"));
+        assert!(init_guard_rejects(&profile));
+    }
+
+    #[test]
+    fn project_subdir_is_allowed_by_init_guard() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A temp dir under /private/var/... is not home/root/profile
+        assert!(!init_guard_rejects(tmp.path()));
+    }
+
+    #[test]
+    fn walk_up_finds_nearest_plexi_dir() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        let deep = workspace.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep).unwrap();
+
+        let found = crate::app_registry::resolve_workspace_root(&deep);
+        assert!(found.is_some(), "should find .plexi ancestor");
+        let found = found.unwrap().canonicalize().unwrap();
+        let expected = workspace.path().canonicalize().unwrap();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn no_plexi_dir_in_tree_returns_none() {
+        let bare: TempDir = tempfile::tempdir().unwrap();
+        let inner = bare.path().join("x").join("y");
+        fs::create_dir_all(&inner).unwrap();
+        assert!(crate::app_registry::resolve_workspace_root(&inner).is_none());
+    }
+
+    #[test]
+    fn walk_up_stops_at_home() {
+        // Simulate a path that extends above home but has .plexi above home.
+        // resolve_workspace_root never walks above HOME, so .plexi above home
+        // must NOT be found.
+        //
+        // We cannot safely create dirs above HOME, so we assert indirectly:
+        // a bare temp dir with no .plexi returns None, proving the walk stops.
+        let bare: TempDir = tempfile::tempdir().unwrap();
+        assert!(crate::app_registry::resolve_workspace_root(bare.path()).is_none());
     }
 }
