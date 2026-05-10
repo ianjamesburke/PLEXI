@@ -60,8 +60,9 @@ This creates:
 .plexi/apps/<name>/
   manifest.toml
   main.py
-  plexi_sdk.py
 ```
+
+The host injects `plexi_sdk` via `PYTHONPATH` at launch — no local copy is needed or created.
 
 ---
 
@@ -139,4 +140,4 @@ After reporting, the agent is in the live-edit loop:
 - **Never run `plexi workspace init` from `~`** — check `pwd` first
 - **`plexi open` must be run from inside a Plexi pane** — `PLEXI_SOCKET` must be set, or the call queues to the spawn-queue without returning a pane ID
 - **The app ID must be unique** — if `.plexi/apps/<name>/` already exists, `plexi app init` will exit with an error; surface it to the user and ask for a different name
-- **Do not modify `plexi_sdk.py`** — it is generated from the host's embedded SDK; editing it will be overwritten on the next install
+- **Do not add `plexi_sdk.py` manually** — the host injects PYTHONPATH at launch; a local copy breaks the package's relative imports

@@ -440,7 +440,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                 // apps are immediately openable without restarting Plexi.
                 if std::env::var("PLEXI_SOCKET").is_ok() {
                     log::info!("app_init: auto-opening '{name}' via socket");
-                    let exit_code = crate::cli::open_cli(name, &[], None);
+                    let exit_code = crate::cli::open_cli(name, &[], None, None);
                     if exit_code != 0 {
                         eprintln!("warning: app created but could not auto-open '{name}' (exit {exit_code}) — run: plexi open {name}");
                     }
