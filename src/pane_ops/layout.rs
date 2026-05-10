@@ -233,15 +233,20 @@ impl PlexiApp {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            // When staying alive (not ephemeral), append `; exec $SHELL -i -l` so the pane
+            // When staying alive (not ephemeral), append `; exec <shell> -i -l` so the pane
             // drops into an interactive shell after the command completes instead of dying.
+            // Use the absolute shell path from settings (already resolved) rather than $SHELL
+            // to guarantee the right shell. Trim trailing semicolons to avoid `;;` syntax errors.
             // `-i` sources ~/.zshrc so PATH additions (Homebrew, nvm, etc.) are
             // visible. Fish uses different flags; for other POSIX shells we use
             // the safe no-interactive fallback.
             let effective_cmd: String = if !close_on_exit {
+                let shell_path = &settings.shell;
+                let trimmed = cmd.trim().trim_end_matches([';', ' ']);
+                let sep = if trimmed.is_empty() { "" } else { "; " };
                 match shell_name {
-                    "fish" => format!("{cmd}; exec $SHELL --login -i"),
-                    _ => format!("{cmd}; exec $SHELL -i -l"),
+                    "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
+                    _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
                 }
             } else {
                 cmd.to_string()
