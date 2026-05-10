@@ -228,18 +228,28 @@ impl PlexiApp {
         let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors);
         if let Some(cmd) = initial_cmd {
-            log::info!("split_focused: initial_cmd={cmd:?}");
+            log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             let shell_name = std::path::Path::new(&settings.shell)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
+            // When staying alive (not ephemeral), append `; exec $SHELL -i -l` so the pane
+            // drops into an interactive shell after the command completes instead of dying.
             // `-i` sources ~/.zshrc so PATH additions (Homebrew, nvm, etc.) are
             // visible. Fish uses different flags; for other POSIX shells we use
             // the safe no-interactive fallback.
+            let effective_cmd: String = if !close_on_exit {
+                match shell_name {
+                    "fish" => format!("{cmd}; exec $SHELL --login -i"),
+                    _ => format!("{cmd}; exec $SHELL -i -l"),
+                }
+            } else {
+                cmd.to_string()
+            };
             settings.args = match shell_name {
-                "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), cmd.to_string()],
-                "fish" => vec!["--login".to_string(), "-c".to_string(), cmd.to_string()],
-                _ => vec!["-l".to_string(), "-c".to_string(), cmd.to_string()],
+                "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
+                "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
+                _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
             };
         }
         let Some(mut pane) = TerminalPane::new(
