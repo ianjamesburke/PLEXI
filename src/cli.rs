@@ -472,7 +472,8 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     // do NOT copy plexi_sdk.py alongside (the package uses relative imports
     // that break when imported as a flat single file).
     let main_py = format!(
-        "#!/usr/bin/env python3\nfrom plexi_sdk import App\n\napp = App()\n\n@app.on_render\ndef render(ctx):\n    ctx.rect(0, 0, ctx.width, ctx.height, fill=\"#1e1e2e\")\n    ctx.text(20, 20, \"{display}\", size=16, color=\"#cdd6f4\", bold=True)\n    ctx.text(20, 50, \"Edit main.py to build your app.\", size=13, color=\"#6c7086\")\n\n@app.on_key\ndef on_key(key, mods, emit):\n    pass\n\napp.run()\n",
+        "#!/usr/bin/env python3\nfrom plexi_sdk import App, RenderContext\n\n\nclass {class_name}(App):\n    def on_render(self, ctx: RenderContext) -> None:\n        ctx.rect(0, 0, ctx.width, ctx.height, fill=\"#1e1e2e\")\n        ctx.text(20, 20, \"{display}\", size=16, color=\"#cdd6f4\", bold=True)\n        ctx.text(20, 50, \"Edit main.py to build your app.\", size=13, color=\"#6c7086\")\n\n    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:\n        pass\n\n\n{class_name}().run()\n",
+        class_name = to_struct_name(name),
         display = to_title_case(name),
     );
     let main_path = app_dir.join("main.py");
