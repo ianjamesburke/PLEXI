@@ -1,7 +1,7 @@
 ---
 name: create-app
 description: Scaffold a new Plexi app, install it, open it in a pane, and activate hot reload — all in one command. Use when the user says "build me an app", "create a Plexi app", or "make an app that does X".
-skill_version: "3.5.89"
+skill_version: "3.5.101"
 source: local
 date_added: "2026-05-09"
 ---
