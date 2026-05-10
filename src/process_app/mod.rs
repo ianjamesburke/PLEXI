@@ -334,7 +334,30 @@ impl ProcessApp {
         // legitimately needs. Strips OPENROUTER_API_KEY and every other
         // host credential — apps must use the iq.query / llm broker, never direct API access.
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
-        let mut cmd = std::process::Command::new(bin_path);
+
+        // Resolve the bundled Python interpreter path — used both to build the
+        // python3 command for .py entries and to prepend to PATH for PYTHONPATH setup.
+        let bundle_contents = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+        let bundled_py_bin = bundle_contents.as_ref()
+            .map(|c| c.join("Resources").join("assets").join("python").join("bin"));
+
+        // .py entries are launched via python3 directly — no shebang or executable bit required.
+        let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
+        let mut cmd = if is_python {
+            let py_exe = bundled_py_bin.as_ref()
+                .map(|b| b.join("python3"))
+                .filter(|p| p.exists())
+                .map(|p| std::ffi::OsString::from(p))
+                .unwrap_or_else(|| std::ffi::OsString::from("python3"));
+            log::info!("ProcessApp[{type_id}]: launching .py entry via {:?}", py_exe);
+            let mut c = std::process::Command::new(py_exe);
+            c.arg(bin_path);
+            c
+        } else {
+            std::process::Command::new(bin_path)
+        };
         cmd.args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
@@ -378,15 +401,9 @@ impl ProcessApp {
             }
         }).flatten();
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
-        // Python app shebangs (`#!/usr/bin/env python3`) resolve to our hermetic
-        // Python 3.12, not whatever the host machine happens to have installed.
-        // Falls back silently to host PATH if the bundle runtime isn't present
-        // (dev builds that haven't run `just fetch-python-runtime` yet).
-        let bundle_contents = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
-        if let Some(ref contents) = bundle_contents {
-            let py_bin = contents.join("Resources").join("assets").join("python").join("bin");
+        // dev-mode .py entries without the bundle still resolve python3 correctly.
+        // Falls back silently to host PATH if the bundle runtime isn't present.
+        if let Some(ref py_bin) = bundled_py_bin {
             if py_bin.exists() {
                 let host_path = std::env::var("PATH").unwrap_or_default();
                 cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
