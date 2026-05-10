@@ -490,7 +490,7 @@ impl PlexiApp {
             });
 
         // Re-attach a parked background app if one is waiting
-        if let Some(mut parked) = self.background_apps.remove(id) {
+        if let Some((_park_ctx, mut parked)) = self.background_apps.remove(id) {
             log::info!("re-attaching background app '{id}'");
             parked.send_event(&crate::app_protocol::PlexiEvent::Resume);
             self.open_process_app_pane(id, *parked, cwd, group, hint.as_deref());
