@@ -359,6 +359,74 @@ pub fn workspace_secret_list() -> i32 {
     }
 }
 
+/// `plexi secret get <friendly-name>` — print the resolved secret value to stdout.
+///
+/// Resolution order (unless --global):
+///   1. Workspace-scoped Keychain entry (nearest .plexi/ workspace)
+///   2. Global user-scoped Keychain entry (fallback)
+///
+/// `--global` skips the workspace lookup entirely.
+pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
+    log::info!("secret_get:cli: friendly={friendly} global={global}");
+
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore};
+        let store = MacKeychain::new();
+
+        if global {
+            let account = keychain_user_name(friendly);
+            return match store.get(&account) {
+                Some(value) => {
+                    log::info!("secret_get:cli: found globally account={account}");
+                    println!("{}", value.as_str());
+                    0
+                }
+                None => {
+                    log::warn!("secret_get:cli: not found friendly={friendly}");
+                    eprintln!("error: secret '{friendly}' not found");
+                    1
+                }
+            };
+        }
+
+        // Try workspace-scoped first, then global fallback.
+        if let Ok((root, cfg)) = require_workspace() {
+            let account = keychain_workspace_name(&cfg.id, friendly);
+            if let Some(value) = store.get(&account) {
+                log::info!(
+                    "secret_get:cli: found workspace_id={} account={account} root={}",
+                    cfg.id,
+                    root.display()
+                );
+                println!("{}", value.as_str());
+                return 0;
+            }
+        }
+
+        // Global fallback.
+        let user_account = keychain_user_name(friendly);
+        match store.get(&user_account) {
+            Some(value) => {
+                log::info!("secret_get:cli: found globally account={user_account}");
+                println!("{}", value.as_str());
+                0
+            }
+            None => {
+                log::warn!("secret_get:cli: not found friendly={friendly}");
+                eprintln!("error: secret '{friendly}' not found");
+                1
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (friendly, global);
+        eprintln!("error: keychain not available on this platform");
+        1
+    }
+}
+
 /// `plexi secret delete <friendly-name>` — remove the workspace-scoped
 /// Keychain entry and update the index.
 pub fn workspace_secret_delete(friendly: &str) -> i32 {

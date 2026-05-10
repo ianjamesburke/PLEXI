@@ -172,6 +172,17 @@ pub enum SecretCmd {
         #[arg(long)]
         global: bool,
     },
+    /// Read a secret value to stdout
+    ///
+    /// Walks up to nearest .plexi/ workspace, resolves from there first, then falls back to global.
+    /// Use --global to read from the global store only.
+    Get {
+        /// Name of the secret
+        friendly_name: String,
+        /// Read from global store only (skip workspace lookup)
+        #[arg(long)]
+        global: bool,
+    },
     /// List stored secrets
     List,
     /// Delete a secret
