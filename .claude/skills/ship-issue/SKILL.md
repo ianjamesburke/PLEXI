@@ -611,6 +611,7 @@ If `stash pop` conflicts (rare — means the squash and the stash both touched t
 
 **5. Cleanup:**
 ```bash
+rm -f test_pr<pr-number>.py        # delete test script if one was written
 just pr-clean <pr-number>          # skip if no just pr-install was run (diff-review path)
 wtp remove <branch> --force
 git push origin --delete <branch>
