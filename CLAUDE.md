@@ -204,6 +204,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed.
 - **git worktree operations:** Always use absolute paths with `git -C /absolute/worktree/path <command>` — relative paths (`git -C worktrees/<branch>`) fail when CWD is not the repo root. Applies to all operations: `add`, `rebase`, `push`, etc.
 - **HostHarness initial state:** `add_test_pane()` inserts a `ProcessApp` pane — not a Terminal. Terminal-count assertions in tests must not assume the initial pane is a Terminal; offset accordingly.
+- **Shell suffix construction:** when appending a stay-alive or exec suffix to a user command string, use the absolute shell path from `settings.shell` (already resolved) rather than `$SHELL`, and `trim_end_matches([';', ' '])` the user command before appending to prevent `;;` syntax errors.
 
 ## Host UI Systems — Reuse Before Rolling Your Own
 
