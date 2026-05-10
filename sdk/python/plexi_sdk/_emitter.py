@@ -1037,12 +1037,21 @@ class Emitter:
         the app reads ``handle.read_frame()`` once it connects). Failure
         arrives as ``PlexiEvent::AudioCaptureError``.
 
+        If ``pipe_id`` is already registered (i.e. the app is restarting
+        capture), the old Pipe is closed before the new one is created —
+        prevents OSError on the reader thread's recv() from a stale socket.
+
         Requires ``audio.in`` capability. Raises ``CapabilityDeniedError``
         only when the gate fires synchronously at the wire layer; the
         usual TCC mic-permission denial surfaces async on the first frame
         attempt as an ``AudioCaptureError`` event.
         """
         from ._pipe import Pipe
+        # Close any existing pipe for this id before replacing — prevents
+        # orphaned sockets when the app restarts capture with the same pipe_id.
+        existing = self._app._pipes.pop(pipe_id, None)
+        if existing is not None:
+            existing.close()
         # Open the binary pipe FIRST so PipeOpened can attach when it
         # arrives — same shape as ``open_video``.
         pipe = Pipe(pipe_id=pipe_id, mode="binary", direction="in", app=self._app)
@@ -1055,6 +1064,26 @@ class Emitter:
             "buffer_size": int(buffer_size),
         })
         return pipe
+
+    def stop_audio_capture(self, pipe_id: str) -> None:
+        """Stop an active audio capture and close its pipe (#862).
+
+        Closes the Pipe registered under ``pipe_id`` and removes it from
+        the internal registry. The host cleans up the stale session on the
+        next ``AudioCapture`` for the same ``pipe_id``. No host command is
+        needed — closing the socket is sufficient.
+
+        Apps should join any reader thread after calling this to avoid
+        reading from a closed socket::
+
+            self.emit.stop_audio_capture("mic")
+            self._reader_thread.join(timeout=2.0)
+
+        No-op if ``pipe_id`` is not registered.
+        """
+        pipe = self._app._pipes.pop(pipe_id, None)
+        if pipe is not None:
+            pipe.close()
 
     def audio_play(self, source: str, volume: float = 1.0) -> None:
         """Play an audio file via the host (rodio). Requires audio.playback capability.
