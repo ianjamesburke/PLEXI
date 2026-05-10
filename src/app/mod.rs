@@ -2570,6 +2570,43 @@ impl eframe::App for PlexiApp {
                             );
                         }
                         child_ui.set_opacity(0.88);
+                        // Render name bar outside the Frame so the terminal's background
+                        // fill inside the Frame cannot paint over it. advance_cursor_after_rect
+                        // pushes the Frame's outer rect to start below the name bar.
+                        let has_name = zoomed_pane_name.is_some();
+                        if has_name {
+                            let name_bar_height = 20.0_f32;
+                            let bar_rect = egui::Rect::from_min_size(
+                                child_ui.cursor().min,
+                                egui::vec2(child_ui.available_width(), name_bar_height),
+                            );
+                            child_ui.painter().rect_filled(bar_rect, 0.0, self.colors.terminal_bg);
+                            if let Some((active_idx, count)) = zoomed_tab_info {
+                                crate::tiling::paint_tab_dots(
+                                    child_ui.painter(),
+                                    bar_rect.left(),
+                                    bar_rect.center().y,
+                                    active_idx,
+                                    count,
+                                    self.colors.accent,
+                                    self.colors.bg_active,
+                                );
+                            }
+                            if let Some(ref name) = zoomed_pane_name {
+                                child_ui.painter().text(
+                                    bar_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    name,
+                                    egui::FontId::proportional(11.0),
+                                    self.colors.text_dim,
+                                );
+                            }
+                            log::info!(
+                                "zoom: name bar — pane={pane_id:?} name={:?}",
+                                zoomed_pane_name
+                            );
+                            child_ui.advance_cursor_after_rect(bar_rect);
+                        }
                         egui::Frame::new()
                             .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
@@ -2578,30 +2615,6 @@ impl eframe::App for PlexiApp {
                                     if let Some(t) = pane.as_terminal_mut() {
                                         if dropped_to_zoom {
                                             crate::tiling::write_dropped_paths_to_terminal(ui, t);
-                                        }
-                                        // Render name bar + tab dots — mirrors the non-zoomed path
-                                        {
-                                            use std::collections::HashMap;
-                                            let tab_info_map = zoomed_tab_info
-                                                .map(|ti| HashMap::from([(zoomed_tile, ti)]))
-                                                .unwrap_or_default();
-                                            let pane_names_map = zoomed_pane_name.as_ref()
-                                                .map(|n| HashMap::from([(pane_id, n.clone())]))
-                                                .unwrap_or_default();
-                                            if zoomed_pane_name.is_some() || zoomed_tab_info.is_some() {
-                                                log::debug!(
-                                                    "zoom: rendering name bar — pane={pane_id:?} name={zoomed_pane_name:?} tabs={zoomed_tab_info:?}"
-                                                );
-                                            }
-                                            crate::render::terminal_pane::render_name_bar_and_dots(
-                                                ui,
-                                                zoomed_tile,
-                                                &pane_id,
-                                                &tab_info_map,
-                                                &pane_names_map,
-                                                &self.colors,
-                                                false,
-                                            );
                                         }
                                         if t.exited {
                                             let rect = ui.max_rect();
@@ -2644,6 +2657,12 @@ impl eframe::App for PlexiApp {
                                                 },
                                             );
                                         } else {
+                                            // Reserve space for tab dots when no name bar
+                                            if !has_name && zoomed_tab_info.is_some() {
+                                                ui.add_space(
+                                                    crate::tiling::TAB_DOT_RESERVED_HEIGHT,
+                                                );
+                                            }
                                             let font_size = t.font_size;
                                             log::debug!("[DRAG] zoom overlay: TerminalView render start");
                                             let terminal = TerminalView::new(ui, &mut t.backend)
@@ -2665,6 +2684,21 @@ impl eframe::App for PlexiApp {
                                     }
                                 }
 
+                                // Draw tab indicator dots for unnamed panes in a tab group
+                                if !has_name {
+                                    if let Some((active_idx, count)) = zoomed_tab_info {
+                                        let rect = ui.max_rect();
+                                        crate::tiling::paint_tab_dots(
+                                            ui.painter(),
+                                            rect.left(),
+                                            rect.top() + 2.0 + 4.0, // 4.0 = dot radius
+                                            active_idx,
+                                            count,
+                                            self.colors.accent,
+                                            self.colors.bg_active,
+                                        );
+                                    }
+                                }
                             });
                     } else {
                         drop(behavior);
