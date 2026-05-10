@@ -148,8 +148,7 @@ impl PlexiApp {
                         egui::Label::new(RichText::new(&ctx_name).size(12.0).color(text_color))
                             .selectable(false),
                     );
-                    // Badge — only when not hovering (X button takes that space on hover)
-                    if badge_count > 0 && !hovered {
+                    if badge_count > 0 {
                         row_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(8.0);
                             let badge_text = if badge_count > 9 { "9+".to_string() } else { badge_count.to_string() };
