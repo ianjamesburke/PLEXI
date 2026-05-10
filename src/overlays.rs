@@ -1907,8 +1907,7 @@ impl PlexiApp {
                     let shortcuts: &[(&[&str], &str)] = &[
                         (&["⌘", "N"], "new terminal"),
                         (&["⌘", "⇧", "N"], "new context"),
-                        (&["⌘", "H", "J", "K", "L"], "move between panes"),
-                        (&["⌘", "⇧", "H", "J", "K", "L"], "move between windows"),
+                        (&["⌘", "H", "J", "K", "L"], "move focus (panes & windows)"),
                         (&["⌘", "/"], "keyboard shortcuts"),
                     ];
 
