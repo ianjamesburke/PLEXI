@@ -137,7 +137,7 @@ impl PlexiApp {
                 ui,
                 egui::Id::new(("ctx", i)),
                 &self.colors,
-                |row_ui, hovered| {
+                |row_ui, _hovered| {
                     row_ui.add_space(20.0);
                     if i < 9 {
                         row_ui.label(
