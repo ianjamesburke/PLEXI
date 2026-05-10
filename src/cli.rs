@@ -1439,6 +1439,7 @@ pub fn notify_cli(
     level: &str,
     choices: &[(String, String, Option<String>)],
     timeout_secs: u64,
+    scope: Option<crate::app_protocol::NotifyScope>,
 ) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
@@ -1483,10 +1484,18 @@ pub fn notify_cli(
     if let Some(ref rf) = response_file_str {
         payload["response_file"] = serde_json::Value::String(rf.clone());
     }
+    if let Some(s) = scope {
+        let s_str = match s {
+            crate::app_protocol::NotifyScope::Window => "window",
+            crate::app_protocol::NotifyScope::Context => "context",
+            crate::app_protocol::NotifyScope::Global => "global",
+        };
+        payload["scope"] = serde_json::Value::String(s_str.to_string());
+    }
 
     log::info!(
-        "notify:cli: sending via socket choices={} response_file={:?}",
-        choices.len(), response_file_str
+        "notify:cli: sending via socket choices={} scope={:?} response_file={:?}",
+        choices.len(), scope, response_file_str
     );
 
     use std::io::Write;
@@ -3308,7 +3317,7 @@ mod notify_tests {
     #[test]
     fn notify_cli_no_socket_returns_one() {
         std::env::remove_var("PLEXI_SOCKET");
-        let code = notify_cli("Test title", "Test body", "info", &[], 0);
+        let code = notify_cli("Test title", "Test body", "info", &[], 0, None);
         assert_eq!(code, 1);
     }
 

@@ -240,7 +240,7 @@ fn main() -> eframe::Result {
                     Commands::Pack { cmd } => match cmd {
                         PackCmd::Export { path } => std::process::exit(cli::pack_export_cli(&path)),
                     },
-                    Commands::Notify { title, body, level, choices, host_actions, timeout } => {
+                    Commands::Notify { title, body, level, choices, host_actions, timeout, scope } => {
                         // Parse --host-action flags into a key → "action_type:action_arg" map.
                         let mut host_action_map: std::collections::HashMap<String, String> =
                             std::collections::HashMap::new();
@@ -293,11 +293,25 @@ fn main() -> eframe::Result {
                             eprintln!("{msg}");
                             std::process::exit(1);
                         }
+                        let parsed_scope: Option<crate::app_protocol::NotifyScope> = match scope.as_deref() {
+                            None | Some("global") => None,
+                            Some("window") => Some(crate::app_protocol::NotifyScope::Window),
+                            Some("context") => Some(crate::app_protocol::NotifyScope::Context),
+                            Some(other) => {
+                                let msg = format!(
+                                    "error: --scope must be window, context, or global — got {:?}",
+                                    other
+                                );
+                                log::warn!("notify:cli: {msg}");
+                                eprintln!("{msg}");
+                                std::process::exit(1);
+                            }
+                        };
                         log::info!(
                             "notify:cli: host_actions={} merged into choices",
                             host_actions.len()
                         );
-                        std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout));
+                        std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout, parsed_scope));
                     }
                     Commands::Pane { cmd } => match cmd {
                         PaneCmd::SetTitle { first, second } => {

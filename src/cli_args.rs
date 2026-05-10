@@ -93,6 +93,9 @@ pub enum Commands {
         /// Timeout in seconds (0 = no timeout)
         #[arg(long, default_value = "0")]
         timeout: u64,
+        /// Notification visibility scope: window, context, or global. Default: global.
+        #[arg(long, value_name = "SCOPE")]
+        scope: Option<String>,
     },
     /// Pane management [requires PLEXI_SOCKET — run inside a Plexi pane]
     Pane {

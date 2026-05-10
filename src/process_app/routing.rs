@@ -269,6 +269,7 @@ impl ProcessApp {
                 timeout_secs,
                 on_dismiss,
                 response_file: _,
+                scope: _,
             } => {
                 let notif_id = format!("{}-{}", self.type_id, event_log::now_timestamp());
                 log::info!(

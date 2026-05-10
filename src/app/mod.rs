@@ -1060,7 +1060,7 @@ impl PlexiApp {
                 crate::app_protocol::HostCommand::Notify {
                     level, title, body, kind, options, input_prompt,
                     required, priority, image_inline, image_pipe_id,
-                    timeout_secs, on_dismiss, response_file, ..
+                    timeout_secs, on_dismiss, response_file, scope, ..
                 } => {
                     if !self.notifications_enabled {
                         log::info!("pane_ipc: notify dropped — notifications disabled");
@@ -1074,14 +1074,14 @@ impl PlexiApp {
                             .unwrap_or(0)
                     );
                     log::info!(
-                        "pane_ipc: kind=notify title={:?} choices={} response_file={:?}",
-                        title, options.len(), response_file
+                        "pane_ipc: kind=notify title={:?} choices={} scope={:?} response_file={:?}",
+                        title, options.len(), scope, response_file
                     );
                     self.pending_notifications.push(PendingNotification {
                         notify_id: internal_id.clone(),
                         sender_pane_id: 0,
                         source_context_id: self.router.active().context_id,
-                        scope: crate::app_protocol::NotifyScope::Global,
+                        scope: scope.unwrap_or(crate::app_protocol::NotifyScope::Global),
                         level: level.clone(),
                         title: title.clone(),
                         body: body.clone(),
