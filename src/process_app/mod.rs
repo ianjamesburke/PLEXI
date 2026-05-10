@@ -2030,9 +2030,34 @@ fn default_midi_device() -> Arc<dyn MidiDevice> {
     Arc::new(crate::midi::MockMidiDevice::new())
 }
 
+/// Migrate a single `app_state/` directory to `app_states/` if the old path exists and the new
+/// one does not yet. Logs a warning so operators know migration occurred.
+fn migrate_app_state_dir(old_dir: &std::path::Path, new_dir: &std::path::Path) {
+    if old_dir.exists() && !new_dir.exists() {
+        match std::fs::rename(old_dir, new_dir) {
+            Ok(()) => log::warn!(
+                "load_app_state: migrated {} → {} (one-time rename)",
+                old_dir.display(),
+                new_dir.display()
+            ),
+            Err(e) => log::warn!(
+                "load_app_state: could not migrate {} → {}: {e}",
+                old_dir.display(),
+                new_dir.display()
+            ),
+        }
+    }
+}
+
 fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json::Value {
     let filename = format!("{type_id}.json");
-    let workspace_path = workspace_root.join(".plexi").join("app_state").join(&filename);
+
+    // Migrate old app_state/ → app_states/ on first access (workspace).
+    let ws_old = workspace_root.join(".plexi").join("app_state");
+    let ws_new = workspace_root.join(".plexi").join("app_states");
+    migrate_app_state_dir(&ws_old, &ws_new);
+
+    let workspace_path = ws_new.join(&filename);
     if workspace_path.exists() {
         match std::fs::read(&workspace_path) {
             Err(e) => {
@@ -2049,7 +2074,13 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
             },
         }
     }
-    let global_path = crate::config::config_dir().join("app_state").join(&filename);
+
+    // Migrate old app_state/ → app_states/ on first access (global).
+    let global_old = crate::config::config_dir().join("app_state");
+    let global_new = crate::config::config_dir().join("app_states");
+    migrate_app_state_dir(&global_old, &global_new);
+
+    let global_path = global_new.join(&filename);
     if global_path.exists() {
         match std::fs::read(&global_path) {
             Err(e) => {
@@ -3543,12 +3574,26 @@ mod app_state_tests {
     #[test]
     fn load_app_state_reads_workspace_file_over_global() {
         let ws_dir = tempfile::tempdir().expect("workspace tempdir");
-        let state_dir = ws_dir.path().join(".plexi").join("app_state");
+        let state_dir = ws_dir.path().join(".plexi").join("app_states");
         std::fs::create_dir_all(&state_dir).expect("mkdir");
         let state_path = state_dir.join("my-app.json");
         std::fs::write(&state_path, r#"{"interval_idx":3}"#).expect("write");
 
         let result = load_app_state("my-app", ws_dir.path());
         assert_eq!(result["interval_idx"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn load_app_state_migrates_old_app_state_dir() {
+        let ws_dir = tempfile::tempdir().expect("workspace tempdir");
+        let old_dir = ws_dir.path().join(".plexi").join("app_state");
+        std::fs::create_dir_all(&old_dir).expect("mkdir");
+        std::fs::write(old_dir.join("my-app.json"), r#"{"migrated":true}"#).expect("write");
+
+        let result = load_app_state("my-app", ws_dir.path());
+        assert_eq!(result["migrated"], serde_json::json!(true));
+        // Old dir must be gone, new dir must exist.
+        assert!(!old_dir.exists(), "old app_state dir should have been renamed");
+        assert!(ws_dir.path().join(".plexi").join("app_states").exists());
     }
 }
