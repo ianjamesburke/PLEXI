@@ -1,7 +1,7 @@
 ---
 name: create-app
 description: Scaffold a new Plexi app, install it, open it in a pane, and activate hot reload — all in one command. Use when the user says "build me an app", "create a Plexi app", or "make an app that does X".
-skill_version: "3.5.88"
+skill_version: "3.5.89"
 source: local
 date_added: "2026-05-09"
 ---
@@ -35,11 +35,16 @@ echo "PLEXI_SOCKET is set: $PLEXI_SOCKET"
 ```
 
 ```bash
+# Must not be in home directory — workspace init from ~ collides with the global profile dir
+if [ "$PWD" = "$HOME" ]; then
+  echo "error: cannot create a Plexi app from the home directory"
+  echo "Please cd into a project directory first"
+  exit 1
+fi
+
 # Must have a workspace (CWD or ancestor has .plexi/)
 plexi workspace init 2>/dev/null || true   # no-op if already initialised
 ```
-
-> If the user is in their home directory (`$HOME`), stop and ask them to `cd` into a project directory first. `plexi workspace init` must never run from `~` — it would collide with the global profile dir.
 
 ---
 
@@ -92,7 +97,7 @@ PANE_ID=$(plexi open "$APP_NAME")
 echo "Opened pane: $PANE_ID"
 ```
 
-The host rescans the app registry on cache miss (added in v3.5.89), so newly scaffolded apps are discoverable without restarting Plexi.
+The host rescans the app registry on cache miss (v3.5.89+), so newly scaffolded apps are discoverable without restarting Plexi.
 
 If `plexi open` prints nothing or exits non-zero:
 1. Check `~/.plexi-alpha/plexi.log` (or the channel-appropriate log) for errors
