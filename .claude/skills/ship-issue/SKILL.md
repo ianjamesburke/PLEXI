@@ -207,6 +207,8 @@ Rules (always):
 
 ## Phase 4 — Implement
 
+> **Worktree path rule:** All Read/Edit/Write tool calls during implementation must target the WORKTREE absolute path (`worktrees/<branch>/src/...`), NOT the repo root path. The repo root is the alpha checkout — a separate working tree. Editing the root silently misses the feature branch and creates uncommitted changes on alpha.
+
 **Scope gate:**
 - **≤ 3 files:** implement inline in the feature worktree. Write tests first, run `cargo test`.
 - **> 3 files or multiple subsystems:** dispatch a Sonnet subagent.
