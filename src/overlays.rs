@@ -1567,23 +1567,53 @@ impl PlexiApp {
         }
 
         if let Some(cmd) = action_cmd {
-            // Acknowledgment / option-select / input-submit — the user gave
-            // a real answer. Remove the notification by id, deliver the
-            // NotifyAction to the originating app, then pick the next
-            // highest-priority remaining from whatever's in the queue
-            // right now (not a pre-frozen list).
-            self.pending_notifications
-                .retain(|n| n.notify_id != current_id);
-            self.modal_focused_option = 0;
-            self.modal_input_buffer.clear();
-            self.modal_state_notify_id.clear();
-            if self.pending_notifications.is_empty() {
-                self.show_notification_modal = false;
-                self.current_notify_id = None;
+            use crate::app_trait::AppCommand;
+            // Check for snooze before removing from queue. Snooze sets
+            // deliver_after in place — the notification stays but becomes
+            // invisible and no DeliverNotifyAction is sent to the app (the
+            // CLI stays blocked until the user picks a non-snooze choice).
+            let snooze_secs = if let AppCommand::DeliverNotifyAction { ref host_action, .. } = cmd {
+                host_action.as_deref()
+                    .and_then(|a| a.strip_prefix("snooze:"))
+                    .and_then(|s| s.parse::<u64>().ok())
             } else {
-                self.current_notify_id = self.select_highest_priority();
+                None
+            };
+
+            if let Some(delay_secs) = snooze_secs {
+                let wake = std::time::Instant::now() + std::time::Duration::from_secs(delay_secs);
+                if let Some(n) = self.pending_notifications.iter_mut()
+                    .find(|n| n.notify_id == current_id)
+                {
+                    n.deliver_after = Some(wake);
+                    log::info!("notify:snooze: notify_id={} delay={}s", current_id, delay_secs);
+                }
+                self.modal_focused_option = 0;
+                self.modal_input_buffer.clear();
+                self.modal_state_notify_id.clear();
+                let next = self.select_highest_priority();
+                if next.is_some() {
+                    self.current_notify_id = next;
+                } else {
+                    self.show_notification_modal = false;
+                    self.current_notify_id = None;
+                }
+            } else {
+                // Acknowledgment / option-select / input-submit — real answer.
+                // Remove the notification, deliver the NotifyAction, pick next.
+                self.pending_notifications
+                    .retain(|n| n.notify_id != current_id);
+                self.modal_focused_option = 0;
+                self.modal_input_buffer.clear();
+                self.modal_state_notify_id.clear();
+                if self.pending_notifications.is_empty() {
+                    self.show_notification_modal = false;
+                    self.current_notify_id = None;
+                } else {
+                    self.current_notify_id = self.select_highest_priority();
+                }
+                cmds.push(cmd);
             }
-            cmds.push(cmd);
         }
 
         cmds
