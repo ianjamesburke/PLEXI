@@ -80,6 +80,7 @@ Edit it in-place — use the Read + Edit tools (not sed). The `[app]` section sh
 [app]
 id = "<name>"
 name = "<Display Name>"
+type = "app"
 entry = "main.py"
 version = "0.1.0"
 description = "<user's description>"
