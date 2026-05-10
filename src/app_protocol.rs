@@ -844,6 +844,11 @@ pub enum HostCommand {
         /// result to the blocking CLI process. Never set by app SDK.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// CLI-only: notification visibility scope. Apps never set this — their
+        /// scope comes from `manifest.toml::[launch] notification_scope`.
+        /// Omit for backwards-compatible global behaviour.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<NotifyScope>,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
