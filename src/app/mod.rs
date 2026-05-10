@@ -2571,14 +2571,15 @@ impl eframe::App for PlexiApp {
                         }
                         child_ui.set_opacity(0.88);
                         // Render name bar outside the Frame so the terminal's background
-                        // fill inside the Frame cannot paint over it. advance_cursor_after_rect
-                        // pushes the Frame's outer rect to start below the name bar.
+                        // fill inside the Frame cannot paint over it. The Frame gets its
+                        // own child_ui scoped to the area below the name bar, so there
+                        // is no cursor/spacing gap between them.
                         let has_name = zoomed_pane_name.is_some();
+                        const NAME_BAR_HEIGHT: f32 = 20.0;
                         if has_name {
-                            let name_bar_height = 20.0_f32;
                             let bar_rect = egui::Rect::from_min_size(
-                                child_ui.cursor().min,
-                                egui::vec2(child_ui.available_width(), name_bar_height),
+                                inner_rect.min,
+                                egui::vec2(inner_rect.width(), NAME_BAR_HEIGHT),
                             );
                             child_ui.painter().rect_filled(bar_rect, 0.0, self.colors.terminal_bg);
                             if let Some((active_idx, count)) = zoomed_tab_info {
@@ -2605,12 +2606,20 @@ impl eframe::App for PlexiApp {
                                 "zoom: name bar — pane={pane_id:?} name={:?}",
                                 zoomed_pane_name
                             );
-                            child_ui.advance_cursor_after_rect(bar_rect);
                         }
+                        // Frame rect starts exactly where the name bar ends (or at the
+                        // top of inner_rect when there is no name bar), so no gap appears.
+                        let frame_rect = if has_name {
+                            inner_rect.with_min_y(inner_rect.min.y + NAME_BAR_HEIGHT)
+                        } else {
+                            inner_rect
+                        };
+                        let mut frame_ui = ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
+                        frame_ui.set_opacity(0.88);
                         egui::Frame::new()
                             .fill(self.colors.terminal_bg)
                             .inner_margin(egui::Margin::same(8))
-                            .show(&mut child_ui, |ui| {
+                            .show(&mut frame_ui, |ui| {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
                                     if let Some(t) = pane.as_terminal_mut() {
                                         if dropped_to_zoom {
