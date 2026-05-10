@@ -589,7 +589,7 @@ impl PlexiApp {
                     let type_id = process_app.type_id.clone();
                     if self.registry.is_background(&type_id) {
                         process_app.send_event(&crate::app_protocol::PlexiEvent::Suspend);
-                        let park_context_id = self.windows[self.active_window].context_id;
+                        let park_context_id = self.windows[ctx_idx].context_id;
                         log::info!("parking background app '{type_id}' in context_id {park_context_id}");
                         self.background_apps.insert(type_id, (park_context_id, process_app));
                     }
