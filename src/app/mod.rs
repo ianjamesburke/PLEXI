@@ -3105,6 +3105,15 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::CommandPalette);
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::CommandPalette);
+            // Explicitly surrender egui focus from palette_search so AccessKit
+            // doesn't hold a stale focused node ID after the widget is gone.
+            self.ctx.memory_mut(|m| {
+                let palette_id = egui::Id::new("palette_search");
+                if m.focused() == Some(palette_id) {
+                    log::info!("palette: surrendering palette_search focus on dismiss");
+                    m.surrender_focus(palette_id);
+                }
+            });
         }
     }
 

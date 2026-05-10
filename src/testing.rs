@@ -431,4 +431,29 @@ mod tests {
         h.run_frames(1); // must not panic; logs warn "not found"
     }
 
+    /// Regression guard for issue #1018: dismissing the command palette must
+    /// surrender egui focus from palette_search so AccessKit holds no stale
+    /// focused node ID after the widget is gone. Without the fix, the next
+    /// pane close triggers AccessKit's internal consistency check and panics.
+    #[test]
+    fn palette_close_surrenders_focus_before_pane_close() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+
+        // Open the palette — sync_command_palette_focus pushes the focus layer
+        // and the per-frame code requests focus on palette_search.
+        h.app.show_command_palette = true;
+        h.run_frames(3);
+
+        // Dismiss the palette — sync_command_palette_focus must pop the layer
+        // AND surrender palette_search focus so AccessKit has no stale node.
+        h.app.show_command_palette = false;
+        h.run_frames(2);
+
+        // Close a pane — triggers the AccessKit consistency check that panicked
+        // when palette_search focus was not surrendered. Passes if no panic.
+        h.app.execute_close_pane();
+        h.run_frames(1);
+    }
+
 }
