@@ -2589,7 +2589,7 @@ impl eframe::App for PlexiApp {
                                                 .map(|n| HashMap::from([(pane_id, n.clone())]))
                                                 .unwrap_or_default();
                                             if zoomed_pane_name.is_some() || zoomed_tab_info.is_some() {
-                                                log::info!(
+                                                log::debug!(
                                                     "zoom: rendering name bar — pane={pane_id:?} name={zoomed_pane_name:?} tabs={zoomed_tab_info:?}"
                                                 );
                                             }
