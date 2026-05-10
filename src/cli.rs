@@ -1826,7 +1826,7 @@ pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
 /// which the running host drains each second.
 ///
 /// Returns 0 on success, 1 on error.
-pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
+pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
     let layout_str = layout.unwrap_or("overlay");
     if type_id == "terminal" {
         log::warn!("open:cli: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
@@ -1841,14 +1841,17 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
             .join(format!("spawn-pane-response-{id}.json"))
             .to_string_lossy()
             .into_owned();
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "type": "spawn_pane",
             "type_id": type_id,
             "args": args,
             "layout": layout_str,
             "response_file": response_file,
         });
-        log::info!("open:cli: sending via socket response_file={response_file:?}");
+        if let Some(pid) = from_pane_id {
+            payload["from_pane_id"] = serde_json::Value::Number(pid.into());
+        }
+        log::info!("open:cli: sending via socket from_pane_id={from_pane_id:?} response_file={response_file:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -1887,6 +1890,10 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
     }
 
     // Fallback: write to the spawn-queue for the channel this binary belongs to.
+    if from_pane_id.is_some() {
+        log::warn!("open:cli: --from-pane-id requires PLEXI_SOCKET (run inside a Plexi pane); ignoring");
+        eprintln!("warning: --from-pane-id is ignored outside a Plexi pane");
+    }
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         eprintln!("error: could not create spawn queue: {e}");
@@ -1916,7 +1923,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>) -> i32 {
 ///
 /// Opens a terminal pane. Supports the --ephemeral flag which closes the pane when the
 /// process exits.
-pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>) -> i32 {
+pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
     let layout_str = layout.unwrap_or("split_v");
     let args: Vec<String> = cmd.map(|c| vec![c.to_string()]).unwrap_or_default();
 
@@ -1936,7 +1943,10 @@ pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>) ->
         if ephemeral {
             payload["ephemeral"] = serde_json::Value::Bool(true);
         }
-        log::info!("terminal:cli: sending via socket ephemeral={ephemeral} response_file={response_file:?}");
+        if let Some(pid) = from_pane_id {
+            payload["from_pane_id"] = serde_json::Value::Number(pid.into());
+        }
+        log::info!("terminal:cli: sending via socket ephemeral={ephemeral} from_pane_id={from_pane_id:?} response_file={response_file:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -1973,6 +1983,10 @@ pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>) ->
     }
 
     // Fallback: spawn-queue (outside a Plexi pane)
+    if from_pane_id.is_some() {
+        log::warn!("terminal:cli: --from-pane-id requires PLEXI_SOCKET (run inside a Plexi pane); ignoring");
+        eprintln!("warning: --from-pane-id is ignored outside a Plexi pane");
+    }
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         eprintln!("error: could not create spawn queue: {e}");
@@ -3005,7 +3019,8 @@ _plexi() {
         terminal)
           _arguments \
             '--ephemeral[Close the pane when the process exits]' \
-            '--layout[Layout hint]:layout:(split_v split_h split_above)'
+            '--layout[Layout hint]:layout:(split_v split_h split_above)' \
+            '--from-pane-id[Split relative to this pane ID]:pane_id:'
           ;;
         descriptor)
           local subcmds
@@ -3029,6 +3044,11 @@ _plexi() {
             '--level[Level]:level:(info warn error)' \
             '--choice[Choice option (key:Label / Label:action:arg / key:Label:action:arg)]:choice:' \
             '--timeout[Timeout in seconds]:seconds:'
+          ;;
+        open)
+          _arguments \
+            '--layout[Layout hint]:layout:(split_v split_h split_above overlay)' \
+            '--from-pane-id[Split relative to this pane ID]:pane_id:'
           ;;
         install)
           _arguments '--pack[Install from a pack file or core]:pack:'
@@ -3084,7 +3104,14 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       if [[ $prev == "--layout" ]]; then
         COMPREPLY=($(compgen -W "split_v split_h split_above" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "--ephemeral --layout" -- "$cur"))
+        COMPREPLY=($(compgen -W "--ephemeral --layout --from-pane-id" -- "$cur"))
+      fi
+      ;;
+    open)
+      if [[ $prev == "--layout" ]]; then
+        COMPREPLY=($(compgen -W "split_v split_h split_above overlay" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "--layout --from-pane-id" -- "$cur"))
       fi
       ;;
     descriptor)
@@ -3192,6 +3219,10 @@ complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash f
 # terminal flags
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l ephemeral -d "Close the pane when the process exits"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above"
+complete -c plexi -n "__fish_seen_subcommand_from terminal" -l from-pane-id -d "Split relative to this pane ID"
+# open flags
+complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hint" -a "split_v split_h split_above overlay"
+complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"
 "#;
 
 #[cfg(test)]
