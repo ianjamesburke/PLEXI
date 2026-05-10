@@ -314,7 +314,21 @@ fn main() -> eframe::Result {
                         std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout, parsed_scope));
                     }
                     Commands::Pane { cmd } => match cmd {
+                        PaneCmd::Name { first, second } => {
+                            let (pane_id, name) = match second {
+                                Some(title) => match first.parse::<u64>() {
+                                    Ok(id) => (Some(id), title),
+                                    Err(_) => {
+                                        eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
+                                        std::process::exit(1);
+                                    }
+                                },
+                                None => (None, first),
+                            };
+                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
+                        }
                         PaneCmd::SetTitle { first, second } => {
+                            eprintln!("warning: `pane set-title` is deprecated — use `pane name` instead");
                             let (pane_id, name) = match second {
                                 Some(title) => match first.parse::<u64>() {
                                     Ok(id) => (Some(id), title),

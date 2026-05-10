@@ -247,11 +247,19 @@ pub enum PackCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
-    /// Set the title of a pane
+    /// Set the name of a pane
     ///
     /// Usage:
-    ///   plexi pane set-title <title>           — renames the current (focused) pane
-    ///   plexi pane set-title <pane-id> <title> — renames an arbitrary pane by ID
+    ///   plexi pane name <title>           — renames the current (focused) pane
+    ///   plexi pane name <pane-id> <title> — renames an arbitrary pane by ID
+    Name {
+        /// Pane ID (from `plexi pane list`) or title when used alone
+        first: String,
+        /// Title when pane-id is given as the first argument
+        second: Option<String>,
+    },
+    /// Deprecated: use `pane name` instead
+    #[command(hide = true)]
     SetTitle {
         /// Pane ID (from `plexi pane list`) or title when used alone
         first: String,

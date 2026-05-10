@@ -3095,7 +3095,7 @@ _plexi() {
           ;;
         pane)
           local subcmds
-          subcmds=('set-title:Set the title of a pane (current or by ID)')
+          subcmds=('name:Set the name of a pane (current or by ID)' 'set-title:Set the name of a pane (deprecated: use name)')
           _describe 'subcommand' subcmds
           ;;
         terminal)
@@ -3181,7 +3181,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "export" -- "$cur"))
       ;;
     pane)
-      COMPREPLY=($(compgen -W "set-title" -- "$cur"))
+      COMPREPLY=($(compgen -W "name set-title" -- "$cur"))
       ;;
     terminal)
       if [[ $prev == "--layout" ]]; then
@@ -3270,7 +3270,8 @@ complete -c plexi -f -n "__fish_seen_subcommand_from update" -a apps -d "Update 
 complete -c plexi -f -n "__fish_seen_subcommand_from pack" -a export -d "Export current apps as a pack file"
 
 # pane subcommands
-complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a set-title -d "Set the title of a pane (current or by ID)"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a name -d "Set the name of a pane (current or by ID)"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a set-title -d "Set the name of a pane (deprecated: use name)"
 
 # descriptor subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from descriptor" -a probe -d "Probe a CLI for its Plexi descriptor"
