@@ -232,6 +232,10 @@ pub struct ProcessApp {
     crashed_at: Option<std::time::SystemTime>,
     /// Deadline for showing "✓ copied" overlay feedback. None = "C — copy report".
     copied_feedback_until: Option<std::time::Instant>,
+    /// Count of pending notifications originating from this pane. Updated
+    /// each frame by `PlexiApp` before tiling renders. Zero when no
+    /// notifications are pending.
+    pub(crate) pending_notification_count: usize,
     /// When true, `PlexiEvent::MouseMove` is delivered to the app every frame
     /// that the pointer moves over the pane. Controlled by
     /// `DrawCommand::SetMouseTracking { enabled }`. Off by default to avoid
@@ -630,6 +634,7 @@ impl ProcessApp {
             show_stderr_overlay: false,
             crashed_at: None,
             copied_feedback_until: None,
+            pending_notification_count: 0,
             mouse_tracking_enabled: false,
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
@@ -750,6 +755,7 @@ impl ProcessApp {
             show_stderr_overlay: false,
             crashed_at: None,
             copied_feedback_until: None,
+            pending_notification_count: 0,
             mouse_tracking_enabled: false,
             text_input_buffers: HashMap::new(),
             text_input_visible_prev: std::collections::HashSet::new(),
@@ -957,6 +963,39 @@ impl ProcessApp {
         // interaction widget. type_id is unique-per-pane in practice.
         let id = ui.id().with(("lifecycle_pill", &self.type_id));
         Some(ui.interact(pill_rect, id, egui::Sense::click()))
+    }
+
+    /// Draw a small notification badge in the top-left corner of `pane_rect`
+    /// when there are pending notifications from this pane. Uses the theme
+    /// accent color to visually match the sidebar badge style. Shows count if
+    /// > 1, "1" if exactly one.
+    fn draw_notification_indicator(
+        &self,
+        ui: &mut egui::Ui,
+        pane_rect: egui::Rect,
+        count: usize,
+        colors: &crate::theme::Colors,
+    ) {
+        let label = if count > 9 { "9+".to_string() } else { count.to_string() };
+        let font_size = 11.0;
+        let radius = 6.0;
+        let inset = 8.0;
+        let font_id = egui::FontId::proportional(font_size);
+        let fg_color = egui::Color32::from_rgb(0x1e, 0x1e, 0x2e);
+        let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, fg_color));
+        let text_w = galley.size().x;
+        let text_h = galley.size().y;
+        let pill_w = (text_w + crate::style::BADGE_PAD_H * 2.0).max(crate::style::BADGE_MIN_W);
+        let pill_h = text_h + crate::style::BADGE_PAD_V * 2.0;
+        let pill_rect = egui::Rect::from_min_size(
+            egui::pos2(pane_rect.min.x + inset, pane_rect.min.y + inset),
+            egui::vec2(pill_w, pill_h),
+        );
+        let painter = ui.painter().with_clip_rect(pane_rect);
+        painter.rect_filled(pill_rect, radius, colors.accent);
+        let text_x = pill_rect.center().x - text_w / 2.0;
+        let text_y = pill_rect.center().y - text_h / 2.0;
+        painter.galley(egui::pos2(text_x, text_y), galley, fg_color);
     }
 
     /// Render every `DrawCommand::TextInput` in `frame` as a real egui
@@ -1643,6 +1682,17 @@ impl App for ProcessApp {
         // ── Lifecycle pill ──────────────────────────────────────────────────
         // Top-right corner. Hidden in Running. Click toggles the stderr
         // overlay (in addition to the auto-overlay rules above).
+        // Notification badge: top-left corner of pane chrome. Only visible
+        // when this pane has pending choice notifications awaiting input.
+        if self.pending_notification_count > 0 {
+            log::debug!(
+                "pane::{}: notification_indicator count={}",
+                self.type_id,
+                self.pending_notification_count
+            );
+            self.draw_notification_indicator(ui, pane_rect, self.pending_notification_count, ctx.colors);
+        }
+
         let pill_response = self.draw_lifecycle_pill(ui, pane_rect, lifecycle_state);
         let pill_consumed_click = if let Some(response) = pill_response {
             if response.clicked() {

@@ -2416,6 +2416,27 @@ impl eframe::App for PlexiApp {
                     return;
                 }
 
+                // Build per-pane notification counts before `ctx` mutably borrows
+                // `self.windows`. Inline the notification_is_visible logic to
+                // avoid a borrow conflict with the mutable ctx reference below.
+                let notify_counts: std::collections::HashMap<u64, usize> = {
+                    let active_context_id = self.router.active().context_id;
+                    let mut counts = std::collections::HashMap::new();
+                    for n in &self.pending_notifications {
+                        let visible = match n.scope {
+                            crate::app_protocol::NotifyScope::Global => true,
+                            crate::app_protocol::NotifyScope::Window
+                            | crate::app_protocol::NotifyScope::Context => {
+                                n.source_context_id == active_context_id
+                            }
+                        };
+                        if visible {
+                            *counts.entry(n.sender_pane_id).or_insert(0) += 1;
+                        }
+                    }
+                    counts
+                };
+
                 let ctx = &mut self.windows[self.active_window];
 
                 // Resolve focused_pane if simplifier moved the tile
@@ -2499,6 +2520,16 @@ impl eframe::App for PlexiApp {
                 } else {
                     let hover_id = egui::Id::new("drag_hover_was_active");
                     ui.ctx().data_mut(|d| d.insert_temp(hover_id, false));
+                }
+
+                // Propagate pre-computed notification counts into each app pane so
+                // ProcessApp can render the per-pane chrome badge without
+                // holding a reference to PlexiApp.
+                for pane in ctx.panes.values_mut() {
+                    if let Some(app_pane) = pane.as_app_mut() {
+                        let count = notify_counts.get(&app_pane.id).copied().unwrap_or(0);
+                        app_pane.runtime.set_pending_notification_count(count);
+                    }
                 }
 
                 let mut behavior = PlexiBehavior {
