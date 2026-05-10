@@ -80,7 +80,7 @@ class McpClient:
             ready, _, _ = select.select([self._stdout], [], [], timeout)
             if not ready:
                 raise TimeoutError(f"MCP server did not respond within {timeout:.0f}s")
-            raw = self._stdout.readline()
+            raw = self._stdout.readline(65536)
             if not raw:
                 raise EOFError("MCP server closed stdout")
             raw = raw.strip()

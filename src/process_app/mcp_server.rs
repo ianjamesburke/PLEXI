@@ -109,8 +109,9 @@ fn handle_connection(
         return Ok(());
     }
 
-    // We only handle POST /mcp
-    let is_post_mcp = request_line.starts_with("POST") && request_line.contains("/mcp");
+    // Only handle POST /mcp (exact path match)
+    let mut req_parts = request_line.split_whitespace();
+    let is_post_mcp = req_parts.next() == Some("POST") && req_parts.next() == Some("/mcp");
 
     // Read headers, find Content-Length
     let mut content_length: usize = 0;
@@ -136,6 +137,12 @@ fn handle_connection(
         return Ok(());
     }
 
+    // Cap body size to prevent OOM from a crafted Content-Length header.
+    const MAX_BODY: usize = 10 * 1024 * 1024; // 10 MB
+    if content_length > MAX_BODY {
+        write_http_response(&mut write_stream, 413, b"{\"error\":\"payload too large\"}")?;
+        return Ok(());
+    }
     // Read body (content_length bytes)
     let mut buf = vec![0u8; content_length];
     {
@@ -203,7 +210,7 @@ fn handle_connection(
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
 
-            let call_id = uuid_v4();
+            let call_id = generate_call_id();
             let (response_tx, response_rx) =
                 std::sync::mpsc::sync_channel::<McpToolResponse>(1);
 
@@ -271,15 +278,15 @@ fn write_http_response(
     let status_text = if status == 200 { "OK" } else { "Error" };
     write!(
         stream,
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
     stream.flush()
 }
 
-/// Generate a simple pseudo-UUID v4 using random bytes from the OS.
-fn uuid_v4() -> String {
+/// Generate a unique call ID using time + thread ID as entropy (no uuid crate dependency).
+fn generate_call_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     // Use time + thread id as entropy source — no uuid crate dependency needed.
     let t = SystemTime::now()
