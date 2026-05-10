@@ -3281,6 +3281,28 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     }))
 }
 
+/// `plexi context current`
+///
+/// Prints the context ID and name for the current pane as JSON.
+/// Reads PLEXI_CONTEXT_ID and PLEXI_CONTEXT_NAME set at pane spawn time.
+pub fn context_current_cli() -> i32 {
+    let context_id = match std::env::var("PLEXI_CONTEXT_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+    let context_name = std::env::var("PLEXI_CONTEXT_NAME").unwrap_or_default();
+    let id_num: u64 = context_id.parse().unwrap_or(0);
+    let json = serde_json::json!({
+        "context_id": id_num,
+        "context_name": context_name,
+    });
+    println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
+    0
+}
+
 /// `plexi completions <shell>`
 ///
 /// Prints a static shell completion script to stdout. Pipe to the appropriate
@@ -3382,7 +3404,7 @@ _plexi() {
           ;;
         context)
           local subcmds
-          subcmds=('new:Create a new context' 'open:Open a context at a path' 'set-root:Set the root directory')
+          subcmds=('new:Create a new context' 'open:Open a context at a path' 'set-root:Set the root directory' 'current:Print current context as JSON')
           _describe 'subcommand' subcmds
           ;;
         notify)
@@ -3470,7 +3492,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "watch" -- "$cur"))
       ;;
     context)
-      COMPREPLY=($(compgen -W "new open set-root" -- "$cur"))
+      COMPREPLY=($(compgen -W "new open set-root current" -- "$cur"))
       ;;
     notify)
       if [[ $prev == "--level" ]]; then
@@ -3551,6 +3573,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from registry" -a watch -d "Watc
 complete -c plexi -f -n "__fish_seen_subcommand_from context" -a new -d "Create a new context"
 complete -c plexi -f -n "__fish_seen_subcommand_from context" -a open -d "Open a context at a path"
 complete -c plexi -f -n "__fish_seen_subcommand_from context" -a set-root -d "Set the root directory"
+complete -c plexi -f -n "__fish_seen_subcommand_from context" -a current -d "Print current context as JSON"
 
 # notify flags
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l title -d "Notification title"

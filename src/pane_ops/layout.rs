@@ -226,7 +226,9 @@ impl PlexiApp {
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
         let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors);
+        let ctx_id = self.windows[self.active_window].context_id;
+        let ctx_name = self.context_name_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             let shell_name = std::path::Path::new(&settings.shell)
@@ -339,7 +341,9 @@ impl PlexiApp {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[self.active_window].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
-            let settings = Self::make_backend_settings(new_id, None, &self.colors);
+            let ctx_id = self.windows[self.active_window].context_id;
+            let ctx_name = self.context_name_for(ctx_id);
+            let settings = Self::make_backend_settings(new_id, None, &self.colors, ctx_id, &ctx_name);
             let Some(pane) = TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
@@ -366,7 +370,9 @@ impl PlexiApp {
         let new_id = self.host.alloc_pane_id();
 
         let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
-        let settings = Self::make_backend_settings(new_id, cwd, &self.colors);
+        let ctx_id = self.windows[self.active_window].context_id;
+        let ctx_name = self.context_name_for(ctx_id);
+        let settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
         let Some(pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),

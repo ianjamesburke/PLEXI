@@ -408,6 +408,9 @@ impl PlexiApp {
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut windows = Vec::new();
+            let ctx_name_map: std::collections::HashMap<u64, String> = ws.contexts.iter()
+                .map(|c| (c.context_id, c.name.clone()))
+                .collect();
             for saved_win in ws.windows {
                 let mut panes = HashMap::new();
                 for saved_pane in &saved_win.panes {
@@ -504,7 +507,8 @@ impl PlexiApp {
                     }
 
                     if pane_entry.is_none() {
-                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors);
+                        let ctx_name = ctx_name_map.get(&saved_win.context_id).cloned().unwrap_or_default();
+                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name);
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
                             cc.egui_ctx.clone(),
@@ -855,7 +859,10 @@ impl PlexiApp {
         pane_id: u64,
         working_directory: Option<PathBuf>,
         colors: &Colors,
+        context_id: u64,
+        context_name: &str,
     ) -> BackendSettings {
+        log::info!("make_backend_settings: pane_id={pane_id} context_id={context_id} context_name={context_name:?}");
         let mut env = shell::build_env();
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         let socket = crate::config::config_dir()
@@ -863,6 +870,8 @@ impl PlexiApp {
             .to_string_lossy()
             .into_owned();
         env.insert("PLEXI_SOCKET".into(), socket);
+        env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
+        env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
@@ -870,6 +879,13 @@ impl PlexiApp {
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
         }
+    }
+
+    pub(crate) fn context_name_for(&self, context_id: u64) -> String {
+        self.router.iter()
+            .find(|c| c.context_id == context_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default()
     }
 
 

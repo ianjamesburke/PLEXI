@@ -350,4 +350,6 @@ pub enum ContextCmd {
     SetRoot {
         path: Option<String>,
     },
+    /// Print the context ID and name for the current pane as JSON
+    Current,
 }
