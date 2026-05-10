@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.106] — 2026-05-10
+
+### Changes
+- skill(orchestrator): plexi-orchestrator — spawn parallel Claude ship sessions with auto-layout (#1012)
 ## [3.5.105] — 2026-05-10
 
 ### Changes
