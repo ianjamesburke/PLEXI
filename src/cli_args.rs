@@ -226,6 +226,16 @@ pub enum AppCmd {
     Info {
         id: String,
     },
+    /// Register a local app directory with the workspace (does not move files)
+    Link {
+        /// Path to the app directory containing manifest.toml
+        path: String,
+    },
+    /// Remove a linked app directory from the workspace registry
+    Unlink {
+        /// Path to the app directory (same path used with `link`)
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]

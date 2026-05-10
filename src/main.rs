@@ -217,6 +217,8 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::app_render(&id, &size, state.as_deref(), output.as_deref()))
                         }
                         AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
+                        AppCmd::Link { path } => std::process::exit(cli::app_link(&path)),
+                        AppCmd::Unlink { path } => std::process::exit(cli::app_unlink(&path)),
                     },
                     Commands::Install { spec, pack } => {
                         if let Some(p) = pack {
