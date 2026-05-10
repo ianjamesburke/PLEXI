@@ -120,3 +120,6 @@ fi
 
 echo ""
 echo "Released v$version — GitHub Actions release workflow will run."
+
+echo "Installing main..."
+(cd "$MAIN_TREE" && just install)
