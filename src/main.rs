@@ -452,7 +452,9 @@ fn main() -> eframe::Result {
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([400.0, 300.0])
             .with_title(env!("PLEXI_APP_TITLE"))
-            .with_icon(icon),
+            .with_icon(icon)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false),
         ..Default::default()
     };
 
