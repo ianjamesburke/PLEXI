@@ -1827,7 +1827,6 @@ pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
 ///
 /// Returns 0 on success, 1 on error.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
-    let layout_str = layout.unwrap_or("overlay");
     if type_id == "terminal" {
         log::warn!("open:cli: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
         eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
@@ -1845,7 +1844,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
             "type": "spawn_pane",
             "type_id": type_id,
             "args": args,
-            "layout": layout_str,
+            "layout": layout,
             "response_file": response_file,
         });
         if let Some(pid) = from_pane_id {
@@ -1906,7 +1905,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
     let queue_payload = serde_json::json!({
         "type_id": type_id,
         "args": args,
-        "layout": layout_str,
+        "layout": layout,
     });
     let file = queue_dir.join(format!("{id}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {

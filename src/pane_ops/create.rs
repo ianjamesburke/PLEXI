@@ -686,7 +686,7 @@ mod tests {
 
         h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
             type_id: "terminal".to_string(),
-            layout: "split_v".to_string(),
+            layout: Some("split_v".to_string()),
             args: vec![],
             pipe_id: None,
             from_pane_id: None,
@@ -721,7 +721,7 @@ mod tests {
 
         h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
             type_id: "terminal".to_string(),
-            layout: "split_v".to_string(),
+            layout: Some("split_v".to_string()),
             args: vec!["echo".to_string(), "hello".to_string()],
             pipe_id: None,
             from_pane_id: None,
@@ -741,6 +741,43 @@ mod tests {
         assert!(
             snap.pane_titles.values().any(|t| t == "Terminal"),
             "expected a Terminal pane after SpawnPane with args, got: {:?}",
+            snap.pane_titles,
+        );
+    }
+
+    /// Regression guard for issue #992: SpawnPane with layout=None (omitted from IPC)
+    /// must still open a terminal pane — the host must not treat None as a missing
+    /// layout and silently skip the pane. Without the fix, the IPC handler would have
+    /// called `matches!(layout.as_str(), ...)` on a String "overlay" (the old serde
+    /// default), meaning apps always opened as overlay regardless of registry hint.
+    #[test]
+    fn spawn_pane_terminal_with_null_layout_still_opens_pane() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: None,
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+        });
+        h.run_frames(2);
+
+        let snap = h.state();
+        assert!(
+            snap.open_panes.len() > 1,
+            "SpawnPane terminal with null layout must open a new pane (got {:?})",
+            snap.pane_titles,
+        );
+        assert!(
+            snap.pane_titles.values().any(|t| t == "Terminal"),
+            "expected a Terminal pane with null layout, got: {:?}",
             snap.pane_titles,
         );
     }

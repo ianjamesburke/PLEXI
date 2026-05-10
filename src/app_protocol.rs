@@ -909,8 +909,8 @@ pub enum HostCommand {
     ///               `PlexiEvent::PaneSpawnError { reason }` on failure.
     SpawnPane {
         type_id: String,
-        #[serde(default = "default_spawn_layout")]
-        layout: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<String>,
         #[serde(default)]
         args: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1511,10 +1511,6 @@ pub struct ListItem {
     pub icon: Option<String>, // reserved for future use
     #[serde(default)]
     pub is_dir: bool,
-}
-
-fn default_spawn_layout() -> String {
-    "overlay".to_string()
 }
 
 fn is_false(b: &bool) -> bool {
@@ -2480,7 +2476,7 @@ mod tests {
         match &cmd {
             DrawCommand::Host(HostCommand::SpawnPane { type_id, layout, args, pipe_id, from_pane_id, request_id, .. }) => {
                 assert_eq!(type_id, "snake");
-                assert_eq!(layout, "split_v");
+                assert_eq!(layout.as_deref(), Some("split_v"));
                 assert_eq!(args, &["--foo"]);
                 assert_eq!(pipe_id.as_deref(), Some("p1"));
                 assert!(from_pane_id.is_none());
@@ -2491,12 +2487,12 @@ mod tests {
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(serialised.contains(r#""type":"spawn_pane""#), "wire tag missing: {serialised}");
 
-        // defaults: layout defaults to "overlay", args to [], pipe_id absent
+        // defaults: layout is None (absent from wire), args to [], pipe_id absent
         let minimal = r#"{"type":"spawn_pane","type_id":"snake"}"#;
         let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
             DrawCommand::Host(HostCommand::SpawnPane { layout, args, pipe_id, from_pane_id, request_id, .. }) => {
-                assert_eq!(layout, "overlay");
+                assert!(layout.is_none(), "absent layout must deserialise to None");
                 assert!(args.is_empty());
                 assert!(pipe_id.is_none());
                 assert!(from_pane_id.is_none());

@@ -777,13 +777,14 @@ impl ProcessApp {
                         .push_back(PlexiEvent::PaneSpawnError { reason, request_id });
                     return;
                 }
+                let layout_str = layout.unwrap_or_else(|| "overlay".to_string());
                 log::info!(
-                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout}' args={args:?} pipe_id={pipe_id:?} from_pane_id={from_pane_id:?} request_id={request_id:?}",
+                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout_str}' args={args:?} pipe_id={pipe_id:?} from_pane_id={from_pane_id:?} request_id={request_id:?}",
                     self.type_id
                 );
                 self.pending_commands.push(AppCommand::SpawnPane {
                     type_id,
-                    layout,
+                    layout: layout_str,
                     args,
                     pipe_id,
                     from_pane_id,
