@@ -2381,7 +2381,7 @@ impl eframe::App for PlexiApp {
                 egui::Frame::new()
                     .fill(self.colors.bg_toolbar)
                     .inner_margin(egui::Margin {
-                        left: 8,
+                        left: 80,
                         right: 8,
                         top: 4,
                         bottom: 4,
