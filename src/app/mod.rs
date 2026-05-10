@@ -2065,21 +2065,25 @@ impl eframe::App for PlexiApp {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
+                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused(false, None, false);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].zoomed_pane = None;
+                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused(true, None, false);
                     self.save_workspace();
                 }
                 Action::SplitRight => {
                     self.windows[self.active_window].zoomed_pane = None;
+                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused_mirror(crate::host::command::Placement::Right);
                     self.save_workspace();
                 }
                 Action::SplitDown => {
                     self.windows[self.active_window].zoomed_pane = None;
+                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused_mirror(crate::host::command::Placement::Below);
                     self.save_workspace();
                 }
@@ -2087,8 +2091,14 @@ impl eframe::App for PlexiApp {
                     let was_zoomed = self.windows[self.active_window].zoomed_pane.is_some();
                     self.navigate(dir);
                     if was_zoomed {
-                        self.windows[self.active_window].zoomed_pane =
-                            self.windows[self.active_window].focused_pane;
+                        let new_pane = self.windows[self.active_window].focused_pane;
+                        self.windows[self.active_window].zoomed_pane = new_pane;
+                        log::info!("zoom: navigate — new zoomed pane={new_pane:?}");
+                        self.ctx.memory_mut(|m| {
+                            if let Some(id) = m.focused() {
+                                m.surrender_focus(id);
+                            }
+                        });
                     }
                 }
                 Action::SwapPane(dir) => {
@@ -2147,9 +2157,16 @@ impl eframe::App for PlexiApp {
                     if let Some(focused) = ctx.focused_pane {
                         if ctx.zoomed_pane == Some(focused) {
                             ctx.zoomed_pane = None;
+                            log::info!("zoom: toggle off — pane={focused:?}");
                         } else {
                             ctx.zoomed_pane = Some(focused);
+                            log::info!("zoom: toggle on — pane={focused:?}");
                         }
+                        self.ctx.memory_mut(|m| {
+                            if let Some(id) = m.focused() {
+                                m.surrender_focus(id);
+                            }
+                        });
                     }
                 }
                 Action::Quit => {
@@ -2412,6 +2429,11 @@ impl eframe::App for PlexiApp {
                 if let Some(zp) = ctx.zoomed_pane {
                     if !matches!(ctx.tree.tiles.get(zp), Some(Tile::Pane(_))) {
                         ctx.zoomed_pane = None;
+                        self.ctx.memory_mut(|m| {
+                            if let Some(id) = m.focused() {
+                                m.surrender_focus(id);
+                            }
+                        });
                     }
                 }
 
@@ -2616,10 +2638,6 @@ impl eframe::App for PlexiApp {
                                     self.colors.text_dim,
                                 );
                             }
-                            log::info!(
-                                "zoom: name bar — pane={pane_id:?} name={:?}",
-                                zoomed_pane_name
-                            );
                         }
                         // Frame rect starts exactly where the name bar ends (or at the
                         // top of inner_rect when there is no name bar), so no gap appears.
