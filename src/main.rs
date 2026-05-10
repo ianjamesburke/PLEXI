@@ -205,6 +205,7 @@ fn main() -> eframe::Result {
                     },
                     Commands::Secret { cmd } => match cmd {
                         SecretCmd::Set { friendly_name, from_env, global } => std::process::exit(cli::workspace_secret_set(&friendly_name, from_env, global)),
+                        SecretCmd::Get { friendly_name, global } => std::process::exit(cli::workspace_secret_get(&friendly_name, global)),
                         SecretCmd::List => std::process::exit(cli::workspace_secret_list()),
                         SecretCmd::Delete { friendly_name } => std::process::exit(cli::workspace_secret_delete(&friendly_name)),
                     },
