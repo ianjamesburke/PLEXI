@@ -2625,4 +2625,37 @@ mod tests {
         // Empty is not reserved
         assert!(!is_reserved_shortcut(""));
     }
+
+    #[test]
+    fn key_pane_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"key_pane","pane_id":42,"key":"enter","response_file":"result.json"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::KeyPane { pane_id, key, response_file }) => {
+                assert_eq!(*pane_id, 42);
+                assert_eq!(key, "enter");
+                assert_eq!(response_file.as_deref(), Some("result.json"));
+            }
+            other => panic!("expected KeyPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"key_pane""#), "wire tag missing: {serialised}");
+
+        // Optional field: response_file absent → None
+        let minimal = r#"{"type":"key_pane","pane_id":1,"key":"h"}"#;
+        let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
+        match &cmd2 {
+            DrawCommand::Host(HostCommand::KeyPane { response_file, .. }) => {
+                assert!(response_file.is_none(), "absent response_file must deserialise to None");
+            }
+            other => panic!("expected KeyPane, got {other:?}"),
+        }
+
+        // Required-field discipline: missing key field must fail
+        let bad = r#"{"type":"key_pane","pane_id":1}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required key field"
+        );
+    }
 }

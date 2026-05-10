@@ -1101,8 +1101,9 @@ mod tests {
         let after_classify = &src[classify_start..handle_key_start];
         // classify_key should contain key_pressed calls (for scroll keys)
         assert!(after_classify.contains("key_pressed"), "classify_key must contain key_pressed calls");
-        // classify_key must also use key_pressed_no_repeat for navigation keys
-        assert!(after_classify.contains("key_pressed_no_repeat"), "classify_key must use key_pressed_no_repeat for navigation keys");
+        // classify_key must also use key_pressed_no_repeat for action/activation keys (Escape, Enter, etc.)
+        // scroll keys (ArrowDown, ArrowUp, j, k) still use key_pressed to allow repeating
+        assert!(after_classify.contains("key_pressed_no_repeat"), "classify_key must use key_pressed_no_repeat for action/activation keys");
         // handle_key body must not contain key_pressed calls
         let handle_body_end = handle_key_body[10..].find("fn ").map(|i| i + 10).unwrap_or(handle_key_body.len());
         let handle_body = &handle_key_body[..handle_body_end];

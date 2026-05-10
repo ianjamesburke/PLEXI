@@ -310,7 +310,7 @@ pub enum PaneCmd {
     },
     /// Print JSON info for the current pane [requires PLEXI_PANE_ID]
     Info,
-    /// Deliver a synthetic key event to a pane [requires PLEXI_SOCKET]
+    /// Deliver a synthetic key event to a pane [requires PLEXI_SOCKET — run inside a Plexi pane]
     ///
     /// For terminal panes, injects as PTY keystroke.
     /// For app panes, delivers a structured key event.

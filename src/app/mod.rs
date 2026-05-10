@@ -3364,17 +3364,14 @@ impl PlexiApp {
 
 // ── Directed pipe helpers (#286) ─────────────────────────────────────────────
 
-/// Register a duplex JSON pipe on the target pane's typed-pipe registry so
-/// `has_reader` returns `true` and the SDK can `pipe_send` back through the
-/// same id. Returns `true` on success, `false` if the target pane has no
 /// Translate a key string (e.g. "enter", "ctrl+c", "h") to PTY bytes.
 fn key_str_to_pty_bytes(key: &str) -> Vec<u8> {
     let key_lower = key.to_lowercase();
-    // Handle ctrl+X chords
+    // Handle ctrl+X chords using bit-mask to support any ASCII char ([, ], \, /, @, etc.)
     if let Some(rest) = key_lower.strip_prefix("ctrl+") {
         if let Some(ch) = rest.chars().next() {
-            if ch.is_ascii_alphabetic() {
-                return vec![(ch as u8) - b'a' + 1];
+            if ch.is_ascii() && !ch.is_ascii_control() {
+                return vec![(ch as u8) & 0x1F];
             }
         }
     }
