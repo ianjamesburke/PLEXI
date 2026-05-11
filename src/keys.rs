@@ -542,7 +542,7 @@ pub fn poll_actions(
         // Rename context before rename pane — check shifted variant first.
         if input.consume_key(bindings.rename_context.0, bindings.rename_context.1) {
             actions.push(Action::RenameContext);
-        } else if input.consume_key(bindings.rename_pane.0, bindings.rename_pane.1) {
+        } else if !input.modifiers.alt && input.consume_key(bindings.rename_pane.0, bindings.rename_pane.1) {
             actions.push(Action::RenamePane);
         }
 
