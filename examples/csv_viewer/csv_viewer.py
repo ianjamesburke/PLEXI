@@ -32,6 +32,14 @@ class CsvViewer(App):
         self._rows: list[list[str]] = []
         self._v_scroll = 0
         self._h_scroll = 0
+        # Cache file sizes once at init to avoid stat() calls inside on_render
+        self._file_hints: dict[Path, str] = {}
+        for p in self._files:
+            try:
+                kb = p.stat().st_size / 1024
+                self._file_hints[p] = f"{kb:.1f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"
+            except OSError:
+                self._file_hints[p] = ""
         ctx.info(f"csv_viewer: {len(self._files)} CSV files in {launch_dir}")
 
     def on_inject(self, _ctx: RenderContext, payload: dict) -> None:
@@ -120,13 +128,10 @@ class CsvViewer(App):
             if i == self._selected:
                 ctx.rect(0, row_y - 2, w, ROW_H, fill=SURFACE, radius=0.0)
             color = ACCENT if i == self._selected else FG
-            ctx.text(PAD, row_y + 4, path.name, size=BODY, color=color)
-            try:
-                kb = path.stat().st_size / 1024
-                hint = f"{kb:.1f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"
+            ctx.text(PAD, row_y + 4, path.name, size=BODY, color=color, max_width=w - PAD * 2 - 80)
+            hint = self._file_hints.get(path, "")
+            if hint:
                 ctx.text(w - PAD - 64, row_y + 4, hint, size=CAPTION, color=MUTED)
-            except OSError:
-                pass
 
         ctx.text(PAD, h - 20, "↑↓ / jk  navigate   ↵  open   esc  exit", size=CAPTION, color=MUTED)
 
@@ -151,9 +156,8 @@ class CsvViewer(App):
         for ci, col_idx in enumerate(range(col_start, col_end)):
             x = PAD + ci * COL_W
             label = self._headers[col_idx] if col_idx < len(self._headers) else ""
-            if len(label) > 16:
-                label = label[:14] + "…"
-            ctx.text(x + CELL_PAD, y + 4, label, size=CAPTION, color=ACCENT, bold=True)
+            ctx.text(x + CELL_PAD, y + 4, label, size=CAPTION, color=ACCENT, bold=True,
+                     max_width=COL_W - CELL_PAD * 2)
         y += ROW_H + 2
 
         # Data rows
@@ -173,9 +177,8 @@ class CsvViewer(App):
             for ci, col_idx in enumerate(range(col_start, col_end)):
                 x = PAD + ci * COL_W
                 cell = row[col_idx] if col_idx < len(row) else ""
-                if len(cell) > 16:
-                    cell = cell[:14] + "…"
-                ctx.text(x + CELL_PAD, row_y + 4, cell, size=CAPTION, color=FG)
+                ctx.text(x + CELL_PAD, row_y + 4, cell, size=CAPTION, color=FG,
+                         max_width=COL_W - CELL_PAD * 2)
 
         # Footer
         if self._rows:
