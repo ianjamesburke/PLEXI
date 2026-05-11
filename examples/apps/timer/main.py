@@ -25,7 +25,7 @@ DURATIONS = [
     (60 * 60, "60 min"),
 ]
 
-DEFAULT_IDX = 4  # 5 min
+DEFAULT_IDX = 5  # 5 min
 DEFAULT_MSG = "Timer done!"
 TICK_ID = "tick"
 TWO_PI = 2 * math.pi
