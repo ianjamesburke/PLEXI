@@ -354,21 +354,23 @@ class AppBar(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         ctx.rect(x, y, w, h, BG)
         band = self._band()
+        text_x = x + SPACE_MD
+        text_w = w - SPACE_MD
         if self.subtitle:
             block_h = self.TITLE_SIZE + SPACE_XS + self.SUBTITLE_SIZE
             title_y = y + (band - block_h) / 2.0
             sub_y = title_y + self.TITLE_SIZE + SPACE_XS
-            ctx.text(x, title_y, self.title,
+            ctx.text(text_x, title_y, self.title,
                      size=self.TITLE_SIZE, color=self.accent, bold=True,
-                     max_width=w, elide=True)
-            ctx.text(x, sub_y, self.subtitle,
+                     max_width=text_w, elide=True)
+            ctx.text(text_x, sub_y, self.subtitle,
                      size=self.SUBTITLE_SIZE, color=MUTED,
-                     max_width=w, elide=True)
+                     max_width=text_w, elide=True)
         else:
             text_y = y + (band - self.TITLE_SIZE) / 2.0
-            ctx.text(x, text_y, self.title,
+            ctx.text(text_x, text_y, self.title,
                      size=self.TITLE_SIZE, color=self.accent, bold=True,
-                     max_width=w, elide=True)
+                     max_width=text_w, elide=True)
         ctx.rect(x, y + band, w, self.DIVIDER_H, HIGHLIGHT)
 
 
