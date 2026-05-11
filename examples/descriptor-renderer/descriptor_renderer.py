@@ -17,21 +17,15 @@ import sys
 import threading
 from pathlib import Path
 
-from plexi_sdk import (
-    App, RenderContext,
-    BG, FG, SURFACE, HIGHLIGHT, ACCENT, MUTED, RED,
-    HEADING, BODY, CAPTION, HINT,
-    PAD, HEADER_H,
-    CapabilityDeniedError,
+from plexi_sdk import App, RenderContext, CapabilityDeniedError
+from plexi_sdk.ui import (
+    Column, AppBar, SelectList, FormField,
+    ListItem, Label, Spacer, Card,
+    HIGHLIGHT, ACCENT, MUTED, RED,
+    TEXT_HINT,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    RADIUS_SM,
 )
-
-# ── Layout constants ───────────────────────────────────────────────────────────
-
-BTN_H: float = 44.0
-BTN_GAP: float = 8.0
-FIELD_H: float = 36.0
-FIELD_GAP: float = 24.0  # label (16px) + gap below field
-ROW_H: float = BTN_H + BTN_GAP
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -104,14 +98,15 @@ class DescriptorRendererApp(App):
         self._view: str = "loading"   # loading | error | list | form
         self._cmd_path: list[str] = []
         self._selected_idx: int = 0   # cursor in current command list
-        self._scroll_offset: int = 0  # first visible row index (auto-tracked)
-        self._list_y0: float = 0.0    # y where list content starts (set each render)
         # Form state
         self._fields: list[dict] = []
         self._field_values: dict[str, str] = {}
+        self._form_fields: list[FormField] = []
         self._last_run: str = ""
         # Hit regions: (y_top, y_bot, tag)
         self._hits: list[tuple[float, float, object]] = []
+        # UI components
+        self._select_list = SelectList([])
 
         path = _parse_descriptor_path(sys.argv[1:])
         if not path:
@@ -163,158 +158,139 @@ class DescriptorRendererApp(App):
     # ── Render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, ctx.h, BG)
-
         if self._view == "loading":
-            ctx.text(x=ctx.w / 2, y=ctx.h / 2, text="Loading…",
-                     size=BODY, color=MUTED, align="center")
+            ctx.render(Column([
+                Spacer(grow=True),
+                Label("Loading…", tone="hint"),
+                Spacer(grow=True),
+            ], padding=0, gap=0))
             return
 
         if self._view == "error":
-            self._render_error(ctx)
+            ctx.render(Column([
+                Spacer(SPACE_LG),
+                Card([
+                    Label("Error", color=RED, bold=True),
+                    Spacer(SPACE_SM),
+                    Label(self._error, tone="caption"),
+                ]),
+            ], padding=SPACE_LG, gap=0))
             return
 
-        y = self._render_header(ctx)
-        y = self._render_breadcrumb(ctx, y)
-
-        if self._view == "list":
-            self._list_y0 = y
-            self._render_list(ctx, y)
-        else:
-            self._render_form(ctx, y)
-
-    def _render_header(self, ctx: RenderContext) -> float:
         assert self._descriptor is not None
-        h = HEADER_H
-        ctx.rect(0, 0, ctx.w, h, SURFACE)
         d = self._descriptor
         icon = d.get("icon", "")
         name = d.get("name", "")
         ver = d.get("version", "")
-        label = f"{icon}  {name}  v{ver}" if icon else f"{name}  v{ver}"
-        ctx.text(x=PAD, y=h / 2, text=label,
-                 size=HEADING, color=FG, bold=True, align="left_center")
+        title = f"{icon}  {name}  v{ver}" if icon else f"{name}  v{ver}"
         desc = d.get("description", "")
-        if desc:
-            ctx.text(x=ctx.w - PAD, y=h / 2, text=desc,
-                     size=HINT, color=MUTED, align="right_center",
-                     max_width=ctx.w * 0.45, elide=True)
-        return h + PAD
 
-    def _render_breadcrumb(self, ctx: RenderContext, y: float) -> float:
+        if self._view == "list":
+            commands = _commands_at(self._descriptor, self._cmd_path)
+            crumb = None
+            if self._cmd_path:
+                crumb = " › ".join([name] + list(self._cmd_path))
+            self._select_list.items = [
+                {
+                    "name": cmd["name"] + (" ›" if cmd.get("commands") else ""),
+                    "description": cmd.get("description") or None,
+                    "leading": cmd.get("icon") or None,
+                }
+                for cmd in commands
+            ]
+            app_bar = AppBar(title, subtitle=crumb or desc or None)
+            app_bar_h = app_bar.measure(ctx.w)
+            header_items: list = [app_bar]
+            if self._cmd_path:
+                back_item = ListItem(title="← Back", selected=False)
+                header_items.append(back_item)
+                back_h = back_item.measure(ctx.w)
+                self._hits = [(app_bar_h, app_bar_h + back_h, "back")]
+            else:
+                self._hits = []
+            header_items.append(self._select_list)
+            ctx.render(Column(header_items, padding=0, gap=0))
+            return
+
+        if self._view == "form":
+            self._render_form(ctx)
+
+    def _render_form(self, ctx: RenderContext) -> None:
         assert self._descriptor is not None
-        if not self._cmd_path:
-            return y
-        cli = self._descriptor.get("name", "?")
-        crumb = " › ".join([cli] + list(self._cmd_path))
-        ctx.text(x=PAD, y=y, text=crumb, size=CAPTION, color=MUTED)
-        return y + 22
+        d = self._descriptor
+        icon = d.get("icon", "")
+        name = d.get("name", "")
+        ver = d.get("version", "")
+        title = f"{icon}  {name}  v{ver}" if icon else f"{name}  v{ver}"
 
-    def _render_error(self, ctx: RenderContext) -> None:
-        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 80.0, SURFACE, radius=6.0)
-        ctx.text(x=PAD + 14, y=PAD + 20, text="Error", size=HEADING, color=RED, bold=True)
-        ctx.text(x=PAD + 14, y=PAD + 52, text=self._error,
-                 size=CAPTION, color=FG, max_width=ctx.w - PAD * 2 - 28, elide=True)
-
-    def _render_list(self, ctx: RenderContext, y0: float) -> None:
-        assert self._descriptor is not None
-        commands = _commands_at(self._descriptor, self._cmd_path)
-        btn_w = ctx.w - PAD * 2
         self._hits = []
-        y = y0
 
-        if self._cmd_path:
-            ctx.rect(PAD, y, btn_w, BTN_H, SURFACE, radius=6.0)
-            ctx.text(x=PAD + 14, y=y + BTN_H / 2, text="← Back",
-                     size=BODY, color=ACCENT, bold=True, align="left_center")
-            self._hits.append((y, y + BTN_H, "back"))
-            y += BTN_H + BTN_GAP
+        # AppBar at top
+        app_bar = AppBar(title)
+        app_bar_h = app_bar.measure(ctx.w)
+        app_bar.render(ctx, 0, 0, ctx.w, app_bar_h)
+        y = app_bar_h
 
-        for i, cmd in enumerate(commands):
-            by = y + (i - self._scroll_offset) * ROW_H
-            self._hits.append((by, by + BTN_H, i))
-            if by + BTN_H <= y0 or by >= ctx.h:
-                continue
+        # Back button
+        back = ListItem(title="← Back", selected=False)
+        back_h = back.measure(ctx.w)
+        back.render(ctx, 0, y, ctx.w, back_h)
+        self._hits.append((y, y + back_h, "back"))
+        y += back_h + SPACE_SM
 
-            selected = (i == self._selected_idx)
-            bg = HIGHLIGHT if selected else SURFACE
-            name_color = ACCENT if selected else FG
-            is_group = bool(cmd.get("commands"))
-            icon = cmd.get("icon", "")
-            name_label = cmd["name"] + (" ›" if is_group else "")
-            display = f"{icon}  {name_label}" if icon else name_label
-            desc_text = cmd.get("description", "")
-
-            ctx.rect(PAD, by, btn_w, BTN_H, bg, radius=6.0)
-            label_y = by + (BTN_H * 0.38 if desc_text else BTN_H / 2)
-            ctx.text(x=PAD + 14, y=label_y, text=display,
-                     size=BODY, color=name_color, bold=True, align="left_center")
-            if desc_text:
-                ctx.text(x=PAD + 14, y=by + BTN_H * 0.72, text=desc_text,
-                         size=HINT, color=MUTED, align="left_center",
-                         max_width=btn_w - 28, elide=True)
-
-        # Hint only when list overflows visible area
-        visible_rows = max(1, int((ctx.h - y) / ROW_H))
-        if len(commands) > visible_rows:
-            ctx.text(x=ctx.w / 2, y=ctx.h - 16,
-                     text=f"j/k  ·  {self._selected_idx + 1} / {len(commands)}",
-                     size=HINT, color=MUTED, align="center")
-
-    def _render_form(self, ctx: RenderContext, y0: float) -> None:
-        btn_w = ctx.w - PAD * 2
-        self._hits = []
-        y = y0
-
-        ctx.rect(PAD, y, btn_w, BTN_H, SURFACE, radius=6.0)
-        ctx.text(x=PAD + 14, y=y + BTN_H / 2, text="← Back",
-                 size=BODY, color=ACCENT, bold=True, align="left_center")
-        self._hits.append((y, y + BTN_H, "back"))
-        y += BTN_H + BTN_GAP
-
-        if not self._fields:
-            ctx.rect(PAD, y, btn_w, BTN_H, ACCENT, radius=6.0)
-            ctx.text(x=PAD + btn_w / 2, y=y + BTN_H / 2, text="▶  Run",
-                     size=BODY, color=BG, bold=True, align="center")
-            self._hits.append((y, y + BTN_H, "run"))
-            y += BTN_H + BTN_GAP
+        if not self._form_fields:
+            run = ListItem(title="▶  Run", background=ACCENT, selected=False)
+            run_h = run.measure(ctx.w)
+            run.render(ctx, 0, y, ctx.w, run_h)
+            self._hits.append((y, y + run_h, "run"))
+            y += run_h + SPACE_SM
         else:
-            for field in self._fields:
-                name = field["name"]
-                req = " *" if field.get("required") else ""
-                ctx.text(x=PAD, y=y, text=f"{name}{req}", size=HINT, color=MUTED)
-                y += 18
-                submitted = ctx.text_input(
-                    id=name, x=PAD, y=y, w=btn_w,
-                    placeholder=field.get("placeholder", field.get("default_str", "")),
-                )
-                if submitted is not None:
-                    self._field_values[name] = submitted
-                    if name == self._fields[-1]["name"]:
+            for ff in self._form_fields:
+                sub = ff.submitted
+                if sub is not None:
+                    self._field_values[ff.id] = sub
+                    if ff.id == self._form_fields[-1].id:
                         self._run()
-                self._hits.append((y, y + FIELD_H, name))
-                y += FIELD_H + FIELD_GAP
+                fh = ff.measure(ctx.w - 2 * SPACE_LG)
+                ff.render(ctx, SPACE_LG, y, ctx.w - 2 * SPACE_LG, fh)
+                y += fh
 
-            ctx.rect(PAD, y, btn_w, BTN_H, ACCENT, radius=6.0)
-            ctx.text(x=PAD + btn_w / 2, y=y + BTN_H / 2, text="▶  Run",
-                     size=BODY, color=BG, bold=True, align="center")
-            self._hits.append((y, y + BTN_H, "run"))
-            y += BTN_H + BTN_GAP
+            run = ListItem(title="▶  Run", background=ACCENT, selected=False)
+            run_h = run.measure(ctx.w)
+            run.render(ctx, 0, y, ctx.w, run_h)
+            self._hits.append((y, y + run_h, "run"))
+            y += run_h + SPACE_SM
 
         if self._last_run:
-            ctx.rect(PAD, y, btn_w, 34, HIGHLIGHT, radius=4.0)
-            ctx.text(x=PAD + 10, y=y + 17, text=f"$ {self._last_run}",
-                     size=HINT, color=MUTED, monospace=True,
-                     align="left_center", max_width=btn_w - 20, elide=True)
+            last_run_h = TEXT_HINT + SPACE_XS * 2 + 4.0
+            ctx.rect(SPACE_LG, y, ctx.w - 2 * SPACE_LG, last_run_h, HIGHLIGHT, radius=RADIUS_SM)
+            ctx.text(x=SPACE_LG + SPACE_SM, y=y + last_run_h / 2,
+                     text=f"$ {self._last_run}",
+                     size=TEXT_HINT, color=MUTED, monospace=True,
+                     align="left_center", max_width=ctx.w - 2 * SPACE_LG - SPACE_MD, elide=True)
 
     # ── Interaction ───────────────────────────────────────────────────────────
 
-    def on_click(self, ctx: RenderContext, _x: float, y: float, button: str) -> None:
+    def on_click(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:
         if button != "primary":
             return
-        for (y_top, y_bot, tag) in self._hits:
-            if y_top <= y < y_bot:
-                # Sync selection cursor to clicked row so it stays coherent
+        if self._view == "list":
+            # Check back button first (tracked in _hits)
+            for (yt, yb, tag) in self._hits:
+                if yt <= y < yb:
+                    self._handle(tag)
+                    self.emit.schedule_render(after_ms=16)
+                    return
+            # Then list items via SelectList
+            idx = self._select_list.hit_index(y)
+            if idx is not None:
+                self._selected_idx = idx
+                self._handle(idx)
+                self.emit.schedule_render(after_ms=16)
+            return
+        # Form view: use _hits
+        for (yt, yb, tag) in self._hits:
+            if yt <= y < yb:
                 if isinstance(tag, int) and self._view == "list":
                     self._selected_idx = tag
                 self._handle(tag)
@@ -329,7 +305,7 @@ class DescriptorRendererApp(App):
             elif self._cmd_path:
                 self._cmd_path.pop()
             self._selected_idx = 0
-            self._scroll_offset = 0
+            self._select_list.selected_idx = 0
             return
 
         if tag == "run":
@@ -343,7 +319,7 @@ class DescriptorRendererApp(App):
                 cmd = commands[tag]
                 self._cmd_path.append(cmd["name"])
                 self._selected_idx = 0
-                self._scroll_offset = 0
+                self._select_list.selected_idx = 0
                 if not cmd.get("commands"):
                     self._enter_form(cmd)
 
@@ -351,6 +327,7 @@ class DescriptorRendererApp(App):
         self._view = "form"
         self._field_values = {}
         self._fields = []
+        self._form_fields = []
         for arg in cmd.get("args", []):
             default = arg.get("default")
             self._fields.append({
@@ -360,6 +337,12 @@ class DescriptorRendererApp(App):
                 "placeholder": arg.get("placeholder") or arg.get("description", ""),
                 "default_str": "" if default is None else str(default),
             })
+            self._form_fields.append(FormField(
+                id=arg["name"],
+                label=arg["name"],
+                placeholder=arg.get("placeholder") or arg.get("description", ""),
+                required=arg.get("required", False),
+            ))
             if default is not None:
                 self._field_values[arg["name"]] = str(default)
         for flag in cmd.get("flags", []):
@@ -371,6 +354,12 @@ class DescriptorRendererApp(App):
                 "placeholder": flag.get("description", ""),
                 "default_str": "" if default is None else str(default),
             })
+            self._form_fields.append(FormField(
+                id=flag["name"],
+                label=flag["name"],
+                placeholder=flag.get("description", ""),
+                required=False,
+            ))
             if default is not None:
                 self._field_values[flag["name"]] = str(default)
 
@@ -385,28 +374,18 @@ class DescriptorRendererApp(App):
         self.emit.run_in_linked_terminal(self._terminal_pane_id, cmd_str, echo=True)
         self.emit.info(f"descriptor-renderer: ran {cmd_str!r}")
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._view == "list":
-            assert self._descriptor is not None
-            commands = _commands_at(self._descriptor, self._cmd_path)
-            total = len(commands)
-            visible_rows = max(1, int((ctx.h - self._list_y0) / ROW_H))
-
-            if key in ("down", "j"):
-                self._selected_idx = min(self._selected_idx + 1, total - 1)
-                self._clamp_scroll(visible_rows)
-                self.emit.schedule_render(after_ms=16)
-            elif key in ("up", "k"):
-                self._selected_idx = max(self._selected_idx - 1, 0)
-                self._clamp_scroll(visible_rows)
+            if self._select_list.handle_key(key):
+                self._selected_idx = self._select_list.selected_idx
                 self.emit.schedule_render(after_ms=16)
             elif key in ("Return", "Enter"):
-                self._handle(self._selected_idx)
+                self._handle(self._select_list.selected_idx)
                 self.emit.schedule_render(after_ms=16)
             elif key == "Escape" and self._cmd_path:
                 self._cmd_path.pop()
                 self._selected_idx = 0
-                self._scroll_offset = 0
+                self._select_list.selected_idx = 0
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
@@ -414,15 +393,8 @@ class DescriptorRendererApp(App):
                 self._view = "list"
                 self._cmd_path.pop()
                 self._selected_idx = 0
-                self._scroll_offset = 0
+                self._select_list.selected_idx = 0
                 self.emit.schedule_render(after_ms=16)
-
-    def _clamp_scroll(self, visible_rows: int) -> None:
-        """Keep _scroll_offset so _selected_idx is always in the visible window."""
-        if self._selected_idx < self._scroll_offset:
-            self._scroll_offset = self._selected_idx
-        elif self._selected_idx >= self._scroll_offset + visible_rows:
-            self._scroll_offset = self._selected_idx - visible_rows + 1
 
 
 if __name__ == "__main__":
