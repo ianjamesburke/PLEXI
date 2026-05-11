@@ -102,35 +102,7 @@ fn run_with_timeout(binary: &str, arg: &str) -> Result<String, CliParseError> {
 }
 
 fn run_version(binary: &str) -> Option<String> {
-    use std::sync::mpsc;
-    use std::process::Stdio;
-
-    let child = std::process::Command::new(binary)
-        .arg("--version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-
-    let pid = child.id();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-
-    let timeout = Duration::from_secs(TIMEOUT_SECS);
-    let output = match rx.recv_timeout(timeout) {
-        Ok(Ok(o)) => o,
-        _ => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
-            return None;
-        }
-    };
-
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let text = run_with_timeout(binary, "--version").ok()?;
     text.lines().next().map(|l| l.trim().to_string())
 }
 
