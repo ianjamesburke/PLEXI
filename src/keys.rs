@@ -12,7 +12,8 @@ use crate::config::KeybindingsConfig;
 // Cmd+Ctrl+H/J/K/L            — swap focused pane with neighbor in direction
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
-// Cmd+] / Cmd+[               — cycle tabs
+// Cmd+Shift+L/H               — next/prev tab
+// Cmd+Shift+J/K               — first/last tab
 // Cmd+Q                       — quit
 // Cmd+B                       — toggle sidebar
 // Cmd+Enter                   — toggle zoom
@@ -60,6 +61,9 @@ pub enum Action {
     NewTab,
     SwitchContext(usize),
     NextTab,
+    PrevTab,
+    FirstTab,
+    LastTab,
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
@@ -133,6 +137,9 @@ pub struct KeyBindings {
     pub navigate_right: (egui::Modifiers, egui::Key),
     pub new_tab: (egui::Modifiers, egui::Key),
     pub next_tab: (egui::Modifiers, egui::Key),
+    pub prev_tab: (egui::Modifiers, egui::Key),
+    pub first_tab: (egui::Modifiers, egui::Key),
+    pub last_tab: (egui::Modifiers, egui::Key),
     pub nav_back: (egui::Modifiers, egui::Key),
     pub toggle_sidebar: (egui::Modifiers, egui::Key),
     pub toggle_zoom: (egui::Modifiers, egui::Key),
@@ -185,7 +192,10 @@ impl Default for KeyBindings {
             navigate_up:               (cmd(),       egui::Key::K),
             navigate_right:            (cmd(),       egui::Key::L),
             new_tab:                   (cmd(),       egui::Key::T),
-            next_tab:                  (cmd(),       egui::Key::CloseBracket),
+            next_tab:                  (cmd_shift(), egui::Key::L),
+            prev_tab:                  (cmd_shift(), egui::Key::H),
+            first_tab:                 (cmd_shift(), egui::Key::J),
+            last_tab:                  (cmd_shift(), egui::Key::K),
             nav_back:                  (cmd(),       egui::Key::OpenBracket),
             toggle_sidebar:            (cmd(),       egui::Key::B),
             toggle_zoom:               (cmd(),       egui::Key::Enter),
@@ -329,6 +339,9 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(navigate_right, "navigate_right");
     apply_override!(new_tab, "new_tab");
     apply_override!(next_tab, "next_tab");
+    apply_override!(prev_tab, "prev_tab");
+    apply_override!(first_tab, "first_tab");
+    apply_override!(last_tab, "last_tab");
     apply_override!(nav_back, "nav_back");
     apply_override!(toggle_sidebar, "toggle_sidebar");
     apply_override!(toggle_zoom, "toggle_zoom");
@@ -369,6 +382,9 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("navigate_right",            bindings.navigate_right),
         ("new_tab",                   bindings.new_tab),
         ("next_tab",                  bindings.next_tab),
+        ("prev_tab",                  bindings.prev_tab),
+        ("first_tab",                 bindings.first_tab),
+        ("last_tab",                  bindings.last_tab),
         ("nav_back",                  bindings.nav_back),
         ("toggle_sidebar",            bindings.toggle_sidebar),
         ("toggle_zoom",               bindings.toggle_zoom),
@@ -475,14 +491,27 @@ pub fn poll_actions(
             actions.push(Action::NewTab);
         }
 
-        // Cycle tabs. When the notification modal is open, these cycle through
-        // the pending-notifications queue instead.
+        // Tab navigation. When the notification modal is open, next/prev tab
+        // cycle through the pending-notifications queue instead.
         if input.consume_key(bindings.next_tab.0, bindings.next_tab.1) {
             actions.push(if notification_modal_open {
                 Action::NotificationCycleNext
             } else {
                 Action::NextTab
             });
+        }
+        if input.consume_key(bindings.prev_tab.0, bindings.prev_tab.1) {
+            actions.push(if notification_modal_open {
+                Action::NotificationCyclePrev
+            } else {
+                Action::PrevTab
+            });
+        }
+        if input.consume_key(bindings.first_tab.0, bindings.first_tab.1) {
+            actions.push(Action::FirstTab);
+        }
+        if input.consume_key(bindings.last_tab.0, bindings.last_tab.1) {
+            actions.push(Action::LastTab);
         }
         if input.consume_key(bindings.nav_back.0, bindings.nav_back.1) {
             actions.push(if notification_modal_open {

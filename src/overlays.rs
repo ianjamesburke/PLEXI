@@ -265,12 +265,25 @@ impl PlexiApp {
 
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&["\u{2318}", "]"], &["\u{2318}", "["]],
+                                        &[&["\u{2318}", "\u{21E7}", "L"], &["\u{2318}", "\u{21E7}", "H"]],
                                         None,
                                         colors,
                                     );
                                     ui.label(
-                                        RichText::new("Next/prev tab")
+                                        RichText::new("Next / prev tab")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}", "\u{21E7}", "J"], &["\u{2318}", "\u{21E7}", "K"]],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("First / last tab")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );

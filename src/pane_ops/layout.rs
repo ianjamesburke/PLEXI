@@ -461,6 +461,41 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn jump_to_tab(&mut self, index: usize) {
+        let ctx = &self.windows[self.active_window];
+        let Some(focused) = ctx.focused_pane else {
+            return;
+        };
+
+        let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) else {
+            return;
+        };
+
+        let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get(tabs_id) else {
+            return;
+        };
+
+        let children = &tabs.children;
+        if children.is_empty() {
+            return;
+        }
+
+        let clamped = index.min(children.len() - 1);
+        let target = children[clamped];
+
+        let ctx = &mut self.windows[self.active_window];
+        if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tabs_id) {
+            tabs.set_active(target);
+        }
+
+        if let Some(pane_tile) = ctx.find_first_pane_in(target) {
+            ctx.focused_pane = Some(pane_tile);
+            if ctx.zoomed_pane.is_some() {
+                ctx.zoomed_pane = Some(pane_tile);
+            }
+        }
+    }
+
     pub(crate) fn close_focused(&mut self) {
         let focused = match self.windows[self.active_window].focused_pane {
             Some(f) => f,
