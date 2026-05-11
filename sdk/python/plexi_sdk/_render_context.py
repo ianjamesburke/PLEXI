@@ -150,7 +150,7 @@ class RenderContext:
 
     def badge(self, x: float, y_center: float, label: str,
               fill: str = ACCENT, fg: str = BG,
-              font_size: float = 11.0, radius: float = 8.0) -> None:
+              font_size: float = 11.0, radius: float = 6.0) -> None:
         """Render a host-measured pill badge.
 
         The host measures the label with real egui font metrics, sizes the pill
