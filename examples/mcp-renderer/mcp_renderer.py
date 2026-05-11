@@ -87,29 +87,29 @@ class McpClient:
                 continue
             return json.loads(raw)
 
-    def _call(self, method: str, params: dict) -> dict:
+    def _call(self, method: str, params: dict, timeout: float = 30.0) -> dict:
         msg_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
         while True:
-            resp = self._recv()
+            resp = self._recv(timeout=timeout)
             # Skip notifications (no id or id is None)
             if resp.get("id") == msg_id:
                 if "error" in resp:
                     raise RuntimeError(f"MCP error: {resp['error']}")
                 return resp.get("result", {})
 
-    def initialize(self) -> None:
+    def initialize(self, timeout: float = 10.0) -> None:
         self._call("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
             "clientInfo": {"name": "mcp-renderer", "version": "0.1.0"},
-        })
+        }, timeout=timeout)
         # Send initialized notification (no id, no response expected)
         self._send({"jsonrpc": "2.0", "id": None, "method": "notifications/initialized", "params": {}})
 
-    def list_tools(self) -> list[dict]:
-        result = self._call("tools/list", {})
+    def list_tools(self, timeout: float = 30.0) -> list[dict]:
+        result = self._call("tools/list", {}, timeout=timeout)
         return result.get("tools", [])
 
     def call_tool(self, name: str, arguments: dict) -> list[dict]:
@@ -170,19 +170,21 @@ class McpRendererApp(App):
             self.emit.warn(f"mcp-renderer: thread spawn failed: {e}")
 
     def _connect(self, cmd: list[str]) -> None:
+        client = McpClient(cmd)
         try:
-            client = McpClient(cmd)
             client.start()
-            client.initialize()
-            tools = client.list_tools()
+            client.initialize(timeout=10.0)
+            tools = client.list_tools(timeout=10.0)
             self._client = client
             self._tools = tools
             self._view = "list"
             self.emit.info(f"mcp-renderer: got {len(tools)} tools")
         except Exception as e:
-            self._error = f"Failed to connect to MCP server:\n{e}"
+            stderr = getattr(client, "_last_stderr", "")
+            detail = f"\nServer stderr: {stderr}" if stderr else ""
+            self._error = f"Failed to connect to MCP server:\n{e}{detail}"
             self._view = "error"
-            self.emit.warn(f"mcp-renderer: connect failed: {e}")
+            self.emit.warn(f"mcp-renderer: connect failed: {e}{detail}")
         self._tools_ready.set()
         self.emit.schedule_render(after_ms=16)
 
