@@ -8,9 +8,9 @@ Two views:
 Keys: j/k navigate · Enter open detail · Esc back · o open in browser
       r refresh · n new issue in terminal
 """
+import asyncio
 import json
 import subprocess
-import threading
 
 from plexi_sdk import (
     App, RenderContext,
@@ -78,7 +78,7 @@ class GhIssues(App):
     def _fetch(self) -> None:
         self._loading = True
         self._error   = None
-        threading.Thread(target=self._load_list, daemon=True).start()
+        asyncio.get_event_loop().create_task(asyncio.to_thread(self._load_list))
 
     def _load_list(self) -> None:
         rc, out, err = _gh(
@@ -154,8 +154,8 @@ class GhIssues(App):
         ctx.rect(0, HEADER_H - 1, ctx.w, 1, fill=BG)
 
         mid_y = HEADER_H / 2
-        ctx.text(PAD, mid_y, "Issues", size=HEADING, color=ACCENT,
-                 bold=True, monospace=True, align="center")
+        ctx.text(PAD, mid_y - HEADING / 2, "Issues", size=HEADING, color=ACCENT,
+                 bold=True, monospace=True)
 
         if not self._loading:
             ctx.badge(
@@ -210,10 +210,9 @@ class GhIssues(App):
 
             # title
             ctx.text(
-                PAD + 52, row_mid,
+                PAD + 52, row_mid - CAPTION / 2,
                 issue["title"],
                 size=CAPTION, color=FG,
-                align="center",
                 max_width=ctx.w - PAD - 52 - PAD - 130,
             )
 
@@ -344,9 +343,9 @@ class GhIssues(App):
         self._view           = self.VIEW_DETAIL
         self._detail         = None
         self._detail_loading = True
-        threading.Thread(
-            target=self._load_detail, args=(issue["number"],), daemon=True
-        ).start()
+        asyncio.get_event_loop().create_task(
+            asyncio.to_thread(self._load_detail, issue["number"])
+        )
 
     def _open_browser(self) -> None:
         if not self._issues:
