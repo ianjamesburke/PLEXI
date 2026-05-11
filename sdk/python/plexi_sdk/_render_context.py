@@ -43,8 +43,13 @@ class RenderContext:
         self._my: float = app._my
         self._clicks: list[tuple[float, float]] = clicks or []
         # Shared reference to App's hold-timer map — mutations here persist
-        # across frames (#1083).
+        # across frames (#1083). Prune expired entries each frame so the dict
+        # stays bounded for apps that generate transient button IDs.
         self._btn_active_until: dict[str, float] = app._btn_active_until
+        _now = time.monotonic()
+        expired = [bid for bid, exp in self._btn_active_until.items() if exp <= _now]
+        for bid in expired:
+            del self._btn_active_until[bid]
 
     def _queue(self, obj: dict) -> None:
         """Buffer a render command for batch flush at frame_done()."""
