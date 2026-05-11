@@ -676,6 +676,7 @@ class __CLASS_NAME__(App):
         if self._btn.render(ctx):
             self.click_count += 1
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
+            # ctx.notify("__DISPLAY_NAME__", f"Click #{self.click_count}", priority=PRIORITY_NORMAL)
 
         # ── 5. State label ───────────────────────────────────────────────────────
         # Mutations to self.* are visible on the next frame.
