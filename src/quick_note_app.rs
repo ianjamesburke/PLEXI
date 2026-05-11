@@ -140,6 +140,7 @@ impl QuickNoteApp {
         if esc {
             log::info!("QuickNote: destination picker dismissed, back to composing");
             self.phase = Phase::Composing;
+            self.focus_set = false;
             return;
         }
 
@@ -178,8 +179,8 @@ impl QuickNoteApp {
         // --- Note preview (dimmed) ---
         let preview = {
             let t = self.text.trim();
-            if t.len() > 80 {
-                format!("{}…", &t[..80])
+            if let Some((idx, _)) = t.char_indices().nth(80) {
+                format!("{}…", &t[..idx])
             } else {
                 t.to_string()
             }
