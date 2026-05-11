@@ -683,6 +683,18 @@ impl PlexiApp {
             if let Some(target) = wrap_target {
                 log::info!("navigate({:?}): wrapping within context to pane {:?}", dir, target);
                 self.windows[self.active_window].focused_pane = Some(target);
+                if let Some(egui_tiles::Tile::Pane(pane_id)) =
+                    self.windows[self.active_window].tree.tiles.get(target)
+                {
+                    let pane_id = *pane_id;
+                    if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
+                        if let Some(app) = pane.as_app_mut() {
+                            if let crate::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
+                                proc_app.pane_just_focused = true;
+                            }
+                        }
+                    }
+                }
             }
         } else {
             log::info!("navigate({:?}): falling through to page navigation", dir);
