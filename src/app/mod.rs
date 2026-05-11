@@ -1037,9 +1037,23 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} response_file={response_file:?}");
+                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} from_pane_id={from_pane_id:?} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
+
+                    // Override focused_pane for the split if from_pane_id is specified,
+                    // so the new pane splits the origin pane regardless of which pane has focus.
+                    let active = self.active_window;
+                    let original_focused = self.windows[active].focused_pane;
+                    if let Some(from_id) = from_pane_id {
+                        if let Some(tile) = self.windows[active].tree.tiles.find_pane(from_id) {
+                            log::info!("pane_ipc: spawn_pane: splitting relative to from_pane_id={from_id}");
+                            self.windows[active].focused_pane = Some(tile);
+                        } else {
+                            log::warn!("pane_ipc: spawn_pane: from_pane_id={from_id} not found, using focused pane");
+                        }
+                    }
+
                     if type_id == "terminal" {
                         let layout_str = layout.as_deref().unwrap_or("split_v");
                         let vertical = matches!(layout_str, "split_h" | "split_above");
@@ -1048,6 +1062,11 @@ impl PlexiApp {
                         self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
                     } else {
                         self.launch_app_by_id_with_layout(type_id, layout.clone(), args);
+                    }
+
+                    // Only restore if we overrode focus; otherwise the new pane keeps focus.
+                    if from_pane_id.is_some() {
+                        self.windows[active].focused_pane = original_focused;
                     }
                     if let Some(rf) = response_file {
                         let json = format!("{{\"pane_id\":{new_pane_id}}}");
