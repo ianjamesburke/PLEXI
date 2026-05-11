@@ -63,6 +63,8 @@ class ListView:
     """
 
     def __init__(self, item_height: float = 48.0) -> None:
+        if item_height <= 0:
+            raise ValueError(f"ListView: item_height must be > 0, got {item_height!r}")
         self._item_height = item_height
         self._selected: int = 0
         self._scroll_offset: float = 0.0
