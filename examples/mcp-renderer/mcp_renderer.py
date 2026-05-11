@@ -13,6 +13,7 @@ Result view: Shows tool call output inline. Escape or Back returns to list.
 """
 
 import json
+import os
 import select
 import subprocess
 import sys
@@ -50,11 +51,15 @@ class McpClient:
         self._lock = threading.Lock()
 
     def start(self) -> None:
+        env = os.environ.copy()
+        extra = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+        env["PATH"] = extra + ":" + env.get("PATH", "")
         self._proc = subprocess.Popen(
             self._cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
         self._stdin = self._proc.stdin
         self._stdout = self._proc.stdout
