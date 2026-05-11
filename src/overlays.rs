@@ -92,7 +92,7 @@ impl PlexiApp {
                 ui.add_space(4.0);
             }
 
-            // Right side — help button + notification badge
+            // Right side — help button + version label
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(
@@ -130,32 +130,6 @@ impl PlexiApp {
                     .clicked()
                 {
                     self.show_changelog = !self.show_changelog;
-                }
-
-                let notif_count = self.visible_notification_count();
-                if notif_count > 0 {
-                    let badge_text = if notif_count > 9 {
-                        "9+".to_string()
-                    } else {
-                        notif_count.to_string()
-                    };
-                    let btn = egui::Button::new(
-                        RichText::new(format!("\u{1F514} {badge_text}"))
-                            .size(12.0)
-                            .color(self.colors.accent),
-                    )
-                    .frame(false);
-                    if ui
-                        .add(btn)
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Notifications (\u{2318}\u{21E7}A)")
-                        .clicked()
-                    {
-                        self.show_notification_modal = !self.show_notification_modal;
-                        if self.show_notification_modal && self.current_notify_id.is_none() {
-                            self.current_notify_id = self.select_highest_priority();
-                        }
-                    }
                 }
             });
         });
