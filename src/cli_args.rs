@@ -118,16 +118,27 @@ pub enum Commands {
     },
     /// Open an app pane
     Open {
-        /// App or pane type id
-        type_id: String,
+        /// App or pane type id (mutually exclusive with --mcp and --cli)
+        #[arg(conflicts_with_all = ["mcp", "cli"])]
+        type_id: Option<String>,
+        /// Wrap the given stdio MCP server command in the bundled mcp-renderer
+        ///
+        /// Example: plexi open --mcp npx @modelcontextprotocol/server-filesystem /tmp
+        #[arg(long, num_args = 1.., value_name = "CMD", allow_hyphen_values = true, conflicts_with = "cli")]
+        mcp: Vec<String>,
+        /// Wrap the given CLI binary in the bundled descriptor-renderer
+        ///
+        /// Example: plexi open --cli git
+        #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
+        cli: Option<String>,
         /// Layout hint
         #[arg(long)]
         layout: Option<String>,
         /// Split relative to this pane ID instead of the focused pane
         #[arg(long)]
         from_pane_id: Option<u64>,
-        /// Extra args passed to the app
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Extra args passed to the app (only valid with type_id)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
     },
     /// Descriptor probe

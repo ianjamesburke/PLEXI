@@ -3488,7 +3488,9 @@ _plexi() {
         open)
           _arguments \
             '--layout[Layout hint]:layout:(split_v split_h split_above overlay)' \
-            '--from-pane-id[Split relative to this pane ID]:pane_id:'
+            '--from-pane-id[Split relative to this pane ID]:pane_id:' \
+            '--mcp[Wrap stdio MCP server command in mcp-renderer]:cmd:' \
+            '--cli[Wrap CLI binary in descriptor-renderer]:binary:_command_names'
           ;;
         install)
           _arguments '--pack[Install from a pack file or core]:pack:'
@@ -3551,7 +3553,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       if [[ $prev == "--layout" ]]; then
         COMPREPLY=($(compgen -W "split_v split_h split_above overlay" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "--layout --from-pane-id" -- "$cur"))
+        COMPREPLY=($(compgen -W "--layout --from-pane-id --mcp --cli" -- "$cur"))
       fi
       ;;
     descriptor)
@@ -3669,6 +3671,8 @@ complete -c plexi -n "__fish_seen_subcommand_from terminal" -l from-pane-id -d "
 # open flags
 complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hint" -a "split_v split_h split_above overlay"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"
+complete -c plexi -n "__fish_seen_subcommand_from open" -l mcp -d "Wrap stdio MCP server command in mcp-renderer"
+complete -c plexi -n "__fish_seen_subcommand_from open" -l cli -d "Wrap CLI binary in descriptor-renderer" -a "(__fish_complete_command)"
 "#;
 
 #[cfg(test)]
