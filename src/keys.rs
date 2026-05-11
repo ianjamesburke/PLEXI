@@ -531,7 +531,7 @@ pub fn poll_actions(
             });
         }
         if input.consume_key(bindings.focus_history_forward.0, bindings.focus_history_forward.1) {
-            actions.push(if notification_modal_open {
+            actions.push(if overlay_open {
                 Action::NotificationCycleNext
             } else {
                 Action::FocusHistoryForward
