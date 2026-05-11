@@ -7,12 +7,13 @@ from pathlib import Path
 
 from plexi_sdk import (  # type: ignore[attr-defined]
     App, RenderContext,
-    FG, MUTED, SURFACE, ACCENT, BG,
+    FG, MUTED, ACCENT, BG,
     BODY, CAPTION,
 )
 
 PAD = 16.0
 ROW_H = 24.0
+LIST_ITEM_H = 36.0
 COL_W = 130.0
 CELL_PAD = 8.0
 STRIPE = "#0d0d0d"
@@ -119,17 +120,12 @@ class CsvViewer(App):
         ctx.text(PAD, y, label, size=BODY, color=FG)
         y += ROW_H + 4
 
-        for i, path in enumerate(self._files):
-            row_y = y + i * ROW_H
-            if row_y + ROW_H > h - 30:
-                break
-            if i == self._selected:
-                ctx.rect(0, row_y - 2, w, ROW_H, fill=SURFACE, radius=0.0)
-            color = ACCENT if i == self._selected else FG
-            ctx.text(PAD, row_y + 4, path.name, size=BODY, color=color, max_width=w - PAD * 2 - 80)
-            hint = self._file_hints.get(path, "")
-            if hint:
-                ctx.text(w - PAD - 64, row_y + 4, hint, size=CAPTION, color=MUTED)
+        items = [
+            {"label": p.name, "secondary": self._file_hints.get(p, "") or None}
+            for p in self._files
+        ]
+        ctx.list_view(items, selected=self._selected, item_height=LIST_ITEM_H,
+                      x=0, y=y, w=w, h=h - y - 30)
 
         ctx.text(PAD, h - 20, "↑↓ / jk  navigate   ↵  open   esc  exit", size=CAPTION, color=MUTED)
 
