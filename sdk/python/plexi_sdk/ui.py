@@ -835,7 +835,7 @@ def badge(
     fill: str = ACCENT,
     fg: str = BG,
     font_size: float = TEXT_HINT,
-    radius: float = RADIUS_MD,
+    radius: float = 6.0,
 ) -> None:
     """Render a host-measured pill badge centred on ``y_center``.
 
@@ -851,7 +851,8 @@ def badge(
         fg:        Text colour (default ``BG`` — dark text on light pill).
         font_size: Label pt size (default ``TEXT_HINT``).
         radius:    Corner radius. Use ``RADIUS_SM`` (4 px) for tag chips,
-                   ``RADIUS_MD`` (8 px, default) for branch badges.
+                   6.0 (default) for rounded badges without the perfect-stadium
+                   look of ``RADIUS_MD`` (8 px).
     """
     ctx.badge(x=x, y_center=y_center, label=label,
               fill=fill, fg=fg, font_size=font_size, radius=radius)
