@@ -856,26 +856,53 @@ impl PlexiApp {
         self.record_context_visit(new_win_id);
 
         // Insert pane into destination window at the incoming edge.
+        // new_pane_first = true when entering from the left/top (pane leads).
+        let new_pane_first = matches!(dir, Direction::Right | Direction::Down);
+        let split_dir = if dx != 0 {
+            egui_tiles::LinearDir::Horizontal
+        } else {
+            egui_tiles::LinearDir::Vertical
+        };
+
         let ctx = &mut self.windows[adj_idx];
         let new_tile = ctx.tree.tiles.insert_pane(src_pane_id);
         ctx.panes.insert(src_pane_id, pane);
 
-        // new_pane_first = true when entering from the left/top (pane leads).
-        let new_pane_first = matches!(dir, Direction::Right | Direction::Down);
         if ctx.tree.root.is_none() {
             ctx.tree.root = Some(new_tile);
         } else if let Some(root) = ctx.tree.root {
-            let ordered = if new_pane_first {
-                vec![new_tile, root]
+            // If root is already a same-direction linear container, insert inline
+            // to avoid unnecessary nesting (e.g. H[H[a,b], c] → H[a,b,c]).
+            let inserted_inline = if let Some(Tile::Container(Container::Linear(linear))) =
+                ctx.tree.tiles.get_mut(root)
+            {
+                if linear.dir == split_dir {
+                    if new_pane_first {
+                        linear.children.insert(0, new_tile);
+                    } else {
+                        linear.children.push(new_tile);
+                    }
+                    true
+                } else {
+                    false
+                }
             } else {
-                vec![root, new_tile]
+                false
             };
-            let container_tile = if dx != 0 {
-                ctx.tree.tiles.insert_horizontal_tile(ordered)
-            } else {
-                ctx.tree.tiles.insert_vertical_tile(ordered)
-            };
-            ctx.tree.root = Some(container_tile);
+
+            if !inserted_inline {
+                let ordered = if new_pane_first {
+                    vec![new_tile, root]
+                } else {
+                    vec![root, new_tile]
+                };
+                let container_tile = if dx != 0 {
+                    ctx.tree.tiles.insert_horizontal_tile(ordered)
+                } else {
+                    ctx.tree.tiles.insert_vertical_tile(ordered)
+                };
+                ctx.tree.root = Some(container_tile);
+            }
         }
         ctx.focused_pane = Some(new_tile);
 
