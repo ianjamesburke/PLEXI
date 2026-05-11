@@ -180,7 +180,7 @@ class McpRendererApp(App):
             self._view = "list"
             self.emit.info(f"mcp-renderer: got {len(tools)} tools")
         except Exception as e:
-            stderr = client._last_stderr
+            stderr = getattr(client, "_last_stderr", "")
             detail = f"\nServer stderr: {stderr}" if stderr else ""
             self._error = f"Failed to connect to MCP server:\n{e}{detail}"
             self._view = "error"
