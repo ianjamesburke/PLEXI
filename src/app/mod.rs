@@ -2226,12 +2226,16 @@ impl eframe::App for PlexiApp {
                             self.ctx.request_repaint();
                         }
                         crate::pane_ops::SwapResult::AtBoundary => {
-                            if let Some(focused) = self.windows[self.active_window].focused_pane {
-                                self.edge_pulse = Some(EdgePulse {
-                                    tile: focused,
-                                    dir,
-                                    started_at: std::time::Instant::now(),
-                                });
+                            if !self.move_focused_pane_to_adjacent_window(dir) {
+                                if let Some(focused) = self.windows[self.active_window].focused_pane {
+                                    self.edge_pulse = Some(EdgePulse {
+                                        tile: focused,
+                                        dir,
+                                        started_at: std::time::Instant::now(),
+                                    });
+                                    self.ctx.request_repaint();
+                                }
+                            } else {
                                 self.ctx.request_repaint();
                             }
                         }
