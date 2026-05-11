@@ -143,7 +143,7 @@ class McpRendererApp(App):
         self._form_fields: list[FormField] = []
         # Result state
         self._result_lines: list[str] = []
-        self._calling: bool = False  # UI-only flag: True while tool call is in-flight
+        self._calling: bool = False  # True while tool call is in-flight; guards against concurrent calls
         # Hit regions for form/result views: (y_top, y_bot, tag)
         self._hits: list[tuple[float, float, object]] = []
         # UI components
@@ -382,7 +382,7 @@ class McpRendererApp(App):
         self._view = "form"
 
     async def _run_tool(self) -> None:
-        if self._client is None:
+        if self._calling or self._client is None:
             return
         self._calling = True
         arguments: dict = {}
