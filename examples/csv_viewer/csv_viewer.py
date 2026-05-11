@@ -59,15 +59,15 @@ class CsvViewer(App):
 
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == "list":
-            if key in ("up", "k", "ArrowUp", "down", "j", "ArrowDown"):
+            if key in ("up", "k", "down", "j"):
                 self._file_list.handle_key(key)
                 self._selected = self._file_list.selected_idx
-            elif key == "Enter":
+            elif key == "return":
                 if self._files:
                     self._load_csv(self._files[self._selected])
                     self._mode = "detail"
                     ctx.info(f"csv_viewer: opened {self._files[self._selected].name}")
-            elif key == "Escape":
+            elif key == "escape":
                 ctx.info("csv_viewer: exit via Escape")
                 sys.exit(0)
         else:
@@ -80,7 +80,7 @@ class CsvViewer(App):
             elif key in ("right", "l"):
                 max_h = max(0, len(self._headers) - 1)
                 self._h_scroll = min(max_h, self._h_scroll + 1)
-            elif key == "Escape":
+            elif key == "escape":
                 self._mode = "list"
                 ctx.info("csv_viewer: back to list")
 

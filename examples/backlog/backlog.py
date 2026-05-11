@@ -248,7 +248,7 @@ class BacklogApp(App):
 
     # ── Keys ─────────────────────────────────────────────────────────────────────
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         self.status = ""   # clear on any key
 
         # ── Add-item mode (host owns the buffer) ─────────────────────────────────
@@ -256,28 +256,28 @@ class BacklogApp(App):
         # exit shortcut. Submission is delivered via PlexiEvent::TextSubmitted
         # and consumed in `on_render`'s `ctx.text_input(...)` call.
         if self.in_add:
-            if key == "Escape":
+            if key == "escape":
                 self.in_add = False
             return
 
         # ── Confirm-delete mode ──────────────────────────────────────────────────
         if self.confirm_delete:
-            if key == "Enter":
+            if key == "return":
                 self._delete()
-            elif key in ("Escape", "d"):
+            elif key in ("escape", "d"):
                 self.confirm_delete = False
             return
 
         # ── Search mode ──────────────────────────────────────────────────────────
         if self.in_search:
-            if key == "Escape":
+            if key == "escape":
                 self.in_search = False
                 self.search_query = ""
                 self._refilter()
-            elif key == "Backspace":
+            elif key == "backspace":
                 self.search_query = self.search_query[:-1]
                 self._refilter()
-            elif key == "Enter":
+            elif key == "return":
                 self.in_search = False
             elif len(key) == 1:   # single char from Text event; ignores "Slash" etc.
                 self.search_query += key
@@ -285,11 +285,11 @@ class BacklogApp(App):
             return
 
         # ── Normal mode ──────────────────────────────────────────────────────────
-        if key in ("j", "down", "ArrowDown", "k", "up", "ArrowUp"):
+        if key in ("j", "down", "k", "up"):
             self._item_list.handle_key(key)
             self.selected = self._item_list.selected_idx
             self._cache_preview()
-        elif key in ("e", "Enter"):
+        elif key in ("e", "return"):
             self._open()
         elif key == "a":
             self._archive()
