@@ -473,26 +473,13 @@ pub fn poll_actions(
             actions.push(Action::SwapPane(Direction::Right));
         }
 
-        // Focus navigation
-        if input.consume_key(bindings.navigate_left.0, bindings.navigate_left.1) {
-            actions.push(Action::Navigate(Direction::Left));
-        }
-        if input.consume_key(bindings.navigate_down.0, bindings.navigate_down.1) {
-            actions.push(Action::Navigate(Direction::Down));
-        }
-        if input.consume_key(bindings.navigate_up.0, bindings.navigate_up.1) {
-            actions.push(Action::Navigate(Direction::Up));
-        }
-        if input.consume_key(bindings.navigate_right.0, bindings.navigate_right.1) {
-            actions.push(Action::Navigate(Direction::Right));
-        }
-
+        // Tab navigation — checked before plain Cmd+H/J/K/L pane navigation because
+        // egui's consume_key uses subset modifier matching: Cmd+H matches Cmd+Shift+H,
+        // so more-specific (Cmd+Shift) variants must be consumed first.
         if input.consume_key(bindings.new_tab.0, bindings.new_tab.1) {
             actions.push(Action::NewTab);
         }
-
-        // Tab navigation. When the notification modal is open, next/prev tab
-        // cycle through the pending-notifications queue instead.
+        // When the notification modal is open, next/prev tab cycle the queue instead.
         if input.consume_key(bindings.next_tab.0, bindings.next_tab.1) {
             actions.push(if notification_modal_open {
                 Action::NotificationCycleNext
@@ -513,6 +500,21 @@ pub fn poll_actions(
         if input.consume_key(bindings.last_tab.0, bindings.last_tab.1) {
             actions.push(Action::LastTab);
         }
+
+        // Focus navigation — checked after Cmd+Shift tab variants above.
+        if input.consume_key(bindings.navigate_left.0, bindings.navigate_left.1) {
+            actions.push(Action::Navigate(Direction::Left));
+        }
+        if input.consume_key(bindings.navigate_down.0, bindings.navigate_down.1) {
+            actions.push(Action::Navigate(Direction::Down));
+        }
+        if input.consume_key(bindings.navigate_up.0, bindings.navigate_up.1) {
+            actions.push(Action::Navigate(Direction::Up));
+        }
+        if input.consume_key(bindings.navigate_right.0, bindings.navigate_right.1) {
+            actions.push(Action::Navigate(Direction::Right));
+        }
+
         if input.consume_key(bindings.nav_back.0, bindings.nav_back.1) {
             actions.push(if notification_modal_open {
                 Action::NotificationCyclePrev
