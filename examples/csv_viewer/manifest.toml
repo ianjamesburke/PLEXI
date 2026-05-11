@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "csv_viewer"
+type = "app"
+name = "CSV Viewer"
+version = "0.1.0"
+description = "Browse and inspect CSV files in the current directory."
+entry = "csv_viewer.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.55 }
