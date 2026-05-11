@@ -60,6 +60,7 @@ class App:
         on_click(self, ctx, x, y, button)             — on Click event (task)
         on_command(self, ctx, text)                   — on Command event (task)
         on_paste(self, ctx, text)                     — on Paste event (task)
+        on_text_submitted(self, ctx, id, text)        — on TextInput Enter press (task)
         on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (task)
         on_path_changed(self, ctx, cwd)               — on PathChanged (task)
         on_suspend(self)                              — on Suspend (awaited)
@@ -188,6 +189,7 @@ class App:
 
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
+    def on_text_submitted(self, _ctx: RenderContext, _id: str, _text: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_file_picked(self, _ctx: RenderContext, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
         """Called when the user selected one or more files in the picker.
 
@@ -590,9 +592,17 @@ class App:
                     # `DrawCommand::TextInput` field. Stash the value keyed
                     # on the input id; `RenderContext.text_input(...)` will
                     # drain it on the next frame the app polls.
+                    # Also dispatch on_text_submitted as a hook task if the
+                    # app has overridden it — apps that use the event-handler
+                    # path can do I/O cleanly without side effects in on_render.
                     tid = ev.get("id", "")
                     if tid:
-                        self._text_submissions[tid] = ev.get("value", "")
+                        value = ev.get("value", "")
+                        self._text_submissions[tid] = value
+                        if type(self).on_text_submitted is not App.on_text_submitted:
+                            self._dispatch_hook_task(
+                                self.on_text_submitted, self._make_ctx(), tid, value
+                            )
 
                 elif t == "run_update":
                     pass  # apps can override on_run_update if needed
