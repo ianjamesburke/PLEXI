@@ -2,6 +2,14 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-11 — [GOTCHA] SDK key normalization (#1060) silently broke example apps using capitalized key names (PR #1071 → alpha)
+
+PR #1060 added `_KEY_ALIASES` normalization in `_app.py`: `"Enter"→"return"`, `"Escape"→"escape"`, `"Backspace"→"backspace"`. Any app checking `key == "Enter"` (capitalized) silently stops responding to that key — no error, no warning. The stale alpha binary (pre-#1060) masked this during initial testing because the test was done at 02:24 and #1060 merged at 02:33 the same day.
+
+**What NOT to do next time:** Don't validate key-event behavior against an alpha binary that was installed before a key normalization PR landed. Always check `_app.py:_KEY_ALIASES` for the canonical key name before writing any `key ==` check in an app.
+
+**Breaks if:** Enter/Escape/Backspace stop responding in csv_viewer or backlog (navigation j/k still works; only the affected keys are silent).
+
 ## 2026-05-11 — [CHANGED] Migrate mcp-renderer + descriptor-renderer to plexi_sdk.ui components (PR #1061 → alpha)
 Added `SelectList` (stateful scrollable list with j/k, hit detection, scrollbar) and `FormField` (label + TextInput wrapper with `.submitted` property) to `sdk/python/plexi_sdk/ui.py`. Migrated both example renderers to use the declarative component system — no more manual `ctx.rect`/`ctx.text` layout math in the renderers.
 
