@@ -2282,11 +2282,8 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::NavBackApp => {
-                    // Cmd+[ when a nav-active app pane is focused: go back one
-                    // level. Falls through to cycling tabs backwards if no nav is active.
-                    if !self.try_nav_back_focused() {
-                        self.cycle_tab(false);
-                    }
+                    self.try_nav_back_focused();
+                    log::info!("nav: back-app — window={}", self.active_window);
                 }
                 Action::NewTab => {
                     self.new_tab();
@@ -2365,6 +2362,19 @@ impl eframe::App for PlexiApp {
                 }
                 Action::NextTab => {
                     self.cycle_tab(true);
+                    log::info!("tab: next — window={}", self.active_window);
+                }
+                Action::PrevTab => {
+                    self.cycle_tab(false);
+                    log::info!("tab: prev — window={}", self.active_window);
+                }
+                Action::FirstTab => {
+                    self.jump_to_tab(0);
+                    log::info!("tab: first — window={}", self.active_window);
+                }
+                Action::LastTab => {
+                    self.jump_to_tab(usize::MAX);
+                    log::info!("tab: last — window={}", self.active_window);
                 }
                 Action::IncreasePaneFontSize => {
                     self.adjust_focused_pane_font_size(1.0);
@@ -3335,11 +3345,9 @@ impl PlexiApp {
                     if shift && matches!(key, egui::Key::A) {
                         return true;
                     }
-                    // Cmd+] / Cmd+[ — cycle the notification queue without
+                    // Cmd+Shift+L / Cmd+Shift+H — cycle the notification queue without
                     // acknowledging. Only meaningful while the modal is open.
-                    if !shift
-                        && matches!(key, egui::Key::CloseBracket | egui::Key::OpenBracket)
-                    {
+                    if shift && matches!(key, egui::Key::L | egui::Key::H) {
                         return true;
                     }
                     false
