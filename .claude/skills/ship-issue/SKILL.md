@@ -92,18 +92,12 @@ gh issue view <number> --json state,title --jq '{state: .state, title: .title}'
 ```
 If state is `CLOSED`: stop immediately. Tell the user: "Issue #<n> is already closed — nothing to do." Do NOT add labels, create worktrees, or proceed further.
 
-Run in parallel:
 ```bash
-git fetch origin
-git status --porcelain
-git log origin/alpha..HEAD --oneline
+git fetch origin && git status --porcelain
 ```
 
-Handle each state automatically — do not stop and ask:
-
-- **Dirty (uncommitted changes):** Stage and commit everything on alpha with `git add -A && git commit -m "chore: commit alpha changes before branching"`, then pull.
-- **Local commits ahead of origin:** If they're chore/release commits (`chore: release`, `chore: bump`), push them with `git push`. If they look like real unmerged feature work, surface to the user and ask before proceeding.
-- **Clean and synced:** `git pull --rebase origin alpha` to confirm up-to-date.
+- **Dirty (any output):** Stop immediately. Surface the dirty files to the user and ask how to proceed — never auto-commit on alpha.
+- **Clean:** `git pull --rebase origin alpha` to confirm up-to-date, then proceed.
 
 Mark the issue in progress, capture the origin pane ID, and update the pane title:
 ```bash
