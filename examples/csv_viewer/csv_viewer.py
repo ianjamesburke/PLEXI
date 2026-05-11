@@ -43,8 +43,6 @@ class CsvViewer(App):
         ctx.info(f"csv_viewer: {len(self._files)} CSV files in {launch_dir}")
 
     def on_inject(self, _ctx: RenderContext, payload: dict) -> None:
-        if not isinstance(payload, dict):
-            return
         if "mode" in payload:
             self._mode = payload["mode"]
         if "headers" in payload:
