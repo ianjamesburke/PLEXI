@@ -96,11 +96,18 @@ The `blocked` label is the fast filter; front matter is the data. Only parse bod
 
 ## Phase 1 — Pre-flight
 
-**First — check issue state before touching anything:**
+**First — check issue state and in-progress status before touching anything:**
 ```bash
-gh issue view <number> --json state,title --jq '{state: .state, title: .title}'
+gh issue view <number> --json state,title,labels --jq '{state: .state, title: .title, labels: [.labels[].name]}'
 ```
 If state is `CLOSED`: stop immediately. Tell the user: "Issue #<n> is already closed — nothing to do." Do NOT add labels, create worktrees, or proceed further.
+
+If labels include `in progress`: **stop and surface context before proceeding.** Another agent may own this issue. Run:
+```bash
+git worktree list | grep -i "<number>"
+gh pr list --search "head:feature/<number>" --json number,title,state,url
+```
+Tell the user exactly what exists: existing worktree path (if any), existing PR (if any), and any commits on the branch (`git log --oneline -5` on the worktree). Then ask: "Issue #<n> is already in progress. Take over from here, or abort?" **Do not proceed until the user explicitly confirms takeover.** If aborting, remove the `in progress` label you added (if you added it — otherwise leave it alone) and stop.
 
 ```bash
 git fetch origin && git status --porcelain
@@ -450,6 +457,8 @@ Reply with one of:
 - "modify: <specific change needed>"
 ```
 
+**Notification rule: the notify command is the absolute last action before STOP. The full diff-review testing block must already be visible in the conversation before `plexi notify` is called.**
+
 Then send the notification:
 ```bash
 RESULT=$(plexi notify --title "PR #<n> ready to review" \
@@ -488,6 +497,8 @@ Reply with one of:
 - "fail: <exact description of what went wrong>" — notes are required
 - "modify: <specific change needed>" — only if pass criteria not yet met; must stay within original scope
 ```
+
+**Notification rule: the notify command is the absolute last action before STOP. The full testing block — every instruction line, every pass criterion, every fail criterion — must already be visible in the conversation before `plexi notify` is called. Do not fire the notification while the block is still being written.**
 
 Then send a synchronous notification so the user gets pulled in only when ready to test:
 ```bash
