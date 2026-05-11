@@ -14,6 +14,7 @@ from plexi_sdk.widgets.text_area import TextArea, TextAreaTheme
 from plexi_sdk.widgets.text_input import emit_text_input
 from plexi_sdk.widgets.button import Button, ButtonStyle
 from plexi_sdk.widgets.keymap import KeyMap
+from plexi_sdk.widgets.list_view import ListView
 
 __all__ = [
     "ScrollState",
@@ -22,4 +23,5 @@ __all__ = [
     "emit_text_input",
     "Button", "ButtonStyle",
     "KeyMap",
+    "ListView",
 ]

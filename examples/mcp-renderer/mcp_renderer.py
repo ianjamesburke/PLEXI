@@ -22,11 +22,12 @@ from typing import IO
 
 from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
-    Column, AppBar, SelectList, FormField, Scrollable, FooterKeys,
+    Column, AppBar, FormField, Scrollable, FooterKeys,
     ListItem, Label, Spacer, Card,
     BG, ACCENT, RED,
     SPACE_XS, SPACE_SM, SPACE_LG,
 )
+from plexi_sdk.widgets import ListView
 
 
 # ── MCP stdio protocol ────────────────────────────────────────────────────────
@@ -142,10 +143,10 @@ class McpRendererApp(App):
         # Result state
         self._result_lines: list[str] = []
         self._calling: bool = False
-        # Hit regions: (y_top, y_bot, tag)
+        # Hit regions for form/result views: (y_top, y_bot, tag)
         self._hits: list[tuple[float, float, object]] = []
         # UI components
-        self._select_list = SelectList([])
+        self._list = ListView(item_height=ListItem.HEIGHT_DOUBLE)
         self._result_scrollable = Scrollable(Label("", tone="hint"))
         # MCP client
         self._client: McpClient | None = None
@@ -237,13 +238,16 @@ class McpRendererApp(App):
             return
 
         if self._view == "list":
-            self._select_list.items = [
-                {"name": t["name"], "description": t.get("description") or None}
-                for t in self._tools
-            ]
             ctx.render(Column([
                 AppBar(f"MCP · {cmd_name}", subtitle=subtitle),
-                self._select_list,
+                self._list.render([
+                    ListItem(
+                        title=t["name"],
+                        subtitle=t.get("description") or None,
+                        selected=i == self._list.selected_index,
+                    )
+                    for i, t in enumerate(self._tools)
+                ]),
             ], padding=0, padding_top=0, gap=0))
             return
 
@@ -318,10 +322,11 @@ class McpRendererApp(App):
     def on_click(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:
         if button != "primary":
             return
-        # List view: use SelectList hit detection
+        # List view: use ListView hit detection
         if self._view == "list":
-            idx = self._select_list.hit_index(y)
+            idx = self._list.hit_test(y)
             if idx is not None:
+                self._list.set_selected(idx)
                 self._selected_idx = idx
                 self._handle(idx)
                 self.emit.schedule_render(after_ms=16)
@@ -338,7 +343,7 @@ class McpRendererApp(App):
             if self._view in ("form", "result"):
                 self._view = "list"
                 self._selected_idx = 0
-                self._select_list.selected_idx = 0
+                self._list.set_selected(0)
             return
 
         if tag == "run":
@@ -406,18 +411,18 @@ class McpRendererApp(App):
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._view == "list":
-            if self._select_list.handle_key(key):
-                self._selected_idx = self._select_list.selected_idx
+            if self._list.handle_key(key):
+                self._selected_idx = self._list.selected_index
                 self.emit.schedule_render(after_ms=16)
             elif key in ("Return", "Enter"):
-                self._handle(self._select_list.selected_idx)
+                self._handle(self._list.selected_index)
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
             if key == "Escape":
                 self._view = "list"
                 self._selected_idx = 0
-                self._select_list.selected_idx = 0
+                self._list.set_selected(0)
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "result":
@@ -425,7 +430,7 @@ class McpRendererApp(App):
                 self.emit.schedule_render(after_ms=16)
             elif key == "Escape":
                 self._view = "list"
-                self._select_list.selected_idx = 0
+                self._list.set_selected(0)
                 self.emit.schedule_render(after_ms=16)
 
 
