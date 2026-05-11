@@ -713,8 +713,11 @@ impl PlexiApp {
             }
         });
         if advance && !self.quick_note_text.trim().is_empty() {
+            self.quick_note_dest_cursor = 0;
             self.push_focus_layer(crate::app::FocusLayer::QuickNoteDestination);
             log::info!("QuickNote: advancing to destination picker");
+            // Draw destination in the same frame to avoid a one-frame scrim flash.
+            self.draw_quick_note_destination(ctx);
             return;
         }
 
@@ -732,8 +735,9 @@ impl PlexiApp {
                 );
             });
 
-        // Modal
-        let modal_w = (screen_rect.width() * 0.6).min(720.0).max(400.0);
+        // Modal — grows with content up to (screen_height - 96px insets) then scrolls.
+        let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
+        let max_text_h = (screen_rect.height() * 0.8).max(80.0);
         egui::Area::new(egui::Id::new("quick_note_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -755,40 +759,132 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_SM);
 
-                        // Text input
-                        let text_response = ui.add_sized(
-                            [modal_w, 120.0],
-                            egui::TextEdit::multiline(&mut self.quick_note_text)
-                                .id(egui::Id::new("quick_note_text"))
-                                .font(egui::FontId::monospace(style::TEXT_BODY))
-                                .text_color(self.colors.text_primary)
-                                .desired_width(f32::INFINITY)
-                                .frame(false)
-                                .hint_text(
-                                    RichText::new("What's on your mind?")
-                                        .color(self.colors.text_dim.linear_multiply(0.3))
-                                        .size(style::TEXT_BODY),
-                                ),
-                        );
-                        text_response.request_focus();
+                        // Text input — expands line-by-line; scrolls once full.
+                        egui::ScrollArea::vertical()
+                            .max_height(max_text_h)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.quick_note_text)
+                                        .id(egui::Id::new("quick_note_text"))
+                                        .font(egui::FontId::monospace(style::TEXT_BODY))
+                                        .text_color(self.colors.text_primary)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(1)
+                                        .frame(false)
+                                        .hint_text(
+                                            RichText::new("What's on your mind?")
+                                                .color(self.colors.text_dim.linear_multiply(0.3))
+                                                .size(style::TEXT_BODY),
+                                        ),
+                                );
+                            });
                     });
             });
     }
 
-    /// Quick note destination picker: digit keys route instantly.
+    /// Quick note destination picker: digit keys route instantly; arrows/jk navigate.
     pub(crate) fn draw_quick_note_destination(&mut self, ctx: &egui::Context) {
         use crate::style;
         use crate::widgets;
         use egui::{Align2, RichText, Vec2};
 
-        // Esc → back to compose.
-        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        if esc {
+        let dest_count = self.config.quick_note.as_ref()
+            .map(|qn| qn.destinations.len())
+            .unwrap_or(0);
+        let total = 1 + dest_count;
+
+        // H or Esc → back to compose.
+        let back = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
+        });
+        if back {
             self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
             log::info!("QuickNote: destination picker dismissed, back to composing");
             return;
         }
 
+        // Arrow / vim navigation.
+        let up = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+        });
+        let down = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+        });
+        if up {
+            self.quick_note_dest_cursor = if self.quick_note_dest_cursor == 0 {
+                total.saturating_sub(1)
+            } else {
+                self.quick_note_dest_cursor - 1
+            };
+            log::info!("QuickNote: dest cursor → {}", self.quick_note_dest_cursor);
+        }
+        if down {
+            self.quick_note_dest_cursor = (self.quick_note_dest_cursor + 1) % total.max(1);
+            log::info!("QuickNote: dest cursor → {}", self.quick_note_dest_cursor);
+        }
+
+        // Enter → dispatch selected item.
+        let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        if enter {
+            let cursor = self.quick_note_dest_cursor;
+            if cursor == 0 {
+                let text = self.quick_note_text.clone();
+                log::info!("QuickNote: destination selected via Enter: cursor=0 (global backlog)");
+                if self.commit_quick_note_global_backlog(&text) {
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                    self.quick_note_text.clear();
+                }
+                return;
+            }
+            let dest = self.config.quick_note.as_ref()
+                .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
+            if let Some(dest) = dest {
+                log::info!("QuickNote: destination selected via Enter: cursor={cursor} key={}", dest.key);
+                if dest.options.is_some() {
+                    let key = dest.key;
+                    self.quick_note_pending_parent = Some(key);
+                    self.quick_note_sub_cursor = 0;
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(key));
+                    log::info!("QuickNote: submenu opened: parent={key}");
+                    self.draw_quick_note_subdestination(ctx);
+                } else {
+                    let text = self.quick_note_text.clone();
+                    if self.commit_quick_note(&text, &dest) {
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                        self.quick_note_text.clear();
+                    }
+                }
+            }
+            return;
+        }
+
+        // L → enter submenu for selected item (zero-flash).
+        let enter_sub = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L));
+        if enter_sub {
+            let cursor = self.quick_note_dest_cursor;
+            if cursor > 0 {
+                let dest = self.config.quick_note.as_ref()
+                    .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
+                if let Some(dest) = dest {
+                    if dest.options.is_some() {
+                        let key = dest.key;
+                        self.quick_note_pending_parent = Some(key);
+                        self.quick_note_sub_cursor = 0;
+                        self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(key));
+                        log::info!("QuickNote: submenu opened via L: parent={key}");
+                        self.draw_quick_note_subdestination(ctx);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Digit keys → fast-dispatch by number.
         let pressed = consume_digit_key(ctx);
 
         if let Some(key) = pressed {
@@ -808,8 +904,10 @@ impl PlexiApp {
                 log::info!("QuickNote: destination selected: key={key}");
                 if dest.options.is_some() {
                     self.quick_note_pending_parent = Some(key);
+                    self.quick_note_sub_cursor = 0;
                     self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(key));
                     log::info!("QuickNote: submenu opened: parent={key}");
+                    self.draw_quick_note_subdestination(ctx);
                 } else {
                     let text = self.quick_note_text.clone();
                     if self.commit_quick_note(&text, &dest) {
@@ -825,7 +923,7 @@ impl PlexiApp {
         // Render
         let screen_rect = ctx.screen_rect();
 
-        egui::Area::new(egui::Id::new("quick_note_dest_scrim"))
+        egui::Area::new(egui::Id::new("quick_note_scrim"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
@@ -836,7 +934,11 @@ impl PlexiApp {
                 );
             });
 
-        let modal_w = (screen_rect.width() * 0.5).min(560.0).max(340.0);
+        let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
+        let cursor = self.quick_note_dest_cursor;
+        let destinations = self.config.quick_note.as_ref()
+            .map(|qn| qn.destinations.as_slice())
+            .unwrap_or(&[]);
         egui::Area::new(egui::Id::new("quick_note_dest_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -849,14 +951,23 @@ impl PlexiApp {
                     .show(ui, |ui| {
                         ui.set_width(modal_w);
 
-                        // Note preview
+                        // Note preview — up to 4 lines, each truncated at 80 chars.
                         let preview = {
                             let t = self.quick_note_text.trim();
-                            if let Some((idx, _)) = t.char_indices().nth(80) {
-                                format!("{}…", &t[..idx])
-                            } else {
-                                t.to_string()
+                            let mut lines: Vec<String> = t.lines()
+                                .take(4)
+                                .map(|line| {
+                                    if let Some((idx, _)) = line.char_indices().nth(80) {
+                                        format!("{}…", &line[..idx])
+                                    } else {
+                                        line.to_string()
+                                    }
+                                })
+                                .collect();
+                            if t.lines().count() > 4 {
+                                lines.push("…".to_string());
                             }
+                            lines.join("\n")
                         };
                         ui.label(
                             RichText::new(&preview)
@@ -873,26 +984,47 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_MD);
 
-                        // Hard-coded destination 0
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                            widgets::key_chip(ui, "0", &self.colors);
-                            ui.label(
-                                RichText::new("Backlog (global)")
-                                    .color(self.colors.text_dim)
-                                    .size(style::TEXT_BODY),
-                            );
+                        // Row 0: global backlog
+                        let row0_frame = if cursor == 0 {
+                            egui::Frame::new()
+                                .fill(self.colors.bg_active)
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .inner_margin(egui::Margin::symmetric(4, 2))
+                        } else {
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin::symmetric(4, 2))
+                        };
+                        row0_frame.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                                widgets::key_chip(ui, "0", &self.colors);
+                                ui.label(
+                                    RichText::new("Backlog (global)")
+                                        .color(self.colors.text_dim)
+                                        .size(style::TEXT_BODY),
+                                );
+                            });
                         });
                         ui.add_space(style::SPACE_SM);
 
                         // Config destinations
-                        if let Some(qn) = &self.config.quick_note {
-                            for dest in &qn.destinations {
-                                let label = if dest.options.is_some() {
-                                    format!("{} ›", dest.label)
-                                } else {
-                                    dest.label.clone()
-                                };
+                        for (idx, dest) in destinations.iter().enumerate() {
+                            let row_idx = idx + 1;
+                            let label = if dest.options.is_some() {
+                                format!("{} ›", dest.label)
+                            } else {
+                                dest.label.clone()
+                            };
+                            let row_frame = if cursor == row_idx {
+                                egui::Frame::new()
+                                    .fill(self.colors.bg_active)
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                            } else {
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                            };
+                            row_frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = style::SPACE_SM;
                                     widgets::key_chip(ui, &dest.key.to_string(), &self.colors);
@@ -902,13 +1034,13 @@ impl PlexiApp {
                                             .size(style::TEXT_BODY),
                                     );
                                 });
-                                ui.add_space(style::SPACE_SM);
-                            }
+                            });
+                            ui.add_space(style::SPACE_SM);
                         }
 
                         ui.add_space(style::SPACE_XL);
                         ui.label(
-                            RichText::new("Esc to go back")
+                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  H/Esc back")
                                 .color(self.colors.text_dim.linear_multiply(0.4))
                                 .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
@@ -932,9 +1064,12 @@ impl PlexiApp {
             }
         };
 
-        // Esc → back to destination picker.
-        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        if esc {
+        // H or Esc → back to destination picker.
+        let back = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
+        });
+        if back {
             self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
             self.quick_note_pending_parent = None;
             log::info!("QuickNote: submenu dismissed, back to destination picker");
@@ -947,10 +1082,60 @@ impl PlexiApp {
             .and_then(|d| d.options.clone())
             .unwrap_or_default();
 
+        let total = options.len();
+
+        // Arrow / vim navigation.
+        let up = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+        });
+        let down = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+        });
+        if up {
+            self.quick_note_sub_cursor = if self.quick_note_sub_cursor == 0 {
+                total.saturating_sub(1)
+            } else {
+                self.quick_note_sub_cursor - 1
+            };
+            log::info!("QuickNote: sub cursor → {}", self.quick_note_sub_cursor);
+        }
+        if down {
+            self.quick_note_sub_cursor = (self.quick_note_sub_cursor + 1) % total.max(1);
+            log::info!("QuickNote: sub cursor → {}", self.quick_note_sub_cursor);
+        }
+
+        // Enter → dispatch selected option.
+        let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        if enter {
+            if let Some(opt) = options.get(self.quick_note_sub_cursor).cloned() {
+                let text = self.quick_note_text.clone();
+                let cmd_template = opt.command.clone();
+                let position = opt.position.clone().unwrap_or_else(|| "split".to_string());
+                let ctx_data = self.quick_note_ctx.clone();
+                let cmd = Self::substitute_note_tokens_static(&cmd_template, &text, &ctx_data);
+                log::info!("QuickNote: submenu selected via Enter: parent={parent_key} cursor={}", self.quick_note_sub_cursor);
+                log::info!("QuickNote: committed via '{}' position={position:?}", opt.label);
+                match position.as_str() {
+                    "context-end" => self.open_at_context_end(&cmd),
+                    "context-start" => self.open_at_context_start(&cmd),
+                    _ => self.split_focused(false, Some(&cmd), true),
+                }
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                self.quick_note_text.clear();
+                self.quick_note_pending_parent = None;
+            }
+            return;
+        }
+
+        // Digit keys → fast-dispatch by number.
         let pressed = consume_digit_key(ctx);
 
         if let Some(key) = pressed {
-            if let Some(opt) = options.iter().find(|o| o.key == key) {
+            if let Some(opt) = options.iter().find(|o| o.key == key).cloned() {
                 let text = self.quick_note_text.clone();
                 let cmd_template = opt.command.clone();
                 let position = opt.position.clone().unwrap_or_else(|| "split".to_string());
@@ -977,14 +1162,15 @@ impl PlexiApp {
 
         // Render
         let screen_rect = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("quick_note_sub_scrim"))
+        let sub_cursor = self.quick_note_sub_cursor;
+        egui::Area::new(egui::Id::new("quick_note_scrim"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
                 ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(230));
             });
 
-        let modal_w = (screen_rect.width() * 0.5).min(560.0).max(340.0);
+        let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
         egui::Area::new(egui::Id::new("quick_note_sub_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -1010,22 +1196,33 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_MD);
 
-                        for opt in &options {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                widgets::key_chip(ui, &opt.key.to_string(), &self.colors);
-                                ui.label(
-                                    RichText::new(&opt.label)
-                                        .color(self.colors.text_dim)
-                                        .size(style::TEXT_BODY),
-                                );
+                        for (idx, opt) in options.iter().enumerate() {
+                            let row_frame = if sub_cursor == idx {
+                                egui::Frame::new()
+                                    .fill(self.colors.bg_active)
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                            } else {
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                            };
+                            row_frame.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                                    widgets::key_chip(ui, &opt.key.to_string(), &self.colors);
+                                    ui.label(
+                                        RichText::new(&opt.label)
+                                            .color(self.colors.text_dim)
+                                            .size(style::TEXT_BODY),
+                                    );
+                                });
                             });
                             ui.add_space(style::SPACE_SM);
                         }
 
                         ui.add_space(style::SPACE_XL);
                         ui.label(
-                            RichText::new("Esc to go back")
+                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  H/Esc back")
                                 .color(self.colors.text_dim.linear_multiply(0.4))
                                 .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
