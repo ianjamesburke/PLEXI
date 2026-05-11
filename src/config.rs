@@ -460,11 +460,11 @@ confirm_close = false
 # Master switch. If false, notifications are silently dropped at
 # arrival — apps still send them, the modal never appears, and
 # the queue stays empty.
-enabled = true
+# enabled = true
 
 # Focus mode. When true, NO notification auto-surfaces regardless of
 # priority. Everything queues silently; open Cmd+Shift+A to review.
-focus_mode = false
+# focus_mode = false
 
 # Minimum priority that may auto-open the modal. Notifications below
 # this value queue silently (badge ticks on the toolbar, Cmd+Shift+A
@@ -479,7 +479,7 @@ focus_mode = false
 # Default = 100: NORMAL and LOW queue silently, HIGH and CRITICAL
 # interrupt. Set to 0 to auto-open everything. Set to 201 to match
 # focus_mode = true (nothing auto-opens).
-interrupt_threshold = 100
+# interrupt_threshold = 100
 
 # Esc vs Enter on the modal:
 #   Enter (or option-select / input-submit) = acknowledge. Notification
@@ -489,61 +489,30 @@ interrupt_threshold = 100
 #   Required notifications (required = true) cannot be Esc'd.
 
 [theme]
-# Uncomment any color below to override the preset value.
-# accent = "#89b4fa"
-# bg_darkest = "#11111b"      # Deepest background (window edges)
-# bg_sidebar = "#181825"      # Sidebar background
-# bg_toolbar = "#181825"      # Toolbar/status bar background
-# terminal_bg = "#292a44"     # Terminal pane background
-# bg_hover = "#2a2a3c"        # Hover highlight
-# bg_active = "#313144"       # Active/selected item
-# text_primary = "#cdd6f4"    # Main text color
-# text_dim = "#6c7086"        # Dimmed/secondary text
-# text_section = "#585b70"    # Section headers
-# border = "#2a2a3c"          # Pane borders
-
-# Terminal ANSI colors (override the palette)
-# foreground = "#e8e6ed"
-# background = "#292a44"
-# black = "#12131e"
-# red = "#dd7755"
-# green = "#04dbb5"
-# yellow = "#f2e7b7"
-# blue = "#7aa5ff"
-# magenta = "#bf9cf9"
-# cyan = "#56d3c2"
-# white = "#e4e3e9"
-# bright_black = "#666699"
-# bright_red = "#ff92cd"
-# bright_green = "#01eac0"
-# bright_yellow = "#fffca8"
-# bright_blue = "#69c0fa"
-# bright_magenta = "#c17ff8"
-# bright_cyan = "#8bfde1"
-# bright_white = "#f4f2f9"
-# bright_foreground = "#f4f2f9"
-
-# ── Plexi AI — brokered LLM calls (`ai.query` capability) ─────
-# Apps that declare `ai.query` in their manifest can call tier-routed
-# LLM models through the host broker. Two backends are supported:
-# "openrouter" (default, cloud) and "ollama" (local).
+# Uncomment any line below to override the active preset.
+# Full color name reference and all preset palettes (catppuccin-mocha,
+# dracula, tokyo-night, gruvbox-dark, nord, solarized-dark):
+# https://plexiapp.dev/docs/config
 #
-# OpenRouter (default):
-#   Export your key in ~/.zprofile or ~/.zshrc:
-#     export OPENROUTER_API_KEY="sk-or-..."
+# accent       = "#89b4fa"   # catppuccin-mocha defaults shown
+# bg_darkest   = "#11111b"
+# terminal_bg  = "#292a44"
+# text_primary = "#cdd6f4"
+# foreground   = "#e8e6ed"
+
+# ── Plexi AI — coming soon ────────────────────────────────────
+# On the roadmap: apps will be able to make tier-routed LLM calls
+# through the host broker via the `ai.query` capability. When that
+# ships, configure your backend here.
 #
-[ai]
-backend = "openrouter"
-
-[ai.openrouter]
-api_key_env  = "OPENROUTER_API_KEY"
-model_low    = "google/gemini-2.0-flash-001"
-model_medium = "anthropic/claude-sonnet-4-6"
-model_high   = "anthropic/claude-opus-4-7"
-
-# Ollama (local):
 # [ai]
-# backend = "ollama"
+# backend = "openrouter"   # "openrouter" (cloud) or "ollama" (local)
+#
+# [ai.openrouter]
+# api_key_env  = "OPENROUTER_API_KEY"   # export in ~/.zprofile
+# model_low    = "google/gemini-2.0-flash-001"
+# model_medium = "anthropic/claude-sonnet-4-6"
+# model_high   = "anthropic/claude-opus-4-7"
 #
 # [ai.ollama]
 # host         = "http://localhost:11434"
@@ -619,30 +588,33 @@ model_high   = "anthropic/claude-opus-4-7"
 # Destination 0 (global backlog → ~/.plexi/backlog) is always
 # available regardless of config.
 #
-# Tokens in `command`:  {note} = note text (shell-escaped)
-#                        {cwd}  = focused pane directory
-#
-# [[quick_note.destinations]]
-# key     = 1
-# label   = "Backlog"
-# type    = "backlog"
-# path    = "~/.plexi/backlog"
-#
-# [[quick_note.destinations]]
-# key     = 2
-# label   = "Ask Claude"
-# type    = "pane"
-# command = "claude -p {note}"
-# position = "context-end"
-#
-# [[quick_note.destinations]]
-# key     = 3
-# label   = "GitHub issue"
-# options = [
-#   { key = 1, label = "Bug report",       command = "cd {cwd} && gh issue create --label bug --title {note} --body ''" },
-#   { key = 2, label = "Feature request",  command = "cd {cwd} && gh issue create --label enhancement --title {note} --body ''" },
-#   { key = 3, label = "Draft (no label)", command = "cd {cwd} && gh issue create --title {note} --body '' --draft" },
-# ]
+# {note} = your note text (shell-escaped)   {cwd} = focused pane dir
+
+[[quick_note.destinations]]
+key   = 1
+label = "Backlog"
+type  = "backlog"
+path  = "~/.plexi/backlog"
+
+[[quick_note.destinations]]
+key      = 2
+label    = "Ask Claude"
+type     = "pane"
+command  = "claude -p {note}"
+position = "context-end"
+
+[[quick_note.destinations]]
+key   = 3
+label = "GitHub issue"
+# {note} becomes the issue title and body. Keep quick notes concise
+# for readable titles. Labels must exist on the repo — bug and
+# enhancement are GitHub defaults. Create custom labels with:
+#   gh label create "my-label" --color "AAAAAA"
+options = [
+  { key = 1, label = "Bug",         command = "cd {cwd} && gh issue create --label bug --title {note} --body {note}" },
+  { key = 2, label = "Enhancement", command = "cd {cwd} && gh issue create --label enhancement --title {note} --body {note}" },
+  { key = 3, label = "No label",    command = "cd {cwd} && gh issue create --title {note} --body {note}" },
+]
 "##;
 
 pub fn open_config_file() {
