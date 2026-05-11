@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 from ._constants import FG, BG, ACCENT, BODY
@@ -41,6 +42,9 @@ class RenderContext:
         self._mx: float = app._mx
         self._my: float = app._my
         self._clicks: list[tuple[float, float]] = clicks or []
+        # Shared reference to App's hold-timer map — mutations here persist
+        # across frames (#1083).
+        self._btn_active_until: dict[str, float] = app._btn_active_until
 
     def _queue(self, obj: dict) -> None:
         """Buffer a render command for batch flush at frame_done()."""
@@ -179,12 +183,16 @@ class RenderContext:
             (x <= cx <= x + w) and (y <= cy <= y + h)
             for cx, cy in self._clicks
         )
-        bg = active_fill if clicked else (hover_fill if hovered else fill)
+        now = time.monotonic()
+        if clicked:
+            self._btn_active_until[id] = now + 0.15
+            self.schedule_render(after_ms=150)
+            self.info(f"button clicked: id={id!r}")
+        active = now < self._btn_active_until.get(id, 0.0)
+        bg = active_fill if (clicked or active) else (hover_fill if hovered else fill)
         self.rect(x, y, w, h, fill=bg, radius=radius)
         self.text(x + w / 2, y + h / 2, label, size=font_size,
                   color=text_color, align="center")
-        if clicked:
-            self.info(f"button clicked: id={id!r}")
         return clicked
 
     def key_chip_row(self, x: float, y: float, keys: "list[str]",
