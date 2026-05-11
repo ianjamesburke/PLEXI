@@ -460,11 +460,11 @@ confirm_close = false
 # Master switch. If false, notifications are silently dropped at
 # arrival — apps still send them, the modal never appears, and
 # the queue stays empty.
-enabled = true
+# enabled = true
 
 # Focus mode. When true, NO notification auto-surfaces regardless of
 # priority. Everything queues silently; open Cmd+Shift+A to review.
-focus_mode = false
+# focus_mode = false
 
 # Minimum priority that may auto-open the modal. Notifications below
 # this value queue silently (badge ticks on the toolbar, Cmd+Shift+A
@@ -479,7 +479,7 @@ focus_mode = false
 # Default = 100: NORMAL and LOW queue silently, HIGH and CRITICAL
 # interrupt. Set to 0 to auto-open everything. Set to 201 to match
 # focus_mode = true (nothing auto-opens).
-interrupt_threshold = 100
+# interrupt_threshold = 100
 
 # Esc vs Enter on the modal:
 #   Enter (or option-select / input-submit) = acknowledge. Notification
@@ -489,39 +489,203 @@ interrupt_threshold = 100
 #   Required notifications (required = true) cannot be Esc'd.
 
 [theme]
-# Uncomment any color below to override the preset value.
-# accent = "#89b4fa"
-# bg_darkest = "#11111b"      # Deepest background (window edges)
-# bg_sidebar = "#181825"      # Sidebar background
-# bg_toolbar = "#181825"      # Toolbar/status bar background
-# terminal_bg = "#292a44"     # Terminal pane background
-# bg_hover = "#2a2a3c"        # Hover highlight
-# bg_active = "#313144"       # Active/selected item
-# text_primary = "#cdd6f4"    # Main text color
-# text_dim = "#6c7086"        # Dimmed/secondary text
-# text_section = "#585b70"    # Section headers
-# border = "#2a2a3c"          # Pane borders
-
-# Terminal ANSI colors (override the palette)
-# foreground = "#e8e6ed"
-# background = "#292a44"
-# black = "#12131e"
-# red = "#dd7755"
-# green = "#04dbb5"
-# yellow = "#f2e7b7"
-# blue = "#7aa5ff"
-# magenta = "#bf9cf9"
-# cyan = "#56d3c2"
-# white = "#e4e3e9"
-# bright_black = "#666699"
-# bright_red = "#ff92cd"
-# bright_green = "#01eac0"
-# bright_yellow = "#fffca8"
-# bright_blue = "#69c0fa"
+# Pick a full preset palette by uncommenting one block below, or set
+# individual keys to override the active theme_preset above.
+#
+# To build a custom theme from scratch, see all available color names
+# and their roles at: https://plexiapp.dev/docs/config
+#
+# ── catppuccin-mocha (default) ─────────────────────────────────
+# accent         = "#89b4fa"
+# bg_darkest     = "#11111b"
+# bg_sidebar     = "#181825"
+# bg_toolbar     = "#181825"
+# terminal_bg    = "#292a44"
+# bg_hover       = "#2a2a3c"
+# bg_active      = "#313144"
+# text_primary   = "#cdd6f4"
+# text_dim       = "#6c7086"
+# text_section   = "#585b70"
+# border         = "#2a2a3c"
+# foreground     = "#e8e6ed"
+# background     = "#292a44"
+# black          = "#12131e"
+# red            = "#dd7755"
+# green          = "#04dbb5"
+# yellow         = "#f2e7b7"
+# blue           = "#7aa5ff"
+# magenta        = "#bf9cf9"
+# cyan           = "#56d3c2"
+# white          = "#e4e3e9"
+# bright_black   = "#666699"
+# bright_red     = "#ff92cd"
+# bright_green   = "#01eac0"
+# bright_yellow  = "#fffca8"
+# bright_blue    = "#69c0fa"
 # bright_magenta = "#c17ff8"
-# bright_cyan = "#8bfde1"
-# bright_white = "#f4f2f9"
+# bright_cyan    = "#8bfde1"
+# bright_white   = "#f4f2f9"
 # bright_foreground = "#f4f2f9"
+
+# ── dracula ────────────────────────────────────────────────────
+# accent         = "#bd93f9"
+# bg_darkest     = "#282a36"
+# bg_sidebar     = "#21222c"
+# bg_toolbar     = "#21222c"
+# terminal_bg    = "#282a36"
+# bg_hover       = "#343746"
+# bg_active      = "#3e4154"
+# text_primary   = "#f8f8f2"
+# text_dim       = "#6272a4"
+# text_section   = "#545876"
+# border         = "#44475a"
+# foreground     = "#f8f8f2"
+# background     = "#282a36"
+# black          = "#21222c"
+# red            = "#ff5555"
+# green          = "#50fa7b"
+# yellow         = "#f1fa8c"
+# blue           = "#6272a4"
+# magenta        = "#ff79c6"
+# cyan           = "#8be9fd"
+# white          = "#f8f8f2"
+# bright_black   = "#6272a4"
+# bright_red     = "#ff6e6e"
+# bright_green   = "#69ff94"
+# bright_yellow  = "#fffca8"
+# bright_blue    = "#d6acff"
+# bright_magenta = "#ff92df"
+# bright_cyan    = "#a4ffff"
+# bright_white   = "#ffffff"
+# bright_foreground = "#ffffff"
+
+# ── tokyo-night ────────────────────────────────────────────────
+# accent         = "#7aa2f7"
+# bg_darkest     = "#1a1b26"
+# bg_sidebar     = "#16161e"
+# bg_toolbar     = "#16161e"
+# terminal_bg    = "#1a1b26"
+# bg_hover       = "#232433"
+# bg_active      = "#292e42"
+# text_primary   = "#a9b1d6"
+# text_dim       = "#565f89"
+# text_section   = "#444b6a"
+# border         = "#292e42"
+# foreground     = "#a9b1d6"
+# background     = "#1a1b26"
+# black          = "#16161e"
+# red            = "#f7768e"
+# green          = "#9ece6a"
+# yellow         = "#e0af68"
+# blue           = "#7aa2f7"
+# magenta        = "#bb9af7"
+# cyan           = "#7dcfff"
+# white          = "#a9b1d6"
+# bright_black   = "#565f89"
+# bright_red     = "#ff899d"
+# bright_green   = "#b5e87a"
+# bright_yellow  = "#e8c87e"
+# bright_blue    = "#8db8ff"
+# bright_magenta = "#c8adff"
+# bright_cyan    = "#90d8ff"
+# bright_white   = "#c0caf5"
+# bright_foreground = "#c0caf5"
+
+# ── gruvbox-dark ───────────────────────────────────────────────
+# accent         = "#fe8019"
+# bg_darkest     = "#1d2021"
+# bg_sidebar     = "#282828"
+# bg_toolbar     = "#282828"
+# terminal_bg    = "#282828"
+# bg_hover       = "#3c3836"
+# bg_active      = "#504945"
+# text_primary   = "#ebdbb2"
+# text_dim       = "#928374"
+# text_section   = "#7c6f64"
+# border         = "#3c3836"
+# foreground     = "#ebdbb2"
+# background     = "#282828"
+# black          = "#1d2021"
+# red            = "#cc241d"
+# green          = "#98971a"
+# yellow         = "#d79921"
+# blue           = "#458588"
+# magenta        = "#b16286"
+# cyan           = "#689d6a"
+# white          = "#ebdbb2"
+# bright_black   = "#928374"
+# bright_red     = "#fb4934"
+# bright_green   = "#b8bb26"
+# bright_yellow  = "#fabd2f"
+# bright_blue    = "#83a598"
+# bright_magenta = "#d3869b"
+# bright_cyan    = "#8ec07c"
+# bright_white   = "#fbf1c7"
+# bright_foreground = "#fbf1c7"
+
+# ── nord ───────────────────────────────────────────────────────
+# accent         = "#88c0d0"
+# bg_darkest     = "#2e3440"
+# bg_sidebar     = "#3b4252"
+# bg_toolbar     = "#3b4252"
+# terminal_bg    = "#2e3440"
+# bg_hover       = "#434c5e"
+# bg_active      = "#4c566a"
+# text_primary   = "#eceff4"
+# text_dim       = "#4c566a"
+# text_section   = "#434c5e"
+# border         = "#3b4252"
+# foreground     = "#eceff4"
+# background     = "#2e3440"
+# black          = "#3b4252"
+# red            = "#bf616a"
+# green          = "#a3be8c"
+# yellow         = "#ebcb8b"
+# blue           = "#81a1c1"
+# magenta        = "#b48ead"
+# cyan           = "#88c0d0"
+# white          = "#eceff4"
+# bright_black   = "#4c566a"
+# bright_red     = "#d08770"
+# bright_green   = "#a3be8c"
+# bright_yellow  = "#ebcb8b"
+# bright_blue    = "#81a1c1"
+# bright_magenta = "#b48ead"
+# bright_cyan    = "#8fbcbb"
+# bright_white   = "#e5e9f0"
+# bright_foreground = "#e5e9f0"
+
+# ── solarized-dark ─────────────────────────────────────────────
+# accent         = "#268bd2"
+# bg_darkest     = "#002b36"
+# bg_sidebar     = "#073642"
+# bg_toolbar     = "#073642"
+# terminal_bg    = "#002b36"
+# bg_hover       = "#0a4050"
+# bg_active      = "#124d5e"
+# text_primary   = "#839496"
+# text_dim       = "#586e75"
+# text_section   = "#4d6269"
+# border         = "#073642"
+# foreground     = "#839496"
+# background     = "#002b36"
+# black          = "#073642"
+# red            = "#dc322f"
+# green          = "#859900"
+# yellow         = "#b58900"
+# blue           = "#268bd2"
+# magenta        = "#d33682"
+# cyan           = "#2aa198"
+# white          = "#eee8d5"
+# bright_black   = "#586e75"
+# bright_red     = "#cb4b16"
+# bright_green   = "#859900"
+# bright_yellow  = "#b58900"
+# bright_blue    = "#268bd2"
+# bright_magenta = "#6c71c4"
+# bright_cyan    = "#2aa198"
+# bright_white   = "#fdf6e3"
+# bright_foreground = "#fdf6e3"
 
 # ── Plexi AI — brokered LLM calls (`ai.query` capability) ─────
 # Apps that declare `ai.query` in their manifest can call tier-routed
