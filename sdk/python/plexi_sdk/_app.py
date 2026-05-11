@@ -33,6 +33,13 @@ _KEY_ALIASES: "dict[str, str]" = {
     "ArrowRight": "right",
     "ArrowUp": "up",
     "ArrowDown": "down",
+    # egui Debug-format names → SDK canonical names
+    "Enter": "return",
+    "Escape": "escape",
+    "Backspace": "backspace",
+    "Tab": "tab",
+    # Space arrives as Event::Text(" "), not Event::Key
+    " ": "space",
 }
 
 
