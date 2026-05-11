@@ -2,6 +2,14 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-11 — [CHANGED] Config template made fully self-documenting (PR #1117 → alpha)
+
+`CONFIG_TEMPLATE` in `src/config.rs` was a sparse file with minimal comments. Replaced with a fully documented template: notifications values commented-out with tier docs, `[theme]` compact block with docs link and catppuccin-mocha defaults, `[ai]` fully commented as "coming soon", keybindings all commented-out, and 3 active Quick Note defaults (Backlog, Ask Claude, GitHub issue submenu).
+
+Discovered `scripts/install.sh` had its own hardcoded base64-encoded minimal config that bypassed `CONFIG_TEMPLATE` entirely on fresh installs. Regenerated the base64 from the Rust source via Python. Also: `migrate-config.sh` was passing `"[ai]"` as a required section — since `[ai]` is now intentionally commented out, it would append an empty `[ai]` stub on every existing config. Removed `[ai]` from the migration list.
+
+**Breaks if:** Fresh `plexi-pr-N app` install produces a sparse config with only `[ai]` or similar instead of the full documented template; or if an existing config gets a stray empty `[ai]` stub appended on upgrade.
+
 ## 2026-05-11 — [GOTCHA] SDK key normalization (#1060) silently broke example apps using capitalized key names (PR #1071 → alpha)
 
 PR #1060 added `_KEY_ALIASES` normalization in `_app.py`: `"Enter"→"return"`, `"Escape"→"escape"`, `"Backspace"→"backspace"`. Any app checking `key == "Enter"` (capitalized) silently stops responding to that key — no error, no warning. The stale alpha binary (pre-#1060) masked this during initial testing because the test was done at 02:24 and #1060 merged at 02:33 the same day.
