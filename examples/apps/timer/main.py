@@ -57,31 +57,39 @@ class _Face(Component):
         cy = y + h / 2
         r = min(w, h) * 0.36
 
-        ctx.circle(cx, cy, r, SURFACE)
+        # Ring geometry: 2px outer rim, 12px track, BG center punch-out.
+        # ctx.arc draws filled pie slices from center, so we layer circles
+        # to build a donut: outer circle → track circle → progress arc → hole.
+        rim = r - 2    # inner edge of outer rim / outer edge of track
+        hole = r - 14  # center hole (track width = rim - hole = 12px)
 
         if app._state == "running":
             total = app._total_secs
             elapsed = time.time() - app._start_at
             remaining = max(0.0, total - elapsed)
             frac = remaining / total if total > 0 else 0.0
-            # Background track
-            ctx.arc(cx, cy, r - 6, 0, TWO_PI, MUTED)
-            # Progress arc (from top, clockwise)
+            ctx.circle(cx, cy, r, SURFACE)
+            ctx.circle(cx, cy, rim, MUTED)
             if frac > 0:
                 start_angle = -math.pi / 2
-                ctx.arc(cx, cy, r - 6, start_angle, start_angle + frac * TWO_PI, ACCENT)
+                ctx.arc(cx, cy, rim, start_angle, start_angle + frac * TWO_PI, ACCENT)
+            ctx.circle(cx, cy, hole, BG)
             label = _fmt(remaining)
             sub = app._msg.strip() or DEFAULT_MSG
             color = ACCENT
 
         elif app._state == "done":
-            ctx.arc(cx, cy, r - 6, 0, TWO_PI, GREEN)
+            ctx.circle(cx, cy, r, SURFACE)
+            ctx.circle(cx, cy, rim, GREEN)
+            ctx.circle(cx, cy, hole, BG)
             label = "✓"
             sub = app._msg.strip() or DEFAULT_MSG
             color = GREEN
 
         else:  # setup
-            ctx.arc(cx, cy, r - 6, 0, TWO_PI, MUTED)
+            ctx.circle(cx, cy, r, SURFACE)
+            ctx.circle(cx, cy, rim, MUTED)
+            ctx.circle(cx, cy, hole, BG)
             label = _fmt(DURATIONS[app._dur_idx][0])
             if app._editing_msg:
                 sub = f"{app._msg}▌" if app._msg else "▌"
