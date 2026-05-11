@@ -285,7 +285,7 @@ class BacklogApp(App):
             return
 
         # ── Normal mode ──────────────────────────────────────────────────────────
-        if key in ("j", "down", "k", "up"):
+        if key in ("j", "down", "ArrowDown", "k", "up", "ArrowUp"):
             self._item_list.handle_key(key)
             self.selected = self._item_list.selected_idx
             self._cache_preview()

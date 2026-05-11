@@ -10,7 +10,7 @@ from plexi_sdk import (  # type: ignore[attr-defined]
     FG, MUTED, ACCENT, BG,
     BODY, CAPTION,
 )
-from plexi_sdk.ui import SelectList  # type: ignore[attr-defined]
+from plexi_sdk.ui import SelectList
 
 PAD = 16.0
 ROW_H = 24.0
@@ -59,7 +59,7 @@ class CsvViewer(App):
 
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == "list":
-            if key in ("up", "k", "down", "j"):
+            if key in ("up", "k", "ArrowUp", "down", "j", "ArrowDown"):
                 self._file_list.handle_key(key)
                 self._selected = self._file_list.selected_idx
             elif key == "Enter":

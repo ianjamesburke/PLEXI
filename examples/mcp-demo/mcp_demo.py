@@ -51,6 +51,9 @@ class McpDemoApp(App):
             self._add_note(self._note_form.submitted)
         return y + field_h
 
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+        self._note_list.handle_key(key)
+
     def _render_notes(self, ctx: RenderContext, y0: float) -> None:
         self._note_list.items = [{"name": note} for note in reversed(self._notes)]
         if not self._notes:
