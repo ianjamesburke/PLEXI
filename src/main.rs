@@ -128,11 +128,12 @@ fn main() -> eframe::Result {
     let merged_config_root = adopted_root
         .clone()
         .or_else(|| crate::config::active_workspace_root());
-    let log_level = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref())
+    let log_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref())
         .log
-        .and_then(|l| l.level_filter())
-        .unwrap_or(log::LevelFilter::Info);
-    crate::logging::init(log_level);
+        .unwrap_or_default();
+    let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
+    let retention_days = log_config.retention_days.unwrap_or(30);
+    crate::logging::init(log_level, retention_days);
     let frame_tick = crate::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat
