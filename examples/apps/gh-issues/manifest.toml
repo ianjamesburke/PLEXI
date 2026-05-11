@@ -1,0 +1,17 @@
+schema_version = 1
+
+[app]
+id = "gh-issues"
+type = "app"
+name = "GitHub Issues"
+entry = "main.py"
+version = "0.1.0"
+description = "Browse and inspect GitHub issues for the workspace repo. No browser required."
+watch = true
+mouse_tracking = true
+
+[app.capabilities]
+capabilities = ["fs.read"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
