@@ -62,6 +62,11 @@ TEXT_TITLE_XL = 28.0
 RADIUS_SM = 4.0
 RADIUS_MD = 8.0
 RADIUS_LG = 12.0
+# Badge-specific radius — between tag-chip (4) and full-stadium (8). At
+# TEXT_HINT size the pill height is ~17 px; RADIUS_MD makes it 94% of
+# max-oval (cliché). 6.0 gives visible corners while staying clearly rounded.
+# Keep in sync with src/style.rs RADIUS_BADGE and _render_context.py badge().
+RADIUS_BADGE = 6.0
 
 # Palette — matches the Python-side constants from plexi_sdk/__init__.py.
 # Re-exported here so UI code doesn't have to import both.
@@ -835,7 +840,7 @@ def badge(
     fill: str = ACCENT,
     fg: str = BG,
     font_size: float = TEXT_HINT,
-    radius: float = 6.0,
+    radius: float = RADIUS_BADGE,
 ) -> None:
     """Render a host-measured pill badge centred on ``y_center``.
 
@@ -851,8 +856,8 @@ def badge(
         fg:        Text colour (default ``BG`` — dark text on light pill).
         font_size: Label pt size (default ``TEXT_HINT``).
         radius:    Corner radius. Use ``RADIUS_SM`` (4 px) for tag chips,
-                   6.0 (default) for rounded badges without the perfect-stadium
-                   look of ``RADIUS_MD`` (8 px).
+                   ``RADIUS_BADGE`` (6 px, default) for rounded badges without
+                   the perfect-stadium look of ``RADIUS_MD`` (8 px).
     """
     ctx.badge(x=x, y_center=y_center, label=label,
               fill=fill, fg=fg, font_size=font_size, radius=radius)
@@ -1296,7 +1301,7 @@ __all__ = [
     "SPACE_XS", "SPACE_SM", "SPACE_MD", "SPACE_LG", "SPACE_XL",
     "TEXT_HINT", "TEXT_CAPTION", "TEXT_BODY", "TEXT_HEADING",
     "TEXT_TITLE", "TEXT_TITLE_XL",
-    "RADIUS_SM", "RADIUS_MD", "RADIUS_LG",
+    "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
     "BG", "SURFACE", "HIGHLIGHT", "ACCENT", "MUTED", "FG",
     "RED", "GREEN", "YELLOW",
     # components

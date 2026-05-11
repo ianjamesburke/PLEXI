@@ -940,7 +940,7 @@ impl ProcessApp {
         // position the pill's *left edge* such that its right edge lands
         // at `pane_rect.max.x - inset`.
         let font_size = 11.0;
-        let radius = 6.0;
+        let radius = crate::style::RADIUS_BADGE;
         let inset = 8.0;
         let font_id = egui::FontId::proportional(font_size);
         let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, egui::Color32::BLACK));
@@ -995,7 +995,7 @@ impl ProcessApp {
     ) {
         let label = if count > 9 { "9+".to_string() } else { count.to_string() };
         let font_size = 11.0;
-        let radius = 6.0;
+        let radius = crate::style::RADIUS_BADGE;
         let inset = 8.0;
         let font_id = egui::FontId::proportional(font_size);
         let fg_color = egui::Color32::from_rgb(0x1e, 0x1e, 0x2e);

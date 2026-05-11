@@ -42,6 +42,11 @@ pub const TEXT_TITLE_XL: f32 = 28.0;   // Primary modal title — the thing the
 // ── Corner radii ───────────────────────────────────────────────────────────
 pub const RADIUS_MD: CornerRadius = CornerRadius::same(8);
 pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
+// Badge-specific radius. At TEXT_HINT size the pill height is ~17 px;
+// RADIUS_MD (8) is 94% of max-oval — a cliché perfect stadium. 6 gives
+// visible corners while staying clearly rounded. Keep in sync with
+// RADIUS_BADGE in plexi_sdk/ui.py.
+pub const RADIUS_BADGE: f32 = 6.0;
 
 // ── Modal widths ───────────────────────────────────────────────────────────
 // Pick the smallest width that fits the content without crowding. Bigger is
