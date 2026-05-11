@@ -648,21 +648,11 @@ gh issue edit <n> --remove-label "blocked" --add-label "ready"
 ```
 Report any issues unblocked as part of the completion output.
 
-Run `/improve` to surface friction from this session and suggest improvements. Wait for the improve output to land.
-
-**Before accepting any CLAUDE.md addition from `/improve`:** ask whether the lesson is better encoded as a code change (stricter types, better error messages, a guard in the workflow) rather than a rule in the file. CLAUDE.md is already long — prefer making the architecture harder to misuse over adding another line to memorize. A new CLAUDE.md rule is only warranted if there's no reasonable code-level enforcement.
-
-After `/improve` completes, copy its `[IMPROVEMENTS]` bullets verbatim into the completion block. If the user declined all suggestions or `/improve` made no changes, omit `Improvements made:` entirely.
-
 Output:
 ```
 - Merged: PR #<n> — <title>
 - Closed: Issue #<n> — <title>
 - Version: <version>
-- Improvements made:
-  - <bullet from /improve's [IMPROVEMENTS] output>
-  - <bullet from /improve's [IMPROVEMENTS] output>
-  (omit if none)
 
 [COMPLETE]
 ```
@@ -692,7 +682,7 @@ plexi notify --title "Shipped #<number> — review needed" \
 ```
 Pane stays alive; user can land back here via choice `c` to discuss.
 
-**Decision: clean vs soft** — if `/improve` output had any tier-2 (codebase change) proposals filed as `proposed-improvement` issues that need user vote, OR any deferred threads from the cycle, that's a soft exit. Otherwise clean.
+**Decision: clean vs soft** — if there are any deferred threads from the cycle, that's a soft exit. Otherwise clean.
 
 ---
 
