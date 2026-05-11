@@ -11,6 +11,7 @@ from plexi_sdk import (
 from plexi_sdk.ui import Column, AppBar, FooterKeys, Component, Label
 
 DURATIONS = [
+    (15, "15 sec"),
     (30, "30 sec"),
     (60, "1 min"),
     (2 * 60, "2 min"),
