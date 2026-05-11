@@ -6,17 +6,17 @@ handle_key / hit_test / set_selected give full keyboard and pointer control.
 
 from __future__ import annotations
 
+from plexi_sdk.ui import Component, HIGHLIGHT, MUTED
 
-class _ListViewRenderer:
+
+class _ListViewRenderer(Component):
     """Internal — returned by ListView.render(); bridges Component protocol."""
 
     def __init__(self, owner: "ListView", items: list) -> None:
         self._owner = owner
         self._items = items
 
-    # -- Component protocol ---------------------------------------------------
-
-    def measure(self, _avail_w: float) -> float:
+    def measure(self, avail_w: float) -> float:  # noqa: ARG002
         return 0.0  # grow
 
     def is_grow(self) -> bool:
@@ -24,14 +24,6 @@ class _ListViewRenderer:
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         self._owner._render_items(ctx, x, y, w, h, self._items)
-
-    # Let _render_clipped work (used by Column layout engine)
-    def _render_clipped(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.push_clip(x, y, w, h)
-        try:
-            self.render(ctx, x, y, w, h)
-        finally:
-            ctx.pop_clip()
 
 
 class ListView:
@@ -146,22 +138,18 @@ class ListView:
 
         ctx.push_clip(x, y, w, h)
         try:
-            cursor_y = y - self._scroll_offset
-            for item in items:
-                ib = cursor_y + self._item_height
-                if ib > y and cursor_y < y + h:
-                    item.render(ctx, x, cursor_y, w, self._item_height)
-                cursor_y += self._item_height
+            # Only iterate the visible slice — O(visible) not O(N)
+            start_idx = max(0, int(self._scroll_offset / self._item_height))
+            end_idx = min(len(items), int((self._scroll_offset + h) / self._item_height) + 1)
+            for i in range(start_idx, end_idx):
+                item_y = y + (i * self._item_height) - self._scroll_offset
+                items[i].render(ctx, x, item_y, w, self._item_height)
         finally:
             ctx.pop_clip()
 
         # Scrollbar indicator when content overflows
         total_h = self._total_h()
         if total_h > h and h > 0:
-            try:
-                from plexi_sdk.ui import HIGHLIGHT, MUTED
-            except ImportError:
-                return
             sb_w = 3.0
             thumb_h = max(16.0, h * (h / total_h))
             thumb_y = y + (self._scroll_offset / total_h) * h
