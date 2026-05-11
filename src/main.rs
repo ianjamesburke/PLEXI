@@ -42,7 +42,6 @@ mod headless_renderer;
 mod hot_reload;
 mod install;
 mod protocol;
-mod quick_note_app;
 mod runs;
 mod secrets;
 mod secrets_app;

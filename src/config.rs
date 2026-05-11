@@ -113,6 +113,7 @@ pub struct PlexiConfig {
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
     pub confirm_close: Option<bool>,
     pub keybindings: Option<KeybindingsConfig>,
+    pub quick_note: Option<QuickNoteConfig>,
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).
@@ -598,6 +599,38 @@ model_high   = "anthropic/claude-opus-4-7"
 # open_secrets_manager    = "cmd+shift+s"
 # force_reload_app        = "cmd+alt+r"
 # toggle_notification_modal = "cmd+shift+a"
+
+# ── Quick Note ─────────────────────────────────────────────────
+# Cmd+0 opens a compose modal. Enter advances to the destination
+# picker. Press a digit key to route instantly — no Enter needed.
+# Submenu entries (options = [...]) expand on the parent keypress.
+# Destination 0 (global backlog → ~/.plexi/backlog) is always
+# available regardless of config.
+#
+# Tokens in `command`:  {note} = note text (shell-escaped)
+#                        {cwd}  = focused pane directory
+#
+# [[quick_note.destinations]]
+# key     = 1
+# label   = "Backlog"
+# type    = "backlog"
+# path    = "~/.plexi/backlog"
+#
+# [[quick_note.destinations]]
+# key     = 2
+# label   = "Ask Claude"
+# type    = "pane"
+# command = "claude -p {note}"
+# position = "context-end"
+#
+# [[quick_note.destinations]]
+# key     = 3
+# label   = "GitHub issue"
+# options = [
+#   { key = 1, label = "Bug report",       command = "cd {cwd} && gh issue create --label bug --title {note} --body ''" },
+#   { key = 2, label = "Feature request",  command = "cd {cwd} && gh issue create --label enhancement --title {note} --body ''" },
+#   { key = 3, label = "Draft (no label)", command = "cd {cwd} && gh issue create --title {note} --body '' --draft" },
+# ]
 "##;
 
 pub fn open_config_file() {
@@ -714,6 +747,9 @@ impl PlexiConfig {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.keybindings = Some(incoming),
             _ => {}
+        }
+        if other.quick_note.is_some() {
+            self.quick_note = other.quick_note;
         }
     }
 }
@@ -929,6 +965,41 @@ impl VoiceAgentConfig {
             self.system_prompt = other.system_prompt;
         }
     }
+}
+
+/// Quick Note modal configuration.
+#[derive(Deserialize, Default, Clone)]
+pub struct QuickNoteConfig {
+    #[serde(default)]
+    pub destinations: Vec<QuickNoteDestinationConfig>,
+}
+
+/// A destination entry in `[[quick_note.destinations]]`.
+#[derive(Deserialize, Clone)]
+pub struct QuickNoteDestinationConfig {
+    pub key: u8,
+    pub label: String,
+    /// Destination type: "backlog" or "pane". Absent when `options` is set (submenu).
+    #[serde(rename = "type")]
+    pub dest_type: Option<String>,
+    /// For `type = "backlog"`: directory path (tilde-expanded) to write notes into.
+    pub path: Option<String>,
+    /// For `type = "pane"`: shell command template. Tokens: `{note}`, `{cwd}`.
+    pub command: Option<String>,
+    /// For `type = "pane"`: where to open the new pane.
+    /// "split" (default) | "context-end" | "context-start"
+    pub position: Option<String>,
+    /// When set, this entry is a submenu. No `dest_type` needed at top level.
+    pub options: Option<Vec<QuickNoteSubOptionConfig>>,
+}
+
+/// A sub-option inside a submenu destination.
+#[derive(Deserialize, Clone)]
+pub struct QuickNoteSubOptionConfig {
+    pub key: u8,
+    pub label: String,
+    pub command: String,
+    pub position: Option<String>,
 }
 
 // ── Adopted workspace root (set once by main when an explicit path arg is
