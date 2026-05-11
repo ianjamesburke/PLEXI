@@ -439,22 +439,6 @@ impl PlexiApp {
         );
     }
 
-    /// Open the quick note app (full pane, no terminal split).
-    pub(crate) fn open_quick_note(&mut self) {
-        let cwd = {
-            let ctx = &self.windows[self.active_window];
-            ctx.focused_pane
-                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-        };
-
-        let app = Box::new(crate::quick_note_app::QuickNoteApp::new(cwd.clone()));
-        let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
-    }
-
-
-
     /// Launch an installed app by id in the focused pane.
     /// Respects the `layout_hint` from the app's manifest.toml.
     pub(crate) fn launch_app_by_id(&mut self, id: &str) {
@@ -635,6 +619,249 @@ impl PlexiApp {
         let perms = crate::app_permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
+
+    /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
+    pub(crate) fn open_quick_note_modal(&mut self) {
+        let active = self.active_window;
+        let cwd = self.windows[active]
+            .focused_pane
+            .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let workspace_root = crate::config::active_workspace_root();
+        let context_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
+        let context = self.context_name_for(context_id);
+        self.quick_note_text = String::new();
+        self.quick_note_ctx = crate::app::QuickNoteCtx { cwd, workspace_root, context };
+        self.quick_note_pending_parent = None;
+        self.push_focus_layer(crate::app::FocusLayer::QuickNote);
+        log::info!(
+            "QuickNote: modal opened — cwd={}, workspace={:?}",
+            self.quick_note_ctx.cwd.display(),
+            self.quick_note_ctx.workspace_root
+        );
+    }
+
+    /// Commit a quick note: write backlog or spawn a pane.
+    pub(crate) fn commit_quick_note(
+        &mut self,
+        text: &str,
+        dest: &crate::config::QuickNoteDestinationConfig,
+    ) {
+        let ctx = self.quick_note_ctx.clone();
+        match dest.dest_type.as_deref() {
+            Some("backlog") | None if dest.options.is_none() => {
+                let path = dest.path.as_deref().unwrap_or("");
+                let dir = if path.is_empty() {
+                    crate::config::config_dir().join("backlog")
+                } else {
+                    let expanded = if path.starts_with("~/") {
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("/"))
+                            .join(&path[2..])
+                    } else {
+                        PathBuf::from(path)
+                    };
+                    expanded
+                };
+                Self::write_backlog_note(text, &dir, &ctx);
+            }
+            Some("pane") => {
+                let cmd_template = match &dest.command {
+                    Some(c) => c.clone(),
+                    None => {
+                        log::warn!("QuickNote: pane destination '{}' has no command", dest.label);
+                        return;
+                    }
+                };
+                let cmd = Self::substitute_note_tokens_static(&cmd_template, text, &ctx);
+                let position = dest.position.as_deref().unwrap_or("split");
+                log::info!(
+                    "QuickNote: committed via '{}' position={:?}",
+                    dest.label,
+                    position
+                );
+                match position {
+                    "context-end" => self.open_at_context_end(&cmd),
+                    "context-start" => self.open_at_context_start(&cmd),
+                    _ => self.split_focused(false, Some(&cmd), true),
+                }
+            }
+            _ => {
+                log::warn!("QuickNote: unknown dest_type for '{}'", dest.label);
+            }
+        }
+    }
+
+    /// Commit the hard-coded destination 0: save to config_dir/backlog.
+    pub(crate) fn commit_quick_note_global_backlog(&mut self, text: &str) {
+        let ctx = self.quick_note_ctx.clone();
+        let dir = crate::config::config_dir().join("backlog");
+        log::info!("QuickNote: committed via global backlog (destination 0)");
+        Self::write_backlog_note(text, &dir, &ctx);
+    }
+
+    fn write_backlog_note(text: &str, dir: &PathBuf, ctx: &crate::app::QuickNoteCtx) {
+        use std::time::SystemTime;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let (y, mo, d, h, mi, s) = epoch_to_ymd_hms(secs);
+        let timestamp = format!("{y:04}-{mo:02}-{d:02}-{h:02}{mi:02}{s:02}");
+        let display_time = format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}");
+        let filename = format!("note-{timestamp}.md");
+
+        let context_line = {
+            let ws = ctx.workspace_root.as_ref()
+                .and_then(|p| {
+                    let home = dirs::home_dir()?;
+                    p.strip_prefix(&home).ok().map(|rel| format!("~/{}", rel.display()))
+                })
+                .or_else(|| ctx.workspace_root.as_ref().map(|p| p.to_string_lossy().to_string()));
+            match ws {
+                Some(w) => format!("{} · {}", ctx.context, w),
+                None => ctx.context.clone(),
+            }
+        };
+
+        let content = format!(
+            "# Quick Note — {display_time}\n**Context:** {context_line}\n---\n\n{}\n",
+            text.trim()
+        );
+
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            log::error!("QuickNote: failed to create backlog dir {}: {e}", dir.display());
+            return;
+        }
+        let path = dir.join(&filename);
+        match std::fs::write(&path, &content) {
+            Ok(()) => log::info!("QuickNote: saved to {}", path.display()),
+            Err(e) => log::error!("QuickNote: save failed {}: {e}", path.display()),
+        }
+    }
+
+    pub(crate) fn substitute_note_tokens_static(
+        cmd: &str,
+        note: &str,
+        ctx: &crate::app::QuickNoteCtx,
+    ) -> String {
+        let esc = |s: &str| -> String { shell_escape::escape(s.into()).to_string() };
+        let cwd_str = ctx.cwd.to_string_lossy().to_string();
+        cmd.replace("{note}", &esc(note))
+           .replace("{cwd}", &esc(&cwd_str))
+    }
+
+    /// Spawn a terminal pane as the last child of the root container.
+    pub(crate) fn open_at_context_end(&mut self, cmd: &str) {
+        let did_insert = self.try_insert_at_root(cmd, false);
+        if !did_insert {
+            self.split_focused(false, Some(cmd), true);
+        }
+    }
+
+    /// Spawn a terminal pane as the first child of the root container.
+    pub(crate) fn open_at_context_start(&mut self, cmd: &str) {
+        let did_insert = self.try_insert_at_root(cmd, true);
+        if !did_insert {
+            self.split_focused(false, Some(cmd), true);
+        }
+    }
+
+    fn try_insert_at_root(&mut self, cmd: &str, prepend: bool) -> bool {
+        use egui_tiles::{Container, Tile};
+        let new_id = self.host.alloc_pane_id();
+        let active = self.active_window;
+        let cwd = self.windows[active]
+            .focused_pane
+            .and_then(|t| self.windows[active].get_focused_pane_cwd(t));
+        let ctx_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
+        let ctx_name = self.context_name_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
+
+        let shell_name = std::path::Path::new(&settings.shell)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let trimmed = cmd.trim().trim_end_matches([';', ' ']);
+        settings.args = match shell_name {
+            "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), trimmed.to_string()],
+            "fish" => vec!["--login".to_string(), "-c".to_string(), trimmed.to_string()],
+            _ => vec!["-l".to_string(), "-c".to_string(), trimmed.to_string()],
+        };
+
+        let Some(mut pane) = crate::pane::TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
+            return false;
+        };
+        pane.ephemeral = true;
+        self.windows[active].panes.insert(new_id, crate::pane::Pane::Terminal(Box::new(pane)));
+
+        let ctx = &mut self.windows[active];
+        let new_tile = ctx.tree.tiles.insert_pane(new_id);
+        let root = match ctx.tree.root {
+            Some(r) => r,
+            None => {
+                ctx.tree.root = Some(new_tile);
+                ctx.focused_pane = Some(new_tile);
+                return true;
+            }
+        };
+
+        match ctx.tree.tiles.get_mut(root) {
+            Some(Tile::Container(Container::Linear(lin))) => {
+                if prepend {
+                    lin.children.insert(0, new_tile);
+                } else {
+                    lin.children.push(new_tile);
+                }
+                ctx.focused_pane = Some(new_tile);
+                true
+            }
+            _ => {
+                let ordered = if prepend {
+                    vec![new_tile, root]
+                } else {
+                    vec![root, new_tile]
+                };
+                let container = ctx.tree.tiles.insert_vertical_tile(ordered);
+                ctx.tree.root = Some(container);
+                ctx.focused_pane = Some(new_tile);
+                true
+            }
+        }
+    }
+}
+
+fn epoch_to_ymd_hms(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let days = secs / 86400;
+    let mut y = 1970u32;
+    let mut d = days as u32;
+    loop {
+        let days_in_year = if is_leap(y) { 366 } else { 365 };
+        if d < days_in_year { break; }
+        d -= days_in_year;
+        y += 1;
+    }
+    let months = [31u32, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 1u32;
+    for days_in_month in months {
+        if d < days_in_month { break; }
+        d -= days_in_month;
+        mo += 1;
+    }
+    (y, mo, d + 1, h as u32, m as u32, s as u32)
+}
+
+fn is_leap(y: u32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 /// Returns `true` if a binary named `name` exists in any directory on `PATH`.
@@ -865,5 +1092,30 @@ mod tests {
             h.app.windows[0].zoomed_pane.is_some(),
             "zoom must NOT be cleared when launching an overlay app"
         );
+    }
+}
+
+#[cfg(test)]
+mod quick_note_tests {
+    use super::*;
+    use crate::app::QuickNoteCtx;
+
+    #[test]
+    fn substitute_tokens_escapes_shell_special_chars() {
+        let ctx = QuickNoteCtx {
+            cwd: std::path::PathBuf::from("/tmp/test dir"),
+            workspace_root: None,
+            context: "test".to_string(),
+        };
+        let cmd = "gh issue create --title {note} --body ''";
+        let result = PlexiApp::substitute_note_tokens_static(
+            cmd,
+            "it's a note \"with quotes\"",
+            &ctx,
+        );
+        // Verify it's valid shell (no unquoted single quote)
+        assert!(!result.contains("it's"), "unescaped single quote found: {result}");
+        // The note should appear in escaped form
+        assert!(result.contains("it"), "note text missing from: {result}");
     }
 }
