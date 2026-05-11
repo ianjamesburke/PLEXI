@@ -2399,18 +2399,6 @@ impl eframe::App for PlexiApp {
                     self.new_context();
                     self.save_workspace();
                 }
-                Action::PageLeft => {
-                    self.navigate_or_create_page(-1, 0);
-                }
-                Action::PageRight => {
-                    self.navigate_or_create_page(1, 0);
-                }
-                Action::PageUp => {
-                    self.navigate_or_create_page(0, -1);
-                }
-                Action::PageDown => {
-                    self.navigate_or_create_page(0, 1);
-                }
                 Action::ToggleMinimap => {
                     self.minimap.toggle();
                 }
@@ -3801,5 +3789,57 @@ mod tests {
             h.app.pending_notifications.len(), 1,
             "snoozed notification must survive tick_notification_timeouts"
         );
+    }
+
+    /// Build a second window in the SAME workspace (context_id = 1) placed
+    /// directly below window 0 on the spatial grid (grid_y = 1).
+    /// This is different from `second_window()` which uses context_id = 2
+    /// (a separate workspace used for cross-context tests).
+    fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
+        let mut tree = egui_tiles::Tree::empty("test_tree_below");
+        let tile = tree.tiles.insert_pane(pane_id);
+        tree.root = Some(tile);
+        Window {
+            name: "Test".into(),
+            path: std::env::temp_dir(),
+            tree,
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 1,
+            window_id,
+            context_id: 1, // same workspace as window 0
+        }
+    }
+
+    /// Regression guard for #863: navigate() at the pane boundary of window 0
+    /// must fall through to navigate_page() and switch active_window to window 1.
+    #[test]
+    fn navigate_at_pane_boundary_falls_through_to_page_navigation() {
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+        // Window 1 is directly below window 0 on the spatial grid, same workspace.
+        h.app.windows.push(same_workspace_window_below(2, 9910));
+
+        // Establish focus on window 0's pane so navigate() enters the pane-lookup branch.
+        assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed to set up focus");
+        assert_eq!(h.app.active_window, 0);
+        // Direction::Down with no pane below in the same window should fall through.
+        h.app.navigate(crate::keys::Direction::Down);
+        assert_eq!(h.app.active_window, 1, "navigate() at boundary must switch active_window via page navigation");
+    }
+
+    /// Regression guard for #863: navigate() at the boundary of the bottommost
+    /// window must be a silent no-op (no crash, active_window unchanged).
+    #[test]
+    fn navigate_at_grid_boundary_is_noop() {
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+        // Only one window — no neighbor below.
+        assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed to set up focus");
+        assert_eq!(h.app.active_window, 0);
+        h.app.navigate(crate::keys::Direction::Down);
+        assert_eq!(h.app.active_window, 0, "navigate() at grid boundary must not change active_window");
     }
 }

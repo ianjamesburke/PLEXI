@@ -18,10 +18,6 @@ pub struct KeybindingsConfig {
     pub split_vertical: Option<String>,
     pub split_right: Option<String>,
     pub split_down: Option<String>,
-    pub page_left: Option<String>,
-    pub page_down: Option<String>,
-    pub page_up: Option<String>,
-    pub page_right: Option<String>,
     pub swap_pane_left: Option<String>,
     pub swap_pane_down: Option<String>,
     pub swap_pane_up: Option<String>,
@@ -70,10 +66,6 @@ impl KeybindingsConfig {
         overlay_field!(split_vertical);
         overlay_field!(split_right);
         overlay_field!(split_down);
-        overlay_field!(page_left);
-        overlay_field!(page_down);
-        overlay_field!(page_up);
-        overlay_field!(page_right);
         overlay_field!(swap_pane_left);
         overlay_field!(swap_pane_down);
         overlay_field!(swap_pane_up);
@@ -581,10 +573,6 @@ model_high   = "anthropic/claude-opus-4-7"
 # navigate_down           = "cmd+j"
 # navigate_up             = "cmd+k"
 # navigate_right          = "cmd+l"
-# page_left               = "cmd+shift+h"
-# page_down               = "cmd+shift+j"
-# page_up                 = "cmd+shift+k"
-# page_right              = "cmd+shift+l"
 # swap_pane_left          = "cmd+ctrl+h"
 # swap_pane_down          = "cmd+ctrl+j"
 # swap_pane_up            = "cmd+ctrl+k"

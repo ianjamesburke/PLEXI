@@ -11,9 +11,9 @@
 //!
 //! `navigate_page` is a **pure navigation** function: it only switches
 //! `active_context` to an *existing* page. It never creates. The creation
-//! policy (e.g. "new rows start at column 0") lives exclusively in
-//! `navigate_or_create_page`. Never put creation semantics into
-//! `navigate_page` or `find_navigation_target`.
+//! policy (e.g. "new rows start at column 0") lives in
+//! `pane_ops/workspace.rs` (`create_page_at`). Never put creation semantics
+//! into `navigate_page` or `find_navigation_target`.
 //!
 //! This separation is enforced by `find_navigation_target` being a free
 //! function with no access to `&mut PlexiApp`. Unit tests in this module
@@ -78,8 +78,7 @@ impl PlexiApp {
     /// **Vertical**: closest-by-column in the target row, biased toward the
     /// most recently visited column in that row (`last_page_x_per_row`).
     ///
-    /// Does **not** create pages. For create-if-missing behaviour see
-    /// [`navigate_or_create_page`].
+    /// Does **not** create pages — silently no-ops at the grid boundary.
     pub(crate) fn navigate_page(&mut self, dx: i32, dy: i32) {
         let cur_x = self.windows[self.active_window].grid_x;
         let cur_y = self.windows[self.active_window].grid_y;
@@ -108,36 +107,6 @@ impl PlexiApp {
             self.context_active_window.insert(ws_id, w.window_id);
             let wid = w.window_id;
             self.record_context_visit(wid);
-        }
-    }
-
-    /// Navigate to the adjacent page, creating one at the target coordinates
-    /// if none exists.
-    ///
-    /// Creation policy: vertical moves start new rows at **column 0**;
-    /// horizontal moves extend the current row at the adjacent column.
-    pub(crate) fn navigate_or_create_page(&mut self, dx: i32, dy: i32) {
-        let cur_x = self.windows[self.active_window].grid_x;
-        let cur_y = self.windows[self.active_window].grid_y;
-
-        let tx = cur_x as i32 + dx;
-        let ty = cur_y as i32 + dy;
-        if tx < 0 || ty < 0 {
-            return;
-        }
-
-        let before = self.active_window;
-        self.navigate_page(dx, dy);
-        if self.active_window == before {
-            // Vertical: new rows always start at column 0.
-            // Horizontal: extend the current row at the adjacent column.
-            let create_x = if dy != 0 { 0 } else { tx as u32 };
-            self.create_page_at(create_x, ty as u32);
-            // Record the created page's position so no stale trail lingers on
-            // the source page. Without this, navigate_page's post-insert never
-            // fires (navigation failed), leaving last_page_x_per_row at the
-            // source's x — which renders the source cell as a trail indicator.
-            self.last_page_x_per_row.insert(ty as u32, create_x);
         }
     }
 
@@ -172,8 +141,8 @@ impl PlexiApp {
 // changed a documented behaviour — update the test intentionally rather than
 // silently.
 //
-// Creation policy (e.g. "vertical creates start at col 0") is NOT tested here
-// because it lives in `navigate_or_create_page`, not in this function.
+// Creation policy (e.g. "vertical creates start at col 0") lives in
+// `pane_ops/workspace.rs` (create_page_at), not in this function.
 
 #[cfg(test)]
 mod tests {

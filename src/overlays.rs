@@ -233,20 +233,7 @@ impl PlexiApp {
                                         colors,
                                     );
                                     ui.label(
-                                        RichText::new("Move between panes")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.end_row();
-
-                                    crate::widgets::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}", "\u{21E7}"], &["H", "J", "K", "L"]],
-                                        None,
-                                        colors,
-                                    );
-                                    ui.label(
-                                        RichText::new("Navigate windows")
+                                        RichText::new("Move focus (panes & windows)")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );
@@ -1920,8 +1907,7 @@ impl PlexiApp {
                     let shortcuts: &[(&[&str], &str)] = &[
                         (&["⌘", "N"], "new terminal"),
                         (&["⌘", "⇧", "N"], "new context"),
-                        (&["⌘", "H", "J", "K", "L"], "move between panes"),
-                        (&["⌘", "⇧", "H", "J", "K", "L"], "move between windows"),
+                        (&["⌘", "H", "J", "K", "L"], "move focus (panes & windows)"),
                         (&["⌘", "/"], "keyboard shortcuts"),
                     ];
 

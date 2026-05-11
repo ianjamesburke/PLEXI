@@ -643,25 +643,36 @@ impl PlexiApp {
         let effects = self.submit(HostCommand::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
 
+        let (dx, dy) = match dir {
+            Direction::Left  => (-1,  0),
+            Direction::Right => ( 1,  0),
+            Direction::Up    => ( 0, -1),
+            Direction::Down  => ( 0,  1),
+        };
+
         let ctx = &self.windows[self.active_window];
-        if let Some(focused) = ctx.focused_pane {
-            if let Some(target) = ctx.find_pane_in_direction_from(focused, dir) {
-                self.windows[self.active_window].focused_pane = Some(target);
-                // Signal the newly-focused pane so render_text_inputs auto-focuses
-                // the first TextInput on the next frame.
-                if let Some(egui_tiles::Tile::Pane(pane_id)) =
-                    self.windows[self.active_window].tree.tiles.get(target)
-                {
-                    let pane_id = *pane_id;
-                    if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
-                        if let Some(app) = pane.as_app_mut() {
-                            if let crate::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
-                                proc_app.pane_just_focused = true;
-                            }
+        let pane_neighbor = ctx.focused_pane
+            .and_then(|focused| ctx.find_pane_in_direction_from(focused, dir));
+
+        if let Some(target) = pane_neighbor {
+            self.windows[self.active_window].focused_pane = Some(target);
+            // Signal the newly-focused pane so render_text_inputs auto-focuses
+            // the first TextInput on the next frame.
+            if let Some(egui_tiles::Tile::Pane(pane_id)) =
+                self.windows[self.active_window].tree.tiles.get(target)
+            {
+                let pane_id = *pane_id;
+                if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
+                    if let Some(app) = pane.as_app_mut() {
+                        if let crate::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
+                            proc_app.pane_just_focused = true;
                         }
                     }
                 }
             }
+        } else {
+            log::info!("navigate({:?}): falling through to page navigation", dir);
+            self.navigate_page(dx, dy);
         }
     }
 
