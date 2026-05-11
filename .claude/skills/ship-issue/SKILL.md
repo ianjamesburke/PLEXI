@@ -711,7 +711,7 @@ Pane stays alive; user can land back here via choice `c` to discuss.
 - On fail: always post a failure comment on the issue before closing/reverting anything — the issue stays open
 - Never close a failing issue — only close on merge
 - Never pass `--delete-branch` to `gh pr merge` — git refuses to delete a branch checked out by a worktree
-- **Build verification in worktrees:** always use `cargo build --manifest-path <worktree>/Cargo.toml` — never rely on CWD being the right worktree
+- **Build verification in worktrees:** always use `cargo build --manifest-path <worktree>/Cargo.toml` and `cargo test --manifest-path <worktree>/Cargo.toml` — never rely on CWD being the right worktree; `cargo test` without `--manifest-path` runs against CWD and silently matches 0 tests when the tests only exist in the feature branch
 - **Cross-repo changes:** when the ship cycle modifies files outside this repo (dotfiles, global skills, etc.), commit those to their own repo as a separate step before marking [COMPLETE]
 - **Spawn-queue ≠ process down:** `PLEXI_SOCKET` unset means "outside a Plexi pane" — not that the host is absent; never write messaging implying Plexi is not running when taking the queue fallback path
 - Alpha must be clean when the cycle ends
