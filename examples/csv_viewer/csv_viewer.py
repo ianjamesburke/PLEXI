@@ -34,12 +34,25 @@ class CsvViewer(App):
         self._h_scroll = 0
         ctx.info(f"csv_viewer: {len(self._files)} CSV files in {launch_dir}")
 
+    def on_inject(self, _ctx: RenderContext, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            return
+        if "mode" in payload:
+            self._mode = payload["mode"]
+        if "headers" in payload:
+            self._headers = list(payload["headers"])
+        if "rows" in payload:
+            self._rows = [list(r) for r in payload["rows"]]
+        if "selected" in payload:
+            self._selected = int(payload["selected"])
+
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == "list":
             if key in ("up", "k"):
                 self._selected = max(0, self._selected - 1)
             elif key in ("down", "j"):
-                self._selected = min(len(self._files) - 1, self._selected + 1)
+                if self._files:
+                    self._selected = min(len(self._files) - 1, self._selected + 1)
             elif key == "Enter":
                 if self._files:
                     self._load_csv(self._files[self._selected])
@@ -49,11 +62,10 @@ class CsvViewer(App):
                 ctx.info("csv_viewer: exit via Escape")
                 sys.exit(0)
         else:
-            max_v = max(0, len(self._rows) - 1)
             if key in ("up", "k"):
                 self._v_scroll = max(0, self._v_scroll - 1)
             elif key in ("down", "j"):
-                self._v_scroll = min(max_v, self._v_scroll + 1)
+                self._v_scroll += 1  # clamped to viewport in _draw_detail
             elif key in ("left", "h"):
                 self._h_scroll = max(0, self._h_scroll - 1)
             elif key in ("right", "l"):
