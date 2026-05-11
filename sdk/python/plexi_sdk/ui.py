@@ -324,39 +324,47 @@ class Divider(Component):
 
 @dataclass
 class AppBar(Component):
-    """Thin top-of-pane app bar — single-line title, vertically centred
-    in a fixed band, 1px divider at the bottom edge.
+    """Thin top-of-pane app bar with optional subtitle.
 
-    Replaces the old `Header` two-line block. Apps that need subtitle /
-    metadata text put it in a separate `Label(text, tone="hint")` row
-    below the AppBar — keeps the app bar minimal and predictable.
-
-    Future: an optional `actions` slot for right-aligned menu buttons
-    (e.g. settings, refresh) so apps can grow their own toolbar without
-    each rolling its own layout.
+    Single-line (title only): fixed BAND_H band, title vertically centred.
+    Two-line (title + subtitle): taller BAND_H_DOUBLE band, title/subtitle
+    stacked and centred together.
     """
     title: str
+    subtitle: Optional[str] = None
     accent: str = FG
 
-    TITLE_SIZE = 16.0   # TEXT_HEADING — app-bar scale, not billboard
-    BAND_H = 36.0       # thin band; native-toolbar feel
+    TITLE_SIZE = 16.0
+    SUBTITLE_SIZE = TEXT_HINT
+    BAND_H = 36.0
+    BAND_H_DOUBLE = 52.0
     DIVIDER_H = 1.0
 
+    def _band(self) -> float:
+        return self.BAND_H_DOUBLE if self.subtitle else self.BAND_H
+
     def measure(self, avail_w: float) -> float:
-        return self.BAND_H + self.DIVIDER_H
+        return self._band() + self.DIVIDER_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        # Opaque BG backdrop so content scrolled under the AppBar doesn't
-        # bleed through (defensive; the host clip stack makes overdraw
-        # structurally impossible, but the backdrop keeps chrome visually
-        # solid regardless of rendering order).
         ctx.rect(x, y, w, h, BG)
-        # Vertically centre the title in BAND_H.
-        text_y = y + (self.BAND_H - self.TITLE_SIZE) / 2.0
-        ctx.text(x, text_y, self.title,
-                 size=self.TITLE_SIZE, color=self.accent, bold=True,
-                 max_width=w, elide=True)
-        ctx.rect(x, y + self.BAND_H, w, self.DIVIDER_H, HIGHLIGHT)
+        band = self._band()
+        if self.subtitle:
+            block_h = self.TITLE_SIZE + SPACE_XS + self.SUBTITLE_SIZE
+            title_y = y + (band - block_h) / 2.0
+            sub_y = title_y + self.TITLE_SIZE + SPACE_XS
+            ctx.text(x, title_y, self.title,
+                     size=self.TITLE_SIZE, color=self.accent, bold=True,
+                     max_width=w, elide=True)
+            ctx.text(x, sub_y, self.subtitle,
+                     size=self.SUBTITLE_SIZE, color=MUTED,
+                     max_width=w, elide=True)
+        else:
+            text_y = y + (band - self.TITLE_SIZE) / 2.0
+            ctx.text(x, text_y, self.title,
+                     size=self.TITLE_SIZE, color=self.accent, bold=True,
+                     max_width=w, elide=True)
+        ctx.rect(x, y + band, w, self.DIVIDER_H, HIGHLIGHT)
 
 
 @dataclass

@@ -8,8 +8,8 @@ version = "3.5.123"
 edition = "2021"
 
 [package.metadata.bundle]
-name = "Plexi"
-identifier = "com.ianjamesburke.plexi"
+name = "Plexi Alpha"
+identifier = "com.ianjamesburke.plexi-alpha"
 icon = ["assets/app-icon.icns"]
 short_description = "Spatial terminal window manager"
 osx_minimum_system_version = "12.0"

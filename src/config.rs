@@ -353,20 +353,19 @@ pub fn ensure_profile_initialized() {
         );
     }
 
-    // Always ensure the SDK is present — runs on every launch so that
-    // migrated profiles (pre-existing dir) get the SDK on first run.
+    // Always overwrite the SDK on every launch so upgrades always get the
+    // version embedded in the current binary, not a stale copy from a prior install.
     let sdk_dest = dir.join("sdk").join("plexi_sdk");
-    if !sdk_dest.exists() {
-        if let Err(e) = std::fs::create_dir_all(&sdk_dest) {
-            eprintln!("profile init: failed to create sdk dir: {e}");
+    let _ = std::fs::remove_dir_all(&sdk_dest);
+    if let Err(e) = std::fs::create_dir_all(&sdk_dest) {
+        eprintln!("profile init: failed to create sdk dir: {e}");
+    } else {
+        let embedded_sdk =
+            include_dir::include_dir!("$CARGO_MANIFEST_DIR/sdk/python/plexi_sdk");
+        if let Err(e) = embedded_sdk.extract(&sdk_dest) {
+            eprintln!("profile init: failed to seed SDK: {e}");
         } else {
-            let embedded_sdk =
-                include_dir::include_dir!("$CARGO_MANIFEST_DIR/sdk/python/plexi_sdk");
-            if let Err(e) = embedded_sdk.extract(&sdk_dest) {
-                eprintln!("profile init: failed to seed SDK: {e}");
-            } else {
-                log::info!("profile init: seeded SDK to {}", sdk_dest.display());
-            }
+            log::info!("profile init: seeded SDK to {}", sdk_dest.display());
         }
     }
 }
