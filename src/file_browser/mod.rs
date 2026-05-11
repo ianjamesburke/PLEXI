@@ -134,6 +134,9 @@ pub struct FileBrowserApp {
     search_query: String,
     search_indices: Vec<usize>, // indices into `entries` that match the query
     should_close: bool,
+    /// In tests: collects paths passed to open_file instead of spawning the system opener.
+    #[cfg(test)]
+    pub(crate) opened_files: Vec<PathBuf>,
 }
 
 impl FileBrowserApp {
@@ -157,6 +160,8 @@ impl FileBrowserApp {
             search_query: String::new(),
             search_indices: Vec::new(),
             should_close: false,
+            #[cfg(test)]
+            opened_files: Vec::new(),
         };
         app.refresh();
         app
@@ -263,10 +268,20 @@ impl FileBrowserApp {
             });
             return;
         }
+        #[cfg(test)]
+        {
+            self.opened_files.push(path.to_path_buf());
+            return;
+        }
+        #[cfg(not(test))]
         match std::process::Command::new(Self::system_opener()).arg(path).status() {
-            Ok(_) => log::debug!("file_browser: system-open succeeded for {}", path.display()),
+            Ok(status) if status.success() => log::info!("file_browser: opened '{}'", path.display()),
+            Ok(status) => log::error!(
+                "file_browser: system-open failed for '{}': {status}",
+                path.display()
+            ),
             Err(e) => log::error!(
-                "file_browser: system-open failed for {}: {e}",
+                "file_browser: system-open failed to spawn for '{}': {e}",
                 path.display()
             ),
         }
@@ -1135,5 +1150,73 @@ mod tests {
                 assert!(super::key_pressed_no_repeat(i, Key::ArrowRight));
             });
         });
+    }
+
+    // ── Enter / l / → open non-directory files (#138) ──────────────────────
+
+    fn make_file_only_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("readme.txt"), b"hi").expect("write file");
+        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        (app, dir)
+    }
+
+    fn make_mixed_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("subdir")).expect("create subdir");
+        std::fs::write(dir.path().join("notes.txt"), b"hi").expect("write file");
+        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        (app, dir)
+    }
+
+    #[test]
+    fn enter_on_file_opens_file_and_browser_stays_open() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        assert!(!app.entries.is_empty(), "entries must be populated after new()");
+        assert!(!app.entries[0].is_dir, "first entry must be a file (no dirs in fixture)");
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        assert!(consumed, "Enter on a file must be consumed");
+        assert_eq!(app.opened_files.len(), 1, "Enter on a file must call open_file");
+        assert!(app.opened_files[0].ends_with("readme.txt"), "must open the selected file");
+        assert!(!app.should_close, "browser must stay open after opening a file");
+    }
+
+    #[test]
+    fn l_key_on_file_opens_file() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::L, Modifiers::default())]);
+        assert!(consumed);
+        assert_eq!(app.opened_files.len(), 1, "l on a file must call open_file");
+    }
+
+    #[test]
+    fn arrow_right_on_file_opens_file() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::ArrowRight, Modifiers::default())]);
+        assert!(consumed);
+        assert_eq!(app.opened_files.len(), 1, "→ on a file must call open_file");
+    }
+
+    #[test]
+    fn enter_on_dir_navigates_not_opens() {
+        let (mut app, _dir) = make_mixed_dir_app();
+        // dirs sort first — selected=0 is the subdir
+        assert!(app.entries[0].is_dir, "first entry must be the subdirectory");
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        assert!(consumed);
+        assert!(app.opened_files.is_empty(), "Enter on a dir must navigate, not open_file");
+    }
+
+    #[test]
+    fn search_enter_on_file_opens_and_exits_search() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        // enter search mode
+        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(app.in_search, "slash must enter search mode");
+        // press Enter to open the (only) filtered result
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        assert!(consumed);
+        assert_eq!(app.opened_files.len(), 1, "Enter in search mode on a file must call open_file");
+        assert!(!app.in_search, "search mode must exit after opening a file");
     }
 }
