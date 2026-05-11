@@ -54,7 +54,7 @@ class CsvViewer(App):
         if "rows" in payload:
             self._rows = [list(r) for r in payload["rows"]]
         if "selected" in payload:
-            self._selected = int(payload["selected"])
+            self._selected = max(0, min(len(self._files) - 1, int(payload["selected"]))) if self._files else 0
             self._file_list.selected_idx = self._selected
 
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
