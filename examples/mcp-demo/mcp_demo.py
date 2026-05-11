@@ -11,17 +11,16 @@ Connect Claude Desktop by adding to claude_desktop_config.json:
 """
 
 import os
-from plexi_sdk import App, RenderContext, BG, FG, SURFACE, ACCENT, MUTED, HEADING, BODY, CAPTION, HINT, PAD, HEADER_H
-
-BTN_H = 44.0
-FIELD_H = 36.0
-ROW_H = BTN_H + 8.0
+from plexi_sdk import App, RenderContext, BG, FG, SURFACE, ACCENT, MUTED, HEADING, CAPTION, HINT, PAD, HEADER_H
+from plexi_sdk.ui import SelectList, FormField
 
 
 class McpDemoApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         self._notes: list[str] = []
         self._mcp_port: str = os.environ.get("PLEXI_MCP_PORT", "not set")
+        self._note_list = SelectList([])
+        self._note_form = FormField(id="draft", label="New note", placeholder="Type a note…  (Enter to add)", required=True)
         self.emit.info(f"mcp-demo: started, PLEXI_MCP_PORT={self._mcp_port}")
         ctx.status_summary(f"MCP Demo  ·  port {self._mcp_port}")
 
@@ -46,30 +45,21 @@ class McpDemoApp(App):
         return y + 56 + 12
 
     def _render_input(self, ctx: RenderContext, y: float) -> float:
-        btn_w = ctx.w - PAD*2
-        ctx.text(x=PAD, y=y, text="New note *", size=HINT, color=MUTED)
-        y += 18
-        submitted = ctx.text_input(id="draft", x=PAD, y=y, w=btn_w, placeholder="Type a note…")
-        if submitted is not None:
-            self._add_note(submitted)
-        y += FIELD_H + 8
-        ctx.rect(PAD, y, btn_w, BTN_H, ACCENT, radius=6.0)
-        ctx.text(x=PAD + btn_w/2, y=y+BTN_H/2, text="Add Note", size=BODY, color=BG, bold=True, align="center")
-        return y + BTN_H + 16
+        field_h = self._note_form.measure(ctx.w - PAD * 2)
+        self._note_form.render(ctx, PAD, y, ctx.w - PAD * 2, field_h)
+        if self._note_form.submitted is not None:
+            self._add_note(self._note_form.submitted)
+        return y + field_h
+
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+        self._note_list.handle_key(key)
 
     def _render_notes(self, ctx: RenderContext, y0: float) -> None:
-        btn_w = ctx.w - PAD*2
+        self._note_list.items = [{"name": note} for note in reversed(self._notes)]
         if not self._notes:
             ctx.text(x=ctx.w/2, y=y0+40, text="No notes yet", size=CAPTION, color=MUTED, align="center")
             return
-        y = y0
-        for note in reversed(self._notes):
-            ctx.rect(PAD, y, btn_w, BTN_H, SURFACE, radius=6.0)
-            ctx.text(x=PAD+12, y=y+BTN_H/2, text=note, size=BODY, color=FG, align="left_center",
-                     max_width=btn_w-24, elide=True)
-            y += ROW_H
-            if y > ctx.h:
-                break
+        self._note_list.render(ctx, PAD, y0, ctx.w - PAD * 2, ctx.h - y0)
 
     def _add_note(self, text: str) -> None:
         text = text.strip()
