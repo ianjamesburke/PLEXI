@@ -1,6 +1,6 @@
 ---
 name: ship-issue
-description: "Full PLEXI ship cycle. Three modes: /ship-issue (auto-find next issue), /ship-issue <issue-number> (specific issue), /ship-issue <priority> (e.g. /ship-issue P1)."
+description: "Full PLEXI ship cycle. Four modes: /ship-issue (auto-find next issue), /ship-issue <issue-number> (specific issue), /ship-issue <priority> (e.g. /ship-issue P1), /ship-issue <n> <m> [...] (bundle multiple issues in one PR)."
 risk: medium
 source: local
 date_added: "2026-05-03"
@@ -8,13 +8,23 @@ date_added: "2026-05-03"
 
 # Ship
 
-The full development lifecycle for PLEXI. One skill, three entry points:
+The full development lifecycle for PLEXI. One skill, four entry points:
 
 | Invocation | Entry point |
 |---|---|
 | `/ship` | Auto-find next unblocked issue (P0→P1→P2→P3→P4) → Phase 0 |
 | `/ship <issue-number>` | Start from a specific issue → Phase 1 |
 | `/ship P0` / `/ship P1` / `/ship P2` / `/ship P3` / `/ship P4` | Find first unblocked issue at that level → Phase 0 |
+| `/ship <n> <m> [...]` | Bundle mode — ship multiple issues in one PR → Phase 1b-bundle |
+
+### Bundle mode rules
+- All issues must be open; verify each with `gh issue view <n> --json state --jq '.state'` before proceeding. Skip any that are already closed and note it.
+- Branch name: `feature/bundle-<n1>-<n2>[-<n3>...]`
+- PR title: `<short summary of combined intent> (#<n1>, #<n2>[, #<n3>...])`
+- PR body lists each issue and its "Done when" criteria separately.
+- Phase 6 closes **all** issue numbers: `gh issue close <n> --comment "Closed by PR #<pr>"` for each.
+- All issues are marked `in progress` at Phase 1 start; all have that label removed on fail or merge.
+- Pane title: `#<n1>+<n2> — <short summary>`
 
 ---
 
