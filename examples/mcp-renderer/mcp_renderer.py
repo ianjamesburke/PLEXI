@@ -420,26 +420,21 @@ class McpRendererApp(App):
                 self._selected_idx = self._list.selected_index
                 self.emit.schedule_render(after_ms=16)
             elif key == "return":
-                idx = self._list.selected_index
-                if 0 <= idx < len(self._tools):
-                    self._enter_form(self._tools[idx])
+                await self._handle(self._list.selected_index)
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
             if key == "escape":
-                self._view = "list"
-                self._selected_idx = 0
-                self._list.set_selected(0)
+                await self._handle("back")
                 self.emit.schedule_render(after_ms=16)
             elif key == "return":
-                await self._run_tool()
+                await self._handle("run")
 
         elif self._view == "result":
             if self._result_scrollable.handle_key(key):
                 self.emit.schedule_render(after_ms=16)
             elif key == "escape":
-                self._view = "list"
-                self._list.set_selected(0)
+                await self._handle("back")
                 self.emit.schedule_render(after_ms=16)
 
 

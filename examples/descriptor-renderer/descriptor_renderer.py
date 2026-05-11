@@ -394,20 +394,15 @@ class DescriptorRendererApp(App):
                 self._handle(self._list.selected_index)
                 self.emit.schedule_render(after_ms=16)
             elif key == "escape" and self._cmd_path:
-                self._cmd_path.pop()
-                self._selected_idx = 0
-                self._list.set_selected(0)
+                self._handle("back")
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
             if key == "escape":
-                self._view = "list"
-                self._cmd_path.pop()
-                self._selected_idx = 0
-                self._list.set_selected(0)
+                self._handle("back")
                 self.emit.schedule_render(after_ms=16)
             elif key == "return":
-                self._run()
+                self._handle("run")
                 self.emit.schedule_render(after_ms=16)
 
 
