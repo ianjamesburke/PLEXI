@@ -1066,6 +1066,154 @@ class ChatBubble(Component):
         ctx.markdown(text_x, text_y, text_w, self.text, base_size=fs, color=fg)
 
 
+class SelectList(Component):
+    """Keyboard-navigable scrollable list. Stateful — create in on_init, not on_render.
+
+    items: list of dicts with keys: name (str), description (str, optional),
+           leading (str, optional), trailing (str, optional)
+    selected_idx: currently highlighted row index
+
+    Call handle_key(key) from on_key. Call hit_index(click_y) from on_click.
+    """
+
+    def __init__(self, items: List[dict], selected_idx: int = 0) -> None:
+        self.items = items
+        self.selected_idx = selected_idx
+        self._scroll_px: float = 0.0
+        self._viewport_h: float = 0.0
+        self._rendered_rects: List[tuple] = []  # (y_top, y_bot, idx) populated each render
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, avail_w: float) -> float:
+        return 0.0  # is_grow — allocated by parent
+
+    def _item_h(self, i: int) -> float:
+        item = self.items[i]
+        return ListItem.HEIGHT_DOUBLE if item.get("description") else ListItem.HEIGHT_SINGLE
+
+    def _item_top(self, idx: int) -> float:
+        """Item's y position in content-local space (before scroll)."""
+        y = 0.0
+        for i in range(idx):
+            y += self._item_h(i) + SPACE_XS
+        return y
+
+    def _total_content_h(self) -> float:
+        if not self.items:
+            return 0.0
+        return sum(self._item_h(i) for i in range(len(self.items))) + SPACE_XS * (len(self.items) - 1)
+
+    def _clamp_scroll(self) -> None:
+        max_scroll = max(0.0, self._total_content_h() - self._viewport_h)
+        self._scroll_px = max(0.0, min(self._scroll_px, max_scroll))
+
+    def handle_key(self, key: str) -> bool:
+        """Update selection and scroll for j/k/arrows. Returns True if consumed."""
+        total = len(self.items)
+        if total == 0:
+            return False
+        if key in ("j", "ArrowDown", "down"):
+            self.selected_idx = min(self.selected_idx + 1, total - 1)
+        elif key in ("k", "ArrowUp", "up"):
+            self.selected_idx = max(self.selected_idx - 1, 0)
+        else:
+            return False
+        # Scroll to keep selected item visible
+        item_top = self._item_top(self.selected_idx)
+        item_bot = item_top + self._item_h(self.selected_idx)
+        self._scroll_px = ensure_visible(self._scroll_px, self._viewport_h, item_top, item_bot)
+        self._clamp_scroll()
+        return True
+
+    def hit_index(self, click_y: float) -> Optional[int]:
+        """Return item index at click_y (screen coords from last render), or None."""
+        for (yt, yb, idx) in self._rendered_rects:
+            if yt <= click_y < yb:
+                return idx
+        return None
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._viewport_h = h
+        self._rendered_rects = []
+        self._clamp_scroll()
+
+        if not self.items:
+            ctx.text(x + w / 2, y + h / 2, "No items",
+                     size=TEXT_HINT, color=MUTED, align="center")
+            return
+
+        ctx.push_clip(x, y, w, h)
+        try:
+            cursor_y = y - self._scroll_px
+            for i, item in enumerate(self.items):
+                ih = self._item_h(i)
+                yt = cursor_y
+                yb = cursor_y + ih
+                if yb > y and yt < y + h:
+                    self._rendered_rects.append((yt, yb, i))
+                    li = ListItem(
+                        title=item["name"],
+                        subtitle=item.get("description") or None,
+                        leading=item.get("leading"),
+                        trailing=item.get("trailing"),
+                        selected=(i == self.selected_idx),
+                    )
+                    li.render(ctx, x, cursor_y, w, ih)
+                cursor_y += ih + SPACE_XS
+        finally:
+            ctx.pop_clip()
+
+        # Scrollbar indicator when content overflows
+        total_h = self._total_content_h()
+        if total_h > h and h > 0:
+            sb_w = 3.0
+            thumb_ratio = h / total_h
+            thumb_h = max(16.0, h * thumb_ratio)
+            thumb_y = y + (self._scroll_px / total_h) * h
+            thumb_y = min(thumb_y, y + h - thumb_h)
+            bar_x = x + w - sb_w
+            ctx.rect(bar_x, y, sb_w, h, HIGHLIGHT)
+            ctx.rect(bar_x, thumb_y, sb_w, thumb_h, MUTED)
+
+
+@dataclass
+class FormField(Component):
+    """Label + TextInput row. Create in on_init (stable across renders).
+
+    Read .submitted after ctx.render() — it contains the text entered
+    by the user when they pressed Enter, or None if no submission this frame.
+    """
+    id: str
+    label: str
+    placeholder: str = ""
+    required: bool = False
+    height: float = 48.0
+
+    LABEL_H: float = TEXT_HINT + SPACE_XS  # 11 + 4 = 15px
+    LABEL_GAP: float = SPACE_SM            # 8px gap between label and input
+    BOTTOM_PAD: float = SPACE_LG          # 16px below input before next item
+
+    def __post_init__(self) -> None:
+        self._input: TextInput = TextInput(self.id, placeholder=self.placeholder, height=self.height)
+
+    @property
+    def submitted(self) -> Optional[str]:
+        """Text submitted this frame (Enter pressed), or None."""
+        return self._input.submitted
+
+    def measure(self, avail_w: float) -> float:
+        return self.LABEL_H + self.LABEL_GAP + self.height + self.BOTTOM_PAD
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        req_suffix = " *" if self.required else ""
+        ctx.text(x, y, f"{self.label}{req_suffix}",
+                 size=TEXT_HINT, color=MUTED)
+        input_y = y + self.LABEL_H + self.LABEL_GAP
+        self._input.render(ctx, x, input_y, w, self.height)
+
+
 @dataclass
 class Column(Component):
     """The root container. Stacks children vertically. Handles grow spacers:
@@ -1155,6 +1303,7 @@ __all__ = [
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     "ListItem", "Row", "TextInput", "ChatBubble",
+    "SelectList", "FormField",
     # badge primitive
     "badge",
     # scroll helpers
