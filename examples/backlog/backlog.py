@@ -14,8 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN
+from plexi_sdk.ui import SelectList
 
-ROW_H     = 22.0
 LIST_FRAC = 0.38   # fraction of width for the item list
 # Chrome — where the list/preview body starts and ends vertically. These
 # replace the fixed header/footer bars from v1 chrome. They're tuned so the
@@ -39,6 +39,7 @@ class BacklogApp(App):
         self.confirm_delete = False
         self.in_add = False        # showcase: host-owned TextInput entry mode
         self.status = ""
+        self._item_list = SelectList([])
         self._load()
 
     # ── Data ────────────────────────────────────────────────────────────────────
@@ -63,6 +64,8 @@ class BacklogApp(App):
             if not q or q in f.stem.lower() or q in f.name.lower()
         ]
         self.selected = min(self.selected, max(0, len(self.filtered) - 1))
+        self._item_list.items = [{"name": p.stem} for p in self.filtered]
+        self._item_list.selected_idx = self.selected
         self._cache_preview()
 
     def _cache_preview(self) -> None:
@@ -176,24 +179,11 @@ class BacklogApp(App):
         ctx.line(list_w, TOP - 4, list_w, h - BOTTOM_BAR_H, color=HIGHLIGHT, width=1.0)
 
         # ── Item list ────────────────────────────────────────────────────────────
-        visible_start = max(0, self.selected - int(list_h / ROW_H) + 4)
-        for i, path in enumerate(self.filtered):
-            if i < visible_start:
-                continue
-            row_y = TOP + (i - visible_start) * ROW_H
-            if row_y + ROW_H > h - BOTTOM_BAR_H:
-                break
-            is_sel = i == self.selected
-            if is_sel:
-                ctx.rect(1, row_y, list_w - 2, ROW_H, HIGHLIGHT, radius=3.0)
-            name = path.stem
-            color = FG if is_sel else MUTED
-            ctx.text(12, row_y + 4, name, size=12, color=color,
-                     max_width=list_w - 24)
-
         if not self.filtered:
             msg = "No results" if self.search_query else "Backlog is empty"
             ctx.text(12, TOP + 12, msg, size=12, color=MUTED)
+        else:
+            self._item_list.render(ctx, 0, TOP, list_w, list_h)
 
         # ── Preview ──────────────────────────────────────────────────────────────
         px = list_w + 14
@@ -295,13 +285,9 @@ class BacklogApp(App):
             return
 
         # ── Normal mode ──────────────────────────────────────────────────────────
-        n = len(self.filtered)
-
-        if key in ("j", "down"):
-            self.selected = min(self.selected + 1, max(0, n - 1))
-            self._cache_preview()
-        elif key in ("k", "up"):
-            self.selected = max(0, self.selected - 1)
+        if key in ("j", "down", "k", "up"):
+            self._item_list.handle_key(key)
+            self.selected = self._item_list.selected_idx
             self._cache_preview()
         elif key in ("e", "Enter"):
             self._open()

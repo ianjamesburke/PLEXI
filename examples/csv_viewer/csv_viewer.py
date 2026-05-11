@@ -10,10 +10,10 @@ from plexi_sdk import (  # type: ignore[attr-defined]
     FG, MUTED, ACCENT, BG,
     BODY, CAPTION,
 )
+from plexi_sdk.ui import SelectList  # type: ignore[attr-defined]
 
 PAD = 16.0
 ROW_H = 24.0
-LIST_ITEM_H = 36.0
 COL_W = 130.0
 CELL_PAD = 8.0
 STRIPE = "#0d0d0d"
@@ -41,6 +41,9 @@ class CsvViewer(App):
                 self._file_hints[p] = f"{kb:.1f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"
             except OSError:
                 self._file_hints[p] = ""
+        self._file_list = SelectList(
+            [{"name": p.name, "description": self._file_hints.get(p) or None} for p in self._files]
+        )
         ctx.info(f"csv_viewer: {len(self._files)} CSV files in {launch_dir}")
 
     def on_inject(self, _ctx: RenderContext, payload: dict) -> None:
@@ -52,14 +55,13 @@ class CsvViewer(App):
             self._rows = [list(r) for r in payload["rows"]]
         if "selected" in payload:
             self._selected = int(payload["selected"])
+            self._file_list.selected_idx = self._selected
 
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == "list":
-            if key in ("up", "k"):
-                self._selected = max(0, self._selected - 1)
-            elif key in ("down", "j"):
-                if self._files:
-                    self._selected = min(len(self._files) - 1, self._selected + 1)
+            if key in ("up", "k", "down", "j"):
+                self._file_list.handle_key(key)
+                self._selected = self._file_list.selected_idx
             elif key == "Enter":
                 if self._files:
                     self._load_csv(self._files[self._selected])
@@ -118,14 +120,10 @@ class CsvViewer(App):
 
         label = f"{len(self._files)} CSV file{'s' if len(self._files) != 1 else ''}"
         ctx.text(PAD, y, label, size=BODY, color=FG)
-        y += ROW_H + 4
+        y += 28.0
 
-        items = [
-            {"label": p.name, "secondary": self._file_hints.get(p, "") or None}
-            for p in self._files
-        ]
-        ctx.list_view(items, selected=self._selected, item_height=LIST_ITEM_H,
-                      x=0, y=y, w=w, h=h - y - 30)
+        self._file_list.selected_idx = self._selected
+        self._file_list.render(ctx, 0, y, w, h - y - 30)
 
         ctx.text(PAD, h - 20, "↑↓ / jk  navigate   ↵  open   esc  exit", size=CAPTION, color=MUTED)
 
