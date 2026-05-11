@@ -763,7 +763,7 @@ impl PlexiApp {
                         egui::ScrollArea::vertical()
                             .max_height(max_text_h)
                             .show(ui, |ui| {
-                                let r = ui.add(
+                                ui.add(
                                     egui::TextEdit::multiline(&mut self.quick_note_text)
                                         .id(egui::Id::new("quick_note_text"))
                                         .font(egui::FontId::monospace(style::TEXT_BODY))
@@ -777,7 +777,6 @@ impl PlexiApp {
                                                 .size(style::TEXT_BODY),
                                         ),
                                 );
-                                r.request_focus();
                             });
                     });
             });
@@ -937,9 +936,9 @@ impl PlexiApp {
 
         let modal_w = (screen_rect.width() * 0.5).min(560.0).max(340.0);
         let cursor = self.quick_note_dest_cursor;
-        let destinations: Vec<_> = self.config.quick_note.as_ref()
-            .map(|qn| qn.destinations.clone())
-            .unwrap_or_default();
+        let destinations = self.config.quick_note.as_ref()
+            .map(|qn| qn.destinations.as_slice())
+            .unwrap_or(&[]);
         egui::Area::new(egui::Id::new("quick_note_dest_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -956,13 +955,9 @@ impl PlexiApp {
                         let preview = {
                             let t = self.quick_note_text.trim();
                             let first_line = t.lines().next().unwrap_or("");
-                            let has_more = first_line.len() < t.len();
-                            if first_line.chars().count() > 80 {
-                                let idx = first_line.char_indices().nth(80)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(first_line.len());
+                            if let Some((idx, _)) = first_line.char_indices().nth(80) {
                                 format!("{}…", &first_line[..idx])
-                            } else if has_more {
+                            } else if first_line.len() < t.len() {
                                 format!("{}…", first_line)
                             } else {
                                 first_line.to_string()
