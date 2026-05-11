@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.112] — 2026-05-11
+
+### Changes
+- feat(cli): inject PLEXI_CONTEXT_ID/NAME env vars + context current command (#1025)
+- fix(bundle): keyboard_capture for input-inspector + rename app_state dir (#907, #851) (#1023)
+- chore: auto-install after promoting to main
 ## [3.5.111] — 2026-05-10
 
 ### Changes
