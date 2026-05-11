@@ -670,6 +670,20 @@ impl PlexiApp {
                     }
                 }
             }
+        } else if dy != 0 {
+            // Vertical boundary: wrap within the current context rather than
+            // falling through to page navigation. Up wraps to the last pane
+            // (circular: above the top is the bottom); Down wraps to the first.
+            let root = self.windows[self.active_window].tree.root;
+            let wrap_target = if dy < 0 {
+                root.and_then(|r| self.windows[self.active_window].find_last_pane_in(r))
+            } else {
+                root.and_then(|r| self.windows[self.active_window].find_first_pane_in(r))
+            };
+            if let Some(target) = wrap_target {
+                log::info!("navigate({:?}): wrapping within context to pane {:?}", dir, target);
+                self.windows[self.active_window].focused_pane = Some(target);
+            }
         } else {
             log::info!("navigate({:?}): falling through to page navigation", dir);
             self.navigate_page(dx, dy);

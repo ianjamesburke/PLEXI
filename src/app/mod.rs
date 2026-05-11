@@ -3832,33 +3832,49 @@ mod tests {
         }
     }
 
-    /// Regression guard for #863: navigate() at the pane boundary of window 0
-    /// must fall through to navigate_page() and switch active_window to window 1.
+    /// #1074: navigate(Down) at the vertical pane boundary wraps to the first
+    /// pane in the current context — it must NOT fall through to page navigation.
     #[test]
-    fn navigate_at_pane_boundary_falls_through_to_page_navigation() {
+    fn navigate_down_at_vertical_boundary_wraps_not_page_navigates() {
         let mut h = HostHarness::new();
         let pane_a = h.add_test_pane();
         // Window 1 is directly below window 0 on the spatial grid, same workspace.
         h.app.windows.push(same_workspace_window_below(2, 9910));
 
-        // Establish focus on window 0's pane so navigate() enters the pane-lookup branch.
         assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed to set up focus");
         assert_eq!(h.app.active_window, 0);
-        // Direction::Down with no pane below in the same window should fall through.
+        // Down with no pane below must wrap within context — NOT switch to window 1.
         h.app.navigate(crate::keys::Direction::Down);
-        assert_eq!(h.app.active_window, 1, "navigate() at boundary must switch active_window via page navigation");
+        assert_eq!(h.app.active_window, 0, "navigate(Down) at vertical boundary must stay in current context");
+        assert!(h.app.windows[0].focused_pane.is_some(), "focused_pane must be set after Down wrap");
     }
 
-    /// Regression guard for #863: navigate() at the boundary of the bottommost
-    /// window must be a silent no-op (no crash, active_window unchanged).
+    /// #1074: navigate(Up) at the top vertical boundary wraps to the last pane
+    /// in the current context — active_window must not change.
     #[test]
-    fn navigate_at_grid_boundary_is_noop() {
+    fn navigate_up_at_vertical_boundary_wraps_not_page_navigates() {
         let mut h = HostHarness::new();
         let pane_a = h.add_test_pane();
-        // Only one window — no neighbor below.
+
         assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed to set up focus");
         assert_eq!(h.app.active_window, 0);
-        h.app.navigate(crate::keys::Direction::Down);
-        assert_eq!(h.app.active_window, 0, "navigate() at grid boundary must not change active_window");
+        h.app.navigate(crate::keys::Direction::Up);
+        assert_eq!(h.app.active_window, 0, "navigate(Up) at vertical boundary must stay in current context");
+        assert!(h.app.windows[0].focused_pane.is_some(), "focused_pane must be set after Up wrap");
+    }
+
+    /// Horizontal boundary (Left/Right) still falls through to page navigation.
+    #[test]
+    fn navigate_left_at_horizontal_boundary_still_page_navigates() {
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+        // Window 1 is at grid_x=0, grid_y=1 (below) — not to the left.
+        // We need a window to the LEFT (grid_x = cur_x - 1, same row) to confirm
+        // Left still falls through. Since there's no window to the left of (0,0),
+        // Left must be a no-op (active_window unchanged) rather than a wrap.
+        assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed");
+        assert_eq!(h.app.active_window, 0);
+        h.app.navigate(crate::keys::Direction::Left);
+        assert_eq!(h.app.active_window, 0, "Left at boundary must not change active_window (no left page, not wrapped)");
     }
 }
