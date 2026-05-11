@@ -1064,7 +1064,10 @@ impl PlexiApp {
                         self.launch_app_by_id_with_layout(type_id, layout.clone(), args);
                     }
 
-                    self.windows[active].focused_pane = original_focused;
+                    // Only restore if we overrode focus; otherwise the new pane keeps focus.
+                    if from_pane_id.is_some() {
+                        self.windows[active].focused_pane = original_focused;
+                    }
                     if let Some(rf) = response_file {
                         let json = format!("{{\"pane_id\":{new_pane_id}}}");
                         if let Err(e) = std::fs::write(rf, &json) {
