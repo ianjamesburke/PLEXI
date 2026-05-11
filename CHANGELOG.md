@@ -1,6 +1,25 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.118] — 2026-05-11
+
+### Changes
+- fix(deps): disable eframe accesskit feature to eliminate accesskit_consumer panic (#1039)
+- feat(cli): cli_help_parser — parse_help_to_descriptor (#1042)
+- example(mcp-renderer): add demo_server.py — local MCP server for renderer testing (#1044)
+- fix(mcp-renderer): use plexi open syntax in no-command error message (#1041)
+- chore: commit alpha changes before branching
+- feat(quick-note): destination picker UI stub (#1030)
+- fix(file-browser): verify Enter/l/→ open files via system opener (#138) (#1029)
+- feat(navigation): Cmd+HJKL falls through to window nav at pane boundary (#1017)
+- fix(keybindings): Cmd+R rename-pane and font-size bindings broken by exact-modifier guard (#1027)
+- feat(logging): date-based log rotation with configurable retention (#1028)
+- chore: update ship-issue skill
+- feat: app_states rename, pane key injection, file-browser no-repeat nav (#1026)
+- feat(notify): snooze choice — defer notification by N seconds (#1024)
+- feat(cli): inject PLEXI_CONTEXT_ID/NAME env vars + context current command (#1025)
+- fix(bundle): keyboard_capture for input-inspector + rename app_state dir (#907, #851) (#1023)
+- chore: auto-install after promoting to main
 ## [3.5.117] — 2026-05-11
 
 ### Changes
