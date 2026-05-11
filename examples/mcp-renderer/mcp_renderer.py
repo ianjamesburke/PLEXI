@@ -414,28 +414,30 @@ class McpRendererApp(App):
         self._result_scrollable.scroll_offset = 0.0
         self.emit.schedule_render(after_ms=16)
 
-    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+    async def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._view == "list":
             if self._list.handle_key(key):
                 self._selected_idx = self._list.selected_index
                 self.emit.schedule_render(after_ms=16)
-            elif key in ("Return", "Enter"):
+            elif key == "return":
                 idx = self._list.selected_index
                 if 0 <= idx < len(self._tools):
                     self._enter_form(self._tools[idx])
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
-            if key == "Escape":
+            if key == "escape":
                 self._view = "list"
                 self._selected_idx = 0
                 self._list.set_selected(0)
                 self.emit.schedule_render(after_ms=16)
+            elif key == "return":
+                await self._run_tool()
 
         elif self._view == "result":
             if self._result_scrollable.handle_key(key):
                 self.emit.schedule_render(after_ms=16)
-            elif key == "Escape":
+            elif key == "escape":
                 self._view = "list"
                 self._list.set_selected(0)
                 self.emit.schedule_render(after_ms=16)
