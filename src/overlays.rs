@@ -291,6 +291,19 @@ impl PlexiApp {
 
                                     crate::widgets::key_combo_list(
                                         ui,
+                                        &[&["\u{2318}", "["], &["\u{2318}", "]"]],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("Focus history back / forward")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+
+                                    crate::widgets::key_combo_list(
+                                        ui,
                                         &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
                                         None,
                                         colors,
