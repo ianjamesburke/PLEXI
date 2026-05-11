@@ -208,10 +208,212 @@ impl HeadlessRenderer {
                 "text" => self.pgap_text(&mut pixmap, cmd),
                 "line" => self.pgap_line(&mut pixmap, cmd),
                 "list" => self.pgap_list(&mut pixmap, cmd, width),
+                "layout" => self.pgap_layout(&mut pixmap, cmd, width as f32),
                 _ => {}
             }
         }
         pixmap.encode_png().expect("PNG encoding never fails on a valid Pixmap")
+    }
+
+    // ── Layout command support ──────────────────────────────────────────────
+    //
+    // Resolves a `layout` draw command using taffy for flex positioning, then
+    // paints each leaf at its resolved absolute position. Font measurement uses
+    // fontdue (DejaVuSans) — metrics approximate egui's harfbuzz output.
+
+    const BADGE_PAD_H: f32 = 8.0;
+    const BADGE_PAD_V: f32 = 3.0;
+    const BADGE_MIN_W: f32 = 32.0;
+
+    fn measure_text_advance(&self, text: &str, size: f32) -> f32 {
+        text.chars()
+            .map(|ch| self.font.rasterize(ch, size).0.advance_width)
+            .sum()
+    }
+
+    fn measure_text_height(&self, size: f32) -> f32 {
+        self.font
+            .horizontal_line_metrics(size)
+            .map(|m| (m.ascent - m.descent).ceil())
+            .unwrap_or(size)
+    }
+
+    fn measure_leaf_headless(&self, cmd: &Value) -> (f32, f32) {
+        let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
+        match kind {
+            "badge" => {
+                let label = cmd["label"].as_str().unwrap_or("");
+                let font_size = cmd["font_size"].as_f64().unwrap_or(11.0) as f32;
+                let tw = self.measure_text_advance(label, font_size);
+                let th = self.measure_text_height(font_size);
+                let w = (tw + Self::BADGE_PAD_H * 2.0).max(Self::BADGE_MIN_W);
+                let h = th + Self::BADGE_PAD_V * 2.0;
+                (w, h)
+            }
+            "text" => {
+                let text = cmd["text"].as_str().unwrap_or("");
+                let size = cmd["size"].as_f64().unwrap_or(12.0) as f32;
+                let w = self.measure_text_advance(text, size);
+                let h = self.measure_text_height(size);
+                (w, h)
+            }
+            "key_chip" => {
+                let label = cmd["label"].as_str().unwrap_or("");
+                let font_size = cmd["font_size"].as_f64().unwrap_or(11.0) as f32;
+                let tw = self.measure_text_advance(label, font_size);
+                let th = self.measure_text_height(font_size);
+                (tw + 10.0, th + 2.0) // KEYCHIP_PAD_H=5*2, PAD_V=1*2
+            }
+            _ => (0.0, 0.0),
+        }
+    }
+
+    fn pgap_layout(&self, pixmap: &mut Pixmap, cmd: &Value, available_w: f32) {
+        use taffy::prelude::*;
+
+        let origin_x = cmd["x"].as_f64().unwrap_or(0.0) as f32;
+        let origin_y = cmd["y"].as_f64().unwrap_or(0.0) as f32;
+        let gap = cmd["gap"].as_f64().unwrap_or(0.0) as f32;
+        let direction = cmd["direction"].as_str().unwrap_or("row");
+        let children = match cmd["children"].as_array() {
+            Some(a) => a,
+            None => return,
+        };
+
+        let mut tree: taffy::TaffyTree<Option<Value>> = taffy::TaffyTree::new();
+
+        fn build_node(
+            tree: &mut taffy::TaffyTree<Option<Value>>,
+            child: &Value,
+            renderer: &HeadlessRenderer,
+        ) -> taffy::NodeId {
+            let kind = child.get("type").and_then(Value::as_str).unwrap_or("");
+            match kind {
+                "leaf" => {
+                    let command = &child["command"];
+                    let (w, h) = renderer.measure_leaf_headless(command);
+                    let style = taffy::style::Style {
+                        size: taffy::geometry::Size {
+                            width: length(w),
+                            height: length(h),
+                        },
+                        ..Default::default()
+                    };
+                    tree.new_leaf_with_context(style, Some(command.clone())).unwrap()
+                }
+                "node" => {
+                    let dir = child["direction"].as_str().unwrap_or("row");
+                    let g = child["gap"].as_f64().unwrap_or(0.0) as f32;
+                    let flex_dir = if dir == "column" {
+                        taffy::style::FlexDirection::Column
+                    } else {
+                        taffy::style::FlexDirection::Row
+                    };
+                    let child_ids: Vec<taffy::NodeId> = child["children"]
+                        .as_array()
+                        .map(|a| a.iter().map(|c| build_node(tree, c, renderer)).collect())
+                        .unwrap_or_default();
+                    let gap_size = if dir == "column" {
+                        taffy::geometry::Size { width: length(0.0), height: length(g) }
+                    } else {
+                        taffy::geometry::Size { width: length(g), height: length(0.0) }
+                    };
+                    let style = taffy::style::Style {
+                        display: taffy::style::Display::Flex,
+                        flex_direction: flex_dir,
+                        gap: gap_size,
+                        ..Default::default()
+                    };
+                    tree.new_with_children(style, &child_ids).unwrap()
+                }
+                _ => tree.new_leaf(taffy::style::Style::default()).unwrap(),
+            }
+        }
+
+        let flex_dir = if direction == "column" {
+            taffy::style::FlexDirection::Column
+        } else {
+            taffy::style::FlexDirection::Row
+        };
+        let gap_size = if direction == "column" {
+            taffy::geometry::Size { width: length(0.0), height: length(gap) }
+        } else {
+            taffy::geometry::Size { width: length(gap), height: length(0.0) }
+        };
+
+        let child_ids: Vec<taffy::NodeId> = children
+            .iter()
+            .map(|c| build_node(&mut tree, c, self))
+            .collect();
+        let root_style = taffy::style::Style {
+            display: taffy::style::Display::Flex,
+            flex_direction: flex_dir,
+            gap: gap_size,
+            ..Default::default()
+        };
+        let root = tree.new_with_children(root_style, &child_ids).unwrap();
+
+        let avail = taffy::geometry::Size {
+            width: taffy::style::AvailableSpace::Definite(available_w - origin_x),
+            height: taffy::style::AvailableSpace::MaxContent,
+        };
+        tree.compute_layout(root, avail).unwrap();
+
+        // Walk the resolved tree and paint each leaf.
+        fn paint(
+            tree: &taffy::TaffyTree<Option<Value>>,
+            node: taffy::NodeId,
+            parent_x: f32,
+            parent_y: f32,
+            pixmap: &mut Pixmap,
+            renderer: &HeadlessRenderer,
+        ) {
+            let layout = tree.layout(node).unwrap();
+            let abs_x = parent_x + layout.location.x;
+            let abs_y = parent_y + layout.location.y;
+            let leaf_h = layout.size.height;
+
+            if let Some(Some(cmd)) = tree.get_node_context(node) {
+                let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
+                match kind {
+                    "badge" => {
+                        let label = cmd["label"].as_str().unwrap_or("");
+                        let fill = cmd["fill"].as_str().unwrap_or("#89b4fa");
+                        let fg = cmd["fg"].as_str().unwrap_or("#1e1e2e");
+                        let font_size = cmd["font_size"].as_f64().unwrap_or(11.0) as f32;
+                        let radius = cmd["radius"].as_f64().unwrap_or(8.0) as f32;
+                        let (w, _h) = renderer.measure_leaf_headless(cmd);
+                        let pill_rect_cmd = serde_json::json!({
+                            "type": "rect", "x": abs_x, "y": abs_y,
+                            "w": w, "h": leaf_h, "fill": fill, "radius": radius
+                        });
+                        renderer.pgap_rect(pixmap, &pill_rect_cmd);
+                        let tw = renderer.measure_text_advance(label, font_size);
+                        let th = renderer.measure_text_height(font_size);
+                        let text_cmd = serde_json::json!({
+                            "type": "text",
+                            "x": abs_x + (w - tw) / 2.0,
+                            "y": abs_y + (leaf_h - th) / 2.0,
+                            "text": label, "size": font_size, "color": fg, "bold": false
+                        });
+                        renderer.pgap_text(pixmap, &text_cmd);
+                    }
+                    "text" => {
+                        let mut text_cmd = cmd.clone();
+                        text_cmd["x"] = serde_json::json!(abs_x);
+                        text_cmd["y"] = serde_json::json!(abs_y);
+                        renderer.pgap_text(pixmap, &text_cmd);
+                    }
+                    _ => {}
+                }
+            }
+
+            for child in tree.children(node).unwrap() {
+                paint(tree, child, abs_x, abs_y, pixmap, renderer);
+            }
+        }
+
+        paint(&tree, root, origin_x, origin_y, pixmap, self);
     }
 
     fn pgap_rect(&self, pixmap: &mut Pixmap, cmd: &Value) {

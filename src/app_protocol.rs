@@ -457,6 +457,48 @@ pub enum MouseButton {
     Secondary,
 }
 
+/// Direction of a flex layout node.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutDirection {
+    Row,
+    Column,
+    Stack,
+}
+
+/// A child inside a layout tree — either a nested layout node or a leaf draw command.
+///
+/// Leaf commands must be host-measured primitives (`Badge`, `Text`, `KeyChip`).
+/// The `x` and `y` fields on leaf commands are ignored — positions come from taffy.
+///
+/// `JsonSchema` is implemented manually to avoid schemars recursion issues
+/// (RenderCommand → LayoutChild → RenderCommand).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LayoutChild {
+    /// A nested layout node.
+    Node {
+        direction: LayoutDirection,
+        children: Vec<LayoutChild>,
+        #[serde(default)]
+        gap: f32,
+    },
+    /// A leaf draw command positioned by taffy.
+    Leaf {
+        command: Box<RenderCommand>,
+    },
+}
+
+// Manual JsonSchema impl to avoid schemars recursion (RenderCommand ↔ LayoutChild).
+impl schemars::JsonSchema for LayoutChild {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "LayoutChild".into()
+    }
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({})
+    }
+}
+
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
 
 /// Render primitives — go to `pending_frame` → drawn to screen.
@@ -759,6 +801,22 @@ pub enum RenderCommand {
     /// Must be balanced with a preceding `BeginScroll`. Imbalanced pairs are
     /// logged at `warn` level and the stack is reset at frame end.
     EndScroll,
+
+    /// Declarative flex layout tree. The host resolves all positions using
+    /// taffy (flexbox) and real egui font metrics before painting.
+    ///
+    /// `x`, `y` — pane-relative top-left anchor of the layout tree.
+    /// `direction` — flex direction of the root node.
+    /// `children` — the layout tree children.
+    /// `gap` — space between children in the root node (pixels).
+    Layout {
+        x: f32,
+        y: f32,
+        direction: LayoutDirection,
+        children: Vec<LayoutChild>,
+        #[serde(default)]
+        gap: f32,
+    },
 }
 
 /// Side-effectful commands — go to `route_command`.
@@ -2657,5 +2715,21 @@ mod tests {
             serde_json::from_str::<DrawCommand>(bad).is_err(),
             "must fail without required key field"
         );
+    }
+
+    #[test]
+    fn layout_command_round_trips_serde() {
+        let json = r##"{"type":"layout","x":10.0,"y":20.0,"direction":"row","gap":6.0,"children":[{"type":"leaf","command":{"type":"badge","x":0.0,"y":0.0,"label":"4 files","fill":"#89b4fa","fg":"#1e1e2e","font_size":11.0,"radius":8.0}},{"type":"leaf","command":{"type":"text","x":0.0,"y":0.0,"text":"modified","size":12.0,"color":"#cdd6f4","monospace":false,"bold":false,"align":"top_left","elide":false,"selectable":false}}]}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise layout command");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::Layout { direction, children, gap, .. }) => {
+                assert!(matches!(direction, LayoutDirection::Row));
+                assert_eq!(children.len(), 2);
+                assert!((gap - 6.0).abs() < 0.01);
+            }
+            other => panic!("expected Layout, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"layout""#), "wire tag missing: {serialised}");
     }
 }
