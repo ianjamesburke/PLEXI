@@ -4,6 +4,30 @@ use crate::theme::Colors;
 use crate::tiling::PaneId;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2};
 
+/// Consume the first digit key (0–9) pressed this frame; return its value.
+fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
+    ctx.input_mut(|i| {
+        let keys = [
+            (egui::Key::Num0, 0u8),
+            (egui::Key::Num1, 1),
+            (egui::Key::Num2, 2),
+            (egui::Key::Num3, 3),
+            (egui::Key::Num4, 4),
+            (egui::Key::Num5, 5),
+            (egui::Key::Num6, 6),
+            (egui::Key::Num7, 7),
+            (egui::Key::Num8, 8),
+            (egui::Key::Num9, 9),
+        ];
+        for (key, n) in keys {
+            if i.consume_key(egui::Modifiers::NONE, key) {
+                return Some(n);
+            }
+        }
+        None
+    })
+}
+
 use crate::app::PlexiApp;
 
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
@@ -730,27 +754,7 @@ impl PlexiApp {
             return;
         }
 
-        // Check digit keys 0–9
-        let pressed = ctx.input_mut(|i| {
-            let keys = [
-                (egui::Key::Num0, 0u8),
-                (egui::Key::Num1, 1),
-                (egui::Key::Num2, 2),
-                (egui::Key::Num3, 3),
-                (egui::Key::Num4, 4),
-                (egui::Key::Num5, 5),
-                (egui::Key::Num6, 6),
-                (egui::Key::Num7, 7),
-                (egui::Key::Num8, 8),
-                (egui::Key::Num9, 9),
-            ];
-            for (key, n) in keys {
-                if i.consume_key(egui::Modifiers::NONE, key) {
-                    return Some(n);
-                }
-            }
-            None
-        });
+        let pressed = consume_digit_key(ctx);
 
         if let Some(key) = pressed {
             if key == 0 {
@@ -845,7 +849,7 @@ impl PlexiApp {
                         ui.add_space(style::SPACE_SM);
 
                         // Config destinations
-                        if let Some(qn) = &self.config.quick_note.clone() {
+                        if let Some(qn) = &self.config.quick_note {
                             for dest in &qn.destinations {
                                 let label = if dest.options.is_some() {
                                     format!("{} ›", dest.label)
@@ -906,26 +910,7 @@ impl PlexiApp {
             .and_then(|d| d.options.clone())
             .unwrap_or_default();
 
-        let pressed = ctx.input_mut(|i| {
-            let keys = [
-                (egui::Key::Num0, 0u8),
-                (egui::Key::Num1, 1),
-                (egui::Key::Num2, 2),
-                (egui::Key::Num3, 3),
-                (egui::Key::Num4, 4),
-                (egui::Key::Num5, 5),
-                (egui::Key::Num6, 6),
-                (egui::Key::Num7, 7),
-                (egui::Key::Num8, 8),
-                (egui::Key::Num9, 9),
-            ];
-            for (key, n) in keys {
-                if i.consume_key(egui::Modifiers::NONE, key) {
-                    return Some(n);
-                }
-            }
-            None
-        });
+        let pressed = consume_digit_key(ctx);
 
         if let Some(key) = pressed {
             if let Some(opt) = options.iter().find(|o| o.key == key) {

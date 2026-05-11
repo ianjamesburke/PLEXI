@@ -749,14 +749,10 @@ impl PlexiApp {
     }
 
     fn write_backlog_note(text: &str, dir: &PathBuf, ctx: &crate::app::QuickNoteCtx) {
-        use std::time::SystemTime;
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-        let secs = now.as_secs();
-        let (y, mo, d, h, mi, s) = epoch_to_ymd_hms(secs);
-        let timestamp = format!("{y:04}-{mo:02}-{d:02}-{h:02}{mi:02}{s:02}");
-        let display_time = format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}");
+        use chrono::Local;
+        let now = Local::now();
+        let timestamp = now.format("%Y-%m-%d-%H%M%S").to_string();
+        let display_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
         let filename = format!("note-{timestamp}.md");
 
         let context_line = {
@@ -885,32 +881,6 @@ impl PlexiApp {
     }
 }
 
-fn epoch_to_ymd_hms(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-    let mut y = 1970u32;
-    let mut d = days as u32;
-    loop {
-        let days_in_year = if is_leap(y) { 366 } else { 365 };
-        if d < days_in_year { break; }
-        d -= days_in_year;
-        y += 1;
-    }
-    let months = [31u32, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut mo = 1u32;
-    for days_in_month in months {
-        if d < days_in_month { break; }
-        d -= days_in_month;
-        mo += 1;
-    }
-    (y, mo, d + 1, h as u32, m as u32, s as u32)
-}
-
-fn is_leap(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-}
 
 /// Returns `true` if a binary named `name` exists in any directory on `PATH`.
 /// Used to detect when an installed Plexi app shadows a same-named CLI binary.
