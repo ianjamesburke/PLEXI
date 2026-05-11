@@ -602,13 +602,16 @@ class RenderContext:
         }}
 
     def text_child(self, text: str, size: float = 12.0, color: str = "#cdd6f4",
-                   monospace: bool = False, bold: bool = False) -> dict:
+                   monospace: bool = False, bold: bool = False,
+                   max_width: "float | None" = None, elide: bool = False,
+                   selectable: bool = False) -> dict:
         """Return a layout child node for Text. Use inside ctx.row/column/stack."""
         return {"type": "leaf", "command": {
             "type": "text", "x": 0.0, "y": 0.0,
             "text": text, "size": size, "color": color,
             "monospace": monospace, "bold": bold,
-            "align": "top_left", "elide": False, "selectable": False,
+            "align": "top_left", "max_width": max_width,
+            "elide": elide, "selectable": selectable,
         }}
 
     def key_chip_child(self, label: str, font_size: float = 11.0) -> dict:

@@ -858,24 +858,91 @@ fn build_taffy_node<'a>(
             taffy.new_leaf_with_context(style, Some(command.as_ref())).unwrap()
         }
         LayoutChild::Node { direction, children, gap } => {
-            let flex_dir = match direction {
-                LayoutDirection::Row | LayoutDirection::Stack => FlexDirection::Row,
-                LayoutDirection::Column => FlexDirection::Column,
-            };
-            let child_ids: Vec<NodeId> = children
-                .iter()
-                .map(|c| build_taffy_node(taffy, c, ui))
-                .collect();
-            let style = Style {
-                display: Display::Flex,
-                flex_direction: flex_dir,
-                gap: taffy::geometry::Size {
-                    width: length(*gap),
-                    height: length(0.0),
-                },
-                ..Default::default()
-            };
-            taffy.new_with_children(style, &child_ids).unwrap()
+            match direction {
+                LayoutDirection::Stack => {
+                    // Stack: all children layered at (0, 0). Container size = max of children.
+                    let max_w = children
+                        .iter()
+                        .map(|c| match c {
+                            LayoutChild::Leaf { command } => measure_leaf_size(ui, command).0,
+                            _ => 0.0,
+                        })
+                        .fold(0.0f32, f32::max);
+                    let max_h = children
+                        .iter()
+                        .map(|c| match c {
+                            LayoutChild::Leaf { command } => measure_leaf_size(ui, command).1,
+                            _ => 0.0,
+                        })
+                        .fold(0.0f32, f32::max);
+                    let child_ids: Vec<NodeId> = children
+                        .iter()
+                        .map(|c| {
+                            let (w, h) = match c {
+                                LayoutChild::Leaf { command } => measure_leaf_size(ui, command),
+                                _ => (0.0, 0.0),
+                            };
+                            let abs_style = Style {
+                                position: Position::Absolute,
+                                inset: taffy::geometry::Rect {
+                                    left: auto(),
+                                    right: auto(),
+                                    top: length(0.0),
+                                    bottom: auto(),
+                                },
+                                size: taffy::geometry::Size {
+                                    width: length(w),
+                                    height: length(h),
+                                },
+                                ..Default::default()
+                            };
+                            match c {
+                                LayoutChild::Leaf { command } => taffy
+                                    .new_leaf_with_context(abs_style, Some(command.as_ref()))
+                                    .unwrap(),
+                                _ => taffy.new_leaf_with_context(abs_style, None).unwrap(),
+                            }
+                        })
+                        .collect();
+                    let container_style = Style {
+                        display: Display::Block,
+                        size: taffy::geometry::Size {
+                            width: length(max_w),
+                            height: length(max_h),
+                        },
+                        ..Default::default()
+                    };
+                    taffy.new_with_children(container_style, &child_ids).unwrap()
+                }
+                LayoutDirection::Row | LayoutDirection::Column => {
+                    let flex_dir = match direction {
+                        LayoutDirection::Row => FlexDirection::Row,
+                        LayoutDirection::Column => FlexDirection::Column,
+                        LayoutDirection::Stack => unreachable!(),
+                    };
+                    let child_ids: Vec<NodeId> = children
+                        .iter()
+                        .map(|c| build_taffy_node(taffy, c, ui))
+                        .collect();
+                    let gap_size = match flex_dir {
+                        FlexDirection::Column => taffy::geometry::Size {
+                            width: length(0.0),
+                            height: length(*gap),
+                        },
+                        _ => taffy::geometry::Size {
+                            width: length(*gap),
+                            height: length(0.0),
+                        },
+                    };
+                    let style = Style {
+                        display: Display::Flex,
+                        flex_direction: flex_dir,
+                        gap: gap_size,
+                        ..Default::default()
+                    };
+                    taffy.new_with_children(style, &child_ids).unwrap()
+                }
+            }
         }
     }
 }
@@ -965,21 +1032,82 @@ pub(crate) fn render_layout_node(
     // ── Phase 1: Build taffy tree ─────────────────────────────────────────────
     let mut taffy: TaffyTree<Option<&RenderCommand>> = TaffyTree::new();
 
+    // Stack at the root: overlay all leaf children at the same origin.
+    if matches!(direction, LayoutDirection::Stack) {
+        let screen_origin = pane_rect.min;
+        for child in children {
+            if let LayoutChild::Leaf { command } = child {
+                let (leaf_w, leaf_h) = measure_leaf_size(ui, command);
+                let abs_screen_x = screen_origin.x + pane_x;
+                let abs_screen_y = screen_origin.y + pane_y;
+                let paint_origin = egui::Pos2::ZERO;
+                match command.as_ref() {
+                    RenderCommand::Badge { label, fill, fg, font_size, radius, .. } => {
+                        render_badge(
+                            ui, paint_origin, clip,
+                            abs_screen_x, abs_screen_y + leaf_h / 2.0,
+                            label, fill, fg, *font_size, *radius,
+                        );
+                    }
+                    RenderCommand::Text { text, size, color, monospace, .. } => {
+                        let font_id = if *monospace {
+                            egui::FontId::monospace(*size)
+                        } else {
+                            egui::FontId::proportional(*size)
+                        };
+                        let text_color = parse_color(color).unwrap_or(colors.text_primary);
+                        let galley = ui.fonts(|f| {
+                            f.layout_no_wrap(text.clone(), font_id, text_color)
+                        });
+                        ui.painter().with_clip_rect(clip).galley(
+                            egui::pos2(abs_screen_x, abs_screen_y),
+                            galley,
+                            text_color,
+                        );
+                    }
+                    RenderCommand::KeyChip { label, font_size, .. } => {
+                        render_key_chip_at(
+                            ui, paint_origin, clip,
+                            abs_screen_x, abs_screen_y,
+                            label, *font_size, colors,
+                        );
+                    }
+                    _ => {
+                        log::warn!("render_layout_node: unsupported stack leaf type, skipping");
+                    }
+                }
+                let _ = leaf_w; // size used for hit-rect in future; paint uses leaf_h only now
+            } else {
+                log::warn!("render_layout_node: nested nodes inside root Stack not yet supported");
+            }
+        }
+        log::info!("render_layout_node: painted stack at pane ({pane_x}, {pane_y})");
+        return;
+    }
+
     let flex_dir = match direction {
-        LayoutDirection::Row | LayoutDirection::Stack => FlexDirection::Row,
+        LayoutDirection::Row => FlexDirection::Row,
         LayoutDirection::Column => FlexDirection::Column,
+        LayoutDirection::Stack => unreachable!(),
     };
     let child_ids: Vec<NodeId> = children
         .iter()
         .map(|c| build_taffy_node(&mut taffy, c, ui))
         .collect();
-    let root_style = Style {
-        display: Display::Flex,
-        flex_direction: flex_dir,
-        gap: taffy::geometry::Size {
+    let gap_size = match flex_dir {
+        FlexDirection::Column => taffy::geometry::Size {
+            width: length(0.0),
+            height: length(gap),
+        },
+        _ => taffy::geometry::Size {
             width: length(gap),
             height: length(0.0),
         },
+    };
+    let root_style = Style {
+        display: Display::Flex,
+        flex_direction: flex_dir,
+        gap: gap_size,
         ..Default::default()
     };
     let root = taffy.new_with_children(root_style, &child_ids).unwrap();
