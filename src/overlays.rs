@@ -725,6 +725,7 @@ impl PlexiApp {
                         let text_response = ui.add_sized(
                             [modal_w, 120.0],
                             egui::TextEdit::multiline(&mut self.quick_note_text)
+                                .id(egui::Id::new("quick_note_text"))
                                 .font(egui::FontId::monospace(style::TEXT_BODY))
                                 .text_color(self.colors.text_primary)
                                 .desired_width(f32::INFINITY)

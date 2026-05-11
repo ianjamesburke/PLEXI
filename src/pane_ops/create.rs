@@ -789,7 +789,7 @@ impl PlexiApp {
         note: &str,
         ctx: &crate::app::QuickNoteCtx,
     ) -> String {
-        let esc = |s: &str| -> String { shell_escape::escape(s.into()).to_string() };
+        let esc = |s: &str| -> String { crate::shell::shell_quote(s) };
         let cwd_str = ctx.cwd.to_string_lossy().to_string();
         cmd.replace("{note}", &esc(note))
            .replace("{cwd}", &esc(&cwd_str))

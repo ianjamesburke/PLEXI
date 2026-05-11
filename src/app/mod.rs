@@ -3027,6 +3027,12 @@ impl eframe::App for PlexiApp {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("palette_search")));
         }
 
+        // Same pattern: QuickNote compose mode needs re-focus every frame so
+        // pane TextInput widgets rendered in CentralPanel can't steal it.
+        if matches!(self.focus_stack.last(), Some(FocusLayer::QuickNote)) {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
+        }
+
         let frame_ms = _frame_start.elapsed().as_millis();
         if frame_ms > 50 {
             log::warn!("slow frame: {}ms", frame_ms);
