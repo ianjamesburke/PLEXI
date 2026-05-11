@@ -336,6 +336,9 @@ pub enum DescriptorCmd {
         no_registry: bool,
         #[arg(long = "no-crawl")]
         no_crawl: bool,
+        /// Output raw descriptor JSON (fresh --help parse, no cache)
+        #[arg(long = "json")]
+        json: bool,
         /// Extra args forwarded to the probed CLI
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
