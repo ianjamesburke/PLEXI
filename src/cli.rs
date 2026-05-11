@@ -573,8 +573,9 @@ This file demonstrates core SDK primitives — delete what you don't need.
 """
 from plexi_sdk import (
     App, RenderContext,
-    BG, SURFACE, FG, ACCENT, MUTED,
-    BODY, CAPTION, TITLE,
+    BG, SURFACE, FG, ACCENT, MUTED, HIGHLIGHT,
+    BODY, CAPTION, HEADING, HINT,
+    GREEN,
     PAD, PAD_TIGHT,
     PRIORITY_NORMAL,
 )
@@ -595,7 +596,13 @@ class __CLASS_NAME__(App):
         self.emit.info("__DISPLAY_NAME__ initialized")
 
         # ButtonStyle fields: fill, hover_fill, active_fill, text_color, font_size, radius
-        self._btn = Button("increment", x=PAD, y=120, w=120, h=36, label="Click me")
+        self._btn = Button(
+            "increment", x=PAD, y=0, w=130, h=30, label="[ Click me ]",
+            style=ButtonStyle(
+                fill=SURFACE, hover_fill=HIGHLIGHT, active_fill=HIGHLIGHT,
+                text_color=ACCENT, font_size=CAPTION, radius=3.0,
+            ),
+        )
 
     def on_render(self, ctx: RenderContext) -> None:
         # Called every frame. ctx.w / ctx.h are the current pane dimensions.
@@ -603,42 +610,73 @@ class __CLASS_NAME__(App):
 
         # ── 1. Background ────────────────────────────────────────────────────────
         # Theme colors: BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, YELLOW
-        # Font sizes:   TITLE (22), HEADING (18), BODY (15), CAPTION (13), HINT (12)
+        # Font sizes:   HEADING (18), BODY (15), CAPTION (13), HINT (12)
         # Layout:       PAD (16), PAD_TIGHT (8), HEADER_H (48), STATUS_H (44)
         ctx.clear(BG)
 
-        # ── 2. Header card ───────────────────────────────────────────────────────
+        # ── 2. Header ───────────────────────────────────────────────────────────
         # ctx.rect(x, y, w, h, fill, radius=0.0, stroke=None, stroke_width=1.0)
         # ctx.text(x, y, text, size, color, bold=False, monospace=False, max_width=None)
-        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 56, fill=SURFACE, radius=8.0)
-        ctx.text(PAD * 2, PAD + 10, "__DISPLAY_NAME__", size=TITLE, color=FG, bold=True)
-        ctx.text(PAD * 2, PAD + 36, "Edit main.py to build your app", size=CAPTION, color=MUTED)
+        #
+        # Title: monospace, accent color, HEADING size
+        ctx.text(PAD, PAD, "__DISPLAY_NAME__", size=HEADING, color=ACCENT, bold=True, monospace=True)
 
-        # ── 3. Host info panel ───────────────────────────────────────────────────
+        # ctx.badge() is host-measured — the pill sizes itself to fit the text.
+        # Right-align by estimating the badge width for this fixed-format string.
+        # The pill will never clip its own text regardless of this offset.
+        ctx.badge(
+            x=ctx.w - PAD - 58,
+            y_center=PAD + HEADING / 2,
+            label="v0.1.0",
+            fill=SURFACE, fg=MUTED, font_size=HINT, radius=3.0,
+        )
+
+        # Subtitle: optional muted line below the title.
+        # To remove: delete this ctx.text call and change table_y below to:
+        #   table_y = PAD + HEADING + PAD * 2
+        subtitle_y = PAD + HEADING + PAD_TIGHT
+        ctx.text(PAD, subtitle_y, "Edit main.py to build your app", size=CAPTION, color=MUTED)
+
+        # ── 3. Host info table ───────────────────────────────────────────────────
         # These values come from the host after Init and update each frame:
         #   self.app_id        — unique identifier (from manifest.toml [app] id)
         #   ctx.workspace_root — the workspace directory Plexi is rooted in
         #   ctx.w, ctx.h       — current pane dimensions in pixels
         #   ctx.capabilities   — list of granted runtime capabilities
         rows = [
-            ("App ID",       self.app_id),
-            ("Workspace",    ctx.workspace_root or "(none)"),
-            ("Dimensions",   f"{ctx.w:.0f} × {ctx.h:.0f}"),
-            ("Capabilities", ", ".join(ctx.capabilities) or "none"),
+            ("app_id",      self.app_id),
+            ("workspace",   ctx.workspace_root or "(none)"),
+            ("dimensions",  f"{ctx.w:.0f} × {ctx.h:.0f}"),
+            ("caps",        ", ".join(ctx.capabilities) or "none"),
         ]
-        y = 90
-        for label, value in rows:
-            ctx.text(PAD, y, f"{label}:", size=CAPTION, color=MUTED)
-            ctx.text(PAD + 100, y, value, size=CAPTION, color=FG, max_width=ctx.w - PAD - 110)
-            y += 20
+        ROW_H    = 30
+        NUM_ROWS = len(rows)
+        table_y  = subtitle_y + CAPTION + PAD   # subtitle bottom + gap
+        table_h  = ROW_H * NUM_ROWS
+        KEY_COL  = 100
+
+        # Table background
+        ctx.rect(PAD, table_y, ctx.w - PAD * 2, table_h, fill=SURFACE, radius=6.0)
+
+        for i, (key, value) in enumerate(rows):
+            row_y = table_y + i * ROW_H
+            # Row divider (1px BG line between rows, not after last)
+            if i > 0:
+                ctx.rect(PAD, row_y, ctx.w - PAD * 2, 1, fill=BG)
+            # Vertically center text within the row
+            text_y = row_y + (ROW_H - CAPTION) / 2
+            ctx.text(PAD + 10,            text_y, key,   size=CAPTION, color=GREEN, monospace=True)
+            ctx.text(PAD + 10 + KEY_COL, text_y, value, size=CAPTION, color=FG,    monospace=True,
+                     max_width=ctx.w - PAD - 10 - KEY_COL - PAD)
 
         # ── 4. Button ────────────────────────────────────────────────────────────
         # Button.render(ctx) draws the button and returns True on click this frame.
         # The button tracks hover/active state across frames via its id.
-        self._btn.y = y + PAD_TIGHT
+        self._btn.y = table_y + table_h + PAD
         if self._btn.render(ctx):
             self.click_count += 1
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
+            ctx.notify("__DISPLAY_NAME__", f"Click #{self.click_count}", priority=PRIORITY_NORMAL)
 
         # ── 5. State label ───────────────────────────────────────────────────────
         # Mutations to self.* are visible on the next frame.
@@ -658,11 +696,7 @@ class __CLASS_NAME__(App):
         # Blocking:        ctx.notify_and_wait(...)  → "acknowledge" | "cancel"
         #                  ctx.notify_choice(title, options, ...)  → chosen value
         #                  ctx.notify_input(title, prompt, ...)    → typed string
-        ctx.notify(
-            "__DISPLAY_NAME__",
-            f"Clicked at ({x:.0f}, {y:.0f}) with {button} button",
-            priority=PRIORITY_NORMAL,
-        )
+        pass
 
 
 __CLASS_NAME__().run()
