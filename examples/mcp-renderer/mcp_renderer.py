@@ -155,7 +155,7 @@ class McpRendererApp(App):
 
         argv = sys.argv[1:]
         if not argv:
-            self._error = "Usage: mcp_renderer.py <command> [args...]\nExample: mcp_renderer.py npx -y @modelcontextprotocol/server-filesystem /tmp"
+            self._error = "Usage: plexi open mcp-renderer <command> [args...]\nExample: plexi open mcp-renderer npx -y @modelcontextprotocol/server-filesystem /tmp"
             self._view = "error"
             ctx.status_summary("mcp-renderer: no command")
             return
