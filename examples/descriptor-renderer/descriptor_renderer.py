@@ -19,13 +19,14 @@ from pathlib import Path
 
 from plexi_sdk import App, RenderContext, CapabilityDeniedError
 from plexi_sdk.ui import (
-    Column, AppBar, SelectList, FormField,
+    Column, AppBar, FormField,
     ListItem, Label, Spacer, Card,
     BG, HIGHLIGHT, ACCENT, MUTED, RED,
     TEXT_HINT,
     SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
     RADIUS_SM,
 )
+from plexi_sdk.widgets import ListView
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -106,7 +107,7 @@ class DescriptorRendererApp(App):
         # Hit regions: (y_top, y_bot, tag)
         self._hits: list[tuple[float, float, object]] = []
         # UI components
-        self._select_list = SelectList([])
+        self._list = ListView(item_height=ListItem.HEIGHT_DOUBLE)
 
         path = _parse_descriptor_path(sys.argv[1:])
         if not path:
@@ -190,14 +191,6 @@ class DescriptorRendererApp(App):
             crumb = None
             if self._cmd_path:
                 crumb = " › ".join([name] + list(self._cmd_path))
-            self._select_list.items = [
-                {
-                    "name": cmd["name"] + (" ›" if cmd.get("commands") else ""),
-                    "description": cmd.get("description") or None,
-                    "leading": cmd.get("icon") or None,
-                }
-                for cmd in commands
-            ]
             app_bar = AppBar(title, subtitle=crumb or desc or None)
             app_bar_h = app_bar.measure(ctx.w)
             header_items: list = [app_bar]
@@ -208,7 +201,15 @@ class DescriptorRendererApp(App):
                 self._hits = [(app_bar_h, app_bar_h + back_h, "back")]
             else:
                 self._hits = []
-            header_items.append(self._select_list)
+            header_items.append(self._list.render([
+                ListItem(
+                    title=cmd["name"] + (" ›" if cmd.get("commands") else ""),
+                    subtitle=cmd.get("description") or None,
+                    leading=cmd.get("icon") or None,
+                    selected=i == self._list.selected_index,
+                )
+                for i, cmd in enumerate(commands)
+            ]))
             ctx.render(Column(header_items, padding=0, padding_top=0, gap=0))
             return
 
@@ -282,9 +283,10 @@ class DescriptorRendererApp(App):
                     self._handle(tag)
                     self.emit.schedule_render(after_ms=16)
                     return
-            # Then list items via SelectList
-            idx = self._select_list.hit_index(y)
+            # Then list items via ListView
+            idx = self._list.hit_test(y)
             if idx is not None:
+                self._list.set_selected(idx)
                 self._selected_idx = idx
                 self._handle(idx)
                 self.emit.schedule_render(after_ms=16)
@@ -306,7 +308,7 @@ class DescriptorRendererApp(App):
             elif self._cmd_path:
                 self._cmd_path.pop()
             self._selected_idx = 0
-            self._select_list.selected_idx = 0
+            self._list.set_selected(0)
             return
 
         if tag == "run":
@@ -320,7 +322,7 @@ class DescriptorRendererApp(App):
                 cmd = commands[tag]
                 self._cmd_path.append(cmd["name"])
                 self._selected_idx = 0
-                self._select_list.selected_idx = 0
+                self._list.set_selected(0)
                 if not cmd.get("commands"):
                     self._enter_form(cmd)
 
@@ -377,16 +379,16 @@ class DescriptorRendererApp(App):
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._view == "list":
-            if self._select_list.handle_key(key):
-                self._selected_idx = self._select_list.selected_idx
+            if self._list.handle_key(key):
+                self._selected_idx = self._list.selected_index
                 self.emit.schedule_render(after_ms=16)
             elif key in ("Return", "Enter"):
-                self._handle(self._select_list.selected_idx)
+                self._handle(self._list.selected_index)
                 self.emit.schedule_render(after_ms=16)
             elif key == "Escape" and self._cmd_path:
                 self._cmd_path.pop()
                 self._selected_idx = 0
-                self._select_list.selected_idx = 0
+                self._list.set_selected(0)
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
@@ -394,7 +396,7 @@ class DescriptorRendererApp(App):
                 self._view = "list"
                 self._cmd_path.pop()
                 self._selected_idx = 0
-                self._select_list.selected_idx = 0
+                self._list.set_selected(0)
                 self.emit.schedule_render(after_ms=16)
 
 
