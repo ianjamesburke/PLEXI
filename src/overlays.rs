@@ -929,12 +929,13 @@ impl PlexiApp {
                     "context-start" => self.open_at_context_start(&cmd),
                     _ => self.split_focused(false, Some(&cmd), true),
                 }
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                self.quick_note_text.clear();
+                self.quick_note_pending_parent = None;
             }
-            self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
-            self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
-            self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-            self.quick_note_text.clear();
-            self.quick_note_pending_parent = None;
+            // Unrecognised key — digit was consumed but no matching option; redraw.
             return;
         }
 

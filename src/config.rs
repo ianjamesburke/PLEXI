@@ -748,8 +748,10 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.keybindings = Some(incoming),
             _ => {}
         }
-        if other.quick_note.is_some() {
-            self.quick_note = other.quick_note;
+        match (self.quick_note.as_mut(), other.quick_note) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.quick_note = Some(incoming),
+            _ => {}
         }
     }
 }
@@ -972,6 +974,14 @@ impl VoiceAgentConfig {
 pub struct QuickNoteConfig {
     #[serde(default)]
     pub destinations: Vec<QuickNoteDestinationConfig>,
+}
+
+impl QuickNoteConfig {
+    fn overlay(&mut self, other: Self) {
+        if !other.destinations.is_empty() {
+            self.destinations = other.destinations;
+        }
+    }
 }
 
 /// A destination entry in `[[quick_note.destinations]]`.
