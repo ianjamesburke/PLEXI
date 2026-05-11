@@ -47,29 +47,44 @@ pub fn parse_help_to_descriptor(binary: &str) -> Result<String, CliParseError> {
 
 fn run_with_timeout(binary: &str, arg: &str) -> Result<String, CliParseError> {
     use std::sync::mpsc;
+    use std::process::Stdio;
 
-    let binary_owned = binary.to_string();
-    let arg_owned = arg.to_string();
-    let (tx, rx) = mpsc::channel();
-
-    std::thread::spawn(move || {
-        let result = std::process::Command::new(&binary_owned)
-            .arg(&arg_owned)
-            .output();
-        let _ = tx.send(result);
-    });
-
-    let timeout = Duration::from_secs(TIMEOUT_SECS);
-    let output = rx
-        .recv_timeout(timeout)
-        .map_err(|_| CliParseError::Timeout {
-            binary: binary.to_string(),
-            secs: TIMEOUT_SECS,
-        })?
+    let child = std::process::Command::new(binary)
+        .arg(arg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|source| CliParseError::SpawnFailed {
             binary: binary.to_string(),
             source,
         })?;
+
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    let timeout = Duration::from_secs(TIMEOUT_SECS);
+    let output = match rx.recv_timeout(timeout) {
+        Ok(result) => result.map_err(|source| CliParseError::SpawnFailed {
+            binary: binary.to_string(),
+            source,
+        })?,
+        Err(_) => {
+            // Kill the subprocess so it doesn't linger after timeout.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            log::warn!("cli_help_parser: `{binary} {arg}` timed out after {TIMEOUT_SECS}s");
+            return Err(CliParseError::Timeout {
+                binary: binary.to_string(),
+                secs: TIMEOUT_SECS,
+            });
+        }
+    };
 
     // Many CLIs print help to stderr; prefer stdout, fall back to stderr.
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -88,18 +103,33 @@ fn run_with_timeout(binary: &str, arg: &str) -> Result<String, CliParseError> {
 
 fn run_version(binary: &str) -> Option<String> {
     use std::sync::mpsc;
+    use std::process::Stdio;
 
-    let binary_owned = binary.to_string();
+    let child = std::process::Command::new(binary)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    let pid = child.id();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = std::process::Command::new(&binary_owned)
-            .arg("--version")
-            .output();
-        let _ = tx.send(result);
+        let _ = tx.send(child.wait_with_output());
     });
 
     let timeout = Duration::from_secs(TIMEOUT_SECS);
-    let output = rx.recv_timeout(timeout).ok()?.ok()?;
+    let output = match rx.recv_timeout(timeout) {
+        Ok(Ok(o)) => o,
+        _ => {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            return None;
+        }
+    };
+
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.lines().next().map(|l| l.trim().to_string())
 }
@@ -113,9 +143,8 @@ mod tests {
     /// Verify the returned string is valid JSON with the expected top-level keys.
     #[test]
     fn parse_help_to_descriptor_returns_valid_json() {
-        // `echo` is a safe binary guaranteed to exist; its --help may be minimal
-        // but parse_help_to_descriptor must not error — it accepts sparse output.
-        // We test with a known-good binary that always succeeds.
+        // cargo is guaranteed to exist in Rust dev environments and always
+        // exits 0 with a rich --help output.
         let result = parse_help_to_descriptor("cargo");
         assert!(
             result.is_ok(),
