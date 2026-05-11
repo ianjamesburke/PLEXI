@@ -431,7 +431,7 @@ pub fn poll_actions(
     bindings: &KeyBindings,
     app_active: bool,
     keyboard_capture_active: bool,
-    notification_modal_open: bool,
+    overlay_open: bool,
     shortcuts_overlay_open: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -481,14 +481,14 @@ pub fn poll_actions(
         }
         // When the notification modal is open, next/prev tab cycle the queue instead.
         if input.consume_key(bindings.next_tab.0, bindings.next_tab.1) {
-            actions.push(if notification_modal_open {
+            actions.push(if overlay_open {
                 Action::NotificationCycleNext
             } else {
                 Action::NextTab
             });
         }
         if input.consume_key(bindings.prev_tab.0, bindings.prev_tab.1) {
-            actions.push(if notification_modal_open {
+            actions.push(if overlay_open {
                 Action::NotificationCyclePrev
             } else {
                 Action::PrevTab
@@ -516,7 +516,7 @@ pub fn poll_actions(
         }
 
         if input.consume_key(bindings.nav_back.0, bindings.nav_back.1) {
-            actions.push(if notification_modal_open {
+            actions.push(if overlay_open {
                 Action::NotificationCyclePrev
             } else {
                 Action::NavBackApp
