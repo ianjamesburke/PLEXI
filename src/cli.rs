@@ -1668,6 +1668,10 @@ pub fn pack_export_cli(dest_path: &str) -> i32 {
 /// - `Label:action_type:action_arg`         → (Label, Label, Some("action_type:action_arg"))
 /// - `key:Label:action_type:action_arg`     → (key, Label, Some("action_type:action_arg"))
 ///
+/// Supported host action types:
+/// - `pane_focus:<pane_id>` — navigate to the given pane when clicked
+/// - `snooze:<seconds>`     — re-deliver the notification after N seconds (CLI stays blocked)
+///
 /// Any other segment count is rejected with a clear error string.
 pub(crate) fn parse_notify_choice(raw: &str) -> Result<(String, String, Option<String>), String> {
     let segments: Vec<&str> = raw.splitn(5, ':').collect();
@@ -3687,6 +3691,26 @@ mod notify_tests {
         assert_eq!(key, "a");
         assert_eq!(label, "Talk to Claude");
         assert_eq!(final_action.as_deref(), Some("pane_focus:NEW"));
+    }
+
+    /// #840: snooze action type parses to the correct host_action string.
+    #[test]
+    fn parse_choice_snooze_action() {
+        let (key, label, action) =
+            parse_notify_choice("snooze5:Remind me in 5 min:snooze:300").unwrap();
+        assert_eq!(key, "snooze5");
+        assert_eq!(label, "Remind me in 5 min");
+        assert_eq!(action.as_deref(), Some("snooze:300"));
+    }
+
+    /// #840: three-segment form also works for snooze.
+    #[test]
+    fn parse_choice_snooze_three_segment() {
+        let (key, label, action) =
+            parse_notify_choice("Snooze 5min:snooze:300").unwrap();
+        assert_eq!(key, "Snooze 5min");
+        assert_eq!(label, "Snooze 5min");
+        assert_eq!(action.as_deref(), Some("snooze:300"));
     }
 }
 

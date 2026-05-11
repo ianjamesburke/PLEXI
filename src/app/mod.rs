@@ -103,6 +103,9 @@ pub(crate) struct PendingNotification {
     /// True when the originating app pane has exited. The notification stays
     /// in the queue so the user can read it, but action buttons are hidden.
     pub tombstoned: bool,
+    /// When `Some(t)`, the notification is invisible and exempt from timeout
+    /// until `t` has elapsed (snooze). `None` means deliver immediately.
+    pub deliver_after: Option<std::time::Instant>,
 }
 
 /// Render state for a notification's image attachment. Computed once and
@@ -1124,6 +1127,7 @@ impl PlexiApp {
                         on_dismiss: on_dismiss.clone(),
                         enqueued_at: std::time::Instant::now(),
                         tombstoned: false,
+                        deliver_after: None,
                     });
                     let should_auto_open = !self.notifications_focus_mode
                         && *priority >= self.notifications_interrupt_threshold;
@@ -1267,6 +1271,9 @@ impl PlexiApp {
 
     /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
+        if n.deliver_after.map_or(false, |t| t > std::time::Instant::now()) {
+            return false;
+        }
         match n.scope {
             crate::app_protocol::NotifyScope::Global => true,
             crate::app_protocol::NotifyScope::Window
@@ -1343,14 +1350,37 @@ impl PlexiApp {
 
     /// Check every pending notification for expiry. For each that has exceeded
     /// its `timeout_secs`, deliver a `NotifyAction` dismiss event and remove it.
-    /// Called once per second from `update()`.
+    /// Also wakes snoozed notifications whose `deliver_after` has elapsed and
+    /// auto-reopens the modal when a high-priority one wakes. Called once per
+    /// second from `update()`.
     pub(crate) fn tick_notification_timeouts(&mut self) {
+        let now = std::time::Instant::now();
+        let threshold = self.notifications_interrupt_threshold;
+        let focus_mode = self.notifications_focus_mode;
         let mut expired_ids: Vec<String> = Vec::new();
-        for n in &self.pending_notifications {
+        let mut woken_priority_met = false;
+        // Single mutable pass: wake snoozed entries, collect expired ids.
+        for n in &mut self.pending_notifications {
+            if let Some(t) = n.deliver_after {
+                if t > now {
+                    continue; // still snoozed — skip timeout check too
+                }
+                if !focus_mode && n.priority >= threshold {
+                    woken_priority_met = true;
+                }
+                log::info!("notify:snooze: woke notify_id={}", n.notify_id);
+                n.deliver_after = None;
+            }
             if let Some(timeout) = n.timeout_secs {
                 if n.enqueued_at.elapsed() >= std::time::Duration::from_secs(timeout) {
                     expired_ids.push(n.notify_id.clone());
                 }
+            }
+        }
+        if woken_priority_met {
+            self.show_notification_modal = true;
+            if self.current_notify_id.is_none() {
+                self.current_notify_id = self.select_highest_priority();
             }
         }
         for id in expired_ids {
@@ -1743,6 +1773,7 @@ impl eframe::App for PlexiApp {
                         on_dismiss,
                         enqueued_at: std::time::Instant::now(),
                         tombstoned: false,
+                        deliver_after: None,
                     });
                     // Auto-open rules:
                     //   1. Visibility — Global always; Window/Context only when
@@ -3585,5 +3616,83 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(&resp_file);
+    }
+
+    /// #840: A snoozed notification must become invisible immediately after
+    /// deliver_after is set, and visible again once the instant has elapsed.
+    #[test]
+    fn snoozed_notification_invisible_then_visible() {
+        let mut h = HostHarness::new();
+
+        // Push a notification that is already past its snooze window.
+        let wake_past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        h.app.pending_notifications.push(PendingNotification {
+            notify_id: "snoozed-woken".into(),
+            sender_pane_id: 0,
+            source_context_id: h.app.router.active().context_id,
+            level: "info".into(),
+            title: "Snoozed".into(),
+            body: "body".into(),
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            priority: 100,
+            scope: crate::app_protocol::NotifyScope::Global,
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: None,
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now(),
+            tombstoned: false,
+            deliver_after: Some(wake_past), // already elapsed → visible
+        });
+
+        assert_eq!(h.app.visible_notification_count(), 1, "past-snooze notification must be visible");
+
+        // Now set deliver_after to the future (active snooze).
+        let wake_future = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        h.app.pending_notifications[0].deliver_after = Some(wake_future);
+
+        assert_eq!(h.app.visible_notification_count(), 0, "future-snooze notification must be invisible");
+    }
+
+    /// #840: tick_notification_timeouts must not time out a snoozed notification.
+    #[test]
+    fn snoozed_notification_exempt_from_timeout() {
+        let mut h = HostHarness::new();
+
+        let sender_id = h.add_test_pane();
+        // Enqueued 10 minutes ago with a 60s timeout, but snoozed into the future.
+        h.app.pending_notifications.push(PendingNotification {
+            notify_id: "snoozed-no-timeout".into(),
+            sender_pane_id: sender_id,
+            source_context_id: h.app.router.active().context_id,
+            level: "info".into(),
+            title: "ShouldNotTimeout".into(),
+            body: "body".into(),
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            priority: 100,
+            scope: crate::app_protocol::NotifyScope::Global,
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: Some(60),
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now() - std::time::Duration::from_secs(600),
+            tombstoned: false,
+            deliver_after: Some(std::time::Instant::now() + std::time::Duration::from_secs(300)),
+        });
+
+        h.app.tick_notification_timeouts();
+
+        assert_eq!(
+            h.app.pending_notifications.len(), 1,
+            "snoozed notification must survive tick_notification_timeouts"
+        );
     }
 }
