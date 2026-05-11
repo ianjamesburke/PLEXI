@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "kanban"
+type = "app"
+name = "Kanban"
+entry = "main.py"
+version = "0.1.0"
+description = "Draggable Kanban board with columns and cards"
+watch = true
+
+[app.capabilities]
+capabilities = ["fs.read"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
