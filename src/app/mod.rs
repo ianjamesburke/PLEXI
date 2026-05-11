@@ -199,6 +199,10 @@ pub struct PlexiApp {
     pub(crate) palette_selected: usize,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
+    /// One-shot guard: true after `request_focus()` fires on the rename modal's
+    /// first render. Prevents the focus from being re-requested every frame,
+    /// which lets a later widget steal it on the same frame indefinitely.
+    pub(crate) rename_pane_focus_requested: bool,
     pub(crate) features: crate::features::FeatureFlags,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
@@ -618,6 +622,7 @@ impl PlexiApp {
                     palette_selected: 0,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
+                    rename_pane_focus_requested: false,
                     registry,
                     features: features.clone(),
                     pending_notifications: Vec::new(),
@@ -714,6 +719,7 @@ impl PlexiApp {
             palette_selected: 0,
             context_visit_history: Vec::new(),
             renaming_pane: None,
+            rename_pane_focus_requested: false,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
             pending_notifications: Vec::new(),
@@ -820,6 +826,7 @@ impl PlexiApp {
             palette_selected: 0,
             context_visit_history: Vec::new(),
             renaming_pane: None,
+            rename_pane_focus_requested: false,
             registry: AppRegistry::load_with_global(
                 &path,
                 &path.join("nonexistent-apps-dir"),
@@ -2196,7 +2203,7 @@ impl eframe::App for PlexiApp {
         };
 
         // Handle keyboard shortcuts
-        let modal_open = self.show_notification_modal;
+        let modal_open = self.input_captured_by_overlay();
         for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
             match action {
                 Action::SplitHorizontal => {
@@ -2352,6 +2359,13 @@ impl eframe::App for PlexiApp {
                                 .and_then(|t| t.name.clone())
                                 .unwrap_or_default();
                             self.renaming_pane = Some(pane_id);
+                            self.rename_pane_focus_requested = false;
+                            // Sync the focus layer immediately so `input_captured_by_overlay()`
+                            // is accurate for the rest of this frame — without this, there is a
+                            // one-frame window where `renaming_pane` is Some but the focus layer
+                            // has not been pushed yet.
+                            self.sync_rename_pane_focus();
+                            log::info!("rename_pane: opened for pane {pane_id:?}");
                         }
                     }
                 }
@@ -3960,5 +3974,32 @@ mod tests {
         // No window to the left of (0,0) → Left is a no-op (not wrapped).
         h.app.navigate(crate::keys::Direction::Left);
         assert_eq!(h.app.active_window, 0, "Left at boundary must not change active_window");
+    }
+
+    /// Regression guard for #1110: setting renaming_pane + sync_rename_pane_focus()
+    /// must push FocusLayer::RenamePane in the same call so input_captured_by_overlay()
+    /// is accurate immediately — not deferred to the next frame.
+    #[test]
+    fn rename_pane_focus_layer_syncs_immediately() {
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+
+        assert!(h.app.focus_stack.is_empty(), "focus stack must start empty");
+        assert!(!h.app.input_captured_by_overlay(), "no overlay on start");
+
+        // Simulate what the fixed Action::RenamePane handler now does.
+        h.app.renaming_pane = Some(pane_a);
+        h.app.rename_pane_focus_requested = false;
+        h.app.sync_rename_pane_focus();
+
+        assert_eq!(
+            h.app.focus_stack.last(),
+            Some(&FocusLayer::RenamePane),
+            "FocusLayer::RenamePane must be on the stack after sync"
+        );
+        assert!(
+            h.app.input_captured_by_overlay(),
+            "input_captured_by_overlay must be true while rename modal is open"
+        );
     }
 }

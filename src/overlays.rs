@@ -566,8 +566,12 @@ impl PlexiApp {
                                 .font(egui::TextStyle::Body),
                         );
 
-                        // Auto-focus and select all
-                        if !te.has_focus() {
+                        // One-shot focus: only request on the first render frame.
+                        // Re-requesting every frame (guarded by `!te.has_focus()`) lets
+                        // any widget rendered later in the same frame steal focus
+                        // permanently — egui resolves `request_focus()` conflicts
+                        // last-caller-wins within a frame.
+                        if !self.rename_pane_focus_requested {
                             te.request_focus();
                             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
                                 state
@@ -578,12 +582,15 @@ impl PlexiApp {
                                     )));
                                 state.store(ui.ctx(), te_id);
                             }
+                            self.rename_pane_focus_requested = true;
+                            log::info!("rename_pane: focus requested for TextEdit");
                         }
                     });
             });
 
         if cancel {
             self.renaming_pane = None;
+            self.rename_pane_focus_requested = false;
         } else if commit {
             let new_name = self.rename_buffer.trim().to_string();
             if let Some(pane) =
@@ -598,6 +605,7 @@ impl PlexiApp {
                 }
             }
             self.renaming_pane = None;
+            self.rename_pane_focus_requested = false;
         }
     }
 
