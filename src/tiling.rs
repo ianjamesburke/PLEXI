@@ -107,7 +107,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui =
-                ui.new_child(egui::UiBuilder::new().max_rect(pane_rect.shrink(8.0)));
+                ui.new_child(egui::UiBuilder::new().max_rect(pane_rect.shrink(style::SPACE_SM)));
             let close_exited = render::terminal_pane::render(
                 &mut terminal_ui,
                 terminal,
