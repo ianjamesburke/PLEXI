@@ -60,14 +60,15 @@ class GhIssues(App):
     VIEW_DETAIL = "detail"
 
     async def on_init(self, ctx: RenderContext) -> None:
-        self._view     = self.VIEW_LIST
-        self._issues   : list[dict] = []
-        self._sel      = 0
-        self._scroll_y = 0.0
-        self._loading  = True
-        self._error    : str | None = None
-        self._detail   : dict | None = None
-        self._root     = ctx.workspace_root or ""
+        self._view           = self.VIEW_LIST
+        self._issues         : list[dict] = []
+        self._sel            = 0
+        self._scroll_y       = 0.0
+        self._loading        = True
+        self._detail_loading = False
+        self._error          : str | None = None
+        self._detail         : dict | None = None
+        self._root           = ctx.workspace_root or ""
         ctx.status_summary("Loading…")
         self.emit.info(f"gh-issues init workspace={self._root!r}")
         self._fetch()
@@ -90,15 +91,18 @@ class GhIssues(App):
             self.emit.warn(f"gh issue list failed rc={rc} stderr={err!r}")
             self._error   = err.strip() or f"exit {rc}"
             self._loading = False
+            self.emit.schedule_render()
             return
         try:
             self._issues = json.loads(out)
-            self._sel    = 0
+            # clamp selection to new list bounds
+            self._sel = max(0, min(self._sel, len(self._issues) - 1)) if self._issues else 0
         except Exception as exc:
             self.emit.warn(f"gh issue list json parse error: {exc}")
             self._error = str(exc)
         self._loading = False
         self.emit.info(f"gh-issues loaded {len(self._issues)} open issues")
+        self.emit.schedule_render()
 
     def _load_detail(self, number: int) -> None:
         rc, out, err = _gh(
@@ -109,6 +113,8 @@ class GhIssues(App):
         if rc != 0:
             self.emit.warn(f"gh issue view {number} failed rc={rc} stderr={err!r}")
             self._error = err.strip() or f"exit {rc}"
+            self._detail_loading = False
+            self.emit.schedule_render()
             return
         try:
             self._detail = json.loads(out)
@@ -116,6 +122,8 @@ class GhIssues(App):
         except Exception as exc:
             self.emit.warn(f"gh issue view {number} json parse error: {exc}")
             self._error = str(exc)
+        self._detail_loading = False
+        self.emit.schedule_render()
 
     # ── render ────────────────────────────────────────────────────────────────
 
@@ -133,7 +141,10 @@ class GhIssues(App):
                      "r — retry", size=HINT, color=MUTED)
             return
 
-        if self._view == self.VIEW_DETAIL and self._detail is not None:
+        if self._view == self.VIEW_DETAIL:
+            if self._detail_loading:
+                ctx.text(PAD, HEADER_H + PAD, "Loading issue…", size=BODY, color=MUTED)
+                return
             self._draw_detail(ctx)
         else:
             self._draw_list(ctx)
@@ -330,8 +341,9 @@ class GhIssues(App):
             return
         issue = self._issues[self._sel]
         self.emit.info(f"gh-issues: open detail #{issue['number']}")
-        self._view   = self.VIEW_DETAIL
-        self._detail = None
+        self._view           = self.VIEW_DETAIL
+        self._detail         = None
+        self._detail_loading = True
         threading.Thread(
             target=self._load_detail, args=(issue["number"],), daemon=True
         ).start()
