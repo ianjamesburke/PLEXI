@@ -621,10 +621,15 @@ class __CLASS_NAME__(App):
         # Title: monospace, accent color, HEADING size
         ctx.text(PAD, PAD, "__DISPLAY_NAME__", size=HEADING, color=ACCENT, bold=True, monospace=True)
 
-        # Version badge: right-aligned so it never overlaps the title.
-        BADGE_W = 48
-        ctx.rect(ctx.w - PAD - BADGE_W, PAD + 1, BADGE_W, 18, fill=SURFACE, radius=3.0)
-        ctx.text(ctx.w - PAD - BADGE_W + 4, PAD + 4, "v0.1.0", size=HINT, color=MUTED, monospace=True)
+        # ctx.badge() is host-measured — the pill sizes itself to fit the text.
+        # Right-align by estimating the badge width for this fixed-format string.
+        # The pill will never clip its own text regardless of this offset.
+        ctx.badge(
+            x=ctx.w - PAD - 58,
+            y_center=PAD + HEADING / 2,
+            label="v0.1.0",
+            fill=SURFACE, fg=MUTED, font_size=HINT, radius=3.0,
+        )
 
         # Subtitle: optional muted line below the title.
         # To remove: delete this ctx.text call and change table_y below to:
