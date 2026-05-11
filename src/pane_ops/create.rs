@@ -267,6 +267,54 @@ impl PlexiApp {
         }
     }
 
+    /// Detect crashes on watched panes and restart them after a brief delay
+    /// so the developer can read the crash overlay. Only applies to panes
+    /// that opted in via `[app] watch = true` — production installs are
+    /// unaffected. Called once per frame alongside `drain_hot_reload_requests`.
+    pub(crate) fn drain_crash_restarts(&mut self) {
+        use crate::process_app::LifecycleState;
+        use std::time::{Duration, Instant};
+
+        const CRASH_RESTART_DELAY: Duration = Duration::from_secs(2);
+
+        let active = self.active_window;
+
+        // Schedule restarts for newly-crashed watched panes.
+        for pane_id in self.hot_reload.watched_pane_ids() {
+            if self.pending_crash_restarts.contains_key(&pane_id) {
+                continue;
+            }
+            if let Some(pane) = self.windows[active].panes.get(&pane_id) {
+                if let Some(app_pane) = pane.as_app() {
+                    if let crate::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
+                        if proc.lifecycle.state() == LifecycleState::Crashed {
+                            log::info!(
+                                "app::{}: crash detected on watched pane {pane_id} — scheduling restart in {}ms",
+                                app_pane.manifest_id,
+                                CRASH_RESTART_DELAY.as_millis()
+                            );
+                            self.pending_crash_restarts
+                                .insert(pane_id, Instant::now() + CRASH_RESTART_DELAY);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fire elapsed restarts.
+        let now = Instant::now();
+        let ready: Vec<_> = self
+            .pending_crash_restarts
+            .iter()
+            .filter(|(_, t)| **t <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        for pane_id in ready {
+            self.pending_crash_restarts.remove(&pane_id);
+            self.reload_app_pane(pane_id, "crash-restart");
+        }
+    }
+
     /// Force-reload the focused app pane (manual trigger via Cmd+Option+R).
     /// No-op when the focused pane isn't a process-backed AppPane.
     pub(crate) fn force_reload_focused_app(&mut self) {

@@ -248,6 +248,9 @@ pub struct PlexiApp {
     /// existing `AppPane` envelope.
     pub(crate) hot_reload: crate::hot_reload::HotReloadWatcher,
     pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::hot_reload::ReloadRequest>,
+    /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
+    /// which the restart fires — giving the developer ~2s to read the crash overlay.
+    pub(crate) pending_crash_restarts: HashMap<PaneId, std::time::Instant>,
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
     /// and the `Cmd+Shift+M` override-visible flag.
     pub(crate) minimap: crate::minimap::MinimapState,
@@ -634,6 +637,7 @@ impl PlexiApp {
                     directed_pipes: HashMap::new(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
+                    pending_crash_restarts: HashMap::new(),
                     minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
                     context_active_window: ws.context_active_window,
@@ -726,6 +730,7 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher2,
             hot_reload_rx: hr_rx2,
+            pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -830,6 +835,7 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
+            pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -2433,6 +2439,10 @@ impl eframe::App for PlexiApp {
         // dropped (sending Shutdown + reaping the child) and replaced with
         // a fresh subprocess. Idempotent if the pane was closed since.
         self.drain_hot_reload_requests();
+
+        // Crash-resilient dev reload (#1055): auto-restart watched panes that
+        // have crashed, after a 2s delay so the developer can read the traceback.
+        self.drain_crash_restarts();
 
         // Reload configuration from disk when the user clicks
         // "Reload Configuration" in the app menu.
