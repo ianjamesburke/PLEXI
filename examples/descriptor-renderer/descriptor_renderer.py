@@ -19,7 +19,7 @@ from pathlib import Path
 
 from plexi_sdk import App, RenderContext, CapabilityDeniedError
 from plexi_sdk.ui import (
-    Column, AppBar, FormField,
+    Column, AppBar, FormField, FooterKeys,
     ListItem, Label, Spacer, Card,
     BG, HIGHLIGHT, ACCENT, MUTED, RED,
     TEXT_HINT,
@@ -210,6 +210,10 @@ class DescriptorRendererApp(App):
                 )
                 for i, cmd in enumerate(commands)
             ]))
+            footer_hints = [("j/k", "navigate"), ("enter", "open")]
+            if self._cmd_path:
+                footer_hints.append(("esc", "back"))
+            header_items.append(FooterKeys(footer_hints))
             ctx.render(Column(header_items, padding=0, padding_top=0, gap=0))
             return
 
@@ -270,6 +274,10 @@ class DescriptorRendererApp(App):
                      text=f"$ {self._last_run}",
                      size=TEXT_HINT, color=MUTED, monospace=True,
                      align="left_center", max_width=ctx.w - 2 * SPACE_LG - SPACE_MD, elide=True)
+
+        footer = FooterKeys([("enter", "run"), ("esc", "back")])
+        footer_h = footer.measure(ctx.w)
+        footer.render(ctx, 0, ctx.h - footer_h, ctx.w, footer_h)
 
     # ── Interaction ───────────────────────────────────────────────────────────
 
@@ -382,21 +390,19 @@ class DescriptorRendererApp(App):
             if self._list.handle_key(key):
                 self._selected_idx = self._list.selected_index
                 self.emit.schedule_render(after_ms=16)
-            elif key in ("Return", "Enter"):
+            elif key == "return":
                 self._handle(self._list.selected_index)
                 self.emit.schedule_render(after_ms=16)
-            elif key == "Escape" and self._cmd_path:
-                self._cmd_path.pop()
-                self._selected_idx = 0
-                self._list.set_selected(0)
+            elif key == "escape" and self._cmd_path:
+                self._handle("back")
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
-            if key == "Escape":
-                self._view = "list"
-                self._cmd_path.pop()
-                self._selected_idx = 0
-                self._list.set_selected(0)
+            if key == "escape":
+                self._handle("back")
+                self.emit.schedule_render(after_ms=16)
+            elif key == "return":
+                self._handle("run")
                 self.emit.schedule_render(after_ms=16)
 
 
