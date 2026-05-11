@@ -923,23 +923,34 @@ impl PlexiApp {
 
         let screen_rect = ctx.screen_rect();
 
-        // Dim the whole work area. The scrim swallows clicks so UI behind can't
-        // accidentally eat them.
-        egui::Area::new(egui::Id::new("notification_modal_scrim"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen_rect.min)
-            .interactable(true)
-            .show(ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    screen_rect.size(),
-                    egui::Sense::click(),
-                );
-                ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::ZERO,
-                    Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-            });
+        // PRIORITY_CRITICAL (≥200) demands full attention: keep the scrim and
+        // center the modal. Lower priorities show as a top-right toast so the
+        // app behind remains readable.
+        let is_critical = notif.priority >= 200;
+        log::info!(
+            "notification_modal: priority={} is_critical={} kind={:?}",
+            notif.priority, is_critical, notif.kind
+        );
+
+        if is_critical {
+            // Dim the whole work area. The scrim swallows clicks so UI behind can't
+            // accidentally eat them.
+            egui::Area::new(egui::Id::new("notification_modal_scrim"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(screen_rect.min)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(
+                        screen_rect.size(),
+                        egui::Sense::click(),
+                    );
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::ZERO,
+                        Color32::from_black_alpha(style::SCRIM_ALPHA),
+                    );
+                });
+        }
 
         let level_color = match notif.level.as_str() {
             "error" => Color32::from_rgb(0xff, 0x55, 0x55),
@@ -1033,9 +1044,14 @@ impl PlexiApp {
             _ => {}
         }
 
+        let (modal_anchor, modal_offset) = if is_critical {
+            (Align2::CENTER_CENTER, Vec2::ZERO)
+        } else {
+            (Align2::RIGHT_TOP, Vec2::new(-16.0, 80.0))
+        };
         egui::Area::new(egui::Id::new("notification_modal"))
             .order(egui::Order::Tooltip)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .anchor(modal_anchor, modal_offset)
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(self.colors.bg_sidebar)
