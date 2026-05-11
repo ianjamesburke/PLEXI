@@ -542,9 +542,7 @@ pub fn poll_actions(
         // Rename context before rename pane — check shifted variant first.
         if input.consume_key(bindings.rename_context.0, bindings.rename_context.1) {
             actions.push(Action::RenameContext);
-        } else if input.modifiers == bindings.rename_pane.0
-            && input.consume_key(bindings.rename_pane.0, bindings.rename_pane.1)
-        {
+        } else if !input.modifiers.alt && input.consume_key(bindings.rename_pane.0, bindings.rename_pane.1) {
             actions.push(Action::RenamePane);
         }
 
@@ -573,10 +571,10 @@ pub fn poll_actions(
             actions.push(Action::ScrollDown);
         }
 
-        if input.modifiers == bindings.increase_font_size.0 && input.consume_key(bindings.increase_font_size.0, bindings.increase_font_size.1) {
+        if input.consume_key(bindings.increase_font_size.0, bindings.increase_font_size.1) {
             actions.push(Action::IncreasePaneFontSize);
         }
-        if input.modifiers == bindings.decrease_font_size.0 && input.consume_key(bindings.decrease_font_size.0, bindings.decrease_font_size.1) {
+        if input.consume_key(bindings.decrease_font_size.0, bindings.decrease_font_size.1) {
             actions.push(Action::DecreasePaneFontSize);
         }
 
